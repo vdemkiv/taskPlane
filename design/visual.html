@@ -1,42 +1,36 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>R-0002 attributed operator-trust sequence</title>
-  <style>
-    :root { color-scheme: light; font: 16px/1.45 system-ui,sans-serif; --ink:#17202a; --muted:#566573; --line:#8395a7; --active:#176b46; --backlog:#8a6d1d; --paper:#f6f8fa; }
-    body { margin:0; background:var(--paper); color:var(--ink); }
-    main { max-width:1120px; margin:32px auto; padding:0 24px 40px; }
-    h1 { font-size:1.55rem; margin:0 0 6px; }
-    p { color:var(--muted); margin:0 0 24px; }
-    .flow { display:grid; grid-template-columns:repeat(6,minmax(130px,1fr)); gap:18px; }
-    .node { position:relative; background:white; border:2px solid var(--line); border-radius:12px; padding:14px; min-height:134px; }
-    .node:not(:last-child)::after { content:"→"; position:absolute; right:-17px; top:50%; transform:translateY(-50%); color:var(--muted); font-weight:800; font-size:20px; }
-    .node strong { display:block; margin-bottom:7px; }
-    .node small { color:var(--muted); }
-    .active { border-color:var(--active); }
-    .rule { margin-top:24px; border-left:5px solid var(--active); background:white; padding:14px 16px; }
-    .backlog { margin-top:18px; border:2px dashed var(--backlog); background:#fffdf5; border-radius:10px; padding:14px 16px; }
-    .backlog strong { color:var(--backlog); }
-    @media(max-width:900px){ .flow{grid-template-columns:1fr}.node:not(:last-child)::after{content:"↓";right:50%;top:auto;bottom:-22px;transform:translateX(50%)} }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>R-0001 corrective delivery sequence</title>
+<style>
+:root{color-scheme:light;--ink:#18202b;--muted:#667085;--line:#cbd5e1;--blue:#2563eb;--teal:#0f766e;--amber:#b45309;--red:#b42318;--paper:#f8fafc}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:auto;padding:40px 28px 56px}h1{font-size:28px;margin:0 0 8px}p.lead{color:var(--muted);margin:0 0 28px;max-width:880px}
+.sequence{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:18px;align-items:stretch}.phase{position:relative;background:white;border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 2px 8px #0f172a0d}
+.phase:not(:last-child)::after{content:"";position:absolute;top:34px;right:-19px;width:19px;border-top:2px solid var(--blue)}.phase:not(:last-child)::before{content:"";position:absolute;top:29px;right:-19px;border:6px solid transparent;border-left-color:var(--blue);transform:translateX(9px)}
+.num{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--blue);color:#fff;font-weight:700}.phase h2{font-size:17px;margin:12px 0 6px}.phase p{color:var(--muted);margin:0 0 12px}.lanes{display:grid;gap:7px}.lane{padding:8px 9px;border-radius:8px;background:#eff6ff;border-left:3px solid var(--blue);font-size:13px}
+.exit{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;font-weight:650}.feature{color:var(--teal)}.release{color:var(--amber)}.stop{color:var(--red)}
+.authority{margin-top:26px;display:grid;grid-template-columns:1fr auto 1fr;gap:18px;align-items:center}.receipt{background:white;border:1px solid var(--line);border-radius:12px;padding:18px}.receipt h3{margin:0 0 6px;font-size:16px}.receipt p{margin:0;color:var(--muted)}.arrow{font-size:26px;color:var(--line);text-align:center}.barrier{margin-top:26px;border:1px solid #fed7aa;background:#fff7ed;border-radius:12px;padding:16px 18px}.barrier strong{color:var(--amber)}.legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:20px;color:var(--muted);font-size:13px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+@media(max-width:900px){.sequence{grid-template-columns:1fr}.phase:not(:last-child)::after,.phase:not(:last-child)::before{display:none}.authority{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}}
+</style>
 </head>
-<body>
-<main>
-  <h1>R-0002: explicit operator assertion before the existing pickup path</h1>
-  <p>The active path compares one exact caller-supplied SHA with the shelf and existing repository lineage. It records that assertion and explicitly denies a cryptographic-origin claim.</p>
-  <section class="flow" aria-label="Attributed operator trust sequence">
-    <div class="node active"><strong>Human invocation</strong><small>tp pickup shelf.json<br>--trust-source<br>&lt;full SHA&gt;</small></div>
-    <div class="node"><strong>tp.py</strong><small>Forward exact string<br>No normalization<br>Neutral help/output</small></div>
-    <div class="node active"><strong>One parse factory</strong><small>40/64 lowercase hex<br>Equals shelf source<br>Frozen typed value</small></div>
-    <div class="node"><strong>Existing BUILD-C</strong><small>Direct assignment<br>One checkpoint<br>Green integration</small></div>
-    <div class="node"><strong>Explicit serializer</strong><small>Atomic receipt v2<br>Exact flag + value<br>Claim field = false</small></div>
-    <div class="node"><strong>Next checkout</strong><small>Tracked shelf + receipts<br>New explicit assertion<br>Zero private handoff</small></div>
-  </section>
-  <div class="rule"><strong>Fail before BUILD-C:</strong> missing/malformed/mismatched input, invalid shelf structure, or any digest/path/predecessor/fork/gap/collision/mixed-lineage failure preserves all prior receipts and authorizes no checkpoint or merge.</div>
-  <div class="rule"><strong>Scoped tooling disposition:</strong> this standard-library-only AC4 uses the incumbent compile/import, introspection, focused/full pytest, and manual annotation/escape-hatch checks. No pydantic, ruff, black, mypy, or pyright dependency/config is added; this is not a standing waiver.</div>
-  <div class="backlog"><strong>No active edge:</strong> asymmetric approval authority and repository public trust are decision-0008 backlog inventory only. OpenSSH + allowed-signers may be redesigned after a trigger; no signer, verifier, key, dependency, or protected-surface change enters 2.17.20.</div>
-</main>
-</body>
-</html>
+<body><main>
+<h1>R-0001: governed corrective delivery</h1>
+<p class="lead">The signed order is serial at five phase barriers. Within each phase, every disjoint owner runs concurrently. Build evidence and release authority remain deliberately separate.</p>
+<section class="sequence" aria-label="Five ordered delivery phases">
+<article class="phase"><span class="num">1</span><h2>A2 mechanisms</h2><p>Remove recurring lens and outage overhead first.</p><div class="lanes"><div class="lane">Delivery mode + empty collection</div><div class="lane">Human unstarted-kernel rebind</div><div class="lane">Live-host producer observations</div><div class="lane">Single-use host continuity (no authenticity claim)</div></div><div class="exit feature">Exit: feature-green only</div></article>
+<article class="phase"><span class="num">2</span><h2>Forward v2.17.21 repair</h2><p>Consume the ecfc48e CI repairs as inventory, then converge remaining release and startup wiring.</p><div class="lanes"><div class="lane">Advance final v2.17.21 docs/manifests</div><div class="lane">Detect → obstruct → flag reference + digest</div><div class="lane">Hosted default branch</div><div class="lane">Protected platform proof + A5 history</div></div><div class="exit release">Exit: final candidate evidence</div></article>
+<article class="phase"><span class="num">3</span><h2>Design enforcement</h2><p>Turn the accepted test and wiring plan into Build authority.</p><div class="lanes"><div class="lane">12 exact AC test maps</div><div class="lane">W01–W32 wiring ledger</div><div class="lane">DoR + checkpoint adapters</div></div><div class="exit">Exit: incomplete maps refuse</div></article>
+<article class="phase"><span class="num">4</span><h2>Performance package</h2><p>Drive maximum safe fan-out with binding limits.</p><div class="lanes"><div class="lane">Delta brief under 4K</div><div class="lane">Atomic capped admission + default-deny dispatch</div><div class="lane">Budgets + bounded events + telemetry</div><div class="lane">Persistent DAG + critical path</div></div><div class="exit stop">Exit: ceilings stop for human scope</div></article>
+<article class="phase"><span class="num">5</span><h2>Cold-start gate</h2><p>Measure the real front door before resuming R-0013.</p><div class="lanes"><div class="lane">Fresh checkout</div><div class="lane">Same pushed SHA</div><div class="lane">Empty private home</div><div class="lane">First checkpoint &lt;120s</div></div><div class="exit feature">Exit: R-0013 resume allowed</div></article>
+</section>
+<section class="authority" aria-label="Green receipt authority separation">
+<div class="receipt"><h3 class="feature">Feature-green</h3><p>Focused exact-SHA tests. May advance Build. Cannot authorize tag, install, or publication.</p></div>
+<div class="arrow" aria-hidden="true">≠</div>
+<div class="receipt"><h3 class="release">Release-green</h3><p>Closed W01–W32 ledger + terminal full matrix + package proof + independent exact pushed-SHA platform re-query + outside-model human recheck.</p></div>
+</section>
+<div class="barrier"><strong>Authority and history barrier:</strong> local receipts and attributed actor strings are not authenticity proof; no signatures, MACs, or keys are added. Workers receive no release credentials. v2.17.20 remains released-incomplete; repairs move forward as v2.17.21. A <code>released-unverified</code> override records skipped proofs but never becomes green; graph revision 2757822e remains attributed and unchanged.</div>
+<div class="legend"><span><i class="dot" style="background:#2563eb"></i>parallel owner lane</span><span><i class="dot" style="background:#0f766e"></i>feature gate</span><span><i class="dot" style="background:#b45309"></i>release authority</span><span><i class="dot" style="background:#b42318"></i>human scope stop</span></div>
+</main></body></html>

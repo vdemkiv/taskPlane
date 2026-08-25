@@ -1,248 +1,260 @@
-# R-0002 Design — explicit attributed operator trust for repository-only pickup
+# R-0001 Design — corrective delivery architecture
+
+Status: proposed HOW for human approval. This document does not approve a Plan, authorize implementation, or relabel any release.
 
 ## Decision
 
-Implement the accepted human decision from KB 0008 as one narrow mode:
+Use a **contract-first evidence spine with narrow owner adapters**, delivered in the signed order: A2 mechanisms first; the forward v2.17.21 release-repair lane second; Design test/wiring enforcement third; performance/orchestration fourth; and the measured pickup cold-start gate last. The spine introduces small standard-library owners for injected delivery ports, delivery policy, review rebind authority, host producer observations, Design wiring closure, release evidence, plan topology, delta briefs, and dispatch telemetry. Existing `loop.py`, `review.py`, `build_c.py`, `checkpoint.py`, `repository.py`, and `retro.py` remain execution boundaries but call those owners through explicit typed contracts.
 
-```text
-tp pickup <design-contract> --trust-source <exact-source-sha>
-```
+This split is deliberate. Current `loop.py` is a shared hot owner for Plan readiness, stage briefing, lens routing, review startup, dispatch, gates, and release-adjacent evidence. Adding all corrective policy there would serialize otherwise disjoint work and make severed edges difficult to prove. The selected design keeps transition order in `loop.py` while moving validation and receipt construction to testable, side-effect-bounded modules.
 
-`--trust-source` is an explicit operator assertion for a fresh repository-only resume. `taskplane/tp.py` passes the exact argument spelling and value to `taskplane/pickup.py`. Pickup validates that the value is one full lowercase 40- or 64-hex Git object id and equals the shelf's exact `source_sha`; it then applies the incumbent closed shelf-structure, Design-fingerprint, receipt digest/path/predecessor, history, checkpoint, and merge identity checks. Only after all preflight checks pass may the existing BUILD-C entry run.
+The following meanings are fixed:
 
-The assertion does not prove who typed it or who produced the shelf. Every new receipt labels the mode `attributed-operator-trust`, records `--trust-source` and the full supplied SHA verbatim, and carries `cryptographic_authenticity_claimed: false`. CLI help, output, trace, tests, documentation, release notes, and reviews use operator-trust/structural-agreement language for this mode. KB 0009 remains inherited standing state: actor strings are not cryptographically identified and v1 shelf evidence uses a private symmetric secret. This delivery neither changes nor claims to solve that limitation.
+- `feature-green` is a focused, exact-SHA acceptance receipt that may advance Build. It has no tag, install, publication, or release authority.
+- `release-green` is a different final-SHA receipt. It requires the closed wiring ledger, terminal full matrix, package/manifests evidence, and an independently re-queried hosted-platform run/check identity for the exact pushed SHA. A protected consumer then obtains an outside-model human recheck before an irreversible action. Local receipts alone are not platform or actor authenticity proof.
+- `released-unverified` is an attributed human override record with a non-empty exact list of skipped proofs. It is evidence of an exception and can never be consumed as `release-green`; it does not claim cryptographic authenticity.
+- v2.17.20 stays `released-incomplete`. Forward repair is v2.17.21. Historical graph revision `2757822ede49177fc52de8c173302286364d6206` remains an attributed inherited limitation; no history rewrite, re-release, or verifier weakening is designed.
 
-## Baseline and retained inventory
+## Grounded current state
 
-The exact source baseline remains HEAD `a73f125e762670323d0e4a8fbbef3a1edf3ea958`. The original pre-approval Design graph was `901fccc66e02c780213d13a5647414487fe3b3961475f5da5c75a2180010da47`, 53 modules/175 edges. Product corrected the executable authority classification and removed only the two stale asymmetric requirement edges; the current Design graph baseline is `c6e3f9ed00e00c75fe07d3a4734633ea19d36d81b7a7ef4ce39d289025e26199`, 55 modules/177 edges, at the same source HEAD. This is authority representation, not product implementation. `specs/spec.md`, the private R-0002 record, and accepted decisions 0008/0009 govern this amendment. The prior blocked asymmetric Design is inventory only.
+The Design is rebound to clean detached HEAD `ecfc48ec2f5f4c25dd0d9bab4d6751bc2f130845` and authoritative requirement-enriched dependency graph `a6a3c1e72c0c268648e3727cdcec904f60c41442a1f77bf16231bbdb84cd90a6` (50 modules, 156 edges: 150 scanner edges plus six recorded R-0001 contract edges). Graph scan quality is complete/not degraded and `scanned_head` is the exact Design base. The graph policy remains local depth 3, `contract-only`, contract depth 1, requirement depth 1.
 
-The accepted Product correction is bound to `specs/spec.md` SHA-256 `0ae3d5c0071e06b76cc67cd7216c6b9cc68231d18354634a8a6d8fa18984eda4`. Its executable authority is exactly three acceptance criteria and seven active canonical contracts, including `contract:pickup.operator-trust-source`. `contract:pickup.asymmetric-authenticity` and `resource:repository.pickup-public-verification-material` are absent from active Design contracts and proposed edges; they remain only non-authoritative historical backlog inventory. This is a representation-only correction because Taskplane 2.17.19 Plan DoR treats every acceptance row and proposed edge as executable. It changes none of the selected HOW, modules, receipt schemas, validation behavior, or delivery scope below.
+Observed current behavior:
 
-Completed T01–T04, repository-only resume groundwork, and retry-safe atomic receipt publication are non-replay inventory. The Design preserves their implementation and evidence. AC1–AC3 may run only as unchanged regression coverage in the final AC5 suite. Task-owned acceptance is exactly AC4, AC5, and the bounded 2.17.20 release surfaces. After those pass, the loop—not Plan tasks or per-task lenses—owns mandatory concurrent quick security+QA, same-SHA EM, and the human push-authority stop.
+1. `loop._plan_dor_errors` validates scopes, commands, criteria, contracts, graph readiness, and Design readiness, but no sealed delivery mode or pairwise topology is required.
+2. `loop.next_action` primes lenses for Execute/Fix and creates a ReviewKernel for Evaluate/EM. `loop.wave` also calls `lens_router.prime_scope`; build dispatch therefore still carries automatic lens work.
+3. `loop._evaluation_errors` derives `expected_lenses` from a ReviewKernel and understands a normal complete kernel, but there is no explicit successful empty-collection receipt contract. Producer-receipt absence can flow into evaluator-outage handling.
+4. `review.start_review` seals a routed run and slots; `loop.next_action` persists a binding. There is no bounded human-only append-only rebind contract that distinguishes an unstarted kernel from any slot with start/write/collection evidence.
+5. Leased lens results have strong host observations in `review.py`, while evaluator and final-EM output contracts say observations are required without one closed live-Codex producer-to-gate path.
+6. `design_contract.design_dod_errors` maps criterion text to narrative validation, but does not require exact test files/selectors or a closed producer-consumer wiring ledger. `checkpoint.validate_checkpoint_spec` checks its single focused proof file, not the Design-declared per-AC set.
+7. Release provenance, freshness, pushed-SHA classification, workflow matrix, version manifests, archives, docs, and runtime checks exist across scripts and tests, but no one release-green receipt closes them. The 16-commit CI repair delta now fixes the current v2.17.20 generated CLI reference and README window; those changes are integrated inventory, not R-0001 work.
+8. `RepositoryManager.acquire_repository` fetches a hosted mirror and then dereferences bare `HEAD`. A newly initialized mirror can retain `refs/heads/master` while the fetched default is `origin/main`, producing the observed ambiguous-HEAD startup failure.
+9. `loop.next_action` returns a broad rediscovered payload rather than a stable-reference delta. Existing spend/progress/lens telemetry does not enforce all four wave ceilings or persist the required per-dispatch/thread-type fields. Retro does not compute parallelism factor or longest serial chain.
+10. The released v2.17.20 security-methodology reference mandates `references/prompt-injection-defense.md`, but that file is absent from the installed package. The source-to-package-to-security-lens edge is broken.
 
-Current owners are already sufficient:
+Sources inspected: `taskplane/loop.py`, `taskplane/build_c.py`, `taskplane/checkpoint.py`, `taskplane/design_contract.py`, `taskplane/review.py`, `taskplane/review_retry.py`, `taskplane/evaluation_output.py`, `taskplane/evaluator_health.py`, `taskplane/repository.py`, `taskplane/preflight.py`, `taskplane/retro.py`, `taskplane/progress.py`, `taskplane/spend.py`, `taskplane/lens_telemetry.py`, `taskplane/command_runtime.py`, `taskplane/pickup.py`, `taskplane/tp.py`, `scripts/ci_evals.py`, packaging scripts, `.github/workflows/ci.yml`, release manifests, release/freshness/repository tests, the accepted retro, and its signed authority amendment.
 
-- `taskplane/tp.py` owns the public parser and delegates to pickup.
-- `taskplane/pickup.py` owns clean checkout/shelf selection, structural repository resume, exact source and Design identity, receipt lineage, the live BUILD-C call, and atomic receipt projection.
-- `taskplane/tests/test_pickup.py` already owns the shelf fixture, second-checkout flow, severed BUILD-C seam, lineage tamper coverage, and publication/interruption evidence.
-- `taskplane/design_contract.py` and its v1 private-secret verification path remain byte- and behavior-unchanged.
-- BUILD-C, checkpoint, repository, storage, hooks, and the legacy loop remain protected incumbent boundaries.
+The engine supplied no `knowledge.current_state`, and the repository has no `architecture.md`. This Design therefore makes only a bounded exact-HEAD claim from the cited files, tests, baseline graph, accepted retro, and signed amendment. The component map, lane barriers, and graph DoR/DoD below are R-0001 authority only; final graph scan and independent review must re-attest them.
+
+### Exact-tip rebind verification
+
+The exact `4a0378e7f080..ecfc48ec2f5f` range contains 16 CI compatibility/regression commits across 60 files. It integrates four relevant classes of inventory: (1) `build_c.py` now receives loop-owned state and event-wait services through `bind_loop_runtime`, removing its lazy imports of `loop`/`review`; (2) Review uses the graph and runtime bundle from the same canonical tree, and degraded graphs retain architecture plus security; (3) evidence, stage-startup telemetry, repository identity, cleanup replay, and their fixtures are repaired; and (4) current plugin descriptions, CLI reference, configuration, and README release window are fresh. None introduces delivery-mode receipts, empty-lens success, human kernel rebind, evaluator/EM producer observation, Design wiring closure, release-green authority, the R-0001 scheduler/budgets, hosted-default preparation, or the missing prompt-injection reference.
+
+The clean authoritative graph was scanned separately before this uncommitted Design overlay, then replayed with the same six recorded R-0001→contract edges. Its module and edge topology is identical to the approved 4a0378e baseline; only source hashes, scanned revision, and content fingerprint changed. The separate `73abaaaad36e18663bde23523d28a4dcef9474e57ce4307721eda3ef02e3d309` 44/152 graph is rejected as a binding because it observed Design overlay files and omitted the recorded requirement edges.
+
+Compatibility is unchanged by the delta: manifests remain v2.17.20; no R-0001 receipt schema, host/plugin capability, N/N-1 matrix cell, migration, deprecation, or sunset rule changed. The approved v2.17.21 forward-only design therefore remains intact.
 
 ## Alternatives
 
-### A. Explicit attributed operator trust — selected
+### A. Contract-first evidence spine with narrow adapters — selected
 
-Add the optional public flag, but require it whenever pickup has no incumbent private shelf secret. Validate exact full-SHA syntax and equality, then retain every structural and lineage check. Project the assertion into only the next receipt using a strict versioned shape.
+Gains: policy is single-sourced; producer and consumer identities are executable; new owners give Plan disjoint scopes; release claims become impossible without complete evidence; each seam has a severed-edge test. Costs: several small modules and additive receipt schemas; a compatibility projection is needed for existing loop output and historical focused receipts. Revisit if measured coupling shows two adjacent owners always change together for two releases; merge only after graph and test evidence.
 
-Gains:
+### B. Patch the existing `loop.py`/`review.py` paths in place
 
-- satisfies the accepted operator decision and fresh-checkout AC4 without private-home handoff;
-- makes the trust assumption visible, exact-SHA-bound, durable, and testable;
-- changes only the CLI, pickup projection, focused tests, and bounded release surfaces; and
-- preserves the existing BUILD-C/checkpoint/merge and atomic publication owners.
+Gains: fewer files and short-term call-site edits. Costs: one shared owner serializes A2, Design enforcement, performance, and release work; mode, budgets, observations, and release authority remain mixed with transitions; severed-edge tests become source-introspection rather than behavior; rollback is all-or-nothing. Revisit only for an emergency one-line refusal fix, never for this multi-contract program.
 
-Costs:
+### C. Put correctness in CI/workflows only
 
-- the human assertion is not cryptographic evidence of actor or producer origin;
-- a matching SHA proves only agreement among the supplied value and repository identities; and
-- mixed receipt history must support an old v1 receipt followed by a new operator-trust v2 receipt.
+Gains: release checks are visible and parallelizable without local state changes. Costs: build lens creation, empty-lens handling, human rebind, live-host observations, `loop next` size, and repository startup all occur before CI; local tags/install could still bypass workflow-only evidence. Revisit only for redundant remote attestation after local/runtime contracts are closed.
 
-Revisit when a second operator, an untrusted producer host, or an external evidence-verification requirement appears; use the shelved backlog rather than extending this mode.
+### D. Status quo plus operator discipline
 
-### B. V1 private-secret path only; no repository-only resume
+Gains: no implementation. Costs: it reproduces the accepted defects and the fourth unverified ship; it cannot satisfy any of the new enforcement criteria. Revisit never under R-0001.
 
-Keep `tp pickup <design-contract>` exactly as it is and require the original private Taskplane secret in every checkout.
+### E. Cryptographically authenticated actor authority — shelved
 
-Gains: zero source/receipt change and incumbent symmetric verification remains available.
+Gains: signatures and repository-verifiable keys could establish actor authenticity across untrusted producer hosts. Costs: this adds protected keys, signer/verifier integration, trust bootstrap, rotation/revocation, and a materially larger security surface. The accepted human decision explicitly shelves it: R-0001 adds no signature, MAC, key, signer, verifier, or authenticity claim. Revisit only for a second operator, an untrusted producer host, external evidence verification, or a new human authorization. Until then actor strings are attributed but unauthenticated.
 
-Costs: fresh second-checkout AC4 cannot run without a private-store handoff, so the selected product decision is not delivered.
+## Selected modules and boundaries
 
-Revisit only if the human withdraws repository-only resume.
+New narrow owners under `taskplane/`:
 
-### C. Asymmetric approval authority now
+- `delivery_ports.py`: public Protocols for `Clock`, `EventWaiter`, `ProducerEventSource`, `HostActionCapabilitySource`, `TaskDispatchCapabilityFactory`, `EvidenceStore`, `PlatformCiQuery`, `GitRunner`, and `FaultInjector`. Production and deterministic test implementations share these boundaries.
+- `delivery_policy.py`: frozen delivery-mode and wave-budget values; parse/validate factories; `taskplane.delivery-mode-receipt/v1`; budget-stop decision. Modes are closed (`build`, `review`, `design`), with automatic lenses allowed only for Design. Raw Plan mappings never cross this boundary.
+- `review_authority.py`: kernel lifecycle projection and append-only `taskplane.review-kernel-override/v1`; accepts only attributed human authority, exact prior/new binding fingerprints, reason, timestamp, and zero-start proof. Any slot start, producer assignment, write observation, collection reservation, or revision makes the kernel immutable.
+- `producer_observation.py`: host-neutral `taskplane.producer-observation/v1` for evaluator and EM outputs, bound to run/task/stage/producer/host session or turn/output path/bytes/SHA/schema/contract/revision. Codex and Claude adapters supply host facts; gates consume only validated observations.
+- `wiring_closure.py`: closed Design AC test map and producer-consumer edge ledger; exact file/selector resolution; `taskplane.wiring-closure/v1` fingerprint. It is pure validation and imports no loop/review runtime.
+- `release_evidence.py`: mutually exclusive feature-green, release-green, and release-override constructors/validators; only release-green exports release authority.
+- `plan_topology.py`: exhaustive unordered task-pair classification (`parallel` or `serialized-because-<shared-owner>`), ready-set validation, verification fan-out topology, and critical-path inputs.
+- `brief_projection.py`: delta-shaped `loop next` projection containing current action, new evidence, and content-addressed references to unchanged data; canonical token/byte measurement and refusal over 4,000 tokens.
+- `dispatch_telemetry.py`: append-only per-dispatch facts, binding budget aggregation, thread type, duration/wait/corrections, progress/completion/attention events, parallelism factor and critical-path calculation.
 
-Add producer signing and repository public verification material now.
+Existing owners receive bounded adapters only:
 
-Gains: could eventually support producer-origin evidence.
+- `loop.py`: invokes policy/topology/brief/observation/release validators at existing Plan, dispatch, submission, gate, and next-action seams. It does not implement their schemas.
+- `build_c.py`: consumes an approved build-mode receipt and topology-ready set; refuses any lens-worker factory; dispatches all pairwise-disjoint ready work and preserves the existing event wait through the incumbent ecfc48e `bind_loop_runtime` dependency-inversion seam. R-0001 extends that seam and does not restore lazy `build_c → loop/review` imports.
+- `review.py` and `evaluation_output.py`: use producer observations and empty-collection receipt; no host-specific authority is inferred from authored JSON.
+- `design_contract.py` and `checkpoint.py`: consume the AC test map and wiring ledger; checkpoint reports the exact missing file and selector before command start.
+- `repository.py` and `preflight.py`: resolve remote default ref after fetch, prove it exists, set/read the mirror default binding explicitly, then resolve the commit; never dereference an unverified bare `HEAD`.
+- `progress.py`, `command_runtime.py`, `spend.py`, and `retro.py`: emit/aggregate the telemetry contract. Telemetry unavailability cannot fabricate green; missing binding budget data blocks continuation for human scope review.
+- `pickup.py`: emits first-executing-checkpoint timing markers used by the final cold-start measurement. No pickup behavior is redesigned.
+- `tp.py`: exposes only bounded CLI projections for human kernel rebind and evidence/status; generated CLI docs remain a required freshness consumer.
 
-Costs: requires signer/verifier/key workflow, trust material, runtime guarantees, and protected surfaces explicitly excluded by KB 0008 and the amended requirement.
+## Delivery sequence and parallel lanes
 
-Revisit only at a backlog trigger. The preserved future direction is OpenSSH `ssh-keygen -Y` plus a committed allowed-signers file and fail-closed absence handling; it is not a current contract, module, edge, task, claim, or evaluation.
+The program order is binding, while tasks inside a numbered phase use maximum disjoint fan-out.
 
-### D. Status quo structural resume without explicit operator input
+1. **A2 feature package:** delivery mode + zero-lens collection; review rebind; evaluator/EM producer observations. These are separate write owners and run concurrently after the shared receipt schemas are frozen. A focused exact-SHA receipt makes the package feature-green only.
+2. **Forward v2.17.21 release-repair lane:** consume the ecfc48e CI fixes as integrated inventory (do not reimplement them), advance final docs/manifests freshness for v2.17.21, repair the still-missing security reference edge, fix hosted default-branch startup, add release override/evidence, preserve the A5 historical disposition, and converge on one candidate SHA. Cheap docs/manifests/package/default-branch jobs fan out; one full matrix follows; pushed-SHA proof is terminal. v2.17.20 remains unchanged in history.
+3. **Design enforcement:** AC test map and wiring ledger validators plus Build DoR/checkpoint adapters. This phase dogfoods the exact R-0001 map in this Design Contract.
+4. **Performance/orchestration:** topology, delta brief, telemetry/budget stop, progress wakeups, verification fan-out, Retro metrics. Disjoint module owners dispatch together; adapters into `loop.py` serialize under the named `loop-transition-owner` only.
+5. **Cold-start gate:** from a fresh checkout at the same final pushed SHA and empty private Taskplane home, measure command start to the first executing pickup checkpoint. A value below 120 seconds yields the resume receipt. Failure blocks R-0013 and opens only a bounded cold-start repair.
 
-Continue accepting shelf structure and receipt lineage when the private secret is absent.
+No tag/install/publication occurs merely because a phase is feature-green. The final release-green constructor consumes the final exact SHA, complete wiring fingerprint, terminal full matrix, package/manifests proofs, and successful fetched pushed-SHA proof.
 
-Gains: current second-checkout test keeps passing without a new flag.
+## Receipt and data contracts
 
-Costs: the trust assumption stays implicit and unattributed, directly contradicting decision 0008 and amended AC4.
+All receipts use canonical JSON (UTF-8, sorted keys, compact separators, newline), closed fields, SHA-256 content fingerprints, exact source SHA, and predecessor digests.
 
-Revisit never for current R-0002.
+`taskplane.delivery-mode-receipt/v1` records requirement, Plan fingerprint, mode, automatic-lens policy, attributed Plan authority, and exact SHA. Build dispatch accepts only `mode=build` and `automatic_lenses=[]`.
 
-## Active data and runtime contracts
+`taskplane.empty-lens-collection/v1` records run/task/stage, `expected_lenses: []`, `collected_lenses: []`, schema-valid evaluator/EM output fingerprint, producer-observation fingerprint, and `status: complete`. It is a normal success, never an outage identity.
 
-### CLI contract
+`taskplane.review-kernel-override/v1` records prior binding, replacement binding, zero-start evidence, human authority receipt, reason, and predecessor digest. Receipts are append-only. The lifecycle predicate checks durable slot and collection evidence, not merely a mutable status string.
 
-`tp pickup <design-contract> [--trust-source <exact-source-sha>]`
+`taskplane.producer-observation/v1` binds the real host event to exact output bytes and the expected output contract. Missing, stale, mismatched, ambiguous, or caller-authored observations fail before evaluator/EM gate consumption; they are not translated into a human outage decision.
 
-- `tp.py` adds one `--trust-source` argument and forwards its exact Python string without `.strip()`, case folding, abbreviation, revision resolution, or inference.
-- The `pickup` subparser alone is constructed with `allow_abbrev=False`, so every pickup option uses its canonical spelling. Canonical `--workspace` remains supported and displayed; abbreviated workspace spellings are unsupported. The root parser and every unrelated subparser retain their incumbent behavior; no handwritten `argv` scan, private argparse override, or root-wide parser-policy change is permitted.
-- Existing calls without the flag continue down the incumbent v1 private-secret path when its authority file exists.
-- When the private authority file is absent, missing `--trust-source` refuses before BUILD-C.
-- When the flag is supplied, operator-trust mode is explicit even if private state happens to exist; this prevents environment-dependent interpretation. It reads the shelf through the existing closed structural loader and does not invoke or change the v1 verifier.
+`taskplane.wiring-closure/v1` contains the exact AC tests and every edge below. Each row names producer, artifact/contract, consumer, required status, and exact severed/freshness selector. A closed fingerprint is carried into Plan, Build, feature evidence, and release evidence.
 
-The human scope decision explicitly classifies argparse's incumbent unique-prefix acceptance (for example, shortened `--workspace`) as accidental, undocumented behavior outside the supported governed-caller contract. This delivery intentionally does not preserve it and introduces no compatibility shim. Canonical `--workspace` remains green; abbreviated pickup options refuse. This attributed disposition resolves the DEFINE integrability finding without widening the implementation.
+`taskplane.dispatch-telemetry/v1` records dispatch identity, thread type (`main`, `worker`, `lens`, `evaluator`, `guardian`), input, cached input, uncached input, output, reasoning tokens, start/end/duration, wait duration, correction count, task/dependency/owner, and events. Aggregation stops before another dispatch when elapsed >= 8h, sessions >= 60, total tokens >= 150M, or uncached input >= 25M.
 
-The only accepted trust option token is exactly `--trust-source`. Parameterize all eleven proper prefixes from `--t` through `--trust-sourc`, plus alternate case, underscore, omitted-hyphen, and suffix lookalikes; each exits before `cmd_pickup`, `pickup.run`, or BUILD-C. Canonical help shows `--workspace` and `--trust-source`. The accepted trust value syntax is exactly lowercase `[0-9a-f]{40}` or `[0-9a-f]{64}` and must equal `authority["source_sha"]` byte-for-byte. A symbolic ref, abbreviated SHA value, uppercase value, surrounding whitespace, other length, or mismatched full SHA refuses.
+`taskplane.host-action-capability/v1`, `taskplane.task-dispatch-capability/v1`, and `taskplane.platform-ci-proof/v1` are closed authority-boundary schemas described below. All set `cryptographic_authenticity_claimed: false` where applicable. They add continuity, least authority, and independent platform facts without claiming actor authenticity.
 
-### Typed operator-trust boundary
+## Wiring closure ledger
 
-`taskplane/pickup.py` defines one private immutable value object, `_OperatorTrust`, as a standard-library `@dataclass(frozen=True, slots=True)`. Its typed fields are the exact receipt values: `authority_mode`, `flag_name`, `flag_value`, and `cryptographic_authenticity_claimed`. No public constructor use is permitted. The only construction path is one fail-closed `_parse_operator_trust(raw, *, boundary, expected_source_sha, required)` factory:
+Each edge is mandatory and has an exact implementation-time test:
 
-- `boundary="cli"` accepts only the raw `str | None`, applies the exact required/full-SHA/equality rules, and returns `_OperatorTrust | None` (`None` only for the unchanged no-flag v1 path);
-- `boundary="receipt"` accepts only a JSON mapping with the exact closed five-field serialization shown below, rejects unknown/missing fields and non-`false` claim values, and returns `_OperatorTrust`; and
-- every other input type, boundary label, constant, or identity mismatch raises the named pre-BUILD-C refusal. No permissive constructor, `.strip()`, coercion, general mapping wrapper, or alternate validation path exists.
+| ID | Producer → artifact/contract → consumer | Test |
+|---|---|---|
+| W01 | Plan gate → delivery-mode receipt → loop/build dispatch | `taskplane/tests/test_r0001_delivery_mode.py::test_sever_delivery_mode_receipt_to_dispatch_fails_closed` |
+| W02 | build dispatch → zero lens-worker intent → host dispatcher | `taskplane/tests/test_r0001_delivery_mode.py::test_build_mode_dispatch_creates_zero_automatic_lens_workers` |
+| W03 | empty expected set + valid result → empty-collection receipt → Evaluate/EM gate | `taskplane/tests/test_r0001_delivery_mode.py::test_empty_expected_lenses_emits_successful_collection_receipt` |
+| W04 | human authority → append-only override → ReviewKernel binding | `taskplane/tests/test_r0001_review_authority.py::test_human_override_rebinds_only_unstarted_kernel` |
+| W05 | slot lifecycle events → immutability predicate → override refusal | `taskplane/tests/test_r0001_review_authority.py::test_started_slot_rebind_is_immutable` |
+| W06 | Codex/Claude host event → producer observation → evaluator gate | `taskplane/tests/test_r0001_producer_observation.py::test_severed_host_observation_blocks_submission_without_outage_resolution` |
+| W07 | Design AC map → Plan task tests → checkpoint path/selector validation | `taskplane/tests/test_r0001_design_wiring.py::test_checkpoint_refuses_named_missing_test_file` |
+| W08 | Design wiring ledger → Build DoR → release evidence | `taskplane/tests/test_r0001_design_wiring.py::test_every_changed_producer_has_closed_consumer_edges_and_edge_tests` |
+| W09 | `tp.py` parser → generator → `docs/cli-reference.md` | `taskplane/tests/test_release_freshness.py::TestGeneratedCliReference::test_committed_reference_matches_live_parser` |
+| W10 | version manifests + changelog → README three-row release window | `taskplane/tests/test_release_freshness.py::TestReleaseWindow::test_readme_keeps_exactly_three_current_changelog_rows` |
+| W11 | runtime/skills/hooks/docs sources → both packagers → archives/install consumers | `taskplane/tests/test_r0001_release_green.py::test_runtime_and_public_surfaces_are_in_both_installable_archives` |
+| W12 | security methodology → prompt-injection reference → package → security lens loader | `taskplane/tests/test_r0001_design_wiring.py::test_security_methodology_reference_exists_is_packaged_and_loads` |
+| W13 | manifests → marketplace/package validators → installed version 2.17.21 | `taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21721` |
+| W14 | CI workflow → cheap jobs/shards/full matrix → check receipts | `taskplane/tests/test_r0001_release_green.py::test_ci_matrix_and_terminal_full_matrix_are_closed` |
+| W15 | feature receipt → Build gate only | `taskplane/tests/test_r0001_release_green.py::test_feature_green_cannot_authorize_release` |
+| W16 | wiring + full matrix + package + pushed proof → release-green → tag/install/publication | `taskplane/tests/test_r0001_release_green.py::test_release_green_requires_wiring_matrix_full_matrix_and_pushed_sha` |
+| W17 | attributed skipped-proof human authority → released-unverified receipt → audit/history only | `taskplane/tests/test_r0001_release_green.py::test_release_override_records_released_unverified_and_every_skipped_proof` |
+| W18 | loop state/new evidence → delta brief → CLI/host consumers | `taskplane/tests/test_r0001_wave_budgets.py::test_loop_next_delta_projection_is_under_4000_tokens` |
+| W19 | Plan pair map → direct ready-set → all disjoint worker dispatches | `taskplane/tests/test_r0001_parallel_delivery.py::test_direct_assignment_dispatches_all_ready_disjoint_tasks_simultaneously` |
+| W20 | worker runtime → progress/completion/attention events → event wait/orchestrator wake | `taskplane/tests/test_r0001_parallel_delivery.py::test_long_workers_emit_events_and_ready_work_never_idles` |
+| W21 | host usage/session receipts → dispatch telemetry → budget stop | `taskplane/tests/test_r0001_wave_budgets.py::test_any_binding_budget_ceiling_stops_for_human_scope_review` |
+| W22 | task dependencies/durations → Retro → parallelism factor/longest serial chain | `taskplane/tests/test_r0001_parallel_delivery.py::test_retro_reports_parallelism_factor_and_longest_serial_chain` |
+| W23 | remote advertised default → fetched remote ref → mirror binding → checkout SHA | `taskplane/tests/test_r0001_repository_default_branch.py::test_non_master_default_branch_survives_severed_bare_head` |
+| W24 | pickup command/timing events → cold-start receipt → R-0013 resume guard | `taskplane/tests/test_r0001_pickup_cold_start.py::test_r0013_resume_refuses_without_passing_cold_start_receipt` |
+| W25 | v2.17.20/historical graph disposition → release history/evidence → verifier | `taskplane/tests/test_r0001_forward_release.py::test_historical_graph_revision_is_attributed_without_history_rewrite` |
+| W26 | host/plugin adapters → capability handshake → Plan/dispatch/release cutover | `taskplane/tests/test_r0001_compatibility.py::test_mixed_plugin_host_n_n_minus_1_matrix` |
+| W27 | checked-in schemas + compatibility policy → diff/N/N-1 receipts → release-green | `taskplane/tests/test_r0001_compatibility.py::test_release_green_requires_compatibility_matrix_receipt` |
+| W28 | recorded/live producer event sources → replay/canary receipts → observation/release-green | `taskplane/tests/test_r0001_producer_observation.py::test_recorded_event_source_replay_is_hermetic_and_deterministic` |
+| W29 | EvidenceStore prepare/commit/reconcile → atomic receipt lineage → five evidence domains | `taskplane/tests/test_r0001_test_harness.py::test_all_domains_expose_prepare_commit_and_idempotent_recovery_fault_seams` |
+| W30 | scheduler admission → reservation + execution DAG → dispatcher/Retro/budget stop | `taskplane/tests/test_r0001_parallel_delivery.py::test_atomic_batch_admission_caps_and_preserves_overflow_ready` |
+| W31 | host-private channel → single-use exact-bound action capability → rebind/observation protected entry | `taskplane/tests/test_r0001_host_capability.py::test_rebind_capability_is_single_use_and_exact_bound` |
+| W32 | Plan admission + protected release consumer → default-deny dispatch capability/platform proof → worker/release barrier | `taskplane/tests/test_r0001_dispatch_capability.py::test_task_capability_defaults_deny_every_undeclared_surface` |
 
-Only `_serialize_operator_trust(value: _OperatorTrust) -> dict[str, object]` projects the object to receipt JSON, by explicitly enumerating the five fields. Raw argparse strings and raw receipt mappings terminate at the factory. BUILD-C continues to receive only the incumbent normalized micro-plan; neither `_OperatorTrust` nor any raw authority mapping crosses that boundary.
+W12 specifically closes the newly observed released-tip defect. Its positive case proves the source file exists, both package builders include it, an installed archive can resolve it from `security-methodology.md`, and bytes match source. It also requires an independently reviewed document whose semantic contract is explicitly `detect → obstruct → flag`, binds that reviewed digest into wiring closure and release-green, and tests missing/stale/semantically incomplete cases. Design does not invent the document's contents.
 
-The repository-wide generic preference for pydantic-style external-boundary models is deliberately overridden for this single bounded AC4 change by the governing standard-library-only/no-new-dependency delivery constraint and the protected-surface boundary. Revised Design approval is the scoped human policy disposition for the frozen dataclass plus one factory. It is not a standing waiver, a precedent for later boundaries, or permission to add another ad hoc parser.
+## Review-bound architecture and runtime details
 
-### Receipt compatibility
+### Owners, graph, lanes, and barriers
 
-Existing `taskplane.pickup-receipt/v1` bytes and validation remain accepted and unchanged. Operator-trust executions append `taskplane.pickup-receipt/v2`, whose closed field set is the v1 field set plus one `operator_trust` object:
+The nine new owner modules form an acyclic graph. No owner imports a transition adapter. `delivery_ports.py` is dependency-free; `review_authority.py`, `producer_observation.py`, `release_evidence.py`, `plan_topology.py`, and `dispatch_telemetry.py` consume its injected protocols. `delivery_policy.py` feeds only `brief_projection.py` and `dispatch_telemetry.py`; `wiring_closure.py` feeds only `release_evidence.py`; `plan_topology.py` feeds only `dispatch_telemetry.py`. Existing adapters consume owners in one direction. Any undeclared import, reverse edge, cycle, or fan-in/fan-out drift blocks release-green.
 
-```json
-{
-  "schema": "taskplane.pickup-operator-trust/v1",
-  "authority_mode": "attributed-operator-trust",
-  "flag_name": "--trust-source",
-  "flag_value": "<exact unmodified full SHA>",
-  "cryptographic_authenticity_claimed": false
-}
-```
+Plan must assign exclusive new-owner files to disjoint lanes. Shared adapters serialize behind named barriers: `loop.py` under `loop-transition-owner`; `review.py` and `evaluation_output.py` under `review-integration-owner`; `tp.py`/generated CLI under `cli-owner`; `retro.py` under `retro-owner`; packaging/manifests/workflow under `release-surface-owner`. Owners finish and publish focused evidence before the associated adapter owner begins. This retains fan-out while preventing concurrent edits to shared integration files.
 
-The object participates in the existing canonical receipt digest and therefore in its content-addressed filename and successor predecessor digest. The v2 validator delegates the raw JSON object to the same `_parse_operator_trust` factory and requires the exact closed fields, constants, `false`, valid full-SHA syntax, and equality to the receipt/shelf authorized source SHA. A receipt directory may contain an initial contiguous sequence of v1 receipts followed by v2 receipts. A v1 receipt after the first v2 receipt is a mixed-mode lineage failure. Every v2 receipt must carry the same exact source value. No backfill or rewrite occurs.
+### Atomic evidence, events, and recovery
 
-The v1 private-secret path continues to write v1 receipts with precisely the incumbent fields. It never gains an operator object, mode switch, new secret behavior, or new claim.
+Authoritative evidence is kept in the managed run store as immutable canonical JSON files plus expected-head CAS pointers, namespaced by caller root, repository fingerprint, and run id. Review rebinds live under `review-authority/<kernel-id>/overrides/`; release evidence under `release-evidence/<target-sha>/<kind>/`; telemetry, observations, reservations, and execution-DAG revisions use the same primitive. Repository `exports/retro/...` files are content-bound projections, not authority, avoiding a Git-SHA self-reference. Prepare writes and fsyncs intent; commit writes and fsyncs immutable bytes then CASes the head; reconciliation is idempotent and rejects forks, gaps, collisions, mixed lineages, and contradictory heads. Public fault seams cover before/after bytes, CAS, domain state, and recovery.
 
-### Runtime order
+The incumbent `taskplane.wait-policy/v1` remains event-driven with one 1,800-second wait. Dispatch events bind dispatch id, producer/thread id, monotonic sequence, kind, payload digest, and fingerprint. Identical duplicates are idempotent; contradictory duplicates fail; out-of-order events wait in a 256-entry per-dispatch map; each event is capped at 64 KiB. Completion/attention wakes immediately. Timeout or adapter disconnect records `partial-host` terminal attention with missing members; it never becomes success or outage resolution.
 
-1. Resolve the repository-relative shelf regular file and clean checkout as today.
-2. Select the mode from explicit `trust_source is not None`, not from ambient private state.
-3. In operator mode, load the existing closed shelf structure and pass the raw CLI value plus its source SHA to the sole `_parse_operator_trust` factory; retain only the resulting frozen value object.
-4. In v1 mode, call the existing `design_contract.load_approved_contract_for_pickup` unchanged.
-5. Load and validate every tracked receipt, routing each raw v2 operator mapping through that same factory before applying v1/v2 transition rules, exact digests/paths, predecessor continuity, and unchanged BUILD-C checkpoint/merge evidence.
-6. Validate receipt-explained Git history and dirty-state rules.
-7. Emit `pickup.operator_trust.accepted` only after all operator preflight succeeds; then run the existing `build_c.run_pickup` seam for one criterion.
-8. After green integration, explicitly serialize the frozen value into the v2 receipt and atomically publish it. Existing hard-link/fsync collision behavior remains unchanged.
+### Compatibility and repository preparation
 
-Every missing/malformed/mismatched flag or shelf/lineage refusal occurs before BUILD-C. Refusal leaves prior receipt bytes unchanged, creates no authoritative partial receipt, and authorizes no checkpoint or merge.
+Host/plugin cutover is emit-before-require, not atomic. N=2.17.21 and N-1=2.17.20 readers use schema discrimination and closed objects. New plugin/new host, new/old, old/new, and old/old are all tested. Missing N capability may retain declared feature compatibility but never release-green. Authority schema changes require a new schema id and a machine-readable compatibility diff; legacy focused or unobserved evidence is historical/feature-only and cannot be upgraded into release authority. The checked-in authorities are `design/compatibility.json` and `design/schemas/r0001-evidence-schemas.json`.
 
-## Active modules and boundaries
+`taskplane.repository-preparation-request/v1` fully binds locator, remote, requested/default ref policy, caller root, repository fingerprint, run namespace, retry predecessor, and request fingerprint. `taskplane.repository-preparation/v1` returns a stable status/refusal id, exact retryability, repository/default-ref/fetch/resolved-SHA/checkout facts, predecessor, and fingerprint. Unknown fields fail; idempotent retry requires the same request and predecessor; ambiguous/missing defaults never dereference bare `HEAD`.
 
-Changed product files for AC4 are only:
+### Hermetic seams and atomic admission
 
-- `taskplane/tp.py`: pickup-subparser-only `allow_abbrev=False`, canonical `--workspace`/`--trust-source` help, exact trust forwarding, and neutral pickup help text;
-- `taskplane/pickup.py`: one frozen operator-trust value, one shared fail-closed factory, explicit mode selection, v1/v2 receipt validation/projection, and operator-trust trace/refusals; and
-- `taskplane/tests/test_pickup.py`: positive, negative, receipt compatibility, CLI forwarding, terminology, and v1 regression proofs.
+AC4's deterministic proof uses an immutable recorded `ProducerEventSource`; a separately classified live Codex canary is a release input. Injected wall/monotonic `Clock` and `EventWaiter` eliminate sleeps. `EvidenceStore` gives deterministic parallel namespaces and scoped teardown. `GitRunner` uses local bare remotes for public-entry W23 coverage. `FaultInjector` enumerates prepare/commit/recovery seams for review rebind, producer observation, telemetry, release evidence, and remote-default preparation.
 
-Later downstream release changes are limited to README, CHANGELOG, and the three plugin manifests. Generated `exports/` receipts realize the existing resource contract; no static trust file or key material is added.
+Admission atomically reserves one tranche with `min(pairwise-disjoint ready count, host free concurrency, remaining 60-session budget, max-in-flight free capacity)`. Overflow remains durably ready. A terminal event releases capacity and admits the next tranche in the same wake transaction. A missing reservation forbids dispatch; exhausted session or missing binding data stops for human scope review. CAS races yield one winner. An immutable, edge-complete execution DAG persists readiness/admission/start/complete/attention/human timestamps across replans. A controlled wide-DAG proof requires elapsed time no greater than critical path plus two fake-clock seconds per tranche and one per terminal event, with zero scheduler-caused idle whenever ready capacity exists.
 
-Protected and unchanged: `taskplane/design_contract.py`, `taskplane/loop.py`, `taskplane/taskplane_lite.py`, `taskplane/build_c.py`, `taskplane/checkpoint.py`, `taskplane/repository.py`, `taskplane/storage.py`, hooks, `.taskplane/codex-hook.py`, Plan, backlog, graph producer, CI, deploy, and all signing/key surfaces.
+### Bounded security authority
 
-The active new boundary is `contract:pickup.operator-trust-source`. It connects the public CLI input to pickup preflight and the v2 receipt projection. The old ids `contract:pickup.asymmetric-authenticity` and `resource:repository.pickup-public-verification-material` survive only in the non-authoritative inventory at `design/backlog/asymmetric-approval-authority.md`. They appear in neither active Design contracts nor `graph.proposed_edges` and have no runtime provider/consumer, module realization, Plan task, implementation claim, acceptance claim, evaluation claim, or release claim.
+`taskplane.host-action-capability/v1` is a host-issued, single-use, **non-cryptographic** continuity token delivered through an agent-inaccessible host channel. It binds purpose, opaque nonce, monotonic sequence, host session/turn, run, kernel, task, stage, request/output digest, and contract fingerprint. The protected consumer consumes it atomically before publishing evidence. Replay, cross-run/kernel/task/stage/session/output use, expiry, digest mismatch, duplicate sequence, missing handle, or direct-filesystem injection fails before rebind, observation, receipt, or gate mutation. Its schema fixes `cryptographic_authenticity_claimed: false`: it does not prove the actor identity, and unauthenticated actor strings remain an accepted inherited limitation.
 
-## Executable validation
+`taskplane.task-dispatch-capability/v1` is closed and per task. It binds run/SHA/Design/Plan/task/stage/reservation/predecessor and explicit allowed tools, read/write paths, Git refs, network endpoints, and credential handles. Unlisted surfaces are denied; no wildcard or inherited authority exists; workers get no release credential and no push/tag/install/publish permission. An outside-model human recheck is required at the protected consumer for every irreversible action.
 
-### AC4 positive
+`taskplane.platform-ci-proof/v1` is created only from an independent hosted-platform query by the protected release consumer immediately before release. It binds repository, protected default branch, exact pushed SHA, workflow run id, check-run ids/names/conclusions, query freshness, and platform response digest. Local receipts cannot populate this port or establish platform/actor authenticity. Any signature/MAC/key/verifier edge or authenticity language is Design drift; the cryptographic option stays shelved.
 
-Extend the existing second-checkout test rather than replaying completed work:
+## Acceptance tests
 
-- run criterion one through the unchanged v1 private-secret path and commit its existing v1 receipt;
-- delete access to the first checkout's `.taskplane` state and clone a fresh second checkout;
-- invoke the public `tp pickup` parser with `--trust-source` equal to the exact shelf source SHA;
-- assert the next existing BUILD-C checkpoint/integration runs, zero private coordination state is created, the v1 predecessor remains byte-identical, and the new receipt is strict v2;
-- assert `flag_name` and `flag_value` exactly equal the original CLI tokens, mode is explicit, the denial field is `false`, and SHA/Design/lineage/predecessor identities agree; and
-- assert raw CLI/JSON inputs are converted only by `_parse_operator_trust`, the returned dataclass is frozen/slotted, explicit serialization reproduces the closed object, and BUILD-C receives only the unchanged micro-plan; and
-- assert public result/trace/help/docs use operator-trust language and make none of the prohibited positive claims.
+The canonical map is machine-readable in `design/contract.json`. Summary:
 
-Alongside the end-to-end SHA-1-repository case, directly parameterize the sole factory and serializer with matching lowercase 40-hex and 64-hex values. Each must produce the same frozen value, exact five-field serialization, and receipt-boundary round trip without normalization.
+1. AC1: `test_r0001_delivery_mode.py` — Plan receipt, build zero-lens dispatch, severed receipt.
+2. AC2: `test_r0001_delivery_mode.py` — valid empty collection, malformed result, no outage path.
+3. AC3: `test_r0001_review_authority.py` — human unstarted rebind, started immutability, append-only attribution.
+4. AC4: `test_r0001_producer_observation.py` — live Codex evaluator/EM observations and severed observation.
+5. AC5: `test_r0001_design_wiring.py` — exact selector resolution, missing-file refusal, Build DoR.
+6. AC6: `test_r0001_design_wiring.py`, `test_release_freshness.py`, and release packaging tests — full edge closure and freshness.
+7. AC7: `test_r0001_release_green.py` — distinct authority, complete prerequisites, override semantics, consumer refusal.
+8. AC8: `test_r0001_wave_budgets.py` — <4,000-token brief, every binding ceiling, complete telemetry.
+9. AC9: `test_r0001_parallel_delivery.py` — every pair classified, maximum ready fan-out, named serialization, wakeups, fan-out matrix, Retro metrics.
+10. AC10: `test_r0001_repository_default_branch.py` — fetched default before HEAD, non-master sever, ambiguous/missing refusal.
+11. AC11: `test_r0001_pickup_cold_start.py` — same-SHA empty-home <120 seconds and resume refusal.
+12. AC12: `test_r0001_forward_release.py` — immutable v2.17.20 disposition, exact v2.17.21 forward candidate, historical graph attribution, unchanged verifier strength.
 
-### AC4 negative matrix
+## Failure behavior
 
-Run the same public seam with BUILD-C/checkpoint/merge calls instrumented to fail the test if reached. Cover:
+All authority failures occur before their consumer action:
 
-- missing flag in repository-only mode;
-- every proper prefix of `--trust-source` (`--t`, `--tr`, `--tru`, `--trus`, `--trust`, `--trust-`, `--trust-s`, `--trust-so`, `--trust-sou`, `--trust-sour`, `--trust-sourc`) plus `--Trust-source`, `--TRUST-SOURCE`, `--trust_source`, `--trustsource`, `--trust-sources`, and other alternate spellings; argparse must exit nonzero before `cmd_pickup`, `pickup.run`, or BUILD-C, with no receipt or private state;
-- 39-, 41-, 63-, and 65-character hex, uppercase, whitespace, symbolic ref, and non-hex values;
-- a different well-formed 40- or 64-hex value;
-- missing, non-regular, malformed, or structurally changed shelf;
-- stale Design fingerprint, mixed shelf source, approval/engine digest mismatch;
-- receipt digest/path mismatch, predecessor mismatch, fork, gap, collision, unrelated/mixed lineage history;
-- malformed v2 operator object, a `true` denial field, mismatched receipt flag value, v1 after v2, and mixed source SHA; and
-- direct factory inputs with wrong boundary labels/types, missing/extra mapping fields, attempted coercion, and attempted mutation of the frozen value; and
-- injected receipt publication interruption/collision using the existing atomic seam.
+- Missing/malformed/mismatched delivery mode: no build dispatch and no lens construction.
+- Non-empty build automatic-lens set: no host dispatch.
+- Empty expected set with invalid result or missing observation: no success receipt; no outage reinterpretation.
+- Rebind without attributed human authority or after any slot start evidence: append-only refusal, prior binding unchanged.
+- Missing/stale producer observation: evaluator/EM gate remains closed.
+- Missing test file/selector or wiring edge/test: Design/Build DoR remains closed and names the exact identity.
+- Missing release evidence: tag/install/publication remains closed. An override records skipped facts but cannot become green.
+- Brief >4,000 tokens: emit a bounded refusal plus stable artifact reference; do not truncate authority fields.
+- Any binding budget ceiling: stop before new dispatch and request human scope review.
+- Missing/ambiguous remote default ref: no bare-HEAD dereference or checkout.
+- Cold start >=120 seconds or identity mismatch: no R-0013 resume.
+- Missing/replayed/cross-bound/file-injected host capability: no rebind or producer observation and no partial evidence.
+- Any undeclared worker tool/path/ref/network/credential or irreversible request: refuse before invocation; workers never receive release credentials.
+- Missing/stale/wrong-SHA hosted-platform proof or missing outside-model human recheck: no tag/install/publication; local receipts do not substitute.
+- Missing, stale, or semantically incomplete prompt-injection reference: W12 and release-green remain open.
 
-For each case, snapshot every prior receipt and `exports/` file first; assert byte equality afterward, no authoritative partial file, no BUILD-C/checkpoint/merge call, no private-state mutation, and a named refusal boundary.
+## Observability and budgets
 
-### V1 compatibility
+Repository-resident Retro evidence records every dispatch and thread type, including guardian sessions. Counters use host-observed usage when available and fail closed for binding totals when required fields are absent. Signals include delivery mode, expected/created lens counts, kernel binding/override digest, producer-observation status, wiring fingerprint, feature/release disposition, brief token count, elapsed/session/token thresholds, ready/held/running tasks, progress event age, default-branch identity, cold-start duration, parallelism factor, and longest serial chain.
 
-Keep the existing signed-shelf fixture on the incumbent private secret and invoke pickup without `--trust-source`. Assert it still calls `design_contract.load_approved_contract_for_pickup`, produces the exact v1 receipt field set with no `operator_trust`, and reaches the unchanged BUILD-C/checkpoint/merge path. Run existing v1 tamper selectors unchanged. No v1 golden byte or semantic expectation is edited merely to fit v2.
+Alerts are loop actions rather than background services: mode/lens contradiction; attempted started-kernel rebind; missing producer observation; broken wiring; release consumer without release-green; brief token overflow; budget ceiling; idle orchestrator with ready work; stale long worker; ambiguous default branch; cold-start failure.
 
-### Downstream validation
+## Rollout and rollback
 
-After the bounded AC4 behavior-and-test commit is accepted, update only the five 2.17.20 release surfaces. On the exact clean final SHA run `python -m pytest taskplane/tests -q`; zero new failures are required, including unchanged pickup, v1, atomic publication, hook, and legacy-loop regressions. Those three rows—AC4, AC5, and bounded release surfaces—are the complete task-owned acceptance set.
+Roll forward through the five ordered phases. Each new schema is additive and versioned; old focused receipts remain readable but cannot grant new release authority. Host/plugin behavior uses capability handshake emit, observe, then human-authorized require with N/N-1 dual-read rather than an atomic cutover. The first phase runs in refusal-observe mode only in focused fixtures, then enforcement is enabled before another production wave. Protected release consumers switch only after the compatibility matrix passes. Current-only release fixes and inherited CI agent work are integrated, not reimplemented.
 
-### Post-acceptance release gate — loop owned
+Rollback is by phase before release authority: remove the thin adapter and its new module together, restore the prior consumer behavior, and retain all append-only receipts. Never rewrite or delete an override, producer observation, release disposition, or historical graph record. After release consumers require `release-green/v1`, rollback may disable publication but must not accept legacy focused evidence as release authority. v2.17.20 is never retagged or reclassified.
 
-After AC5 and the bounded release-surface criterion pass, the loop must run quick security and QA concurrently against that exact SHA and evidence set, then engineering-manager review against the identical SHA and evidence fingerprints, then stop before every external release mutation for explicit human push authority. This sequence is mandatory release authority, but it is not an acceptance criterion, Plan task, proposed module/edge, implementation/evaluation claim, or per-task lens.
+## Graph readiness and done proof
 
-## Python, tooling policy, and packaging
+DoR: exact clean HEAD `ecfc48ec2f5f4c25dd0d9bab4d6751bc2f130845` and graph `a6a3c1e72c0c268648e3727cdcec904f60c41442a1f77bf16231bbdb84cd90a6` (50/156, six recorded, complete quality) match; all modules/contract ids exist; the signed order is reflected in dependencies; every AC has exact test file/selectors and controlled dependencies; all 32 wiring edges have a named severed/freshness selector; component fan-in/fan-out and lane barriers are declared; checked-in schemas/compatibility policy parse; the 16-commit CI repairs are mapped as integrated non-replay inventory; no R-0013 or product implementation enters Design.
 
-The repository root has no lint, formatter, or strict-type configuration: no ruff, black, mypy, pyright, `pyproject.toml`, `setup.cfg`, or `tox.ini` governs the shipped Taskplane code. The only discovered `pyproject.toml` is under `corpus/polyglot-app/services/pricing/`, an unrelated test fixture. This is inherited standing tooling state, not debt introduced by R-0002, and no debt record is authorized.
+DoD: rescan the final SHA; compare realized modules/edges to the overlay; require exact selector collection; sever each W01–W32 edge; verify owner cycles/fan-in/fan-out and graph drift; prove lane barriers, CAS recovery, event idempotency/bounds, N/N-1 compatibility, hermetic replay, atomic admission and critical-path bounds; inspect adapters for schema duplication; prove no automatic build lens worker; prove host-capability replay/direct-injection refusal and default-deny worker authority; prove no cryptographic authenticity claim or worker release credential; produce feature-green and release-green as distinct receipts; re-query the protected platform for exact pushed-SHA run/check identities and obtain an outside-model human recheck; run the terminal full matrix; bind the reviewed prompt-injection reference digest through both packages; and retain v2.17.20 plus graph revision 2757822e unchanged.
 
-Revised Design approval is the scoped human policy disposition for this bounded standard-library AC4 change: introduce no ruff/black/mypy/pyright dependency or configuration. Validation uses the repository's incumbent tracked-surface compile/import gate, parser/version import smoke, focused pytest, and exact final full pytest; focused introspection with `inspect.signature`, `typing.get_type_hints`, `dataclasses.is_dataclass`, `dataclasses.fields`, and frozen-mutation refusal checks the new typed boundary. Manual review of the active Python diff requires annotations on every new/changed boundary and zero new `Any`, `cast`, `# type: ignore`, `# noqa`, untyped `dict` boundary, or equivalent escape hatch unless a line-specific new human disposition is recorded. This one-delivery policy is neither a standing waiver nor precedent for other work.
+## Solution-design lens
 
-The flow is synchronous; there is no async task ownership, cancellation, mutable shared global state, or free-threaded coordination surface. Runtime validation remains at the CLI/JSON/receipt trust boundaries. Raw values stop at the one factory, the frozen value crosses only pickup-internal functions, explicit serialization owns persistence, and BUILD-C receives the existing micro-plan only.
+Self-attested Design evidence is recorded once in the contract and will be rebound to the final content fingerprint after the visual/fingerprint pass. The human approval gate must treat it as self-attested and wait for the independent Design-boundary lens set. There are no open product questions in the accepted requirement and signed amendment.
 
-No runtime or development dependency, subprocess, key library, lockfile, native extension, import namespace, or plugin packaging rule changes. The code stays within the repository's CPython 3.10–3.13 support and Python 3.14 syntax/design guidance. Package/archive checks must contain only existing modules and documentation—no signer, verifier, allowed-signers file, public key, private key, or cryptography dependency.
+## Visualization
 
-## Failure signals and recovery
-
-- `operator-trust: --trust-source is required` — the operator re-invokes with the exact full shelf source SHA; no retry is automatic.
-- `operator-trust: --trust-source is malformed` — the operator supplies one exact lowercase 40- or 64-hex SHA; refs/abbreviations are not resolved.
-- `operator-trust: --trust-source does not match shelf source SHA` — the operator selects the intended shelf/source or stops for human review; pickup never edits either.
-- existing `checkout-clean`, `approved-design`, `source-sha`, and `receipt-lineage` refusals remain authoritative for dirty/malformed/mixed evidence; the operator restores the exact tracked lineage or stops.
-- `pickup.operator_trust.accepted` records only successful structural/source agreement before BUILD-C; it never uses a producer-origin claim.
-- existing `pickup.receipt.lineage`, `pickup.checkpoint.started`, `pickup.integration.outcome`, and `pickup.storage.audit` continue to describe the incumbent execution path.
-
-This is a synchronous CLI, so there is no always-on alert. Every refusal is immediate/nonzero and the committed receipt is the durable signal.
-
-## Rollout, rollback, and debt disposition
-
-Rollout is one AC4 implementation commit containing behavior and focused tests, followed only after green by the bounded 2.17.20 metadata commit and AC5 exact-SHA validation. Those three task-owned criteria complete delivery acceptance. The Taskplane loop then owns the mandatory concurrent quick security+QA, same-SHA EM, and human push-authority stop; none becomes a Plan task or per-task lens. No data migration or backfill occurs. Existing v1 receipts remain valid; the first operator-trust continuation appends v2.
-
-Rollback is a normal forward revert of the optional parser argument, operator mode, v2 read/write support, focused tests, and release metadata. Never delete or rewrite a committed v2 receipt. A reverted 2.17.19 consumer may continue incumbent v1 private-secret pickup only on a pure-v1 lineage; any lineage already containing v2 fails closed until the complete v2 reader/writer is restored. It never claims to resume v2 evidence.
-
-The lack of producer-origin evidence is inherited standing state registered by KB 0009, not new R-0002 debt, and no debt requirement is created. The future asymmetric direction is intentionally shelved in `design/backlog/asymmetric-approval-authority.md` under KB 0008 triggers.
-
-## Graph DoR
-
-- Exact HEAD, original pre-approval graph, current post-approval contract graph, accepted decisions 0008/0009, current owners, and non-replay inventory are captured.
-- The active changed modules are limited to `tp.py`, `pickup.py`, and `test_pickup.py`; later release surfaces are separately bounded; every protected surface is explicit.
-- Pickup-subparser-only `allow_abbrev=False`, canonical help, the attributed unsupported-abbreviation disposition, exact trust-option recognition, mode selection, exact string preservation, v1/v2 receipt schemas, mixed-lineage compatibility, failure order, and rollback are settled.
-- The frozen/slotted value object, sole CLI/receipt parse factory, explicit serializer, raw-value stopping point, and unchanged BUILD-C payload are settled.
-- Revised Design approval explicitly disposes the inherited no-lint/formatter/strict-type tooling limitation for this one delivery without dependency/config additions or precedent.
-- Active contracts and the historical metadata-only ids are classified separately; depth is local 3, contract-only, contract 1, requirement 1.
-- The governing spec hash, exactly seven active contracts, and separately non-authoritative two-id historical inventory are recorded; the Product correction requires no HOW change.
-- Exactly three task-owned acceptance strings map to executable validation; the mandatory post-acceptance security+QA → EM → human authority sequence is loop-owned, and Product has no open question.
-
-## Graph DoD
-
-- Final graph realizes only `tp.py` → `contract:pickup.operator-trust-source` → `pickup.py`, existing pickup → BUILD-C/checkpoint/merge/exports edges, and focused test edges.
-- Any signer, verifier, OpenSSH, cryptography, key, allowed-signers, or public-trust runtime/module edge fails proportionality and delivery.
-- Historical asymmetric/public-trust ids remain outside active contracts and proposed edges; any Plan task, implementation/evaluation claim, runtime edge, or release claim for them fails delivery.
-- Git diff shows zero protected-surface changes, especially `design_contract.py`, loop, taskplane_lite, BUILD-C, checkpoint, repository, storage, hooks, graph, CI, and deploy.
-- Positive/negative/v1 focused tests prove canonical pickup-option enforcement, canonical `--workspace` remains supported, all eleven trust proper-prefix refusals, canonical help, exact assertion projection, matching 40/64-hex factory/serialization, all pre-BUILD-C refusals, byte-identical prior receipts, zero private state, and unchanged v1 behavior.
-- Introspection/factory tests and manual changed-line review prove the immutable typed boundary, single construction path, explicit closed serialization, complete annotations, and zero new typing/lint escape hatches.
-- Final clean-SHA full suite and later reviews satisfy only downstream AC5/release authority.
+A sequence/dependency visual is materially useful because five ordered phases contain parallel lanes and two different green authorities. `design/visual.html` will show that order, the disjoint owners, the release barrier, and the cold-start resume gate; it is explanatory only and not authority.

@@ -1,0 +1,162 @@
+{
+  "schema": "taskplane.compatibility-policy/v1",
+  "program": "R-0001",
+  "baseline_rebind": {
+    "prior_source_sha": "4a0378e7f080136d27f01d4ab7ecdf9bac8a1ad6",
+    "current_source_sha": "ecfc48ec2f5f4c25dd0d9bab4d6751bc2f130845",
+    "commit_count": 16,
+    "classification": "integrated CI compatibility/regression repair inventory",
+    "schema_change": false,
+    "host_plugin_matrix_change": false,
+    "migration_change": false,
+    "sunset_change": false,
+    "released_generation": "2.17.20",
+    "next_generation": "2.17.21",
+    "graph_fingerprint": "a6a3c1e72c0c268648e3727cdcec904f60c41442a1f77bf16231bbdb84cd90a6",
+    "graph_counts": {
+      "modules": 50,
+      "edges": 156,
+      "scanner_edges": 150,
+      "recorded_requirement_edges": 6
+    }
+  },
+  "window": {
+    "current": "2.17.21",
+    "previous": "2.17.20",
+    "accepted_generations": [
+      "N",
+      "N-1"
+    ],
+    "unknown_generation": "refuse"
+  },
+  "cutover": {
+    "mode": "emit-before-require",
+    "states": [
+      {
+        "id": "emit",
+        "require_capabilities": false,
+        "dual_read": true,
+        "rule": "N plugin and N host emit new capability/receipt shapes."
+      },
+      {
+        "id": "observe",
+        "require_capabilities": false,
+        "dual_read": true,
+        "rule": "All four mixed host/plugin cells must have same-SHA receipts."
+      },
+      {
+        "id": "require",
+        "require_capabilities": true,
+        "dual_read": true,
+        "rule": "Human Plan authority may require N only after matrix receipt proves all production hosts."
+      }
+    ]
+  },
+  "matrix": [
+    {
+      "plugin": "2.17.21",
+      "host": "2.17.21",
+      "feature": "new",
+      "release": "eligible-with-all-proofs"
+    },
+    {
+      "plugin": "2.17.21",
+      "host": "2.17.20",
+      "feature": "legacy-compatible",
+      "release": "refuse-missing-N-capability"
+    },
+    {
+      "plugin": "2.17.20",
+      "host": "2.17.21",
+      "feature": "legacy-compatible",
+      "release": "refuse-legacy-release-authority"
+    },
+    {
+      "plugin": "2.17.20",
+      "host": "2.17.20",
+      "feature": "historical-N-1",
+      "release": "refuse-legacy-release-authority"
+    }
+  ],
+  "json_evolution": {
+    "authority_objects": "closed",
+    "additionalProperties": false,
+    "unknown_schema": "refuse",
+    "field_change": "new schema id plus compatibility-diff row",
+    "reader": "schema-discriminated N/N-1 only"
+  },
+  "legacy": [
+    {
+      "id": "v2.17.20-focused-checkpoint",
+      "read_as": "legacy-feature-evidence",
+      "authority": [
+        "build-regression",
+        "history"
+      ],
+      "release_green": false,
+      "migration": "reference original digest; do not rewrite",
+      "sunset": {
+        "state": "not-scheduled",
+        "not_before_version": "2.17.22",
+        "minimum_green_releases": 1,
+        "requires_human_approval": true
+      }
+    },
+    {
+      "id": "v2.17.20-evaluator-em-without-observation",
+      "read_as": "legacy-evaluation-evidence",
+      "authority": [
+        "history",
+        "dual-read-feature"
+      ],
+      "release_green": false,
+      "migration": "only a newly observed write may receive a separate observation",
+      "sunset": {
+        "state": "not-scheduled",
+        "not_before_version": "2.17.22",
+        "minimum_green_releases": 1,
+        "requires_human_approval": true
+      }
+    },
+    {
+      "id": "focused-green-release-proxy",
+      "read_as": "invalid-release-authority",
+      "authority": [],
+      "release_green": false,
+      "migration": "none; rerun every release-green prerequisite",
+      "sunset": {
+        "state": "refused-immediately",
+        "not_before_version": "2.17.21",
+        "minimum_green_releases": 0,
+        "requires_human_approval": false
+      }
+    }
+  ],
+  "release_green_requires": [
+    "schema_bundle_fingerprint",
+    "compatibility_policy_fingerprint",
+    "compatibility_diff_receipt",
+    "mixed_n_n_minus_1_matrix_receipt",
+    "live_codex_canary_receipt",
+    "recorded_event_replay_receipt",
+    "host_action_capability_refusal_receipt",
+    "task_dispatch_capability_default_deny_receipt",
+    "independently_queried_platform_ci_proof",
+    "outside_model_irreversible_action_human_recheck",
+    "reviewed_prompt_injection_reference_digest"
+  ],
+  "authority_limitations": {
+    "cryptographic_authenticity_claimed": false,
+    "actor_strings": "attributed but unauthenticated inherited limitation",
+    "host_action_capability": "single-use exact-bound host-channel continuity only",
+    "local_receipts": "not actor or platform authenticity proof",
+    "asymmetric_authority": "shelved; no signer/verifier/key/MAC/signature workflow in R-0001"
+  },
+  "dispatch_capability": {
+    "schema": "taskplane.task-dispatch-capability/v1",
+    "default_deny": true,
+    "release_credentials_available": false,
+    "irreversible_actions_allowed": false,
+    "outside_model_human_recheck_required": true
+  }
+}

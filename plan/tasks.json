@@ -1,67 +1,182 @@
 {
   "tasks": [
     {
-      "id": "t07-ac5-bounded-no-pickup-regression-proof",
-      "scope": [
-        "exports/**"
-      ],
-      "tests": "/private/tmp/taskplane-py312-pytest8-20260824/bin/python -c 'import json,pathlib,subprocess,sys; run=lambda argv,**kwargs: subprocess.run(argv,check=True,**kwargs); base=\"f15588137a0b2470494318836798820200d63a56\"; assert run([\"git\",\"status\",\"--porcelain\",\"--untracked-files=all\"],capture_output=True,text=True).stdout==\"\"; head=run([\"git\",\"rev-parse\",\"HEAD\"],capture_output=True,text=True).stdout.strip(); print(\"exact_head=\"+head,flush=True); run([\"git\",\"merge-base\",\"--is-ancestor\",base,\"HEAD\"]); changed=set(filter(None,run([\"git\",\"diff\",\"--name-only\",base,\"HEAD\"],capture_output=True,text=True).stdout.splitlines())); assert changed<={\"plan/plan.md\",\"plan/tasks.json\"},changed; run([sys.executable,\"-m\",\"pytest\",\"-q\",\"taskplane/tests/test_pickup.py\"]); codex=json.loads(pathlib.Path(\".codex-plugin/plugin.json\").read_text()); claude=json.loads(pathlib.Path(\".claude-plugin/plugin.json\").read_text()); market=json.loads(pathlib.Path(\".claude-plugin/marketplace.json\").read_text()); assert {codex[\"version\"],claude[\"version\"],market[\"version\"],market[\"plugins\"][0][\"version\"]}=={\"2.17.20\"}; assert \"2.17.20\" in run([sys.executable,\"taskplane/tp.py\",\"version\"],capture_output=True,text=True).stdout; help_text=run([sys.executable,\"taskplane/tp.py\",\"pickup\",\"--help\"],capture_output=True,text=True).stdout; assert \"--trust-source\" in help_text and \"--workspace\" in help_text; readme=pathlib.Path(\"README.md\").read_text().lower(); changelog=pathlib.Path(\"CHANGELOG.md\").read_text().lower(); assert \"2.17.20\" in readme and \"operator trust\" in readme and \"not cryptographic\" in readme; assert \"2.17.20\" in changelog and \"attributed human authority\" in changelog and \"does not cryptographically authenticate\" in changelog'",
-      "req": "R-0002",
-      "deps": [],
-      "type": "reliability",
-      "contracts": [
-        "contract:pickup.stateless-front-door",
-        "contract:pickup.operator-trust-source",
-        "contract:design.approved-contract",
-        "contract:build-c.direct-assignment",
-        "contract:build-c.acceptance-checkpoint",
-        "contract:repository.merge-on-green",
-        "resource:exports.pickup-receipts"
-      ],
-      "new_modules": [
-        "taskplane/tp.py",
-        "taskplane/pickup.py",
-        "taskplane/tests/test_pickup.py",
-        "taskplane/design_contract.py",
-        "taskplane/taskplane_lite.py",
-        "taskplane/build_c.py",
-        "taskplane/checkpoint.py",
-        "taskplane/repository.py",
-        "taskplane/storage.py",
-        "README.md",
-        "CHANGELOG.md",
-        ".codex-plugin/plugin.json",
-        ".claude-plugin/plugin.json",
-        ".claude-plugin/marketplace.json"
-      ],
+      "id": "t01-public-delivery-ports",
+      "scope": ["taskplane/delivery_ports.py", "taskplane/tests/test_r0001_test_harness.py", "taskplane/tests/test_r0001_host_capability.py", "taskplane/tests/test_r0001_dispatch_capability.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_test_harness.py",
+      "req": "R-0001", "deps": [], "type": "reliability", "contracts": [],
+      "new_modules": ["taskplane/delivery_ports.py", "taskplane", "taskplane/tests"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["The live Codex host produces conformant observable producer receipts for evaluator and EM submissions without manual outage resolution."]
+    },
+    {
+      "id": "t02-a2-delivery-mode-empty-collection",
+      "scope": ["taskplane/delivery_policy.py", "taskplane/tests/test_r0001_delivery_mode.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_delivery_mode.py",
+      "req": "R-0001", "deps": ["t01-public-delivery-ports"], "type": "feature", "contracts": ["contract:delivery-mode-receipt"],
+      "new_modules": ["taskplane/delivery_policy.py"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["The Plan gate declares delivery mode, stamps it into receipts, and the engine prevents build-mode dispatch from instantiating automatic lens workers.", "expected_lenses=[] plus a schema-valid result succeeds with an explicit empty-collection receipt and never requires outage resolution."]
+    },
+    {
+      "id": "t03-a2-review-kernel-authority",
+      "scope": ["taskplane/review_authority.py", "taskplane/tests/test_r0001_review_authority.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_review_authority.py taskplane/tests/test_r0001_host_capability.py::test_rebind_capability_is_single_use_and_exact_bound taskplane/tests/test_r0001_host_capability.py::test_direct_filesystem_injection_cannot_supply_host_capability taskplane/tests/test_r0001_host_capability.py::test_capability_makes_no_actor_authenticity_claim",
+      "req": "R-0001", "deps": ["t01-public-delivery-ports"], "type": "security", "contracts": ["contract:review-kernel-authority"],
+      "new_modules": ["taskplane/review_authority.py"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["An unstarted review kernel can be rebound only by attributed human authority with an append-only override receipt; any started slot remains immutable."]
+    },
+    {
+      "id": "t04-a2-producer-observation",
+      "scope": ["taskplane/producer_observation.py", "taskplane/tests/test_r0001_producer_observation.py", "taskplane/tests/test_r0001_live_host_canary.py", "taskplane/tests/fixtures/r0001/codex-producer-events.jsonl"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_producer_observation.py taskplane/tests/test_r0001_host_capability.py::test_producer_capability_rejects_replay_cross_run_stage_task_output taskplane/tests/test_r0001_host_capability.py::test_direct_filesystem_injection_cannot_supply_host_capability taskplane/tests/test_r0001_host_capability.py::test_capability_makes_no_actor_authenticity_claim",
+      "req": "R-0001", "deps": ["t01-public-delivery-ports"], "type": "reliability", "contracts": ["contract:producer-observation"],
+      "new_modules": ["taskplane/producer_observation.py"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["The live Codex host produces conformant observable producer receipts for evaluator and EM submissions without manual outage resolution."]
+    },
+    {
+      "id": "t05-a2-shared-adapter-integration",
+      "scope": ["taskplane/review.py", "taskplane/evaluation_output.py", "taskplane/loop.py", "taskplane/build_c.py", "taskplane/tp.py", "taskplane/tests/test_r0001_delivery_mode.py", "taskplane/tests/test_r0001_review_authority.py", "taskplane/tests/test_r0001_producer_observation.py", "taskplane/tests/test_r0001_host_capability.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_delivery_mode.py taskplane/tests/test_r0001_review_authority.py taskplane/tests/test_r0001_producer_observation.py taskplane/tests/test_r0001_host_capability.py",
+      "req": "R-0001", "deps": ["t02-a2-delivery-mode-empty-collection", "t03-a2-review-kernel-authority", "t04-a2-producer-observation"], "type": "integration",
+      "contracts": ["contract:delivery-mode-receipt", "contract:review-kernel-authority", "contract:producer-observation"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["The Plan gate declares delivery mode, stamps it into receipts, and the engine prevents build-mode dispatch from instantiating automatic lens workers.", "expected_lenses=[] plus a schema-valid result succeeds with an explicit empty-collection receipt and never requires outage resolution.", "An unstarted review kernel can be rebound only by attributed human authority with an append-only override receipt; any started slot remains immutable.", "The live Codex host produces conformant observable producer receipts for evaluator and EM submissions without manual outage resolution."]
+    },
+    {
+      "id": "t06-forward-release-docs-security",
+      "scope": ["docs/cli-reference.md", "README.md", "CHANGELOG.md", "lenses/references/prompt-injection-defense.md", "taskplane/tests/test_release_freshness.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_release_freshness.py",
+      "req": "R-0001", "deps": ["t05-a2-shared-adapter-integration"], "type": "docs", "contracts": ["contract:design-wiring-closure", "contract:release-green-evidence"],
+      "new_modules": ["(root)", "docs", "lenses/references"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test.", "v2.17.20 remains released-incomplete; repairs move forward as v2.17.21, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening."]
+    },
+    {
+      "id": "t07-forward-release-default-branch",
+      "scope": ["taskplane/repository.py", "taskplane/preflight.py", "taskplane/tests/test_r0001_repository_default_branch.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_repository_default_branch.py",
+      "req": "R-0001", "deps": ["t05-a2-shared-adapter-integration"], "type": "reliability", "contracts": ["contract:repository-preparation"],
+      "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Hosted repository preparation resolves and tests the fetched remote default branch before dereferencing bare HEAD, including a non-master default-branch severed-edge case."]
+    },
+    {
+      "id": "t08-forward-release-authority-compatibility",
+      "scope": ["taskplane/release_evidence.py", "taskplane/tests/test_r0001_release_green.py", "taskplane/tests/test_r0001_forward_release.py", "taskplane/tests/test_r0001_compatibility.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_release_green.py taskplane/tests/test_r0001_forward_release.py taskplane/tests/test_r0001_compatibility.py",
+      "req": "R-0001", "deps": ["t05-a2-shared-adapter-integration"], "type": "security", "contracts": ["contract:release-green-evidence"],
+      "new_modules": ["taskplane/release_evidence.py", "design", "design/schemas"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Feature-green and release-green are distinct receipts; tag, install, or publication requires closed wiring evidence, the full matrix, and successful pushed-SHA proof, while any override records released-unverified and every skipped proof.", "v2.17.20 remains released-incomplete; repairs move forward as v2.17.21, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening."]
+    },
+    {
+      "id": "t09-forward-release-surface-integration",
+      "scope": ["scripts/package_openai.py", "scripts/package_claude.py", "scripts/ci_evals.py", ".github/workflows/ci.yml", ".codex-plugin/plugin.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "README.md", "CHANGELOG.md"],
+      "tests": "python -m pytest -q taskplane/tests/test_release_freshness.py taskplane/tests/test_r0001_release_green.py taskplane/tests/test_r0001_forward_release.py taskplane/tests/test_r0001_compatibility.py",
+      "req": "R-0001", "deps": ["t06-forward-release-docs-security", "t07-forward-release-default-branch", "t08-forward-release-authority-compatibility"], "type": "integration",
+      "contracts": ["contract:design-wiring-closure", "contract:release-green-evidence", "contract:repository-preparation"],
+      "new_modules": ["(root)", ".claude-plugin", ".codex-plugin", ".github/workflows", "lenses", "scripts", "skills/tp-go"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test.", "Feature-green and release-green are distinct receipts; tag, install, or publication requires closed wiring evidence, the full matrix, and successful pushed-SHA proof, while any override records released-unverified and every skipped proof.", "v2.17.20 remains released-incomplete; repairs move forward as v2.17.21, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening."]
+    },
+    {
+      "id": "t10-design-wiring-closure-owner",
+      "scope": ["taskplane/wiring_closure.py", "taskplane/tests/test_r0001_design_wiring.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_design_wiring.py",
+      "req": "R-0001", "deps": ["t09-forward-release-surface-integration"], "type": "feature", "contracts": ["contract:design-wiring-closure"],
+      "new_modules": ["taskplane/wiring_closure.py"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent.", "Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test."]
+    },
+    {
+      "id": "t11-design-checkpoint-adapters",
+      "scope": ["taskplane/design_contract.py", "taskplane/checkpoint.py", "taskplane/tests/test_r0001_design_wiring.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_design_wiring.py",
+      "req": "R-0001", "deps": ["t10-design-wiring-closure-owner"], "type": "integration", "contracts": ["contract:design-wiring-closure"],
+      "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent."]
+    },
+    {
+      "id": "t12-performance-delta-brief",
+      "scope": ["taskplane/brief_projection.py", "taskplane/tests/test_r0001_wave_budgets.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_wave_budgets.py",
+      "req": "R-0001", "deps": ["t11-design-checkpoint-adapters"], "type": "performance", "contracts": ["contract:delivery-mode-receipt"],
+      "new_modules": ["taskplane/brief_projection.py"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review."]
+    },
+    {
+      "id": "t13-performance-plan-topology",
+      "scope": ["taskplane/plan_topology.py", "taskplane/tests/test_r0001_parallel_delivery.py", "taskplane/tests/test_r0001_dispatch_capability.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_dispatch_capability.py",
+      "req": "R-0001", "deps": ["t11-design-checkpoint-adapters"], "type": "performance", "contracts": ["contract:delivery-mode-receipt"],
+      "new_modules": ["taskplane/plan_topology.py", "plan"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain."]
+    },
+    {
+      "id": "t14-performance-dispatch-telemetry",
+      "scope": ["taskplane/dispatch_telemetry.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_test_harness.py",
+      "req": "R-0001", "deps": ["t11-design-checkpoint-adapters"], "type": "performance", "contracts": ["contract:delivery-mode-receipt"],
+      "new_modules": ["taskplane/dispatch_telemetry.py"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review.", "The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain."]
+    },
+    {
+      "id": "t15-performance-runtime-integration",
+      "scope": ["taskplane/loop.py", "taskplane/build_c.py", "taskplane/tp.py", "taskplane/progress.py", "taskplane/command_runtime.py", "taskplane/spend.py", "taskplane/retro.py", "taskplane/tests/test_r0001_wave_budgets.py", "taskplane/tests/test_r0001_parallel_delivery.py", "taskplane/tests/test_r0001_dispatch_capability.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_dispatch_capability.py",
+      "req": "R-0001", "deps": ["t12-performance-delta-brief", "t13-performance-plan-topology", "t14-performance-dispatch-telemetry"], "type": "integration",
+      "contracts": ["contract:delivery-mode-receipt", "contract:design-wiring-closure"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review.", "The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain."]
+    },
+    {
+      "id": "t16-same-sha-cold-start-gate",
+      "scope": ["taskplane/pickup.py", "taskplane/tests/test_r0001_pickup_cold_start.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_pickup_cold_start.py",
+      "req": "R-0001", "deps": ["t07-forward-release-default-branch", "t15-performance-runtime-integration"], "type": "performance", "contracts": ["contract:repository-preparation"],
+      "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["AC2 measures a fresh checkout at the same SHA reaching the first executing pickup checkpoint in under two minutes before R-0013 resumes."]
+    },
+    {
+      "id": "t17a-verify-a2-live-host",
+      "scope": ["exports/verification/r0001/a2/**"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_delivery_mode.py taskplane/tests/test_r0001_review_authority.py taskplane/tests/test_r0001_producer_observation.py taskplane/tests/test_r0001_host_capability.py taskplane/tests/test_r0001_live_host_canary.py",
+      "req": "R-0001", "deps": ["t16-same-sha-cold-start-gate"], "type": "reliability",
+      "contracts": ["contract:delivery-mode-receipt", "contract:review-kernel-authority", "contract:producer-observation"], "new_modules": ["exports", "exports/verification"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["The Plan gate declares delivery mode, stamps it into receipts, and the engine prevents build-mode dispatch from instantiating automatic lens workers.", "expected_lenses=[] plus a schema-valid result succeeds with an explicit empty-collection receipt and never requires outage resolution.", "An unstarted review kernel can be rebound only by attributed human authority with an append-only override receipt; any started slot remains immutable.", "The live Codex host produces conformant observable producer receipts for evaluator and EM submissions without manual outage resolution."]
+    },
+    {
+      "id": "t17b-verify-wiring-release-repository",
+      "scope": ["exports/verification/r0001/release/**"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_release_freshness.py taskplane/tests/test_r0001_release_green.py taskplane/tests/test_r0001_forward_release.py taskplane/tests/test_r0001_compatibility.py taskplane/tests/test_r0001_repository_default_branch.py",
+      "req": "R-0001", "deps": ["t16-same-sha-cold-start-gate"], "type": "reliability",
+      "contracts": ["contract:design-wiring-closure", "contract:release-green-evidence", "contract:repository-preparation"], "new_modules": ["exports/verification"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent.", "Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test.", "Feature-green and release-green are distinct receipts; tag, install, or publication requires closed wiring evidence, the full matrix, and successful pushed-SHA proof, while any override records released-unverified and every skipped proof.", "Hosted repository preparation resolves and tests the fetched remote default branch before dereferencing bare HEAD, including a non-master default-branch severed-edge case.", "v2.17.20 remains released-incomplete; repairs move forward as v2.17.21, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening."]
+    },
+    {
+      "id": "t17c-verify-performance-events",
+      "scope": ["exports/verification/r0001/performance/**"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_test_harness.py taskplane/tests/test_r0001_dispatch_capability.py taskplane/tests/test_r0001_pickup_cold_start.py",
+      "req": "R-0001", "deps": ["t16-same-sha-cold-start-gate"], "type": "reliability",
+      "contracts": ["contract:delivery-mode-receipt", "contract:repository-preparation"], "new_modules": ["exports/verification"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review.", "The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain.", "AC2 measures a fresh checkout at the same SHA reaching the first executing pickup checkpoint in under two minutes before R-0013 resumes."]
+    },
+    {
+      "id": "t18-terminal-full-matrix-and-closure",
+      "scope": ["exports/verification/r0001/terminal/**"],
+      "tests": "python -m pytest -q taskplane/tests",
+      "req": "R-0001", "deps": ["t17a-verify-a2-live-host", "t17b-verify-wiring-release-repository", "t17c-verify-performance-events"], "type": "reliability",
+      "contracts": ["contract:delivery-mode-receipt", "contract:review-kernel-authority", "contract:producer-observation", "contract:design-wiring-closure", "contract:release-green-evidence", "contract:repository-preparation"],
+      "new_modules": ["exports/verification"],
       "design_edges": [
-        "taskplane/tp.py->contract:pickup.operator-trust-source:provides",
-        "contract:pickup.operator-trust-source->taskplane/pickup.py:consumes",
-        "taskplane/pickup.py->contract:pickup.stateless-front-door:changes",
-        "contract:design.approved-contract->taskplane/pickup.py:structural-consumes",
-        "contract:build-c.direct-assignment->taskplane/pickup.py:consumes",
-        "contract:build-c.acceptance-checkpoint->taskplane/pickup.py:consumes",
-        "contract:repository.merge-on-green->taskplane/pickup.py:consumes",
-        "taskplane/pickup.py->resource:exports.pickup-receipts:provides",
-        "taskplane/pickup.py->taskplane/build_c.py:runtime-existing",
-        "taskplane/tests/test_pickup.py->taskplane/tp.py:test",
-        "taskplane/tests/test_pickup.py->taskplane/pickup.py:test"
+        "plan->contract:delivery-mode-receipt:contract-flow", "contract:delivery-mode-receipt->taskplane:contract-flow", "taskplane->contract:review-kernel-authority:contract-flow", "contract:review-kernel-authority->exports:contract-flow", "taskplane->contract:producer-observation:contract-flow", "contract:producer-observation->exports:contract-flow", "design->contract:design-wiring-closure:contract-flow", "contract:design-wiring-closure->plan:contract-flow", "contract:design-wiring-closure->taskplane:contract-flow", "taskplane->contract:release-green-evidence:contract-flow", "contract:release-green-evidence->scripts:contract-flow", "contract:release-green-evidence->.github/workflows:contract-flow", "contract:release-green-evidence->.codex-plugin:contract-flow", "contract:release-green-evidence->.claude-plugin:contract-flow", "taskplane->contract:repository-preparation:contract-flow", "contract:repository-preparation->taskplane/tests:contract-flow", "taskplane->taskplane/tests:wiring", "taskplane->docs:wiring", "taskplane->scripts:wiring", "scripts->.codex-plugin:wiring", "scripts->.claude-plugin:wiring", "lenses/references->scripts:wiring", "lenses/references->lenses:wiring", ".github/workflows->scripts:wiring", "taskplane->exports:wiring", "plan->taskplane:wiring", "taskplane->skills/tp-go:wiring", "taskplane->(root):wiring", "(root)->.github/workflows:wiring", "taskplane/delivery_policy.py->taskplane:consumed-by", "taskplane/review_authority.py->taskplane:consumed-by", "taskplane/producer_observation.py->taskplane:consumed-by", "taskplane/wiring_closure.py->taskplane:consumed-by", "taskplane/release_evidence.py->taskplane:consumed-by", "taskplane/plan_topology.py->taskplane:consumed-by", "taskplane/brief_projection.py->taskplane:consumed-by", "taskplane/dispatch_telemetry.py->taskplane:consumed-by", "taskplane/wiring_closure.py->taskplane/release_evidence.py:provides", "taskplane/delivery_policy.py->taskplane/brief_projection.py:provides", "taskplane/delivery_policy.py->taskplane/dispatch_telemetry.py:provides", "taskplane/plan_topology.py->taskplane/dispatch_telemetry.py:provides", "taskplane/delivery_ports.py->taskplane/review_authority.py:provides", "taskplane/delivery_ports.py->taskplane/producer_observation.py:provides", "taskplane/delivery_ports.py->taskplane/release_evidence.py:provides", "taskplane/delivery_ports.py->taskplane/plan_topology.py:provides", "taskplane/delivery_ports.py->taskplane/dispatch_telemetry.py:provides", "taskplane/delivery_ports.py->taskplane:provides"
       ],
-      "impact_policy": {
-        "local_depth": 3,
-        "boundary_mode": "contract-only",
-        "contract_depth": 1,
-        "requirement_depth": 1
-      },
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": [
-        "AC4 — a fresh second checkout resumes through explicit attributed operator trust with no private-store handoff. After one manual criterion and atomic receipt are committed, a fresh second checkout with an empty or nonexistent Taskplane home and no first-checkout access invokes pickup with --trust-source <exact-source-sha>. The exact flag and full SHA are recorded verbatim in the new receipt as attributed human authority; the SHA equals the shelf authorized source SHA and existing exact-SHA, Design-fingerprint, and receipt-lineage identity; the next existing BUILD-C checkpoint runs with zero run, track, claim, lease, wave, or private-handoff state; and no output claims cryptographic authenticity. Missing flag, malformed SHA, SHA mismatch, missing or malformed shelf evidence, structural tampering, digest, path, or predecessor mismatch, fork, gap, collision, and mixed lineage identity all refuse before BUILD-C, preserve prior receipts byte-identically, create no authoritative partial receipt, and authorize no merge. The unchanged v1 private-secret symmetric path retains focused green coverage.",
-        "AC5 — full suite on the final SHA: no new failures. After the AC4 commit and consistent 2.17.20 version and release metadata are committed, the exact candidate checkout is clean and python -m pytest taskplane/tests -q with the pinned delivery interpreter reports zero new failures, including unchanged pickup, v1 symmetric, atomic-publication, hook, and legacy-loop regressions; any failure blocks final review and grants no broad repair authority.",
-        "2.17.20 release surfaces are consistent and bounded. README, CHANGELOG, Codex plugin manifest, Claude plugin manifest, and marketplace manifest identify 2.17.20, parse successfully, describe the operator-trust limitation accurately, and perform no push, tag, publication, release, or origin/main mutation.",
-        "Archived T05 is accepted non-replay evidence: implementation commit 4c5e40aa18a5d7ca3709ea8cbf274f7c6c2132e9 delivered AC4 with 37 focused and 54 full-pickup tests green plus py_compile, diff hygiene, protected-surface comparison, and manual escape review; the audited replan history records the human pass and reanchor authority.",
-        "Archived T06 is accepted non-replay evidence at exact release-surface commit f15588137a0b2470494318836798820200d63a56: the bounded execute gate was green, the five release surfaces identify 2.17.20, and the audited replan history records the human pass and reanchor authority.",
-        "The human baseline exception accepts the isolated pickup wave: the prior T07 full-suite run at f15588137a0b2470494318836798820200d63a56 stopped at 42% with 42 failed, 1781 passed, and 1 skipped; all 42 selected failing nodeids reproduce at released main/CI SHA 726acd108d3ca431e680183de129918842202eda across six isolated clean-clone checks, all observed identities are legacy governance, routing, evidence, graph, golden, or loop failures, and no taskplane/tests/test_pickup.py failure was observed.",
-        "GitHub CI #106 (https://github.com/vdemkiv/taskPlane/actions/runs/32774798956) is already red at exact SHA 726acd108d3ca431e680183de129918842202eda. Public logs hide nodeids, but job-surface mapping accounts for 42 of 42 observed failures. Remediation of this inherited red-CI baseline is deferred to a separate post-2.17.20 delivery and grants this task no repair authority.",
-        "This proof task requires no repository change. It may persist only explicitly authorized delivery evidence or receipts under exports/**; it must not modify product, tests, Design, spec, backlog, release surfaces, hooks, legacy loop, Phase 0, E0, R-0011, unrelated R-0013, or external repository/release state, and it must not run the full suite or any automatic lens sweep."
+        "The Plan gate declares delivery mode, stamps it into receipts, and the engine prevents build-mode dispatch from instantiating automatic lens workers.",
+        "expected_lenses=[] plus a schema-valid result succeeds with an explicit empty-collection receipt and never requires outage resolution.",
+        "An unstarted review kernel can be rebound only by attributed human authority with an append-only override receipt; any started slot remains immutable.",
+        "The live Codex host produces conformant observable producer receipts for evaluator and EM submissions without manual outage resolution.",
+        "Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent.",
+        "Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test.",
+        "Feature-green and release-green are distinct receipts; tag, install, or publication requires closed wiring evidence, the full matrix, and successful pushed-SHA proof, while any override records released-unverified and every skipped proof.",
+        "Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review.",
+        "The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain.",
+        "Hosted repository preparation resolves and tests the fetched remote default branch before dereferencing bare HEAD, including a non-master default-branch severed-edge case.",
+        "AC2 measures a fresh checkout at the same SHA reaching the first executing pickup checkpoint in under two minutes before R-0013 resumes.",
+        "v2.17.20 remains released-incomplete; repairs move forward as v2.17.21, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening."
       ]
     }
   ]

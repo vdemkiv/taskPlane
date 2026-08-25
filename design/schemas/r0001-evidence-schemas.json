@@ -1,0 +1,1153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "taskplane.r0001-evidence-schemas/v1",
+  "title": "R-0001 evidence schema bundle",
+  "description": "Design-time closed schemas. Runtime evolution requires a new schema id and compatibility diff.",
+  "$defs": {
+    "deliveryCapabilityReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "host",
+        "session_or_turn",
+        "plugin_version",
+        "host_adapter_version",
+        "capabilities",
+        "receipt_schema_ids",
+        "emitted_at",
+        "source_sha",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.delivery-capability-receipt/v1"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "session_or_turn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plugin_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host_adapter_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "receipt_schema_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "emitted_at": {
+          "type": "number"
+        },
+        "source_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "deliveryModeReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "requirement_id",
+        "plan_fingerprint",
+        "mode",
+        "automatic_lenses",
+        "authority_receipt",
+        "source_sha",
+        "predecessor_digest",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.delivery-mode-receipt/v1"
+        },
+        "requirement_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plan_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "mode": {
+          "enum": [
+            "build",
+            "review",
+            "design"
+          ]
+        },
+        "automatic_lenses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "authority_receipt": {
+          "type": "object"
+        },
+        "source_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "predecessor_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "emptyLensCollection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "run_id",
+        "task_id",
+        "stage",
+        "expected_lenses",
+        "collected_lenses",
+        "output_schema_id",
+        "output_fingerprint",
+        "producer_observation_fingerprint",
+        "status",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.empty-lens-collection/v1"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stage": {
+          "enum": [
+            "evaluate",
+            "em"
+          ]
+        },
+        "expected_lenses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "collected_lenses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "output_schema_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "producer_observation_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": {
+          "const": "complete"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "reviewKernelOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "prior_binding_fingerprint",
+        "replacement_binding_fingerprint",
+        "zero_start_evidence",
+        "human_authority_receipt",
+        "reason",
+        "recorded_at",
+        "predecessor_digest",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.review-kernel-override/v1"
+        },
+        "prior_binding_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "replacement_binding_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "zero_start_evidence": {
+          "type": "object"
+        },
+        "human_authority_receipt": {
+          "type": "object"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recorded_at": {
+          "type": "number"
+        },
+        "predecessor_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "producerObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "run_id",
+        "task_id",
+        "stage",
+        "producer",
+        "host",
+        "host_session_or_turn",
+        "output_path",
+        "output_bytes",
+        "output_sha256",
+        "output_schema_id",
+        "output_contract_fingerprint",
+        "source_sha",
+        "observed_at",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.producer-observation/v1"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stage": {
+          "enum": [
+            "evaluate",
+            "em"
+          ]
+        },
+        "producer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host": {
+          "enum": [
+            "codex",
+            "claude"
+          ]
+        },
+        "host_session_or_turn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "output_schema_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output_contract_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "source_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "observed_at": {
+          "type": "number"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "featureGreen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "source_sha",
+        "design_fingerprint",
+        "task_id",
+        "declared_selectors",
+        "focused_receipt_digests",
+        "status",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.feature-green-receipt/v1"
+        },
+        "source_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "design_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "declared_selectors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "focused_receipt_digests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "status": {
+          "const": "feature-green"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "releaseGreen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "source_sha",
+        "version",
+        "wiring_closure_fingerprint",
+        "feature_receipt_digests",
+        "full_matrix_receipts",
+        "package_manifest_receipts",
+        "pushed_sha_proof",
+        "compatibility_policy_fingerprint",
+        "schema_bundle_fingerprint",
+        "compatibility_diff_receipt",
+        "mixed_version_matrix_receipt",
+        "live_host_canary_receipt",
+        "recorded_event_replay_receipt",
+        "status",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.release-green-receipt/v1"
+        },
+        "source_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "version": {
+          "const": "2.17.21"
+        },
+        "wiring_closure_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "feature_receipt_digests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "full_matrix_receipts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "package_manifest_receipts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "pushed_sha_proof": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "compatibility_policy_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schema_bundle_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "compatibility_diff_receipt": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "mixed_version_matrix_receipt": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "live_host_canary_receipt": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "recorded_event_replay_receipt": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": {
+          "const": "release-green"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "releaseOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "source_sha",
+        "status",
+        "skipped_proofs",
+        "human_authority_receipt",
+        "reason",
+        "recorded_at",
+        "predecessor_digest",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.release-override-receipt/v1"
+        },
+        "source_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "status": {
+          "const": "released-unverified"
+        },
+        "skipped_proofs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "human_authority_receipt": {
+          "type": "object"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recorded_at": {
+          "type": "number"
+        },
+        "predecessor_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "dispatchTelemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "dispatch_id",
+        "thread_type",
+        "task_id",
+        "shared_owner",
+        "input_tokens",
+        "cached_input_tokens",
+        "uncached_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "started_at",
+        "ended_at",
+        "duration_seconds",
+        "wait_seconds",
+        "correction_count",
+        "events",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.dispatch-telemetry/v1"
+        },
+        "dispatch_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thread_type": {
+          "enum": [
+            "main",
+            "worker",
+            "lens",
+            "evaluator",
+            "guardian"
+          ]
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "shared_owner": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cached_input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "uncached_input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reasoning_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "started_at": {
+          "type": "number"
+        },
+        "ended_at": {
+          "type": "number"
+        },
+        "duration_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "wait_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "correction_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "dispatchAdmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "revision",
+        "reservation_id",
+        "ready_ids",
+        "admitted_ids",
+        "overflow_ids",
+        "configured_host_concurrency",
+        "remaining_session_budget",
+        "max_in_flight",
+        "current_in_flight",
+        "predecessor_fingerprint",
+        "status",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.dispatch-admission/v1"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reservation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ready_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "admitted_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "overflow_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "configured_host_concurrency": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "remaining_session_budget": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_in_flight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "current_in_flight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "predecessor_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "reserved",
+            "waiting-capacity",
+            "human-stop"
+          ]
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "executionDag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "run_id",
+        "generation",
+        "nodes",
+        "edges",
+        "predecessor_fingerprint",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.execution-dag/v1"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "predecessor_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "repositoryPreparationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "operation_id",
+        "run_id",
+        "target",
+        "workspace_locator_fingerprint",
+        "attempt",
+        "predecessor_result_fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.repository-preparation-request/v1"
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "repository_id",
+            "remote",
+            "requested_ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "repository"
+            },
+            "repository_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "remote": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requested_ref": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "workspace_locator_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "predecessor_result_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "repositoryPreparationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "operation_id",
+        "run_id",
+        "request_fingerprint",
+        "attempt",
+        "status",
+        "reason_code",
+        "retryability",
+        "refusal_identity",
+        "predecessor_result_fingerprint",
+        "repository_id",
+        "remote_default_branch",
+        "remote_default_ref",
+        "fetch_receipt",
+        "resolved_sha",
+        "checkout",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "taskplane.repository-preparation/v1"
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "ready",
+            "needs_user",
+            "waiting",
+            "refused"
+          ]
+        },
+        "reason_code": {
+          "enum": [
+            "ready",
+            "authority_required",
+            "host_policy",
+            "external_unavailable",
+            "repeated_failure",
+            "invalid_request",
+            "remote_default_missing",
+            "remote_default_ambiguous",
+            "default_ref_unfetched",
+            "identity_mismatch"
+          ]
+        },
+        "retryability": {
+          "enum": [
+            "none",
+            "retry_after_user",
+            "retry_after_external",
+            "change_request"
+          ]
+        },
+        "refusal_identity": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "predecessor_result_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "repository_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remote_default_branch": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remote_default_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fetch_receipt": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolved_sha": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checkout": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "hostActionCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "capability_id",
+        "purpose",
+        "nonce",
+        "sequence",
+        "host_session_id",
+        "host_turn_id",
+        "run_id",
+        "kernel_id",
+        "task_id",
+        "stage",
+        "request_or_output_digest",
+        "contract_fingerprint",
+        "issued_at",
+        "expires_at",
+        "cryptographic_authenticity_claimed"
+      ],
+      "properties": {
+        "schema": {"const": "taskplane.host-action-capability/v1"},
+        "capability_id": {"type": "string", "minLength": 1},
+        "purpose": {"enum": ["review_rebind", "producer_observation"]},
+        "nonce": {"type": "string", "minLength": 32},
+        "sequence": {"type": "integer", "minimum": 0},
+        "host_session_id": {"type": "string", "minLength": 1},
+        "host_turn_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "kernel_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "task_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "stage": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "request_or_output_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "contract_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "issued_at": {"type": "number"},
+        "expires_at": {"type": "number"},
+        "cryptographic_authenticity_claimed": {"const": false}
+      }
+    },
+    "taskDispatchCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "capability_id",
+        "run_id",
+        "source_sha",
+        "design_fingerprint",
+        "plan_fingerprint",
+        "task_id",
+        "stage",
+        "reservation_fingerprint",
+        "predecessor_fingerprint",
+        "allowed_tools",
+        "read_paths",
+        "write_paths",
+        "allowed_git_refs",
+        "allowed_network_endpoints",
+        "credential_handles",
+        "release_credentials_available",
+        "irreversible_actions_allowed",
+        "cryptographic_authenticity_claimed"
+      ],
+      "properties": {
+        "schema": {"const": "taskplane.task-dispatch-capability/v1"},
+        "capability_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+        "design_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "plan_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "task_id": {"type": "string", "minLength": 1},
+        "stage": {"type": "string", "minLength": 1},
+        "reservation_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "predecessor_fingerprint": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "allowed_tools": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "read_paths": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "write_paths": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "allowed_git_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "allowed_network_endpoints": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "credential_handles": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "release_credentials_available": {"const": false},
+        "irreversible_actions_allowed": {"const": false},
+        "cryptographic_authenticity_claimed": {"const": false}
+      }
+    },
+    "platformCiProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "provider",
+        "repository_id",
+        "protected_default_branch",
+        "pushed_sha",
+        "workflow_run_id",
+        "check_run_ids",
+        "required_check_names",
+        "conclusions",
+        "queried_at",
+        "fresh_until",
+        "platform_response_digest"
+      ],
+      "properties": {
+        "schema": {"const": "taskplane.platform-ci-proof/v1"},
+        "provider": {"type": "string", "minLength": 1},
+        "repository_id": {"type": "string", "minLength": 1},
+        "protected_default_branch": {"type": "string", "minLength": 1},
+        "pushed_sha": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+        "workflow_run_id": {"type": "string", "minLength": 1},
+        "check_run_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "required_check_names": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "conclusions": {"type": "object", "additionalProperties": {"const": "success"}, "minProperties": 1},
+        "queried_at": {"type": "number"},
+        "fresh_until": {"type": "number"},
+        "platform_response_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}
