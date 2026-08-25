@@ -78,6 +78,9 @@ _PYTEST_REVISION_OPTION = "--taskplane-checkpoint-revision"
 _PYTEST_SCOPE_OPTION = "--taskplane-checkpoint-scope"
 _OBSERVED_REVISION_PREFIX = "taskplane-checkpoint-observed-revision="
 _GIT_REVISION = re.compile(r"[0-9a-f]{40,64}\Z")
+_PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES = 64 * 1024
+_PICKUP_OUTPUT_READ_CHARS = 16 * 1024
+_OUTPUT_TRUNCATION_MARKER = b"\n... taskplane output truncated ...\n"
 
 
 class CheckpointSpecError(ValueError):
@@ -92,6 +95,55 @@ def _canonical_digest(value: object) -> str:
     return hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":"), default=str
     ).encode("utf-8")).hexdigest()
+
+
+def _bounded_process_output(process) -> tuple[str, str, int, bool]:
+    """Consume merged text output with fixed in-memory retained evidence."""
+    digest = hashlib.sha256()
+    byte_count = 0
+    retained = bytearray()
+    head = bytearray()
+    tail = bytearray()
+    truncated = False
+    marker_size = len(_OUTPUT_TRUNCATION_MARKER)
+    retained_budget = _PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES - marker_size
+    head_budget = retained_budget // 2
+    tail_budget = retained_budget - head_budget
+
+    stream = process.stdout
+    if stream is None:
+        raise RuntimeError("focused proof output stream is unavailable")
+    while True:
+        text = stream.read(_PICKUP_OUTPUT_READ_CHARS)
+        if not text:
+            break
+        encoded = text.encode("utf-8")
+        digest.update(encoded)
+        byte_count += len(encoded)
+        if not truncated and len(retained) + len(encoded) <= \
+                _PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES:
+            retained.extend(encoded)
+            continue
+        if not truncated:
+            combined = bytes(retained) + encoded
+            head.extend(combined[:head_budget])
+            tail.extend(combined[-tail_budget:])
+            retained.clear()
+            truncated = True
+            continue
+        tail.extend(encoded)
+        if len(tail) > tail_budget:
+            del tail[:-tail_budget]
+
+    if not truncated:
+        summary = bytes(retained).decode("utf-8")
+    else:
+        summary = (
+            bytes(head).decode("utf-8", errors="ignore") +
+            _OUTPUT_TRUNCATION_MARKER.decode("ascii") +
+            bytes(tail).decode("utf-8", errors="ignore")
+        )
+    return summary, digest.hexdigest(), byte_count, truncated
 
 
 def receipt_digest(receipt: Mapping) -> str:
@@ -487,12 +539,18 @@ def _validated_runtime_result(worktree: str, spec: Mapping,
             not isinstance(artifact.get("truncated"), bool)):
         raise CheckpointReceiptError("command output artifact is invalid")
     output = event.get("output_delta")
-    if (not isinstance(output, str) or
-            snapshot.get("output_summary") != output or
-            hashlib.sha256(output.encode("utf-8")).hexdigest() !=
-            artifact["sha256"] or
-            len(output.encode("utf-8")) != artifact["bytes"] or
-            snapshot.get("output_digest") != artifact["sha256"]):
+    if not isinstance(output, str) or snapshot.get("output_summary") != output \
+            or snapshot.get("output_digest") != artifact["sha256"]:
+        raise CheckpointReceiptError("command output evidence is mixed")
+    retained_bytes = output.encode("utf-8")
+    if artifact["truncated"]:
+        marker = _OUTPUT_TRUNCATION_MARKER.decode("ascii")
+        if (artifact["bytes"] <= _PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES or
+                len(retained_bytes) > _PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES or
+                output.count(marker) != 1):
+            raise CheckpointReceiptError("command output evidence is mixed")
+    elif (hashlib.sha256(retained_bytes).hexdigest() != artifact["sha256"] or
+          len(retained_bytes) != artifact["bytes"]):
         raise CheckpointReceiptError("command output evidence is mixed")
     attestation = _OBSERVED_REVISION_PREFIX + spec["worktree_revision"]
     if output.count(attestation) != 1:
@@ -503,9 +561,6 @@ def _validated_runtime_result(worktree: str, spec: Mapping,
             snapshot.get("exit_code") != 0:
         raise CheckpointReceiptError(
             f"focused_proof ended {state}; later phases stopped")
-    if artifact["truncated"]:
-        raise CheckpointReceiptError(
-            "focused_proof output is truncated; later phases stopped")
     return {"identity": identity, "snapshot": dict(snapshot),
             "event": dict(event), "artifact": dict(artifact)}
 
@@ -602,15 +657,15 @@ def run_and_mint_stateless(worktree: str, spec: Mapping, *,
         package_root if not prior_pythonpath else
         package_root + os.pathsep + prior_pythonpath
     )
-    completed = subprocess.run(
+    process = subprocess.Popen(
         argv, cwd=worktree, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace", check=False,
+        text=True, encoding="utf-8", errors="replace",
         env=environment,
     )
-    state = "succeeded" if completed.returncode == 0 else "failed"
-    output = completed.stdout or ""
-    output_bytes = output.encode("utf-8")
-    output_digest = hashlib.sha256(output_bytes).hexdigest()
+    output, output_digest, output_bytes, output_truncated = \
+        _bounded_process_output(process)
+    returncode = process.wait()
+    state = "succeeded" if returncode == 0 else "failed"
     command_digest = _canonical_digest(argv)
     command_fingerprint = hashlib.sha256(
         command_digest.encode("utf-8")
@@ -621,11 +676,11 @@ def run_and_mint_stateless(worktree: str, spec: Mapping, *,
     checked_identity = _validated_identity(identity, "pickup")
     artifact = {
         "path": "pickup/focused-proof.log", "sha256": output_digest,
-        "bytes": len(output_bytes), "truncated": False,
+        "bytes": output_bytes, "truncated": output_truncated,
     }
     event = {
         "schema": _EVENT_SCHEMA, "handle": handle, "revision": 1,
-        "state": state, "reason": state, "exit_code": completed.returncode,
+        "state": state, "reason": state, "exit_code": returncode,
         "elapsed_ms": 0, "output_delta": output, "artifact": artifact,
         "delivery_key": "pickup-focused-proof", "identity": checked_identity,
         "delivery_receipt": {
@@ -641,7 +696,7 @@ def run_and_mint_stateless(worktree: str, spec: Mapping, *,
         "authorization_fingerprint": _canonical_digest(active_contract),
         "command_fingerprint": command_fingerprint, "state": state,
         "revision": 1, "identity": checked_identity,
-        "exit_code": completed.returncode, "reason": state,
+        "exit_code": returncode, "reason": state,
         "artifact": artifact, "output_summary": output,
         "output_digest": output_digest, "metrics": {"output_redactions": 0},
     }

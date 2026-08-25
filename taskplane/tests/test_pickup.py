@@ -9,6 +9,7 @@ import subprocess
 
 import pytest
 
+import checkpoint
 import pickup
 import storage
 import taskplane_lite as contract_engine
@@ -88,7 +89,15 @@ def signed_shelf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
     checkout = tmp_path / "repo"
     proof = checkout / "tests" / "test_proof.py"
     proof.parent.mkdir(parents=True)
-    proof.write_text("def test_proof():\n    assert True\n", encoding="utf-8")
+    proof.write_text(
+        "import os\n\n"
+        "def test_proof():\n"
+        "    size = int(os.environ.get('TASKPLANE_PICKUP_TEST_OUTPUT_BYTES', '0'))\n"
+        "    if size:\n"
+        "        print('x' * size)\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
     (checkout / ".gitignore").write_text(
         ".taskplane/\n__pycache__/\n.pytest_cache/\n", encoding="utf-8"
     )
@@ -209,6 +218,82 @@ def test_public_tp_pickup_cli_delegates_workspace_contract_and_renders_result(
     assert exit_code == 0
     assert observed == [(str(tmp_path.resolve()), "design/shelf.json")]
     assert json.loads(capsys.readouterr().out) == delegated
+
+
+def test_large_focused_proof_retains_bounded_evidence_and_reaches_terminal_pickup(
+        signed_shelf: tuple[Path, str], monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    checkout, authority_rel = signed_shelf
+    authority_path = checkout / authority_rel
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    signing_authority = contract_engine._review_contract_authority(  # noqa: SLF001
+        str(checkout), create=False
+    )
+    argv = authority["design"]["element"]["acceptance"][0]["proof"]["argv"]
+    argv.insert(-1, "-s")
+    design_fingerprint = hashlib.sha256(
+        _canonical(authority["design"])
+    ).hexdigest()
+    authority["approval"]["design_fingerprint"] = design_fingerprint
+    authority["approval"].pop("signature")
+    authority["approval"]["signature"] = _signature(
+        authority["approval"], signing_authority["secret"]
+    )
+    authority["engine_receipt"]["design_fingerprint"] = design_fingerprint
+    authority["engine_receipt"].pop("signature")
+    authority["engine_receipt"]["signature"] = _signature(
+        authority["engine_receipt"], signing_authority["secret"]
+    )
+    authority_path.write_text(
+        json.dumps(authority, indent=2) + "\n", encoding="utf-8"
+    )
+    _commit(checkout, "large-output shelf authority")
+
+    observed: dict[str, dict] = {}
+    validate_and_mint = checkpoint.validate_and_mint
+
+    def capture_result(worktree: str, spec: dict, command_result: dict,
+                       **kwargs: object) -> dict:
+        observed["command_result"] = command_result
+        return validate_and_mint(worktree, spec, command_result, **kwargs)
+
+    monkeypatch.setattr(checkpoint, "validate_and_mint", capture_result)
+    emitted_bytes = checkpoint._PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES * 2  # noqa: SLF001
+    monkeypatch.setenv("TASKPLANE_PICKUP_TEST_OUTPUT_BYTES", str(emitted_bytes))
+
+    exit_code = tp.main([
+        "pickup", authority_rel, "--workspace", str(checkout),
+    ])
+
+    assert exit_code == 0
+    pickup_result = json.loads(capsys.readouterr().out)
+    command_result = observed["command_result"]
+    event = command_result["event"]
+    snapshot = command_result["snapshot"]
+    artifact = event["artifact"]
+    retained = event["output_delta"]
+    assert pickup_result["status"] == "integrated"
+    assert "pickup.checkpoint.terminal" in pickup_result["trace"]
+    assert pickup_result["trace"][-2:] == [
+        "pickup.integration.outcome", "pickup.storage.audit",
+    ]
+    assert artifact["truncated"] is True
+    assert artifact["bytes"] > emitted_bytes
+    assert len(retained.encode("utf-8")) <= \
+        checkpoint._PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES  # noqa: SLF001
+    assert retained == snapshot["output_summary"]
+    assert checkpoint._OUTPUT_TRUNCATION_MARKER.decode("ascii") in retained  # noqa: SLF001
+    assert checkpoint._OBSERVED_REVISION_PREFIX + _git(  # noqa: SLF001
+        checkout, "rev-parse", "HEAD"
+    ) in retained
+    assert snapshot["output_digest"] == artifact["sha256"]
+    assert hashlib.sha256(retained.encode("utf-8")).hexdigest() != \
+        artifact["sha256"]
+    receipt_output = pickup_result["checkpoint"]["output"]
+    assert receipt_output == {
+        "sha256": artifact["sha256"], "bytes": artifact["bytes"],
+        "truncated": True, "redactions": 0,
+    }
 
 
 def test_dirty_checkout_refuses_before_build_c_without_state_or_receipt(
