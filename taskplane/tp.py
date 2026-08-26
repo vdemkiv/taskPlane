@@ -2810,13 +2810,7 @@ def cmd_loop(a) -> int:
     elif action == "wave":
         out = loopmod.wave(ws)
     elif action == "scheduler-capacity-from-plan":
-        if getattr(a, "trust_parallel", False):
-            out = loopmod.scheduler_capacity_from_plan(
-                ws, trust_parallel=True, by=getattr(a, "by", None))
-        elif getattr(a, "by", None) is not None:
-            out = {"error": "--by requires --trust-parallel"}
-        else:
-            out = loopmod.scheduler_capacity_from_plan(ws)
+        out = loopmod.scheduler_capacity_from_plan(ws)
     elif action == "claim":
         out = loopmod.claim(ws, a.task_id, a.agent_workspace)
     elif action == "approve":
@@ -7179,18 +7173,10 @@ def main(argv=None) -> int:
                     help="acknowledge degraded screen enforcement")
     lw.add_argument("--by", default=None,
                     help="human identity required with --advisory")
-    lcap = lsub.add_parser(
+    lsub.add_parser(
         "scheduler-capacity-from-plan",
         help="mint a fixed one-worker scheduler receipt from the active "
              "sealed zero-lens Build Plan")
-    lcap.add_argument(
-        "--trust-parallel", action="store_true",
-        help="use attributed human trust to derive bounded T17 parallel "
-             "capacity from the sealed Plan (never host observation)")
-    lcap.add_argument(
-        "--by", default=None,
-        help="human attribution required with --trust-parallel; recorded "
-             "verbatim without a cryptographic authenticity claim")
     lc = lsub.add_parser("claim", help="a worker claims one wave task into its own worktree")
     lc.add_argument("task_id")
     lc.add_argument("--agent-workspace", required=True,
