@@ -10,8 +10,9 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 
+from delivery_ports import GitResult, GitRunner, SubprocessGitRunner
 import storage
 import recovery
 import taskplane_lite as tp
@@ -34,13 +35,538 @@ _PICKUP_MERGE_FIELDS = frozenset({
     "schema", "status", "task_id", "primary_checkout", "branch_tip",
     "fingerprint",
 })
+REPOSITORY_PREPARATION_REQUEST_FIELDS = frozenset({
+    "schema", "operation_id", "run_id", "target",
+    "workspace_locator_fingerprint", "attempt",
+    "predecessor_result_fingerprint",
+})
+REPOSITORY_PREPARATION_TARGET_FIELDS = frozenset({
+    "kind", "repository_id", "remote", "requested_ref",
+})
+REPOSITORY_PREPARATION_RESULT_FIELDS = frozenset({
+    "schema", "operation_id", "run_id", "request_fingerprint", "attempt",
+    "status", "reason_code", "retryability", "refusal_identity",
+    "predecessor_result_fingerprint", "repository_id",
+    "remote_default_branch", "remote_default_ref", "fetch_receipt",
+    "resolved_sha", "checkout", "fingerprint",
+})
+_PREPARATION_REQUEST_SCHEMA = \
+    "taskplane.repository-preparation-request/v1"
+_PREPARATION_RESULT_SCHEMA = "taskplane.repository-preparation/v1"
+_PREPARATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_PREPARATION_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+_GIT_OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_PREPARATION_RETRYABILITY = {
+    "ready": ("ready", "none"),
+    "authority_required": ("needs_user", "retry_after_user"),
+    "host_policy": ("waiting", "retry_after_external"),
+    "external_unavailable": ("waiting", "retry_after_external"),
+    "repeated_failure": ("waiting", "retry_after_external"),
+    "invalid_request": ("refused", "change_request"),
+    "remote_default_missing": ("refused", "change_request"),
+    "remote_default_ambiguous": ("refused", "change_request"),
+    "default_ref_unfetched": ("refused", "change_request"),
+    "identity_mismatch": ("refused", "change_request"),
+}
+_PREPARATION_BOUNDARIES = {
+    "authority_required": "git_transport",
+    "host_policy": "git_transport",
+    "external_unavailable": "git_transport",
+    "repeated_failure": "git_transport",
+    "invalid_request": "request_validation",
+    "remote_default_missing": "remote_default_advertisement",
+    "remote_default_ambiguous": "remote_default_advertisement",
+    "default_ref_unfetched": "fetched_default_ref",
+    "identity_mismatch": "repository_identity",
+}
 
 
 class RepositoryAcquisitionError(RuntimeError):
-    def __init__(self, kind: str, detail: str):
+    def __init__(self, kind: str, detail: str, *,
+                 preparation_result: dict | None = None):
         super().__init__(detail)
         self.kind = str(kind)
         self.detail = str(detail)
+        self.preparation_result = copy.deepcopy(preparation_result)
+
+
+def _canonical_fingerprint(value: object) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _preparation_string(value: object, label: str, *,
+                        identifier: bool = False) -> str:
+    if not isinstance(value, str) or not value or value != value.strip() or \
+            len(value) > 2048 or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in value):
+        raise RepositoryAcquisitionError(
+            "identity", f"repository preparation {label} is invalid")
+    if identifier and not _PREPARATION_ID.fullmatch(value):
+        raise RepositoryAcquisitionError(
+            "identity", f"repository preparation {label} is invalid")
+    return value
+
+
+def _valid_requested_ref(value: object) -> str | None:
+    if value is None:
+        return None
+    ref = _preparation_string(value, "requested ref")
+    if not _valid_branch_ref(ref):
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation requested ref is not exact")
+    return ref
+
+
+def _valid_branch_ref(ref: object) -> bool:
+    if not isinstance(ref, str) or not ref.startswith("refs/heads/"):
+        return False
+    branch = ref[len("refs/heads/"):]
+    return bool(branch and len(ref) <= 1024
+                and not branch.startswith(('/', '.'))
+                and not branch.endswith(('/', '.', '.lock'))
+                and ".." not in branch and "@{" not in branch
+                and "//" not in branch and not any(
+                    character.isspace() or character in "~^:?*[\\"
+                    or ord(character) < 32 or ord(character) == 127
+                    for character in branch))
+
+
+def validate_repository_preparation_request(request: object) -> dict:
+    """Validate and normalize the closed repository preparation request."""
+    if not isinstance(request, dict) or set(request) != \
+            REPOSITORY_PREPARATION_REQUEST_FIELDS:
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation request fields are invalid")
+    if request.get("schema") != _PREPARATION_REQUEST_SCHEMA:
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation request schema is invalid")
+    target = request.get("target")
+    if not isinstance(target, dict) or set(target) != \
+            REPOSITORY_PREPARATION_TARGET_FIELDS or \
+            target.get("kind") != "repository":
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation target is invalid")
+    normalized = copy.deepcopy(request)
+    normalized["operation_id"] = _preparation_string(
+        request.get("operation_id"), "operation id", identifier=True)
+    normalized["run_id"] = _preparation_string(
+        request.get("run_id"), "run id", identifier=True)
+    normalized["target"]["repository_id"] = _preparation_string(
+        target.get("repository_id"), "repository id")
+    normalized["target"]["remote"] = _preparation_string(
+        target.get("remote"), "remote")
+    normalized["target"]["requested_ref"] = _valid_requested_ref(
+        target.get("requested_ref"))
+    locator = request.get("workspace_locator_fingerprint")
+    if not isinstance(locator, str) or not \
+            _PREPARATION_FINGERPRINT.fullmatch(locator):
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation locator is invalid")
+    attempt = request.get("attempt")
+    predecessor = request.get("predecessor_result_fingerprint")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation attempt is invalid")
+    if predecessor is not None and (not isinstance(predecessor, str) or
+                                    not _PREPARATION_FINGERPRINT.fullmatch(
+                                        predecessor)):
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation predecessor is invalid")
+    if (attempt == 1) != (predecessor is None):
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation predecessor is unbound")
+    return normalized
+
+
+def _request_fingerprint(request: Mapping[str, object]) -> str:
+    """Fingerprint the retry-stable logical request, excluding lineage."""
+    return _canonical_fingerprint({
+        field: copy.deepcopy(request[field])
+        for field in (
+            "schema", "operation_id", "run_id", "target",
+            "workspace_locator_fingerprint")
+    })
+
+
+def _refusal_identity(request_fingerprint: str, operation_id: str,
+                      reason_code: str) -> str:
+    return _canonical_fingerprint({
+        "request_fingerprint": request_fingerprint,
+        "operation_id": operation_id,
+        "reason_code": reason_code,
+        "failed_boundary": _PREPARATION_BOUNDARIES[reason_code],
+    })
+
+
+def _preparation_result(request: Mapping[str, object], *, reason_code: str,
+                        repository_id: str | None = None,
+                        remote_default_branch: str | None = None,
+                        remote_default_ref: str | None = None,
+                        fetch_receipt: dict | None = None,
+                        resolved_sha: str | None = None,
+                        checkout: str | None = None) -> dict:
+    status, retryability = _PREPARATION_RETRYABILITY[reason_code]
+    request_fingerprint = _request_fingerprint(request)
+    material = {
+        "schema": _PREPARATION_RESULT_SCHEMA,
+        "operation_id": request["operation_id"],
+        "run_id": request["run_id"],
+        "request_fingerprint": request_fingerprint,
+        "attempt": request["attempt"],
+        "status": status,
+        "reason_code": reason_code,
+        "retryability": retryability,
+        "refusal_identity": (None if status == "ready" else
+                             _refusal_identity(
+                                 request_fingerprint,
+                                 str(request["operation_id"]), reason_code)),
+        "predecessor_result_fingerprint":
+            request["predecessor_result_fingerprint"],
+        "repository_id": repository_id,
+        "remote_default_branch": remote_default_branch,
+        "remote_default_ref": remote_default_ref,
+        "fetch_receipt": copy.deepcopy(fetch_receipt),
+        "resolved_sha": resolved_sha,
+        "checkout": checkout,
+    }
+    result = {**material, "fingerprint": _canonical_fingerprint(material)}
+    return validate_repository_preparation_result(result)
+
+
+def _invalid_request_result(request: object) -> dict:
+    raw = request if isinstance(request, dict) else {}
+    operation_id = raw.get("operation_id")
+    run_id = raw.get("run_id")
+    attempt = raw.get("attempt")
+    predecessor = raw.get("predecessor_result_fingerprint")
+    target = raw.get("target") if isinstance(raw.get("target"), dict) else {}
+    safe = {
+        "schema": _PREPARATION_REQUEST_SCHEMA,
+        "operation_id": (operation_id if isinstance(operation_id, str) and
+                         _PREPARATION_ID.fullmatch(operation_id)
+                         else "invalid-operation"),
+        "run_id": (run_id if isinstance(run_id, str) and
+                   _PREPARATION_ID.fullmatch(run_id) else "invalid-run"),
+        "target": {
+            "kind": "repository",
+            "repository_id": str(target.get("repository_id") or "invalid"),
+            "remote": str(target.get("remote") or "invalid"),
+            "requested_ref": None,
+        },
+        "workspace_locator_fingerprint": (
+            str(raw.get("workspace_locator_fingerprint"))
+            if _PREPARATION_FINGERPRINT.fullmatch(
+                str(raw.get("workspace_locator_fingerprint") or ""))
+            else "0" * 64),
+        "attempt": (attempt if isinstance(attempt, int) and
+                    not isinstance(attempt, bool) and attempt > 0 else 1),
+        "predecessor_result_fingerprint": (
+            predecessor if isinstance(predecessor, str) and
+            _PREPARATION_FINGERPRINT.fullmatch(predecessor) else None),
+    }
+    if safe["attempt"] == 1:
+        safe["predecessor_result_fingerprint"] = None
+    elif safe["predecessor_result_fingerprint"] is None:
+        safe["attempt"] = 1
+    return _preparation_result(safe, reason_code="invalid_request")
+
+
+def validate_repository_preparation_result(result: object) -> dict:
+    """Validate the exact closed result and its content fingerprint."""
+    if not isinstance(result, dict) or set(result) != \
+            REPOSITORY_PREPARATION_RESULT_FIELDS:
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation result fields are invalid")
+    if result.get("schema") != _PREPARATION_RESULT_SCHEMA:
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation result schema is invalid")
+    operation_id = result.get("operation_id")
+    run_id = result.get("run_id")
+    if not isinstance(operation_id, str) or not \
+            _PREPARATION_ID.fullmatch(operation_id) or \
+            not isinstance(run_id, str) or not _PREPARATION_ID.fullmatch(run_id):
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation result identity is invalid")
+    for field in ("request_fingerprint", "fingerprint"):
+        if not isinstance(result.get(field), str) or not \
+                _PREPARATION_FINGERPRINT.fullmatch(result[field]):
+            raise RepositoryAcquisitionError(
+                "identity", f"repository preparation {field} is invalid")
+    attempt = result.get("attempt")
+    predecessor = result.get("predecessor_result_fingerprint")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1 \
+            or (attempt == 1) != (predecessor is None) or \
+            (predecessor is not None and (
+                not isinstance(predecessor, str) or
+                not _PREPARATION_FINGERPRINT.fullmatch(predecessor))):
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation result lineage is invalid")
+    reason = result.get("reason_code")
+    expected = _PREPARATION_RETRYABILITY.get(str(reason))
+    if expected != (result.get("status"), result.get("retryability")):
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation retryability is invalid")
+    facts = (
+        result.get("repository_id"), result.get("remote_default_branch"),
+        result.get("remote_default_ref"), result.get("fetch_receipt"),
+        result.get("resolved_sha"), result.get("checkout"),
+    )
+    if result.get("status") == "ready":
+        if result.get("refusal_identity") is not None or \
+                not all(facts) or not all(isinstance(result.get(field), str)
+                    for field in ("repository_id", "remote_default_branch",
+                                  "remote_default_ref", "checkout")) or \
+                not isinstance(result.get("fetch_receipt"), dict) \
+                or not _GIT_OBJECT_ID.fullmatch(
+                    str(result.get("resolved_sha") or "")):
+            raise RepositoryAcquisitionError(
+                "identity", "ready repository preparation facts are invalid")
+    else:
+        if any(value is not None for value in facts) or not isinstance(
+                result.get("refusal_identity"), str) or not \
+                _PREPARATION_FINGERPRINT.fullmatch(
+                    result["refusal_identity"]):
+            raise RepositoryAcquisitionError(
+                "identity", "repository refusal facts are invalid")
+        expected_refusal = _refusal_identity(
+            result["request_fingerprint"], operation_id, str(reason))
+        if result["refusal_identity"] != expected_refusal:
+            raise RepositoryAcquisitionError(
+                "identity", "repository refusal identity is invalid")
+    material = {key: result[key] for key in result if key != "fingerprint"}
+    if result["fingerprint"] != _canonical_fingerprint(material):
+        raise RepositoryAcquisitionError(
+            "identity", "repository preparation fingerprint is invalid")
+    return copy.deepcopy(result)
+
+
+def _git_call(git_runner: GitRunner, args: Sequence[str], *,
+              cwd: str | None = None) -> GitResult:
+    try:
+        result = git_runner.run(tuple(args), cwd=cwd)
+    except AssertionError:
+        raise
+    except RepositoryAcquisitionError as exc:
+        return GitResult(
+            1, "", f"taskplane-error:{exc.kind}\n{exc.detail}")
+    except Exception as exc:
+        return GitResult(
+            1, "", f"taskplane-error:checkout\nGit runner failed: {exc}")
+    if not isinstance(result, GitResult):
+        try:
+            result = GitResult(
+                int(result.returncode), str(result.stdout or ""),
+                str(result.stderr or ""))
+        except (AttributeError, TypeError, ValueError) as exc:
+            return GitResult(
+                1, "", "taskplane-error:checkout\n"
+                f"Git runner returned an invalid result: {exc}")
+    return result
+
+
+def _remote_matches(expected: str, observed: str) -> bool:
+    try:
+        return storage.identity_from_remote(expected).repo_id == \
+            storage.identity_from_remote(observed).repo_id
+    except ValueError:
+        if os.path.isabs(expected) or os.path.isabs(observed):
+            return os.path.realpath(expected) == os.path.realpath(observed)
+        return expected.rstrip("/") == observed.rstrip("/")
+
+
+def _git_wait_reason(result: GitResult) -> str:
+    marker = str(result.stderr or "").splitlines()[0:1]
+    if marker and marker[0].startswith("taskplane-error:"):
+        kind = marker[0].split(":", 1)[1].strip().lower()
+        if kind in {"authentication", "auth", "permission"}:
+            return "authority_required"
+        if kind in {"host-policy", "policy"}:
+            return "host_policy"
+        if kind in {"external-unavailable", "external", "network"}:
+            return "external_unavailable"
+    classification = _classify_failure(
+        "\n".join((result.stdout, result.stderr)))
+    if classification == "authentication":
+        return "authority_required"
+    if classification == "network":
+        return "external_unavailable"
+    return "repeated_failure"
+
+
+def _advertised_remote_default(output: str) -> tuple[str, str] | str:
+    lines = [line for line in str(output or "").splitlines() if line]
+    if not lines:
+        return "remote_default_missing"
+    symrefs: list[str] = []
+    object_ids: list[str] = []
+    malformed = False
+    for line in lines:
+        fields = line.split("\t")
+        if len(fields) != 2 or fields[1] != "HEAD":
+            malformed = True
+            continue
+        if fields[0].startswith("ref: "):
+            symrefs.append(fields[0][5:])
+        elif _GIT_OBJECT_ID.fullmatch(fields[0].lower()):
+            object_ids.append(fields[0].lower())
+        else:
+            malformed = True
+    if len(symrefs) != 1 or len(object_ids) != 1 or malformed or not \
+            _valid_branch_ref(symrefs[0]):
+        return "remote_default_ambiguous"
+    return symrefs[0], object_ids[0]
+
+
+def _retry_or_replay(request: Mapping[str, object],
+                     prior_result: object | None) -> dict | None:
+    attempt = int(request["attempt"])
+    if prior_result is None:
+        if attempt != 1:
+            return _preparation_result(
+                request, reason_code="invalid_request")
+        return None
+    try:
+        prior = validate_repository_preparation_result(prior_result)
+    except RepositoryAcquisitionError:
+        return _preparation_result(request, reason_code="invalid_request")
+    identity_matches = (
+        prior["operation_id"] == request["operation_id"]
+        and prior["run_id"] == request["run_id"]
+        and prior["request_fingerprint"] == _request_fingerprint(request)
+    )
+    if prior["attempt"] == attempt:
+        if identity_matches and prior["predecessor_result_fingerprint"] == \
+                request["predecessor_result_fingerprint"]:
+            return prior
+        return _preparation_result(request, reason_code="invalid_request")
+    if (not identity_matches or attempt != prior["attempt"] + 1
+            or request["predecessor_result_fingerprint"] !=
+            prior["fingerprint"] or prior["retryability"] not in {
+                "retry_after_user", "retry_after_external"}):
+        return _preparation_result(request, reason_code="invalid_request")
+    return None
+
+
+def prepare(request: object, *, mirror_path: str, worktree_root: str,
+            git_runner: GitRunner | None = None,
+            prior_result: object | None = None) -> dict:
+    """Prepare a hosted default checkout without trusting the mirror's HEAD.
+
+    Git ordering is intentionally strict: fetch, read the remote advertisement,
+    verify the corresponding fetched tracking ref, bind the mirror's symbolic
+    HEAD to that verified ref, and only then resolve/create the checkout.
+    """
+    try:
+        normalized = validate_repository_preparation_request(request)
+    except RepositoryAcquisitionError:
+        return _invalid_request_result(request)
+    replay = _retry_or_replay(normalized, prior_result)
+    if replay is not None:
+        return replay
+
+    runner = git_runner or SubprocessGitRunner()
+    mirror = os.path.realpath(os.path.abspath(mirror_path))
+    worktrees = os.path.realpath(os.path.abspath(worktree_root))
+    expected_remote = normalized["target"]["remote"]
+    common = ("--git-dir", mirror)
+
+    remote_result = _git_call(
+        runner, (*common, "remote", "get-url", "origin"))
+    if remote_result.returncode:
+        return _preparation_result(
+            normalized, reason_code=_git_wait_reason(remote_result))
+    observed_remotes = [line.strip() for line in remote_result.stdout.splitlines()
+                        if line.strip()]
+    if len(observed_remotes) != 1 or not _remote_matches(
+            expected_remote, observed_remotes[0]):
+        return _preparation_result(
+            normalized, reason_code="identity_mismatch")
+
+    refspec = "+refs/heads/*:refs/remotes/origin/*"
+    fetch = _git_call(
+        runner, (*common, "fetch", "--prune", "origin", refspec))
+    if fetch.returncode:
+        return _preparation_result(
+            normalized, reason_code=_git_wait_reason(fetch))
+    fetch_receipt = {
+        "schema": "taskplane.repository-fetch/v1",
+        "remote": expected_remote,
+        "refspec": refspec,
+        "output_fingerprint": _canonical_fingerprint({
+            "stdout": fetch.stdout, "stderr": fetch.stderr}),
+    }
+
+    advertisement = _git_call(
+        runner, (*common, "ls-remote", "--symref", "origin", "HEAD"))
+    if advertisement.returncode:
+        return _preparation_result(
+            normalized, reason_code=_git_wait_reason(advertisement))
+    advertised = _advertised_remote_default(advertisement.stdout)
+    if isinstance(advertised, str):
+        return _preparation_result(normalized, reason_code=advertised)
+    advertised_ref, advertised_sha = advertised
+    requested_ref = normalized["target"]["requested_ref"]
+    if requested_ref is not None and requested_ref != advertised_ref:
+        return _preparation_result(
+            normalized, reason_code="identity_mismatch")
+    branch = advertised_ref[len("refs/heads/"):]
+    fetched_ref = f"refs/remotes/origin/{branch}"
+
+    fetched = _git_call(
+        runner, (*common, "show-ref", "--verify", "--hash", fetched_ref))
+    fetched_lines = [line.strip().lower()
+                     for line in fetched.stdout.splitlines() if line.strip()]
+    if fetched.returncode or len(fetched_lines) != 1 or not \
+            _GIT_OBJECT_ID.fullmatch(fetched_lines[0]):
+        return _preparation_result(
+            normalized, reason_code="default_ref_unfetched")
+    if fetched_lines[0] != advertised_sha:
+        return _preparation_result(
+            normalized, reason_code="identity_mismatch")
+    bound = _git_call(
+        runner, (*common, "symbolic-ref", "HEAD", fetched_ref))
+    if bound.returncode:
+        return _preparation_result(
+            normalized, reason_code=_git_wait_reason(bound))
+    commit = _git_call(
+        runner, (*common, "rev-parse", "--verify", f"{fetched_ref}^{{commit}}"))
+    resolved = commit.stdout.strip().lower()
+    if commit.returncode or not _GIT_OBJECT_ID.fullmatch(resolved):
+        return _preparation_result(
+            normalized, reason_code="default_ref_unfetched")
+    if resolved != advertised_sha:
+        return _preparation_result(
+            normalized, reason_code="identity_mismatch")
+    try:
+        os.makedirs(worktrees, exist_ok=True)
+    except OSError:
+        return _preparation_result(
+            normalized, reason_code="host_policy")
+    checkout = os.path.realpath(os.path.join(
+        worktrees, f"repo-{resolved[:12]}"))
+    if os.path.isdir(checkout):
+        existing = _git_call(runner, ("rev-parse", "--verify", "HEAD^{commit}"),
+                             cwd=checkout)
+        if existing.returncode or existing.stdout.strip().lower() != resolved:
+            return _preparation_result(
+                normalized, reason_code="identity_mismatch")
+    else:
+        checked_out = _git_call(
+            runner, (*common, "worktree", "add", "--detach", checkout,
+                     resolved))
+        if checked_out.returncode:
+            return _preparation_result(
+                normalized, reason_code=_git_wait_reason(checked_out))
+    return _preparation_result(
+        normalized, reason_code="ready",
+        repository_id=normalized["target"]["repository_id"],
+        remote_default_branch=branch, remote_default_ref=fetched_ref,
+        fetch_receipt=fetch_receipt, resolved_sha=resolved,
+        checkout=checkout)
 
 
 def _authority_string(value: object, label: str, *,
@@ -157,19 +683,29 @@ def acquire_with_recovery(acquire: Callable[[], object], *,
         try:
             value = acquire()
         except RepositoryAcquisitionError as exc:
+            preparation_result = exc.preparation_result
             kind = str(exc.kind or "checkout").lower()
             if kind in {"authentication", "auth", "permission"}:
+                if preparation_result is not None:
+                    return preparation_result
                 return {"schema": "taskplane.repository-preparation/v1",
                         "status": "needs_user", "reason": "authority_required",
                         "detail": exc.detail, "attempts": attempt}
             if kind in {"host-policy", "policy"}:
+                if preparation_result is not None:
+                    return preparation_result
                 return {"schema": "taskplane.repository-preparation/v1",
                         "status": "waiting", "reason": "host_policy",
                         "detail": exc.detail, "attempts": attempt}
             if kind in {"external-unavailable", "external"}:
+                if preparation_result is not None:
+                    return preparation_result
                 return {"schema": "taskplane.repository-preparation/v1",
                         "status": "waiting", "reason": "external_unavailable",
                         "detail": exc.detail, "attempts": attempt}
+            if preparation_result is not None and \
+                    preparation_result.get("status") == "refused":
+                return preparation_result
             fingerprint = hashlib.sha256(
                 f"{kind}\0{exc.detail}".encode("utf-8")).hexdigest()
             fingerprints.append(fingerprint)
@@ -179,6 +715,8 @@ def acquire_with_recovery(acquire: Callable[[], object], *,
                 max_routine_attempts=max_attempts)
             if decision["status"] == "recover":
                 continue
+            if preparation_result is not None:
+                return preparation_result
             return {"schema": "taskplane.repository-preparation/v1",
                     "status": "waiting", "reason": decision["reason"],
                     "detail": exc.detail, "attempts": attempt,
@@ -300,8 +838,24 @@ def validate_pickup_merge_receipt(receipt: object, *, task_id: str,
 class RepositoryManager:
     """Own mirrors/worktrees outside report directories."""
 
-    def __init__(self, *, home: str | None = None):
+    def __init__(self, *, home: str | None = None,
+                 git_runner: GitRunner | None = None):
         self.home = storage.taskplane_home(home)
+        self.git_runner = git_runner
+
+    def _git_port(self) -> GitRunner:
+        if self.git_runner is not None:
+            return self.git_runner
+        manager = self
+
+        class _IncumbentGitRunner:
+            def run(self, args: Sequence[str], *, cwd=None) -> GitResult:
+                argv = ["git", *args]
+                output = (manager._fetch(argv) if "fetch" in args
+                          else manager._run(argv, cwd=cwd))
+                return GitResult(0, output, "")
+
+        return _IncumbentGitRunner()
 
     def _run(self, argv: list[str], *, cwd: str | None = None,
              timeout: int = 600) -> str:
@@ -546,34 +1100,65 @@ class RepositoryManager:
                                  "")})
 
     def acquire_repository(self, identity: storage.RepositoryIdentity,
-                           target: dict) -> AcquisitionResult:
-        """Acquire the hosted repository's default HEAD without a PR."""
+                           target: dict, *, run_id: str = "acquisition",
+                           attempt: int = 1,
+                           predecessor_result_fingerprint: str | None = None,
+                           prior_result: dict | None = None) \
+            -> AcquisitionResult:
+        """Acquire a hosted repository from its verified fetched default."""
         layout = storage.resolve_layout(identity, home=self.home,
                                         run_id="acquisition")
         try:
             with self._acquisition_lock(layout):
                 self._ensure_mirror(identity, layout)
-                self._fetch(["git", "--git-dir", layout.mirror_path,
-                             "fetch", "--prune", "origin"])
-                head = self._run(["git", "--git-dir", layout.mirror_path,
-                                  "rev-parse", "HEAD"])
-                checkout = os.path.join(
-                    layout.worktree_root, f"repo-{head[:12]}")
-                os.makedirs(layout.worktree_root, exist_ok=True)
-                if os.path.isdir(checkout):
-                    existing = self._run(
-                        ["git", "rev-parse", "HEAD"], cwd=checkout)
-                    if existing != head:
-                        raise RepositoryAcquisitionError(
-                            "identity", f"managed checkout {checkout} has moved")
-                else:
-                    self._run(["git", "--git-dir", layout.mirror_path,
-                               "worktree", "add", "--detach", checkout, head])
+                remote = self._remote_url(identity)
+                locator_fingerprint = _canonical_fingerprint({
+                    "home": layout.home,
+                    "repository_key": layout.repository_key,
+                    "mirror_path": os.path.realpath(layout.mirror_path),
+                    "worktree_root": os.path.realpath(layout.worktree_root),
+                    "run_id": run_id,
+                })
+                request = {
+                    "schema": _PREPARATION_REQUEST_SCHEMA,
+                    "operation_id": "prepare-" + hashlib.sha256(
+                        f"{run_id}\0{identity.repo_id}".encode("utf-8")
+                    ).hexdigest()[:24],
+                    "run_id": run_id,
+                    "target": {
+                        "kind": "repository",
+                        "repository_id": identity.repo_id,
+                        "remote": remote,
+                        "requested_ref": target.get("requested_ref"),
+                    },
+                    "workspace_locator_fingerprint": locator_fingerprint,
+                    "attempt": attempt,
+                    "predecessor_result_fingerprint":
+                        predecessor_result_fingerprint,
+                }
+                preparation = prepare(
+                    request, mirror_path=layout.mirror_path,
+                    worktree_root=layout.worktree_root,
+                    git_runner=self._git_port(), prior_result=prior_result)
         except tp.StateError as exc:
             raise RepositoryAcquisitionError(
                 "checkout", f"managed repository is busy: {exc}") from None
+        if preparation["status"] != "ready":
+            kind = {
+                "authority_required": "authentication",
+                "host_policy": "host-policy",
+                "external_unavailable": "network",
+                "repeated_failure": "checkout",
+            }.get(preparation["reason_code"], "identity")
+            raise RepositoryAcquisitionError(
+                kind, preparation["reason_code"],
+                preparation_result=preparation)
+        head = preparation["resolved_sha"]
+        checkout = preparation["checkout"]
         return AcquisitionResult(
-            checkout=os.path.realpath(checkout), base_ref="", base=head,
+            checkout=os.path.realpath(checkout),
+            base_ref=preparation["remote_default_ref"], base=head,
             head=head, merge_base=head, changed_files=(),
             metadata={"url": str(target.get("spec") or identity.remote or
-                                  "")})
+                                  ""),
+                      "repository_preparation": preparation})

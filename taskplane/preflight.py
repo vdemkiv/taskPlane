@@ -695,12 +695,17 @@ class RepositoryPreflight:
             "choices": list(choices),
         }
 
-    def _needs_user(self, run_id: str, manifest: dict, action: dict) -> dict:
+    def _needs_user(self, run_id: str, manifest: dict, action: dict, *,
+                    preparation_result: dict | None = None) -> dict:
+        preflight_state = {"status": "needs_user",
+                           "pending_action": action}
+        if preparation_result is not None:
+            preflight_state["repository_preparation"] = dict(
+                preparation_result)
         updated = self.store.commit(
             run_id, expected_revision=int(manifest["revision"]),
             changes={"status": "awaiting_user",
-                     "preflight": {"status": "needs_user",
-                                   "pending_action": action}})
+                     "preflight": preflight_state})
         return {"schema": "taskplane.preflight/v1", "run_id": run_id,
                 "status": "needs_user", "action": action,
                 "revision": updated["revision"]}
@@ -791,9 +796,40 @@ class RepositoryPreflight:
                             "taskPlane will resume this same run."),
                     detail="gh is not authenticated",
                     command_argv=["gh", "auth", "login", "--web"]))
+            preflight_record = manifest.get("preflight") or {}
+            preparation_prior = preflight_record.get(
+                "repository_preparation")
+            if preparation_prior is None:
+                recovery_record = preflight_record.get("recovery")
+                if isinstance(recovery_record, dict) and \
+                        recovery_record.get("schema") == \
+                        "taskplane.repository-preparation/v1" and \
+                        "reason_code" in recovery_record:
+                    preparation_prior = recovery_record
+
             def acquire():
+                nonlocal preparation_prior
                 if parsed.get("kind") == "pr":
                     return self.acquirer.acquire_pr(identity, parsed)
+                if isinstance(self.acquirer, repository.RepositoryManager):
+                    kwargs = {"run_id": run}
+                    if preparation_prior is not None:
+                        kwargs.update({
+                            "attempt": int(preparation_prior["attempt"]) + 1,
+                            "predecessor_result_fingerprint":
+                                preparation_prior["fingerprint"],
+                            "prior_result": preparation_prior,
+                        })
+                    try:
+                        acquired = self.acquirer.acquire_repository(
+                            identity, parsed, **kwargs)
+                    except repository.RepositoryAcquisitionError as exc:
+                        if exc.preparation_result is not None:
+                            preparation_prior = exc.preparation_result
+                        raise
+                    preparation_prior = (acquired.metadata or {}).get(
+                        "repository_preparation")
+                    return acquired
                 return self.acquirer.acquire_repository(identity, parsed)
 
             consolidated = os.environ.get("TASKPLANE_CONSOLIDATED_FLOW", "") \
@@ -811,16 +847,46 @@ class RepositoryPreflight:
                             prompt=("Repository authentication is required. "
                                     "Sign in or authorize access, then "
                                     "taskPlane will resume this same run."),
-                            detail=preparation["detail"], command_argv=command,
-                            choices=("approve", "retry", "cancel")))
+                            detail=str(preparation.get("detail") or
+                                       preparation.get("reason_code") or
+                                       "authority_required"),
+                            command_argv=command,
+                            choices=("approve", "retry", "cancel")),
+                            preparation_result=(preparation if
+                                "reason_code" in preparation else None))
+                    elif preparation["status"] == "refused":
+                        return self._needs_user(run, manifest, self._action(
+                            run, kind="correct_repository_default",
+                            prompt=("The hosted repository default branch could "
+                                    "not be verified. Correct the remote default "
+                                    "or target, then retry this same run."),
+                            detail=str(preparation["reason_code"]),
+                            choices=("retry", "cancel")),
+                            preparation_result=preparation)
                     else:
                         return self._waiting(
-                            run, manifest, reason=preparation["reason"],
-                            detail=preparation["detail"],
-                            recovery_record=preparation.get("recovery"))
+                            run, manifest,
+                            reason=str(preparation.get("reason") or
+                                       preparation.get("reason_code")),
+                            detail=str(preparation.get("detail") or
+                                       preparation.get("reason_code")),
+                            recovery_record=(preparation if
+                                "reason_code" in preparation else
+                                preparation.get("recovery")))
                 else:
                     acquired = acquire()
             except repository.RepositoryAcquisitionError as exc:
+                preparation_result = exc.preparation_result
+                if preparation_result is not None and \
+                        preparation_result.get("status") == "refused":
+                    return self._needs_user(run, manifest, self._action(
+                        run, kind="correct_repository_default",
+                        prompt=("The hosted repository default branch could not "
+                                "be verified. Correct the remote default or "
+                                "target, then retry this same run."),
+                        detail=str(preparation_result["reason_code"]),
+                        choices=("retry", "cancel")),
+                        preparation_result=preparation_result)
                 if exc.kind == "authentication":
                     command = (["gh", "auth", "login", "--web"]
                                if gh.get("present") else [])
@@ -830,7 +896,8 @@ class RepositoryPreflight:
                                 "Sign in or authorize access, then taskPlane "
                                 "will resume this same run."),
                         detail=exc.detail, command_argv=command,
-                        choices=("approve", "retry", "cancel")))
+                        choices=("approve", "retry", "cancel")),
+                        preparation_result=preparation_result)
                 if exc.kind == "network":
                     return self._needs_user(run, manifest, self._action(
                         run, kind="retry_acquisition",
@@ -838,12 +905,14 @@ class RepositoryPreflight:
                                 "already limited the fetch to the requested "
                                 "target and tried its compatible transport; "
                                 "retry or cancel."),
-                        detail=exc.detail, choices=("retry", "cancel")))
+                        detail=exc.detail, choices=("retry", "cancel")),
+                        preparation_result=preparation_result)
                 return self._needs_user(run, manifest, self._action(
                     run, kind="retry_acquisition",
                     prompt=("Repository checkout failed. Retry or cancel."),
                     detail=exc.detail,
-                    choices=("retry", "cancel")))
+                    choices=("retry", "cancel")),
+                    preparation_result=preparation_result)
             target = {
                 "ok": True, "root": acquired.checkout,
                 "origin": identity.remote or
