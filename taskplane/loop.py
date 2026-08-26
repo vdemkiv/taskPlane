@@ -65,14 +65,107 @@ import taskplane_lite as tp
 import yield_meter
 
 if __package__:
+    from . import brief_projection
     from . import delivery_policy
+    from . import dispatch_telemetry
     from . import evaluation_output as evaluation_output
+    from . import plan_topology
     from . import producer_observation as producer_observation_policy
+    from .delivery_ports import SystemClock
 else:  # pragma: no cover - direct CLI module loading
+    import brief_projection
     import delivery_policy
+    import dispatch_telemetry
+    import plan_topology
     import producer_observation as producer_observation_policy
+    from delivery_ports import SystemClock
 
 LOOP_FILE = "loop.json"
+
+
+def _brief_source_root(ws: str) -> str:
+    return os.path.join(tp.tp_dir(ws), "loop-next-sources-v1")
+
+
+def project_next_action_for_host(
+        ws: str, action: Mapping[str, object], *,
+        wave_usage: Mapping[str, object] | None = None) -> dict:
+    """Persist one exact action and return its bounded public delta.
+
+    ``next_action`` remains the internal transition API used by tests and
+    in-process adapters.  The CLI/host boundary calls this function so the
+    model-facing payload is bounded without depriving internal consumers of
+    the full authority-bearing action.
+    """
+    if not isinstance(action, Mapping):
+        raise brief_projection.BriefProjectionError(
+            "loop next action must be a mapping")
+    if wave_usage is None:
+        state = load(ws)
+        ledger = (state or {}).get("dispatch_telemetry")
+        if isinstance(ledger, Mapping):
+            wave_usage = dispatch_telemetry.wave_usage(
+                ledger, SystemClock())
+    root = _brief_source_root(ws)
+    os.makedirs(root, exist_ok=True)
+    raw = brief_projection.canonical_text(action)
+    fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    source_path = os.path.join(root, f"{fingerprint}.json")
+    head_path = os.path.join(root, "HEAD.json")
+    relative_source = os.path.relpath(source_path, os.path.realpath(ws)) \
+        .replace(os.sep, "/")
+    with tp.file_lock(head_path):
+        previous = None
+        if os.path.lexists(head_path):
+            if os.path.islink(head_path):
+                raise brief_projection.BriefProjectionError(
+                    "loop next source head must not be a symlink")
+            with open(head_path, encoding="utf-8") as stream:
+                head = json.load(stream)
+            previous_name = str(head.get("source") or "") \
+                if isinstance(head, Mapping) else ""
+            if not re.fullmatch(r"[0-9a-f]{64}\.json", previous_name):
+                raise brief_projection.BriefProjectionError(
+                    "loop next source head is invalid")
+            previous_path = os.path.realpath(os.path.join(root, previous_name))
+            if os.path.dirname(previous_path) != os.path.realpath(root):
+                raise brief_projection.BriefProjectionError(
+                    "loop next source head escapes its store")
+            with open(previous_path, encoding="utf-8") as stream:
+                loaded = json.load(stream)
+            if not isinstance(loaded, Mapping):
+                raise brief_projection.BriefProjectionError(
+                    "prior loop next source is not an object")
+            previous = loaded
+        if os.path.lexists(source_path) and os.path.islink(source_path):
+            raise brief_projection.BriefProjectionError(
+                "loop next source must not be a symlink")
+        if os.path.isfile(source_path):
+            with open(source_path, encoding="utf-8") as stream:
+                existing = stream.read()
+            if existing != raw:
+                raise brief_projection.BriefProjectionError(
+                    "loop next source fingerprint collision")
+        else:
+            temporary = f"{source_path}.tmp.{os.getpid()}"
+            try:
+                with open(temporary, "x", encoding="utf-8", newline="") as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, source_path)
+            finally:
+                with contextlib.suppress(OSError):
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+        projected = brief_projection.project(
+            action, previous=previous, wave_usage=wave_usage,
+            reference_artifact=relative_source,
+        )
+        tp.atomic_write_json(
+            head_path, {"schema": "taskplane.loop-next-source-head/v1",
+                        "source": f"{fingerprint}.json"}, sort_keys=True)
+    return projected
 
 
 def stamp_plan_delivery_mode(
@@ -4145,6 +4238,127 @@ def _scopes_overlap(a, b) -> bool:
                for x in sa for y in sb)
 
 
+def _declared_repository_test_files(ws: str, tasks: list[dict]) -> set[str]:
+    present: set[str] = set()
+    for task in tasks:
+        command = task.get("tests")
+        if not isinstance(command, str):
+            continue
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            continue
+        for token in tokens:
+            path = token.split("::", 1)[0].replace("\\", "/").removeprefix("./")
+            if path.endswith(".py") and "/" in path and \
+                    os.path.isfile(os.path.join(ws, path)):
+                present.add(path)
+    return present
+
+
+def select_ready_tasks(
+        tasks: list[dict], *, passed: set[str],
+        repository_files: set[str]) -> tuple[list[dict], list[dict], dict]:
+    """Select the executable pairwise-disjoint ready set from the Plan.
+
+    This is the runtime consumer of ``plan_topology``.  In particular, it
+    respects implicit missing-test-artifact predecessors, so an apparently
+    disjoint consumer cannot become false-ready before its test producer.
+    """
+    topology = plan_topology.classify_plan(
+        tasks, repository_files=repository_files)
+    by_id = {str(task.get("id")): task for task in tasks}
+    pair_map = {
+        frozenset((str(row["left"]), str(row["right"]))): row
+        for row in topology["pairs"]
+    }
+    selected: list[dict] = []
+    held: list[dict] = []
+    for task_id in topology["task_ids"]:
+        task = by_id[task_id]
+        if task.get("status", "pending") != "pending":
+            continue
+        dependencies = set(topology["effective_dependencies"][task_id])
+        unmet = sorted(dependencies - passed)
+        if unmet:
+            shared_owner = next((
+                pair_map[frozenset((task_id, dependency))]["shared_owner"]
+                for dependency in unmet
+                if frozenset((task_id, dependency)) in pair_map
+            ), f"dependency:{unmet[0]}")
+            held.append({
+                "task": task_id,
+                "reason": "waiting on deps: " + ",".join(unmet),
+                "shared_owner": shared_owner,
+            })
+            continue
+        missing = list((topology.get("missing_test_assets") or {}).get(task_id) or [])
+        if missing:
+            held.append({
+                "task": task_id,
+                "reason": "missing test assets: " + ",".join(missing),
+                "shared_owner": "test-artifact:" + missing[0],
+            })
+            continue
+        blocker = next((
+            pair_map[frozenset((task_id, str(member["id"])))]
+            for member in selected
+            if pair_map[frozenset((task_id, str(member["id"])))]
+            ["disposition"] == "serialized"
+        ), None)
+        if blocker is not None:
+            held.append({
+                "task": task_id,
+                "reason": f"serialized by {blocker['shared_owner']}",
+                "shared_owner": blocker["shared_owner"],
+            })
+            continue
+        selected.append(task)
+    return selected, held, topology
+
+
+def _dispatch_telemetry_identity(ws: str, state: Mapping[str, object]) -> dict:
+    try:
+        locator = runtime_storage.load_workspace_locator(ws)
+    except Exception:
+        locator = None
+    run_id = str((locator or {}).get("run_id") or state.get("run_id") or "")
+    if not run_id:
+        run_id = "loop-" + hashlib.sha256(json.dumps({
+            "workspace": os.path.realpath(ws),
+            "goal": state.get("goal"),
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    source_sha = str(state.get("baseline") or tp.git_head(ws) or "unknown")
+    design_fingerprint = str(
+        state.get("design_fingerprint") or "legacy-design")
+    plan_fingerprint = str(state.get("plan_fingerprint") or "")
+    if not plan_fingerprint:
+        plan_fingerprint = hashlib.sha256(json.dumps(
+            state.get("tasks") or [], sort_keys=True, separators=(",", ":"),
+            default=str).encode()).hexdigest()
+    return {
+        "run_id": run_id, "source_sha": source_sha,
+        "design_fingerprint": design_fingerprint,
+        "plan_fingerprint": plan_fingerprint,
+    }
+
+
+def _ensure_dispatch_telemetry(ws: str) -> dict:
+    """Create/read the live binding ledger under the loop state lock."""
+    clock = SystemClock()
+    with mutate(ws) as locked:
+        if locked is None:
+            raise dispatch_telemetry.DispatchTelemetryError("no active loop")
+        ledger = locked.get("dispatch_telemetry")
+        if ledger is None:
+            ledger = dispatch_telemetry.new_ledger(
+                **_dispatch_telemetry_identity(ws, locked),
+                started_at=clock.wall_time())
+            locked["dispatch_telemetry"] = ledger
+        dispatch_telemetry.validate_ledger(ledger)
+        return dict(ledger)
+
+
 def _verified_stage_loop_wave_split(
         ws: str, ready: list[dict], *,
         known_bindings: Mapping[str, str] | None = None) \
@@ -4533,31 +4747,103 @@ def wave(ws: str) -> dict:
         return {"error": "build delivery mode refused before dispatch: "
                 "execute dispatch requires build delivery mode",
                 "step": "execute", "parallel": True}
+    try:
+        ledger = _ensure_dispatch_telemetry(ws)
+        budget_projection = dispatch_telemetry.budget_projection(
+            ledger, SystemClock())
+    except dispatch_telemetry.DispatchTelemetryError as exc:
+        return {"error": "dispatch telemetry refused before wave: " + str(exc),
+                "step": "execute", "parallel": True}
+    if not budget_projection["dispatch_allowed"]:
+        tp.trace(ws, "loop_wave_budget_stop",
+                 triggered=budget_projection["triggered"])
+        return {
+            "step": "human_scope_review", "parallel": True,
+            "paused": True, "wave": [], "held": [],
+            "budget": budget_projection,
+            "instruction": "Binding delivery budget reached; obtain human "
+                           "scope review before any new dispatch.",
+        }
+    state = load(ws) or state
     tasks = state.get("tasks") or []
     enforcement = ((state.get("enforcement") or {}).get("current"))
     passed = {t["id"] for t in tasks
               if t.get("status") in DEP_SATISFIED}
-    ready, held = [], []
-    for t in tasks:
-        if t.get("status") != "pending":
-            continue
-        if not set(t.get("deps") or []) <= passed:
-            held.append({"task": t["id"],
-                         "reason": "waiting on deps: "
-                         + ",".join(sorted(set(t.get("deps") or []) - passed))})
-            continue
-        clash = [c["id"] for c in ready
-                 if _scopes_overlap(t.get("scope"), c.get("scope"))
-                 # Different A/B variants deliberately overlap in isolated
-                 # worktrees; they never merge before human selection.
-                 and not (state.get("ab") and t.get("variant")
-                          and c.get("variant")
-                          and t.get("variant") != c.get("variant"))]
-        if clash:
-            held.append({"task": t["id"],
-                         "reason": f"scope overlaps {clash[0]} — next wave"})
-            continue
-        ready.append(t)
+    try:
+        ready, held, executable_topology = select_ready_tasks(
+            tasks, passed=passed,
+            repository_files=_declared_repository_test_files(ws, tasks))
+    except plan_topology.PlanTopologyError as exc:
+        return {"error": "executable Plan topology refused dispatch: " + str(exc),
+                "step": "execute", "parallel": True}
+    remaining_sessions = max(
+        0, dispatch_telemetry.WAVE_BUDGET_CEILINGS["sessions"] -
+        int(budget_projection["usage"]["sessions"]))
+    if len(ready) > remaining_sessions:
+        overflow, ready = ready[remaining_sessions:], ready[:remaining_sessions]
+        held.extend({
+            "task": task["id"],
+            "reason": "session budget capacity — next human-scoped tranche",
+            "shared_owner": "budget:sessions",
+        } for task in overflow)
+    # A/B variants deliberately overlap in isolated worktrees.  The approved
+    # Plan topology remains the default; variant isolation is the one existing
+    # runtime exception and never makes non-variant work parallel.
+    if state.get("ab"):
+        selected: list[dict] = []
+        remaining: list[dict] = []
+        for task in ready:
+            clash = next((member for member in selected
+                          if _scopes_overlap(task.get("scope"), member.get("scope"))
+                          and not (task.get("variant") and member.get("variant")
+                                   and task.get("variant") != member.get("variant"))),
+                         None)
+            if clash is None:
+                selected.append(task)
+            else:
+                remaining.append({"task": task["id"],
+                                  "reason": f"scope overlaps {clash['id']} — next wave",
+                                  "shared_owner": "scope"})
+        ready, held = selected, [*held, *remaining]
+
+    # Mint and reserve the host intents before stage-native projection.  A
+    # stage projection may be retried after a crash before public output; the
+    # intent owner and telemetry owner are both idempotent, so the retry must
+    # replay the same reservations rather than mutate loop authority again.
+    wave_wait_policy = (event_wait_policy("execute-wave", len(ready))
+                        if ready else None)
+    wave_wait_invocation = (event_wait_invocation(
+        wave_wait_policy, [str(task["id"]) for task in ready])
+        if ready else None)
+    dispatches: dict[str, dict] = {}
+    dispatch_intents: dict[str, dict] = {}
+    for task in ready:
+        task_id = str(task["id"])
+        dispatch = tp.dispatch_fields(
+            "step", "tp-executor", task_id,
+            tp.step_tier("execute", task))
+        dispatches[task_id] = dispatch
+        intent = _native_dispatch_intent(
+            ws, state, step="execute", task_id=task_id,
+            dispatch=dispatch, wait_policy=wave_wait_policy,
+            wave_id="execute-wave")
+        dispatch_id = str(intent.get("intent_id") or "")
+        if not dispatch_id:
+            return {"error": "native dispatch intent has no identity",
+                    "step": "execute", "parallel": True}
+        dispatch_intents[task_id] = intent
+    if dispatch_intents:
+        with mutate(ws) as locked:
+            if locked is None:
+                return {"error": "loop disappeared during dispatch reservation",
+                        "step": "execute", "parallel": True}
+            live_ledger = locked.get("dispatch_telemetry")
+            dispatch_telemetry.validate_ledger(live_ledger)
+            now = SystemClock().wall_time()
+            for intent in dispatch_intents.values():
+                dispatch_telemetry.reserve_session(
+                    live_ledger, dispatch_id=str(intent["intent_id"]),
+                    thread_type="worker", reserved_at=now)
 
     try:
         stage_dispatches = _stage_loop_wave_dispatches(ws, state, ready)
@@ -4579,14 +4865,8 @@ def wave(ws: str) -> dict:
                  if str(task["id"]) in stage_dispatches]
 
     entries = []
-    wave_wait_policy = (event_wait_policy("execute-wave", len(ready))
-                        if ready else None)
-    wave_wait_invocation = (event_wait_invocation(
-        wave_wait_policy, [str(task["id"]) for task in ready])
-        if ready else None)
     for t in ready:
-        dispatch = tp.dispatch_fields(
-            "step", "tp-executor", t["id"], tp.step_tier("execute", t))
+        dispatch = dispatches[str(t["id"])]
         task_ws = t.get("workspace") or runtime_storage.task_worktree_path(ws, t["id"])
         if not os.path.isdir(task_ws):
             task_ws = ws
@@ -4628,14 +4908,11 @@ def wave(ws: str) -> dict:
                     t.get("scope"), tp.DEFAULT_OUT_OF_SCOPE))
         if stage_dispatch is not None:
             entry["stage_runtime_dispatch"] = stage_dispatch
-        entry["dispatch_intent"] = _native_dispatch_intent(
-            ws, state, step="execute", task_id=str(t["id"]),
-            dispatch=dispatch, wait_policy=wave_wait_policy,
-            wave_id="execute-wave")
+        entry["dispatch_intent"] = dispatch_intents[str(t["id"])]
         entries.append(entry)
     tp.trace(ws, "loop_wave", ready=[t["id"] for t in ready],
-             held=[h["task"] for h in held])
-
+             held=[h["task"] for h in held],
+             topology_fingerprint=executable_topology["fingerprint"])
     # Deadlock guard: nothing ready, nothing built to evaluate, yet tasks
     # are held — and none of them is held merely on a scope clash (which a
     # later wave clears). If every held task waits on a dep that can NEVER

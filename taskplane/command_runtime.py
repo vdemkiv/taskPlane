@@ -22,6 +22,11 @@ except ImportError:  # package import path
     from taskplane import recovery
 
 try:
+    import dispatch_telemetry
+except ImportError:  # package import path
+    from taskplane import dispatch_telemetry
+
+try:
     import fcntl as _file_lock
 except ImportError:  # pragma: no cover - exercised by windows-latest
     _file_lock = None
@@ -99,6 +104,33 @@ class InvalidTransition(CommandRuntimeError):
 
 class InterruptedWait(CommandRuntimeError):
     """The caller stopped waiting; the command continues unchanged."""
+
+
+def dispatch_event(snapshot: Mapping) -> dict:
+    """Adapt a durable command transition to the shared event protocol."""
+    if not isinstance(snapshot, Mapping) or snapshot.get("schema") != SCHEMA:
+        raise ValueError("command snapshot is invalid")
+    identity = snapshot.get("identity") or {}
+    task_id = str(identity.get("task_id") or snapshot.get("handle") or "")
+    state = str(snapshot.get("state") or "")
+    if state in {"created", "running", "milestone"}:
+        kind = "progress"
+    elif state == "succeeded":
+        kind = "complete"
+    elif state in ATTENTION_STATES:
+        kind = "attention"
+    elif state == "cancelled":
+        kind = "cancelled"
+    else:
+        kind = "failed"
+    return dispatch_telemetry.dispatch_event(
+        dispatch_id=str(snapshot.get("handle") or ""),
+        thread_id=str(snapshot.get("handle") or ""),
+        thread_type="worker", task_id=task_id,
+        sequence=int(snapshot.get("revision") or 0), kind=kind,
+        at=float(snapshot.get("updated_at") or snapshot.get("created_at") or 0),
+        payload={"wave_id": snapshot.get("wave_id"), "state": state},
+    )
 
 
 def _fingerprint(value: str) -> str:
@@ -432,7 +464,7 @@ class CommandRuntime:
         revision = int(snapshot["revision"])
         event_state = state or snapshot["state"]
         artifact = snapshot.get("artifact")
-        return {
+        event = {
             "schema": "taskplane.command-event/v1",
             "handle": snapshot["handle"],
             "revision": revision,
@@ -453,6 +485,10 @@ class CommandRuntime:
             **({"preview": dict(snapshot["preview"])}
                if snapshot.get("preview") else {}),
         }
+        telemetry_snapshot = dict(snapshot)
+        telemetry_snapshot["state"] = event_state
+        event["dispatch_event"] = dispatch_event(telemetry_snapshot)
+        return event
 
     def append_output(self, handle: str, output: str) -> dict:
         with self._state_lock(handle):

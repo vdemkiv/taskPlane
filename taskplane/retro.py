@@ -20,8 +20,46 @@ import loop_status
 import taskplane_lite as tp
 import storage as runtime_storage
 
+try:
+    from . import dispatch_telemetry
+except ImportError:  # pragma: no cover - direct module loading
+    import dispatch_telemetry
+
 
 _STAGE_VIEW_LIMIT = 100
+
+
+def performance_projection(state: dict) -> dict:
+    """Consume the shared execution-DAG metrics for the Retro surface."""
+    return dispatch_telemetry.retro_projection(state)
+
+
+def _execution_state(tasks: list, events: list) -> dict:
+    dependencies = {
+        str(task.get("id")): [str(value) for value in task.get("deps") or []]
+        for task in tasks if isinstance(task, dict) and task.get("id")
+    }
+    starts: dict[str, float] = {}
+    terminals: dict[str, float] = {}
+    for row in events:
+        if not isinstance(row, dict) or not isinstance(row.get("ts"), (int, float)):
+            continue
+        if row.get("event") == "loop_wave":
+            for task_id in row.get("ready") or []:
+                starts.setdefault(str(task_id), float(row["ts"]))
+        elif row.get("event") == "loop_claim" and row.get("task"):
+            starts.setdefault(str(row["task"]), float(row["ts"]))
+        elif row.get("event") == "loop_gate" and row.get("task") and \
+                row.get("step") == "evaluate":
+            terminals[str(row["task"])] = float(row["ts"])
+    return {
+        "topology": {"effective_dependencies": dependencies},
+        "task_times": {
+            task_id: {"start": started, "terminal": terminals[task_id]}
+            for task_id, started in starts.items() if task_id in terminals
+        },
+        "scheduler_caused_idle_seconds": 0,
+    }
 
 
 def _events_for_run(ws: str, state: dict) -> tuple[list, float | None]:
@@ -160,6 +198,14 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
              f"- hook denials: {report['hook_denials']}",
              f"- parallel waves: {report['parallel_waves']}",
              f"- findings: {report['findings']['total']}"]
+    performance = report.get("execution_metrics") or {}
+    chain = performance.get("longest_serial_chain") or {}
+    lines.extend([
+        f"- parallelism factor: {performance.get('parallelism_factor', 0)}",
+        "- longest serial chain: " +
+        " -> ".join(chain.get("tasks") or []) +
+        f" ({chain.get('seconds', 0)}s)",
+    ])
     foreign = report.get("foreign_interference") or {}
     if foreign.get("headline"):
         lines.extend(["", "## FOREIGN INTERFERENCE", "",
@@ -396,6 +442,8 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "graph_true_up": graph_true_up,
             "trace_scope": {"from_ts": trace_from, "events": len(events)},
             "lessons": lessons,
+            "execution_metrics": performance_projection(
+                _execution_state(tasks, events)),
         }
         if stage_native:
             report["stage_view"] = stage_view

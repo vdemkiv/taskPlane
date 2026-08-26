@@ -20,9 +20,10 @@ import storage as runtime_storage
 import taskplane_lite as tp
 
 if __package__:
-    from . import delivery_policy
+    from . import delivery_policy, plan_topology
 else:  # pragma: no cover - direct CLI module loading
     import delivery_policy
+    import plan_topology
 
 
 PROGRAM_LEDGER_SCHEMA = "taskplane.program-phase-ledger/v1"
@@ -113,6 +114,13 @@ def _scope_overlap(left: Mapping[str, object],
                for a in left_stems for b in right_stems)
 
 
+def executable_topology(tasks: list[Mapping[str, object]], *,
+                        repository_files=None) -> dict:
+    """Expose the exact topology consumed by direct BUILD-C admission."""
+    return plan_topology.classify_plan(
+        tasks, repository_files=repository_files)
+
+
 def _direct_worktree(ws: str, task_id: str, revision: str) -> str:
     """Create one isolated worktree through the incumbent repository owner."""
     path = runtime_storage.task_worktree_path(ws, task_id)
@@ -169,7 +177,8 @@ def assign_scopes(
         runtime_storage.register_task_worktree,
         wait_policy_factory: Callable[[str, int], dict] | None = None,
         wait_invocation_factory: Callable[[Mapping[str, object],
-                                           list[str]], dict] | None = None) \
+                                           list[str]], dict] | None = None,
+        repository_files=None) \
         -> dict:
     """Assign the first deterministic set of ready graph-disjoint tasks.
 
@@ -196,6 +205,11 @@ def assign_scopes(
     if not revision:
         raise ScopeAssignmentError("assignment revision is unavailable")
 
+    topology = executable_topology(tasks, repository_files=repository_files)
+    pair_map = {
+        frozenset((str(row["left"]), str(row["right"]))): row
+        for row in topology["pairs"]
+    }
     passed = {str(row.get("id")) for row in tasks
               if isinstance(row, Mapping) and
               row.get("status") in {"passed", "accepted"}}
@@ -205,8 +219,10 @@ def assign_scopes(
             continue
         task_id = str(row.get("id") or "").strip()
         scope = list(row.get("scope") or [])
-        deps = {str(value) for value in row.get("deps") or []}
+        deps = set(topology["effective_dependencies"].get(task_id) or [])
         if not task_id or not scope or not deps <= passed:
+            continue
+        if (topology.get("missing_test_assets") or {}).get(task_id):
             continue
         graph_modules = depgraph.scope_modules(ws, scope)
         if not graph_modules or any(value not in modules
@@ -219,12 +235,18 @@ def assign_scopes(
     selected: list[dict] = []
     serialized = []
     for candidate in candidates:
-        blocker = next((row for row in selected
-                        if _scope_overlap(candidate, row)), None)
-        if blocker is not None:
+        blocking_pair = next((
+            pair_map[frozenset((candidate["task_id"], row["task_id"]))]
+            for row in selected
+            if pair_map[frozenset((candidate["task_id"], row["task_id"]))]
+            ["disposition"] == "serialized"
+        ), None)
+        if blocking_pair is not None:
             serialized.append({"task_id": candidate["task_id"],
-                               "blocked_by": blocker["task_id"],
-                               "reason": "scope_overlap"})
+                               "blocked_by": blocking_pair["left"]
+                               if blocking_pair["left"] != candidate["task_id"]
+                               else blocking_pair["right"],
+                               "reason": blocking_pair["shared_owner"]})
         else:
             selected.append(candidate)
     if not selected:

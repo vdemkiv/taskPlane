@@ -46,3 +46,34 @@ def test_irreversible_action_requires_outside_model_human_recheck():
     capability = _capability()
     for action in ("push", "tag", "install", "publish", "credential-release"):
         assert not capability.allows("tool", action)
+
+
+def test_direct_assignment_carries_exact_bound_default_deny_capability():
+    from taskplane.delivery_ports import FakeClock, RecordedTaskDispatchCapabilityFactory
+    from taskplane.plan_topology import admit_ready_batch, new_scheduler_state
+
+    factory = RecordedTaskDispatchCapabilityFactory()
+    state = new_scheduler_state(
+        [{
+            "id": "task-a", "deps": [], "scope": ["src/a.py"], "tests": "",
+            "allowed_tools": ["read", "test"],
+            "allowed_git_refs": ["refs/heads/task-a"],
+        }],
+        run_id="run", source_sha="a" * 40, design_fingerprint="design",
+        plan_fingerprint="plan", stage="Execute", repository_files=set(),
+    )
+
+    result = admit_ready_batch(
+        state, {"configured_host_concurrency": 1},
+        {"max_in_flight": 1, "session_limit": 60}, None,
+        FakeClock(wall_time=1), capability_factory=factory,
+    )
+
+    assignment = result["assignments"][0]
+    capability = factory.created[0]
+    assert assignment["capability"] == capability.projection
+    assert capability.projection["reservation_fingerprint"] == result["reservation_fingerprint"]
+    assert capability.projection["write_paths"] == ("src/a.py",)
+    capability.require("write_path", "src/a.py", run_id="run", task_id="task-a", stage="Execute")
+    with pytest.raises(DeliveryPortError, match="denies"):
+        capability.require("write_path", "src/b.py", run_id="run", task_id="task-a")

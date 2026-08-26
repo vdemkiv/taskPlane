@@ -16,6 +16,11 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+try:
+    from . import dispatch_telemetry
+except ImportError:  # pragma: no cover - direct module loading
+    import dispatch_telemetry
+
 
 EVENT_SCHEMA = "taskplane.progress-event/v1"
 SNAPSHOT_SCHEMA = "taskplane.progress-snapshot/v1"
@@ -25,6 +30,11 @@ STATES = frozenset(("executing", "tool-wait", "agent-wait", "human-wait",
 DEFAULT_MAX_BYTES = 64 * 1024
 DEFAULT_ETA_MAX_AGE_SECONDS = 300.0
 MAX_HISTORY = 32
+
+
+def scheduler_projection(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Project the live executable scheduler through the telemetry owner."""
+    return dispatch_telemetry.scheduler_projection(state)
 
 # Host-native presentation primitives live with the progress read model rather
 # than the loop state machine.  They consume snapshots/state but never mutate

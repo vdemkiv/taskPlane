@@ -2885,6 +2885,13 @@ def cmd_loop(a) -> int:
         if wrapped is not None:
             print(json.dumps(wrapped, indent=2))
             return 0
+    if _should_project_loop_next(action, out):
+        try:
+            out = loopmod.project_next_action_for_host(ws, out)
+        except Exception as exc:
+            out = {"error": "loop next projection failed closed: "
+                            f"{exc.__class__.__name__}: {exc}",
+                   "step": out.get("step")}
     print(json.dumps(out, indent=2))
     # An engine refusal ({"error": ...}) is a FAILURE: exit nonzero so a
     # scripted driver (`&&` chain, CI wrapper, Tag thread) can never mistake
@@ -3252,6 +3259,24 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
         return (step, {"name": STAGE_WAVE_NAMES[step],
                        "args": {key: [brief]}}, None)
     return None
+
+
+def _should_project_loop_next(action: str, payload) -> bool:
+    """Bound normal next actions without changing the R-0004 task rail.
+
+    Stage dispatches have an older byte-identity contract: when their
+    workflow rail is unavailable or explicitly bypassed, ``_emit_stage``
+    returns ``None`` specifically so the original engine payload is printed
+    untouched.  The R-0001 delta applies only to ordinary loop-next actions;
+    wrapping a stage fallback here would silently sever that compatibility
+    edge and can make large evaluator briefs fail closed.
+    """
+    return (
+        action == "next"
+        and isinstance(payload, dict)
+        and not payload.get("error")
+        and _stage_wave_run(payload) is None
+    )
 
 
 # Sentinel: the emission was REFUSED (reason already on stderr + trace);

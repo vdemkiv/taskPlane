@@ -41,6 +41,31 @@ _COMMAND_COUNTERS = (
 )
 
 
+def dispatch_usage(normalized: dict) -> dict:
+    """Adapt normalized provider usage to the closed dispatch owner input."""
+    if not isinstance(normalized, dict) or normalized.get("schema") != \
+            USAGE_SCHEMA or normalized.get("available") is not True:
+        raise ValueError("observed provider usage is required for dispatch telemetry")
+    cached = _nonnegative_integer(normalized.get("cached_input_tokens"))
+    uncached = _nonnegative_integer(normalized.get("uncached_input_tokens"))
+    output = _nonnegative_integer(normalized.get("output_tokens"))
+    total = _nonnegative_integer(normalized.get("raw_total_tokens"))
+    if None in {cached, uncached, output, total}:
+        raise ValueError("provider usage counters are incomplete")
+    input_tokens = cached + uncached
+    if total < input_tokens + output:
+        raise ValueError("provider usage totals do not reconcile")
+    return {
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached,
+        "uncached_input_tokens": uncached,
+        "output_tokens": output,
+        "reasoning_tokens": _nonnegative_integer(
+            normalized.get("reasoning_tokens")) or 0,
+        "total_tokens": total,
+    }
+
+
 def _nonnegative_number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
