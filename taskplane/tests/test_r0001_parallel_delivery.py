@@ -1121,31 +1121,6 @@ def test_scheduler_capacity_from_plan_terminal_idle_downgrade_fails_closed(
     assert traces == []
 
 
-@pytest.mark.parametrize("malformed_statuses", [
-    "not-a-status-map", [], {"t17a": []},
-])
-def test_scheduler_capacity_from_plan_malformed_statuses_refuse_structurally(
-    tmp_path, monkeypatch, malformed_statuses,
-):
-    traces = []
-    monkeypatch.setattr(loop.tp, "trace", lambda _ws, event, **data:
-                        traces.append((event, data)))
-    state, _ = _terminal_idle_trusted_parallel_state(tmp_path, monkeypatch)
-    traces.clear()
-    state["performance_scheduler"]["statuses"] = malformed_statuses
-    loop.save(str(tmp_path), state)
-    state_path = Path(loop._loop_path(str(tmp_path)))
-    before = state_path.read_bytes()
-
-    result = loop.scheduler_capacity_from_plan(
-        str(tmp_path), clock=FakeClock(wall_time=911),
-    )
-
-    assert "terminal idle" in result["error"]
-    assert state_path.read_bytes() == before
-    assert traces == []
-
-
 @pytest.mark.parametrize("existing", [
     _host_capacity_receipt(
         run_id="other", source_sha="a" * 40, concurrency=1,

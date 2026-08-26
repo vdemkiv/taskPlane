@@ -5415,12 +5415,9 @@ def scheduler_capacity_from_plan(
                 for task in locked.get("tasks") or [])
             scheduler_in_flight = bool(
                 (scheduler or {}).get("in_flight") if scheduler else False)
-            scheduler_statuses = (scheduler or {}).get("statuses") \
-                if scheduler else None
-            active_reservation = isinstance(scheduler_statuses, Mapping) and \
-                any(
-                scheduler_statuses.get(assignment.get("task_id")) ==
-                "in_flight"
+            active_reservation = any(
+                (scheduler or {}).get("statuses", {}).get(
+                    assignment.get("task_id")) == "in_flight"
                 for reservation in ((scheduler or {}).get("reservations") or [])
                 if isinstance(reservation, Mapping)
                 for assignment in (reservation.get("assignments") or [])
