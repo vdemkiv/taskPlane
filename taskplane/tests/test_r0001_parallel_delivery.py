@@ -358,6 +358,31 @@ def test_duplicate_and_out_of_order_events_reconcile_without_double_count():
     assert len(state["events"]) == 2
 
 
+def test_same_task_sequence_new_id_is_idempotent_and_conflicts_fail_closed():
+    state = _state([_task("a")])
+    _admit(state, concurrency=1, max_in_flight=1)
+    first = {"event_id": "a-1", "task_id": "a", "sequence": 1,
+             "kind": "progress", "at": 1}
+    replay = {**first, "event_id": "a-stale"}
+
+    assert record_worker_event(state, first)["status"] == "recorded"
+    assert record_worker_event(state, replay)["status"] == "duplicate"
+    assert state["events"] == [first]
+
+    before_conflict = copy.deepcopy(state)
+    with pytest.raises(PlanTopologyError, match="task sequence collision"):
+        record_worker_event(state, {**replay, "kind": "attention"})
+    assert state == before_conflict
+
+    terminal = record_worker_event(
+        state, {"event_id": "a-2", "task_id": "a", "sequence": 2,
+                "kind": "complete", "at": 2},
+    )
+    assert terminal["terminal"] is True
+    assert state["statuses"]["a"] == "complete"
+    assert len(state["events"]) == 2
+
+
 def test_gapped_terminal_event_waits_for_contiguous_reconciliation():
     factory = RecordedTaskDispatchCapabilityFactory()
     state = _state([

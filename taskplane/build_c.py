@@ -239,28 +239,7 @@ def assign_scopes(
         candidates.append({"task_id": task_id, "scope": scope,
                            "modules": sorted(graph_modules)})
 
-    selected: list[dict] = []
-    serialized = []
-    for candidate in candidates:
-        blocking_pair = next((
-            pair_map[frozenset((candidate["task_id"], row["task_id"]))]
-            for row in selected
-            if pair_map[frozenset((candidate["task_id"], row["task_id"]))]
-            ["disposition"] == "serialized"
-        ), None)
-        if blocking_pair is not None:
-            serialized.append({"task_id": candidate["task_id"],
-                               "blocked_by": blocking_pair["left"]
-                               if blocking_pair["left"] != candidate["task_id"]
-                               else blocking_pair["right"],
-                               "reason": ("scope_overlap"
-                                          if str(blocking_pair[
-                                              "shared_owner"]).startswith(
-                                          "scope:") else
-                                          blocking_pair["shared_owner"])})
-        else:
-            selected.append(candidate)
-    if not selected:
+    if not candidates:
         raise ScopeAssignmentError("no ready scope can be assigned")
 
     clock = clock or SystemClock()
@@ -290,14 +269,6 @@ def assign_scopes(
             capacity["max_in_flight"] == 0:
         raise ScopeAssignmentError(
             "direct assignment host capacity is zero — human scope review")
-    expected_member_count = min(
-        len(selected), capacity["configured_host_concurrency"],
-        capacity["max_in_flight"])
-    expected_member_ids = [row["task_id"]
-                           for row in selected[:expected_member_count]]
-    wait_policy, wait_invocation = _assignment_wait(
-        expected_member_ids, wait_policy_factory=wait_policy_factory,
-        wait_invocation_factory=wait_invocation_factory)
     scheduler = plan_topology.new_scheduler_state(
         tasks, run_id=run_id, source_sha=revision,
         design_fingerprint=design_fingerprint,
@@ -354,15 +325,43 @@ def assign_scopes(
             "direct assignment reservation/capacity binding was refused")
     admitted_ids = list((scheduler_admission.get("dispatch_set") or {}).get(
         "members") or [])
-    if admitted_ids != expected_member_ids:
+    candidate_by_id = {row["task_id"]: row for row in candidates}
+    if not admitted_ids or len(admitted_ids) != len(set(admitted_ids)) or \
+            any(task_id not in candidate_by_id for task_id in admitted_ids):
+        raise ScopeAssignmentError(
+            "direct assignment reservation contradicted ready registration")
+    if len(admitted_ids) > min(capacity["configured_host_concurrency"],
+                               capacity["max_in_flight"]):
         raise ScopeAssignmentError(
             "direct assignment reservation contradicted host capacity")
+    wait_policy, wait_invocation = _assignment_wait(
+        admitted_ids, wait_policy_factory=wait_policy_factory,
+        wait_invocation_factory=wait_invocation_factory)
     admitted = set(admitted_ids)
-    serialized.extend({
-        "task_id": row["task_id"], "blocked_by": None,
-        "reason": "host_capacity",
-    } for row in selected if row["task_id"] not in admitted)
-    selected = [row for row in selected if row["task_id"] in admitted]
+    serialized = []
+    for candidate in candidates:
+        if candidate["task_id"] in admitted:
+            continue
+        blocking_pair = next((
+            pair_map[frozenset((candidate["task_id"], task_id))]
+            for task_id in admitted_ids
+            if pair_map[frozenset((candidate["task_id"], task_id))]
+            ["disposition"] == "serialized"
+        ), None)
+        serialized.append({
+            "task_id": candidate["task_id"],
+            "blocked_by": (blocking_pair["left"]
+                           if blocking_pair is not None and
+                           blocking_pair["left"] != candidate["task_id"]
+                           else blocking_pair["right"]
+                           if blocking_pair is not None else None),
+            "reason": ("scope_overlap"
+                       if blocking_pair is not None and
+                       str(blocking_pair["shared_owner"]).startswith("scope:")
+                       else blocking_pair["shared_owner"]
+                       if blocking_pair is not None else "host_capacity"),
+        })
+    selected = [candidate_by_id[task_id] for task_id in admitted_ids]
     member_ids = admitted_ids
     scheduler_assignments = {
         str(row["task_id"]): dict(row)

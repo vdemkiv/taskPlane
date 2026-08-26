@@ -950,6 +950,27 @@ def record_worker_event(
                 "status": "duplicate",
                 "terminal": state["statuses"].get(task_id) in TERMINAL_STATUSES,
             }
+        existing_sequence = next((
+            row for row in state["events"]
+            if str(row["task_id"]) == task_id
+            and int(row["sequence"]) == int(event["sequence"])
+        ), None)
+        if existing_sequence is not None:
+            existing_semantics = {
+                key: value for key, value in existing_sequence.items()
+                if key != "event_id"
+            }
+            event_semantics = {
+                key: value for key, value in normalized.items()
+                if key != "event_id"
+            }
+            if existing_semantics != event_semantics:
+                raise PlanTopologyError("worker event task sequence collision")
+            return {
+                "schema": "taskplane.worker-event-result/v1",
+                "status": "duplicate",
+                "terminal": state["statuses"].get(task_id) in TERMINAL_STATUSES,
+            }
         if len(state["events"]) >= int(state.get("event_queue_cap") or DEFAULT_EVENT_QUEUE_CAP):
             raise PlanTopologyError("worker event queue cap reached")
         contiguous = _contiguous_task_events(

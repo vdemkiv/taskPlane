@@ -266,6 +266,54 @@ class TestScopeAssignment(unittest.TestCase):
                               "authenticity"):
                 self.assertNotIn(forbidden, authority_encoded)
 
+    def test_scope_assignment_uses_scheduler_maximum_cardinality_reservation(self):
+        ws = os.path.dirname(os.path.abspath(build_c.__file__))
+        ws = os.path.dirname(ws)
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ws,
+            text=True, encoding="utf-8", errors="replace").strip()
+        tasks = [
+            {"id": "a-center", "scope": ["taskplane"], "deps": [],
+             "status": "pending"},
+            {"id": "b-left", "scope": ["taskplane/brief_projection.py"],
+             "deps": [], "status": "pending"},
+            {"id": "c-right", "scope": ["taskplane/plan_topology.py"],
+             "deps": [], "status": "pending"},
+        ]
+        authority = self._runtime_authority(tasks, revision)
+
+        receipt = build_c.assign_scopes(
+            ws, authority["state"], graph=depgraph.load(ws),
+            revision=revision,
+            create_worktree=lambda _ws, task_id, _revision:
+                os.path.join(self.tmp, task_id),
+            register_worktree=lambda _ws, worker, task_id: {
+                "schema": "taskplane.managed-task-worktree/v1",
+                "task_id": task_id, "path": worker,
+                "branch_tip": revision,
+            },
+            wait_policy_factory=lambda _name, count: {
+                "schema": "taskplane.wait-policy/v1", "mode": "event",
+                "scheduled_polling": False, "timeout_seconds": 1800,
+                "reissue_after": ["completion", "attention"],
+                "outstanding_count": count,
+            },
+            wait_invocation_factory=lambda _policy, members: {
+                "schema": "taskplane.event-wait-invocation/v1",
+                "operation": "wait_for_events", "scheduled": False,
+                "reissue": False, "outstanding_members": members,
+            },
+            host_capability_receipt=authority["host_capability_receipt"],
+            capability_factory=authority["capability_factory"],
+            evidence_store=authority["evidence_store"],
+            execution_dag_store=authority["execution_dag_store"],
+            clock=authority["clock"])
+
+        self.assertEqual(receipt["dispatch_set"]["members"],
+                         ["b-left", "c-right"])
+        self.assertEqual([row["task_id"] for row in receipt["assignments"]],
+                         ["b-left", "c-right"])
+
     def test_scope_assignment_uses_real_repository_and_storage_edges(self):
         revision = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.ws,
