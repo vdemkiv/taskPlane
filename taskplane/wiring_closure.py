@@ -27,6 +27,62 @@ _FIVE_CLASS_BOUNDARY_PRODUCERS = frozenset(
         "Plan task capability factory + protected release consumer",
     }
 )
+_CANONICAL_PRODUCER_EDGE_IDS = {
+    "taskplane/delivery_policy.py": frozenset(
+        {"W01", "W02", "W08", "W09", "W11", "W14", "W16", "W27"}
+    ),
+    "taskplane/review_authority.py": frozenset(
+        {"W04", "W05", "W08", "W09", "W11", "W14", "W16", "W27"}
+    ),
+    "taskplane/producer_observation.py": frozenset(
+        {"W06", "W08", "W09", "W11", "W14", "W16", "W27"}
+    ),
+    "taskplane/wiring_closure.py": frozenset(
+        {"W07", "W08", "W12", "W14", "W16", "W27"}
+    ),
+    "taskplane/release_evidence.py": frozenset(
+        {"W10", "W13", "W14", "W15", "W16", "W17", "W25", "W27"}
+    ),
+    "taskplane/plan_topology.py": frozenset(
+        {"W08", "W11", "W14", "W19", "W20", "W22"}
+    ),
+    "taskplane/brief_projection.py": frozenset(
+        {"W08", "W09", "W11", "W14", "W18"}
+    ),
+    "taskplane/dispatch_telemetry.py": frozenset(
+        {"W08", "W11", "W14", "W20", "W21", "W22"}
+    ),
+    "taskplane/repository.py remote-default resolver": frozenset(
+        {"W08", "W11", "W14", "W23"}
+    ),
+    "taskplane/pickup.py timing events": frozenset(
+        {"W08", "W11", "W14", "W24"}
+    ),
+    "lenses/references/prompt-injection-defense.md": frozenset(
+        {"W08", "W11", "W12", "W14", "W16", "W27"}
+    ),
+    "release version/history surfaces": frozenset(
+        {"W10", "W13", "W14", "W16", "W17", "W25", "W27"}
+    ),
+    "host/plugin capability adapters": frozenset(
+        {"W06", "W11", "W14", "W26", "W27"}
+    ),
+    "design/schemas + design/compatibility.json": frozenset(
+        {"W08", "W11", "W14", "W16", "W26", "W27"}
+    ),
+    "taskplane/delivery_ports.py + injected implementations": frozenset(
+        {"W06", "W14", "W16", "W20", "W21", "W23", "W28", "W29"}
+    ),
+    "atomic admission + execution DAG": frozenset(
+        {"W19", "W20", "W21", "W22", "W30"}
+    ),
+    "trusted host adapter private channel": frozenset(
+        {"W04", "W06", "W16", "W28", "W31"}
+    ),
+    "Plan task capability factory + protected release consumer": frozenset(
+        {"W01", "W02", "W14", "W16", "W19", "W30", "W32"}
+    ),
+}
 
 _ACCEPTANCE_FIELDS = frozenset(
     {
@@ -304,6 +360,10 @@ def validate_producer_edges(
         raise WiringClosureError(
             "wiring closure status must be designed or closed"
         )
+    if wiring.get("status") == "closed":
+        raise WiringClosureError(
+            "W31 requires a genuine external host receipt before closure"
+        )
 
     raw_edges = _items(wiring.get("edges"), "wiring edges")
     edge_ids = [
@@ -386,6 +446,7 @@ def validate_producer_edges(
             f"{EXPECTED_PRODUCER_COUNT} producers"
         )
     producers: set[str] = set()
+    producer_edge_ids: dict[str, frozenset[str]] = {}
     normalized_producers: list[dict[str, Any]] = []
     for index, row in enumerate(raw_producers, 1):
         if not isinstance(row, Mapping) or set(row) != _PRODUCER_FIELDS:
@@ -421,6 +482,7 @@ def validate_producer_edges(
             raise WiringClosureError(
                 f"producer {producer} names unknown edges: {', '.join(unknown)}"
             )
+        producer_edge_ids[producer] = frozenset(producer_edges)
         normalized_producers.append(
             {
                 "producer": producer,
@@ -428,6 +490,37 @@ def validate_producer_edges(
                 "edge_ids": producer_edges,
             }
         )
+    canonical_producers = set(_CANONICAL_PRODUCER_EDGE_IDS)
+    if producers != canonical_producers:
+        raise WiringClosureError(
+            "producer edge binding identities mismatch: "
+            f"missing={sorted(canonical_producers - producers)}; "
+            f"unexpected={sorted(producers - canonical_producers)}"
+        )
+    canonical_edge_producers = {
+        edge_id: frozenset(
+            producer
+            for producer, producer_edges in _CANONICAL_PRODUCER_EDGE_IDS.items()
+            if edge_id in producer_edges
+        )
+        for edge_id in EXPECTED_EDGE_IDS
+    }
+    actual_edge_producers = {
+        edge_id: frozenset(
+            producer
+            for producer, producer_edges in producer_edge_ids.items()
+            if edge_id in producer_edges
+        )
+        for edge_id in EXPECTED_EDGE_IDS
+    }
+    for edge_id in EXPECTED_EDGE_IDS:
+        expected = canonical_edge_producers[edge_id]
+        actual = actual_edge_producers[edge_id]
+        if actual != expected:
+            raise WiringClosureError(
+                f"producer edge binding mismatch for {edge_id}: "
+                f"expected={sorted(expected)}; actual={sorted(actual)}"
+            )
     selectors = _resolve_selectors(
         identities,
         caller_root=caller_root,
@@ -436,7 +529,7 @@ def validate_producer_edges(
     return _seal(
         {
             "schema": WIRING_CLOSURE_SCHEMA,
-            "status": "closed",
+            "status": "designed",
             "edge_count": len(normalized_edges),
             "producer_count": len(normalized_producers),
             "edges": normalized_edges,

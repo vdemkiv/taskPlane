@@ -184,19 +184,13 @@ def bind_producer_observation(
         submission: Mapping[str, object], receipt: Mapping[str, object] | None,
         *, output_bytes: bytes, output_schema_id: str,
         output_contract_fingerprint: str) -> dict:
-    """Attach one exact evaluator/EM host observation to a submission."""
-    if not isinstance(submission, Mapping):
-        raise producer_observation_policy.ProducerObservationError(
-            "submission must be a mapping")
-    observed = dict(submission)
-    observed["producer_observation"] = receipt
-    evaluation_output.validate_submission_observation(
-        observed,
-        output_bytes=output_bytes,
-        output_schema_id=output_schema_id,
-        output_contract_fingerprint=output_contract_fingerprint,
+    """Refuse caller-authored provenance at the public loop boundary."""
+    del submission, receipt, output_bytes, output_schema_id
+    del output_contract_fingerprint
+    raise producer_observation_policy.ProducerObservationError(
+        "a genuine external host producer receipt is required; "
+        "caller-supplied producer observation is refused"
     )
-    return observed
 
 STAGE_COMMAND_SCHEMA = "taskplane.stage-command-result/v1"
 STAGE_HISTORY_SCHEMA = "taskplane.stage-history-page/v1"
@@ -6347,8 +6341,7 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
 
 
 def _collect_zero_lens_evaluate_before_guidance(
-        ws: str, act_ws: str, state: dict, task: dict,
-        receipt: Mapping[str, object] | None) -> dict | None:
+        ws: str, act_ws: str, state: dict, task: dict) -> None:
     """Seal an observed zero-slot Evaluate result before runtime guidance."""
     binding = review_kernel_binding(state, "evaluate", task)
     if not binding:
@@ -6361,35 +6354,10 @@ def _collect_zero_lens_evaluate_before_guidance(
     if kernel.get("expected_lenses") != [] or kernel.get("slots") != []:
         raise review_kernel.ReviewKernelError(
             "sealed zero-lens Evaluate authority produced lens slots")
-
-    verdict_path = runtime_storage.evaluation_path(act_ws)
-    verdict, errors = _read_json(verdict_path)
-    if errors:
-        raise review_kernel.ReviewKernelError("; ".join(errors))
-    evaluator_result = evaluation_output.validate_evaluator_value(verdict)
-    with open(verdict_path, "rb") as stream:
-        verdict_bytes = stream.read()
-    observed = bind_producer_observation(
-        {"step": "evaluate", "task": str((task or {}).get("id") or "")},
-        receipt,
-        output_bytes=verdict_bytes,
-        output_schema_id=evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
-        output_contract_fingerprint=(receipt or {}).get(
-            "output_contract_fingerprint"),
+    raise producer_observation_policy.ProducerObservationError(
+        "a genuine external host producer receipt is required; W31 remains "
+        "open before collection, guidance, or submission"
     )
-    observation = observed["producer_observation"]
-    collect_review_bridge(
-        kernel_ws, publish=False, run_id=kernel["run_id"],
-        evaluator_result=evaluator_result,
-        producer_observation_fingerprint=observation["fingerprint"],
-    )
-    completed = review_kernel._load_state(kernel_ws, kernel["run_id"])
-    empty_collection = completed.get("empty_lens_collection") or {}
-    if empty_collection.get("producer_observation_fingerprint") != \
-            observation["fingerprint"]:
-        raise review_kernel.ReviewKernelError(
-            "zero-lens Evaluate collection does not match producer observation")
-    return observation
 
 
 def _acceptance_evidence_errors(ws: str, state: dict, task: dict,
@@ -7093,8 +7061,7 @@ def _run_submit_checkpoint(ws: str, state: Mapping[str, object],
 
 
 def submit(ws: str, outcome: str, note: str = "",
-           task_id: str | None = None, *,
-           producer_observation: Mapping[str, object] | None = None) -> dict:
+           task_id: str | None = None) -> dict:
     """Worker submission — evidence request, never a state transition.
 
     Trust boundary (L12, v2.2.1): "orchestrator-only gating" is a PROTOCOL
@@ -7158,13 +7125,11 @@ def submit(ws: str, outcome: str, note: str = "",
 
     runtime_guidance = None
     checkpoint_receipt = None
-    validated_producer_observation = None
     if outcome == "pass":
         if step == "evaluate":
             try:
-                validated_producer_observation = \
-                    _collect_zero_lens_evaluate_before_guidance(
-                        ws, act_ws, state, task, producer_observation)
+                _collect_zero_lens_evaluate_before_guidance(
+                    ws, act_ws, state, task)
             except Exception as exc:
                 return {
                     "error": "runtime eval producer collection failed: "
@@ -7243,8 +7208,6 @@ def submit(ws: str, outcome: str, note: str = "",
     }
     if checkpoint_receipt is not None:
         submission["checkpoint_receipt"] = checkpoint_receipt
-    if validated_producer_observation is not None:
-        submission["producer_observation"] = validated_producer_observation
     with mutate(ws) as locked:
         if locked is None:
             return {"error": "no active loop"}
