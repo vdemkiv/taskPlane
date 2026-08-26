@@ -1,0 +1,8 @@
+command: python3 -m pytest -q -rs taskplane/tests/test_r0001_live_host_canary.py
+target_sha: f9ba5ebd108e26220f0e472e42845339bb778a0b
+exit_code: 0
+
+s                                                                        [100%]
+=========================== short test summary info ============================
+SKIPPED [1] taskplane/tests/test_r0001_live_host_canary.py:19: live Codex producer-event capture unavailable on this host
+1 skipped in 0.03s

@@ -1,0 +1,73 @@
+{
+  "schema": "taskplane.r0001-a2-verification/v1",
+  "task_id": "t17a-verify-a2-live-host",
+  "target_sha": "f9ba5ebd108e26220f0e472e42845339bb778a0b",
+  "design_fingerprint": "74c2e2422a5232290c91eb18ae2e74355906a3b3839b9c5968dcc433839a535e",
+  "plan_fingerprint": "f663d015150330da01db9c58352f97437471731ef2a820fce2379d67fe4b042b",
+  "delivery_receipt": {
+    "mode": "build",
+    "automatic_lenses": [],
+    "fingerprint": "1933a9506e642fd0e085c16cb7e31fc94b1c59ba4d845370739fabf1f2aafe5d"
+  },
+  "declared_test_command": "python3 -m pytest -q taskplane/tests/test_r0001_delivery_mode.py taskplane/tests/test_r0001_review_authority.py taskplane/tests/test_r0001_producer_observation.py taskplane/tests/test_r0001_host_capability.py taskplane/tests/test_r0001_live_host_canary.py",
+  "declared_test_exit_code": 0,
+  "declared_test_output_file": "declared-tests.txt",
+  "declared_test_result": {
+    "passed": 47,
+    "skipped": 1,
+    "failed": 0
+  },
+  "live_canary_probe_command": "python3 -m pytest -q -rs taskplane/tests/test_r0001_live_host_canary.py",
+  "live_canary_probe_exit_code": 0,
+  "live_canary_probe_output_file": "live-canary.txt",
+  "host_capability": {
+    "probe": "taskplane.host_capabilities.dispatch_snapshot_from_environment",
+    "effective_path": "blocked",
+    "fingerprint": "6061968bcf15b7083c605bbd713a65709f60a030e51d26fc1e155f26dca01ce5",
+    "native_plugin_hooks_loaded": {
+      "status": "unknown",
+      "source": "no-host-receipt"
+    },
+    "stable_event_identity": {
+      "status": "unknown",
+      "source": "no-host-receipt"
+    },
+    "producer_event_file_environment_present": false
+  },
+  "producer_observation": {
+    "status": "unavailable",
+    "reason": "live Codex producer-event capture unavailable on this host",
+    "receipt_bytes": null,
+    "receipt_fingerprint": null,
+    "manual_outage_resolution_used": false,
+    "authenticity_claimed": false
+  },
+  "criteria": [
+    {
+      "id": 1,
+      "criterion": "Plan gate stamps Build delivery mode and prevents automatic lens workers.",
+      "disposition": "proven",
+      "evidence": "Declared deterministic suite passed; sealed delivery receipt is build with automatic_lenses=[]."
+    },
+    {
+      "id": 2,
+      "criterion": "expected_lenses=[] plus schema-valid result succeeds with explicit empty-collection receipt without outage resolution.",
+      "disposition": "proven",
+      "evidence": "Declared deterministic suite passed the delivery-mode and empty-collection coverage."
+    },
+    {
+      "id": 3,
+      "criterion": "Only attributed human authority can rebind an unstarted ReviewKernel and started slots remain immutable.",
+      "disposition": "proven",
+      "evidence": "Declared deterministic review-authority and host-capability suite passed."
+    },
+    {
+      "id": 4,
+      "criterion": "Live Codex host produces conformant observable evaluator and EM producer receipts without manual outage resolution.",
+      "disposition": "unproven",
+      "evidence": "Live canary skipped because TASKPLANE_CODEX_PRODUCER_EVENT_FILE was absent; host probe returned no-host-receipt and effective_path=blocked. No producer receipt was emitted."
+    }
+  ],
+  "overall_disposition": "fail",
+  "failure_reason": "Criterion 4 is unproven: the live Codex host supplied no immutable evaluator/EM producer-event capture or host-private producer receipt."
+}
