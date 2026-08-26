@@ -85,7 +85,7 @@ def _capacity_loop_state():
     }
 
 
-def _trusted_parallel_loop_state(*, overlap=False):
+def _trusted_parallel_loop_state(*, overlap=False, evidence_store=None):
     tasks = [
         _task("t17a", scope=("exports/t17/shared" if overlap else
                               "exports/t17/a",)),
@@ -113,7 +113,7 @@ def _trusted_parallel_loop_state(*, overlap=False):
     )
     admitted = admit_ready_batch(
         scheduler, {"configured_host_concurrency": 1},
-        {"max_in_flight": 1, "session_limit": 60}, None,
+        {"max_in_flight": 1, "session_limit": 60}, evidence_store,
         FakeClock(wall_time=1),
         capability_factory=RecordedTaskDispatchCapabilityFactory(),
     )
@@ -129,6 +129,38 @@ def _trusted_parallel_loop_state(*, overlap=False):
     state["scheduler_host_capability_receipt"] = receipt
     state["performance_scheduler"] = scheduler
     return state
+
+
+def _rehash_reservation(state, index=0):
+    scheduler = state["performance_scheduler"]
+    reservation = scheduler["reservations"][index]
+    material_fields = {
+        "schema", "run_id", "source_sha", "design_fingerprint",
+        "plan_fingerprint", "stage", "scheduler_revision",
+        "topology_fingerprint", "members",
+    }
+    old = reservation["reservation_fingerprint"]
+    new = content_fingerprint({field: reservation[field]
+                               for field in material_fields})
+    reservation["reservation_fingerprint"] = new
+    for assignment in reservation["assignments"]:
+        assignment["reservation_fingerprint"] = new
+        capability = assignment["capability"]
+        capability["reservation_fingerprint"] = new
+        capability["capability_id"] = content_fingerprint({
+            field: value for field, value in capability.items()
+            if field != "capability_id"
+        })
+    for task_id, fingerprint in list(scheduler["in_flight"].items()):
+        if fingerprint == old:
+            scheduler["in_flight"][task_id] = new
+
+
+def _rehash_operator_assertion(assertion):
+    assertion["fingerprint"] = content_fingerprint({
+        field: value for field, value in assertion.items()
+        if field != "fingerprint"
+    })
 
 
 def _state(tasks, **overrides):
@@ -1364,6 +1396,177 @@ def test_scheduler_capacity_from_plan_trusted_parallel_closes_prior_reservations
     )
 
     assert "reservation" in result["error"]
+    assert state_path.read_bytes() == before_bytes
+    assert traces == []
+
+
+@pytest.mark.parametrize("fault", ["scheduler-head", "reservation-ordinal"])
+def test_scheduler_capacity_from_plan_trusted_parallel_closes_revision_chain(
+    tmp_path, monkeypatch, fault,
+):
+    state = _trusted_parallel_loop_state()
+    scheduler = state["performance_scheduler"]
+    if fault == "scheduler-head":
+        scheduler["revision"] = 99
+    else:
+        scheduler["reservations"][0]["scheduler_revision"] = 99
+        scheduler["revision"] = 100
+        _rehash_reservation(state)
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
+                        traces.append((_a, _k)))
+    state_path = Path(loop._loop_path(str(tmp_path)))
+    before_bytes = state_path.read_bytes()
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "revision" in result["error"]
+    assert state_path.read_bytes() == before_bytes
+    assert traces == []
+
+
+@pytest.mark.parametrize("status", [{}, [], None, 7])
+def test_scheduler_capacity_from_plan_trusted_parallel_closes_status_types(
+    tmp_path, monkeypatch, status,
+):
+    state = _trusted_parallel_loop_state()
+    state["performance_scheduler"]["statuses"]["t17b"] = status
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
+                        traces.append((_a, _k)))
+    state_path = Path(loop._loop_path(str(tmp_path)))
+    before_bytes = state_path.read_bytes()
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "status" in result["error"]
+    assert state_path.read_bytes() == before_bytes
+    assert traces == []
+
+
+def test_scheduler_capacity_from_plan_trusted_parallel_binds_evidence_store(
+    tmp_path, monkeypatch,
+):
+    store = SandboxEvidenceStore(tmp_path, "repo", "trusted-integrity")
+    state = _trusted_parallel_loop_state(evidence_store=store)
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    monkeypatch.setattr(loop, "_production_scheduler_evidence",
+                        lambda *_a, **_k: (store, None))
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "error" not in result, result
+
+
+@pytest.mark.parametrize("fault", [
+    "stale-head", "forged-receipt", "omitted-state",
+])
+def test_scheduler_capacity_from_plan_trusted_parallel_closes_evidence_chain(
+    tmp_path, monkeypatch, fault,
+):
+    store = SandboxEvidenceStore(tmp_path, "repo", "trusted-forgery")
+    state = _trusted_parallel_loop_state(evidence_store=store)
+    scheduler = state["performance_scheduler"]
+    if fault == "stale-head":
+        scheduler["evidence_head"] = "e" * 64
+    elif fault == "forged-receipt":
+        receipt_path = next(
+            (store.path / "telemetry" / "receipts").glob("*.json"))
+        receipt = json.loads(receipt_path.read_text())
+        receipt["operation_id"] = "dispatch-forged"
+        receipt["fingerprint"] = content_fingerprint({
+            field: value for field, value in receipt.items()
+            if field != "fingerprint"
+        })
+        forged_path = receipt_path.with_name(receipt["fingerprint"] + ".json")
+        forged_path.write_text(json.dumps(receipt))
+        (store.path / "telemetry" / "HEAD").write_text(
+            receipt["fingerprint"] + "\n")
+        (store.path / "telemetry" / "STATE").write_text(
+            receipt["fingerprint"] + "\n")
+        scheduler["reservations"][0]["evidence_fingerprint"] = \
+            receipt["fingerprint"]
+        scheduler["evidence_head"] = receipt["fingerprint"]
+    else:
+        scheduler["reservations"][0]["evidence_fingerprint"] = None
+        scheduler["evidence_head"] = None
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    monkeypatch.setattr(loop, "_production_scheduler_evidence",
+                        lambda *_a, **_k: (store, None))
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
+                        traces.append((_a, _k)))
+    state_path = Path(loop._loop_path(str(tmp_path)))
+    before_bytes = state_path.read_bytes()
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "evidence" in result["error"]
+    assert state_path.read_bytes() == before_bytes
+    assert traces == []
+
+
+@pytest.mark.parametrize("fault", [
+    "wrong-tranche", "duplicate-reservation", "missing-reservation",
+    "wrong-reservation-fingerprint", "malformed-tranche-member",
+])
+def test_scheduler_capacity_from_plan_trusted_parallel_closes_replay_evidence(
+    tmp_path, monkeypatch, fault,
+):
+    loop.save(str(tmp_path), _trusted_parallel_loop_state())
+    _capacity_runtime(monkeypatch)
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
+                        traces.append((_a, _k)))
+    loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+    state = loop.load(str(tmp_path))
+    assertion = state["scheduler_capacity_operator_assertions"][0]
+    if fault == "wrong-tranche":
+        assertion["derived_tranche_members"][-1] = "t17x"
+    elif fault == "duplicate-reservation":
+        assertion["current_reservations"].append(copy.deepcopy(
+            assertion["current_reservations"][0]))
+    elif fault == "missing-reservation":
+        assertion["current_reservations"] = []
+    elif fault == "wrong-reservation-fingerprint":
+        assertion["current_reservations"][0]["reservation_fingerprint"] = \
+            "e" * 64
+    else:
+        assertion["derived_tranche_members"][0] = {}
+    _rehash_operator_assertion(assertion)
+    loop.save(str(tmp_path), state)
+    traces.clear()
+    state_path = Path(loop._loop_path(str(tmp_path)))
+    before_bytes = state_path.read_bytes()
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=20),
+    )
+
+    assert "error" in result
     assert state_path.read_bytes() == before_bytes
     assert traces == []
 
