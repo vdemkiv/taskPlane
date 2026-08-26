@@ -22,10 +22,8 @@ from pathlib import Path
 
 try:
     from taskplane import taskplane_lite as contract_engine
-    from taskplane import design_contract as design_contract_engine
 except ImportError:  # direct executable/import compatibility
     import taskplane_lite as contract_engine
-    import design_contract as design_contract_engine
 
 
 CHECKPOINT_SCHEMA = "taskplane.build-c-checkpoint/v1"
@@ -87,6 +85,7 @@ _GIT_REVISION = re.compile(r"[0-9a-f]{40,64}\Z")
 _PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES = 64 * 1024
 _PICKUP_OUTPUT_READ_CHARS = 16 * 1024
 _OUTPUT_TRUNCATION_MARKER = b"\n... taskplane output truncated ...\n"
+_DESIGN_CONTRACT = os.path.join("design", "contract.json")
 
 
 class CheckpointSpecError(ValueError):
@@ -95,6 +94,21 @@ class CheckpointSpecError(ValueError):
 
 class CheckpointReceiptError(CheckpointSpecError):
     """Engine-observed checkpoint evidence cannot mint a green receipt."""
+
+
+def _load_design_contract_engine():
+    """Load Design validation only for checkpoints that have a contract.
+
+    The same module is also a dependency-light pytest plugin used by the
+    stateless pickup runtime.  Keeping the broader Design graph out of plugin
+    initialization lets that runtime preserve its deliberately minimal import
+    path without weakening Design-bound checkpoint validation.
+    """
+    try:
+        from taskplane import design_contract
+    except ImportError:  # direct executable/import compatibility
+        import design_contract
+    return design_contract
 
 
 def _canonical_digest(value: object) -> str:
@@ -362,9 +376,9 @@ def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
 
     ac_ids = _strings(spec.get("ac_ids"), "ac_ids")
     design_binding = None
-    contract_path = os.path.join(
-        worktree, design_contract_engine.DESIGN_CONTRACT)
+    contract_path = os.path.join(worktree, _DESIGN_CONTRACT)
     if os.path.isfile(contract_path):
+        design_contract_engine = _load_design_contract_engine()
         design, design_errors = design_contract_engine.design_contract(worktree)
         if design_errors or design is None:
             raise CheckpointSpecError(
