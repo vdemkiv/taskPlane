@@ -4328,11 +4328,7 @@ def select_ready_tasks(
 
 
 def _dispatch_telemetry_identity(ws: str, state: Mapping[str, object]) -> dict:
-    try:
-        locator = runtime_storage.load_workspace_locator(ws)
-    except Exception:
-        locator = None
-    run_id = str((locator or {}).get("run_id") or state.get("run_id") or "")
+    run_id = _managed_scheduler_run_id(ws) or str(state.get("run_id") or "")
     if not run_id:
         run_id = "loop-" + hashlib.sha256(json.dumps({
             "workspace": os.path.realpath(ws),
@@ -4435,8 +4431,8 @@ def scheduler_capacity_from_plan(
 
         managed_run_id = _managed_scheduler_run_id(ws)
         state_run_id = str(locked.get("run_id") or "")
-        if not managed_run_id or not state_run_id or \
-                managed_run_id != state_run_id:
+        if not managed_run_id or (state_run_id and
+                                  managed_run_id != state_run_id):
             return {"error": "managed run binding is missing or stale"}
         source_sha = str(locked.get("baseline") or "")
         if len(source_sha) not in {40, 64} or any(
@@ -4444,6 +4440,9 @@ def scheduler_capacity_from_plan(
                 for character in source_sha):
             return {"error": "governed source-generation SHA is missing or "
                              "stale"}
+        if sealed["source_sha"] != source_sha:
+            return {"error": "sealed delivery-mode source SHA does not match "
+                             "the governed source generation"}
         try:
             identity = _dispatch_telemetry_identity(ws, locked)
         except delivery_policy.DeliveryPolicyError as exc:

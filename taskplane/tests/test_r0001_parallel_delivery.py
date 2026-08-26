@@ -72,7 +72,7 @@ def _capacity_loop_state():
             "requirement": "R-0001", "delivery_mode": "build",
             "automatic_lenses": [], "plan_authority": "human:operator",
         },
-        plan_fingerprint="b" * 64, source_sha="9" * 40,
+        plan_fingerprint="b" * 64, source_sha="a" * 40,
     )
     return {
         "goal": "capacity authority", "parallel": True, "step": "execute",
@@ -834,6 +834,45 @@ def test_scheduler_capacity_from_plan_requires_matching_managed_run(
         str(tmp_path), clock=FakeClock(wall_time=10),
     )
     assert "run" in result["error"]
+
+
+def test_scheduler_capacity_from_plan_accepts_live_shape_without_state_run_id(
+    tmp_path, monkeypatch,
+):
+    state = _capacity_loop_state()
+    state.pop("run_id")
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), clock=FakeClock(wall_time=10),
+    )
+
+    assert "error" not in result, result
+    assert result["receipt"]["run_id"] == "run"
+
+
+def test_scheduler_capacity_from_plan_rejects_sealed_source_mismatch(
+    tmp_path, monkeypatch,
+):
+    state = _capacity_loop_state()
+    state["delivery_mode_receipt"] = validate_plan_mode(
+        {
+            "requirement": "R-0001", "delivery_mode": "build",
+            "automatic_lenses": [], "plan_authority": "human:operator",
+        },
+        plan_fingerprint="b" * 64, source_sha="9" * 40,
+    )
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), clock=FakeClock(wall_time=10),
+    )
+
+    assert "source" in result["error"]
+    assert "scheduler_host_capability_receipt" not in loop.load(str(tmp_path))
 
 
 @pytest.mark.parametrize("status", ["running", "built", "submitted"])
