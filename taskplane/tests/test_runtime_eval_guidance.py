@@ -135,6 +135,8 @@ class TestRuntimeEvalLoopWiring(unittest.TestCase):
 
         binding = {"run_id": "a" * 32, "workspace": self.ws}
         with mock.patch("loop.review_kernel_binding", return_value=binding), \
+                mock.patch(
+                    "loop._collect_zero_lens_evaluate_before_guidance"), \
                 mock.patch("runtime_eval.collect_review_if_ready"), \
                 mock.patch("runtime_eval.review_facts", return_value=missing):
             corrected = loop.submit(self.ws, "pass")
@@ -145,6 +147,8 @@ class TestRuntimeEvalLoopWiring(unittest.TestCase):
         self.assertNotIn("_submission", loop.load(self.ws))
 
         with mock.patch("loop.review_kernel_binding", return_value=binding), \
+                mock.patch(
+                    "loop._collect_zero_lens_evaluate_before_guidance"), \
                 mock.patch("runtime_eval.collect_review_if_ready"), \
                 mock.patch("runtime_eval.review_facts", return_value=complete):
             accepted = loop.submit(self.ws, "pass")

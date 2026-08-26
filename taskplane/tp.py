@@ -2266,11 +2266,24 @@ def _screen(a) -> int:
     # host RECORDED and fails open in every direction, with the action
     # ceiling still standing underneath.
     if not _is_release_command(command):
+        _tpath = None
+        _token_denial = None
         try:
             import spend as _spend
             _tpath = _spend.event_transcript(event)
             _rep = _spend.read_transcript(_tpath) if _tpath else None
-            if _tpath:
+            if _rep and _rep.get("available"):
+                _tok_ok, _tok_why = _spend.status(contract, _rep["effective"])
+                if not _tok_ok:
+                    _token_denial = (_tok_why, _rep["effective"])
+        except Exception:
+            pass
+        # Dispatch telemetry is additive observation, not ceiling authority.
+        # Keep it best-effort and outside the enforcement exception boundary
+        # so a missing ledger or a newer provider shape cannot lift a token
+        # denial that the legacy transcript already proves.
+        if _tpath:
+            try:
                 _provider = "codex" if "turn_id" in event else "claude"
                 _observed = _spend.read_provider_transcript(
                     _tpath, provider=_provider)
@@ -2279,18 +2292,17 @@ def _screen(a) -> int:
                     _loop_runtime.record_observed_dispatch_usage(
                         ws, task_id=str(tid),
                         normalized_usage=_observed, source=_tpath)
-            if _rep and _rep.get("available"):
-                _tok_ok, _tok_why = _spend.status(contract, _rep["effective"])
-                if not _tok_ok:
-                    _meter_bump(ws, tid, "denies")
-                    tp.trace(ws, "token_budget_deny", tool=tool_name,
-                             effective=_rep["effective"])
-                    print(json.dumps({
-                        "decision": "block",
-                        "reason": f"taskplane contract {tid}: {_tok_why}"}))
-                    return 0
-        except Exception:
-            pass
+            except Exception:
+                pass
+        if _token_denial is not None:
+            _tok_why, _effective = _token_denial
+            _meter_bump(ws, tid, "denies")
+            tp.trace(ws, "token_budget_deny", tool=tool_name,
+                     effective=_effective)
+            print(json.dumps({
+                "decision": "block",
+                "reason": f"taskplane contract {tid}: {_tok_why}"}))
+            return 0
 
     ok, reason = tp.budget_status(
         contract, used, reserve=_CLOSING_RESERVE,

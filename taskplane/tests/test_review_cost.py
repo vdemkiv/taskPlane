@@ -540,6 +540,15 @@ class TokenCeilingThroughTheScreener(_WS):
         self.assertEqual(decision, "block")
         self.assertIn("TOKEN BUDGET exhausted", why)
 
+    def test_telemetry_failure_cannot_lift_the_token_ceiling(self):
+        tr = self._contract_with(200_000)
+        with mock.patch(
+                "loop.record_observed_dispatch_usage",
+                side_effect=RuntimeError("telemetry unavailable")):
+            decision, why = self._screen("grep -rn foo .", tr)
+        self.assertEqual(decision, "block")
+        self.assertIn("TOKEN BUDGET exhausted", why)
+
     def test_under_the_ceiling_proceeds(self):
         tr = self._contract_with(900_000)
         self.assertNotEqual(self._screen("grep -rn foo .", tr)[0], "block")

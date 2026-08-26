@@ -516,7 +516,8 @@ def test_normal_flow_wiring_is_mutation_sensitive():
     wave_body = source[source.index("def wave("):source.index("def claim(")]
     next_body = source[
         source.index("def next_action("):source.index("guide = runtime_eval")]
-    assert 'entry["dispatch_intent"] = _native_dispatch_intent(' in \
+    assert 'intent = _native_dispatch_intent(' in wave_body
+    assert 'entry["dispatch_intent"] = dispatch_intents[str(t["id"])]' in \
         wave_body
     assert 'result["dispatch_intent"] = _native_dispatch_intent(' in \
         next_body
