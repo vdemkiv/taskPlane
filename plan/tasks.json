@@ -7,7 +7,7 @@
     {
       "id": "t10-design-wiring-closure-owner",
       "scope": ["taskplane/wiring_closure.py", "taskplane/tests/test_r0001_design_wiring.py", "taskplane/loop.py", "taskplane/tests/test_r0001_delivery_mode.py"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_r0001_delivery_mode.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_r0001_delivery_mode.py",
       "req": "R-0001", "deps": [], "type": "feature", "contracts": ["contract:design-wiring-closure"],
       "new_modules": ["taskplane/wiring_closure.py"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent.", "Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test."]
@@ -15,7 +15,7 @@
     {
       "id": "t11-design-checkpoint-adapters",
       "scope": ["taskplane/design_contract.py", "taskplane/checkpoint.py", "taskplane/tests/test_r0001_design_wiring.py"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_design_wiring.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_design_wiring.py",
       "req": "R-0001", "deps": ["t10-design-wiring-closure-owner"], "type": "integration", "contracts": ["contract:design-wiring-closure"],
       "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent."]
@@ -23,7 +23,7 @@
     {
       "id": "t12-performance-delta-brief",
       "scope": ["taskplane/brief_projection.py", "taskplane/tests/test_r0001_wave_budgets.py"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_wave_budgets.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_wave_budgets.py",
       "req": "R-0001", "deps": ["t11-design-checkpoint-adapters"], "type": "performance", "contracts": ["contract:delivery-mode-receipt"],
       "new_modules": ["taskplane/brief_projection.py"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review."]
@@ -31,7 +31,7 @@
     {
       "id": "t13-performance-plan-topology",
       "scope": ["taskplane/plan_topology.py", "taskplane/tests/test_r0001_parallel_delivery.py", "taskplane/tests/test_r0001_dispatch_capability.py"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_dispatch_capability.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_dispatch_capability.py",
       "req": "R-0001", "deps": ["t11-design-checkpoint-adapters"], "type": "performance", "contracts": ["contract:delivery-mode-receipt"],
       "new_modules": ["taskplane/plan_topology.py", "plan"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain."]
@@ -39,7 +39,7 @@
     {
       "id": "t14-performance-dispatch-telemetry",
       "scope": ["taskplane/dispatch_telemetry.py"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_test_harness.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_test_harness.py",
       "req": "R-0001", "deps": ["t11-design-checkpoint-adapters"], "type": "performance", "contracts": ["contract:delivery-mode-receipt"],
       "new_modules": ["taskplane/dispatch_telemetry.py"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review.", "The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain."]
@@ -47,7 +47,7 @@
     {
       "id": "t15-performance-runtime-integration",
       "scope": ["taskplane/loop.py", "taskplane/build_c.py", "taskplane/tp.py", "taskplane/progress.py", "taskplane/command_runtime.py", "taskplane/spend.py", "taskplane/retro.py", "taskplane/tests/test_r0001_wave_budgets.py", "taskplane/tests/test_r0001_parallel_delivery.py", "taskplane/tests/test_r0001_dispatch_capability.py"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_dispatch_capability.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_dispatch_capability.py",
       "req": "R-0001", "deps": ["t12-performance-delta-brief", "t13-performance-plan-topology", "t14-performance-dispatch-telemetry"], "type": "integration",
       "contracts": ["contract:delivery-mode-receipt", "contract:design-wiring-closure"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review.", "The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain."]
@@ -55,7 +55,7 @@
     {
       "id": "t16-same-sha-cold-start-gate",
       "scope": ["taskplane/pickup.py", "taskplane/tests/test_r0001_pickup_cold_start.py"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_pickup_cold_start.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_pickup_cold_start.py",
       "req": "R-0001", "deps": ["t15-performance-runtime-integration"], "type": "performance", "contracts": ["contract:repository-preparation"],
       "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["AC2 measures a fresh checkout at the same SHA reaching the first executing pickup checkpoint in under two minutes before R-0013 resumes."]
@@ -63,7 +63,7 @@
     {
       "id": "t17a-verify-a2-live-host",
       "scope": ["exports/verification/r0001/a2/**"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_delivery_mode.py taskplane/tests/test_r0001_review_authority.py taskplane/tests/test_r0001_producer_observation.py taskplane/tests/test_r0001_host_capability.py taskplane/tests/test_r0001_live_host_canary.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_delivery_mode.py taskplane/tests/test_r0001_review_authority.py taskplane/tests/test_r0001_producer_observation.py taskplane/tests/test_r0001_host_capability.py taskplane/tests/test_r0001_live_host_canary.py",
       "req": "R-0001", "deps": ["t16-same-sha-cold-start-gate"], "type": "reliability",
       "contracts": ["contract:delivery-mode-receipt", "contract:review-kernel-authority", "contract:producer-observation"], "new_modules": ["exports", "exports/verification"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["The Plan gate declares delivery mode, stamps it into receipts, and the engine prevents build-mode dispatch from instantiating automatic lens workers.", "expected_lenses=[] plus a schema-valid result succeeds with an explicit empty-collection receipt and never requires outage resolution.", "An unstarted review kernel can be rebound only by attributed human authority with an append-only override receipt; any started slot remains immutable.", "The live Codex host produces conformant observable producer receipts for evaluator and EM submissions without manual outage resolution."]
@@ -71,7 +71,7 @@
     {
       "id": "t17b-verify-wiring-release-repository",
       "scope": ["exports/verification/r0001/release/**"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_release_freshness.py taskplane/tests/test_r0001_release_green.py taskplane/tests/test_r0001_forward_release.py taskplane/tests/test_r0001_compatibility.py taskplane/tests/test_r0001_repository_default_branch.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_release_freshness.py taskplane/tests/test_r0001_release_green.py taskplane/tests/test_r0001_forward_release.py taskplane/tests/test_r0001_compatibility.py taskplane/tests/test_r0001_repository_default_branch.py",
       "req": "R-0001", "deps": ["t16-same-sha-cold-start-gate"], "type": "reliability",
       "contracts": ["contract:design-wiring-closure", "contract:release-green-evidence", "contract:repository-preparation"], "new_modules": ["exports/verification"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent.", "Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test.", "Feature-green and release-green are distinct receipts; tag, install, or publication requires closed wiring evidence, the full matrix, and successful pushed-SHA proof, while any override records released-unverified and every skipped proof.", "Hosted repository preparation resolves and tests the fetched remote default branch before dereferencing bare HEAD, including a non-master default-branch severed-edge case.", "v2.17.20 remains released-incomplete; repairs move forward as v2.17.21, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening."]
@@ -79,7 +79,7 @@
     {
       "id": "t17c-verify-performance-events",
       "scope": ["exports/verification/r0001/performance/**"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_test_harness.py taskplane/tests/test_r0001_dispatch_capability.py taskplane/tests/test_r0001_pickup_cold_start.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_test_harness.py taskplane/tests/test_r0001_dispatch_capability.py taskplane/tests/test_r0001_pickup_cold_start.py",
       "req": "R-0001", "deps": ["t16-same-sha-cold-start-gate"], "type": "reliability",
       "contracts": ["contract:delivery-mode-receipt", "contract:repository-preparation"], "new_modules": ["exports/verification"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review.", "The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain.", "AC2 measures a fresh checkout at the same SHA reaching the first executing pickup checkpoint in under two minutes before R-0013 resumes."]
@@ -87,7 +87,7 @@
     {
       "id": "t18-terminal-full-matrix-and-closure",
       "scope": ["exports/verification/r0001/terminal/**"],
-      "tests": "python -m pytest -q taskplane/tests",
+      "tests": "python3 -m pytest -q taskplane/tests",
       "req": "R-0001", "deps": ["t17a-verify-a2-live-host", "t17b-verify-wiring-release-repository", "t17c-verify-performance-events"], "type": "reliability",
       "contracts": ["contract:delivery-mode-receipt", "contract:review-kernel-authority", "contract:producer-observation", "contract:design-wiring-closure", "contract:release-green-evidence", "contract:repository-preparation"],
       "new_modules": ["taskplane/delivery_ports.py", "(root)", ".claude-plugin", ".codex-plugin", ".github/workflows", "design", "docs", "lenses", "lenses/references", "scripts", "skills/tp-go", "taskplane", "taskplane/tests", "taskplane/delivery_policy.py", "taskplane/review_authority.py", "taskplane/producer_observation.py", "taskplane/release_evidence.py", "exports/verification"],
