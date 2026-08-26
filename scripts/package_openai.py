@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import math
@@ -82,6 +83,7 @@ STAGE_RUNTIME_FILES = (
     "taskplane/loop_status.py",
     "taskplane/dashboard.py",
     "taskplane/runtime_eval.py",
+    "taskplane/release_evidence.py",
     "docs/cli-reference.md",
     "skills/taskplane/SKILL.md",
     "skills/taskplane/flow.json",
@@ -100,6 +102,13 @@ STAGE_RUNTIME_FILES = (
     "skills/tp-status/flow.json",
 )
 
+RELEASE_SURFACE_FILES = (
+    "taskplane/release_evidence.py",
+    "lenses/references/prompt-injection-defense.md",
+    "README.md",
+    "CHANGELOG.md",
+)
+
 SUPPORTED_HOOK_ROOT_FIELDS = frozenset({"description", "hooks"})
 
 
@@ -110,6 +119,28 @@ class PackageError(RuntimeError):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise PackageError(message)
+
+
+def release_runtime_constants() -> dict[str, str]:
+    """Read release identity from the runtime without executing it."""
+    path = ROOT / "taskplane" / "release_evidence.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    wanted = {
+        "CURRENT_VERSION", "PREVIOUS_VERSION", "HISTORICAL_GRAPH_REVISION",
+    }
+    values: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id in wanted:
+            value = ast.literal_eval(node.value)
+            require(isinstance(value, str),
+                    f"release runtime constant {target.id} must be a string")
+            values[target.id] = value
+    require(set(values) == wanted,
+            "release runtime must declare the closed release identity")
+    return values
 
 
 def load_manifest() -> dict:
@@ -204,6 +235,14 @@ def validate_manifest(manifest: dict) -> None:
     require(isinstance(version, str) and len(version) <= 64 and
             re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version) is not None,
             "manifest version must be semantic versioning")
+    release = release_runtime_constants()
+    require(version == release["CURRENT_VERSION"],
+            "Codex manifest version must match release_evidence.CURRENT_VERSION")
+    require(release["PREVIOUS_VERSION"] == "2.17.20",
+            "forward repair must preserve v2.17.20 as the previous release")
+    require(release["HISTORICAL_GRAPH_REVISION"] ==
+            "2757822ede49177fc52de8c173302286364d6206",
+            "forward repair must preserve historical graph revision 2757822e")
     require(isinstance(description, str) and 0 < len(description) <= 1024,
             "manifest description must be 1-1024 characters")
     author = manifest.get("author")
@@ -454,6 +493,15 @@ def validate_archive(path: Path) -> tuple[int, int]:
         for required in STAGE_RUNTIME_FILES:
             require(f"{ARCHIVE_ROOT}/{required}" in names,
                     f"ZIP is missing stage runtime member {required}")
+        require(packaged_manifest.get("version") ==
+                release_runtime_constants()["CURRENT_VERSION"],
+                "ZIP Codex manifest does not match release runtime version")
+        for required in RELEASE_SURFACE_FILES:
+            member = f"{ARCHIVE_ROOT}/{required}"
+            require(member in names,
+                    f"ZIP is missing forward-release surface {required}")
+            require(archive.read(member) == (ROOT / required).read_bytes(),
+                    f"ZIP has stale forward-release bytes for {required}")
         try:
             hook_manifest = json.loads(
                 archive.read(f"{ARCHIVE_ROOT}/hooks/hooks.json"))

@@ -63,13 +63,19 @@ this instrument is what would show that it is needed.
 THIS GATES NOTHING. It prints numbers and exits 0 unless a corpus fixture is
 malformed. Pin it later, on purpose, when there is a number worth defending.
 """
+import ast
 import datetime
+import hashlib
+import importlib.util
 import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
+import zipfile
+from pathlib import Path
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -491,7 +497,220 @@ PUSHED_GREEN_REQUIRED_CHECKS = (
     "zero-token corpus (credential-empty, no-egress)",
 )
 CI_COMMIT_PROOF_SCHEMA = "taskplane.ci-commit-proof/v1"
+FORWARD_RELEASE_SURFACE_SCHEMA = "taskplane.forward-release-surface-proof/v1"
 _FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def _literal_assignments(path, names):
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"), filename=str(path))
+    values = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id in names:
+            values[target.id] = ast.literal_eval(node.value)
+    return values
+
+
+def verify_forward_release_surface(root):
+    """Build both install surfaces and prove the forward candidate is closed."""
+    repository = Path(root).resolve()
+    errors = []
+    runtime_path = repository / "taskplane" / "release_evidence.py"
+    expected_graph = "2757822ede49177fc52de8c173302286364d6206"
+    wanted = {
+        "CURRENT_VERSION", "PREVIOUS_VERSION", "HISTORICAL_GRAPH_REVISION",
+    }
+    try:
+        release = _literal_assignments(runtime_path, wanted)
+    except (OSError, SyntaxError, ValueError) as exc:
+        release = {}
+        errors.append(f"cannot read release runtime identity: {exc}")
+    if set(release) != wanted:
+        errors.append("release runtime identity is incomplete")
+    if release.get("CURRENT_VERSION") != "2.17.21":
+        errors.append("forward candidate is not exactly 2.17.21")
+    if release.get("PREVIOUS_VERSION") != "2.17.20":
+        errors.append("v2.17.20 is not preserved as the previous generation")
+    if release.get("HISTORICAL_GRAPH_REVISION") != expected_graph:
+        errors.append("historical graph revision 2757822e is not exact")
+
+    runtime_import = subprocess.run(
+        [
+            sys.executable, "-B", "-c",
+            "import json; from taskplane import release_evidence as r; "
+            "print(json.dumps([r.CURRENT_VERSION, r.PREVIOUS_VERSION, "
+            "r.HISTORICAL_GRAPH_REVISION]))",
+        ],
+        cwd=repository, text=True, encoding="utf-8", errors="replace",
+        capture_output=True,
+    )
+    expected_runtime = [
+        release.get("CURRENT_VERSION"), release.get("PREVIOUS_VERSION"),
+        release.get("HISTORICAL_GRAPH_REVISION"),
+    ]
+    try:
+        imported_runtime = json.loads(runtime_import.stdout)
+    except ValueError:
+        imported_runtime = None
+    if runtime_import.returncode != 0 or imported_runtime != expected_runtime:
+        errors.append("release_evidence runtime cannot import with the exact identity")
+
+    manifests = {}
+    manifest_paths = {
+        "codex": repository / ".codex-plugin" / "plugin.json",
+        "claude": repository / ".claude-plugin" / "plugin.json",
+        "marketplace": repository / ".claude-plugin" / "marketplace.json",
+    }
+    for name, path in manifest_paths.items():
+        try:
+            manifests[name] = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            errors.append(f"cannot read {name} manifest: {exc}")
+    versions = {
+        "codex": manifests.get("codex", {}).get("version"),
+        "claude": manifests.get("claude", {}).get("version"),
+        "marketplace": manifests.get("marketplace", {}).get("version"),
+        "marketplace_plugin": (
+            manifests.get("marketplace", {}).get("plugins") or [{}]
+        )[0].get("version"),
+    }
+    if set(versions.values()) != {release.get("CURRENT_VERSION")}:
+        errors.append("candidate manifests are not single-sourced to runtime version")
+
+    required_doc_phrases = (
+        "v2.17.20", "released-incomplete", "v2.17.21", "not released",
+        "2757822e", "inherited limitation", "no history rewrite",
+        "no re-release", "no verifier weakening",
+    )
+    for relative in ("README.md", "CHANGELOG.md"):
+        try:
+            prose = " ".join(
+                (repository / relative).read_text(encoding="utf-8")
+                .replace(">", "").split()
+            )
+        except OSError as exc:
+            errors.append(f"cannot read {relative}: {exc}")
+            continue
+        missing = [phrase for phrase in required_doc_phrases if phrase not in prose]
+        if missing:
+            errors.append(f"{relative} misses forward-history truth: {', '.join(missing)}")
+
+    required_tests = (
+        "taskplane/tests/test_r0001_repository_default_branch.py",
+        "taskplane/tests/test_r0001_release_green.py",
+        "taskplane/tests/test_r0001_forward_release.py",
+        "taskplane/tests/test_r0001_compatibility.py",
+    )
+    for relative in required_tests:
+        if not (repository / relative).is_file():
+            errors.append(f"required forward-release test file is missing: {relative}")
+    try:
+        workflow = (repository / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8")
+    except OSError as exc:
+        workflow = ""
+        errors.append(f"cannot read CI workflow: {exc}")
+    if "python scripts/ci_evals.py --verify-release-surface --json" not in workflow:
+        errors.append("CI does not execute the forward-release surface proof")
+    python_312 = re.search(
+        r'- python: "3\.12"(?P<body>.*?)(?:\n\s*- python:|\n\s*steps:)',
+        workflow, re.DOTALL,
+    )
+    if python_312 is None or "taskplane/tests" not in python_312.group("body"):
+        errors.append("Python 3.12 CI does not select the complete taskplane test surface")
+
+    archives = {}
+    surface_members = (
+        "taskplane/release_evidence.py",
+        "lenses/references/prompt-injection-defense.md",
+    )
+    with tempfile.TemporaryDirectory(prefix="taskplane-release-surface-") as tmp:
+        for name, script in (
+            ("openai", "package_openai.py"),
+            ("claude", "package_claude.py"),
+        ):
+            try:
+                path = repository / "scripts" / script
+                spec = importlib.util.spec_from_file_location(
+                    f"_forward_surface_{name}", path)
+                if spec is None or spec.loader is None:
+                    raise RuntimeError(f"cannot load {script}")
+                packager = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(packager)
+                files = (
+                    packager.package_files(packager.load_manifest())
+                    if name == "openai" else packager.package_files()
+                )
+                archive_path = Path(tmp) / f"{name}.zip"
+                packager.write_zip(files, archive_path)
+                if name == "openai":
+                    packager.validate_archive(archive_path)
+                else:
+                    packager.validate_archive(
+                        archive_path, release.get("CURRENT_VERSION"))
+                with zipfile.ZipFile(archive_path) as archive:
+                    member_digests = {}
+                    for relative in surface_members:
+                        source = (repository / relative).read_bytes()
+                        member = archive.read("taskplane/" + relative)
+                        if member != source:
+                            errors.append(
+                                f"{name} archive has stale bytes for {relative}")
+                        member_digests[relative] = hashlib.sha256(member).hexdigest()
+                    extract_root = Path(tmp) / f"{name}-installed"
+                    archive.extractall(extract_root)
+                    installed_import = subprocess.run(
+                        [
+                            sys.executable, "-B", "-c",
+                            "from taskplane import release_evidence as r; "
+                            "print(r.CURRENT_VERSION)",
+                        ],
+                        cwd=extract_root / "taskplane",
+                        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                        text=True, encoding="utf-8", errors="replace",
+                        capture_output=True,
+                    )
+                    if (installed_import.returncode != 0 or
+                            installed_import.stdout.strip() !=
+                            release.get("CURRENT_VERSION")):
+                        errors.append(
+                            f"{name} installed release_evidence runtime does not import")
+                    archives[name] = {
+                        "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                        "member_count": len(archive.namelist()),
+                        "surface_member_digests": member_digests,
+                    }
+            except Exception as exc:
+                errors.append(f"{name} release surface failed: {exc}")
+
+    proof = {
+        "schema": FORWARD_RELEASE_SURFACE_SCHEMA,
+        "status": "release-surface-green" if not errors else "refused",
+        "version": release.get("CURRENT_VERSION"),
+        "previous_version": release.get("PREVIOUS_VERSION"),
+        "historical_graph_revision": release.get("HISTORICAL_GRAPH_REVISION"),
+        "manifest_versions": versions,
+        "archives": archives,
+        "released": False,
+        "cryptographic_authenticity_claimed": False,
+        "errors": errors,
+    }
+    encoded = json.dumps(proof, sort_keys=True, separators=(",", ":"))
+    proof["fingerprint"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return proof
+
+
+def _report_forward_release_surface(proof, as_json):
+    if as_json:
+        print(json.dumps(proof, indent=2, sort_keys=True))
+        return
+    print(f"forward release surface: {proof['status']}")
+    print(f"version: {proof['version']} (not released)")
+    print(f"archives: {', '.join(sorted(proof['archives'])) or 'none'}")
+    for error in proof["errors"]:
+        print(f"error: {error}")
 
 
 def classify_ci_commit_proof(*, fetch_receipt, head_sha, remote_sha,
@@ -1651,6 +1870,8 @@ def _parser():
                    help="block on any rubric item that dropped from a pass")
     p.add_argument("--prove-pushed-sha", action="store_true",
                    help="fetch and prove exact pushed-SHA CI evidence")
+    p.add_argument("--verify-release-surface", action="store_true",
+                   help="prove 2.17.21 manifests and both install archives")
     p.add_argument("--checked-sha", metavar="SHA",
                    help="full commit SHA whose required checks were observed")
     p.add_argument("--check-receipts", metavar="FILE",
@@ -1672,7 +1893,8 @@ def main(argv=None) -> int:
                ("--all-skills", args.all_skills),
                ("--set-baseline", bool(args.set_baseline)),
                ("--gate", args.gate),
-               ("--prove-pushed-sha", args.prove_pushed_sha)) if on]
+               ("--prove-pushed-sha", args.prove_pushed_sha),
+               ("--verify-release-surface", args.verify_release_surface)) if on]
     if "--corpus" in picked and len(picked) > 1:
         print(f"evals: --corpus scores the frozen corpus and nothing else; "
               f"it cannot be combined with {', '.join(picked[1:])}",
@@ -1699,6 +1921,14 @@ def main(argv=None) -> int:
                                  args.check_receipts)
         _report_ci_commit_proof(proof, args.json)
         return EXIT_OK if proof["status"] == "pushed_green" else EXIT_BLOCKED
+    if args.verify_release_surface:
+        if len(picked) != 1:
+            print("evals: --verify-release-surface cannot be combined with "
+                  "another scoring mode", file=sys.stderr)
+            return EXIT_USAGE
+        proof = verify_forward_release_surface(root)
+        _report_forward_release_surface(proof, args.json)
+        return EXIT_OK if proof["status"] == "release-surface-green" else EXIT_BLOCKED
     if args.checked_sha or args.check_receipts:
         print("evals: --checked-sha and --check-receipts require "
               "--prove-pushed-sha", file=sys.stderr)

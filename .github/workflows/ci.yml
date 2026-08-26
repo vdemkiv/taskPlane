@@ -150,6 +150,13 @@ jobs:
       - name: Run the authoritative suite or compatibility smoke set
         run: python -m pytest ${{ matrix.tests }} -q
 
+      # R-0001 forward-only release integration. The 3.12 leg already owns
+      # the complete suite, so this adds one deterministic package/runtime
+      # proof without replaying it on the compatibility smoke legs.
+      - name: Verify forward-release manifests, archives, and runtime
+        if: matrix.python == '3.12'
+        run: python scripts/ci_evals.py --verify-release-surface --json
+
       # One public unittest canary retains second-runner/store-isolation
       # coverage without executing the entire pytest-owned suite twice.
       - name: Unittest runner/store-isolation canary

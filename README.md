@@ -131,15 +131,16 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 > **Forward-repair status.** v2.17.20 remains released-incomplete. Repairs are
 > moving forward as v2.17.21, which is not released. Historical graph revision
 > `2757822e` remains an attributed inherited limitation: no history rewrite, no
-> re-release of v2.17.20, and no verifier weakening. The table below therefore
-> continues to list v2.17.20 as the newest release until final release
-> convergence is completed.
+> re-release of v2.17.20, and no verifier weakening. v2.17.21 is the current
+> forward candidate, not a release: install, tag, or publication still requires
+> a release-green receipt bound to closed wiring, the terminal full matrix, both
+> package proofs, and successful protected-platform proof for the pushed SHA.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.17.21** | **Forward-repair candidate — not released.** Release authority now distinguishes feature-green, release-green, and a non-green `released-unverified` override. Hosted repository preparation binds the fetched remote default branch before checkout, both deterministic packages carry the same candidate manifests and runtime, and CI verifies the package surfaces. No install, tag, publication, or release claim is authorized by this candidate row. |
 | **v2.17.20** | **Repository-only pickup can resume from committed receipts with explicit attributed human authority.** `tp pickup <design-contract> --trust-source <exact-source-sha>` records the supplied flag and exact source SHA verbatim and permits continuation only when the repository-resident shelf evidence agrees structurally. This is an operator trust assertion, not cryptographic authentication of the operator, producer, shelf, or repository origin. Missing, malformed, mismatched, or structurally tampered evidence fails closed; the existing v1 symmetric shelf flow through its private-secret path is unchanged. |
 | **v2.17.19** | **BUILD-C is now wired into governed delivery, with review bootstrap hardened at the real flow boundary.** Acceptance-criteria checkpoints use engine-observed, exact-revision receipts; submissions reach checkpoint execution through the event-driven runtime; DEFINE reuses the bounded 4–5-lens quick router; disjoint direct work can run concurrently without claim, lease, or wave state; and only a green checkpoint can authorize integration. Review startup is checkout-bound, graph-first, signed, and fail-closed against stale, tampered, symlinked, or prose-only evidence. Automatic full, deep, promoted, or all-26 review remains prohibited. |
-| **v2.17.18** | **The R-0007 production contracts are wired into the live review path.** Automatic review executes exactly 4–5 selected quick lenses concurrently, keeps architecture in the set, and cannot create automatic full, deep, promoted, audit-wide, or all-26 work. Deep execution exists only behind a direct attributable human command. Structured finding provenance, exact dispatch-lease audits, graph-bound DoD input, composite-worker guidance, bounded efficiency telemetry, and scoped enforcement exceptions travel through production entry points. |
 ## Install
 
 How you install taskplane depends on your **account type**, and the paths are

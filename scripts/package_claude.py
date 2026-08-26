@@ -28,6 +28,7 @@ sha256, so a release archive can be verified against its source commit.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -86,6 +87,7 @@ MUST_CONTAIN = (
     "taskplane/loop_status.py",
     "taskplane/dashboard.py",
     "taskplane/runtime_eval.py",
+    "taskplane/release_evidence.py",
     "lenses/catalog.json",
     "docs/cli-reference.md",
     "skills/taskplane/SKILL.md",
@@ -104,6 +106,14 @@ MUST_CONTAIN = (
     "skills/tp-status/SKILL.md",
     "skills/tp-status/flow.json",
     "docs/assets/taskplane-cowork-flow.gif",
+    "lenses/references/prompt-injection-defense.md",
+)
+
+RELEASE_SURFACE_FILES = (
+    "taskplane/release_evidence.py",
+    "lenses/references/prompt-injection-defense.md",
+    "README.md",
+    "CHANGELOG.md",
 )
 
 SUPPORTED_HOOK_ROOT_FIELDS = frozenset({"description", "hooks"})
@@ -116,6 +126,28 @@ class PackageError(RuntimeError):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise PackageError(message)
+
+
+def release_runtime_constants() -> dict[str, str]:
+    """Read release identity from the runtime without executing it."""
+    path = ROOT / "taskplane" / "release_evidence.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    wanted = {
+        "CURRENT_VERSION", "PREVIOUS_VERSION", "HISTORICAL_GRAPH_REVISION",
+    }
+    values: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id in wanted:
+            value = ast.literal_eval(node.value)
+            require(isinstance(value, str),
+                    f"release runtime constant {target.id} must be a string")
+            values[target.id] = value
+    require(set(values) == wanted,
+            "release runtime must declare the closed release identity")
+    return values
 
 
 def validate_hook_manifest(value: object) -> dict:
@@ -222,6 +254,25 @@ def validate_archive(path: Path, version: str) -> tuple:
         require(manifest["version"] == version,
                 f"packaged manifest says {manifest['version']}, "
                 f"expected {version}")
+        release = release_runtime_constants()
+        require(version == release["CURRENT_VERSION"],
+                "Claude manifest version must match release runtime version")
+        require(release["PREVIOUS_VERSION"] == "2.17.20",
+                "forward repair must preserve v2.17.20 as the previous release")
+        require(release["HISTORICAL_GRAPH_REVISION"] ==
+                "2757822ede49177fc52de8c173302286364d6206",
+                "forward repair must preserve historical graph revision 2757822e")
+        marketplace = json.loads(
+            archive.read(f"{ARCHIVE_ROOT}/.claude-plugin/marketplace.json"))
+        require(marketplace.get("version") == version and
+                marketplace.get("plugins", [{}])[0].get("version") == version,
+                "packaged marketplace and Claude manifest versions disagree")
+        for required in RELEASE_SURFACE_FILES:
+            member = f"{ARCHIVE_ROOT}/{required}"
+            require(member in names,
+                    f"archive is missing forward-release surface {required}")
+            require(archive.read(member) == (ROOT / required).read_bytes(),
+                    f"archive has stale forward-release bytes for {required}")
         require(manifest.get("hostNative") == "../hooks/host-native.json",
                 "Claude manifest must retain supported host-native metadata")
         try:
