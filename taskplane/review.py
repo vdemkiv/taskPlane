@@ -112,6 +112,144 @@ class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
 
 
+def collect_expected_set(
+        *, run_id: str, task_id: str, stage: str,
+        expected_lenses: Iterable[str], collected_lenses: Iterable[str],
+        result: dict, result_validator: Callable[[dict], object],
+        producer_observation_fingerprint: str,
+        predecessor_fingerprint: str | None = None,
+        outage_resolver: Callable[..., object] | None = None) -> dict:
+    """Collect a schema-valid empty expected set as ordinary success.
+
+    ``outage_resolver`` is accepted only as an observable severed-edge seam;
+    the normal empty-set path deliberately never calls it.
+    """
+    del outage_resolver
+    if __package__:
+        from . import delivery_policy
+    else:  # pragma: no cover - direct CLI module loading
+        import delivery_policy
+
+    return delivery_policy.create_empty_lens_collection_receipt(
+        run_id=run_id,
+        task_id=task_id,
+        stage=stage,
+        expected_lenses=list(expected_lenses),
+        collected_lenses=list(collected_lenses),
+        result=result,
+        result_validator=result_validator,
+        producer_observation_fingerprint=producer_observation_fingerprint,
+        predecessor_fingerprint=predecessor_fingerprint,
+    )
+
+
+def project_review_kernel_lifecycle(ws: str, state: dict) -> dict:
+    """Project incumbent durable ReviewKernel start signals for rebind."""
+    if __package__:
+        from . import review_authority
+    else:  # pragma: no cover - direct CLI module loading
+        import review_authority
+
+    if not isinstance(state, dict):
+        raise review_authority.ReviewAuthorityError(
+            "review kernel state must be a mapping")
+    run_id = str(state.get("run_id") or "")
+    slots = [row for row in state.get("slots") or []
+             if isinstance(row, dict)]
+    explicit_starts = [str(row.get("slot_id") or "") for row in slots
+                       if row.get("started") is True or
+                       row.get("status") in {
+                           "assigned", "running", "written", "collected"}]
+
+    def run_records(directory: str) -> list[dict]:
+        records = []
+        for path in sorted(glob.glob(os.path.join(
+                _kernel_root(ws), directory, "*.json"))):
+            row = tp.load_json(path, default=None,
+                               what="review kernel lifecycle evidence")
+            if isinstance(row, dict) and row.get("run_id") == run_id:
+                records.append(row)
+        return records
+
+    assignments = run_records("producers")
+    writes = run_records("provenance")
+    reservation = tp.load_json(
+        _collection_lock_path(ws), default=None,
+        what="review publication reservation")
+    reservations = ([reservation] if isinstance(reservation, dict) and
+                    reservation.get("run_id") == run_id else [])
+    revision = state.get("revision")
+    if revision is None and state.get("status") in {
+            "prepared", "staged", "publishing", "committed", "complete"}:
+        revision = {"status": state.get("status")}
+    return review_authority.project_kernel_lifecycle(
+        slot_starts=explicit_starts,
+        producer_assignments=assignments,
+        write_observations=writes,
+        collection_reservations=reservations,
+        revision=revision,
+    )
+
+
+def rebind_review_kernel(
+        ws: str, *, run_id: str, kernel_run_id: str, stage: str,
+        replacement_binding: dict, human_actor: str, reason: str,
+        host_session_id: str, host_turn_id: str, host_sequence: int,
+        contract_fingerprint: str, capability_handle: str,
+        capability_source, evidence_store, clock) -> dict:
+    """Apply an attributed override to an unstarted incumbent kernel."""
+    if __package__:
+        from . import review_authority
+    else:  # pragma: no cover - direct CLI module loading
+        import review_authority
+
+    state = _load_state(ws, kernel_run_id)
+    prior_binding = state.get("kernel_binding")
+    if not isinstance(prior_binding, dict):
+        prior_binding = {
+            "schema": "taskplane.review-kernel-binding/v1",
+            "run_id": state.get("run_id"),
+            "workspace": os.path.realpath(ws),
+            "stage": state.get("stage"),
+            "status": state.get("status"),
+        }
+    lifecycle = project_review_kernel_lifecycle(ws, state)
+    if not lifecycle["unstarted"]:
+        raise review_authority.ReviewAuthorityError(
+            "review kernel is immutable after any durable start signal")
+    history = list(state.get("kernel_binding_overrides") or [])
+    predecessor = history[-1].get("fingerprint") if history else None
+    receipt = review_authority.rebind(
+        run_id=run_id,
+        kernel_id=kernel_run_id,
+        stage=stage,
+        prior_binding=prior_binding,
+        replacement_binding=replacement_binding,
+        lifecycle=lifecycle,
+        human_actor=human_actor,
+        reason=reason,
+        host_session_id=host_session_id,
+        host_turn_id=host_turn_id,
+        host_sequence=host_sequence,
+        contract_fingerprint=contract_fingerprint,
+        capability_handle=capability_handle,
+        capability_source=capability_source,
+        evidence_store=evidence_store,
+        clock=clock,
+        predecessor_digest=predecessor,
+    )
+    fresh = _load_state(ws, kernel_run_id)
+    current = fresh.get("kernel_binding")
+    if current is not None and current != prior_binding:
+        raise review_authority.ReviewAuthorityError(
+            "review kernel binding changed during override publication")
+    fresh = copy.deepcopy(fresh)
+    fresh["kernel_binding"] = copy.deepcopy(replacement_binding)
+    fresh["kernel_binding_overrides"] = history + [receipt]
+    _save_state(ws, fresh)
+    return receipt
+
+
 def review_depth_policy(requirement: dict | None) -> dict:
     """Resolve the shipped automatic policy: bounded sweep and correction."""
     requirement = requirement if isinstance(requirement, dict) else {}

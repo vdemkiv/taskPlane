@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from taskplane import evaluation_output, loop
 from taskplane.delivery_ports import (
     FakeClock,
     RecordedHostActionCapabilitySource,
@@ -163,3 +164,43 @@ def test_mismatched_or_ambiguous_host_event_fails_before_capability_consumption(
             raw,
             events=RecordedProducerEventSource([event, event]),
         )
+
+
+@pytest.mark.parametrize("row", [0, 1], ids=["evaluator", "em"])
+def test_loop_submission_consumes_observable_producer_receipt(tmp_path, row):
+    event, raw = _fixture_rows()[row]
+    receipt, _, _, _ = _observe(tmp_path, event, raw)
+    submission = {
+        "step": event["stage"],
+        "task": event["task_id"],
+        "evidence_paths": [event["output_path"]],
+    }
+
+    observed = loop.bind_producer_observation(
+        submission,
+        receipt,
+        output_bytes=raw,
+        output_schema_id=event["output_schema_id"],
+        output_contract_fingerprint=event["output_contract_fingerprint"],
+    )
+
+    assert observed["producer_observation"] == receipt
+    assert evaluation_output.validate_submission_observation(
+        observed,
+        output_bytes=raw,
+        output_schema_id=event["output_schema_id"],
+        output_contract_fingerprint=event["output_contract_fingerprint"],
+    ) == receipt
+
+
+def test_loop_submission_rejects_missing_observation_without_outage_path():
+    with pytest.raises(ProducerObservationError, match="producer observation") as caught:
+        loop.bind_producer_observation(
+            {"step": "evaluate", "task": "task-eval"},
+            None,
+            output_bytes=b"{}\n",
+            output_schema_id="taskplane.evaluator-output/v1",
+            output_contract_fingerprint="d" * 64,
+        )
+
+    assert "outage" not in str(caught.value).lower()

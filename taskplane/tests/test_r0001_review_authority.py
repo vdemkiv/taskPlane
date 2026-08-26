@@ -17,6 +17,7 @@ from taskplane.review_authority import (
     rebind_request_digest,
     reconcile,
 )
+from taskplane import review
 
 
 CONTRACT_FINGERPRINT = "c" * 64
@@ -251,3 +252,112 @@ def test_concurrent_override_cas_allows_one_successor(tmp_path):
         detail for status, detail in outcomes if status == "refused"
     )
     assert len(reconcile(store)) == 1
+
+
+def test_review_kernel_rebind_adapter_updates_only_after_override_receipt(
+    tmp_path, monkeypatch
+):
+    store = SandboxEvidenceStore(tmp_path, "repo", "run")
+    source = RecordedHostActionCapabilitySource()
+    state = {
+        "run_id": "1" * 32,
+        "stage": "build",
+        "status": "ready",
+        "slots": [],
+        "kernel_binding": PRIOR_BINDING,
+        "kernel_binding_overrides": [],
+    }
+    saved = []
+    monkeypatch.setattr(review, "_load_state", lambda _ws, _run_id: state)
+    monkeypatch.setattr(review, "_save_state", lambda _ws, value: saved.append(value))
+    lifecycle = review.project_review_kernel_lifecycle("/workspace", state)
+    digest = rebind_request_digest(
+        run_id="delivery-run",
+        kernel_id=state["run_id"],
+        stage="Evaluate",
+        prior_binding=PRIOR_BINDING,
+        replacement_binding=REPLACEMENT_BINDING,
+        lifecycle=lifecycle,
+        human_actor="human:operator",
+        reason="repair binding",
+        host_session_id="session-1",
+        host_turn_id="turn-1",
+        host_sequence=1,
+        contract_fingerprint=CONTRACT_FINGERPRINT,
+    )
+    handle = source.issue(
+        capability_id="cap-adapter",
+        purpose="review_rebind",
+        sequence=1,
+        host_session_id="session-1",
+        host_turn_id="turn-1",
+        run_id="delivery-run",
+        kernel_id=state["run_id"],
+        task_id=None,
+        stage="Evaluate",
+        request_or_output_digest=digest,
+        contract_fingerprint=CONTRACT_FINGERPRINT,
+        issued_at=10.0,
+        expires_at=20.0,
+    )
+
+    receipt = review.rebind_review_kernel(
+        "/workspace",
+        run_id="delivery-run",
+        kernel_run_id=state["run_id"],
+        stage="Evaluate",
+        replacement_binding=REPLACEMENT_BINDING,
+        human_actor="human:operator",
+        reason="repair binding",
+        host_session_id="session-1",
+        host_turn_id="turn-1",
+        host_sequence=1,
+        contract_fingerprint=CONTRACT_FINGERPRINT,
+        capability_handle=handle,
+        capability_source=source,
+        evidence_store=store,
+        clock=FakeClock(11.0),
+    )
+
+    assert receipt["schema"] == "taskplane.review-kernel-override/v1"
+    assert saved[-1]["kernel_binding"] == REPLACEMENT_BINDING
+    assert saved[-1]["kernel_binding_overrides"] == [receipt]
+
+
+def test_review_kernel_rebind_adapter_refuses_started_slot_before_mutation(
+    tmp_path, monkeypatch
+):
+    store = SandboxEvidenceStore(tmp_path, "repo", "run")
+    source = RecordedHostActionCapabilitySource()
+    state = {
+        "run_id": "2" * 32,
+        "stage": "build",
+        "status": "ready",
+        "slots": [{"slot_id": "slot-1", "started": True}],
+        "kernel_binding": PRIOR_BINDING,
+        "kernel_binding_overrides": [],
+    }
+    saved = []
+    monkeypatch.setattr(review, "_load_state", lambda _ws, _run_id: state)
+    monkeypatch.setattr(review, "_save_state", lambda _ws, value: saved.append(value))
+
+    with pytest.raises(ReviewAuthorityError, match="immutable"):
+        review.rebind_review_kernel(
+            "/workspace",
+            run_id="delivery-run",
+            kernel_run_id=state["run_id"],
+            stage="Evaluate",
+            replacement_binding=REPLACEMENT_BINDING,
+            human_actor="human:operator",
+            reason="repair binding",
+            host_session_id="session-1",
+            host_turn_id="turn-1",
+            host_sequence=1,
+            contract_fingerprint=CONTRACT_FINGERPRINT,
+            capability_handle="unused",
+            capability_source=source,
+            evidence_store=store,
+            clock=FakeClock(11.0),
+        )
+
+    assert saved == []

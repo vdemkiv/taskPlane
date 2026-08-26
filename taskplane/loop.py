@@ -64,7 +64,139 @@ import storage as runtime_storage
 import taskplane_lite as tp
 import yield_meter
 
+if __package__:
+    from . import delivery_policy
+    from . import evaluation_output as evaluation_output
+    from . import producer_observation as producer_observation_policy
+else:  # pragma: no cover - direct CLI module loading
+    import delivery_policy
+    import producer_observation as producer_observation_policy
+
 LOOP_FILE = "loop.json"
+
+
+def stamp_plan_delivery_mode(
+        state: dict, declaration: Mapping[str, object], *,
+        plan_fingerprint: str, source_sha: str,
+        predecessor_fingerprint: str | None = None) -> dict:
+    """Seal one explicit Plan delivery declaration into loop state.
+
+    Validation happens before mutation so a malformed or contradictory mode
+    cannot leave partial dispatch authority behind.
+    """
+    if not isinstance(state, dict):
+        raise delivery_policy.DeliveryPolicyError(
+            "loop state must be mutable for Plan delivery mode")
+    receipt = delivery_policy.validate_plan_mode(
+        declaration,
+        plan_fingerprint=plan_fingerprint,
+        source_sha=source_sha,
+        predecessor_fingerprint=predecessor_fingerprint,
+    )
+    requirement_id = str(state.get("requirement_id") or "").strip()
+    if requirement_id and receipt["requirement"] != requirement_id:
+        raise delivery_policy.DeliveryPolicyError(
+            "delivery-mode receipt requirement does not match the loop")
+    state["delivery_mode_receipt"] = receipt
+    return receipt
+
+
+def _validated_delivery_mode(state: Mapping[str, object]) -> dict | None:
+    receipt = state.get("delivery_mode_receipt")
+    if receipt is None:
+        return None
+    if not isinstance(receipt, Mapping):
+        raise delivery_policy.DeliveryPolicyError(
+            "delivery-mode receipt must be a mapping")
+    return delivery_policy.validate_delivery_mode_receipt(receipt)
+
+
+def _plan_delivery_mode_from_file(
+        ws: str, state: dict, *, apply: bool) -> dict | None:
+    """Consume an explicitly declared Plan mode without changing legacy Plans."""
+    path = os.path.join(ws, "plan", "tasks.json")
+    try:
+        with open(path, encoding="utf-8") as stream:
+            plan = json.load(stream)
+    except (OSError, ValueError):
+        return _validated_delivery_mode(state)
+    if not isinstance(plan, dict) or "delivery_mode" not in plan:
+        return _validated_delivery_mode(state)
+    declaration = {
+        "requirement": plan.get("requirement") or state.get("requirement_id"),
+        "delivery_mode": plan.get("delivery_mode"),
+        "automatic_lenses": plan.get("automatic_lenses"),
+        "plan_authority": plan.get("plan_authority"),
+    }
+    plan_fingerprint = hashlib.sha256(json.dumps(
+        plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    source_sha = str(tp.git_head(ws) or "")
+    prior = _validated_delivery_mode(state)
+    if prior and all((
+            prior["requirement"] == declaration["requirement"],
+            prior["plan_fingerprint"] == plan_fingerprint,
+            prior["source_sha"] == source_sha,
+            prior["mode"] == declaration["delivery_mode"],
+            prior["automatic_lenses"] == declaration["automatic_lenses"],
+            prior["plan_authority"] == declaration["plan_authority"],
+    )):
+        return prior
+    receipt = delivery_policy.validate_plan_mode(
+        declaration,
+        plan_fingerprint=plan_fingerprint,
+        source_sha=source_sha,
+        predecessor_fingerprint=(prior or {}).get("fingerprint"),
+    )
+    if apply:
+        state["delivery_mode_receipt"] = receipt
+    return receipt
+
+
+def build_dispatch_lens_routing(
+        state: Mapping[str, object], task: Mapping[str, object] | None,
+        *, workspace: str) -> tuple[dict, dict | None]:
+    """Prime legacy Build lenses or enforce a sealed zero-lens Build mode."""
+    receipt = _validated_delivery_mode(state)
+    if receipt is None:
+        if str(state.get("design_fingerprint") or "").strip():
+            raise delivery_policy.DeliveryPolicyError(
+                "delivery-mode receipt is required for a Design-governed build")
+        return (lens_router.prime_scope(
+            (task or {}).get("scope"),
+            task_type=(task or {}).get("type"), workspace=workspace), None)
+    if receipt["mode"] != "build":
+        raise delivery_policy.DeliveryPolicyError(
+            "execute dispatch requires build delivery mode")
+    authorization = build_c.authorize_delivery_dispatch(
+        receipt, lens_worker_factory=lambda lens: lens)
+    return ({
+        "lenses": [],
+        "context": {
+            "delivery_mode": "build",
+            "delivery_mode_receipt": receipt["fingerprint"],
+            "automatic_lens_worker_count": 0,
+        },
+    }, authorization)
+
+
+def bind_producer_observation(
+        submission: Mapping[str, object], receipt: Mapping[str, object] | None,
+        *, output_bytes: bytes, output_schema_id: str,
+        output_contract_fingerprint: str) -> dict:
+    """Attach one exact evaluator/EM host observation to a submission."""
+    if not isinstance(submission, Mapping):
+        raise producer_observation_policy.ProducerObservationError(
+            "submission must be a mapping")
+    observed = dict(submission)
+    observed["producer_observation"] = receipt
+    evaluation_output.validate_submission_observation(
+        observed,
+        output_bytes=output_bytes,
+        output_schema_id=output_schema_id,
+        output_contract_fingerprint=output_contract_fingerprint,
+    )
+    return observed
 
 STAGE_COMMAND_SCHEMA = "taskplane.stage-command-result/v1"
 STAGE_HISTORY_SCHEMA = "taskplane.stage-history-page/v1"
@@ -4391,6 +4523,15 @@ def wave(ws: str) -> dict:
         return {"error": "loop is serial — `loop init --parallel` to enable"}
     if state["step"] != "execute":
         return {"error": f"waves only at execute (current: {state['step']})"}
+    try:
+        delivery_receipt = _validated_delivery_mode(state)
+    except delivery_policy.DeliveryPolicyError as exc:
+        return {"error": "build delivery mode refused before dispatch: "
+                + str(exc), "step": "execute", "parallel": True}
+    if delivery_receipt is not None and delivery_receipt["mode"] != "build":
+        return {"error": "build delivery mode refused before dispatch: "
+                "execute dispatch requires build delivery mode",
+                "step": "execute", "parallel": True}
     tasks = state.get("tasks") or []
     enforcement = ((state.get("enforcement") or {}).get("current"))
     passed = {t["id"] for t in tasks
@@ -4448,9 +4589,12 @@ def wave(ws: str) -> dict:
         task_ws = t.get("workspace") or runtime_storage.task_worktree_path(ws, t["id"])
         if not os.path.isdir(task_ws):
             task_ws = ws
-        prime = lens_router.prime_scope(t.get("scope"),
-                                        task_type=t.get("type"),
-                                        workspace=task_ws)
+        try:
+            prime, delivery_dispatch = build_dispatch_lens_routing(
+                state, t, workspace=task_ws)
+        except delivery_policy.DeliveryPolicyError as exc:
+            return {"error": "build delivery mode refused before dispatch: "
+                    + str(exc), "step": "execute", "parallel": True}
         recalled = kb.retrieve(ws, files=t.get("scope") or [],
                                tags=[t["id"]], limit=3)
         rid = t.get("req") or state.get("requirement_id")
@@ -4463,6 +4607,8 @@ def wave(ws: str) -> dict:
             "worktree": runtime_storage.task_worktree_reference(ws, t["id"]),
             "merge_on_pass": not is_variant,
             "lenses": prime["lenses"],
+            **({"delivery_dispatch": delivery_dispatch}
+               if delivery_dispatch is not None else {}),
             "language_references": (prime.get("context") or {}).get(
                 "language_references") or [],
             "requirement": rec and {"id": rec["id"], "title": rec["title"],
@@ -4913,6 +5059,7 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     # explicit human/calibration `tp lens route --all` surface remains, but
     # delivery never substitutes full-catalog fan-out for uncertainty.
     routing, breadth = None, "routed"
+    delivery_dispatch = None
     if step in ("pm", "plan"):
         # Advisory tier: C-level lenses run at STRATEGY level, always-on at
         # the pm/plan steps — never on code.
@@ -4936,9 +5083,12 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                          "trade-offs, failure modes, and verifiable delivery"
         }]}
     elif step in ("execute", "fix"):
-        routing = lens_router.prime_scope((task or {}).get("scope"),
-                                          task_type=(task or {}).get("type"),
-                                          workspace=wtree)
+        try:
+            routing, delivery_dispatch = build_dispatch_lens_routing(
+                state, task, workspace=wtree)
+        except delivery_policy.DeliveryPolicyError as exc:
+            return {"error": "build delivery mode refused before dispatch: "
+                    + str(exc), "step": step, "status": status(ws)}
     elif step in ("evaluate", "em"):
         # Deferred until graph quality and complete impact exist below.
         # Mapping before that evidence is the ordering defect R-0005 closes.
@@ -5147,6 +5297,8 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                            "role_marker, model when non-null, and "
                            "reasoning_effort."),
         "wait_policy": dispatch_wait_policy,
+        **({"delivery_dispatch": delivery_dispatch}
+           if delivery_dispatch is not None else {}),
         # cross-host artifact: '/'-shaped out, host-shaped in state
         "task": tp.posix_workspace(task),
         "contract": {"read_only": bool(contract.get("read_only")),
@@ -5445,6 +5597,10 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
     tasks, records requirement/contract edges, resolves each task's
     impact policy, and stores the graph DoR verdict on the state."""
     errors = []
+    try:
+        _plan_delivery_mode_from_file(ws, state, apply=apply)
+    except delivery_policy.DeliveryPolicyError as exc:
+        errors.append("Plan delivery mode: " + str(exc))
     for task in state.get("tasks") or []:
         prefix = f"task {task.get('id', '?')}: "
         if not task.get("scope"):

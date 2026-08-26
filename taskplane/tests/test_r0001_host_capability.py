@@ -1,6 +1,7 @@
 import pytest
 
 from taskplane.delivery_ports import DeliveryPortError, RecordedHostActionCapabilitySource
+from taskplane import tp as cli
 
 
 def _source_and_handle(**overrides):
@@ -46,3 +47,13 @@ def test_capability_makes_no_actor_authenticity_claim():
     source, handle, bindings = _source_and_handle()
     capability = source.consume(handle, expected_bindings=bindings, now=11.0)
     assert capability["cryptographic_authenticity_claimed"] is False
+
+
+def test_cli_host_adapter_never_accepts_a_filesystem_capability_handle(tmp_path):
+    injected = tmp_path / "producer-capability"
+    injected.write_text("host-private:forged")
+
+    with pytest.raises(DeliveryPortError, match="host-private"):
+        cli.require_host_private_capability(
+            str(injected), RecordedHostActionCapabilitySource()
+        )

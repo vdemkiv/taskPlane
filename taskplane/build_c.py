@@ -19,6 +19,11 @@ import repository
 import storage as runtime_storage
 import taskplane_lite as tp
 
+if __package__:
+    from . import delivery_policy
+else:  # pragma: no cover - direct CLI module loading
+    import delivery_policy
+
 
 PROGRAM_LEDGER_SCHEMA = "taskplane.program-phase-ledger/v1"
 DEFINE_PROJECTION_SCHEMA = "taskplane.define-projection/v1"
@@ -62,6 +67,22 @@ _integration_state_loader: Callable[[str], object] | None = None
 _wait_policy_factory: Callable[[str, int], dict] | None = None
 _wait_invocation_factory: Callable[[Mapping[str, object],
                                     list[str]], dict] | None = None
+
+
+def authorize_delivery_dispatch(
+        delivery_mode_receipt: Mapping[str, object], *,
+        lens_worker_factory: Callable[[str], object]) -> dict:
+    """Validate delivery authority before any automatic worker is made."""
+    workers = delivery_policy.automatic_lens_workers_for_dispatch(
+        delivery_mode_receipt, lens_worker_factory)
+    receipt = delivery_policy.validate_delivery_mode_receipt(
+        delivery_mode_receipt)
+    return {
+        "schema": "taskplane.delivery-dispatch-authorization/v1",
+        "delivery_mode_receipt": receipt,
+        "automatic_lens_workers": workers,
+        "automatic_lens_worker_count": len(workers),
+    }
 
 
 def bind_loop_runtime(

@@ -1,5 +1,6 @@
 import pytest
 
+from taskplane import build_c, loop, review
 from taskplane.delivery_policy import (
     DeliveryPolicyError,
     automatic_lens_workers_for_dispatch,
@@ -127,3 +128,73 @@ def test_empty_lens_path_never_enters_outage_resolution():
 
     assert receipt["status"] == "complete"
     assert not any("outage" in key or "resolution" in key for key in receipt)
+
+
+def test_plan_gate_receipt_is_the_build_dispatch_authority():
+    state = {"requirement_id": "R-0001"}
+    receipt = loop.stamp_plan_delivery_mode(
+        state,
+        {
+            "requirement": "R-0001",
+            "delivery_mode": "build",
+            "automatic_lenses": [],
+            "plan_authority": "human:operator",
+        },
+        plan_fingerprint=PLAN_FINGERPRINT,
+        source_sha=SOURCE_SHA,
+    )
+    created = []
+
+    dispatch = build_c.authorize_delivery_dispatch(
+        receipt, lens_worker_factory=lambda lens: created.append(lens)
+    )
+
+    assert state["delivery_mode_receipt"] == receipt
+    assert dispatch["delivery_mode_receipt"] == receipt
+    assert dispatch["automatic_lens_workers"] == ()
+    assert created == []
+
+
+def test_review_empty_expected_set_uses_normal_collection_not_outage():
+    outage_calls = []
+
+    receipt = review.collect_expected_set(
+        run_id="run-a",
+        task_id="task-a",
+        stage="Evaluate",
+        expected_lenses=[],
+        collected_lenses=[],
+        result=_evaluator_result(),
+        result_validator=validate_evaluator_value,
+        producer_observation_fingerprint=OBSERVATION_FINGERPRINT,
+        outage_resolver=lambda *_args, **_kwargs: outage_calls.append(True),
+    )
+
+    assert receipt["schema"] == "taskplane.empty-lens-collection/v1"
+    assert receipt["status"] == "complete"
+    assert outage_calls == []
+
+
+def test_design_governed_missing_delivery_mode_never_uses_legacy_lens_fallback(
+    monkeypatch,
+):
+    calls = []
+
+    def forbidden(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("lens routing or worker construction was invoked")
+
+    monkeypatch.setattr(loop.lens_router, "prime_scope", forbidden)
+    monkeypatch.setattr(build_c, "authorize_delivery_dispatch", forbidden)
+
+    with pytest.raises(DeliveryPolicyError, match="delivery-mode receipt"):
+        loop.build_dispatch_lens_routing(
+            {
+                "requirement_id": "R-0001",
+                "design_fingerprint": "d" * 64,
+            },
+            {"id": "t05", "scope": ["taskplane/**"], "type": "integration"},
+            workspace="/workspace",
+        )
+
+    assert calls == []

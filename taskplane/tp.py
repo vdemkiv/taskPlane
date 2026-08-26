@@ -62,6 +62,10 @@ import collision as collision_kernel  # noqa: E402
 import storage as runtime_storage  # noqa: E402
 import run_store as repository_run_store  # noqa: E402
 import governed_commands as governed_command_engine  # noqa: E402
+if __package__:
+    from .delivery_ports import DeliveryPortError  # noqa: E402
+else:  # pragma: no cover - direct CLI execution
+    from delivery_ports import DeliveryPortError  # noqa: E402
 
 
 # Closed user-layer refusal protocol. Only errors whose failure is an
@@ -102,6 +106,18 @@ KNOWN_ENGINE_ERRORS = frozenset(PUBLIC_ENGINE_ERROR_REGISTRY)
 # declared on 34 parsers; the CLI-reference generator refuses any flag
 # with empty help, so one constant keeps all 34 honest and identical.
 _WS_HELP = "repo root this command operates on (default: the cwd)"
+
+
+def require_host_private_capability(handle: str, capability_source) -> str:
+    """Reject product-visible paths where a host-private handle is required."""
+    value = str(handle or "").strip()
+    if not value.startswith("host-private:") or os.path.exists(value):
+        raise DeliveryPortError(
+            "host-private capability must come from the live host channel")
+    if not callable(getattr(capability_source, "consume", None)):
+        raise DeliveryPortError(
+            "host-private capability source is unavailable")
+    return value
 
 
 def _workspace(explicit: str | None = None) -> str:

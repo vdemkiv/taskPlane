@@ -21,6 +21,49 @@ MAX_OUTPUT_BYTES = 1024 * 1024
 MAX_ATTEMPTS = 2
 
 
+def validate_submission_observation(
+        submission: dict, *, output_bytes: bytes, output_schema_id: str,
+        output_contract_fingerprint: str) -> dict:
+    """Validate the producer receipt consumed by evaluator and EM gates."""
+    if __package__:
+        from . import producer_observation
+    else:  # pragma: no cover - direct CLI module loading
+        import producer_observation
+
+    if not isinstance(submission, dict):
+        raise producer_observation.ProducerObservationError(
+            "submission must be a mapping")
+    receipt = submission.get("producer_observation")
+    if not isinstance(receipt, dict):
+        raise producer_observation.ProducerObservationError(
+            "producer observation is required")
+    receipt = producer_observation.validate_producer_observation(receipt)
+    if not isinstance(output_bytes, bytes):
+        raise producer_observation.ProducerObservationError(
+            "output_bytes must be exact bytes")
+    expected_stage = str(submission.get("step") or "").lower()
+    expected_task = str(submission.get("task") or "")
+    if expected_stage not in {"evaluate", "em"} or \
+            receipt["stage"] != expected_stage:
+        raise producer_observation.ProducerObservationError(
+            "producer observation stage does not match submission")
+    if expected_task and receipt["task_id"] != expected_task:
+        raise producer_observation.ProducerObservationError(
+            "producer observation task does not match submission")
+    if receipt["output_bytes"] != len(output_bytes) or \
+            receipt["output_sha256"] != hashlib.sha256(output_bytes).hexdigest():
+        raise producer_observation.ProducerObservationError(
+            "producer observation does not match exact output bytes")
+    if receipt["output_schema_id"] != output_schema_id:
+        raise producer_observation.ProducerObservationError(
+            "producer observation output schema does not match submission")
+    if receipt["output_contract_fingerprint"] != \
+            output_contract_fingerprint:
+        raise producer_observation.ProducerObservationError(
+            "producer observation contract does not match submission")
+    return receipt
+
+
 class OutputContractError(ValueError):
     """The dispatch contract itself is unsafe or contradictory."""
 
