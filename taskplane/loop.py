@@ -5084,6 +5084,10 @@ def scheduler_capacity_from_plan(
                     "taskplane.scheduler-state/v1":
                 return {"error": "trusted parallel capacity requires the "
                                  "current performance scheduler"}
+            scheduler_reservations = scheduler.get("reservations")
+            if not isinstance(scheduler_reservations, list):
+                return {"error": "trusted parallel scheduler reservations "
+                                 "must be a list"}
             if (
                 scheduler.get("run_id"), scheduler.get("source_sha"),
                 scheduler.get("design_fingerprint"),
@@ -5104,7 +5108,7 @@ def scheduler_capacity_from_plan(
                 None or any(
                     isinstance(reservation, Mapping) and
                     reservation.get("evidence_fingerprint") is not None
-                    for reservation in scheduler.get("reservations") or [])
+                    for reservation in scheduler_reservations)
             try:
                 scheduler_evidence_store, _ = \
                     _production_scheduler_evidence(ws, locked)

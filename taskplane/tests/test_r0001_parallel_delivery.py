@@ -1547,6 +1547,62 @@ def test_scheduler_capacity_from_plan_trusted_parallel_accepts_exact_active_set(
     assert result["receipt"]["configured_host_concurrency"] == 3
 
 
+@pytest.mark.parametrize("reservations", [
+    7, True, 1.5, None, "malformed", {},
+])
+def test_scheduler_capacity_from_plan_trusted_parallel_closes_reservation_type(
+    tmp_path, monkeypatch, reservations,
+):
+    state = _trusted_parallel_loop_state()
+    state["performance_scheduler"]["reservations"] = reservations
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
+                        traces.append((_a, _k)))
+    state_path = Path(loop._loop_path(str(tmp_path)))
+    before_bytes = state_path.read_bytes()
+    before_assertions = loop.load(str(tmp_path)).get(
+        "scheduler_capacity_operator_assertions")
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "reservations" in result["error"]
+    assert state_path.read_bytes() == before_bytes
+    assert loop.load(str(tmp_path)).get(
+        "scheduler_capacity_operator_assertions") == before_assertions
+    assert traces == []
+
+
+def test_scheduler_capacity_from_plan_trusted_parallel_accepts_empty_list(
+    tmp_path, monkeypatch,
+):
+    state = _trusted_parallel_loop_state()
+    scheduler = state["performance_scheduler"]
+    scheduler["reservations"] = []
+    scheduler["revision"] = 0
+    scheduler["in_flight"] = {}
+    scheduler["evidence_head"] = None
+    scheduler["statuses"]["t17a"] = "ready"
+    next(task for task in state["tasks"] if task["id"] == "t17a") \
+        ["status"] = "pending"
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "error" not in result, result
+    assert result["operator_assertion"]["current_reservations"] == []
+    assert result["receipt"]["configured_host_concurrency"] == 3
+
+
 def test_scheduler_capacity_from_plan_trusted_parallel_binds_evidence_store(
     tmp_path, monkeypatch,
 ):
