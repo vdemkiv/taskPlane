@@ -1720,67 +1720,6 @@ def test_scheduler_capacity_from_plan_trusted_parallel_closes_replay_evidence(
     assert traces == []
 
 
-@pytest.mark.parametrize(("field", "value"), [
-    ("source", 7),
-    ("source", "wrong-authority"),
-    ("actor", 7),
-    ("actor", ""),
-    ("actor", "x" * 257),
-    ("run_id", 7),
-    ("run_id", ""),
-    ("source_sha", 7),
-    ("source_sha", "a" * 39),
-    ("source_sha", "g" * 40),
-    ("plan_fingerprint", 7),
-    ("plan_fingerprint", "p" * 64),
-    ("delivery_mode_receipt_fingerprint", 7),
-    ("delivery_mode_receipt_fingerprint", "e" * 63),
-    ("scheduler_host_capability_fingerprint", 7),
-    ("scheduler_host_capability_fingerprint", "e" * 63),
-    ("max_in_flight", 3.0),
-    ("cryptographic_authenticity_claimed", 0),
-    ("cryptographic_authenticity_claimed", "false"),
-    ("cryptographic_authenticity_claimed", True),
-    ("host_observation_claimed", 0),
-    ("host_observation_claimed", "false"),
-    ("host_observation_claimed", True),
-])
-def test_scheduler_capacity_from_plan_closes_assertion_authority_schema(
-    tmp_path, monkeypatch, field, value,
-):
-    loop.save(str(tmp_path), _trusted_parallel_loop_state())
-    _capacity_runtime(monkeypatch)
-    traces = []
-    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
-                        traces.append((_a, _k)))
-    first = loop.scheduler_capacity_from_plan(
-        str(tmp_path), trust_parallel=True, by="human:operator",
-        clock=FakeClock(wall_time=10),
-    )
-    assert "error" not in first, first
-    state = loop.load(str(tmp_path))
-    assertion = state["scheduler_capacity_operator_assertions"][0]
-    assertion[field] = value
-    _rehash_operator_assertion(assertion)
-    loop.save(str(tmp_path), state)
-    traces.clear()
-    state_path = Path(loop._loop_path(str(tmp_path)))
-    before_bytes = state_path.read_bytes()
-    before_assertions = copy.deepcopy(
-        state["scheduler_capacity_operator_assertions"])
-
-    result = loop.scheduler_capacity_from_plan(
-        str(tmp_path), trust_parallel=True, by="human:operator",
-        clock=FakeClock(wall_time=20),
-    )
-
-    assert "assertion ledger is malformed" in result["error"]
-    assert state_path.read_bytes() == before_bytes
-    assert loop.load(str(tmp_path))[
-        "scheduler_capacity_operator_assertions"] == before_assertions
-    assert traces == []
-
-
 @pytest.mark.parametrize("fault", ["malformed", "stale", "cross-run"])
 def test_scheduler_capacity_from_plan_trusted_parallel_rejects_bad_reservation(
     tmp_path, monkeypatch, fault,

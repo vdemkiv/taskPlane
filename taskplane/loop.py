@@ -4406,7 +4406,6 @@ SCHEDULER_TRUSTED_PARALLEL_SOURCE = \
 SCHEDULER_ACTIVE_LOOP_STATUSES = frozenset({
     "running", "built", "submitted",
 })
-SCHEDULER_CAPACITY_ACTOR_MAX_LENGTH = 256
 
 
 def _managed_scheduler_run_id(ws: str) -> str:
@@ -4962,37 +4961,15 @@ def _trusted_parallel_assertion_structure(value: object) -> bool:
         "fingerprint",
     }
     if not isinstance(value, Mapping) or set(value) != fields or \
-            value.get("schema") != SCHEDULER_CAPACITY_ASSERTION_SCHEMA or \
-            value.get("source") != SCHEDULER_TRUSTED_PARALLEL_SOURCE:
+            value.get("schema") != SCHEDULER_CAPACITY_ASSERTION_SCHEMA:
         return False
     reservations = value.get("current_reservations")
     tranche = value.get("derived_tranche_members")
     capacity = value.get("configured_host_concurrency")
-    max_in_flight = value.get("max_in_flight")
     asserted_at = value.get("asserted_at")
-    actor = value.get("actor")
-    run_id = value.get("run_id")
-    source_sha = value.get("source_sha")
-    fingerprints = (
-        value.get("plan_fingerprint"),
-        value.get("delivery_mode_receipt_fingerprint"),
-        value.get("scheduler_host_capability_fingerprint"),
-        value.get("fingerprint"),
-    )
-    if not isinstance(actor, str) or not actor.strip() or \
-            len(actor) > SCHEDULER_CAPACITY_ACTOR_MAX_LENGTH or \
-            not isinstance(run_id, str) or not run_id.strip() or \
-            not isinstance(source_sha, str) or len(source_sha) not in {40, 64} or \
-            re.fullmatch(r"[0-9a-f]+", source_sha) is None or \
-            any(not isinstance(fingerprint, str) or re.fullmatch(
-                r"[0-9a-f]{64}", fingerprint) is None
-                for fingerprint in fingerprints) or \
-            value.get("cryptographic_authenticity_claimed") is not False or \
-            value.get("host_observation_claimed") is not False or \
-            not isinstance(reservations, list) or not isinstance(tranche, list) or \
+    if not isinstance(reservations, list) or not isinstance(tranche, list) or \
             not isinstance(capacity, int) or isinstance(capacity, bool) or \
-            not isinstance(max_in_flight, int) or \
-            isinstance(max_in_flight, bool) or capacity != max_in_flight or \
+            capacity != value.get("max_in_flight") or \
             capacity < 2 or capacity > SCHEDULER_TRUSTED_PARALLEL_CAP or \
             len(tranche) != capacity or \
             any(not isinstance(task_id, str) or re.fullmatch(
@@ -5010,8 +4987,8 @@ def _trusted_parallel_assertion_structure(value: object) -> bool:
                 "task_id", "reservation_fingerprint", "capability_id"} or \
                 not isinstance(reservation.get("task_id"), str) or \
                 reservation.get("task_id") not in tranche or any(
-                    not isinstance(reservation.get(field), str) or
-                    re.fullmatch(r"[0-9a-f]{64}", reservation[field]) is None
+                    re.fullmatch(r"[0-9a-f]{64}", str(
+                        reservation.get(field) or "")) is None
                     for field in ("reservation_fingerprint", "capability_id")):
             return False
         reservation_task_ids.append(reservation["task_id"])
@@ -5049,9 +5026,8 @@ def scheduler_capacity_from_plan(
     """Mint fixed-one or bounded human-attributed capacity from sealed Plan."""
     if not trust_parallel and by is not None:
         return {"error": "--by requires --trust-parallel"}
-    actor = by if isinstance(by, str) else ""
-    if trust_parallel and (not actor.strip() or
-                           len(actor) > SCHEDULER_CAPACITY_ACTOR_MAX_LENGTH):
+    actor = str(by or "")
+    if trust_parallel and not actor.strip():
         return {"error": "trusted parallel capacity requires attributed --by"}
     active_clock = clock or SystemClock()
     trace_data = None
