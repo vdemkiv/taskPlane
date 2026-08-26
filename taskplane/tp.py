@@ -2759,7 +2759,9 @@ def cmd_loop(a) -> int:
         except depgraph.GraphQualityDegraded as exc:
             out = {"error": str(exc), "step": "graph-quality"}
     elif action == "submit":
-        out = loopmod.submit(ws, a.outcome, note=a.note or "", task_id=a.task)
+        out = loopmod.submit(
+            ws, a.outcome, note=a.note or "", task_id=a.task,
+            producer_observation=getattr(a, "producer_observation", None))
     elif action == "gate":
         import depgraph
         try:
@@ -7149,6 +7151,9 @@ def main(argv=None) -> int:
                      help="one-line evidence note recorded with the "
                           "submission")
     lsu.add_argument("--task", help="task id (parallel execute waves)")
+    lsu.add_argument(
+        "--producer-observation", type=json.loads, default=None,
+        help="exact host-observed producer receipt as a JSON object")
     ls_ = lsub.add_parser("select", help="A/B selection gate: pick the "
                           "variant that ships (or 'hybrid')")
     ls_.add_argument("choice", help="variant letter, task id, or 'hybrid'")

@@ -1,6 +1,19 @@
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+
 import pytest
 
-from taskplane import build_c, loop, review
+from taskplane import (
+    build_c,
+    lens,
+    loop,
+    review,
+    storage as runtime_storage,
+    tp as tp_cli,
+)
+from taskplane.delivery_ports import content_fingerprint
 from taskplane.delivery_policy import (
     DeliveryPolicyError,
     automatic_lens_workers_for_dispatch,
@@ -9,6 +22,7 @@ from taskplane.delivery_policy import (
 )
 from taskplane.evaluation_output import (
     OutputValidationError,
+    canonical_bytes,
     validate_evaluator_value,
 )
 
@@ -65,6 +79,147 @@ def _empty_collection(result):
     )
 
 
+def _producer_observation(*, raw: bytes, run_id: str, task_id: str,
+                          output_path: str, source_sha: str) -> dict:
+    projection = {
+        "schema": "taskplane.producer-observation/v1",
+        "run_id": run_id,
+        "task_id": task_id,
+        "stage": "evaluate",
+        "producer": "tp-evaluator",
+        "host": "codex",
+        "host_session_or_turn": "session:turn",
+        "output_path": output_path,
+        "output_bytes": len(raw),
+        "output_sha256": hashlib.sha256(raw).hexdigest(),
+        "output_schema_id": "taskplane.evaluator-output/v1",
+        "output_contract_fingerprint": "d" * 64,
+        "source_sha": source_sha,
+        "observed_at": 1.0,
+    }
+    return {**projection, "fingerprint": content_fingerprint(projection)}
+
+
+def _complete_review_route():
+    return {
+        "lenses": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "mode": "subagent",
+                "tier": "deep",
+                "verdict": "deep",
+                "score": 10,
+                "reasons": ["would be selected without delivery authority"],
+                "evidence": ["controlled complete mapper result"],
+                "checks": row.get("checks") or [],
+                "looks_for": row.get("looks_for") or "",
+            }
+            for row in lens.load_catalog()["lenses"]
+        ],
+        "context": {"status": "complete", "breadth": "routed"},
+    }
+
+
+def _start_evaluate_kernel(workspace: Path, receipt):
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return review.start_review(
+        str(workspace),
+        target={
+            "fingerprint": "e" * 64,
+            "head": head,
+            "task": "task-a",
+        },
+        graph={
+            "meta": {
+                "scanned_head": head,
+                "content_fingerprint": "f" * 64,
+            },
+            "modules": {"src": {"files": ["src/feature.py"]}},
+            "edges": [],
+        },
+        impact={
+            "touched": ["src"],
+            "impacted": {},
+            "total_impacted": 1,
+            "unknown": [],
+        },
+        diff={
+            "files": ["src/feature.py"],
+            "changed_symbols": ["VALUE"],
+        },
+        runnability={"summary": "available", "checks": []},
+        requirement={"id": "R-0001", "text": "zero automatic lenses"},
+        acceptance=["the feature is complete"],
+        contracts=["contract:delivery-mode-receipt"],
+        stage=loop.EVALUATE_ROUTE_STAGE,
+        task_type="feature",
+        router=_complete_review_route,
+        delivery_mode_receipt=receipt,
+    )
+
+
+def _plan_workspace(root: Path) -> Path:
+    workspace = root / "workspace"
+    (workspace / "plan").mkdir(parents=True)
+    (workspace / "src").mkdir()
+    (workspace / "src" / "feature.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "taskplane@example.test"],
+        cwd=workspace,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Taskplane Test"],
+        cwd=workspace,
+        check=True,
+    )
+    subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "baseline"], cwd=workspace, check=True
+    )
+    (workspace / "plan" / "tasks.json").write_text(
+        json.dumps(
+            {
+                "requirement": "R-0001",
+                "delivery_mode": "build",
+                "automatic_lenses": [],
+                "plan_authority": "human:operator",
+                "tasks": [
+                    {
+                        "id": "task-a",
+                        "scope": ["src/**"],
+                        "tests": "true",
+                        "criteria": ["the feature is complete"],
+                    }
+                ],
+            }
+        )
+    )
+    initialized = loop.init(
+        str(workspace),
+        "delivery receipt lifecycle",
+        spec_path="specs/spec.md",
+        checkpoints=[],
+    )
+    assert initialized["step"] == "plan"
+    return workspace
+
+
+def _gate_plan_to_execute(workspace: Path) -> dict:
+    gated = loop.gate(str(workspace), "pass")
+    assert "error" not in gated
+    assert gated["step"] == "execute"
+    return loop.load(str(workspace))
+
+
 def test_plan_gate_requires_and_stamps_delivery_mode():
     receipt = _build_receipt()
 
@@ -92,21 +247,80 @@ def test_build_mode_dispatch_creates_zero_automatic_lens_workers():
     assert created == []
 
 
-def test_sever_delivery_mode_receipt_to_dispatch_fails_closed():
-    receipt = _build_receipt()
-    receipt["source_sha"] = "d" * 40
-    created = []
+def test_plan_gate_persists_receipt_to_subsequent_zero_lens_dispatch(tmp_path):
+    workspace = _plan_workspace(tmp_path)
+    state = _gate_plan_to_execute(workspace)
+    receipt = state["delivery_mode_receipt"]
 
-    with pytest.raises(DeliveryPolicyError, match="fingerprint"):
-        automatic_lens_workers_for_dispatch(
-            receipt, lambda lens: created.append(lens)
-        )
-    assert created == []
+    action = loop.next_action(str(workspace))
+
+    assert "error" not in action
+    assert action["step"] == "execute"
+    assert action["delivery_dispatch"]["delivery_mode_receipt"] == receipt
+    assert action["delivery_dispatch"]["automatic_lens_workers"] == ()
+    assert action["delivery_dispatch"]["automatic_lens_worker_count"] == 0
+    assert action["lenses"] == []
 
 
-def test_empty_expected_lenses_emits_successful_collection_receipt():
-    receipt = _empty_collection(_evaluator_result())
+def test_sever_delivery_mode_receipt_to_dispatch_fails_closed(
+    tmp_path, monkeypatch
+):
+    worker_calls = []
 
+    def forbidden(*_args, **_kwargs):
+        worker_calls.append(True)
+        raise AssertionError("legacy routing or worker construction ran")
+
+    monkeypatch.setattr(loop.lens_router, "prime_scope", forbidden)
+    monkeypatch.setattr(build_c, "authorize_delivery_dispatch", forbidden)
+
+    for edge_failure in ("missing", "tampered"):
+        workspace = _plan_workspace(tmp_path / edge_failure)
+        state = _gate_plan_to_execute(workspace)
+        if edge_failure == "missing":
+            state.pop("delivery_mode_receipt")
+            state["design_fingerprint"] = "d" * 64
+        else:
+            state["delivery_mode_receipt"]["source_sha"] = "d" * 40
+        loop.save(str(workspace), state)
+
+        action = loop.next_action(str(workspace))
+
+        assert "build delivery mode refused before dispatch" in action["error"]
+
+    assert worker_calls == []
+
+
+def test_empty_expected_lenses_emits_successful_collection_receipt(tmp_path):
+    workspace = _plan_workspace(tmp_path)
+    opened = _start_evaluate_kernel(workspace, _build_receipt())
+    started = review._load_state(str(workspace), opened["run_id"])
+
+    collected = loop.collect_review_bridge(
+        str(workspace),
+        publish=False,
+        run_id=opened["run_id"],
+        evaluator_result=_evaluator_result(),
+        producer_observation_fingerprint=OBSERVATION_FINGERPRINT,
+    )
+    completed = review._load_state(str(workspace), opened["run_id"])
+    receipt = collected["empty_lens_collection"]
+
+    assert opened["slots"] == []
+    assert opened["expected_lenses"] == []
+    assert opened["slot_conservation"]["status"] == "empty"
+    assert started["expected_lenses"] == []
+    assert started["slots"] == []
+    assert all(
+        row["mode"] == "none" and row["tier"] == "n/a"
+        and row["negative_evidence"]
+        for row in started["routing"]["lenses"]
+    )
+    assert len(started["routing"]["lenses"]) == len(
+        lens.load_catalog()["lenses"]
+    )
+    assert collected["status"] == "complete"
+    assert completed["empty_lens_collection"] == receipt
     assert receipt["schema"] == "taskplane.empty-lens-collection/v1"
     assert receipt["expected_lenses"] == []
     assert receipt["collected_lenses"] == []
@@ -114,6 +328,128 @@ def test_empty_expected_lenses_emits_successful_collection_receipt():
     assert receipt["producer_observation_fingerprint"] == OBSERVATION_FINGERPRINT
     assert len(receipt["result_fingerprint"]) == 64
     assert len(receipt["fingerprint"]) == 64
+
+
+def test_cli_evaluate_submission_collects_observed_empty_set_before_guidance(
+    tmp_path, monkeypatch, capsys
+):
+    workspace = _plan_workspace(tmp_path)
+    state = _gate_plan_to_execute(workspace)
+    task = loop._current_task(state)
+    opened = _start_evaluate_kernel(
+        workspace, state["delivery_mode_receipt"]
+    )
+    task["status"] = "built"
+    state["step"] = "evaluate"
+    state.setdefault("review_kernel_runs", {})[
+        loop._review_kernel_binding_key("evaluate", task)
+    ] = {
+        "schema": "taskplane.review-kernel-binding/v1",
+        "run_id": opened["run_id"],
+        "workspace": str(workspace),
+        "stage": loop.EVALUATE_ROUTE_STAGE,
+        "status": "ready",
+    }
+    loop.save(str(workspace), state)
+
+    verdict = _evaluator_result()
+    raw = canonical_bytes(verdict)
+    verdict_path = Path(runtime_storage.evaluation_path(str(workspace)))
+    verdict_path.parent.mkdir(parents=True, exist_ok=True)
+    verdict_path.write_bytes(raw)
+    observation = _producer_observation(
+        raw=raw,
+        run_id=opened["run_id"],
+        task_id=task["id"],
+        output_path=str(verdict_path.relative_to(workspace)),
+        source_sha=subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=workspace, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip(),
+    )
+    guidance_calls = []
+
+    def assert_collected_before_guidance(*_args, **_kwargs):
+        completed = review._load_state(str(workspace), opened["run_id"])
+        guidance_calls.append(completed["empty_lens_collection"])
+        assert completed["status"] == "complete"
+        return {"status": "on_path", "facts": {
+            "lens_results_collected": True,
+            "output_producer_observed": True,
+        }}
+
+    monkeypatch.setattr(
+        loop.runtime_eval, "guide_loop", assert_collected_before_guidance
+    )
+
+    exit_code = tp_cli.main([
+        "loop", "--workspace", str(workspace), "submit", "pass",
+        "--producer-observation", json.dumps(
+            observation, sort_keys=True, separators=(",", ":")
+        ),
+    ])
+    submitted = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert submitted["submitted"] is True
+    assert guidance_calls[0]["expected_lenses"] == []
+    assert guidance_calls[0]["collected_lenses"] == []
+    assert submitted["submission"]["producer_observation"] == observation
+
+    severed = _plan_workspace(tmp_path / "severed")
+    severed_state = _gate_plan_to_execute(severed)
+    severed_task = loop._current_task(severed_state)
+    severed_opened = _start_evaluate_kernel(
+        severed, severed_state["delivery_mode_receipt"]
+    )
+    severed_task["status"] = "built"
+    severed_state["step"] = "evaluate"
+    severed_state.setdefault("review_kernel_runs", {})[
+        loop._review_kernel_binding_key("evaluate", severed_task)
+    ] = {
+        "schema": "taskplane.review-kernel-binding/v1",
+        "run_id": severed_opened["run_id"],
+        "workspace": str(severed),
+        "stage": loop.EVALUATE_ROUTE_STAGE,
+        "status": "ready",
+    }
+    loop.save(str(severed), severed_state)
+    severed_path = Path(runtime_storage.evaluation_path(str(severed)))
+    severed_path.parent.mkdir(parents=True, exist_ok=True)
+    severed_path.write_bytes(raw)
+
+    refused = loop.submit(str(severed), "pass")
+
+    assert refused["submitted"] is False
+    assert "producer observation" in refused["error"]
+    assert review._load_state(
+        str(severed), severed_opened["run_id"]
+    )["status"] == "ready"
+    assert len(guidance_calls) == 1
+
+
+@pytest.mark.parametrize("edge", ["missing", "tampered"])
+def test_evaluate_review_kernel_severed_delivery_authority_fails_before_start(
+    tmp_path, monkeypatch, edge
+):
+    workspace = _plan_workspace(tmp_path)
+    receipt = _build_receipt()
+    if edge == "missing":
+        receipt = None
+    else:
+        receipt["source_sha"] = "d" * 40
+    starts = []
+
+    def forbidden_start(*_args, **_kwargs):
+        starts.append(True)
+        raise AssertionError("ReviewKernel state was persisted")
+
+    monkeypatch.setattr(review, "_save_state", forbidden_start)
+
+    with pytest.raises(review.ReviewKernelError, match="delivery-mode authority"):
+        _start_evaluate_kernel(workspace, receipt)
+
+    assert starts == []
 
 
 def test_malformed_empty_lens_result_is_not_success():
