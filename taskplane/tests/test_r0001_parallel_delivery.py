@@ -1159,6 +1159,31 @@ def test_scheduler_capacity_from_plan_trusted_parallel_replay_is_idempotent(
     assert len(before["scheduler_capacity_operator_assertions"]) == 1
 
 
+def test_scheduler_capacity_from_plan_trusted_parallel_replay_binds_actor(
+    tmp_path, monkeypatch,
+):
+    loop.save(str(tmp_path), _trusted_parallel_loop_state())
+    _capacity_runtime(monkeypatch)
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
+                        traces.append((_a, _k)))
+    loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:first",
+        clock=FakeClock(wall_time=10),
+    )
+    before = loop.load(str(tmp_path))
+    trace_count = len(traces)
+
+    replay = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:second",
+        clock=FakeClock(wall_time=20),
+    )
+
+    assert "actor" in replay["error"]
+    assert loop.load(str(tmp_path)) == before
+    assert len(traces) == trace_count
+
+
 def test_scheduler_capacity_from_plan_trusted_parallel_refuses_tampered_assertion(
     tmp_path, monkeypatch,
 ):
@@ -1181,6 +1206,26 @@ def test_scheduler_capacity_from_plan_trusted_parallel_refuses_tampered_assertio
     )
 
     assert "assertion ledger is malformed" in result["error"]
+    assert loop.load(str(tmp_path)) == before
+
+
+def test_scheduler_capacity_from_plan_trusted_parallel_binds_exact_loop_plan(
+    tmp_path, monkeypatch,
+):
+    state = _trusted_parallel_loop_state()
+    for task in state["tasks"]:
+        if task["id"] in {"t17a", "t17b"}:
+            task["scope"] = ["exports/t17/severed-shared-owner"]
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    before = loop.load(str(tmp_path))
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "sealed Plan" in result["error"]
     assert loop.load(str(tmp_path)) == before
 
 
@@ -1229,6 +1274,33 @@ def test_scheduler_capacity_from_plan_trusted_parallel_refuses_non_t17_ready(
     )
 
     assert "T17-only" in result["error"]
+    assert loop.load(str(tmp_path)) == before
+
+
+@pytest.mark.parametrize("field", [
+    "release_credentials_available", "irreversible_actions_allowed",
+])
+def test_scheduler_capacity_from_plan_trusted_parallel_closes_capability_flags(
+    tmp_path, monkeypatch, field,
+):
+    state = _trusted_parallel_loop_state()
+    capability = state["performance_scheduler"]["reservations"][0] \
+        ["assignments"][0]["capability"]
+    capability[field] = True
+    capability["capability_id"] = content_fingerprint({
+        key: value for key, value in capability.items()
+        if key != "capability_id"
+    })
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    before = loop.load(str(tmp_path))
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "capability" in result["error"]
     assert loop.load(str(tmp_path)) == before
 
 
