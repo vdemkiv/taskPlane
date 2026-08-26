@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -24,6 +25,13 @@ _PATH_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _RECEIPT_SCHEMA_V1 = "taskplane.pickup-receipt/v1"
 _RECEIPT_SCHEMA_V2 = "taskplane.pickup-receipt/v2"
 _RECEIPT_PRODUCER = "taskplane.pickup/v1"
+_COLD_START_SCHEMA = "taskplane.pickup-cold-start/v1"
+_COLD_START_LIMIT_SECONDS = 120.0
+_COLD_START_FIELDS = frozenset({
+    "schema", "producer", "expected_sha", "checkout_sha",
+    "taskplane_home_empty", "first_checkpoint_seconds", "limit_seconds",
+    "status", "receipt_digest",
+})
 _RECEIPT_FIELDS_V1 = frozenset({
     "schema", "producer", "authorized_source_sha", "design_fingerprint",
     "approval_digest", "engine_receipt_digest", "element_id",
@@ -138,7 +146,7 @@ def _receipt_digest(receipt: Mapping[str, object]) -> str:
 def _git(checkout: str, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args], cwd=checkout, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+        stderr=subprocess.PIPE, text=True, encoding="utf-8",
         errors="replace", check=False,
     )
     if completed.returncode:
@@ -663,3 +671,96 @@ def run(checkout: str, design_path: str, *, trust_source: str | None = None,
             "equivalent": 0,
         },
     }
+
+
+def _taskplane_home_is_empty(path: str) -> bool:
+    home = Path(path)
+    if not home.exists():
+        return True
+    try:
+        return home.is_dir() and not home.is_symlink() and not any(home.iterdir())
+    except OSError:
+        return False
+
+
+def measure_first_checkpoint(
+        checkout: str, design_path: str, *, expected_sha: str,
+        taskplane_home: str, trust_source: str | None = None) \
+        -> dict[str, object]:
+    """Bind arrival at pickup's first executing checkpoint to a cold start."""
+    root = os.path.realpath(checkout)
+    if not _SHA.fullmatch(expected_sha):
+        raise PickupRefusal("cold-start: expected SHA is invalid")
+    if not taskplane_home or not _taskplane_home_is_empty(taskplane_home):
+        raise PickupRefusal("cold-start: TASKPLANE_HOME is not empty")
+    checkout_sha = _git(root, "rev-parse", "HEAD")
+    if checkout_sha != expected_sha:
+        raise PickupRefusal("cold-start: checkout is not at the expected SHA")
+
+    class _FirstCheckpointReached(RuntimeError):
+        pass
+
+    class _CheckpointTrace(list[str]):
+        def append(self, event: str) -> None:
+            super().append(event)
+            if event == "pickup.checkpoint.started":
+                raise _FirstCheckpointReached
+
+    trace = _CheckpointTrace()
+    started = time.monotonic()
+    try:
+        run(root, design_path, trust_source=trust_source, trace=trace)
+    except _FirstCheckpointReached:
+        pass
+    else:
+        raise PickupRefusal("cold-start: first executing checkpoint is absent")
+    seconds = time.monotonic() - started
+    if _git(root, "rev-parse", "HEAD") != expected_sha:
+        raise PickupRefusal("cold-start: checkout SHA changed during pickup")
+
+    material: dict[str, object] = {
+        "schema": _COLD_START_SCHEMA,
+        "producer": _RECEIPT_PRODUCER,
+        "expected_sha": expected_sha,
+        "checkout_sha": checkout_sha,
+        "taskplane_home_empty": True,
+        "first_checkpoint_seconds": float(seconds),
+        "limit_seconds": _COLD_START_LIMIT_SECONDS,
+        "status": ("passing" if float(seconds) < _COLD_START_LIMIT_SECONDS
+                   else "failed"),
+    }
+    receipt = {**material, "receipt_digest": _digest(material)}
+    return {
+        "schema": "taskplane.pickup-cold-start-result/v1",
+        "status": material["status"],
+        "trace": list(trace),
+        "timing": {"pickup.cold_start.seconds": float(seconds)},
+        "cold_start_receipt": receipt,
+    }
+
+
+def require_r0013_cold_start(
+        receipt: object, *, expected_sha: str) -> dict[str, object]:
+    """Authorize R-0013 resume only from a passing exact-SHA cold-start receipt."""
+    if not isinstance(receipt, dict) or set(receipt) != _COLD_START_FIELDS:
+        raise PickupRefusal("cold-start: passing receipt is required")
+    material = {
+        name: value for name, value in receipt.items()
+        if name != "receipt_digest"
+    }
+    seconds = receipt.get("first_checkpoint_seconds")
+    if not _SHA.fullmatch(expected_sha) or \
+            receipt.get("schema") != _COLD_START_SCHEMA or \
+            receipt.get("producer") != _RECEIPT_PRODUCER or \
+            receipt.get("expected_sha") != expected_sha or \
+            receipt.get("checkout_sha") != expected_sha or \
+            receipt.get("taskplane_home_empty") is not True or \
+            receipt.get("limit_seconds") != _COLD_START_LIMIT_SECONDS or \
+            isinstance(seconds, bool) or \
+            not isinstance(seconds, (int, float)) or \
+            not math.isfinite(float(seconds)) or \
+            not 0.0 <= float(seconds) < _COLD_START_LIMIT_SECONDS or \
+            receipt.get("status") != "passing" or \
+            receipt.get("receipt_digest") != _digest(material):
+        raise PickupRefusal("cold-start: receipt is not passing for exact SHA")
+    return dict(receipt)
