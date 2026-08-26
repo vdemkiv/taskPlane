@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -40,6 +41,28 @@ def _repo(tmp):
     return ws
 
 
+def _bind_scheduler_capacity(ws, concurrency=1):
+    """Model a current host-capability receipt for legacy wave fixtures."""
+    import plan_topology
+    state = loop.load(ws)
+    identity = loop._dispatch_telemetry_identity(ws, state)
+    now = time.time()
+    material = {
+        "schema": plan_topology.HOST_CAPABILITY_SCHEMA,
+        "run_id": identity["run_id"],
+        "source_sha": identity["source_sha"],
+        "plan_fingerprint": identity["plan_fingerprint"],
+        "configured_host_concurrency": concurrency,
+        "max_in_flight": concurrency,
+        "issued_at": now,
+        "expires_at": now + 3600,
+        "cryptographic_authenticity_claimed": False,
+    }
+    state["scheduler_host_capability_receipt"] = {
+        **material,
+        "fingerprint": plan_topology.content_fingerprint(material),
+    }
+    loop.save(ws, state)
 def _deny_unlink():
     """Patch os.remove/os.unlink to behave like a no-unlink FUSE mount."""
     def boom(*a, **k):
@@ -399,6 +422,7 @@ class TestCodexParallelWaveDispatch(unittest.TestCase):
             "deps": [], "status": "pending", "model": "deep",
         }]
         loop.save(self.ws, state)
+        _bind_scheduler_capacity(self.ws)
 
     def _wave(self):
         env = {**os.environ, "TASKPLANE_WORKFLOWS": "0"}
@@ -466,6 +490,7 @@ class TestStatuses(unittest.TestCase):
              "status": statuses[1]},
         ]
         loop.save(ws, st)
+        _bind_scheduler_capacity(ws)
 
     def test_done_seed_satisfies_dep(self):
         ws = _repo(self.tmp)

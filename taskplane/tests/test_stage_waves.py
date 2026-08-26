@@ -336,7 +336,7 @@ def _golden_bytes(name: str) -> str:
 
 
 def _trace_events(ws, event):
-    p = os.path.join(ws, ".taskplane", "trace.jsonl")
+    p = os.path.join(tp_lite.tp_dir(ws), "trace.jsonl")
     if not os.path.isfile(p):
         return []
     with open(p, encoding="utf-8") as f:
@@ -906,7 +906,11 @@ def _walk_design_contract(ws, req):
                      "evidence": "final engineering review"}]},
         "acceptance_map": [
             {"criterion": c, "design_element": "design approval gate",
-             "validation": "state-machine regression test"}
+             "validation": "state-machine regression test",
+             "tests": [
+                 "taskplane/tests/test_stage_waves.py::"
+                 "test_every_gate_reachable_without_workflows",
+             ]}
             for c in req["acceptance"]],
         "risks": [{"risk": "state regression", "mitigation": "opt-in",
                    "owner": "engineering"}],
@@ -1028,8 +1032,111 @@ def _walk_pass_eval(ws):
                        "contracts_checked": contracts},
                    "failures": []}, f)
     _author_kernel_results(act_ws)
-    assert loop.submit(ws, "pass")["submitted"]
+    submitted = loop.submit(ws, "pass")
+    assert submitted.get("submitted"), submitted
     return loop.gate(ws, "pass")
+
+
+def _walk_collect_observed_evaluate(ws, act_ws, state, task):
+    """Model the external host adapter for this compatibility-only walk."""
+    import hashlib
+    import time
+
+    import evaluation_output
+    import review
+    from delivery_ports import (
+        FakeClock,
+        RecordedHostActionCapabilitySource,
+        RecordedProducerEventSource,
+        SandboxEvidenceStore,
+        content_fingerprint,
+    )
+    from producer_observation import observe_submission
+
+    binding = loop.review_kernel_binding(state, "evaluate", task)
+    kernel_ws = str(binding.get("workspace") or act_ws)
+    run_id = binding["run_id"]
+    output_path = os.path.join(act_ws, ".eval", "verdict.json")
+    with open(output_path, "rb") as stream:
+        output_bytes = stream.read()
+    output_digest = hashlib.sha256(output_bytes).hexdigest()
+    contract_fingerprint = content_fingerprint({
+        "schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        "run_id": run_id,
+        "task_id": task["id"],
+        "stage": "evaluate",
+    })
+    now = time.time()
+    host_session_id = "stage-wave-compat-session"
+    host_turn_id = f"evaluate-{run_id}"
+    event = {
+        "schema": "taskplane.host-producer-event/v1",
+        "event_id": f"stage-wave-evaluate-{run_id}",
+        "host": "codex",
+        "host_session_id": host_session_id,
+        "host_turn_id": host_turn_id,
+        "run_id": run_id,
+        "task_id": task["id"],
+        "stage": "evaluate",
+        "producer": "tp-evaluator",
+        "output_path": ".eval/verdict.json",
+        "output_bytes": len(output_bytes),
+        "output_sha256": output_digest,
+        "output_schema_id": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        "output_contract_fingerprint": contract_fingerprint,
+        "source_sha": tp_lite.git_head(act_ws),
+        "observed_at": now,
+    }
+    source = RecordedHostActionCapabilitySource()
+    handle = source.issue(
+        capability_id=f"stage-wave-cap-{run_id}",
+        purpose="producer_observation",
+        sequence=1,
+        host_session_id=host_session_id,
+        host_turn_id=host_turn_id,
+        run_id=run_id,
+        kernel_id=None,
+        task_id=task["id"],
+        stage="evaluate",
+        request_or_output_digest=output_digest,
+        contract_fingerprint=contract_fingerprint,
+        issued_at=now - 1,
+        expires_at=now + 60,
+        nonce=f"stage-wave-{run_id}",
+    )
+    receipt = observe_submission(
+        run_id=run_id,
+        task_id=task["id"],
+        stage="evaluate",
+        producer="tp-evaluator",
+        host="codex",
+        host_session_id=host_session_id,
+        host_turn_id=host_turn_id,
+        output_path=".eval/verdict.json",
+        output_bytes=output_bytes,
+        output_schema_id=evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        output_contract_fingerprint=contract_fingerprint,
+        source_sha=event["source_sha"],
+        capability_handle=handle,
+        event_source=RecordedProducerEventSource([event]),
+        capability_source=source,
+        evidence_store=SandboxEvidenceStore(
+            tp_lite.tp_dir(ws), "stage-wave-compat", run_id),
+        clock=FakeClock(wall_time=now, monotonic=1.0),
+    )
+    observation = evaluation_output.validate_submission_observation(
+        {"step": "evaluate", "task": task["id"],
+         "producer_observation": receipt},
+        output_bytes=output_bytes,
+        output_schema_id=evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        output_contract_fingerprint=contract_fingerprint,
+    )
+    loop.collect_review_bridge(
+        kernel_ws, publish=False, run_id=run_id,
+        evaluator_result=evaluation_output.validate_evaluator_value(
+            json.loads(output_bytes)),
+        producer_observation_fingerprint=observation["fingerprint"],
+    )
 
 
 def _walk_pass_em(ws, state):
@@ -1088,6 +1195,12 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
     import requirements as reqs
     _clean_env(monkeypatch)
     monkeypatch.setenv("TASKPLANE_WORKFLOWS", "0")
+    # A real host supplies this receipt out-of-band.  This transport test
+    # installs an equally strict recorded-host adapter; the production
+    # no-receipt selector remains fail-closed and is exercised separately.
+    monkeypatch.setattr(
+        loop, "_collect_zero_lens_evaluate_before_guidance",
+        _walk_collect_observed_evaluate)
     assert cli.workflow_available(".")["available"] is False
     ws = _walk_repo(str(tmp_path))
     req = reqs.record_requirement(
@@ -1106,10 +1219,12 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
         rc, out = stage_fixture.cli("loop", "--workspace", ws, "next")
         assert rc == 0, out
         payload = json.loads(out)
-        assert payload.get("step") == expect_step, payload
+        action = payload.get("current_action", payload)
+        assert action.get("step") == expect_step, payload
         for key in ("dispatch_path", "workflow"):
             assert key not in payload, (expect_step, key)
-        return payload
+            assert key not in action, (expect_step, key)
+        return action
 
     loop.init(ws, "governed walk", requirement_id=req["id"], design=True)
     nxt("pm")
@@ -1135,12 +1250,16 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
                                 "requirement_depth": 1}}]
     os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
     with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
-        json.dump({"tasks": tasks}, f, indent=2)
+        json.dump({"requirement": req["id"], "delivery_mode": "build",
+                   "automatic_lenses": [],
+                   "plan_authority": "human:walk", "tasks": tasks},
+                  f, indent=2)
     with open(os.path.join(ws, "plan", "plan.md"), "w", encoding="utf-8") as f:
         f.write("# Plan\n\nOne task realizes the approved design.\n")
     assert loop.gate(ws, "pass")["step"] == "plan_approval"    # plan gate
     assert nxt("plan_approval")["paused"]                      # human gate
     assert loop.approve(ws, by="human — walk")["step"] == "execute"
+    stage_fixture.bind_scheduler_capacity(ws, 1)
     # commit the earlier steps' authored artifacts (design/plan) so the
     # execute contract's scope diff starts clean — the engine's own
     # documented recovery for artifacts authored by earlier loop steps

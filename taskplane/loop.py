@@ -5659,20 +5659,37 @@ def _production_scheduler_evidence(ws: str, state: Mapping[str, object]):
     """Resolve the exact managed-run evidence owners for production."""
     locator = runtime_storage.load_workspace_locator(ws)
     identity = _dispatch_telemetry_identity(ws, state)
-    if not isinstance(locator, Mapping) or \
+    if locator is None:
+        # Compatibility workspaces predate managed-run locators.  They still
+        # have a private, repository-keyed external store, and admission has
+        # already validated an exact run/source/Plan capacity receipt before
+        # reaching this owner.  Persist the same immutable scheduler evidence
+        # there without changing the checkout's legacy control/worktree paths.
+        run_id = runtime_storage.validate_stage_path_id(
+            identity["run_id"], "scheduler run id")
+        home = os.path.realpath(tp.external_store_root(ws))
+        managed_run = os.path.realpath(os.path.join(home, "runs", run_id))
+        if os.path.commonpath((home, managed_run)) != home:
+            raise plan_topology.PlanTopologyError(
+                "scheduler legacy run root escapes its private store")
+        os.makedirs(managed_run, exist_ok=True)
+        repository = runtime_storage.resolve_repository_identity(ws)
+        repository_identity = str(repository.repo_id or repository.key)
+    elif not isinstance(locator, Mapping) or \
             str(locator.get("run_id") or "") != identity["run_id"]:
         raise plan_topology.PlanTopologyError(
             "scheduler evidence requires the exact managed run locator")
-    home = os.path.realpath(str(locator.get("home") or ""))
-    managed_run = os.path.realpath(os.path.join(
-        home, "runs", identity["run_id"]))
-    if not home or not os.path.isabs(home) or \
-            os.path.commonpath((home, managed_run)) != home or \
-            not os.path.isdir(managed_run):
-        raise plan_topology.PlanTopologyError(
-            "scheduler managed run root is unavailable")
-    repository_identity = str(
-        locator.get("repo_id") or locator.get("repository_key") or "")
+    else:
+        home = os.path.realpath(str(locator.get("home") or ""))
+        managed_run = os.path.realpath(os.path.join(
+            home, "runs", identity["run_id"]))
+        if not home or not os.path.isabs(home) or \
+                os.path.commonpath((home, managed_run)) != home or \
+                not os.path.isdir(managed_run):
+            raise plan_topology.PlanTopologyError(
+                "scheduler managed run root is unavailable")
+        repository_identity = str(
+            locator.get("repo_id") or locator.get("repository_key") or "")
     if not repository_identity:
         raise plan_topology.PlanTopologyError(
             "scheduler repository identity is unavailable")
@@ -6532,6 +6549,10 @@ def wave(ws: str) -> dict:
             now = SystemClock().wall_time()
             task_by_id = {str(task["id"]): task for task in tasks}
             for task_id, intent in dispatch_intents.items():
+                existing_binding = next((
+                    row for row in live_ledger.get("bindings") or []
+                    if row.get("dispatch_id") == str(intent["intent_id"])
+                ), None)
                 scheduler_assignment = scheduler_assignments.get(task_id)
                 capability = ((scheduler_assignment or {}).get("capability")
                               or {})
@@ -6552,11 +6573,15 @@ def wave(ws: str) -> dict:
                         "dependencies": [str(value) for value in
                                          task.get("deps") or []],
                         "shared_owner": None,
-                        "started_at": now, "ended_at": now,
+                        "started_at": ((existing_binding or {}).get(
+                            "started_at", now)),
+                        "ended_at": ((existing_binding or {}).get(
+                            "ended_at", now)),
                         "wait_duration_seconds": 0,
                         "correction_count": int(
                             task.get("fix_cycles") or 0),
-                        "events": [],
+                        "events": list((existing_binding or {}).get(
+                            "events") or []),
                     },
                     reservation_fingerprint=reservation_fingerprint,
                     capability_id=capability_id,
@@ -6636,9 +6661,6 @@ def wave(ws: str) -> dict:
         if stage_dispatch is not None:
             entry["stage_runtime_dispatch"] = stage_dispatch
         entry["dispatch_intent"] = dispatch_intents[str(t["id"])]
-        if capacity_bound_scheduler:
-            entry["scheduler_assignment"] = \
-                scheduler_assignments[str(t["id"])]
         entries.append(entry)
     tp.trace(ws, "loop_wave", ready=[t["id"] for t in ready],
              held=[h["task"] for h in held],
@@ -6681,7 +6703,6 @@ def wave(ws: str) -> dict:
         "step": "execute", "parallel": True,
         "wave": entries, "held": held,
         "wait_invocation": wave_wait_invocation,
-        "scheduler_admission": scheduler_admission,
         **({"enforcement": enforcement} if enforcement else {}),
         "runtime_evals": runtime_eval.guidance("execute"),
         "instruction": (

@@ -604,7 +604,7 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
         return ws
 
     def _traces(self, ws, event):
-        p = os.path.join(ws, ".taskplane", "trace.jsonl")
+        p = os.path.join(tp.tp_dir(ws), "trace.jsonl")
         if not os.path.isfile(p):
             return []
         with open(p, encoding="utf-8") as f:

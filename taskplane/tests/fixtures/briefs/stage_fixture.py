@@ -40,6 +40,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TASKPLANE = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
@@ -188,8 +189,37 @@ def start_loop(ws: str) -> None:
     loop.next_action(ws)
     loop.gate(ws, "pass")
     loop.approve(ws)
+    bind_scheduler_capacity(ws, len(TASKS))
 
 
+def bind_scheduler_capacity(ws: str, concurrency: int) -> None:
+    """Supply one structurally valid host-capacity receipt to a fixture.
+
+    Successful production waves require external host-capability authority;
+    compatibility fixtures model that boundary explicitly instead of relying
+    on the pre-scheduler ready-count inference that production now refuses.
+    """
+    import loop
+    import plan_topology
+    state = loop.load(ws)
+    identity = loop._dispatch_telemetry_identity(ws, state)
+    now = time.time()
+    material = {
+        "schema": plan_topology.HOST_CAPABILITY_SCHEMA,
+        "run_id": identity["run_id"],
+        "source_sha": identity["source_sha"],
+        "plan_fingerprint": identity["plan_fingerprint"],
+        "configured_host_concurrency": concurrency,
+        "max_in_flight": concurrency,
+        "issued_at": now,
+        "expires_at": now + 3600,
+        "cryptographic_authenticity_claimed": False,
+    }
+    state["scheduler_host_capability_receipt"] = {
+        **material,
+        "fingerprint": plan_topology.content_fingerprint(material),
+    }
+    loop.save(ws, state)
 def build_task(ws: str, tid: str, module: str) -> None:
     """One wave worker's task-rail journey: worktree → claim → edit →
     commit → submit → orchestrator gate."""
