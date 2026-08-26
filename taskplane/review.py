@@ -96,6 +96,7 @@ _REVIEW_EXECUTION_RECEIPT_SCHEMA = \
     "taskplane.review-execution-receipt/v1"
 _REVIEW_HOST_ACTION_AUTHORITY = object()
 _REVIEW_HOST_EXECUTION_AUTHORITY = object()
+_DELIVERY_MODE_AUTHORITY_UNSET = object()
 _NATIVE_APPROVAL_SCHEMA = "taskplane.native-approval-receipt/v1"
 _NATIVE_APPROVAL_LEDGER_SCHEMA = "taskplane.native-approval-ledger/v1"
 
@@ -110,6 +111,58 @@ def _native_approval_fingerprint(decision: dict) -> str:
 
 class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
+
+
+def _evaluate_delivery_mode_authority(
+        receipt: object, *, stage: str) -> dict | None:
+    """Validate an explicitly supplied zero-lens Evaluate authority."""
+    if receipt is _DELIVERY_MODE_AUTHORITY_UNSET:
+        return None
+    if stage != "build":
+        raise ReviewKernelError(
+            "Evaluate delivery-mode authority cannot govern a legacy or EM review")
+    if receipt is None:
+        raise ReviewKernelError("Evaluate delivery-mode authority is missing")
+    if __package__:
+        from . import delivery_policy
+    else:  # pragma: no cover - direct CLI module loading
+        import delivery_policy
+    try:
+        normalized = delivery_policy.validate_delivery_mode_receipt(receipt)
+    except delivery_policy.DeliveryPolicyError as exc:
+        raise ReviewKernelError(
+            f"Evaluate delivery-mode authority is invalid: {exc}") from exc
+    if normalized["mode"] != "build" or normalized["automatic_lenses"] != []:
+        raise ReviewKernelError(
+            "Evaluate delivery-mode authority requires build mode with "
+            "automatic_lenses=[]")
+    return normalized
+
+
+def _zero_automatic_lens_route(routing: dict, receipt: dict) -> dict:
+    """Preserve a complete mapper result while evidencing every lens n/a."""
+    routed = copy.deepcopy(routing)
+    authority = (
+        "sealed build delivery mode authorizes automatic_lenses=[] "
+        f"({receipt['fingerprint']})"
+    )
+    for row in routed.get("lenses") or []:
+        prior = str(row.get("verdict") or row.get("tier") or "unknown")
+        negative = [authority, f"mapper disposition before authority: {prior}"]
+        negative.extend(str(value) for value in
+                        row.get("negative_evidence") or [] if str(value))
+        row["tier"] = row["verdict"] = "n/a"
+        row["mode"] = "none"
+        row["negative_evidence"] = negative
+        row["reasons"] = list(negative)
+        row.pop("evidence", None)
+    context = routed.setdefault("context", {})
+    context["delivery_mode"] = "build"
+    context["delivery_mode_receipt"] = receipt["fingerprint"]
+    context["automatic_review"] = False
+    context["automatic_lens_worker_count"] = 0
+    context["automatic_tiers"] = ["n/a"]
+    return routed
 
 
 def collect_expected_set(
@@ -2924,13 +2977,18 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  router: Callable | None = None,
                  routing_content: dict | None = None,
                  retry_lenses: Iterable[str] | None = None,
-                 retry_source_run_id: str | None = None) -> dict:
+                 retry_source_run_id: str | None = None,
+                 delivery_mode_receipt: object =
+                 _DELIVERY_MODE_AUTHORITY_UNSET) -> dict:
     """Run the normal Review/Evaluate/final-EM evidence kernel once.
 
     The absolute order is target -> graph quality/one expansion -> complete
     impact -> one mapping -> envelope -> exact dispatch.  Any uncertainty
     returns a compact zero-dispatch manifest.
     """
+    delivery_authority = _evaluate_delivery_mode_authority(
+        delivery_mode_receipt, stage=stage)
+
     import graph_quality
     import lens as lensmod
     import review_evidence as evidence
@@ -3096,8 +3154,12 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                 "lenses": sorted(retry),
                 "reuse": "sealed-pass-dispositions",
             }
-        routing = lensmod.automatic_sweep_route(
-            routing, pinned_lenses=membership_pins)
+        if delivery_authority is not None:
+            routing = _zero_automatic_lens_route(
+                routing, delivery_authority)
+        else:
+            routing = lensmod.automatic_sweep_route(
+                routing, pinned_lenses=membership_pins)
         for entry in routing.get("lenses") or []:
             lid = str(entry.get("id") or "")
             if lid in requested and entry.get("tier") == "sweep":
@@ -3178,17 +3240,24 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     for slot in internal_slots:
         slot["run_id"] = run_id
     slot_ids = sorted(row["slot_id"] for row in internal_slots)
-    slot_fingerprint = hashlib.sha256(json.dumps(
-        slot_ids, separators=(",", ":")).encode()).hexdigest()
-    slot_conservation = {
-        "schema": "taskplane.review-slot-conservation/v1",
-        "status": "dispatched",
-        "selected": {"count": len(slot_ids), "slot_ids": slot_ids},
-        "prepared": {"count": len(slot_ids), "slot_ids": slot_ids},
-        "dispatched": {"count": len(slot_ids), "slot_ids": slot_ids},
-        "collected": {"count": 0, "slot_ids": []},
-        "slot_fingerprint": slot_fingerprint,
-    }
+    expected_lenses = sorted(
+        lens_id for lens_id, row in decision.items()
+        if row["verdict"] != "n/a")
+    if delivery_authority is not None:
+        slot_conservation = _slot_conservation_record(
+            selected=[], prepared=[], dispatched=[], collected=[])
+    else:
+        slot_fingerprint = hashlib.sha256(json.dumps(
+            slot_ids, separators=(",", ":")).encode()).hexdigest()
+        slot_conservation = {
+            "schema": "taskplane.review-slot-conservation/v1",
+            "status": "dispatched",
+            "selected": {"count": len(slot_ids), "slot_ids": slot_ids},
+            "prepared": {"count": len(slot_ids), "slot_ids": slot_ids},
+            "dispatched": {"count": len(slot_ids), "slot_ids": slot_ids},
+            "collected": {"count": 0, "slot_ids": []},
+            "slot_fingerprint": slot_fingerprint,
+        }
     # The execution/render choice belongs to a standalone human-requested
     # review. Loop-internal EM review already has its own governed human
     # gates and must not acquire a second, unrelated approval boundary.
@@ -3231,6 +3300,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "review_depth_policy": depth_receipt,
         "envelope": _portable_ref(envelope_ref), "routing_counts": counts,
         "slot_conservation": slot_conservation,
+        **({"delivery_mode_receipt": copy.deepcopy(delivery_authority),
+            "expected_lenses": expected_lenses}
+           if delivery_authority is not None else {}),
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
         **({"review_session": {"schema": review_session["schema"],
@@ -3255,6 +3327,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "dispatch_slots": slots,
         "manifest": manifest, "counters": counters,
         "slot_conservation": slot_conservation,
+        **({"delivery_mode_receipt": copy.deepcopy(delivery_authority),
+            "expected_lenses": expected_lenses}
+           if delivery_authority is not None else {}),
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
         **({"review_session": review_session} if review_session else {}),
@@ -4944,7 +5019,8 @@ def _resume_collection(ws: str, state: dict, store) -> dict:
 
 
 def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
-                   publish: bool = True, run_id: str | None = None) -> dict:
+                   publish: bool = True, run_id: str | None = None,
+                   empty_lens_collection: dict | None = None) -> dict:
     """Run collection under one exact-owner transaction boundary."""
     import review_evidence as evidence
     selected = _load_state(ws, run_id)
@@ -4966,7 +5042,8 @@ def collect_review(ws: str, *, result_refs: Iterable[dict] | None = None,
     try:
         manifest = _collect_review_transaction(
             ws, result_refs=result_refs, publish=publish,
-            run_id=state["run_id"])
+            run_id=state["run_id"],
+            empty_lens_collection=empty_lens_collection)
     except BaseException:
         with tp.file_lock(_collection_lock_path(ws)):
             _recover_collection_failure(ws, reservation)
@@ -5041,7 +5118,8 @@ def _persist_review_publication_failure(
 
 def _collect_review_transaction(
         ws: str, *, result_refs: Iterable[dict] | None,
-        publish: bool, run_id: str) -> dict:
+        publish: bool, run_id: str,
+        empty_lens_collection: dict | None = None) -> dict:
     """Collect under a reservation owned and finalized by ``collect_review``."""
     import review_evidence as evidence
     with tp.file_lock(_collection_lock_path(ws)):
@@ -5067,6 +5145,28 @@ def _collect_review_transaction(
         if list(result_refs or []):
             raise evidence.ProvenanceError(
                 "direct result references cannot establish hook-observed authorship")
+        authorized_empty_collection = None
+        if state.get("delivery_mode_receipt") is not None:
+            if __package__:
+                from . import delivery_policy
+            else:  # pragma: no cover - direct CLI module loading
+                import delivery_policy
+            if empty_lens_collection is None:
+                raise ReviewKernelError(
+                    "zero-lens Evaluate collection requires a validated "
+                    "evaluator result and producer observation")
+            authorized_empty_collection = \
+                delivery_policy.validate_empty_lens_collection_receipt(
+                    empty_lens_collection)
+            task_id = str((state.get("target") or {}).get("task") or "")
+            if authorized_empty_collection["run_id"] != state["run_id"] or \
+                    authorized_empty_collection["task_id"] != task_id or \
+                    authorized_empty_collection["stage"] != "Evaluate":
+                raise ReviewKernelError(
+                    "empty-lens collection receipt does not match ReviewKernel")
+        elif empty_lens_collection is not None:
+            raise ReviewKernelError(
+                "empty-lens collection receipt lacks delivery-mode authority")
         refs, lens_results, result_validations = [], [], []
         repairs = []
         try:
@@ -5337,6 +5437,9 @@ def _collect_review_transaction(
             "review_depth_policy": depth_receipt,
             "quick_corrections": copy.deepcopy(quick_corrections),
             "sweep_rejections": copy.deepcopy(sweep_rejections),
+            **({"empty_lens_collection": copy.deepcopy(
+                    authorized_empty_collection)}
+               if authorized_empty_collection is not None else {}),
         })
         _collection_fault("post_manifest")
         prepared = dict(
@@ -5349,6 +5452,9 @@ def _collect_review_transaction(
             review_depth_receipt=depth_receipt,
             quick_corrections=copy.deepcopy(quick_corrections),
             sweep_rejections=copy.deepcopy(sweep_rejections),
+            **({"empty_lens_collection": copy.deepcopy(
+                    authorized_empty_collection)}
+               if authorized_empty_collection is not None else {}),
             prior_identity=prior, publication_body=body,
             report_markdown=markdown, publish_requested=bool(publish))
         # This durable reservation precedes every authoritative projection.

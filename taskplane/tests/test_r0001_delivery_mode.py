@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from taskplane import build_c, loop, review
+from taskplane import build_c, lens, loop, review
 from taskplane.delivery_policy import (
     DeliveryPolicyError,
     automatic_lens_workers_for_dispatch,
@@ -66,6 +66,71 @@ def _empty_collection(result):
         result=result,
         result_validator=validate_evaluator_value,
         producer_observation_fingerprint=OBSERVATION_FINGERPRINT,
+    )
+
+
+def _complete_review_route():
+    return {
+        "lenses": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "mode": "subagent",
+                "tier": "deep",
+                "verdict": "deep",
+                "score": 10,
+                "reasons": ["would be selected without delivery authority"],
+                "evidence": ["controlled complete mapper result"],
+                "checks": row.get("checks") or [],
+                "looks_for": row.get("looks_for") or "",
+            }
+            for row in lens.load_catalog()["lenses"]
+        ],
+        "context": {"status": "complete", "breadth": "routed"},
+    }
+
+
+def _start_evaluate_kernel(workspace: Path, receipt):
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return review.start_review(
+        str(workspace),
+        target={
+            "fingerprint": "e" * 64,
+            "head": head,
+            "task": "task-a",
+        },
+        graph={
+            "meta": {
+                "scanned_head": head,
+                "content_fingerprint": "f" * 64,
+            },
+            "modules": {"src": {"files": ["src/feature.py"]}},
+            "edges": [],
+        },
+        impact={
+            "touched": ["src"],
+            "impacted": {},
+            "total_impacted": 1,
+            "unknown": [],
+        },
+        diff={
+            "files": ["src/feature.py"],
+            "changed_symbols": ["VALUE"],
+        },
+        runnability={"summary": "available", "checks": []},
+        requirement={"id": "R-0001", "text": "zero automatic lenses"},
+        acceptance=["the feature is complete"],
+        contracts=["contract:delivery-mode-receipt"],
+        stage=loop.EVALUATE_ROUTE_STAGE,
+        task_type="feature",
+        router=_complete_review_route,
+        delivery_mode_receipt=receipt,
     )
 
 
@@ -195,9 +260,36 @@ def test_sever_delivery_mode_receipt_to_dispatch_fails_closed(
     assert worker_calls == []
 
 
-def test_empty_expected_lenses_emits_successful_collection_receipt():
-    receipt = _empty_collection(_evaluator_result())
+def test_empty_expected_lenses_emits_successful_collection_receipt(tmp_path):
+    workspace = _plan_workspace(tmp_path)
+    opened = _start_evaluate_kernel(workspace, _build_receipt())
+    started = review._load_state(str(workspace), opened["run_id"])
 
+    collected = loop.collect_review_bridge(
+        str(workspace),
+        publish=False,
+        run_id=opened["run_id"],
+        evaluator_result=_evaluator_result(),
+        producer_observation_fingerprint=OBSERVATION_FINGERPRINT,
+    )
+    completed = review._load_state(str(workspace), opened["run_id"])
+    receipt = collected["empty_lens_collection"]
+
+    assert opened["slots"] == []
+    assert opened["expected_lenses"] == []
+    assert opened["slot_conservation"]["status"] == "empty"
+    assert started["expected_lenses"] == []
+    assert started["slots"] == []
+    assert all(
+        row["mode"] == "none" and row["tier"] == "n/a"
+        and row["negative_evidence"]
+        for row in started["routing"]["lenses"]
+    )
+    assert len(started["routing"]["lenses"]) == len(
+        lens.load_catalog()["lenses"]
+    )
+    assert collected["status"] == "complete"
+    assert completed["empty_lens_collection"] == receipt
     assert receipt["schema"] == "taskplane.empty-lens-collection/v1"
     assert receipt["expected_lenses"] == []
     assert receipt["collected_lenses"] == []
@@ -205,6 +297,30 @@ def test_empty_expected_lenses_emits_successful_collection_receipt():
     assert receipt["producer_observation_fingerprint"] == OBSERVATION_FINGERPRINT
     assert len(receipt["result_fingerprint"]) == 64
     assert len(receipt["fingerprint"]) == 64
+
+
+@pytest.mark.parametrize("edge", ["missing", "tampered"])
+def test_evaluate_review_kernel_severed_delivery_authority_fails_before_start(
+    tmp_path, monkeypatch, edge
+):
+    workspace = _plan_workspace(tmp_path)
+    receipt = _build_receipt()
+    if edge == "missing":
+        receipt = None
+    else:
+        receipt["source_sha"] = "d" * 40
+    starts = []
+
+    def forbidden_start(*_args, **_kwargs):
+        starts.append(True)
+        raise AssertionError("ReviewKernel state was persisted")
+
+    monkeypatch.setattr(review, "_save_state", forbidden_start)
+
+    with pytest.raises(review.ReviewKernelError, match="delivery-mode authority"):
+        _start_evaluate_kernel(workspace, receipt)
+
+    assert starts == []
 
 
 def test_malformed_empty_lens_result_is_not_success():

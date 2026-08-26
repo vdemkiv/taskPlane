@@ -2261,6 +2261,7 @@ def stage_command(ws: str, command: str, request: object) -> dict:
 # derivation, so the validator's expectation can never drift from what
 # was dispatched. Final EM uses the review profile through the same kernel.
 EVALUATE_ROUTE_STAGE = "build"
+_DELIVERY_MODE_AUTHORITY_UNSET = object()
 
 
 _review_kernel_binding_key = review_retry.binding_key
@@ -3944,7 +3945,9 @@ def _strict_review_graph_quality(review_ws: str, *, target: dict,
 def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
                    task: dict | None, graph: dict, impact: dict,
                    requirement: dict | None,
-                   retry_context: dict | None = None) -> tuple[dict, dict]:
+                   retry_context: dict | None = None,
+                   delivery_mode_receipt: object =
+                   _DELIVERY_MODE_AUTHORITY_UNSET) -> tuple[dict, dict]:
     """One evidence/routing kernel shared by Evaluate and final EM."""
     import hashlib
     import subprocess
@@ -3984,6 +3987,9 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
             evidence_module=review_evidence)
     else:
         caller_expander = review.bounded_caller_expander(graph)
+    delivery_mode_argument = (
+        {"delivery_mode_receipt": delivery_mode_receipt}
+        if delivery_mode_receipt is not _DELIVERY_MODE_AUTHORITY_UNSET else {})
     manifest = review.start_review(
         diff_ws, target=target, graph=graph, impact=impact,
         diff={"files": files,
@@ -3999,7 +4005,8 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
         retry_lenses=((retry_context or {}).get("lenses")
                       if step == "evaluate" else None),
         retry_source_run_id=((retry_context or {}).get("source_run_id")
-                             if step == "evaluate" else None))
+                             if step == "evaluate" else None),
+        **delivery_mode_argument)
     state = review._load_state(diff_ws, manifest.get("run_id"))
     if quality_ref is not None and state.get("quality") != quality_ref:
         # A route is immutable. A mismatch is terminal evidence, never a
@@ -5193,13 +5200,24 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         review_workspace = diff_ws
         base_ref = state.get("baseline") or "HEAD"
         try:
+            review_delivery_authority = _DELIVERY_MODE_AUTHORITY_UNSET
+            if step == "evaluate":
+                delivery_receipt = _validated_delivery_mode(state)
+                if delivery_receipt is None and str(
+                        state.get("design_fingerprint") or "").strip():
+                    raise delivery_policy.DeliveryPolicyError(
+                        "delivery-mode receipt is required for a "
+                        "Design-governed Evaluate")
+                if delivery_receipt is not None:
+                    review_delivery_authority = delivery_receipt
             retry_context = (review_retry.incremental_context(
                 ws, diff_ws, task, review_kernel_binding(state, "evaluate", task))
                 if step == "evaluate" else None)
             review_kernel, routing = _review_kernel(
                 ws, diff_ws, base=base_ref, step=step, task=task,
                 graph=depgraph.load(graph_ws), impact=imp or {},
-                requirement=req_rec, retry_context=retry_context)
+                requirement=req_rec, retry_context=retry_context,
+                delivery_mode_receipt=review_delivery_authority)
             review_kernel = _bind_stateless_review_contract_actions(
                 diff_ws, review_kernel,
                 task_id=str((task or {}).get("id") or
@@ -6286,7 +6304,10 @@ def _claimed_execute_suite_binding():
 
 
 def collect_review_bridge(review_ws: str, *, publish: bool,
-                          run_id: str) -> dict:
+                          run_id: str,
+                          evaluator_result: dict | None = None,
+                          producer_observation_fingerprint: str | None = None
+                          ) -> dict:
     """Collect a ReviewKernel run and release its exact producer slots.
 
     A provisional collection still ends the producer wave: missing or
@@ -6296,9 +6317,31 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
     _, _, review_kernel = _review_runtime_modules()
 
     state = review_kernel._load_state(review_ws, run_id)
+    empty_collection = None
+    if state.get("delivery_mode_receipt") is not None:
+        if state.get("expected_lenses") != [] or state.get("slots") != []:
+            raise review_kernel.ReviewKernelError(
+                "sealed zero-lens Evaluate authority produced lens slots")
+        if evaluator_result is None or \
+                producer_observation_fingerprint is None:
+            raise review_kernel.ReviewKernelError(
+                "zero-lens Evaluate collection requires a schema-valid "
+                "evaluator result and validated producer observation")
+        empty_collection = review_kernel.collect_expected_set(
+            run_id=run_id,
+            task_id=str((state.get("target") or {}).get("task") or ""),
+            stage="Evaluate",
+            expected_lenses=state["expected_lenses"],
+            collected_lenses=[],
+            result=evaluator_result,
+            result_validator=evaluation_output.validate_evaluator_value,
+            producer_observation_fingerprint=
+                producer_observation_fingerprint,
+        )
     try:
         return review_kernel.collect_review(
-            review_ws, publish=publish, run_id=run_id)
+            review_ws, publish=publish, run_id=run_id,
+            empty_lens_collection=empty_collection)
     finally:
         review_kernel._release_slot_contracts(review_ws, state)
 
@@ -6360,8 +6403,30 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     if kernel and kernel.get("status") == "ready" and \
             kernel.get("stage") == EVALUATE_ROUTE_STAGE:
         try:
+            evaluator_result = None
+            observation_fingerprint = None
+            if kernel.get("delivery_mode_receipt") is not None:
+                evaluator_result = evaluation_output.validate_evaluator_value(
+                    verdict)
+                submission = state.get("_submission") or {}
+                observation = \
+                    producer_observation_policy.validate_producer_observation(
+                        submission.get("producer_observation"))
+                with open(path, "rb") as stream:
+                    verdict_bytes = stream.read()
+                observation = evaluation_output.validate_submission_observation(
+                    submission,
+                    output_bytes=verdict_bytes,
+                    output_schema_id=
+                        evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+                    output_contract_fingerprint=observation[
+                        "output_contract_fingerprint"],
+                )
+                observation_fingerprint = observation["fingerprint"]
             collect_review_bridge(
-                kernel_ws, publish=False, run_id=kernel.get("run_id"))
+                kernel_ws, publish=False, run_id=kernel.get("run_id"),
+                evaluator_result=evaluator_result,
+                producer_observation_fingerprint=observation_fingerprint)
             kernel = _review._load_state(
                 kernel_ws, kernel.get("run_id"))
         except Exception as exc:
