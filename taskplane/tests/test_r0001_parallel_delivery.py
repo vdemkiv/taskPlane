@@ -795,6 +795,32 @@ def _capacity_runtime(monkeypatch, *, run_id="run"):
     monkeypatch.setattr(loop, "_managed_scheduler_run_id", lambda _ws: run_id)
 
 
+def _terminal_idle_trusted_parallel_state(tmp_path, monkeypatch):
+    state = _trusted_parallel_loop_state()
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    rebound = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+    assert "error" not in rebound, rebound
+    state = loop.load(str(tmp_path))
+    loop_statuses = {
+        "t17a": "external", "t17b": "passed", "t17c": "passed",
+        "t18": "pending",
+    }
+    for task in state["tasks"]:
+        task["status"] = loop_statuses[task["id"]]
+    scheduler = state["performance_scheduler"]
+    scheduler["statuses"] = {
+        "t17a": "complete", "t17b": "complete", "t17c": "complete",
+        "t18": "ready",
+    }
+    scheduler["in_flight"] = {}
+    loop.save(str(tmp_path), state)
+    return state, rebound
+
+
 def test_scheduler_capacity_from_plan_mints_fixed_receipt_and_admits(
     tmp_path, monkeypatch,
 ):
@@ -987,6 +1013,112 @@ def test_scheduler_capacity_from_plan_idempotency_and_idle_expired_renewal(
     )
     assert renewed["receipt"]["issued_at"] == 911.0
     assert renewed["receipt"]["fingerprint"] != first["receipt"]["fingerprint"]
+
+
+def test_scheduler_capacity_from_plan_downgrades_expired_trusted_parallel_for_t18(
+    tmp_path, monkeypatch,
+):
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda _ws, event, **data:
+                        traces.append((event, data)))
+    state, rebound = _terminal_idle_trusted_parallel_state(
+        tmp_path, monkeypatch)
+    traces.clear()
+    before_scheduler = copy.deepcopy(state["performance_scheduler"])
+    before_assertions = copy.deepcopy(
+        state["scheduler_capacity_operator_assertions"])
+
+    renewed = loop.scheduler_capacity_from_plan(
+        str(tmp_path), clock=FakeClock(wall_time=911),
+    )
+
+    assert "error" not in renewed, renewed
+    receipt = renewed["receipt"]
+    assert receipt["configured_host_concurrency"] == 1
+    assert receipt["max_in_flight"] == 1
+    assert receipt["issued_at"] == 911.0
+    assert receipt["fingerprint"] != rebound["receipt"]["fingerprint"]
+    updated = loop.load(str(tmp_path))
+    assert updated["scheduler_capacity_operator_assertions"] == \
+        before_assertions
+    scheduler = updated["performance_scheduler"]
+    assert scheduler["capacity_binding"] == {
+        **before_scheduler["capacity_binding"],
+        "host_capability_fingerprint": receipt["fingerprint"],
+        "configured_host_concurrency": 1,
+        "max_in_flight": 1,
+    }
+    for field in ("tasks", "statuses", "in_flight", "reservations",
+                  "events", "revision", "sessions_admitted"):
+        assert scheduler[field] == before_scheduler[field]
+    assert traces == [("scheduler_capacity_from_plan", {
+        "source": "expired-attributed-parallel-terminal-idle-downgrade",
+        "delivery_mode_receipt_fingerprint":
+            state["delivery_mode_receipt"]["fingerprint"],
+        "scheduler_host_capability_fingerprint": receipt["fingerprint"],
+        "issued_at": 911.0, "expires_at": 1811.0,
+    })]
+
+    admitted = loop._admit_scheduler_wave(
+        str(tmp_path), [updated["tasks"][3]], repository_files=set(),
+        clock=FakeClock(wall_time=912),
+        capability_factory=RecordedTaskDispatchCapabilityFactory(),
+        evidence_store=SandboxEvidenceStore(
+            tmp_path, "repo", "t18-downgrade"),
+        execution_dag_store=ExecutionDagRevisionStore(tmp_path),
+    )
+    assert admitted["status"] == "admitted"
+    assert admitted["dispatch_set"]["members"] == ["t18"]
+
+
+@pytest.mark.parametrize("severed_edge", [
+    "missing-receipt", "missing-binding", "missing-assertion",
+    "tampered-receipt", "tampered-binding", "tampered-assertion",
+    "live-authority", "active-loop-task", "scheduler-in-flight",
+    "active-reservation",
+])
+def test_scheduler_capacity_from_plan_terminal_idle_downgrade_fails_closed(
+    tmp_path, monkeypatch, severed_edge,
+):
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda _ws, event, **data:
+                        traces.append((event, data)))
+    state, _ = _terminal_idle_trusted_parallel_state(tmp_path, monkeypatch)
+    traces.clear()
+    now = 911
+    if severed_edge == "missing-receipt":
+        state.pop("scheduler_host_capability_receipt")
+    elif severed_edge == "missing-binding":
+        state["performance_scheduler"].pop("capacity_binding")
+    elif severed_edge == "missing-assertion":
+        state.pop("scheduler_capacity_operator_assertions")
+    elif severed_edge == "tampered-receipt":
+        state["scheduler_host_capability_receipt"]["fingerprint"] = "f" * 64
+    elif severed_edge == "tampered-binding":
+        state["performance_scheduler"]["capacity_binding"][
+            "host_capability_fingerprint"] = "f" * 64
+    elif severed_edge == "tampered-assertion":
+        state["scheduler_capacity_operator_assertions"][-1]["actor"] = \
+            "human:other"
+    elif severed_edge == "live-authority":
+        now = 20
+    elif severed_edge == "active-loop-task":
+        state["tasks"][-1]["status"] = "running"
+    elif severed_edge == "scheduler-in-flight":
+        state["performance_scheduler"]["in_flight"]["t18"] = "f" * 64
+    elif severed_edge == "active-reservation":
+        state["performance_scheduler"]["statuses"]["t17a"] = "in_flight"
+    loop.save(str(tmp_path), state)
+    state_path = Path(loop._loop_path(str(tmp_path)))
+    before = state_path.read_bytes()
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), clock=FakeClock(wall_time=now),
+    )
+
+    assert "error" in result
+    assert state_path.read_bytes() == before
+    assert traces == []
 
 
 @pytest.mark.parametrize("existing", [
