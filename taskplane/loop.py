@@ -5043,100 +5043,6 @@ def _valid_trusted_parallel_assertion(
         value.get("host_observation_claimed") is False
 
 
-def _trusted_parallel_terminal_idle_downgrade(
-        ws: str, state: Mapping[str, object], scheduler: object, *,
-        receipt: Mapping[str, object], identity: Mapping[str, object],
-        sealed_fingerprint: str) -> tuple[dict | None, str | None]:
-    """Validate expired attributed 3/3 authority before fixed-one renewal."""
-    if receipt.get("configured_host_concurrency") != \
-            SCHEDULER_TRUSTED_PARALLEL_CAP or \
-            receipt.get("max_in_flight") != SCHEDULER_TRUSTED_PARALLEL_CAP:
-        return None, "expired scheduler capacity authority is not fixed-one " \
-            "or attributed trusted parallel authority"
-    if not isinstance(scheduler, Mapping) or \
-            scheduler.get("schema") != "taskplane.scheduler-state/v1" or (
-                scheduler.get("run_id"), scheduler.get("source_sha"),
-                scheduler.get("design_fingerprint"),
-                scheduler.get("plan_fingerprint"), scheduler.get("stage"),
-            ) != (
-                identity["run_id"], identity["source_sha"],
-                identity["design_fingerprint"],
-                identity["plan_fingerprint"], "Execute",
-            ):
-        return None, "expired trusted parallel scheduler identity is invalid"
-
-    tasks = state.get("tasks")
-    statuses = scheduler.get("statuses")
-    in_flight = scheduler.get("in_flight")
-    reservations = scheduler.get("reservations")
-    if not isinstance(tasks, list) or any(
-            not isinstance(task, Mapping) or
-            not isinstance(task.get("id"), str) or not task.get("id")
-            for task in tasks) or \
-            not isinstance(statuses, Mapping) or \
-            not isinstance(in_flight, Mapping) or in_flight or \
-            not isinstance(reservations, list):
-        return None, "expired trusted parallel scheduler is not terminal idle"
-    loop_statuses = {str(task["id"]): _scheduler_status(task)
-                     for task in tasks}
-    if len(loop_statuses) != len(tasks) or dict(statuses) != loop_statuses or \
-            any(str(task.get("status") or "") in
-                SCHEDULER_ACTIVE_LOOP_STATUSES for task in tasks):
-        return None, "expired trusted parallel loop and scheduler are not " \
-            "terminal idle"
-
-    binding = scheduler.get("capacity_binding")
-    binding_fields = {
-        "schema", "authority", "host_capability_fingerprint",
-        "configured_host_concurrency", "max_in_flight", "session_limit",
-    }
-    if not isinstance(binding, Mapping) or set(binding) != binding_fields or \
-            binding.get("schema") != SCHEDULER_CAPACITY_BINDING_SCHEMA or \
-            binding.get("authority") != "validated-host-receipt" or \
-            binding.get("host_capability_fingerprint") != \
-            receipt.get("fingerprint") or \
-            binding.get("configured_host_concurrency") != \
-            SCHEDULER_TRUSTED_PARALLEL_CAP or \
-            binding.get("max_in_flight") != \
-            SCHEDULER_TRUSTED_PARALLEL_CAP or \
-            isinstance(binding.get("session_limit"), bool) or \
-            not isinstance(binding.get("session_limit"), int) or \
-            int(binding["session_limit"]) < 1:
-        return None, "expired trusted parallel capacity binding is invalid"
-
-    assertions = state.get("scheduler_capacity_operator_assertions")
-    if not isinstance(assertions, list) or not assertions or any(
-            not _trusted_parallel_assertion_structure(value)
-            for value in assertions) or \
-            not _valid_trusted_parallel_assertion(
-                assertions[-1], receipt_fingerprint=str(
-                    receipt.get("fingerprint") or ""),
-                receipt_capacity=SCHEDULER_TRUSTED_PARALLEL_CAP,
-                identity=identity, sealed_fingerprint=sealed_fingerprint):
-        return None, "expired trusted parallel operator assertion ledger is " \
-            "invalid"
-
-    evidence_store = None
-    state_claims_evidence = scheduler.get("evidence_head") is not None or any(
-        isinstance(reservation, Mapping) and
-        reservation.get("evidence_fingerprint") is not None
-        for reservation in reservations)
-    try:
-        evidence_store, _ = _production_scheduler_evidence(ws, state)
-    except Exception as exc:
-        if state_claims_evidence:
-            return None, "scheduler evidence store is unavailable: " + \
-                str(exc)
-    active, reservation_error = _trusted_parallel_active_reservations(
-        scheduler, identity=identity, evidence_store=evidence_store)
-    if reservation_error:
-        return None, reservation_error
-    if active:
-        return None, "expired trusted parallel scheduler has active " \
-            "reservations"
-    return dict(binding), None
-
-
 def scheduler_capacity_from_plan(
         ws: str, *, trust_parallel: bool = False, by: str | None = None,
         clock: SystemClock | None = None) -> dict:
@@ -5427,7 +5333,6 @@ def scheduler_capacity_from_plan(
                                  "is in flight"}
 
             existing = locked.get("scheduler_host_capability_receipt")
-            downgrade_binding = None
             if existing is not None:
                 try:
                     plan_topology.validate_scheduler_host_capability(
@@ -5446,27 +5351,15 @@ def scheduler_capacity_from_plan(
                                          "is not yet valid"}
                     if existing["configured_host_concurrency"] != 1 or \
                             existing["max_in_flight"] != 1:
-                        downgrade_binding, downgrade_error = \
-                            _trusted_parallel_terminal_idle_downgrade(
-                                ws, locked, scheduler, receipt=existing,
-                                identity=identity,
-                                sealed_fingerprint=str(sealed["fingerprint"]))
-                        if downgrade_error:
-                            return {"error": "existing scheduler capacity "
-                                             "authority is invalid for "
-                                             "terminal idle downgrade: " +
-                                             downgrade_error}
+                        return {"error": "existing scheduler capacity authority "
+                                         "does not match the fixed single-worker "
+                                         "bound"}
                 else:
                     if existing["configured_host_concurrency"] != 1 or \
                             existing["max_in_flight"] != 1:
                         return {"error": "existing scheduler capacity authority "
                                          "exceeds the single-worker bound"}
                     return {"receipt": dict(existing), "idempotent": True}
-            elif locked.get("scheduler_capacity_operator_assertions") or (
-                    isinstance(scheduler, Mapping) and
-                    scheduler.get("capacity_binding") is not None):
-                return {"error": "existing scheduler capacity authority is "
-                                 "missing from persisted scheduler state"}
 
             issued_at = float(active_clock.wall_time())
             material = {
@@ -5489,21 +5382,8 @@ def scheduler_capacity_from_plan(
                 plan_fingerprint=identity["plan_fingerprint"],
                 clock=active_clock)
             locked["scheduler_host_capability_receipt"] = receipt
-            if downgrade_binding is not None:
-                locked["performance_scheduler"] = {
-                    **dict(scheduler),
-                    "capacity_binding": {
-                        **downgrade_binding,
-                        "host_capability_fingerprint": receipt["fingerprint"],
-                        "configured_host_concurrency": 1,
-                        "max_in_flight": 1,
-                    },
-                }
             trace_data = {
-                "source": (
-                    "expired-attributed-parallel-terminal-idle-downgrade"
-                    if downgrade_binding is not None else
-                    "sealed-plan-single-worker-liveness"),
+                "source": "sealed-plan-single-worker-liveness",
                 "delivery_mode_receipt_fingerprint": sealed["fingerprint"],
                 "scheduler_host_capability_fingerprint": receipt["fingerprint"],
                 "issued_at": receipt["issued_at"],
