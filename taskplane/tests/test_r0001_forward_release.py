@@ -28,12 +28,12 @@ def test_v21720_remains_released_incomplete():
     }
 
 
-def test_forward_candidate_is_exactly_v21721():
+def test_forward_candidate_is_exactly_v21722():
     history = forward_history_receipt()
 
-    assert CURRENT_VERSION == "2.17.21"
+    assert CURRENT_VERSION == "2.17.22"
     assert history["forward_generation"] == {
-        "version": "2.17.21",
+        "version": "2.17.22",
         "repair_of": "2.17.20",
         "history_rewrite": False,
     }

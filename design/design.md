@@ -10,7 +10,7 @@ The replacement authority split is exact: Taskplane classifies dependency/shared
 
 ## Decision
 
-Use a **contract-first evidence spine with narrow owner adapters**, delivered in the signed order: A2 mechanisms first; the forward v2.17.21 release-repair lane second; Design test/wiring enforcement third; performance/orchestration fourth; and the measured pickup cold-start gate last. The spine introduces small standard-library owners for injected delivery ports, delivery policy, review rebind authority, host producer observations, Design wiring closure, release evidence, plan topology, delta briefs, and dispatch telemetry. Existing `loop.py`, `review.py`, `build_c.py`, `checkpoint.py`, `repository.py`, and `retro.py` remain execution boundaries but call those owners through explicit typed contracts.
+Use a **contract-first evidence spine with narrow owner adapters**, delivered in the signed order: A2 mechanisms first; the forward v2.17.22 release-repair lane second; Design test/wiring enforcement third; performance/orchestration fourth; and the measured pickup cold-start gate last. The spine introduces small standard-library owners for injected delivery ports, delivery policy, review rebind authority, host producer observations, Design wiring closure, release evidence, plan topology, delta briefs, and dispatch telemetry. Existing `loop.py`, `review.py`, `build_c.py`, `checkpoint.py`, `repository.py`, and `retro.py` remain execution boundaries but call those owners through explicit typed contracts.
 
 This split is deliberate. Current `loop.py` is a shared hot owner for Plan readiness, stage briefing, lens routing, review startup, dispatch, gates, and release-adjacent evidence. Adding all corrective policy there would serialize otherwise disjoint work and make severed edges difficult to prove. The selected design keeps transition order in `loop.py` while moving validation and receipt construction to testable, side-effect-bounded modules.
 
@@ -19,7 +19,7 @@ The following meanings are fixed:
 - `feature-green` is a focused, exact-SHA acceptance receipt that may advance Build. It has no tag, install, publication, or release authority.
 - `release-green` is a different final-SHA receipt. It requires the closed wiring ledger, terminal full matrix, package/manifests evidence, and an independently re-queried hosted-platform run/check identity for the exact pushed SHA. A protected consumer then obtains an outside-model human recheck before an irreversible action. Local receipts alone are not platform or actor authenticity proof.
 - `released-unverified` is an attributed human override record with a non-empty exact list of skipped proofs. It is evidence of an exception and can never be consumed as `release-green`; it does not claim cryptographic authenticity.
-- v2.17.20 stays `released-incomplete`. Forward repair is v2.17.21. Historical graph revision `2757822ede49177fc52de8c173302286364d6206` remains an attributed inherited limitation; no history rewrite, re-release, or verifier weakening is designed.
+- v2.17.20 stays `released-incomplete`. v2.17.21 is the superseded source-integration boundary; the Marketplace upload candidate is v2.17.22. Historical graph revision `2757822ede49177fc52de8c173302286364d6206` remains an attributed inherited limitation; no history rewrite, re-release, or verifier weakening is designed.
 
 ## Grounded current state
 
@@ -48,7 +48,7 @@ The exact `4a0378e7f080..ecfc48ec2f5f` range contains 16 CI compatibility/regres
 
 The clean authoritative graph was scanned separately before this uncommitted Design overlay, then replayed with the same six recorded R-0001→contract edges. Its module and edge topology is identical to the approved 4a0378e baseline; only source hashes, scanned revision, and content fingerprint changed. The separate `73abaaaad36e18663bde23523d28a4dcef9474e57ce4307721eda3ef02e3d309` 44/152 graph is rejected as a binding because it observed Design overlay files and omitted the recorded requirement edges.
 
-Compatibility is unchanged by the delta: manifests remain v2.17.20; no R-0001 receipt schema, host/plugin capability, N/N-1 matrix cell, migration, deprecation, or sunset rule changed. The approved v2.17.21 forward-only design therefore remains intact.
+Compatibility is unchanged by the implementation delta: no R-0001 receipt schema, host/plugin capability, migration, deprecation, or sunset rule changed. The approved forward-only design advances its release identity to v2.17.22 while retaining v2.17.20 as the released compatibility baseline.
 
 ## Alternatives
 
@@ -102,7 +102,7 @@ Existing owners receive bounded adapters only:
 The program order is binding, while tasks inside a numbered phase use maximum disjoint fan-out.
 
 1. **A2 feature package:** delivery mode + zero-lens collection; review rebind; evaluator/EM producer observations. These are separate write owners and run concurrently after the shared receipt schemas are frozen. A focused exact-SHA receipt makes the package feature-green only.
-2. **Forward v2.17.21 release-repair lane:** consume the ecfc48e CI fixes as integrated inventory (do not reimplement them), advance final docs/manifests freshness for v2.17.21, repair the still-missing security reference edge, fix hosted default-branch startup, add release override/evidence, preserve the A5 historical disposition, and converge on one candidate SHA. Cheap docs/manifests/package/default-branch jobs fan out; one full matrix follows; pushed-SHA proof is terminal. v2.17.20 remains unchanged in history.
+2. **Forward v2.17.22 release-repair lane:** consume the ecfc48e CI fixes as integrated inventory (do not reimplement them), advance final docs/manifests freshness for v2.17.22, repair the still-missing security reference edge, fix hosted default-branch startup, add release override/evidence, preserve the A5 historical disposition, and converge on one candidate SHA. Cheap docs/manifests/package/default-branch jobs fan out; one full matrix follows; pushed-SHA proof is terminal. v2.17.20 remains unchanged in history.
 3. **Design enforcement:** AC test map and wiring ledger validators plus Build DoR/checkpoint adapters. This phase dogfoods the exact R-0001 map in this Design Contract.
 4. **Performance/orchestration:** topology, delta brief, telemetry/budget stop, progress wakeups, verification fan-out, Retro metrics. Disjoint module owners dispatch together; adapters into `loop.py` serialize under the named `loop-transition-owner` only.
 5. **Cold-start gate:** from a fresh checkout at the same final pushed SHA and empty private Taskplane home, measure command start to the first executing pickup checkpoint. A value below 120 seconds yields the resume receipt. Failure blocks R-0013 and opens only a bounded cold-start repair.
@@ -145,7 +145,7 @@ Each edge is mandatory and has an exact implementation-time test:
 | W10 | version manifests + changelog → README three-row release window | `taskplane/tests/test_release_freshness.py::TestReleaseWindow::test_readme_keeps_exactly_three_current_changelog_rows` |
 | W11 | runtime/skills/hooks/docs sources → both packagers → archives/install consumers | `taskplane/tests/test_r0001_release_green.py::test_runtime_and_public_surfaces_are_in_both_installable_archives` |
 | W12 | security methodology → prompt-injection reference → package → security lens loader | `taskplane/tests/test_r0001_design_wiring.py::test_security_methodology_reference_exists_is_packaged_and_loads` |
-| W13 | manifests → marketplace/package validators → installed version 2.17.21 | `taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21721` |
+| W13 | manifests → marketplace/package validators → installed version 2.17.22 | `taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21722` |
 | W14 | CI workflow → cheap jobs/shards/full matrix → check receipts | `taskplane/tests/test_r0001_release_green.py::test_ci_matrix_and_terminal_full_matrix_are_closed` |
 | W15 | feature receipt → Build gate only | `taskplane/tests/test_r0001_release_green.py::test_feature_green_cannot_authorize_release` |
 | W16 | wiring + full matrix + package + pushed proof → release-green → tag/install/publication | `taskplane/tests/test_r0001_release_green.py::test_release_green_requires_wiring_matrix_full_matrix_and_pushed_sha` |
@@ -184,7 +184,7 @@ The incumbent `taskplane.wait-policy/v1` remains event-driven with one 1,800-sec
 
 ### Compatibility and repository preparation
 
-Host/plugin cutover is emit-before-require, not atomic. N=2.17.21 and N-1=2.17.20 readers use schema discrimination and closed objects. New plugin/new host, new/old, old/new, and old/old are all tested. Missing N capability may retain declared feature compatibility but never release-green. Authority schema changes require a new schema id and a machine-readable compatibility diff; legacy focused or unobserved evidence is historical/feature-only and cannot be upgraded into release authority. The checked-in authorities are `design/compatibility.json` and `design/schemas/r0001-evidence-schemas.json`.
+Host/plugin cutover is emit-before-require, not atomic. N=2.17.22 and N-1=2.17.20 readers use schema discrimination and closed objects. New plugin/new host, new/old, old/new, and old/old are all tested. Missing N capability may retain declared feature compatibility but never release-green. Authority schema changes require a new schema id and a machine-readable compatibility diff; legacy focused or unobserved evidence is historical/feature-only and cannot be upgraded into release authority. The checked-in authorities are `design/compatibility.json` and `design/schemas/r0001-evidence-schemas.json`.
 
 `taskplane.repository-preparation-request/v1` fully binds locator, remote, requested/default ref policy, caller root, repository fingerprint, run namespace, retry predecessor, and request fingerprint. `taskplane.repository-preparation/v1` returns a stable status/refusal id, exact retryability, repository/default-ref/fetch/resolved-SHA/checkout facts, predecessor, and fingerprint. Unknown fields fail; idempotent retry requires the same request and predecessor; ambiguous/missing defaults never dereference bare `HEAD`.
 
@@ -217,7 +217,7 @@ The canonical map is machine-readable in `design/contract.json`. Summary:
 9. AC9: `test_r0001_parallel_delivery.py` — every pair classified, maximum ready fan-out, named serialization, wakeups, fan-out matrix, Retro metrics.
 10. AC10: `test_r0001_repository_default_branch.py` — fetched default before HEAD, non-master sever, ambiguous/missing refusal.
 11. AC11: `test_r0001_pickup_cold_start.py` — same-SHA empty-home <120 seconds and resume refusal.
-12. AC12: `test_r0001_forward_release.py` — immutable v2.17.20 disposition, exact v2.17.21 forward candidate, historical graph attribution, unchanged verifier strength.
+12. AC12: `test_r0001_forward_release.py` — immutable v2.17.20 disposition, exact v2.17.22 forward candidate, historical graph attribution, unchanged verifier strength.
 
 ## Failure behavior
 

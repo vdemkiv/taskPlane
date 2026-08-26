@@ -530,8 +530,8 @@ def verify_forward_release_surface(root):
         errors.append(f"cannot read release runtime identity: {exc}")
     if set(release) != wanted:
         errors.append("release runtime identity is incomplete")
-    if release.get("CURRENT_VERSION") != "2.17.21":
-        errors.append("forward candidate is not exactly 2.17.21")
+    if release.get("CURRENT_VERSION") != "2.17.22":
+        errors.append("forward candidate is not exactly 2.17.22")
     if release.get("PREVIOUS_VERSION") != "2.17.20":
         errors.append("v2.17.20 is not preserved as the previous generation")
     if release.get("HISTORICAL_GRAPH_REVISION") != expected_graph:
@@ -581,7 +581,8 @@ def verify_forward_release_surface(root):
         errors.append("candidate manifests are not single-sourced to runtime version")
 
     required_doc_phrases = (
-        "v2.17.20", "released-incomplete", "v2.17.21", "not released",
+        "v2.17.20", "released-incomplete", "v2.17.21", "superseded",
+        "v2.17.22", "not released",
         "2757822e", "inherited limitation", "no history rewrite",
         "no re-release", "no verifier weakening",
     )
@@ -1872,7 +1873,7 @@ def _parser():
     p.add_argument("--prove-pushed-sha", action="store_true",
                    help="fetch and prove exact pushed-SHA CI evidence")
     p.add_argument("--verify-release-surface", action="store_true",
-                   help="prove 2.17.21 manifests and both install archives")
+                   help="prove 2.17.22 manifests and both install archives")
     p.add_argument("--checked-sha", metavar="SHA",
                    help="full commit SHA whose required checks were observed")
     p.add_argument("--check-receipts", metavar="FILE",

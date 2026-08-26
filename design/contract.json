@@ -1,16 +1,16 @@
 {
   "schema": "taskplane.design/v1",
-  "design_revision": 2,
+  "design_revision": 3,
   "revision_authority": {
     "actor": "Volodymyr Demkiv",
     "date": "2026-08-26",
     "source": "Codex task 01a03619-63a9-7743-90f9-1b6b1945b6ac",
-    "decision": "Retire Taskplane scheduler/capacity/reservation/replay/execution-DAG/event-queue authority and bind R-0001 performance delivery to deterministic Taskplane intents plus Codex native dispatch observation.",
-    "scope": "HOW-only amendment; acceptance scope, release barriers, and graph baseline unchanged"
+    "decision": "Retain the native-dispatch correction and advance the completed two-part delivery from the v2.17.21 source boundary to the v2.17.22 Marketplace upload candidate.",
+    "scope": "Release-identity amendment only; acceptance scope, implementation behavior, release barriers, and graph baseline unchanged"
   },
   "requirement": "R-0001",
   "title": "Contract-first corrective delivery architecture",
-  "summary": "Split policy/evidence from the hot loop owner into narrow typed modules and execute A2, forward v2.17.21 repair, Design closure, native Codex dispatch observation and trace-derived performance, then same-SHA cold-start measurement with maximum disjoint fan-out.",
+  "summary": "Split policy/evidence from the hot loop owner into narrow typed modules and execute A2, forward v2.17.22 repair, Design closure, native Codex dispatch observation and trace-derived performance, then same-SHA cold-start measurement with maximum disjoint fan-out.",
   "current_state": {
     "summary": "Clean HEAD ecfc48ec2f5f integrates the bounded 16-commit CI-repair delta from 4a0378e7f080, including BUILD-C dependency inversion, exact review graph/runtime binding, evidence/stage fixture and telemetry repair, storage identity correction, and current release-document freshness. It still has no Plan delivery-mode or pair topology, still primes Build lenses, has no explicit zero-lens success receipt or human-only unstarted ReviewKernel rebind, lacks closed live-Codex evaluator/EM observations and Design AC/wiring enforcement, fragments release authority, emits broad loop briefs, lacks binding wave/Retro telemetry, dereferences hosted bare HEAD before verified default-branch binding, and ships a security-methodology pointer to an absent prompt-injection-defense reference. v2.17.20 remains released-incomplete.",
     "sources": [
@@ -63,7 +63,7 @@
         "quality": "complete and not degraded"
       },
       "graph_reconciliation": "The separately scanned clean ecfc48e source graph was enriched with the same six R-0001-to-contract recorded edges. Its 50-module/156-edge node and edge topology is identical to the approved 4a0378e baseline; only exact source file hashes, scanned revision, and content fingerprint changed. The 73abaaaad36e18663bde23523d28a4dcef9474e57ce4307721eda3ef02e3d309 44/152 scan is explicitly non-authoritative because it observed the uncommitted Design overlay and omitted recorded requirement edges.",
-      "compatibility_effect": "No receipt or host/plugin schema changed in the 16-commit delta. The approved N=2.17.21/N-1=2.17.20 emit-before-require matrix and legacy-evidence disposition remain unchanged."
+      "compatibility_effect": "No receipt or host/plugin schema changed in the 16-commit delta. The approved N=2.17.22/N-1=2.17.20 emit-before-require matrix and legacy-evidence disposition remain unchanged."
     }
   },
   "alternatives": [
@@ -618,12 +618,12 @@
       ]
     },
     {
-      "criterion": "v2.17.20 remains released-incomplete; repairs move forward as v2.17.21, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening.",
-      "design_element": "release_evidence keeps v2.17.20 incomplete, advances only as v2.17.21, and preserves attributed graph revision 2757822e without weakening.",
-      "validation": "Execute exact selectors: taskplane/tests/test_r0001_forward_release.py::test_v21720_remains_released_incomplete, taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21721, taskplane/tests/test_r0001_forward_release.py::test_historical_graph_revision_is_attributed_without_history_rewrite, taskplane/tests/test_r0001_forward_release.py::test_verifier_strength_and_release_history_are_unchanged; the criterion passes only when every named positive and severed-edge assertion is green at the exact candidate SHA.",
+      "criterion": "v2.17.20 remains released-incomplete; the v2.17.21 source boundary is superseded for Marketplace upload; repairs move forward as v2.17.22, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening.",
+      "design_element": "release_evidence keeps v2.17.20 incomplete, advances the upload candidate as v2.17.22, and preserves attributed graph revision 2757822e without weakening.",
+      "validation": "Execute exact selectors: taskplane/tests/test_r0001_forward_release.py::test_v21720_remains_released_incomplete, taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21722, taskplane/tests/test_r0001_forward_release.py::test_historical_graph_revision_is_attributed_without_history_rewrite, taskplane/tests/test_r0001_forward_release.py::test_verifier_strength_and_release_history_are_unchanged; the criterion passes only when every named positive and severed-edge assertion is green at the exact candidate SHA.",
       "tests": [
         "taskplane/tests/test_r0001_forward_release.py::test_v21720_remains_released_incomplete",
-        "taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21721",
+        "taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21722",
         "taskplane/tests/test_r0001_forward_release.py::test_historical_graph_revision_is_attributed_without_history_rewrite",
         "taskplane/tests/test_r0001_forward_release.py::test_verifier_strength_and_release_history_are_unchanged"
       ],
@@ -755,9 +755,9 @@
       {
         "id": "W13",
         "producer": "version manifests",
-        "artifact_or_contract": "2.17.21 package/marketplace",
+        "artifact_or_contract": "2.17.22 package/marketplace",
         "consumer": "installer",
-        "edge_test": "taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21721",
+        "edge_test": "taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21722",
         "required_status": "closed"
       },
       {
@@ -1349,7 +1349,7 @@
     },
     {
       "order": 2,
-      "id": "v2.17.21-forward-repair",
+      "id": "v2.17.22-forward-repair",
       "parallel": [
         "integrate CI inventory",
         "docs/window",
@@ -1438,8 +1438,8 @@
     },
     {
       "target": "History",
-      "threshold": "v2.17.20 and 2757822e retained; forward version exactly 2.17.21",
-      "measurement": "taskplane/tests/test_r0001_forward_release.py::test_v21720_remains_released_incomplete, taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21721, taskplane/tests/test_r0001_forward_release.py::test_historical_graph_revision_is_attributed_without_history_rewrite, taskplane/tests/test_r0001_forward_release.py::test_verifier_strength_and_release_history_are_unchanged"
+      "threshold": "v2.17.20 and 2757822e retained; forward version exactly 2.17.22",
+      "measurement": "taskplane/tests/test_r0001_forward_release.py::test_v21720_remains_released_incomplete, taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21722, taskplane/tests/test_r0001_forward_release.py::test_historical_graph_revision_is_attributed_without_history_rewrite, taskplane/tests/test_r0001_forward_release.py::test_verifier_strength_and_release_history_are_unchanged"
     },
     {
       "target": "N/N-1 compatibility",
@@ -1823,7 +1823,7 @@
       },
       {
         "check": "Release/history",
-        "evidence": "One terminal matrix and fetched pushed-SHA proof bind final 2.17.21 candidate while 2.17.20 and 2757822e remain unchanged."
+        "evidence": "One terminal matrix and fetched pushed-SHA proof bind final 2.17.22 candidate while 2.17.20 and 2757822e remain unchanged."
       },
       {
         "check": "Performance/resume",
@@ -2076,7 +2076,7 @@
     }
   ],
   "rollout": {
-    "strategy": "Execute the authority-amended five phases in order with disjoint fan-out inside each; schemas/focused refusals first, existing CI repairs integrated as inventory, one terminal full matrix and independently re-queried pushed-SHA platform proof on the final 2.17.21 candidate, then same-SHA cold-start proof before R-0013.",
+    "strategy": "Execute the authority-amended five phases in order with disjoint fan-out inside each; schemas/focused refusals first, existing CI repairs integrated as inventory, one terminal full matrix and independently re-queried pushed-SHA platform proof on the final 2.17.22 candidate, then same-SHA cold-start proof before R-0013.",
     "rollback": "Remove a thin adapter with its new owner before release while retaining append-only receipts; never rewrite override/observation/release/history evidence; after release consumers switch, rollback may disable publication but cannot accept legacy focused evidence or relabel v2.17.20."
   },
   "visualization": {
@@ -2109,11 +2109,11 @@
       "lens": "solution-design",
       "verdict": "pass",
       "blockers": 0,
-      "evidence": "PASS bounded Design revision 2 correction following the terminal EM finding. The previously approved 2026-08-26 HOW amendment is now represented consistently: all 12 acceptance outcomes, W01-W32 closure, six contracts, release barriers, graph baseline, zero Build lenses, event-driven waits, and non-cryptographic authority limits remain; Taskplane emits deterministic non-authoritative dispatch sets, Codex alone owns spawn concurrency, the host hook observes actual spawns and usage, budgets stop only the next dispatch, and Retro consumes native wave/claim/gate trace. The unreleased Design schema bundle advances to v2, retired scheduler-admission/execution-DAG definitions are absent, and all declared acceptance and wiring selectors resolve against the real checkout. This row remains self-attested and non-independent; it does not substitute for terminal EM or human release authority.",
+      "evidence": "PASS bounded Design revision 3 release-identity amendment. Revision 2's native-dispatch correction remains unchanged: all 12 acceptance outcomes, W01-W32 closure, six contracts, release barriers, graph baseline, zero Build lenses, event-driven waits, and non-cryptographic authority limits remain; Taskplane emits deterministic non-authoritative dispatch sets, Codex alone owns spawn concurrency, the host hook observes actual spawns and usage, budgets stop only the next dispatch, and Retro consumes native wave/claim/gate trace. Revision 3 advances the superseded v2.17.21 source boundary to the v2.17.22 Marketplace upload candidate without claiming upload, release-green, or W31 closure. All declared acceptance and wiring selectors continue to resolve against the real checkout. This row remains self-attested and non-independent; it does not substitute for terminal EM or human release authority.",
       "produced_by": "tp-designer",
       "self_attested": true,
       "independent": false,
-      "content_fingerprint": "96021883df4c2af7396e092ac69fb3400399bc4c0ce80e2361b70e0effa4bef7"
+      "content_fingerprint": "1bf791733788e7c639a093ecab818e13415ff4bd28b07c5ecca478ca83591bcc"
     }
   ],
   "open_questions": [],
@@ -2635,7 +2635,7 @@
     "baseline_rebind": "The 4a0378e7f080..ecfc48ec2f5f 16-commit CI-repair delta changes no R-0001 evidence schema, host/plugin capability identity, N/N-1 matrix cell, migration, deprecation, or sunset rule. It is integrated implementation inventory at the same released v2.17.20 compatibility generation.",
     "native_dispatch_amendment": "The unreleased Design-only bundle v1 is retired and v2 removes scheduler-admission/execution-DAG definitions, adds native topology/dispatch-set/observation/budget/metric definitions, and corrects the bundle's dispatchTelemetry projection to the shipped taskplane.dispatch-telemetry/v1 fields. Runtime v1 receipt identities are not rewritten.",
     "window": {
-      "current": "2.17.21",
+      "current": "2.17.22",
       "previous": "2.17.20",
       "rule": "Exactly N and N-1 are accepted by discriminated readers during the declared window; release-green itself has no legacy substitute."
     },
@@ -2718,7 +2718,7 @@
         "migration": "No migration. Re-run closed wiring, compatibility matrix, full matrix, packages, and pushed-SHA proof.",
         "sunset": {
           "state": "refused-immediately",
-          "not_before_version": "2.17.21",
+          "not_before_version": "2.17.22",
           "minimum_green_releases": 0,
           "requires_human_approval": false
         }

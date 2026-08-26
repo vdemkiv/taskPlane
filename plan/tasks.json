@@ -2,7 +2,7 @@
   "requirement": "R-0001",
   "delivery_mode": "build",
   "automatic_lenses": [],
-  "plan_authority": "Volodymyr Demkiv — original approval plus 2026-08-26 amendment and night-flow decision authority in Codex task 01a03619-63a9-7743-90f9-1b6b1945b6ac: Design revision 2 (evidence a12cfc95600cb0d8e90bd4ec5eb7b52f19b5d8a453e3c4e4af0be9b94fc7186c; content 96021883df4c2af7396e092ac69fb3400399bc4c0ce80e2361b70e0effa4bef7) retires Taskplane scheduler/capacity/reservation/DAG authority and binds deterministic Taskplane intents to Codex native dispatch observation",
+  "plan_authority": "Volodymyr Demkiv — original approval plus 2026-08-26 amendment, night-flow authority, and explicit v2.17.22 bump/upload-build authority in Codex task 01a03619-63a9-7743-90f9-1b6b1945b6ac: Design revision 3 (evidence 0cc7a385143361440a5ac3670546478ca15ed475f1eddfb59a6f621aa7e8c7ca; content 1bf791733788e7c639a093ecab818e13415ff4bd28b07c5ecca478ca83591bcc) retains Codex-native dispatch authority and advances only the Marketplace upload candidate release identity",
   "tasks": [
     {
       "id": "t15-performance-runtime-integration",
@@ -34,7 +34,7 @@
       "tests": "python3 -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_release_freshness.py taskplane/tests/test_r0001_release_green.py taskplane/tests/test_r0001_forward_release.py taskplane/tests/test_r0001_compatibility.py taskplane/tests/test_r0001_repository_default_branch.py",
       "req": "R-0001", "deps": ["t16-same-sha-cold-start-gate"], "type": "reliability",
       "contracts": ["contract:design-wiring-closure", "contract:release-green-evidence", "contract:repository-preparation"], "new_modules": ["exports/verification"], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent.", "Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test.", "Feature-green and release-green are distinct receipts; tag, install, or publication requires closed wiring evidence, the full matrix, and successful pushed-SHA proof, while any override records released-unverified and every skipped proof.", "Hosted repository preparation resolves and tests the fetched remote default branch before dereferencing bare HEAD, including a non-master default-branch severed-edge case.", "v2.17.20 remains released-incomplete; repairs move forward as v2.17.21, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening."]
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent.", "Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test.", "Feature-green and release-green are distinct receipts; tag, install, or publication requires closed wiring evidence, the full matrix, and successful pushed-SHA proof, while any override records released-unverified and every skipped proof.", "Hosted repository preparation resolves and tests the fetched remote default branch before dereferencing bare HEAD, including a non-master default-branch severed-edge case.", "v2.17.20 remains released-incomplete; v2.17.21 is superseded for Marketplace upload; repairs move forward as v2.17.22, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening."]
     },
     {
       "id": "t17c-verify-performance-events",
@@ -67,7 +67,7 @@
         "The Plan classifies every task pair as parallel or serialized for a named shared owner; Taskplane emits stable intents for every ready pairwise-disjoint task, Codex dispatches them concurrently, one event-driven wait covers the outstanding set, and Retro reports parallelism factor plus longest serial chain from native trace evidence.",
         "Hosted repository preparation resolves and tests the fetched remote default branch before dereferencing bare HEAD, including a non-master default-branch severed-edge case.",
         "AC2 measures a fresh checkout at the same SHA reaching the first executing pickup checkpoint in under two minutes before R-0013 resumes.",
-        "v2.17.20 remains released-incomplete; repairs move forward as v2.17.21, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening."
+        "v2.17.20 remains released-incomplete; v2.17.21 is superseded for Marketplace upload; repairs move forward as v2.17.22, and historical graph revision 2757822e remains an attributed inherited limitation without history rewrite, re-release, or verifier weakening."
       ]
     }
   ]

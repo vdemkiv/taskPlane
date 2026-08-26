@@ -40,7 +40,7 @@ PROTECTED_RELEASE_AUTHORIZATION_SCHEMA = (
     "taskplane.protected-release-authorization/v1"
 )
 
-CURRENT_VERSION = "2.17.21"
+CURRENT_VERSION = "2.17.22"
 PREVIOUS_VERSION = "2.17.20"
 PREVIOUS_RELEASE_TAG = "v2.17.20"
 PREVIOUS_RELEASE_COMMIT = "4a0378e7f080136d27f01d4ab7ecdf9bac8a1ad6"
@@ -859,7 +859,7 @@ def validate_compatibility_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(window, Mapping) or window.get("current") != CURRENT_VERSION or window.get(
         "previous"
     ) != PREVIOUS_VERSION:
-        raise ReleaseEvidenceError("compatibility window must be N=2.17.21/N-1=2.17.20")
+        raise ReleaseEvidenceError("compatibility window must be N=2.17.22/N-1=2.17.20")
     evolution = policy.get("json_evolution")
     if not isinstance(evolution, Mapping) or evolution.get("authority_objects") != "closed" or evolution.get(
         "additionalProperties"

@@ -334,7 +334,7 @@ def test_release_green_binds_reviewed_prompt_injection_reference_digest():
         "repository_id": "openai/taskplane",
         "protected_default_branch": "main",
         "pushed_sha": source_sha,
-        "workflow_run_id": "run-21721",
+        "workflow_run_id": "run-21722",
         "check_run_ids": ["check-linux"],
         "required_check_names": ["full / linux"],
         "conclusions": {"full / linux": "success"},
@@ -344,7 +344,7 @@ def test_release_green_binds_reviewed_prompt_injection_reference_digest():
     }
     receipt = create_release_green(
         source_sha=source_sha,
-        version="2.17.21",
+        version="2.17.22",
         wiring_closure_fingerprint="1" * 64,
         feature_receipt_digests=["2" * 64],
         full_matrix_receipts=["3" * 64],
@@ -360,7 +360,7 @@ def test_release_green_binds_reviewed_prompt_injection_reference_digest():
         reviewed_prompt_injection_reference_digest=digest,
         repository_id="openai/taskplane",
         protected_default_branch="main",
-        workflow_run_id="run-21721",
+        workflow_run_id="run-21722",
         check_run_ids=["check-linux"],
         required_check_names=["full / linux"],
         outside_model_human_recheck={
