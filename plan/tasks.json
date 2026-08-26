@@ -6,8 +6,8 @@
   "tasks": [
     {
       "id": "t10-design-wiring-closure-owner",
-      "scope": ["taskplane/wiring_closure.py", "taskplane/tests/test_r0001_design_wiring.py"],
-      "tests": "python -m pytest -q taskplane/tests/test_r0001_design_wiring.py",
+      "scope": ["taskplane/wiring_closure.py", "taskplane/tests/test_r0001_design_wiring.py", "taskplane/loop.py", "taskplane/tests/test_r0001_delivery_mode.py"],
+      "tests": "python -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_r0001_delivery_mode.py",
       "req": "R-0001", "deps": [], "type": "feature", "contracts": ["contract:design-wiring-closure"],
       "new_modules": ["taskplane/wiring_closure.py"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent.", "Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test."]
