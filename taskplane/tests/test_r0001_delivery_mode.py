@@ -5,7 +5,14 @@ import subprocess
 
 import pytest
 
-from taskplane import build_c, lens, loop, review, storage as runtime_storage
+from taskplane import (
+    build_c,
+    lens,
+    loop,
+    review,
+    storage as runtime_storage,
+    tp as tp_cli,
+)
 from taskplane.delivery_ports import content_fingerprint
 from taskplane.delivery_policy import (
     DeliveryPolicyError,
@@ -323,8 +330,8 @@ def test_empty_expected_lenses_emits_successful_collection_receipt(tmp_path):
     assert len(receipt["fingerprint"]) == 64
 
 
-def test_evaluate_submission_collects_observed_empty_set_before_guidance(
-    tmp_path, monkeypatch
+def test_cli_evaluate_submission_collects_observed_empty_set_before_guidance(
+    tmp_path, monkeypatch, capsys
 ):
     workspace = _plan_workspace(tmp_path)
     state = _gate_plan_to_execute(workspace)
@@ -375,10 +382,15 @@ def test_evaluate_submission_collects_observed_empty_set_before_guidance(
         loop.runtime_eval, "guide_loop", assert_collected_before_guidance
     )
 
-    submitted = loop.submit(
-        str(workspace), "pass", producer_observation=observation
-    )
+    exit_code = tp_cli.main([
+        "loop", "--workspace", str(workspace), "submit", "pass",
+        "--producer-observation", json.dumps(
+            observation, sort_keys=True, separators=(",", ":")
+        ),
+    ])
+    submitted = json.loads(capsys.readouterr().out)
 
+    assert exit_code == 0
     assert submitted["submitted"] is True
     assert guidance_calls[0]["expected_lenses"] == []
     assert guidance_calls[0]["collected_lenses"] == []
