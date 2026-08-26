@@ -6346,6 +6346,52 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
         review_kernel._release_slot_contracts(review_ws, state)
 
 
+def _collect_zero_lens_evaluate_before_guidance(
+        ws: str, act_ws: str, state: dict, task: dict,
+        receipt: Mapping[str, object] | None) -> dict | None:
+    """Seal an observed zero-slot Evaluate result before runtime guidance."""
+    binding = review_kernel_binding(state, "evaluate", task)
+    if not binding:
+        return None
+    kernel_ws = str(binding.get("workspace") or act_ws)
+    _, _, review_kernel = _review_runtime_modules()
+    kernel = review_kernel._load_state(kernel_ws, binding["run_id"])
+    if kernel.get("delivery_mode_receipt") is None:
+        return None
+    if kernel.get("expected_lenses") != [] or kernel.get("slots") != []:
+        raise review_kernel.ReviewKernelError(
+            "sealed zero-lens Evaluate authority produced lens slots")
+
+    verdict_path = runtime_storage.evaluation_path(act_ws)
+    verdict, errors = _read_json(verdict_path)
+    if errors:
+        raise review_kernel.ReviewKernelError("; ".join(errors))
+    evaluator_result = evaluation_output.validate_evaluator_value(verdict)
+    with open(verdict_path, "rb") as stream:
+        verdict_bytes = stream.read()
+    observed = bind_producer_observation(
+        {"step": "evaluate", "task": str((task or {}).get("id") or "")},
+        receipt,
+        output_bytes=verdict_bytes,
+        output_schema_id=evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        output_contract_fingerprint=(receipt or {}).get(
+            "output_contract_fingerprint"),
+    )
+    observation = observed["producer_observation"]
+    collect_review_bridge(
+        kernel_ws, publish=False, run_id=kernel["run_id"],
+        evaluator_result=evaluator_result,
+        producer_observation_fingerprint=observation["fingerprint"],
+    )
+    completed = review_kernel._load_state(kernel_ws, kernel["run_id"])
+    empty_collection = completed.get("empty_lens_collection") or {}
+    if empty_collection.get("producer_observation_fingerprint") != \
+            observation["fingerprint"]:
+        raise review_kernel.ReviewKernelError(
+            "zero-lens Evaluate collection does not match producer observation")
+    return observation
+
+
 def _acceptance_evidence_errors(ws: str, state: dict, task: dict,
                                 verdict: dict) -> list:
     """Static DoD evidence check, safe to compose with runtime guidance."""
@@ -7047,7 +7093,8 @@ def _run_submit_checkpoint(ws: str, state: Mapping[str, object],
 
 
 def submit(ws: str, outcome: str, note: str = "",
-           task_id: str | None = None) -> dict:
+           task_id: str | None = None, *,
+           producer_observation: Mapping[str, object] | None = None) -> dict:
     """Worker submission — evidence request, never a state transition.
 
     Trust boundary (L12, v2.2.1): "orchestrator-only gating" is a PROTOCOL
@@ -7111,7 +7158,19 @@ def submit(ws: str, outcome: str, note: str = "",
 
     runtime_guidance = None
     checkpoint_receipt = None
+    validated_producer_observation = None
     if outcome == "pass":
+        if step == "evaluate":
+            try:
+                validated_producer_observation = \
+                    _collect_zero_lens_evaluate_before_guidance(
+                        ws, act_ws, state, task, producer_observation)
+            except Exception as exc:
+                return {
+                    "error": "runtime eval producer collection failed: "
+                             f"{exc.__class__.__name__}: {exc}",
+                    "submitted": False, "transitioned": False,
+                }
         runtime_guidance = runtime_eval.guide_loop(ws, task_id=task_id)
         if runtime_guidance.get("error"):
             return {"error": "runtime eval checkpoint failed: "
@@ -7184,6 +7243,8 @@ def submit(ws: str, outcome: str, note: str = "",
     }
     if checkpoint_receipt is not None:
         submission["checkpoint_receipt"] = checkpoint_receipt
+    if validated_producer_observation is not None:
+        submission["producer_observation"] = validated_producer_observation
     with mutate(ws) as locked:
         if locked is None:
             return {"error": "no active loop"}
