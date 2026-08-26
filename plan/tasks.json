@@ -6,11 +6,11 @@
   "tasks": [
     {
       "id": "t10-design-wiring-closure-owner",
-      "scope": ["taskplane/wiring_closure.py", "taskplane/review.py", "taskplane/tp.py", "taskplane/tests/test_r0001_design_wiring.py", "taskplane/loop.py", "taskplane/tests/test_r0001_delivery_mode.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_r0001_delivery_mode.py",
-      "req": "R-0001", "deps": [], "type": "feature", "contracts": ["contract:design-wiring-closure"],
+      "scope": ["taskplane/wiring_closure.py", "taskplane/producer_observation.py", "taskplane/review.py", "taskplane/loop.py", "taskplane/tp.py", "taskplane/tests/test_r0001_design_wiring.py", "taskplane/tests/test_r0001_delivery_mode.py", "taskplane/tests/test_r0001_producer_observation.py", "taskplane/tests/test_r0001_host_capability.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_r0001_delivery_mode.py taskplane/tests/test_r0001_producer_observation.py taskplane/tests/test_r0001_host_capability.py",
+      "req": "R-0001", "deps": [], "type": "fix", "contracts": ["contract:delivery-mode-receipt", "contract:producer-observation", "contract:design-wiring-closure"],
       "new_modules": ["taskplane/wiring_closure.py"], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent.", "Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test."]
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["expected_lenses=[] plus a schema-valid result succeeds with an explicit empty-collection receipt and never requires outage resolution.", "The live Codex host produces conformant observable producer receipts for evaluator and EM submissions without manual outage resolution.", "Every changed producer has a closed map to generated artifacts, documentation, release surfaces, manifests, CI, runtime, and host consumers, and every edge names a severed-edge or freshness test."]
     },
     {
       "id": "t11-design-checkpoint-adapters",
