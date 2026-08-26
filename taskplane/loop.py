@@ -7701,6 +7701,25 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                 state.pop("selection", None)
             if "graph_dor" in _validated:
                 state["graph_dor"] = _validated["graph_dor"]
+            # Plan DoR validates and seals the delivery declaration on the
+            # unlocked snapshot.  The locked transition must carry those
+            # exact validated bytes forward just like tasks and graph_dor;
+            # otherwise the fresh read silently severs Plan authority from
+            # the first Build dispatch.  Revalidate before copying so this
+            # bridge cannot become a fallback or a receipt-forging seam.
+            if "delivery_mode_receipt" in _validated:
+                validated_delivery_receipt = \
+                    delivery_policy.validate_delivery_mode_receipt(
+                        _validated["delivery_mode_receipt"])
+                if validated_delivery_receipt != \
+                        _validated["delivery_mode_receipt"]:
+                    return {
+                        "error": "Plan delivery-mode receipt normalization "
+                                 "changed during locked transition",
+                        "step": step,
+                    }
+                state["delivery_mode_receipt"] = json.loads(json.dumps(
+                    _validated["delivery_mode_receipt"]))
             for field in ("replan_reanchor", "replan_reanchor_history"):
                 if field in _validated:
                     state[field] = json.loads(json.dumps(_validated[field]))

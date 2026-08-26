@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+import subprocess
+
 import pytest
 
 from taskplane import build_c, loop, review
@@ -65,6 +69,61 @@ def _empty_collection(result):
     )
 
 
+def _plan_workspace(root: Path) -> Path:
+    workspace = root / "workspace"
+    (workspace / "plan").mkdir(parents=True)
+    (workspace / "src").mkdir()
+    (workspace / "src" / "feature.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "taskplane@example.test"],
+        cwd=workspace,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Taskplane Test"],
+        cwd=workspace,
+        check=True,
+    )
+    subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "baseline"], cwd=workspace, check=True
+    )
+    (workspace / "plan" / "tasks.json").write_text(
+        json.dumps(
+            {
+                "requirement": "R-0001",
+                "delivery_mode": "build",
+                "automatic_lenses": [],
+                "plan_authority": "human:operator",
+                "tasks": [
+                    {
+                        "id": "task-a",
+                        "scope": ["src/**"],
+                        "tests": "true",
+                        "criteria": ["the feature is complete"],
+                    }
+                ],
+            }
+        )
+    )
+    initialized = loop.init(
+        str(workspace),
+        "delivery receipt lifecycle",
+        spec_path="specs/spec.md",
+        checkpoints=[],
+    )
+    assert initialized["step"] == "plan"
+    return workspace
+
+
+def _gate_plan_to_execute(workspace: Path) -> dict:
+    gated = loop.gate(str(workspace), "pass")
+    assert "error" not in gated
+    assert gated["step"] == "execute"
+    return loop.load(str(workspace))
+
+
 def test_plan_gate_requires_and_stamps_delivery_mode():
     receipt = _build_receipt()
 
@@ -92,16 +151,48 @@ def test_build_mode_dispatch_creates_zero_automatic_lens_workers():
     assert created == []
 
 
-def test_sever_delivery_mode_receipt_to_dispatch_fails_closed():
-    receipt = _build_receipt()
-    receipt["source_sha"] = "d" * 40
-    created = []
+def test_plan_gate_persists_receipt_to_subsequent_zero_lens_dispatch(tmp_path):
+    workspace = _plan_workspace(tmp_path)
+    state = _gate_plan_to_execute(workspace)
+    receipt = state["delivery_mode_receipt"]
 
-    with pytest.raises(DeliveryPolicyError, match="fingerprint"):
-        automatic_lens_workers_for_dispatch(
-            receipt, lambda lens: created.append(lens)
-        )
-    assert created == []
+    action = loop.next_action(str(workspace))
+
+    assert "error" not in action
+    assert action["step"] == "execute"
+    assert action["delivery_dispatch"]["delivery_mode_receipt"] == receipt
+    assert action["delivery_dispatch"]["automatic_lens_workers"] == ()
+    assert action["delivery_dispatch"]["automatic_lens_worker_count"] == 0
+    assert action["lenses"] == []
+
+
+def test_sever_delivery_mode_receipt_to_dispatch_fails_closed(
+    tmp_path, monkeypatch
+):
+    worker_calls = []
+
+    def forbidden(*_args, **_kwargs):
+        worker_calls.append(True)
+        raise AssertionError("legacy routing or worker construction ran")
+
+    monkeypatch.setattr(loop.lens_router, "prime_scope", forbidden)
+    monkeypatch.setattr(build_c, "authorize_delivery_dispatch", forbidden)
+
+    for edge_failure in ("missing", "tampered"):
+        workspace = _plan_workspace(tmp_path / edge_failure)
+        state = _gate_plan_to_execute(workspace)
+        if edge_failure == "missing":
+            state.pop("delivery_mode_receipt")
+            state["design_fingerprint"] = "d" * 64
+        else:
+            state["delivery_mode_receipt"]["source_sha"] = "d" * 40
+        loop.save(str(workspace), state)
+
+        action = loop.next_action(str(workspace))
+
+        assert "build delivery mode refused before dispatch" in action["error"]
+
+    assert worker_calls == []
 
 
 def test_empty_expected_lenses_emits_successful_collection_receipt():
