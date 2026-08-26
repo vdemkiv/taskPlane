@@ -180,18 +180,19 @@ def _acceptance_selector(value: object) -> tuple[str, str]:
 
 
 def acceptance_test_map(contract: Mapping) -> dict[str, list[str]] | None:
-    """Return the opt-in Design AC→exact-selector map.
+    """Return the Design AC→exact-selector map when one is declared.
 
-    Older ``taskplane.design/v1`` contracts predate per-criterion ``tests``.
-    A contract opts into the stronger adapter when any acceptance row declares
-    that field; from then on every row must declare a non-empty, duplicate-free
-    set of exact selector identities.
+    Older ``taskplane.design/v1`` contracts can omit ``acceptance_map`` and
+    retain their compatibility behavior.  Once that map is present, however,
+    every row must declare a non-empty, duplicate-free set of exact selector
+    identities; an all-rows-omitted map must not disable Design or checkpoint
+    validation.
     """
-    rows = contract.get("acceptance_map") if isinstance(contract, Mapping) \
-        else None
-    if not isinstance(rows, list) or not any(
-            isinstance(row, Mapping) and "tests" in row for row in rows):
+    if not isinstance(contract, Mapping) or "acceptance_map" not in contract:
         return None
+    rows = contract.get("acceptance_map")
+    if not isinstance(rows, list):
+        raise DesignAcceptanceError("acceptance_map must be a list")
     result: dict[str, list[str]] = {}
     for index, row in enumerate(rows, 1):
         criterion = str(row.get("criterion") or "").strip() \

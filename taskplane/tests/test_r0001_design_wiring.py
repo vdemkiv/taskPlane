@@ -88,6 +88,36 @@ def test_each_acceptance_row_declares_existing_test_file_and_exact_selector(
     assert missing_selector[0]["tests"][0] in str(exc.value)
 
 
+def test_present_acceptance_map_cannot_omit_tests_from_every_row(tmp_path):
+    contract = {
+        "acceptance_map": [{
+            "criterion": "The exact acceptance criterion",
+            "design_element": "The checkpoint adapter",
+            "validation": "The exact selector is resolved before execution",
+        }],
+    }
+
+    with pytest.raises(
+        design_contract.DesignAcceptanceError,
+        match="acceptance criterion has no exact tests: "
+              "The exact acceptance criterion",
+    ):
+        design_contract.acceptance_test_map(contract)
+    with pytest.raises(
+        design_contract.DesignAcceptanceError,
+        match="acceptance criterion has no exact tests: "
+              "The exact acceptance criterion",
+    ):
+        design_contract.checkpoint_acceptance_tests(
+            str(tmp_path), contract, ["The exact acceptance criterion"]
+        )
+
+    assert design_contract.acceptance_test_map({}) is None
+    assert design_contract.checkpoint_acceptance_tests(
+        str(tmp_path), {}, ["legacy criterion"]
+    ) is None
+
+
 def _checkpoint_repository(tmp_path: Path, acceptance_map: list[dict]) -> Path:
     root = tmp_path / "checkout"
     proof = root / "taskplane" / "tests" / "test_ac.py"
