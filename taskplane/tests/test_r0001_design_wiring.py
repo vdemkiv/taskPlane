@@ -6,10 +6,12 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import subprocess
 import zipfile
 
 import pytest
 
+from taskplane import checkpoint, design_contract
 from taskplane.delivery_ports import FakeClock, RecordedPlatformCiQuery
 from taskplane.release_evidence import create_release_green
 from taskplane.wiring_closure import (
@@ -84,6 +86,86 @@ def test_each_acceptance_row_declares_existing_test_file_and_exact_selector(
     with pytest.raises(WiringClosureError, match="exact selector") as exc:
         validate_acceptance_map(missing_selector, caller_root=tmp_path)
     assert missing_selector[0]["tests"][0] in str(exc.value)
+
+
+def _checkpoint_repository(tmp_path: Path, acceptance_map: list[dict]) -> Path:
+    root = tmp_path / "checkout"
+    proof = root / "taskplane" / "tests" / "test_ac.py"
+    proof.parent.mkdir(parents=True)
+    proof.write_text("def test_proof():\n    assert True\n", encoding="utf-8")
+    contract_path = root / "design" / "contract.json"
+    contract_path.parent.mkdir(parents=True)
+    contract_path.write_text(
+        json.dumps({"acceptance_map": acceptance_map}), encoding="utf-8"
+    )
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git", "-c", "user.name=Taskplane Test",
+            "-c", "user.email=taskplane@example.invalid",
+            "commit", "-qm", "checkpoint fixture",
+        ],
+        cwd=root,
+        check=True,
+    )
+    return root
+
+
+def test_checkpoint_refuses_named_missing_test_file(tmp_path):
+    missing = "taskplane/tests/test_missing.py::test_missing"
+    root = _checkpoint_repository(tmp_path, [{
+        "criterion": "The exact acceptance criterion",
+        "tests": [
+            "taskplane/tests/test_ac.py::test_proof",
+            missing,
+        ],
+    }])
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+    ).strip()
+    spec = {
+        "schema": checkpoint.CHECKPOINT_SCHEMA,
+        "checkpoint_id": "cp-design-ac-1",
+        "phase": "build",
+        "ac_ids": ["The exact acceptance criterion"],
+        "predecessor_checkpoint_ids": [],
+        "worktree_revision": revision,
+        "declared_scope": ["taskplane/tests/**"],
+        "focused_proof": {
+            "path": "taskplane/tests/test_ac.py",
+            "argv": [
+                "python3", "-m", "pytest", "-q",
+                "taskplane/tests/test_ac.py::test_proof",
+            ],
+        },
+        "ratchet_baseline": {"cycle_count": 0},
+    }
+
+    with pytest.raises(checkpoint.CheckpointSpecError, match="declared test file") \
+            as exc:
+        checkpoint.validate_checkpoint_spec(str(root), spec)
+    assert "taskplane/tests/test_missing.py" in str(exc.value)
+
+
+def test_build_dor_refuses_unnamed_selector(tmp_path, monkeypatch):
+    contract = {
+        "acceptance_map": [{
+            "criterion": "The exact acceptance criterion",
+            "tests": ["taskplane/tests/test_ac.py"],
+        }],
+        "graph": {},
+        "contracts": [],
+    }
+    monkeypatch.setattr(
+        design_contract, "design_contract", lambda _ws: (contract, [])
+    )
+
+    errors = design_contract.design_plan_errors(
+        str(tmp_path), {"design_required": True, "tasks": []}
+    )
+
+    assert any("file.py::selector" in error for error in errors)
 
 
 def test_every_changed_producer_has_closed_consumer_edges_and_edge_tests(
