@@ -160,6 +160,19 @@ def test_direct_assignment_dispatches_all_ready_disjoint_tasks_simultaneously():
     assert result["overflow_ready"] == []
 
 
+def test_direct_assignment_maximizes_disjoint_ready_tasks_within_capacity():
+    state = _state([
+        _task("a-center", scope=("src",)),
+        _task("b-left", scope=("src/left.py",)),
+        _task("c-right", scope=("src/right.py",)),
+    ])
+
+    result = _admit(state, concurrency=2, max_in_flight=2)
+
+    assert result["dispatch_set"]["members"] == ["b-left", "c-right"]
+    assert result["overflow_ready"] == ["a-center"]
+
+
 def test_shared_owner_serializes_with_named_reason():
     topology = classify_plan([
         _task("a", scope=("src/shared.py",)),
@@ -283,6 +296,39 @@ def test_duplicate_and_out_of_order_events_reconcile_without_double_count():
     assert record_worker_event(state, first)["status"] == "recorded"
     assert record_worker_event(state, second)["status"] == "duplicate"
     assert len(state["events"]) == 2
+
+
+def test_gapped_terminal_event_waits_for_contiguous_reconciliation():
+    factory = RecordedTaskDispatchCapabilityFactory()
+    state = _state([
+        _task("a", scope=("a",)),
+        _task("b", deps=("a",), scope=("b",)),
+    ])
+    _admit(state, concurrency=1, max_in_flight=1)
+    admission = {
+        "host_capability": {"configured_host_concurrency": 1},
+        "budget": {"max_in_flight": 1, "session_limit": 60},
+        "clock": FakeClock(wall_time=2),
+        "capability_factory": factory,
+    }
+
+    gapped = record_worker_event(
+        state, {"event_id": "a-2", "task_id": "a", "sequence": 2,
+                "kind": "complete", "at": 2},
+        **admission,
+    )
+
+    assert gapped["terminal"] is False
+    assert gapped["admission"] is None
+    assert state["statuses"] == {"a": "in_flight", "b": "ready"}
+    reconciled = record_worker_event(
+        state, {"event_id": "a-1", "task_id": "a", "sequence": 1,
+                "kind": "progress", "at": 1},
+        **admission,
+    )
+    assert reconciled["terminal"] is True
+    assert reconciled["admission"]["dispatch_set"]["members"] == ["b"]
+    assert state["statuses"] == {"a": "complete", "b": "in_flight"}
 
 
 def test_event_queue_cap_and_oversize_event_fail_closed():
@@ -666,6 +712,23 @@ def test_live_scheduler_admits_waits_wakes_and_persists_replan_dag(
         reservation_fingerprint=assignment["reservation_fingerprint"],
         capability_id=assignment["capability"]["capability_id"],
     )
+    initial_event = command_runtime.dispatch_event({
+        "schema": command_runtime.SCHEMA,
+        "handle": "a" * 32, "revision": 1, "state": "created",
+        "created_at": 1, "updated_at": 1,
+        "identity": {
+            "schema": "taskplane.governed-command-identity/v1",
+            "run_id": scheduler["run_id"], "task_id": "a",
+        },
+        "wave_id": "execute-wave",
+    })
+    initial_event["dispatch_id"] = "dispatch-a"
+    initial_event["thread_id"] = "thread-a"
+    initial_event["fingerprint"] = "event-a-1"
+    initial_wake = loop.handle_host_input(
+        str(tmp_path), {"type": "worker_event",
+                        "dispatch_event": initial_event})
+    assert initial_wake["accepted"] is True
     command_event = command_runtime.dispatch_event({
         "schema": command_runtime.SCHEMA,
         "handle": "a" * 32, "revision": 2, "state": "succeeded",

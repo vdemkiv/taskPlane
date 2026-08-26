@@ -13,6 +13,7 @@ from copy import deepcopy
 import contextlib
 import fnmatch
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -196,6 +197,8 @@ def validate_scheduler_host_capability(
             not isinstance(max_in_flight, int) or \
             not isinstance(issued_at, (int, float)) or \
             not isinstance(expires_at, (int, float)) or \
+            not math.isfinite(issued_at) or \
+            not math.isfinite(expires_at) or \
             concurrency < 0 or max_in_flight < 0 or \
             max_in_flight > concurrency or expires_at <= issued_at:
         raise PlanTopologyError(
@@ -669,16 +672,35 @@ def _ready_projection(state: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     return ready, held
 
 
-def _maximal_disjoint(ready: Sequence[str], topology: Mapping[str, Any]) -> list[str]:
+def _maximal_disjoint(
+    ready: Sequence[str], topology: Mapping[str, Any], capacity: int,
+) -> list[str]:
     lookup = _pair_lookup(topology)
-    selected: list[str] = []
-    for candidate in sorted(ready):
-        if all(
-            lookup[frozenset((candidate, member))]["disposition"] == "parallel"
-            for member in selected
+    limit = min(capacity, len(ready))
+    best: tuple[str, ...] = ()
+
+    def search(selected: tuple[str, ...], candidates: tuple[str, ...]) -> bool:
+        nonlocal best
+        if len(selected) > len(best) or (
+            len(selected) == len(best) and selected < best
         ):
-            selected.append(candidate)
-    return selected
+            best = selected
+        if len(best) == limit:
+            return True
+        if len(selected) + len(candidates) <= len(best):
+            return False
+        for index, candidate in enumerate(candidates):
+            compatible = tuple(
+                member for member in candidates[index + 1:]
+                if lookup[frozenset((candidate, member))]["disposition"]
+                == "parallel"
+            )
+            if search((*selected, candidate), compatible):
+                return True
+        return False
+
+    search((), tuple(sorted(ready)))
+    return list(best)
 
 
 def _empty_admission(status: str, *, held: Sequence[str], ready: Sequence[str], reason: str) -> dict[str, Any]:
@@ -730,8 +752,7 @@ def _admit_ready_batch_locked(
             reason="in-flight capacity exhausted",
         )
 
-    disjoint = _maximal_disjoint(ready, state["topology"])
-    selected = disjoint[:capacity]
+    selected = _maximal_disjoint(ready, state["topology"], capacity)
     if not selected:
         return _empty_admission(
             "idle", held=held, ready=ready,
@@ -860,6 +881,23 @@ def _event_bytes(event: Mapping[str, Any]) -> bytes:
         raise PlanTopologyError(f"worker event is not canonical JSON: {exc}") from exc
 
 
+def _contiguous_task_events(
+    events: Sequence[Mapping[str, Any]], task_id: str,
+) -> list[Mapping[str, Any]]:
+    ordered = sorted(
+        (row for row in events if str(row["task_id"]) == task_id),
+        key=lambda row: (int(row["sequence"]), str(row["event_id"])),
+    )
+    contiguous: list[Mapping[str, Any]] = []
+    expected = 1
+    for row in ordered:
+        if int(row["sequence"]) != expected:
+            break
+        contiguous.append(row)
+        expected += 1
+    return contiguous
+
+
 def record_worker_event(
     state: MutableMapping[str, Any], event: Mapping[str, Any], *,
     host_capability: Mapping[str, Any] | None = None,
@@ -886,15 +924,7 @@ def record_worker_event(
             raise PlanTopologyError(f"unknown worker event kind: {kind}")
         if int(event["sequence"]) < 0:
             raise PlanTopologyError("worker event sequence cannot be negative")
-        terminal = kind in TERMINAL_EVENT_KINDS
         task = next(row for row in state["tasks"] if row["id"] == task_id)
-        if task.get("long_worker") and kind == "complete" and not any(
-            row["task_id"] == task_id and row["kind"] == "progress"
-            for row in state["events"]
-        ):
-            raise PlanTopologyError(
-                "long worker terminal event requires prior progress event"
-            )
         existing = next(
             (row for row in state["events"] if row["event_id"] == event_id), None
         )
@@ -902,23 +932,46 @@ def record_worker_event(
         if existing is not None:
             if existing != normalized:
                 raise PlanTopologyError("worker event id collision")
-            return {"schema": "taskplane.worker-event-result/v1", "status": "duplicate", "terminal": kind in TERMINAL_EVENT_KINDS}
+            return {
+                "schema": "taskplane.worker-event-result/v1",
+                "status": "duplicate",
+                "terminal": state["statuses"].get(task_id) in TERMINAL_STATUSES,
+            }
         if len(state["events"]) >= int(state.get("event_queue_cap") or DEFAULT_EVENT_QUEUE_CAP):
             raise PlanTopologyError("worker event queue cap reached")
+        contiguous = _contiguous_task_events(
+            [*state["events"], normalized], task_id,
+        )
+        terminal_event = next(
+            (row for row in contiguous if row["kind"] in TERMINAL_EVENT_KINDS),
+            None,
+        )
+        if task.get("long_worker") and terminal_event is not None and \
+                terminal_event["kind"] == "complete" and not any(
+                    row["kind"] == "progress"
+                    for row in contiguous
+                    if int(row["sequence"]) < int(terminal_event["sequence"])
+                ):
+            raise PlanTopologyError(
+                "long worker terminal event requires prior progress event"
+            )
         state["events"].append(normalized)
         state["events"].sort(key=lambda row: (str(row["task_id"]), int(row["sequence"]), str(row["event_id"])))
         admission = None
-        if terminal:
+        terminal = terminal_event is not None
+        if terminal and state["statuses"].get(task_id) not in TERMINAL_STATUSES:
             status = {
                 "complete": "complete",
                 "attention": "attention",
                 "partial-host": "attention",
                 "failed": "failed",
                 "cancelled": "cancelled",
-            }[kind]
+            }[str(terminal_event["kind"])]
             state["statuses"][task_id] = status
             state["in_flight"].pop(task_id, None)
-            state["task_times"].setdefault(task_id, {})["terminal"] = float(event["at"])
+            state["task_times"].setdefault(task_id, {})["terminal"] = float(
+                terminal_event["at"]
+            )
             if all(value is not None for value in (
                 host_capability, budget, clock, capability_factory,
             )):
@@ -930,7 +983,8 @@ def record_worker_event(
             "schema": "taskplane.worker-event-result/v1",
             "status": "recorded",
             "terminal": terminal,
-            "attention": kind == "partial-host",
+            "attention": terminal_event is not None
+            and terminal_event["kind"] == "partial-host",
             "admission": admission,
         }
 

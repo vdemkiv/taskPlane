@@ -1,6 +1,17 @@
+import math
+
 import pytest
 
-from taskplane.delivery_ports import DeliveryPortError, RecordedTaskDispatchCapabilityFactory
+from taskplane.delivery_ports import (
+    content_fingerprint,
+    DeliveryPortError,
+    FakeClock,
+    RecordedTaskDispatchCapabilityFactory,
+)
+from taskplane.plan_topology import (
+    PlanTopologyError,
+    validate_scheduler_host_capability,
+)
 
 
 def _capability(**overrides):
@@ -77,3 +88,32 @@ def test_direct_assignment_carries_exact_bound_default_deny_capability():
     capability.require("write_path", "src/a.py", run_id="run", task_id="task-a", stage="Execute")
     with pytest.raises(DeliveryPortError, match="denies"):
         capability.require("write_path", "src/b.py", run_id="run", task_id="task-a")
+
+
+@pytest.mark.parametrize("field", ["issued_at", "expires_at"])
+@pytest.mark.parametrize("invalid_time", [math.nan, math.inf, -math.inf])
+def test_scheduler_host_capability_rejects_non_finite_validity_times(
+    field, invalid_time,
+):
+    material = {
+        "schema": "taskplane.scheduler-host-capability/v1",
+        "run_id": "run",
+        "source_sha": "a" * 40,
+        "plan_fingerprint": "b" * 64,
+        "configured_host_concurrency": 1,
+        "max_in_flight": 1,
+        "issued_at": 1.0,
+        "expires_at": 20.0,
+        "cryptographic_authenticity_claimed": False,
+    }
+    material[field] = invalid_time
+    receipt = {**material, "fingerprint": content_fingerprint(material)}
+
+    with pytest.raises(PlanTopologyError, match="malformed"):
+        validate_scheduler_host_capability(
+            receipt,
+            run_id="run",
+            source_sha="a" * 40,
+            plan_fingerprint="b" * 64,
+            clock=FakeClock(wall_time=10),
+        )
