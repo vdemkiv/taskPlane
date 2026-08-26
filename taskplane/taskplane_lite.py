@@ -4921,7 +4921,8 @@ def record_expected_dispatch(workspace: str, kind: str, agent: str,
                              task_name: str | None = None,
                              reasoning_effort: str | None = None,
                              role_marker_value: str | None = None,
-                             dispatch_route: dict | None = None) -> None:
+                             dispatch_route: dict | None = None,
+                             intent_id: str | None = None) -> None:
     """Called when a brief is emitted (`loop next` / `lens dispatch`): what
     agent SHOULD be dispatched next, on what model. A queue, not a scalar —
     a parallel wave emits many briefs with different tiers at once."""
@@ -4935,6 +4936,8 @@ def record_expected_dispatch(workspace: str, kind: str, agent: str,
                  "model_tier": model_tier, "model": model,
                  "reasoning_effort": reasoning_effort or
                  reasoning_for_tier(model_tier), "matched": False}
+        if intent_id is not None:
+            entry["intent_id"] = intent_id
         if isinstance(dispatch_route, dict):
             entry["dispatch_route"] = dispatch_route
         # Emission is observational and may be repeated (refreshing a wave,

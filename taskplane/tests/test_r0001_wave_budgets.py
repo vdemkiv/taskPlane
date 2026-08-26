@@ -384,8 +384,6 @@ def test_observed_production_usage_stops_the_next_live_wave_at_equality(
             "wait_duration_seconds": 0, "correction_count": 0,
             "events": [],
         },
-        reservation_fingerprint="reservation-a",
-        capability_id="capability-a",
     )
     state = {
         "parallel": True, "step": "execute", "goal": "budget",

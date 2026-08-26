@@ -1259,7 +1259,6 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
     assert loop.gate(ws, "pass")["step"] == "plan_approval"    # plan gate
     assert nxt("plan_approval")["paused"]                      # human gate
     assert loop.approve(ws, by="human — walk")["step"] == "execute"
-    stage_fixture.bind_scheduler_capacity(ws, 1)
     # commit the earlier steps' authored artifacts (design/plan) so the
     # execute contract's scope diff starts clean — the engine's own
     # documented recovery for artifacts authored by earlier loop steps

@@ -21,9 +21,8 @@ import taskplane_lite as tp
 import storage as runtime_storage
 
 try:
-    from . import dispatch_telemetry, plan_topology
+    from . import plan_topology
 except ImportError:  # pragma: no cover - direct module loading
-    import dispatch_telemetry
     import plan_topology
 
 
@@ -31,12 +30,12 @@ _STAGE_VIEW_LIMIT = 100
 
 
 def performance_projection(state: dict) -> dict:
-    """Consume the shared execution-DAG metrics for the Retro surface."""
-    return dispatch_telemetry.retro_projection(state)
+    """Compute delivery metrics from native dispatch and loop trace facts."""
+    return plan_topology.execution_metrics(state)
 
 
 def _execution_state(tasks: list, events: list) -> dict:
-    """Legacy-only projection for runs without the R-0001 scheduler."""
+    """Project dependency timing from native wave/claim/gate trace events."""
     dependencies = {
         str(task.get("id")): [str(value) for value in task.get("deps") or []]
         for task in tasks if isinstance(task, dict) and task.get("id")
@@ -60,59 +59,23 @@ def _execution_state(tasks: list, events: list) -> dict:
             task_id: {"start": started, "terminal": terminals[task_id]}
             for task_id, started in starts.items() if task_id in terminals
         },
-        "scheduler_caused_idle_seconds": sum(
-            float(row.get("scheduler_caused_idle_seconds") or 0)
-            for row in events if isinstance(row, dict)
-            and row.get("event") == "scheduler_metrics"),
     }
 
 
 def _authoritative_execution_state(
-        state: dict, tasks: list, events: list, *,
-        execution_dag_store=None) -> tuple[dict, str]:
-    scheduler = state.get("performance_scheduler")
-    if isinstance(scheduler, dict):
-        # This validates statuses, events, and metric computability before
-        # Retro signs the report.  The persisted execution DAG remains the
-        # authority; trace rows are not used to reconstruct it.
-        dispatch_telemetry.scheduler_projection(scheduler)
-        if execution_dag_store is None:
-            raise ValueError(
-                "authoritative execution DAG store is unavailable")
-        head = execution_dag_store.read_head()
-        if head != scheduler.get("execution_dag_head"):
-            raise ValueError(
-                "scheduler execution DAG head contradicts stored authority")
-        dag = execution_dag_store.read_dag()
-        if dag.get("fingerprint") != head.get("fingerprint"):
-            raise ValueError("authoritative execution DAG is unavailable")
-        authoritative = json.loads(json.dumps(scheduler))
-        authoritative["execution_dag"] = dag
-        return authoritative, "managed-run-execution-dag-head"
-    if isinstance(state.get("dispatch_telemetry"), dict):
-        raise ValueError(
-            "dispatch telemetry exists without its authoritative scheduler")
-    return _execution_state(tasks, events), "legacy-trace-compatibility"
+        state: dict, tasks: list, events: list) -> tuple[dict, str]:
+    """Use repository/run-native trace facts; no private concurrency authority."""
+    return (_execution_state(tasks, events),
+            "native-dispatch-and-loop-trace")
 
 
-def _managed_execution_dag_store(ws: str, state: dict):
-    locator = runtime_storage.load_workspace_locator(ws)
-    scheduler = state.get("performance_scheduler")
-    run_id = str((scheduler or {}).get("run_id") or "")
-    if not isinstance(locator, dict) or not run_id or \
-            str(locator.get("run_id") or "") != run_id:
-        raise ValueError("authoritative managed-run locator is unavailable")
-    home = os.path.realpath(str(locator.get("home") or ""))
-    managed_run = os.path.realpath(os.path.join(home, "runs", run_id))
-    if not os.path.isdir(managed_run) or \
-            os.path.commonpath((home, managed_run)) != home:
-        raise ValueError("authoritative managed-run root is unavailable")
-    return plan_topology.ExecutionDagRevisionStore(managed_run)
-
-
-def _events_for_run(ws: str, state: dict) -> tuple[list, float | None]:
+def _events_for_run(
+        ws: str, state: dict, *, active_only: bool = False) \
+        -> tuple[list, float | None]:
     events = []
-    for trace_path in tp.trace_paths(ws):
+    paths = ([os.path.join(tp.tp_dir(ws), "trace.jsonl")]
+             if active_only else tp.trace_paths(ws))
+    for trace_path in paths:
         with open(trace_path, encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
@@ -253,8 +216,6 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
         "- longest serial chain: " +
         " -> ".join(chain.get("tasks") or []) +
         f" ({chain.get('seconds', 0)}s)",
-        f"- scheduler-caused idle: "
-        f"{performance.get('scheduler_caused_idle_seconds', 0)}s",
         f"- execution metric source: "
         f"{report.get('execution_metric_source', 'unknown')}",
     ])
@@ -378,7 +339,8 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                     "step": "retro",
                     "retro_id": retro_id,
                 }
-            events, trace_from = [], None
+            events, trace_from = _events_for_run(
+                ws, state, active_only=True)
         else:
             stage_view, stage_metrics = None, None
             events, trace_from = _events_for_run(ws, state)
@@ -482,16 +444,10 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
         }
         try:
             execution_state, execution_metric_source = \
-                _authoritative_execution_state(
-                    state, tasks, events,
-                    execution_dag_store=(
-                        _managed_execution_dag_store(ws, state)
-                        if isinstance(state.get("performance_scheduler"), dict)
-                        else None),
-                )
+                _authoritative_execution_state(state, tasks, events)
             execution_metrics = performance_projection(execution_state)
         except (ValueError, TypeError,
-                dispatch_telemetry.DispatchTelemetryError) as exc:
+                plan_topology.PlanTopologyError) as exc:
             return {"error": "retro performance evidence is unavailable — "
                     "loop remains open",
                     "detail": f"{exc.__class__.__name__}: {exc}",
@@ -512,26 +468,14 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "lessons": lessons,
             "execution_metrics": execution_metrics,
             "execution_metric_source": execution_metric_source,
-            "execution_dag": ({
-                "schema": execution_state["execution_dag"]["schema"],
-                "fingerprint": execution_state["execution_dag"][
-                    "fingerprint"],
-                "generations": len(
-                    execution_state["execution_dag"].get("generations") or []),
-                "nodes": len(
-                    execution_state["execution_dag"].get("nodes") or []),
-                "edges": len(
-                    execution_state["execution_dag"].get("edges") or []),
-            } if execution_metric_source ==
-            "managed-run-execution-dag-head"
-               else None),
         }
         if stage_native:
             report["stage_view"] = stage_view
             report["stage_metrics"] = stage_metrics
             report["trace_scope"] = {
-                "source": "bounded-stage-view", "from_ts": None,
-                "events": 0,
+                "source": "active-run-trace",
+                "from_ts": trace_from,
+                "events": len(events),
             }
         scope = sorted({glob for task in tasks for glob in task.get("scope", [])})
         decision = _existing_decision(ws, retro_id)

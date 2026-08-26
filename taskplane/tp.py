@@ -1402,11 +1402,9 @@ def cmd_screen_skill(a) -> int:
 
 def cmd_screen_dispatch(a) -> int:
     """PreToolUse hook for the Agent/Task tool: verify the driver dispatched
-    the model the most recent matching brief resolved (tier routing). OPT-IN
-    — inert unless TASKPLANE_ENFORCE_DISPATCH=warn|strict. Warn is advisory;
-    strict fails closed on a mismatch or verification error so the driver
-    must re-dispatch with the brief's exact native Codex identity, role marker,
-    model, and reasoning effort."""
+    the model the most recent matching brief resolved (tier routing).
+    Observation is always on; TASKPLANE_ENFORCE_DISPATCH controls only whether
+    a mismatch is silent, advisory, or denied."""
     mode = (os.environ.get("TASKPLANE_ENFORCE_DISPATCH") or "").strip().lower()
     try:
         event = json.load(sys.stdin)
@@ -1450,10 +1448,6 @@ def cmd_screen_dispatch(a) -> int:
                 "hookEventName": "PreToolUse", "permissionDecision": "deny",
                 "permissionDecisionReason": reason}}))
             return 0
-    if mode not in ("warn", "strict"):
-        if foreign_message:
-            print(json.dumps({"systemMessage": foreign_message}))
-        return 0                                   # tier verification opt-in
     try:
         ti = event.get("tool_input") or {}
         native_codex = bool(ti.get("task_name"))
@@ -1491,6 +1485,21 @@ def cmd_screen_dispatch(a) -> int:
         ok = tp.commit_dispatch_verification(
             ws, agent, model, exp, ok, effort, strict=strict)
         if ok:
+            if exp is not None and exp.get("intent_id"):
+                try:
+                    import loop as _loop_runtime
+                    _loop_runtime.record_native_dispatch_observation(
+                        ws, expected=exp, native_task_name=str(agent))
+                except Exception as telemetry_error:
+                    tp.trace(
+                        ws, "native_dispatch_telemetry_unavailable",
+                        task=exp.get("ref"),
+                        error=f"{type(telemetry_error).__name__}: "
+                              f"{telemetry_error}")
+            if foreign_message:
+                print(json.dumps({"systemMessage": foreign_message}))
+            return 0
+        if mode not in ("warn", "strict"):
             if foreign_message:
                 print(json.dumps({"systemMessage": foreign_message}))
             return 0
@@ -3142,7 +3151,9 @@ def _record_parallel_expectations(ws: str, payload: dict) -> None:
             entry.get("model_tier", "standard"), entry.get("model"),
             ref=task_id, task_name=entry.get("task_name"),
             reasoning_effort=entry.get("reasoning_effort"),
-            role_marker_value=entry.get("role_marker"))
+            role_marker_value=entry.get("role_marker"),
+            intent_id=((entry.get("dispatch_intent") or {}).get(
+                "intent_id")))
 
 
 def _stage_activation(slot: str) -> str:

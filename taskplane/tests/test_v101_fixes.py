@@ -41,28 +41,6 @@ def _repo(tmp):
     return ws
 
 
-def _bind_scheduler_capacity(ws, concurrency=1):
-    """Model a current host-capability receipt for legacy wave fixtures."""
-    import plan_topology
-    state = loop.load(ws)
-    identity = loop._dispatch_telemetry_identity(ws, state)
-    now = time.time()
-    material = {
-        "schema": plan_topology.HOST_CAPABILITY_SCHEMA,
-        "run_id": identity["run_id"],
-        "source_sha": identity["source_sha"],
-        "plan_fingerprint": identity["plan_fingerprint"],
-        "configured_host_concurrency": concurrency,
-        "max_in_flight": concurrency,
-        "issued_at": now,
-        "expires_at": now + 3600,
-        "cryptographic_authenticity_claimed": False,
-    }
-    state["scheduler_host_capability_receipt"] = {
-        **material,
-        "fingerprint": plan_topology.content_fingerprint(material),
-    }
-    loop.save(ws, state)
 def _deny_unlink():
     """Patch os.remove/os.unlink to behave like a no-unlink FUSE mount."""
     def boom(*a, **k):
@@ -191,6 +169,61 @@ class TestScreenDispatchHook(unittest.TestCase):
         r = self._run(self._event(model=None))
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), "")
+
+    def test_native_spawn_observation_is_always_on_and_idempotent(self):
+        loop.init(self.ws, "native observation")
+        with loop.mutate(self.ws) as state:
+            state["tasks"] = [{
+                "id": "t1", "scope": ["src/**"], "tests": "true",
+                "deps": [], "status": "pending",
+            }]
+        task_name = tp.dispatch_task_name("step", "tp-executor", "t1")
+
+        def emit_and_observe():
+            tp.record_expected_dispatch(
+                self.ws, "step", "tp-executor", "standard", None,
+                ref="t1", task_name=task_name, reasoning_effort="medium",
+                intent_id="native-intent-t1")
+            result = self._run(
+                self._codex_event(task_name, effort="medium"))
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.strip(), "")
+
+        emit_and_observe()
+        emit_and_observe()
+        ledger = loop.load(self.ws)["dispatch_telemetry"]
+        self.assertEqual(len(ledger["bindings"]), 1)
+        self.assertEqual(
+            ledger["bindings"][0]["dispatch_id"], "native-intent-t1")
+        self.assertEqual(ledger["bindings"][0]["task_id"], "t1")
+        self.assertEqual(ledger["bindings"][0]["thread_id"], task_name)
+
+    def test_severed_native_observation_is_traced_and_budget_fails_closed(self):
+        loop.init(self.ws, "severed native observation", parallel=True)
+        with loop.mutate(self.ws) as state:
+            state["step"] = "execute"
+            state["tasks"] = [{
+                "id": "t1", "scope": ["src/**"], "tests": "true",
+                "deps": [], "status": "pending",
+            }]
+            state["dispatch_telemetry"] = {"schema": "severed"}
+        task_name = tp.dispatch_task_name("step", "tp-executor", "t1")
+        tp.record_expected_dispatch(
+            self.ws, "step", "tp-executor", "standard", None,
+            ref="t1", task_name=task_name, reasoning_effort="medium",
+            intent_id="native-intent-t1")
+
+        result = self._run(self._codex_event(task_name, effort="medium"))
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "")
+        trace_path = os.path.join(tp.tp_dir(self.ws), "trace.jsonl")
+        with open(trace_path, encoding="utf-8") as handle:
+            trace = [json.loads(line) for line in handle if line.strip()]
+        self.assertTrue(any(
+            row.get("event") == "native_dispatch_telemetry_unavailable"
+            and row.get("task") == "t1" for row in trace))
+        wave = loop.wave(self.ws)
+        self.assertIn("dispatch telemetry refused before wave", wave["error"])
 
     def test_warn_on_missing_model(self):
         tp.record_expected_dispatch(self.ws, "lens", "tp-lens", "cheap",
@@ -422,7 +455,6 @@ class TestCodexParallelWaveDispatch(unittest.TestCase):
             "deps": [], "status": "pending", "model": "deep",
         }]
         loop.save(self.ws, state)
-        _bind_scheduler_capacity(self.ws)
 
     def _wave(self):
         env = {**os.environ, "TASKPLANE_WORKFLOWS": "0"}
@@ -490,7 +522,6 @@ class TestStatuses(unittest.TestCase):
              "status": statuses[1]},
         ]
         loop.save(ws, st)
-        _bind_scheduler_capacity(ws)
 
     def test_done_seed_satisfies_dep(self):
         ws = _repo(self.tmp)

@@ -1,8 +1,8 @@
-"""Closed dispatch, event, budget, and delivery-metric projections.
+"""Native dispatch observation, token budgets, and delivery telemetry.
 
-This owner is deliberately host-neutral.  Transition adapters supply observed
-usage and an injected clock; this module validates, aggregates, and persists
-the resulting facts without starting workers or mutating loop authority.
+Codex owns agent concurrency and lifecycle. Taskplane binds observed native
+dispatches to deterministic intents, aggregates provider usage, and stops only
+the next dispatch when a delivery budget is reached.
 """
 
 from __future__ import annotations
@@ -13,11 +13,10 @@ from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any
 
 try:
-    from . import delivery_policy, plan_topology
+    from . import delivery_policy
     from .delivery_ports import Clock, canonical_json, content_fingerprint
 except ImportError:  # pragma: no cover - direct module loading
     import delivery_policy  # type: ignore
-    import plan_topology  # type: ignore
     from delivery_ports import Clock, canonical_json, content_fingerprint  # type: ignore
 
 
@@ -25,16 +24,12 @@ LEDGER_SCHEMA = "taskplane.dispatch-telemetry-ledger/v1"
 RECEIPT_SCHEMA = "taskplane.dispatch-telemetry/v1"
 EVENT_SCHEMA = "taskplane.dispatch-event/v1"
 BUDGET_SCHEMA = "taskplane.wave-budget/v1"
-SCHEDULER_PROJECTION_SCHEMA = "taskplane.scheduler-progress/v1"
 DISPATCH_BINDING_SCHEMA = "taskplane.dispatch-telemetry-binding/v1"
 
 THREAD_TYPES = frozenset({"main", "worker", "lens", "evaluator", "guardian"})
 EVENT_KINDS = frozenset({
     "progress", "complete", "attention", "failed", "cancelled",
     "partial-host",
-})
-TERMINAL_EVENT_KINDS = frozenset({
-    "complete", "attention", "failed", "cancelled", "partial-host",
 })
 MAX_EVENT_BYTES = 64 * 1024
 MAX_EVENTS = 256
@@ -107,7 +102,6 @@ def new_ledger(*, run_id: str, source_sha: str, design_fingerprint: str,
         **identity,
         "started_at": _nonnegative_number(started_at, "started_at"),
         "revision": 0,
-        "session_reservations": [],
         "dispatches": [],
         "bindings": [],
         "evidence_head": None,
@@ -121,22 +115,9 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
     _nonnegative_number(ledger.get("started_at"), "started_at")
     _nonnegative_integer(ledger.get("revision"), "revision")
     rows = ledger.get("dispatches")
-    reservations = ledger.get("session_reservations")
-    if not isinstance(rows, list) or not isinstance(reservations, list):
+    if not isinstance(rows, list):
         raise DispatchTelemetryError(
-            "dispatch telemetry rows and reservations must be lists")
-    reservation_ids = []
-    for reservation in reservations:
-        if not isinstance(reservation, Mapping) or set(reservation) != {
-                "dispatch_id", "thread_type", "reserved_at"}:
-            raise DispatchTelemetryError("dispatch session reservation is invalid")
-        reservation_ids.append(str(reservation.get("dispatch_id") or ""))
-        if str(reservation.get("thread_type") or "") not in THREAD_TYPES:
-            raise DispatchTelemetryError("dispatch reservation thread type is invalid")
-        _nonnegative_number(reservation.get("reserved_at"), "reserved_at")
-    if any(not value for value in reservation_ids) or \
-            len(set(reservation_ids)) != len(reservation_ids):
-        raise DispatchTelemetryError("dispatch session reservation is duplicated")
+            "dispatch telemetry rows must be a list")
     ids: set[str] = set()
     for row in rows:
         if not isinstance(row, Mapping) or row.get("schema") != RECEIPT_SCHEMA:
@@ -158,10 +139,6 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
             raise DispatchTelemetryError(
                 "dispatch telemetry binding identity is duplicated")
         binding_ids.add(dispatch_id)
-        if not str(binding.get("reservation_fingerprint") or "") or \
-                not str(binding.get("capability_id") or ""):
-            raise DispatchTelemetryError(
-                "dispatch telemetry binding lacks reservation authority")
         if binding.get("usage") is not None:
             _usage(binding["usage"])
     return dict(ledger)
@@ -187,15 +164,9 @@ def _usage(value: Mapping[str, Any]) -> dict[str, int]:
 
 
 def bind_dispatch(
-        ledger: MutableMapping[str, Any], dispatch: Mapping[str, Any], *,
-        reservation_fingerprint: str, capability_id: str) -> dict[str, Any]:
-    """Bind one live host dispatch to its scheduler reservation.
-
-    Usage may arrive later from the hook transcript.  The binding therefore
-    reserves the session now and keeps the exact authority/capacity receipt
-    needed to admit the final observed counters without caller-authored
-    lookalikes.
-    """
+        ledger: MutableMapping[str, Any],
+        dispatch: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind one observed native dispatch to its deterministic intent id."""
     validate_ledger(ledger)
     unknown = set(dispatch).difference(_DISPATCH_FIELDS)
     missing = _DISPATCH_FIELDS.difference(dispatch)
@@ -203,18 +174,10 @@ def bind_dispatch(
         raise DispatchTelemetryError(
             "dispatch binding is closed: "
             f"missing={sorted(missing)} unknown={sorted(unknown)}")
-    reservation_fingerprint = str(reservation_fingerprint or "").strip()
-    capability_id = str(capability_id or "").strip()
-    if not reservation_fingerprint or not capability_id:
-        raise DispatchTelemetryError(
-            "dispatch binding requires reservation fingerprint and capability")
-    # Validate the dispatch half with a reconciled zero usage block.
     _receipt(dispatch, {field: 0 for field in _USAGE_FIELDS})
     material = {
         "schema": DISPATCH_BINDING_SCHEMA,
         **dict(dispatch),
-        "reservation_fingerprint": reservation_fingerprint,
-        "capability_id": capability_id,
         "usage": None,
         "usage_source_fingerprint": None,
         "finalized_receipt_fingerprint": None,
@@ -223,23 +186,14 @@ def bind_dispatch(
     existing = next((row for row in bindings
                      if row["dispatch_id"] == material["dispatch_id"]), None)
     if existing is not None:
-        stable_fields = {
-            key: value for key, value in existing.items()
-            if key not in {"usage", "usage_source_fingerprint",
-                           "finalized_receipt_fingerprint"}
+        identity_fields = {
+            "dispatch_id", "thread_id", "thread_type", "task_id",
+            "dependencies", "shared_owner",
         }
-        expected = {
-            key: value for key, value in material.items()
-            if key not in {"usage", "usage_source_fingerprint",
-                           "finalized_receipt_fingerprint"}
-        }
-        if stable_fields != expected:
+        if any(existing.get(field) != material.get(field)
+               for field in identity_fields):
             raise DispatchTelemetryError("dispatch binding id collision")
         return dict(existing)
-    reserve_session(
-        ledger, dispatch_id=str(material["dispatch_id"]),
-        thread_type=str(material["thread_type"]),
-        reserved_at=material["started_at"])
     bindings.append(material)
     ledger["revision"] = int(ledger["revision"]) + 1
     return dict(material)
@@ -320,40 +274,20 @@ def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float
     if now < started:
         raise DispatchTelemetryError("clock moved before wave start")
     dispatches = ledger.get("dispatches") or []
+    observed_sessions = {
+        str(row.get("dispatch_id") or "")
+        for row in [*(ledger.get("bindings") or []), *dispatches]
+        if str(row.get("dispatch_id") or "")
+    }
     return {
         "elapsed_seconds": now - started,
-        "sessions": len(ledger.get("session_reservations") or []),
+        "sessions": len(observed_sessions),
         "total_tokens": sum(int(row["total_tokens"]) for row in dispatches),
         "uncached_input_tokens": sum(
             int(row["uncached_input_tokens"]) for row in dispatches
         ),
     }
 
-
-def reserve_session(ledger: MutableMapping[str, Any], *, dispatch_id: str,
-                    thread_type: str, reserved_at: int | float) -> dict[str, Any]:
-    """Atomically-accountable, idempotent pre-dispatch session reservation."""
-    validate_ledger(ledger)
-    dispatch_id = str(dispatch_id or "").strip()
-    thread_type = str(thread_type or "").strip()
-    if not dispatch_id:
-        raise DispatchTelemetryError("dispatch reservation id is required")
-    if thread_type not in THREAD_TYPES:
-        raise DispatchTelemetryError(
-            f"unknown dispatch thread type: {thread_type}")
-    row = {
-        "dispatch_id": dispatch_id, "thread_type": thread_type,
-        "reserved_at": _nonnegative_number(reserved_at, "reserved_at"),
-    }
-    existing = next((value for value in ledger["session_reservations"]
-                     if value["dispatch_id"] == dispatch_id), None)
-    if existing is not None:
-        if existing["thread_type"] != thread_type:
-            raise DispatchTelemetryError("dispatch reservation id collision")
-        return dict(existing)
-    ledger["session_reservations"].append(row)
-    ledger["revision"] = int(ledger["revision"]) + 1
-    return dict(row)
 
 
 def budget_projection(ledger: Mapping[str, Any], clock: Clock, *,
@@ -494,16 +428,8 @@ def _receipt(dispatch: Mapping[str, Any], usage: Mapping[str, Any]) -> dict[str,
 def admit(ledger: MutableMapping[str, Any], dispatch: Mapping[str, Any],
           usage: Mapping[str, Any], clock: Clock, evidence_store: Any = None) \
         -> dict[str, Any]:
-    """Append one exact dispatch receipt only while all budgets allow it."""
+    """Record observed usage; the resulting budget governs the next spawn."""
     validate_ledger(ledger)
-    budget = budget_projection(ledger, clock)
-    if not budget["dispatch_allowed"]:
-        return {
-            "schema": "taskplane.dispatch-telemetry-admission/v1",
-            "status": "stop_for_human_scope_review",
-            "receipt": None,
-            "budget": budget,
-        }
     receipt = _receipt(dispatch, usage)
     existing = next((row for row in ledger["dispatches"]
                      if row["dispatch_id"] == receipt["dispatch_id"]), None)
@@ -515,9 +441,6 @@ def admit(ledger: MutableMapping[str, Any], dispatch: Mapping[str, Any],
             "status": "duplicate", "receipt": dict(existing),
             "budget": budget_projection(ledger, clock),
         }
-    reserve_session(
-        ledger, dispatch_id=receipt["dispatch_id"],
-        thread_type=receipt["thread_type"], reserved_at=receipt["started_at"])
     evidence_fingerprint = None
     if evidence_store is not None:
         prepared = evidence_store.prepare(
@@ -536,33 +459,3 @@ def admit(ledger: MutableMapping[str, Any], dispatch: Mapping[str, Any],
         "status": "admitted", "receipt": dict(receipt),
         "budget": budget_projection(ledger, clock),
     }
-
-
-def scheduler_projection(state: Mapping[str, Any]) -> dict[str, Any]:
-    """Bound the scheduler facts consumed by progress and Retro adapters."""
-    if not isinstance(state, Mapping):
-        raise DispatchTelemetryError("scheduler state must be a mapping")
-    statuses = state.get("statuses")
-    events = state.get("events")
-    if not isinstance(statuses, Mapping) or not isinstance(events, list):
-        raise DispatchTelemetryError("scheduler statuses/events are unavailable")
-    return {
-        "schema": SCHEDULER_PROJECTION_SCHEMA,
-        "ready": sorted(task for task, status in statuses.items()
-                        if status == "ready"),
-        "held": sorted(task for task, status in statuses.items()
-                       if status not in plan_topology.TERMINAL_STATUSES
-                       and status not in {"ready", "in_flight"}),
-        "running": sorted(task for task, status in statuses.items()
-                          if status == "in_flight"),
-        "attention": sorted(task for task, status in statuses.items()
-                            if status == "attention"),
-        "events": [dict(row) for row in events[-MAX_EVENTS:]
-                   if isinstance(row, Mapping)],
-        "execution_metrics": plan_topology.execution_metrics(state),
-    }
-
-
-def retro_projection(state: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the exact performance measures included in the Retro report."""
-    return plan_topology.execution_metrics(state)

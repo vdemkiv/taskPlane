@@ -1,18 +1,9 @@
-import math
-
 import pytest
 
 from taskplane.delivery_ports import (
-    content_fingerprint,
     DeliveryPortError,
-    FakeClock,
     RecordedTaskDispatchCapabilityFactory,
 )
-from taskplane.plan_topology import (
-    PlanTopologyError,
-    validate_scheduler_host_capability,
-)
-
 
 def _capability(**overrides):
     values = dict(
@@ -59,61 +50,13 @@ def test_irreversible_action_requires_outside_model_human_recheck():
         assert not capability.allows("tool", action)
 
 
-def test_direct_assignment_carries_exact_bound_default_deny_capability():
-    from taskplane.delivery_ports import FakeClock, RecordedTaskDispatchCapabilityFactory
-    from taskplane.plan_topology import admit_ready_batch, new_scheduler_state
-
-    factory = RecordedTaskDispatchCapabilityFactory()
-    state = new_scheduler_state(
-        [{
-            "id": "task-a", "deps": [], "scope": ["src/a.py"], "tests": "",
-            "allowed_tools": ["read", "test"],
-            "allowed_git_refs": ["refs/heads/task-a"],
-        }],
-        run_id="run", source_sha="a" * 40, design_fingerprint="design",
-        plan_fingerprint="plan", stage="Execute", repository_files=set(),
-    )
-
-    result = admit_ready_batch(
-        state, {"configured_host_concurrency": 1},
-        {"max_in_flight": 1, "session_limit": 60}, None,
-        FakeClock(wall_time=1), capability_factory=factory,
-    )
-
-    assignment = result["assignments"][0]
-    capability = factory.created[0]
-    assert assignment["capability"] == capability.projection
-    assert capability.projection["reservation_fingerprint"] == result["reservation_fingerprint"]
+def test_generic_capability_remains_exact_bound_and_default_deny():
+    capability = _capability()
     assert capability.projection["write_paths"] == ("src/a.py",)
-    capability.require("write_path", "src/a.py", run_id="run", task_id="task-a", stage="Execute")
+    capability.require(
+        "write_path", "src/a.py",
+        run_id="run", task_id="task-a", stage="Execute")
     with pytest.raises(DeliveryPortError, match="denies"):
-        capability.require("write_path", "src/b.py", run_id="run", task_id="task-a")
-
-
-@pytest.mark.parametrize("field", ["issued_at", "expires_at"])
-@pytest.mark.parametrize("invalid_time", [math.nan, math.inf, -math.inf])
-def test_scheduler_host_capability_rejects_non_finite_validity_times(
-    field, invalid_time,
-):
-    material = {
-        "schema": "taskplane.scheduler-host-capability/v1",
-        "run_id": "run",
-        "source_sha": "a" * 40,
-        "plan_fingerprint": "b" * 64,
-        "configured_host_concurrency": 1,
-        "max_in_flight": 1,
-        "issued_at": 1.0,
-        "expires_at": 20.0,
-        "cryptographic_authenticity_claimed": False,
-    }
-    material[field] = invalid_time
-    receipt = {**material, "fingerprint": content_fingerprint(material)}
-
-    with pytest.raises(PlanTopologyError, match="malformed"):
-        validate_scheduler_host_capability(
-            receipt,
-            run_id="run",
-            source_sha="a" * 40,
-            plan_fingerprint="b" * 64,
-            clock=FakeClock(wall_time=10),
-        )
+        capability.require(
+            "write_path", "src/b.py",
+            run_id="run", task_id="task-a")
