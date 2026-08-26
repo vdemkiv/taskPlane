@@ -4315,12 +4315,19 @@ def select_ready_tasks(
             pair_map[frozenset((task_id, str(member["id"])))]
             for member in selected
             if pair_map[frozenset((task_id, str(member["id"])))]
-            ["disposition"] == "serialized"
+            ["disposition"] == "serialized" and not (
+                task.get("variant") and member.get("variant") and
+                task.get("variant") != member.get("variant"))
         ), None)
         if blocker is not None:
+            blocked_by = (blocker["left"] if blocker["left"] != task_id
+                          else blocker["right"])
+            shared_owner = str(blocker["shared_owner"])
             held.append({
                 "task": task_id,
-                "reason": f"serialized by {blocker['shared_owner']}",
+                "reason": (f"scope overlaps {blocked_by} — next wave"
+                           if shared_owner.startswith("scope:") else
+                           f"serialized by {shared_owner}"),
                 "shared_owner": blocker["shared_owner"],
             })
             continue
@@ -4378,6 +4385,79 @@ def _ensure_dispatch_telemetry(ws: str) -> dict:
             locked["dispatch_telemetry"] = ledger
         dispatch_telemetry.validate_ledger(ledger)
         return dict(ledger)
+
+
+_PENDING_WAVE_TELEMETRY = "_pending_wave_dispatch_telemetry"
+
+
+def _capacity_bound_scheduler_required(state: Mapping[str, object]) -> bool:
+    """Return whether this generation opted into capacity-bound dispatch.
+
+    Legacy loops have none of these authority fields and retain their
+    established topology-driven wave behavior. Once any capacity authority
+    surface exists, missing or malformed host capacity still fails closed.
+    """
+    return any(field in state for field in (
+        "delivery_mode_receipt", "plan_fingerprint",
+        "scheduler_host_capability_receipt", "performance_scheduler",
+        "scheduler_capacity_operator_assertions",
+    ))
+
+
+def _pending_legacy_wave_telemetry(
+        ws: str, state: Mapping[str, object],
+        dispatch_intents: Mapping[str, Mapping[str, object]], *,
+        reserved_at: float) -> dict:
+    """Prepare legacy reservations without mutating before a stage split."""
+    current = state.get("dispatch_telemetry")
+    if current is None:
+        ledger = dispatch_telemetry.new_ledger(
+            **_dispatch_telemetry_identity(ws, state),
+            started_at=reserved_at)
+        base = None
+    else:
+        dispatch_telemetry.validate_ledger(current)
+        base = json.loads(json.dumps(current))
+        ledger = json.loads(json.dumps(current))
+    for intent in dispatch_intents.values():
+        dispatch_telemetry.reserve_session(
+            ledger, dispatch_id=str(intent["intent_id"]),
+            thread_type="worker", reserved_at=reserved_at)
+    return {"base": base, "ledger": ledger}
+
+
+def _apply_pending_wave_telemetry(
+        ws: str, source: Mapping[str, object], locked: dict) -> None:
+    pending = source.get(_PENDING_WAVE_TELEMETRY)
+    if pending is None:
+        return
+    if not isinstance(pending, Mapping) or set(pending) != {"base", "ledger"}:
+        raise dispatch_telemetry.DispatchTelemetryError(
+            "pending legacy wave telemetry is malformed")
+    base = pending.get("base")
+    ledger = pending.get("ledger")
+    checked = dispatch_telemetry.validate_ledger(ledger)
+    identity = _dispatch_telemetry_identity(ws, locked)
+    if any(str(checked.get(field) or "") != str(identity[field])
+           for field in ("run_id", "source_sha", "design_fingerprint",
+                         "plan_fingerprint")):
+        raise dispatch_telemetry.DispatchTelemetryError(
+            "pending legacy wave telemetry identity is stale")
+    current = locked.get("dispatch_telemetry")
+    if current == ledger:
+        return
+    if current != base:
+        raise dispatch_telemetry.DispatchTelemetryError(
+            "dispatch telemetry changed during stage projection")
+    locked["dispatch_telemetry"] = json.loads(json.dumps(ledger))
+
+
+def _commit_pending_wave_telemetry(
+        ws: str, source: Mapping[str, object]) -> None:
+    with mutate(ws) as locked:
+        if locked is None:
+            raise dispatch_telemetry.DispatchTelemetryError("no active loop")
+        _apply_pending_wave_telemetry(ws, source, locked)
 
 
 def _scheduler_status(task: Mapping[str, object]) -> str:
@@ -6106,6 +6186,7 @@ def _persist_stage_loop_wave_bindings(
             ws, ready, known_bindings=bindings)
         if current != dict(bindings):
             raise ValueError("stage-native wave split changed before binding")
+        _apply_pending_wave_telemetry(ws, state, locked)
         table = locked.setdefault("_stage_bindings", {})
         for task_id, child_id in bindings.items():
             existing = table.get(task_id)
@@ -6165,6 +6246,7 @@ def _stage_loop_wave_dispatches(
     if len(ready) == 1:
         task_id = str(ready[0]["id"])
         with mutate(ws) as locked:
+            _apply_pending_wave_telemetry(ws, state, locked)
             locked.setdefault("_stage_bindings", {}).setdefault(
                 task_id, {})["build"] = str(parent["stage_id"])
         return {task_id: _stage_loop_dispatch(
@@ -6311,8 +6393,16 @@ def wave(ws: str) -> dict:
         return {"error": "build delivery mode refused before dispatch: "
                 "execute dispatch requires build delivery mode",
                 "step": "execute", "parallel": True}
+    capacity_bound_scheduler = _capacity_bound_scheduler_required(state)
     try:
-        ledger = _ensure_dispatch_telemetry(ws)
+        ledger = (_ensure_dispatch_telemetry(ws)
+                  if capacity_bound_scheduler else
+                  state.get("dispatch_telemetry"))
+        if ledger is None:
+            ledger = dispatch_telemetry.new_ledger(
+                **_dispatch_telemetry_identity(ws, state),
+                started_at=SystemClock().wall_time())
+        dispatch_telemetry.validate_ledger(ledger)
         budget_projection = dispatch_telemetry.budget_projection(
             ledger, SystemClock())
     except dispatch_telemetry.DispatchTelemetryError as exc:
@@ -6378,7 +6468,7 @@ def wave(ws: str) -> dict:
     wave_wait_invocation = None
     scheduler_admission = None
     scheduler_assignments: dict[str, dict] = {}
-    if ready:
+    if ready and capacity_bound_scheduler:
         try:
             scheduler_admission = _admit_scheduler_wave(
                 ws, ready,
@@ -6411,6 +6501,10 @@ def wave(ws: str) -> dict:
         wave_wait_policy = event_wait_policy("execute-wave", len(ready))
         wave_wait_invocation = event_wait_invocation(
             wave_wait_policy, [str(task["id"]) for task in ready])
+    elif ready:
+        wave_wait_policy = event_wait_policy("execute-wave", len(ready))
+        wave_wait_invocation = event_wait_invocation(
+            wave_wait_policy, [str(task["id"]) for task in ready])
     dispatches: dict[str, dict] = {}
     dispatch_intents: dict[str, dict] = {}
     for task in ready:
@@ -6428,7 +6522,7 @@ def wave(ws: str) -> dict:
             return {"error": "native dispatch intent has no identity",
                     "step": "execute", "parallel": True}
         dispatch_intents[task_id] = intent
-    if dispatch_intents:
+    if dispatch_intents and capacity_bound_scheduler:
         with mutate(ws) as locked:
             if locked is None:
                 return {"error": "loop disappeared during dispatch reservation",
@@ -6467,6 +6561,10 @@ def wave(ws: str) -> dict:
                     reservation_fingerprint=reservation_fingerprint,
                     capability_id=capability_id,
                 )
+    elif dispatch_intents:
+        state[_PENDING_WAVE_TELEMETRY] = _pending_legacy_wave_telemetry(
+            ws, state, dispatch_intents,
+            reserved_at=SystemClock().wall_time())
 
     try:
         stage_dispatches = _stage_loop_wave_dispatches(ws, state, ready)
@@ -6474,6 +6572,12 @@ def wave(ws: str) -> dict:
         return {"error": "stage-native wave dispatch failed closed: "
                 f"{exc.__class__.__name__}: {exc}",
                 "step": "execute", "parallel": True}
+    if dispatch_intents and not capacity_bound_scheduler:
+        try:
+            _commit_pending_wave_telemetry(ws, state)
+        except dispatch_telemetry.DispatchTelemetryError as exc:
+            return {"error": "dispatch telemetry refused during legacy wave: "
+                    + str(exc), "step": "execute", "parallel": True}
 
     # A recovered split can already have verified resume receipts for some
     # children.  The dispatch helper returns only the still-undispatched task
@@ -6532,7 +6636,9 @@ def wave(ws: str) -> dict:
         if stage_dispatch is not None:
             entry["stage_runtime_dispatch"] = stage_dispatch
         entry["dispatch_intent"] = dispatch_intents[str(t["id"])]
-        entry["scheduler_assignment"] = scheduler_assignments[str(t["id"])]
+        if capacity_bound_scheduler:
+            entry["scheduler_assignment"] = \
+                scheduler_assignments[str(t["id"])]
         entries.append(entry)
     tp.trace(ws, "loop_wave", ready=[t["id"] for t in ready],
              held=[h["task"] for h in held],
