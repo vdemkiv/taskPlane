@@ -158,6 +158,78 @@ class TestGeneratedCliReference(unittest.TestCase):
             "Do not create stage JSON, authority JSON", skill)
 
 
+class TestForwardRepairDocumentation(unittest.TestCase):
+    def test_v21721_is_forward_only_and_preserves_historical_disposition(self):
+        for path in ("README.md", "CHANGELOG.md"):
+            text = _read(path)
+            prose = " ".join(text.replace(">", "").split())
+            self.assertIn("v2.17.20", prose, path)
+            self.assertIn("released-incomplete", prose, path)
+            self.assertIn("v2.17.21", prose, path)
+            self.assertIn("not released", prose, path)
+            self.assertIn("2757822e", prose, path)
+            self.assertIn("inherited limitation", prose, path)
+            self.assertIn("no history rewrite", prose, path)
+            self.assertIn("no re-release", prose, path)
+            self.assertIn("no verifier weakening", prose, path)
+
+
+class TestPromptInjectionDefense(unittest.TestCase):
+    REFERENCE = "lenses/references/prompt-injection-defense.md"
+    METHODOLOGY = "lenses/references/security-methodology.md"
+    SECURITY_LENS = "lenses/security.md"
+
+    @staticmethod
+    def _load_packager(name: str):
+        path = os.path.join(ROOT, "scripts", name)
+        spec = importlib.util.spec_from_file_location(
+            f"_prompt_defense_{name.replace('.', '_')}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_reference_declares_detect_obstruct_flag_contract(self):
+        reference = _read(self.REFERENCE)
+        self.assertIn("detect → obstruct → flag", reference)
+        self.assertIn("## Detect", reference)
+        self.assertIn("## Obstruct", reference)
+        self.assertIn("## Flag", reference)
+        self.assertIn("direct and indirect prompt injection", reference)
+        self.assertIn("High-risk sinks fail closed", reference)
+        self.assertIn("Treat detections as untrusted evidence", reference)
+
+    def test_reference_matches_both_archives_and_installed_security_load_chain(self):
+        source = Path(ROOT, self.REFERENCE).read_bytes()
+        for packager_name in ("package_openai.py", "package_claude.py"):
+            packager = self._load_packager(packager_name)
+            with tempfile.TemporaryDirectory() as tmp:
+                archive_path = Path(tmp) / f"{packager_name}.zip"
+                if packager_name == "package_openai.py":
+                    files = packager.package_files(packager.load_manifest())
+                else:
+                    files = packager.package_files()
+                packager.write_zip(files, archive_path)
+                with zipfile.ZipFile(archive_path) as archive:
+                    security = archive.read(
+                        "taskplane/" + self.SECURITY_LENS).decode("utf-8")
+                    methodology_pointer = re.search(
+                        r"`(lenses/references/security-methodology\.md)`",
+                        security,
+                    )
+                    self.assertIsNotNone(methodology_pointer, packager_name)
+                    methodology_member = "taskplane/" + methodology_pointer.group(1)
+                    methodology = archive.read(methodology_member).decode("utf-8")
+                    reference_pointer = re.search(
+                        r"`(references/prompt-injection-defense\.md)`",
+                        methodology,
+                    )
+                    self.assertIsNotNone(reference_pointer, packager_name)
+                    reference_member = (
+                        "taskplane/lenses/" + reference_pointer.group(1)
+                    )
+                    self.assertEqual(archive.read(reference_member), source)
+
+
 class TestReferencedDocumentation(unittest.TestCase):
     REFERENCE = re.compile(
         r"`((?:\.\./[a-z0-9-]+/)?references/[a-z0-9-]+\.md)`"

@@ -21,6 +21,12 @@ fails CI on drift. Two rows are exempt, each with a recorded reason:
 **v2.7.2** is absent on purpose: the number was burned during the v2.7.x
 lens rewrite and never bumped to.
 
+> **Forward-repair status.** v2.17.20 remains released-incomplete. Repairs are
+> moving forward as v2.17.21, which is not released. Historical graph revision
+> `2757822e` remains an attributed inherited limitation: no history rewrite, no
+> re-release of v2.17.20, and no verifier weakening. No v2.17.21 release-history
+> row will be added until the final release surfaces converge.
+
 | Version | Highlights |
 | --- | --- |
 | **v2.17.20** | **Stateless pickup now supports explicit, repository-only continuation under attributed human authority.** `tp pickup <design-contract> --trust-source <exact-source-sha>` loads the approved Design Contract and committed shelf evidence from the checkout, records the supplied flag and exact source SHA verbatim in the pickup receipt, and enters the existing direct-assignment/BUILD-C checkpoint path without creating run, track, claim, or lease state. The assertion establishes structural agreement with the selected source SHA; it does not cryptographically authenticate the operator, producer, shelf, or repository origin. Missing or malformed assertions, source mismatches, malformed evidence, structural tampering, and broken receipt lineage fail closed before BUILD-C. The incumbent v1 symmetric shelf handling remains unchanged on its existing private-secret path. |

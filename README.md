@@ -128,6 +128,13 @@ mapped to models by env config, verifiable with `tp loop verify-dispatch`.
 Recent releases. [CHANGELOG.md](CHANGELOG.md) is the
 authoritative, complete history — if the two ever disagree, the CHANGELOG wins.
 
+> **Forward-repair status.** v2.17.20 remains released-incomplete. Repairs are
+> moving forward as v2.17.21, which is not released. Historical graph revision
+> `2757822e` remains an attributed inherited limitation: no history rewrite, no
+> re-release of v2.17.20, and no verifier weakening. The table below therefore
+> continues to list v2.17.20 as the newest release until final release
+> convergence is completed.
+
 | Version | Highlights |
 | --- | --- |
 | **v2.17.20** | **Repository-only pickup can resume from committed receipts with explicit attributed human authority.** `tp pickup <design-contract> --trust-source <exact-source-sha>` records the supplied flag and exact source SHA verbatim and permits continuation only when the repository-resident shelf evidence agrees structurally. This is an operator trust assertion, not cryptographic authentication of the operator, producer, shelf, or repository origin. Missing, malformed, mismatched, or structurally tampered evidence fails closed; the existing v1 symmetric shelf flow through its private-secret path is unchanged. |
