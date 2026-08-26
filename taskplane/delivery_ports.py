@@ -224,7 +224,8 @@ class SubprocessGitRunner:
         if not args or any(not isinstance(arg, str) or "\x00" in arg for arg in args):
             raise DeliveryPortError("Git arguments must be non-empty strings without NUL bytes")
         completed = subprocess.run(
-            ["git", *args], cwd=cwd, text=True, capture_output=True, check=False
+            ["git", *args], cwd=cwd, text=True, encoding="utf-8",
+            errors="replace", capture_output=True, check=False
         )
         return GitResult(completed.returncode, completed.stdout, completed.stderr)
 

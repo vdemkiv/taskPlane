@@ -19,7 +19,8 @@ import repository  # noqa: E402
 
 def _git(*args: str, cwd: Path | None = None) -> str:
     return subprocess.check_output(
-        ["git", *args], cwd=cwd, text=True, stderr=subprocess.STDOUT
+        ["git", *args], cwd=cwd, text=True, encoding="utf-8",
+        errors="replace", stderr=subprocess.STDOUT
     ).strip()
 
 

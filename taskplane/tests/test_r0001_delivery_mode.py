@@ -106,6 +106,8 @@ def _start_evaluate_kernel(workspace: Path, receipt):
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     return review.start_review(
         str(workspace),

@@ -85,6 +85,7 @@ for _s in (sys.stdout, sys.stderr):
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "evals")
+sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
 AREAS = ("artifact_surfacing", "product_graph", "agent_fanout",

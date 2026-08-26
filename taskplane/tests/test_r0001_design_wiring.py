@@ -152,7 +152,8 @@ def test_checkpoint_refuses_named_missing_test_file(tmp_path):
         ],
     }])
     revision = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True,
+        encoding="utf-8", errors="replace"
     ).strip()
     spec = {
         "schema": checkpoint.CHECKPOINT_SCHEMA,
