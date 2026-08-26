@@ -22,8 +22,10 @@ from pathlib import Path
 
 try:
     from taskplane import taskplane_lite as contract_engine
+    from taskplane import design_contract as design_contract_engine
 except ImportError:  # direct executable/import compatibility
     import taskplane_lite as contract_engine
+    import design_contract as design_contract_engine
 
 
 CHECKPOINT_SCHEMA = "taskplane.build-c-checkpoint/v1"
@@ -359,6 +361,20 @@ def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
             raise CheckpointSpecError(f"{field} must be a non-empty string")
 
     ac_ids = _strings(spec.get("ac_ids"), "ac_ids")
+    design_binding = None
+    contract_path = os.path.join(
+        worktree, design_contract_engine.DESIGN_CONTRACT)
+    if os.path.isfile(contract_path):
+        design, design_errors = design_contract_engine.design_contract(worktree)
+        if design_errors or design is None:
+            raise CheckpointSpecError(
+                "Design Contract cannot supply checkpoint acceptance tests: "
+                + "; ".join(design_errors))
+        try:
+            design_binding = design_contract_engine.checkpoint_acceptance_tests(
+                worktree, design, ac_ids)
+        except design_contract_engine.DesignAcceptanceError as exc:
+            raise CheckpointSpecError(str(exc)) from exc
     predecessors = _strings(spec.get("predecessor_checkpoint_ids", []),
                             "predecessor_checkpoint_ids", nonempty=False)
     if spec["checkpoint_id"] in predecessors:
@@ -411,6 +427,16 @@ def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
         raise CheckpointSpecError(
             "declared scope must match exact HEAD: " + changes[0])
     argv = _focused_pytest_argv(argv, proof_path, revision, scope)
+    if design_binding is not None:
+        if proof_path not in design_binding["files"]:
+            raise CheckpointSpecError(
+                f"focused proof is not Design-declared for {', '.join(ac_ids)}: "
+                f"{proof_path}")
+        focused_selector = argv[-1]
+        if focused_selector not in design_binding["selectors"]:
+            raise CheckpointSpecError(
+                f"focused proof selector is not Design-declared for "
+                f"{', '.join(ac_ids)}: {focused_selector}")
     ratchet = spec.get("ratchet_baseline")
     if not isinstance(ratchet, Mapping):
         raise CheckpointSpecError("ratchet_baseline must be a mapping")
