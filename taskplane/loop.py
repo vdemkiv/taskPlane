@@ -33,6 +33,7 @@ import contextvars
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import shlex
@@ -4395,6 +4396,13 @@ def _scheduler_status(task: Mapping[str, object]) -> str:
 
 
 SCHEDULER_CAPACITY_FROM_PLAN_TTL_SECONDS = 900.0
+SCHEDULER_TRUSTED_PARALLEL_CAP = 3
+SCHEDULER_CAPACITY_ASSERTION_SCHEMA = \
+    "taskplane.scheduler-capacity-operator-assertion/v1"
+SCHEDULER_CAPACITY_BINDING_SCHEMA = \
+    "taskplane.scheduler-capacity-binding/v1"
+SCHEDULER_TRUSTED_PARALLEL_SOURCE = \
+    "human-attributed-sealed-plan-parallel"
 
 
 def _managed_scheduler_run_id(ws: str) -> str:
@@ -4405,9 +4413,293 @@ def _managed_scheduler_run_id(ws: str) -> str:
     return str((locator or {}).get("run_id") or "")
 
 
+class _ReceiptStructureClock:
+    """Validate receipt structure at a time strictly inside its own window."""
+
+    def __init__(self, wall_time: float) -> None:
+        self._wall_time = wall_time
+
+    def wall_time(self) -> float:
+        return self._wall_time
+
+
+def _structurally_valid_capacity_receipt(
+        receipt: object, *, identity: Mapping[str, object], now: float) \
+        -> dict | None:
+    """Return an exact-bound receipt even when it has truthfully expired."""
+    if not isinstance(receipt, Mapping):
+        return None
+    issued_at = receipt.get("issued_at")
+    expires_at = receipt.get("expires_at")
+    if isinstance(issued_at, bool) or isinstance(expires_at, bool) or \
+            not isinstance(issued_at, (int, float)) or \
+            not isinstance(expires_at, (int, float)):
+        return None
+    if float(issued_at) > now or float(expires_at) <= float(issued_at):
+        return None
+    validation_time = float(issued_at) + (
+        float(expires_at) - float(issued_at)) / 2
+    try:
+        validated = plan_topology.validate_scheduler_host_capability(
+            receipt, run_id=str(identity["run_id"]),
+            source_sha=str(identity["source_sha"]),
+            plan_fingerprint=str(identity["plan_fingerprint"]),
+            clock=_ReceiptStructureClock(validation_time))
+    except plan_topology.PlanTopologyError:
+        return None
+    return {**dict(receipt), **validated}
+
+
+def _trusted_parallel_active_reservations(
+        scheduler: Mapping[str, object], *, identity: Mapping[str, object]) \
+        -> tuple[list[dict], str | None]:
+    """Validate and project every exact capability behind current in-flight work."""
+    reservations = scheduler.get("reservations")
+    in_flight = scheduler.get("in_flight")
+    statuses = scheduler.get("statuses")
+    if not isinstance(reservations, list) or \
+            not isinstance(in_flight, Mapping) or \
+            not isinstance(statuses, Mapping):
+        return [], "active scheduler reservation state is malformed"
+    projected = []
+    for task_id, reservation_fingerprint in sorted(in_flight.items()):
+        task_id = str(task_id)
+        reservation_fingerprint = str(reservation_fingerprint or "")
+        if statuses.get(task_id) != "in_flight":
+            return [], "active scheduler reservation status is stale"
+        matches = [
+            reservation for reservation in reservations
+            if isinstance(reservation, Mapping) and
+            reservation.get("reservation_fingerprint") ==
+            reservation_fingerprint and
+            task_id in (reservation.get("members") or [])
+        ]
+        if len(matches) != 1:
+            return [], "active scheduler reservation is missing or stale"
+        reservation = matches[0]
+        expected_identity = (
+            identity["run_id"], identity["source_sha"],
+            scheduler.get("design_fingerprint"),
+            identity["plan_fingerprint"], scheduler.get("stage"),
+            (scheduler.get("topology") or {}).get("fingerprint"),
+        )
+        observed_identity = (
+            reservation.get("run_id"), reservation.get("source_sha"),
+            reservation.get("design_fingerprint"),
+            reservation.get("plan_fingerprint"), reservation.get("stage"),
+            reservation.get("topology_fingerprint"),
+        )
+        if observed_identity != expected_identity:
+            return [], "active scheduler reservation has cross-run bindings"
+        material_fields = {
+            "schema", "run_id", "source_sha", "design_fingerprint",
+            "plan_fingerprint", "stage", "scheduler_revision",
+            "topology_fingerprint", "members",
+        }
+        if reservation.get("schema") != \
+                "taskplane.dispatch-reservation/v1" or \
+                not material_fields.issubset(reservation):
+            return [], "active scheduler reservation is malformed"
+        material = {field: reservation[field] for field in material_fields}
+        if reservation_fingerprint != \
+                plan_topology.content_fingerprint(material):
+            return [], "active scheduler reservation fingerprint is invalid"
+        assignments = [
+            assignment for assignment in reservation.get("assignments") or []
+            if isinstance(assignment, Mapping) and
+            assignment.get("task_id") == task_id
+        ]
+        if len(assignments) != 1:
+            return [], "active scheduler reservation assignment is malformed"
+        assignment = assignments[0]
+        capability = assignment.get("capability")
+        if assignment.get("reservation_fingerprint") != \
+                reservation_fingerprint or not isinstance(capability, Mapping):
+            return [], "active scheduler reservation capability is malformed"
+        capability_material = {
+            field: value for field, value in capability.items()
+            if field != "capability_id"
+        }
+        if capability.get("capability_id") != \
+                plan_topology.content_fingerprint(capability_material):
+            return [], "active scheduler reservation capability fingerprint " \
+                "is invalid"
+        if (
+            capability.get("run_id"), capability.get("source_sha"),
+            capability.get("design_fingerprint"),
+            capability.get("plan_fingerprint"), capability.get("task_id"),
+            capability.get("stage"),
+            capability.get("reservation_fingerprint"),
+        ) != (
+            identity["run_id"], identity["source_sha"],
+            scheduler.get("design_fingerprint"),
+            identity["plan_fingerprint"], task_id, scheduler.get("stage"),
+            reservation_fingerprint,
+        ) or capability.get("cryptographic_authenticity_claimed") is not False:
+            return [], "active scheduler reservation capability has " \
+                "cross-run bindings"
+        projected.append({
+            "task_id": task_id,
+            "reservation_fingerprint": reservation_fingerprint,
+            "capability_id": capability["capability_id"],
+        })
+    return projected, None
+
+
+def _trusted_parallel_tranche(
+        scheduler: Mapping[str, object]) -> tuple[list[str], str | None]:
+    """Derive the bounded maximum disjoint T17 tranche from sealed topology."""
+    tasks = scheduler.get("tasks")
+    topology = scheduler.get("topology")
+    repository_files = scheduler.get("repository_files")
+    if not isinstance(tasks, list) or not isinstance(topology, Mapping) or \
+            not isinstance(repository_files, list):
+        return [], "sealed Plan scheduler topology is malformed"
+    try:
+        expected_topology = plan_topology.classify_plan(
+            tasks, repository_files=repository_files)
+    except plan_topology.PlanTopologyError as exc:
+        return [], "sealed Plan scheduler topology is invalid: " + str(exc)
+    if dict(topology) != expected_topology:
+        return [], "sealed Plan scheduler topology fingerprint is stale"
+    statuses = scheduler.get("statuses")
+    in_flight = scheduler.get("in_flight")
+    if not isinstance(statuses, Mapping) or not isinstance(in_flight, Mapping):
+        return [], "sealed Plan scheduler statuses are malformed"
+    task_ids = {str(task_id) for task_id in topology.get("task_ids") or []}
+    if set(statuses) != task_ids or not set(in_flight).issubset(task_ids):
+        return [], "sealed Plan scheduler statuses are stale"
+    missing = topology.get("missing_test_assets") or {}
+    ready = []
+    for task_id in topology.get("task_ids") or []:
+        status = statuses.get(task_id)
+        if status in plan_topology.TERMINAL_STATUSES or status == "in_flight":
+            continue
+        dependencies = (topology.get("effective_dependencies") or {}).get(
+            task_id)
+        if not isinstance(dependencies, list):
+            return [], "sealed Plan scheduler dependencies are malformed"
+        if not missing.get(task_id) and all(
+                statuses.get(dependency) in plan_topology.COMPLETE_STATUSES
+                for dependency in dependencies):
+            ready.append(str(task_id))
+    active = sorted(str(task_id) for task_id in in_flight)
+    current = sorted(set(active + ready))
+    if any(re.fullmatch(r"t17[a-z0-9_-]+", task_id,
+                        flags=re.IGNORECASE) is None
+           for task_id in current):
+        return [], "trusted parallel capacity requires a T17-only tranche"
+    if len(active) > SCHEDULER_TRUSTED_PARALLEL_CAP:
+        return [], "trusted parallel capacity cannot exceed the cap of three"
+    pair_lookup = {
+        frozenset((str(row.get("left")), str(row.get("right")))): row
+        for row in topology.get("pairs") or [] if isinstance(row, Mapping)
+    }
+
+    def pairwise_parallel(members: tuple[str, ...]) -> bool:
+        return all(
+            pair_lookup.get(frozenset((left, right)), {}).get("disposition")
+            == "parallel"
+            for index, left in enumerate(members)
+            for right in members[index + 1:]
+        )
+
+    active_tuple = tuple(active)
+    if not pairwise_parallel(active_tuple):
+        return [], "active T17 reservations are not pairwise disjoint"
+    best = active_tuple
+
+    def search(selected: tuple[str, ...], candidates: tuple[str, ...]) -> None:
+        nonlocal best
+        if len(selected) > len(best) or (
+                len(selected) == len(best) and selected < best):
+            best = selected
+        if len(selected) >= SCHEDULER_TRUSTED_PARALLEL_CAP:
+            return
+        for index, candidate in enumerate(candidates):
+            proposed = (*selected, candidate)
+            if pairwise_parallel(proposed):
+                search(proposed, candidates[index + 1:])
+
+    search(active_tuple, tuple(task_id for task_id in ready
+                               if task_id not in active))
+    if len(best) < 2:
+        return [], "sealed Plan has insufficient T17 disjoint concurrency"
+    return list(best), None
+
+
+def _trusted_parallel_assertion_structure(value: object) -> bool:
+    fields = {
+        "schema", "source", "actor", "run_id", "source_sha",
+        "plan_fingerprint", "delivery_mode_receipt_fingerprint",
+        "current_reservations", "derived_tranche_members",
+        "configured_host_concurrency", "max_in_flight", "asserted_at",
+        "scheduler_host_capability_fingerprint",
+        "cryptographic_authenticity_claimed", "host_observation_claimed",
+        "fingerprint",
+    }
+    if not isinstance(value, Mapping) or set(value) != fields or \
+            value.get("schema") != SCHEDULER_CAPACITY_ASSERTION_SCHEMA:
+        return False
+    reservations = value.get("current_reservations")
+    tranche = value.get("derived_tranche_members")
+    capacity = value.get("configured_host_concurrency")
+    asserted_at = value.get("asserted_at")
+    if not isinstance(reservations, list) or not isinstance(tranche, list) or \
+            not isinstance(capacity, int) or isinstance(capacity, bool) or \
+            capacity != value.get("max_in_flight") or \
+            capacity < 2 or capacity > SCHEDULER_TRUSTED_PARALLEL_CAP or \
+            len(tranche) != capacity or len(set(tranche)) != len(tranche) or \
+            any(not isinstance(task_id, str) or re.fullmatch(
+                r"t17[a-z0-9_-]+", task_id, flags=re.IGNORECASE) is None
+                for task_id in tranche) or \
+            isinstance(asserted_at, bool) or \
+            not isinstance(asserted_at, (int, float)) or \
+            not math.isfinite(float(asserted_at)):
+        return False
+    for reservation in reservations:
+        if not isinstance(reservation, Mapping) or set(reservation) != {
+                "task_id", "reservation_fingerprint", "capability_id"} or \
+                reservation.get("task_id") not in tranche or any(
+                    re.fullmatch(r"[0-9a-f]{64}", str(
+                        reservation.get(field) or "")) is None
+                    for field in ("reservation_fingerprint", "capability_id")):
+            return False
+    material = {field: item for field, item in value.items()
+                if field != "fingerprint"}
+    return value.get("fingerprint") == \
+        plan_topology.content_fingerprint(material)
+
+
+def _valid_trusted_parallel_assertion(
+        value: object, *, receipt_fingerprint: str, receipt_capacity: int,
+        identity: Mapping[str, object], sealed_fingerprint: str) -> bool:
+    return _trusted_parallel_assertion_structure(value) and \
+        value.get("source") == SCHEDULER_TRUSTED_PARALLEL_SOURCE and \
+        bool(str(value.get("actor") or "").strip()) and \
+        (value.get("run_id"), value.get("source_sha"),
+         value.get("plan_fingerprint")) == \
+        (identity["run_id"], identity["source_sha"],
+         identity["plan_fingerprint"]) and \
+        value.get("delivery_mode_receipt_fingerprint") == \
+        sealed_fingerprint and \
+        value.get("scheduler_host_capability_fingerprint") == \
+        receipt_fingerprint and \
+        value.get("configured_host_concurrency") == receipt_capacity and \
+        value.get("max_in_flight") == receipt_capacity and \
+        value.get("cryptographic_authenticity_claimed") is False and \
+        value.get("host_observation_claimed") is False
+
+
 def scheduler_capacity_from_plan(
-        ws: str, *, clock: SystemClock | None = None) -> dict:
-    """Mint the fixed single-worker scheduler receipt from sealed Plan authority."""
+        ws: str, *, trust_parallel: bool = False, by: str | None = None,
+        clock: SystemClock | None = None) -> dict:
+    """Mint fixed-one or bounded human-attributed capacity from sealed Plan."""
+    if not trust_parallel and by is not None:
+        return {"error": "--by requires --trust-parallel"}
+    actor = str(by or "")
+    if trust_parallel and not actor.strip():
+        return {"error": "trusted parallel capacity requires attributed --by"}
     active_clock = clock or SystemClock()
     trace_data = None
     with mutate(ws) as locked:
@@ -4457,82 +4749,266 @@ def scheduler_capacity_from_plan(
         scheduler = locked.get("performance_scheduler")
         if scheduler is not None and not isinstance(scheduler, Mapping):
             return {"error": "performance scheduler state is malformed"}
-        task_in_flight = any(
-            isinstance(task, Mapping) and str(task.get("status") or "") in
-            {"running", "built", "submitted"}
-            for task in locked.get("tasks") or [])
-        scheduler_in_flight = bool(
-            (scheduler or {}).get("in_flight") if scheduler else False)
-        active_reservation = any(
-            (scheduler or {}).get("statuses", {}).get(
-                assignment.get("task_id")) == "in_flight"
-            for reservation in ((scheduler or {}).get("reservations") or [])
-            if isinstance(reservation, Mapping)
-            for assignment in (reservation.get("assignments") or [])
-            if isinstance(assignment, Mapping))
-        if task_in_flight or scheduler_in_flight or active_reservation:
-            return {"error": "scheduler capacity cannot change while work "
-                             "is in flight"}
+        if trust_parallel:
+            if not isinstance(scheduler, Mapping) or \
+                    scheduler.get("schema") != \
+                    "taskplane.scheduler-state/v1":
+                return {"error": "trusted parallel capacity requires the "
+                                 "current performance scheduler"}
+            if (
+                scheduler.get("run_id"), scheduler.get("source_sha"),
+                scheduler.get("design_fingerprint"),
+                scheduler.get("plan_fingerprint"), scheduler.get("stage"),
+            ) != (
+                identity["run_id"], identity["source_sha"],
+                identity["design_fingerprint"],
+                identity["plan_fingerprint"], "Execute",
+            ):
+                return {"error": "trusted parallel scheduler identity has "
+                                 "cross-run or cross-source bindings"}
+            tranche, tranche_error = _trusted_parallel_tranche(scheduler)
+            if tranche_error:
+                return {"error": tranche_error}
+            current_reservations, reservation_error = \
+                _trusted_parallel_active_reservations(
+                    scheduler, identity=identity)
+            if reservation_error:
+                return {"error": reservation_error}
+            loop_tasks = {
+                str(task.get("id")): task for task in locked.get("tasks") or []
+                if isinstance(task, Mapping) and task.get("id")
+            }
+            scheduler_task_ids = set(
+                (scheduler.get("topology") or {}).get("task_ids") or [])
+            if set(loop_tasks) != scheduler_task_ids:
+                return {"error": "active scheduler reservation Plan task set "
+                                 "is stale"}
+            if any(str(loop_tasks[reservation["task_id"]].get("status") or "")
+                   not in {"running", "built", "submitted"}
+                   for reservation in current_reservations):
+                return {"error": "active scheduler reservation task state is "
+                                 "stale"}
 
-        existing = locked.get("scheduler_host_capability_receipt")
-        if existing is not None:
-            try:
-                plan_topology.validate_scheduler_host_capability(
-                    existing, run_id=identity["run_id"],
-                    source_sha=identity["source_sha"],
-                    plan_fingerprint=identity["plan_fingerprint"],
-                    clock=active_clock)
-            except plan_topology.PlanTopologyError as exc:
-                if str(exc) != "scheduler host capability receipt is stale":
-                    return {"error": "existing scheduler capacity authority "
-                                     "is invalid: " + str(exc)}
-                if float(existing["expires_at"]) > \
-                        float(active_clock.wall_time()):
-                    return {"error": "existing scheduler capacity authority "
-                                     "is not yet valid"}
-                if existing["configured_host_concurrency"] != 1 or \
-                        existing["max_in_flight"] != 1:
-                    return {"error": "existing scheduler capacity authority "
-                                     "does not match the fixed single-worker "
-                                     "bound"}
-            else:
-                if existing["configured_host_concurrency"] != 1 or \
-                        existing["max_in_flight"] != 1:
-                    return {"error": "existing scheduler capacity authority "
-                                     "exceeds the single-worker bound"}
-                return {"receipt": dict(existing), "idempotent": True}
+            assertions = locked.get(
+                "scheduler_capacity_operator_assertions", [])
+            if not isinstance(assertions, list) or any(
+                    not _trusted_parallel_assertion_structure(value)
+                    for value in assertions):
+                return {"error": "scheduler capacity operator assertion "
+                                 "ledger is malformed"}
+            now = float(active_clock.wall_time())
+            existing = locked.get("scheduler_host_capability_receipt")
+            validated_existing = _structurally_valid_capacity_receipt(
+                existing, identity=identity, now=now)
+            if validated_existing is None:
+                return {"error": "existing scheduler capacity authority is "
+                                 "invalid for trusted parallel rebinding"}
+            existing_pair = (
+                validated_existing["configured_host_concurrency"],
+                validated_existing["max_in_flight"],
+            )
+            derived_capacity = len(tranche)
+            prior_assertion = next((
+                dict(value) for value in reversed(assertions)
+                if _valid_trusted_parallel_assertion(
+                    value,
+                    receipt_fingerprint=str(
+                        validated_existing["fingerprint"]),
+                    receipt_capacity=int(validated_existing[
+                        "configured_host_concurrency"]),
+                    identity=identity,
+                    sealed_fingerprint=str(sealed["fingerprint"]),
+                )
+            ), None)
+            if existing_pair != (1, 1) and (
+                    existing_pair != (derived_capacity, derived_capacity) or
+                    prior_assertion is None):
+                return {"error": "existing scheduler capacity authority is "
+                                 "not fixed-one or attributed trusted "
+                                 "parallel authority"}
 
-        issued_at = float(active_clock.wall_time())
-        material = {
-            "schema": plan_topology.HOST_CAPABILITY_SCHEMA,
-            "run_id": identity["run_id"],
-            "source_sha": identity["source_sha"],
-            "plan_fingerprint": identity["plan_fingerprint"],
-            "configured_host_concurrency": 1,
-            "max_in_flight": 1,
-            "issued_at": issued_at,
-            "expires_at": issued_at +
-                SCHEDULER_CAPACITY_FROM_PLAN_TTL_SECONDS,
-            "cryptographic_authenticity_claimed": False,
-        }
-        receipt = {**material,
-                   "fingerprint": plan_topology.content_fingerprint(material)}
-        plan_topology.validate_scheduler_host_capability(
-            receipt, run_id=identity["run_id"],
-            source_sha=identity["source_sha"],
-            plan_fingerprint=identity["plan_fingerprint"],
-            clock=active_clock)
-        locked["scheduler_host_capability_receipt"] = receipt
-        trace_data = {
-            "source": "sealed-plan-single-worker-liveness",
-            "delivery_mode_receipt_fingerprint": sealed["fingerprint"],
-            "scheduler_host_capability_fingerprint": receipt["fingerprint"],
-            "issued_at": receipt["issued_at"],
-            "expires_at": receipt["expires_at"],
-        }
+            capacity_binding = scheduler.get("capacity_binding")
+            if not isinstance(capacity_binding, Mapping) or \
+                    capacity_binding.get("schema") != \
+                    SCHEDULER_CAPACITY_BINDING_SCHEMA or \
+                    capacity_binding.get("authority") != \
+                    "validated-host-receipt" or \
+                    capacity_binding.get("host_capability_fingerprint") != \
+                    validated_existing["fingerprint"] or \
+                    capacity_binding.get("configured_host_concurrency") != \
+                    validated_existing["configured_host_concurrency"] or \
+                    capacity_binding.get("max_in_flight") != \
+                    validated_existing["max_in_flight"] or \
+                    isinstance(capacity_binding.get("session_limit"), bool) or \
+                    not isinstance(capacity_binding.get("session_limit"), int) or \
+                    int(capacity_binding["session_limit"]) < 1:
+                return {"error": "active scheduler reservation capacity "
+                                 "binding is malformed or stale"}
+
+            if existing_pair == (derived_capacity, derived_capacity) and \
+                    float(validated_existing["expires_at"]) > now and \
+                    prior_assertion is not None:
+                return {
+                    "receipt": dict(existing),
+                    "operator_assertion": prior_assertion,
+                    "idempotent": True,
+                }
+
+            issued_at = now
+            material = {
+                "schema": plan_topology.HOST_CAPABILITY_SCHEMA,
+                "run_id": identity["run_id"],
+                "source_sha": identity["source_sha"],
+                "plan_fingerprint": identity["plan_fingerprint"],
+                "configured_host_concurrency": derived_capacity,
+                "max_in_flight": derived_capacity,
+                "issued_at": issued_at,
+                "expires_at": issued_at +
+                    SCHEDULER_CAPACITY_FROM_PLAN_TTL_SECONDS,
+                "cryptographic_authenticity_claimed": False,
+            }
+            receipt = {
+                **material,
+                "fingerprint": plan_topology.content_fingerprint(material),
+            }
+            plan_topology.validate_scheduler_host_capability(
+                receipt, run_id=identity["run_id"],
+                source_sha=identity["source_sha"],
+                plan_fingerprint=identity["plan_fingerprint"],
+                clock=active_clock)
+            assertion_material = {
+                "schema": SCHEDULER_CAPACITY_ASSERTION_SCHEMA,
+                "source": SCHEDULER_TRUSTED_PARALLEL_SOURCE,
+                "actor": actor,
+                "run_id": identity["run_id"],
+                "source_sha": identity["source_sha"],
+                "plan_fingerprint": identity["plan_fingerprint"],
+                "delivery_mode_receipt_fingerprint": sealed["fingerprint"],
+                "current_reservations": current_reservations,
+                "derived_tranche_members": tranche,
+                "configured_host_concurrency": derived_capacity,
+                "max_in_flight": derived_capacity,
+                "asserted_at": issued_at,
+                "scheduler_host_capability_fingerprint":
+                    receipt["fingerprint"],
+                "cryptographic_authenticity_claimed": False,
+                "host_observation_claimed": False,
+            }
+            operator_assertion = {
+                **assertion_material,
+                "fingerprint": plan_topology.content_fingerprint(
+                    assertion_material),
+            }
+            rebound = {
+                **dict(capacity_binding),
+                "host_capability_fingerprint": receipt["fingerprint"],
+                "configured_host_concurrency": derived_capacity,
+                "max_in_flight": derived_capacity,
+            }
+            locked["scheduler_host_capability_receipt"] = receipt
+            locked["performance_scheduler"] = {
+                **dict(scheduler), "capacity_binding": rebound,
+            }
+            locked["scheduler_capacity_operator_assertions"] = [
+                *assertions, operator_assertion,
+            ]
+            trace_data = {
+                "source": SCHEDULER_TRUSTED_PARALLEL_SOURCE,
+                "actor": actor,
+                "delivery_mode_receipt_fingerprint": sealed["fingerprint"],
+                "scheduler_host_capability_fingerprint":
+                    receipt["fingerprint"],
+                "operator_assertion_fingerprint":
+                    operator_assertion["fingerprint"],
+                "configured_host_concurrency": derived_capacity,
+                "max_in_flight": derived_capacity,
+                "cryptographic_authenticity_claimed": False,
+                "host_observation_claimed": False,
+                "issued_at": receipt["issued_at"],
+                "expires_at": receipt["expires_at"],
+            }
+            result = {
+                "receipt": receipt,
+                "operator_assertion": operator_assertion,
+            }
+        else:
+            task_in_flight = any(
+                isinstance(task, Mapping) and str(task.get("status") or "") in
+                {"running", "built", "submitted"}
+                for task in locked.get("tasks") or [])
+            scheduler_in_flight = bool(
+                (scheduler or {}).get("in_flight") if scheduler else False)
+            active_reservation = any(
+                (scheduler or {}).get("statuses", {}).get(
+                    assignment.get("task_id")) == "in_flight"
+                for reservation in ((scheduler or {}).get("reservations") or [])
+                if isinstance(reservation, Mapping)
+                for assignment in (reservation.get("assignments") or [])
+                if isinstance(assignment, Mapping))
+            if task_in_flight or scheduler_in_flight or active_reservation:
+                return {"error": "scheduler capacity cannot change while work "
+                                 "is in flight"}
+
+            existing = locked.get("scheduler_host_capability_receipt")
+            if existing is not None:
+                try:
+                    plan_topology.validate_scheduler_host_capability(
+                        existing, run_id=identity["run_id"],
+                        source_sha=identity["source_sha"],
+                        plan_fingerprint=identity["plan_fingerprint"],
+                        clock=active_clock)
+                except plan_topology.PlanTopologyError as exc:
+                    if str(exc) != \
+                            "scheduler host capability receipt is stale":
+                        return {"error": "existing scheduler capacity authority "
+                                         "is invalid: " + str(exc)}
+                    if float(existing["expires_at"]) > \
+                            float(active_clock.wall_time()):
+                        return {"error": "existing scheduler capacity authority "
+                                         "is not yet valid"}
+                    if existing["configured_host_concurrency"] != 1 or \
+                            existing["max_in_flight"] != 1:
+                        return {"error": "existing scheduler capacity authority "
+                                         "does not match the fixed single-worker "
+                                         "bound"}
+                else:
+                    if existing["configured_host_concurrency"] != 1 or \
+                            existing["max_in_flight"] != 1:
+                        return {"error": "existing scheduler capacity authority "
+                                         "exceeds the single-worker bound"}
+                    return {"receipt": dict(existing), "idempotent": True}
+
+            issued_at = float(active_clock.wall_time())
+            material = {
+                "schema": plan_topology.HOST_CAPABILITY_SCHEMA,
+                "run_id": identity["run_id"],
+                "source_sha": identity["source_sha"],
+                "plan_fingerprint": identity["plan_fingerprint"],
+                "configured_host_concurrency": 1,
+                "max_in_flight": 1,
+                "issued_at": issued_at,
+                "expires_at": issued_at +
+                    SCHEDULER_CAPACITY_FROM_PLAN_TTL_SECONDS,
+                "cryptographic_authenticity_claimed": False,
+            }
+            receipt = {**material,
+                       "fingerprint": plan_topology.content_fingerprint(material)}
+            plan_topology.validate_scheduler_host_capability(
+                receipt, run_id=identity["run_id"],
+                source_sha=identity["source_sha"],
+                plan_fingerprint=identity["plan_fingerprint"],
+                clock=active_clock)
+            locked["scheduler_host_capability_receipt"] = receipt
+            trace_data = {
+                "source": "sealed-plan-single-worker-liveness",
+                "delivery_mode_receipt_fingerprint": sealed["fingerprint"],
+                "scheduler_host_capability_fingerprint": receipt["fingerprint"],
+                "issued_at": receipt["issued_at"],
+                "expires_at": receipt["expires_at"],
+            }
 
     tp.trace(ws, "scheduler_capacity_from_plan", **trace_data)
-    return {"receipt": receipt}
+    return result if trust_parallel else {"receipt": receipt}
 
 
 def _current_scheduler(

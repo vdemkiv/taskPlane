@@ -84,6 +84,52 @@ def _capacity_loop_state():
     }
 
 
+def _trusted_parallel_loop_state(*, overlap=False):
+    tasks = [
+        _task("t17a", scope=("exports/t17/shared" if overlap else
+                              "exports/t17/a",)),
+        _task("t17b", scope=("exports/t17/shared" if overlap else
+                              "exports/t17/b",)),
+        _task("t17c", scope=("exports/t17/shared" if overlap else
+                              "exports/t17/c",)),
+        _task("t18", deps=("t17a", "t17b", "t17c"),
+              scope=("exports/t18",)),
+    ]
+    state = _capacity_loop_state()
+    state["design_fingerprint"] = "d" * 64
+    state["tasks"] = [
+        {**task, "status": "running" if task["id"] == "t17a" else
+         "pending"}
+        for task in tasks
+    ]
+    receipt = _host_capacity_receipt(
+        concurrency=1, max_in_flight=1, issued_at=0, expires_at=5,
+    )
+    scheduler = new_scheduler_state(
+        tasks, run_id="run", source_sha="a" * 40,
+        design_fingerprint="d" * 64, plan_fingerprint="b" * 64,
+        stage="Execute", repository_files=set(),
+    )
+    admitted = admit_ready_batch(
+        scheduler, {"configured_host_concurrency": 1},
+        {"max_in_flight": 1, "session_limit": 60}, None,
+        FakeClock(wall_time=1),
+        capability_factory=RecordedTaskDispatchCapabilityFactory(),
+    )
+    assert admitted["dispatch_set"]["members"] == ["t17a"]
+    scheduler["capacity_binding"] = {
+        "schema": "taskplane.scheduler-capacity-binding/v1",
+        "authority": "validated-host-receipt",
+        "host_capability_fingerprint": receipt["fingerprint"],
+        "configured_host_concurrency": 1,
+        "max_in_flight": 1,
+        "session_limit": 60,
+    }
+    state["scheduler_host_capability_receipt"] = receipt
+    state["performance_scheduler"] = scheduler
+    return state
+
+
 def _state(tasks, **overrides):
     values = dict(
         run_id="run",
@@ -954,6 +1000,286 @@ def test_scheduler_capacity_from_plan_cli_calls_production_without_inputs(
     assert rc == 0
     assert json.loads(capsys.readouterr().out) == expected
     assert observed == [str(tmp_path)]
+
+
+def test_scheduler_capacity_from_plan_trusted_parallel_requires_flag_and_actor(
+    tmp_path, monkeypatch,
+):
+    _capacity_runtime(monkeypatch)
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
+    for arguments, match in [
+        ({"trust_parallel": True}, "attributed"),
+        ({"by": "Volodymyr Demkiv"}, "trust-parallel"),
+    ]:
+        state = _trusted_parallel_loop_state()
+        loop.save(str(tmp_path), state)
+        before = loop.load(str(tmp_path))
+
+        result = loop.scheduler_capacity_from_plan(
+            str(tmp_path), clock=FakeClock(wall_time=10), **arguments,
+        )
+
+        assert match in result["error"]
+        assert loop.load(str(tmp_path)) == before
+
+
+def test_scheduler_capacity_from_plan_cli_rejects_numeric_capacity(
+    tmp_path,
+):
+    with pytest.raises(SystemExit):
+        cli.main([
+            "loop", "--workspace", str(tmp_path),
+            "scheduler-capacity-from-plan", "--trust-parallel",
+            "--by", "human:operator", "--capacity", "3",
+        ])
+
+
+def test_scheduler_capacity_from_plan_cli_refuses_actor_without_mode(
+    tmp_path, monkeypatch, capsys,
+):
+    import loop as loop_cli_module
+
+    monkeypatch.setattr(
+        loop_cli_module, "scheduler_capacity_from_plan",
+        lambda _ws: pytest.fail("capacity producer must not run"),
+    )
+    rc = cli.main([
+        "loop", "--workspace", str(tmp_path),
+        "scheduler-capacity-from-plan", "--by", "human:operator",
+    ])
+
+    assert rc == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "--by requires --trust-parallel",
+    }
+
+
+def test_scheduler_capacity_from_plan_trusted_parallel_rebinds_and_admits_two(
+    tmp_path, monkeypatch,
+):
+    state = _trusted_parallel_loop_state()
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda _ws, event, **data:
+                        traces.append((event, data)))
+    before_scheduler = copy.deepcopy(
+        loop.load(str(tmp_path))["performance_scheduler"])
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True,
+        by="Volodymyr Demkiv — explicit parallel authority",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "error" not in result, result
+    updated = loop.load(str(tmp_path))
+    receipt = result["receipt"]
+    assert receipt["configured_host_concurrency"] == 3
+    assert receipt["max_in_flight"] == 3
+    assert receipt["cryptographic_authenticity_claimed"] is False
+    assert updated["scheduler_host_capability_receipt"] == receipt
+    scheduler = updated["performance_scheduler"]
+    assert scheduler["capacity_binding"] == {
+        **before_scheduler["capacity_binding"],
+        "host_capability_fingerprint": receipt["fingerprint"],
+        "configured_host_concurrency": 3,
+        "max_in_flight": 3,
+    }
+    for field in ("tasks", "statuses", "in_flight", "reservations",
+                  "events", "revision", "sessions_admitted"):
+        assert scheduler[field] == before_scheduler[field]
+
+    assertion = result["operator_assertion"]
+    assert assertion == updated["scheduler_capacity_operator_assertions"][-1]
+    material = {key: value for key, value in assertion.items()
+                if key != "fingerprint"}
+    assert assertion["fingerprint"] == content_fingerprint(material)
+    assert assertion["actor"] == \
+        "Volodymyr Demkiv — explicit parallel authority"
+    assert assertion["source"] == "human-attributed-sealed-plan-parallel"
+    assert assertion["run_id"] == "run"
+    assert assertion["source_sha"] == "a" * 40
+    assert assertion["plan_fingerprint"] == "b" * 64
+    assert assertion["delivery_mode_receipt_fingerprint"] == \
+        state["delivery_mode_receipt"]["fingerprint"]
+    assert assertion["cryptographic_authenticity_claimed"] is False
+    assert assertion["host_observation_claimed"] is False
+    assert assertion["derived_tranche_members"] == ["t17a", "t17b", "t17c"]
+    assert assertion["current_reservations"] == [{
+        "task_id": "t17a",
+        "reservation_fingerprint":
+            before_scheduler["in_flight"]["t17a"],
+        "capability_id": before_scheduler["reservations"][0]
+            ["assignments"][0]["capability"]["capability_id"],
+    }]
+    assert traces[0][0] == "scheduler_capacity_from_plan"
+    assert traces[0][1]["source"] == \
+        "human-attributed-sealed-plan-parallel"
+
+    evidence = SandboxEvidenceStore(tmp_path, "repo", "trusted-parallel")
+    dag_store = ExecutionDagRevisionStore(tmp_path)
+    monkeypatch.setattr(
+        loop, "_production_scheduler_evidence",
+        lambda _ws, _state: (evidence, dag_store),
+    )
+    admitted = loop._admit_scheduler_wave(
+        str(tmp_path), [updated["tasks"][1], updated["tasks"][2]],
+        repository_files=set(), clock=FakeClock(wall_time=20),
+        capability_factory=RecordedTaskDispatchCapabilityFactory(),
+    )
+    assert admitted["status"] == "admitted"
+    assert admitted["dispatch_set"]["members"] == ["t17b", "t17c"]
+    assert admitted["overflow_ready"] == []
+
+
+def test_scheduler_capacity_from_plan_trusted_parallel_replay_is_idempotent(
+    tmp_path, monkeypatch,
+):
+    loop.save(str(tmp_path), _trusted_parallel_loop_state())
+    _capacity_runtime(monkeypatch)
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
+    first = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+    before = loop.load(str(tmp_path))
+
+    replay = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=20),
+    )
+
+    assert replay == {
+        "receipt": first["receipt"],
+        "operator_assertion": first["operator_assertion"],
+        "idempotent": True,
+    }
+    assert loop.load(str(tmp_path)) == before
+    assert len(before["scheduler_capacity_operator_assertions"]) == 1
+
+
+def test_scheduler_capacity_from_plan_trusted_parallel_refuses_tampered_assertion(
+    tmp_path, monkeypatch,
+):
+    loop.save(str(tmp_path), _trusted_parallel_loop_state())
+    _capacity_runtime(monkeypatch)
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
+    loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+    state = loop.load(str(tmp_path))
+    state["scheduler_capacity_operator_assertions"][0]["actor"] = \
+        "tampered"
+    loop.save(str(tmp_path), state)
+    before = loop.load(str(tmp_path))
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=20),
+    )
+
+    assert "assertion ledger is malformed" in result["error"]
+    assert loop.load(str(tmp_path)) == before
+
+
+def test_scheduler_capacity_from_plan_trusted_parallel_overlap_does_not_widen(
+    tmp_path, monkeypatch,
+):
+    state = _trusted_parallel_loop_state(overlap=True)
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    before = loop.load(str(tmp_path))
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "disjoint concurrency" in result["error"]
+    assert loop.load(str(tmp_path)) == before
+
+
+def test_scheduler_capacity_from_plan_trusted_parallel_refuses_non_t17_ready(
+    tmp_path, monkeypatch,
+):
+    state = _trusted_parallel_loop_state()
+    scheduler = state["performance_scheduler"]
+    for task in scheduler["tasks"]:
+        if task["id"] == "t17c":
+            task["id"] = "t16"
+        task["deps"] = ["t16" if dep == "t17c" else dep
+                        for dep in task.get("deps") or []]
+    scheduler["statuses"]["t16"] = scheduler["statuses"].pop("t17c")
+    scheduler["topology"] = classify_plan(
+        scheduler["tasks"], repository_files=set())
+    for task in state["tasks"]:
+        if task["id"] == "t17c":
+            task["id"] = "t16"
+        task["deps"] = ["t16" if dep == "t17c" else dep
+                        for dep in task.get("deps") or []]
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    before = loop.load(str(tmp_path))
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "T17-only" in result["error"]
+    assert loop.load(str(tmp_path)) == before
+
+
+@pytest.mark.parametrize("fault", ["malformed", "stale", "cross-run"])
+def test_scheduler_capacity_from_plan_trusted_parallel_rejects_bad_reservation(
+    tmp_path, monkeypatch, fault,
+):
+    state = _trusted_parallel_loop_state()
+    scheduler = state["performance_scheduler"]
+    if fault == "malformed":
+        scheduler["reservations"][0]["assignments"][0]["capability"] \
+            ["capability_id"] = "malformed"
+    elif fault == "stale":
+        scheduler["in_flight"]["t17a"] = "e" * 64
+    else:
+        scheduler["reservations"][0]["run_id"] = "other-run"
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    before = loop.load(str(tmp_path))
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "reservation" in result["error"]
+    assert loop.load(str(tmp_path)) == before
+
+
+def test_scheduler_capacity_from_plan_cli_passes_attributed_parallel_assertion(
+    tmp_path, monkeypatch, capsys,
+):
+    import loop as loop_cli_module
+
+    observed = []
+    expected = {"receipt": {"fingerprint": "f" * 64}}
+
+    def invoke(ws, *, trust_parallel=False, by=None):
+        observed.append((ws, trust_parallel, by))
+        return expected
+
+    monkeypatch.setattr(loop_cli_module, "scheduler_capacity_from_plan", invoke)
+    rc = cli.main([
+        "loop", "--workspace", str(tmp_path),
+        "scheduler-capacity-from-plan", "--trust-parallel",
+        "--by", "Volodymyr Demkiv",
+    ])
+
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out) == expected
+    assert observed == [(str(tmp_path), True, "Volodymyr Demkiv")]
 
 
 def test_live_wave_with_no_host_receipt_stops_without_ready_count_inference(
