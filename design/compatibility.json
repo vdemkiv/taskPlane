@@ -20,6 +20,30 @@
       "recorded_requirement_edges": 6
     }
   },
+  "design_schema_bundle_amendment": {
+    "authority": "Volodymyr Demkiv — 2026-08-26 Codex task 01a03619-63a9-7743-90f9-1b6b1945b6ac",
+    "previous_bundle_id": "taskplane.r0001-evidence-schemas/v1",
+    "current_bundle_id": "taskplane.r0001-evidence-schemas/v2",
+    "previous_bundle_status": "unreleased Design inventory; retired, never production authority",
+    "classification": "Design correction from duplicate Taskplane scheduler authority to Codex-native dispatch observation",
+    "retired_definitions": [
+      "dispatchAdmission",
+      "executionDag"
+    ],
+    "added_definitions": [
+      "planTopology",
+      "dispatchSet",
+      "dispatchTelemetryBinding",
+      "waveBudget",
+      "executionMetrics"
+    ],
+    "corrected_definitions": [
+      "dispatchTelemetry now matches the shipped taskplane.dispatch-telemetry/v1 closed receipt fields"
+    ],
+    "runtime_schema_rule": "Existing runtime v1 schema ids keep their shipped byte meaning. The bundle version changed because the Design inventory changed; no released runtime receipt is rewritten.",
+    "native_authority": "Taskplane intents are non-authoritative; Codex spawn is the sole concurrency transport; host observation plus claim/gate trace is evidence; budgets stop only the next native dispatch.",
+    "retired_authority": "No Taskplane scheduler, host capacity, reservation, admission/event queue, replay scheduler, lease, or execution-DAG authority."
+  },
   "window": {
     "current": "2.17.21",
     "previous": "2.17.20",
@@ -154,6 +178,7 @@
   },
   "dispatch_capability": {
     "schema": "taskplane.task-dispatch-capability/v1",
+    "mode": "inactive security inventory; not instantiated by Codex-native assignment",
     "default_deny": true,
     "release_credentials_available": false,
     "irreversible_actions_allowed": false,

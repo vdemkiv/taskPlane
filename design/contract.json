@@ -1,8 +1,16 @@
 {
   "schema": "taskplane.design/v1",
+  "design_revision": 2,
+  "revision_authority": {
+    "actor": "Volodymyr Demkiv",
+    "date": "2026-08-26",
+    "source": "Codex task 01a03619-63a9-7743-90f9-1b6b1945b6ac",
+    "decision": "Retire Taskplane scheduler/capacity/reservation/replay/execution-DAG/event-queue authority and bind R-0001 performance delivery to deterministic Taskplane intents plus Codex native dispatch observation.",
+    "scope": "HOW-only amendment; acceptance scope, release barriers, and graph baseline unchanged"
+  },
   "requirement": "R-0001",
   "title": "Contract-first corrective delivery architecture",
-  "summary": "Split policy/evidence from the hot loop owner into narrow typed modules and execute A2, forward v2.17.21 repair, Design closure, performance/orchestration, then same-SHA cold-start measurement with maximum disjoint fan-out.",
+  "summary": "Split policy/evidence from the hot loop owner into narrow typed modules and execute A2, forward v2.17.21 repair, Design closure, native Codex dispatch observation and trace-derived performance, then same-SHA cold-start measurement with maximum disjoint fan-out.",
   "current_state": {
     "summary": "Clean HEAD ecfc48ec2f5f integrates the bounded 16-commit CI-repair delta from 4a0378e7f080, including BUILD-C dependency inversion, exact review graph/runtime binding, evidence/stage fixture and telemetry repair, storage identity correction, and current release-document freshness. It still has no Plan delivery-mode or pair topology, still primes Build lenses, has no explicit zero-lens success receipt or human-only unstarted ReviewKernel rebind, lacks closed live-Codex evaluator/EM observations and Design AC/wiring enforcement, fragments release authority, emits broad loop briefs, lacks binding wave/Retro telemetry, dereferences hosted bare HEAD before verified default-branch binding, and ships a security-methodology pointer to an absent prompt-injection-defense reference. v2.17.20 remains released-incomplete.",
     "sources": [
@@ -255,10 +263,10 @@
     "repository_request": "taskplane.repository-preparation-request/v1",
     "repository_result": "taskplane.repository-preparation/v1",
     "schema_evolution": "Strict closed objects; any field evolution is a new schema id with an explicit compatibility diff.",
-    "dispatch_admission": "taskplane.dispatch-admission/v1",
-    "execution_dag": "taskplane.execution-dag/v1",
+    "native_dispatch_set": "taskplane.dispatch-set/v1 (non-authoritative intent for Codex native assignment)",
+    "native_execution_metrics": "taskplane.execution-metrics/v1 (Retro projection derived from native wave/claim/gate trace)",
     "host_action_capability": "taskplane.host-action-capability/v1 (single-use continuity token; no actor-authenticity claim)",
-    "task_dispatch_capability": "taskplane.task-dispatch-capability/v1 (default-deny worker authority)",
+    "task_dispatch_capability": "taskplane.task-dispatch-capability/v1 (inactive generic default-deny security inventory)",
     "platform_ci_proof": "taskplane.platform-ci-proof/v1 (independently re-queried pushed-SHA run identity)"
   },
   "security_authority": {
@@ -297,7 +305,7 @@
     },
     "task_dispatch_capability": {
       "schema": "taskplane.task-dispatch-capability/v1",
-      "rule": "Each dispatch gets one closed, versioned capability bound to run, source SHA, Design/Plan fingerprints, task, stage, reservation and predecessor. Every authority surface is default-deny; no permission is inherited from the host or another task.",
+      "rule": "This closed, versioned default-deny type is retained as inactive security inventory for future protected adapters. The active Codex-native assignment path does not instantiate it and does not depend on a reservation, host scheduler, or Taskplane-owned concurrency capability.",
       "fields": [
         "schema",
         "capability_id",
@@ -319,7 +327,7 @@
         "irreversible_actions_allowed",
         "cryptographic_authenticity_claimed"
       ],
-      "default_deny": "Every omitted or unlisted tool/path/ref/network endpoint/credential handle is denied. release_credentials_available, irreversible_actions_allowed and cryptographic_authenticity_claimed are exactly false for workers; credential_handles contains no release credential. Cross-task/run/ref/path/network/credential reuse fails before tool invocation.",
+      "default_deny": "When this generic type is explicitly instantiated by a separately authorized adapter, every omitted or unlisted tool/path/ref/network endpoint/credential handle is denied. release_credentials_available, irreversible_actions_allowed and cryptographic_authenticity_claimed are exactly false; credential_handles contains no release credential. The native assignment path remains independent of this inventory.",
       "irreversible_actions": "Tag, push, install, publish, credential release and other irreversible actions are absent from worker capabilities. A protected host consumer independently reconstructs release prerequisites and requires a fresh outside-model human recheck before any irreversible action.",
       "tests": [
         "taskplane/tests/test_r0001_dispatch_capability.py::test_task_capability_defaults_deny_every_undeclared_surface",
@@ -367,21 +375,18 @@
   "acceptance_map": [
     {
       "criterion": "The Plan gate declares delivery mode, stamps it into receipts, and the engine prevents build-mode dispatch from instantiating automatic lens workers.",
-      "design_element": "delivery_policy seals the Plan mode receipt; loop/build_c validate build plus an empty automatic-lens set before routing or dispatch. Each admitted task also receives a closed default-deny taskplane.task-dispatch-capability/v1 with no release credentials or irreversible authority.",
-      "validation": "Execute exact selectors: taskplane/tests/test_r0001_delivery_mode.py::test_plan_gate_requires_and_stamps_delivery_mode, taskplane/tests/test_r0001_delivery_mode.py::test_build_mode_dispatch_creates_zero_automatic_lens_workers, taskplane/tests/test_r0001_delivery_mode.py::test_sever_delivery_mode_receipt_to_dispatch_fails_closed; the criterion passes only when every named positive and severed-edge assertion is green at the exact candidate SHA. Dispatch-capability tests prove every undeclared tool/path/ref/network/credential surface is denied before invocation.",
+      "design_element": "delivery_policy seals the Plan mode receipt; loop/build_c validate build plus an empty automatic-lens set before routing or dispatch. Native Codex assignment receives no Taskplane scheduler or capability-factory authority.",
+      "validation": "Execute exact selectors: taskplane/tests/test_r0001_delivery_mode.py::test_plan_gate_requires_and_stamps_delivery_mode, taskplane/tests/test_r0001_delivery_mode.py::test_build_mode_dispatch_creates_zero_automatic_lens_workers, taskplane/tests/test_r0001_delivery_mode.py::test_sever_delivery_mode_receipt_to_dispatch_fails_closed; the criterion passes only when every named positive and severed-edge assertion is green at the exact candidate SHA.",
       "tests": [
         "taskplane/tests/test_r0001_delivery_mode.py::test_plan_gate_requires_and_stamps_delivery_mode",
         "taskplane/tests/test_r0001_delivery_mode.py::test_build_mode_dispatch_creates_zero_automatic_lens_workers",
-        "taskplane/tests/test_r0001_delivery_mode.py::test_sever_delivery_mode_receipt_to_dispatch_fails_closed",
-        "taskplane/tests/test_r0001_dispatch_capability.py::test_task_capability_defaults_deny_every_undeclared_surface",
-        "taskplane/tests/test_r0001_dispatch_capability.py::test_workers_receive_no_release_credentials_or_irreversible_tools"
+        "taskplane/tests/test_r0001_delivery_mode.py::test_sever_delivery_mode_receipt_to_dispatch_fails_closed"
       ],
       "public_entrypoint": "delivery_policy.validate_plan_mode",
       "controlled_dependencies": [
         "EvidenceStore",
         "Clock",
-        "lens_factory_spy",
-        "TaskDispatchCapabilityFactory"
+        "lens_factory_spy"
       ]
     },
     {
@@ -536,38 +541,39 @@
       ]
     },
     {
-      "criterion": "The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain.",
-      "design_element": "plan_topology classifies every pair and drives simultaneous direct ready-set assignment; events wake the loop and Retro computes required metrics. Each atomic reservation produces a per-task default-deny dispatch capability bound to the exact run/task/stage/SHA/Design/Plan/ref/path/network/credential scope.",
-      "validation": "Execute exact selectors: taskplane/tests/test_r0001_parallel_delivery.py::test_plan_classifies_every_task_pair, taskplane/tests/test_r0001_parallel_delivery.py::test_direct_assignment_dispatches_all_ready_disjoint_tasks_simultaneously, taskplane/tests/test_r0001_parallel_delivery.py::test_shared_owner_serializes_with_named_reason, taskplane/tests/test_r0001_parallel_delivery.py::test_long_workers_emit_events_and_ready_work_never_idles, taskplane/tests/test_r0001_parallel_delivery.py::test_retro_reports_parallelism_factor_and_longest_serial_chain, taskplane/tests/test_r0001_parallel_delivery.py::test_verification_fanout_and_terminal_full_matrix; the criterion passes only when every named positive and severed-edge assertion is green at the exact candidate SHA. Incumbent 1800-second event wait, duplicate/out-of-order idempotency, queue bounds, and partial-host terminal attention are mandatory. Admission is one atomic capacity-bounded reservation; overflow stays durably ready; every terminal event admits the next tranche. An immutable cross-replan DAG proves critical-path wall time and zero scheduler idle.",
+      "criterion": "The Plan classifies every task pair as parallel or serialized for a named shared owner; Taskplane emits every ready pairwise-disjoint task as one deterministic native dispatch set; Codex alone owns concurrent spawn execution; one event-driven wait follows; and Retro reports parallelism factor plus longest serial chain from native wave/claim/gate trace.",
+      "design_element": "plan_topology.classify_plan and loop.select_ready_tasks compute deterministic dependency- and owner-safe readiness. build_c.assign_scopes emits taskplane.dispatch-set/v1 without scheduler, reservation, capacity, lease, or execution-DAG authority. tp.py records the actual Codex spawn through the always-on native observation seam; claims, gates, telemetry ceilings, and Retro consume that trace. The generic task-dispatch capability type remains inactive security inventory and is not instantiated by this path.",
+      "validation": "Execute every exact selector below against the real candidate checkout. The criterion passes only when topology, native ready-set emission, false-ready refusal, direct BUILD-C assignment, event-driven waiting, exact spawn observation, budget stopping, native trace metrics, claim/gate continuity, and retired-scheduler severance are green on the exact SHA. Taskplane must never acquire host concurrency/capacity/reservation/replay/execution-DAG authority; Codex native dispatch is the only concurrency transport.",
       "tests": [
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_plan_classifies_every_task_pair",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_direct_assignment_dispatches_all_ready_disjoint_tasks_simultaneously",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_shared_owner_serializes_with_named_reason",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_long_workers_emit_events_and_ready_work_never_idles",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_retro_reports_parallelism_factor_and_longest_serial_chain",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_verification_fanout_and_terminal_full_matrix",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_event_wait_is_1800_seconds_idempotent_and_wakes_on_terminal_event",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_duplicate_and_out_of_order_events_reconcile_without_double_count",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_event_queue_cap_and_oversize_event_fail_closed",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_partial_host_is_terminal_attention_not_green_or_outage",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_atomic_batch_admission_caps_and_preserves_overflow_ready",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_session_59_admits_one_and_stops_remaining",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_capacity_exhaustion_creates_no_reservation_and_human_stop",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_concurrent_reservation_race_has_one_winner",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_huge_ready_set_is_bounded_and_lossless",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_execution_dag_remains_edge_complete_across_replans",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_wide_dag_elapsed_is_critical_path_plus_orchestration_allowance_not_sum",
-        "taskplane/tests/test_r0001_parallel_delivery.py::test_scheduler_caused_idle_is_zero_when_ready_capacity_exists",
-        "taskplane/tests/test_r0001_dispatch_capability.py::test_task_capability_defaults_deny_every_undeclared_surface",
-        "taskplane/tests/test_r0001_dispatch_capability.py::test_cross_task_run_ref_path_network_and_credential_reuse_is_refused"
+        "taskplane/tests/test_r0001_parallel_delivery.py::test_plan_classifies_every_pair_without_host_capacity",
+        "taskplane/tests/test_r0001_parallel_delivery.py::test_native_ready_set_emits_all_disjoint_work_and_holds_overlap",
+        "taskplane/tests/test_r0001_parallel_delivery.py::test_missing_owned_tests_become_dependency_edges",
+        "taskplane/tests/test_r0001_parallel_delivery.py::test_retro_uses_native_wave_claim_and_gate_trace",
+        "taskplane/tests/test_r0001_parallel_delivery.py::test_non_finite_native_trace_time_fails_closed",
+        "taskplane/tests/test_r0001_parallel_delivery.py::test_command_completion_remains_a_native_dispatch_event",
+        "taskplane/tests/test_r0001_parallel_delivery.py::test_build_c_receipt_is_native_dispatch_set_without_scheduler_fields",
+        "taskplane/tests/test_r0001_parallel_delivery.py::test_retired_scheduler_is_not_an_active_api",
+        "taskplane/tests/test_loop.py::TestScopeAssignment::test_scope_assignment_runs_disjoint_scopes_concurrently_and_serializes_overlap",
+        "taskplane/tests/test_loop.py::TestScopeAssignment::test_scope_assignment_preserves_plan_order_without_host_scheduler",
+        "taskplane/tests/test_loop.py::TestScopeAssignment::test_scope_assignment_uses_real_repository_and_storage_edges",
+        "taskplane/tests/test_loop.py::TestScopeAssignment::test_scope_assignment_fails_when_live_graph_or_registration_edge_is_severed",
+        "taskplane/tests/test_loop.py::TestScopeAssignment::test_scope_assignment_refuses_legacy_state_and_invalid_event_wait",
+        "taskplane/tests/test_stage_dispatch.py::test_loop_next_and_wave_task_emission_remain_byte_identical",
+        "taskplane/tests/test_v101_fixes.py::TestScreenDispatchHook::test_native_spawn_observation_is_always_on_and_idempotent",
+        "taskplane/tests/test_v101_fixes.py::TestScreenDispatchHook::test_severed_native_observation_is_traced_and_budget_fails_closed",
+        "taskplane/tests/test_r0007_governed_commands.py::test_normal_native_dispatch_emits_non_authoritative_intent_telemetry",
+        "taskplane/tests/test_r0007_governed_commands.py::test_normal_flow_wiring_is_mutation_sensitive",
+        "taskplane/tests/test_r0007_sweep_bootstrap.py::test_event_wait_policy_is_long_lived_and_wake_driven",
+        "taskplane/tests/test_r0007_sweep_bootstrap.py::test_native_dispatch_guidance_forbids_repeat_polling",
+        "taskplane/tests/test_r0001_wave_budgets.py::test_observed_production_usage_stops_the_next_live_wave_at_equality",
+        "taskplane/tests/test_r0001_dispatch_capability.py::test_generic_capability_remains_exact_bound_and_default_deny"
       ],
-      "public_entrypoint": "plan_topology.admit_ready_batch",
+      "public_entrypoint": "plan_topology.classify_plan, loop.select_ready_tasks, build_c.assign_scopes, loop.record_native_dispatch_observation, and loop.wave",
       "controlled_dependencies": [
         "Clock",
         "EventWaiter",
         "EvidenceStore",
-        "host capability snapshot",
-        "TaskDispatchCapabilityFactory"
+        "Codex native spawn observation hook"
       ]
     },
     {
@@ -804,33 +810,32 @@
       {
         "id": "W19",
         "producer": "Plan pair map",
-        "artifact_or_contract": "ready dispatch set",
-        "consumer": "direct assignment",
-        "edge_test": "taskplane/tests/test_r0001_parallel_delivery.py::test_direct_assignment_dispatches_all_ready_disjoint_tasks_simultaneously",
+        "artifact_or_contract": "deterministic native dispatch set",
+        "consumer": "BUILD-C direct assignment through Codex native concurrency",
+        "edge_test": "taskplane/tests/test_r0001_parallel_delivery.py::test_native_ready_set_emits_all_disjoint_work_and_holds_overlap",
         "required_status": "closed",
         "additional_tests": [
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_atomic_batch_admission_caps_and_preserves_overflow_ready",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_session_59_admits_one_and_stops_remaining",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_capacity_exhaustion_creates_no_reservation_and_human_stop",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_concurrent_reservation_race_has_one_winner",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_huge_ready_set_is_bounded_and_lossless"
+          "taskplane/tests/test_r0001_parallel_delivery.py::test_plan_classifies_every_pair_without_host_capacity",
+          "taskplane/tests/test_r0001_parallel_delivery.py::test_missing_owned_tests_become_dependency_edges",
+          "taskplane/tests/test_r0001_parallel_delivery.py::test_build_c_receipt_is_native_dispatch_set_without_scheduler_fields",
+          "taskplane/tests/test_loop.py::TestScopeAssignment::test_scope_assignment_runs_disjoint_scopes_concurrently_and_serializes_overlap",
+          "taskplane/tests/test_loop.py::TestScopeAssignment::test_scope_assignment_preserves_plan_order_without_host_scheduler"
         ]
       },
       {
         "id": "W20",
-        "producer": "long worker",
-        "artifact_or_contract": "progress/completion/attention",
-        "consumer": "event wait",
-        "edge_test": "taskplane/tests/test_r0001_parallel_delivery.py::test_long_workers_emit_events_and_ready_work_never_idles",
+        "producer": "Codex command and worker lifecycle",
+        "artifact_or_contract": "native completion/attention trace",
+        "consumer": "event wait and orchestrator wake",
+        "edge_test": "taskplane/tests/test_r0001_parallel_delivery.py::test_command_completion_remains_a_native_dispatch_event",
         "required_status": "closed",
         "additional_tests": [
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_event_wait_is_1800_seconds_idempotent_and_wakes_on_terminal_event",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_duplicate_and_out_of_order_events_reconcile_without_double_count",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_event_queue_cap_and_oversize_event_fail_closed",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_partial_host_is_terminal_attention_not_green_or_outage",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_execution_dag_remains_edge_complete_across_replans",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_wide_dag_elapsed_is_critical_path_plus_orchestration_allowance_not_sum",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_scheduler_caused_idle_is_zero_when_ready_capacity_exists"
+          "taskplane/tests/test_command_adapters.py::test_no_event_host_uses_one_runtime_blocking_wait_and_zero_model_polls",
+          "taskplane/tests/test_command_runtime.py::test_attention_and_terminal_states_are_delivered_once",
+          "taskplane/tests/test_command_runtime.py::test_concurrent_terminal_attention_orderings_preserve_both_events",
+          "taskplane/tests/test_command_runtime.py::test_crash_after_receive_uses_receipt_to_prevent_second_model_wake",
+          "taskplane/tests/test_r0007_sweep_bootstrap.py::test_event_wait_policy_is_long_lived_and_wake_driven",
+          "taskplane/tests/test_r0007_sweep_bootstrap.py::test_native_dispatch_guidance_forbids_repeat_polling"
         ]
       },
       {
@@ -843,11 +848,14 @@
       },
       {
         "id": "W22",
-        "producer": "deps+durations",
-        "artifact_or_contract": "parallelism/critical path",
+        "producer": "native wave/claim/gate trace",
+        "artifact_or_contract": "parallelism factor and longest serial chain",
         "consumer": "Retro",
-        "edge_test": "taskplane/tests/test_r0001_parallel_delivery.py::test_retro_reports_parallelism_factor_and_longest_serial_chain",
-        "required_status": "closed"
+        "edge_test": "taskplane/tests/test_r0001_parallel_delivery.py::test_retro_uses_native_wave_claim_and_gate_trace",
+        "required_status": "closed",
+        "additional_tests": [
+          "taskplane/tests/test_r0001_parallel_delivery.py::test_non_finite_native_trace_time_fails_closed"
+        ]
       },
       {
         "id": "W23",
@@ -922,18 +930,17 @@
       },
       {
         "id": "W30",
-        "producer": "atomic scheduler admission",
-        "artifact_or_contract": "dispatch reservation and execution DAG",
-        "consumer": "host dispatch/Retro/budget stop",
-        "edge_test": "taskplane/tests/test_r0001_parallel_delivery.py::test_atomic_batch_admission_caps_and_preserves_overflow_ready",
+        "producer": "Taskplane expected dispatch and Codex native spawn observation",
+        "artifact_or_contract": "expected/observed native-dispatch binding and usage trace",
+        "consumer": "next-dispatch budget stop, claim/gate, and Retro",
+        "edge_test": "taskplane/tests/test_v101_fixes.py::TestScreenDispatchHook::test_native_spawn_observation_is_always_on_and_idempotent",
         "additional_tests": [
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_session_59_admits_one_and_stops_remaining",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_capacity_exhaustion_creates_no_reservation_and_human_stop",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_concurrent_reservation_race_has_one_winner",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_huge_ready_set_is_bounded_and_lossless",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_execution_dag_remains_edge_complete_across_replans",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_wide_dag_elapsed_is_critical_path_plus_orchestration_allowance_not_sum",
-          "taskplane/tests/test_r0001_parallel_delivery.py::test_scheduler_caused_idle_is_zero_when_ready_capacity_exists"
+          "taskplane/tests/test_v101_fixes.py::TestScreenDispatchHook::test_severed_native_observation_is_traced_and_budget_fails_closed",
+          "taskplane/tests/test_r0007_governed_commands.py::test_normal_native_dispatch_emits_non_authoritative_intent_telemetry",
+          "taskplane/tests/test_r0007_governed_commands.py::test_normal_flow_wiring_is_mutation_sensitive",
+          "taskplane/tests/test_r0001_wave_budgets.py::test_observed_production_usage_stops_the_next_live_wave_at_equality",
+          "taskplane/tests/test_r0001_parallel_delivery.py::test_build_c_receipt_is_native_dispatch_set_without_scheduler_fields",
+          "taskplane/tests/test_r0001_parallel_delivery.py::test_retired_scheduler_is_not_an_active_api"
         ],
         "required_status": "closed"
       },
@@ -952,11 +959,12 @@
       },
       {
         "id": "W32",
-        "producer": "Plan admission + protected release consumer",
-        "artifact_or_contract": "default-deny task dispatch capability + independent platform CI proof",
-        "consumer": "worker dispatcher / tag-install-publish barrier",
-        "edge_test": "taskplane/tests/test_r0001_dispatch_capability.py::test_task_capability_defaults_deny_every_undeclared_surface",
+        "producer": "generic task capability inventory + protected release consumer",
+        "artifact_or_contract": "inactive default-deny capability type + independent platform CI proof",
+        "consumer": "future protected adapters / tag-install-publish barrier",
+        "edge_test": "taskplane/tests/test_r0001_dispatch_capability.py::test_generic_capability_remains_exact_bound_and_default_deny",
         "additional_tests": [
+          "taskplane/tests/test_r0001_dispatch_capability.py::test_task_capability_defaults_deny_every_undeclared_surface",
           "taskplane/tests/test_r0001_dispatch_capability.py::test_workers_receive_no_release_credentials_or_irreversible_tools",
           "taskplane/tests/test_r0001_dispatch_capability.py::test_cross_task_run_ref_path_network_and_credential_reuse_is_refused",
           "taskplane/tests/test_r0001_dispatch_capability.py::test_irreversible_action_requires_outside_model_human_recheck",
@@ -1272,15 +1280,15 @@
         ]
       },
       {
-        "producer": "atomic admission + execution DAG",
+        "producer": "native dispatch intent + host spawn observation",
         "consumer_classes": [
-          "reservation/DAG artifacts",
-          "Plan/Retro docs",
-          "release performance evidence",
+          "deterministic native dispatch-set artifact",
+          "Codex spawn observation seam",
+          "event-driven wait and native trace",
+          "next-dispatch budget stop",
+          "claim/gate/Retro consumers",
           "package runtime",
-          "CI scale tests",
-          "scheduler/runtime",
-          "host dispatcher"
+          "CI native-path and severed-edge tests"
         ],
         "edge_ids": [
           "W19",
@@ -1308,9 +1316,9 @@
         ]
       },
       {
-        "producer": "Plan task capability factory + protected release consumer",
+        "producer": "generic task capability inventory + protected release consumer",
         "consumer_classes": [
-          "default-deny worker dispatch",
+          "inactive default-deny capability type",
           "tool/path/ref/network/credential enforcement",
           "independent platform CI query",
           "outside-model irreversible-action recheck",
@@ -1321,13 +1329,12 @@
           "W02",
           "W14",
           "W16",
-          "W19",
           "W30",
           "W32"
         ]
       }
     ],
-    "release_rule": "All W01-W30 edge tests pass at the final exact SHA; generated/package members are byte-fresh; schema, compatibility, live-host canary, deterministic replay, evidence-store fault, admission, and execution-DAG receipts are closed release-green inputs."
+    "release_rule": "All W01-W30 edge tests pass against the real final exact-SHA checkout; generated/package members are byte-fresh; schema, compatibility, live-host canary, deterministic replay, evidence-store fault, native-dispatch observation, budget, and native-trace receipts are closed release-green inputs."
   },
   "delivery_sequence": [
     {
@@ -1416,8 +1423,8 @@
     },
     {
       "target": "Parallelism",
-      "threshold": "100% pairs classified and all ready disjoint work dispatched together; Retro includes both metrics",
-      "measurement": "taskplane/tests/test_r0001_parallel_delivery.py::test_plan_classifies_every_task_pair, taskplane/tests/test_r0001_parallel_delivery.py::test_direct_assignment_dispatches_all_ready_disjoint_tasks_simultaneously, taskplane/tests/test_r0001_parallel_delivery.py::test_shared_owner_serializes_with_named_reason, taskplane/tests/test_r0001_parallel_delivery.py::test_long_workers_emit_events_and_ready_work_never_idles, taskplane/tests/test_r0001_parallel_delivery.py::test_retro_reports_parallelism_factor_and_longest_serial_chain, taskplane/tests/test_r0001_parallel_delivery.py::test_verification_fanout_and_terminal_full_matrix"
+      "threshold": "100% pairs classified; every ready disjoint task appears once in the native dispatch set; Codex owns concurrency; Retro includes both native-trace metrics",
+      "measurement": "taskplane/tests/test_r0001_parallel_delivery.py::test_plan_classifies_every_pair_without_host_capacity, taskplane/tests/test_r0001_parallel_delivery.py::test_native_ready_set_emits_all_disjoint_work_and_holds_overlap, taskplane/tests/test_r0001_parallel_delivery.py::test_missing_owned_tests_become_dependency_edges, taskplane/tests/test_r0001_parallel_delivery.py::test_build_c_receipt_is_native_dispatch_set_without_scheduler_fields, taskplane/tests/test_r0001_parallel_delivery.py::test_retro_uses_native_wave_claim_and_gate_trace"
     },
     {
       "target": "Repository",
@@ -1455,14 +1462,14 @@
       "measurement": "taskplane/tests/test_r0001_test_harness.py::test_evidence_store_parallel_namespaces_are_isolated_and_teardown_is_scoped, taskplane/tests/test_r0001_test_harness.py::test_all_domains_expose_prepare_commit_and_idempotent_recovery_fault_seams"
     },
     {
-      "target": "batch admission",
-      "threshold": "admitted count exactly capacity formula; 0 dispatches without reservations; all overflow remains ready; one CAS winner",
-      "measurement": "taskplane/tests/test_r0001_parallel_delivery.py::test_atomic_batch_admission_caps_and_preserves_overflow_ready, taskplane/tests/test_r0001_parallel_delivery.py::test_session_59_admits_one_and_stops_remaining, taskplane/tests/test_r0001_parallel_delivery.py::test_capacity_exhaustion_creates_no_reservation_and_human_stop, taskplane/tests/test_r0001_parallel_delivery.py::test_concurrent_reservation_race_has_one_winner, taskplane/tests/test_r0001_parallel_delivery.py::test_huge_ready_set_is_bounded_and_lossless"
+      "target": "native dispatch authority",
+      "threshold": "one deterministic non-authoritative intent per ready task; exact Codex spawn observation; zero scheduler/reservation/capacity/DAG fields or APIs",
+      "measurement": "taskplane/tests/test_r0001_parallel_delivery.py::test_build_c_receipt_is_native_dispatch_set_without_scheduler_fields, taskplane/tests/test_r0001_parallel_delivery.py::test_retired_scheduler_is_not_an_active_api, taskplane/tests/test_v101_fixes.py::TestScreenDispatchHook::test_native_spawn_observation_is_always_on_and_idempotent, taskplane/tests/test_v101_fixes.py::TestScreenDispatchHook::test_severed_native_observation_is_traced_and_budget_fails_closed"
     },
     {
-      "target": "critical-path execution",
-      "threshold": "wide DAG elapsed <= critical path + 2s/tranche + 1s/terminal event and scheduler idle=0 whenever ready capacity exists",
-      "measurement": "taskplane/tests/test_r0001_parallel_delivery.py::test_execution_dag_remains_edge_complete_across_replans, taskplane/tests/test_r0001_parallel_delivery.py::test_wide_dag_elapsed_is_critical_path_plus_orchestration_allowance_not_sum, taskplane/tests/test_r0001_parallel_delivery.py::test_scheduler_caused_idle_is_zero_when_ready_capacity_exists"
+      "target": "native-trace performance",
+      "threshold": "Retro derives parallelism factor and longest serial chain only from finite native wave/claim/gate timestamps",
+      "measurement": "taskplane/tests/test_r0001_parallel_delivery.py::test_retro_uses_native_wave_claim_and_gate_trace, taskplane/tests/test_r0001_parallel_delivery.py::test_non_finite_native_trace_time_fails_closed"
     },
     {
       "target": "bounded authority security",
@@ -1832,7 +1839,7 @@
       },
       {
         "check": "Crash and event seams",
-        "evidence": "Fault injection proves immutable receipt+CAS reconciliation; event tests prove incumbent 1800s wait, idempotent duplicates, bounded out-of-order queue, immediate terminal wake, and fail-closed partial-host state."
+        "evidence": "Fault injection proves immutable receipt+CAS reconciliation; native command/runtime tests prove the incumbent 1800s event-driven wait, exactly-once terminal/attention delivery, crash replay refusal, and zero model polling."
       },
       {
         "check": "Schema and compatibility release closure",
@@ -1847,8 +1854,8 @@
         "evidence": "Every acceptance row names public_entrypoint and controlled_dependencies; immutable recorded replay proves AC4 hermetically, live Codex is a separate canary, FakeClock/EventWaiter eliminate sleeps, and EvidenceStore isolation/fault tests cover five domains."
       },
       {
-        "check": "Admission and critical path",
-        "evidence": "59-session, capacity, race, huge-ready, terminal-tranche and cross-replan wide-DAG tests prove atomic capped reservation, durable overflow, no unreserved dispatch, critical-path wall bound, and zero scheduler-caused idle."
+        "check": "Native dispatch and trace metrics",
+        "evidence": "Real-checkout selectors prove deterministic disjoint intent emission, Codex-only concurrency, always-on spawn observation, next-dispatch budget stopping, finite native wave/claim/gate metrics, and absence of retired scheduler APIs and fields."
       },
       {
         "check": "Non-cryptographic host continuity and dispatch least authority",
@@ -1922,9 +1929,9 @@
       "recovery": "Return exact prior result or require the declared user/external/request change; never blind-retry."
     },
     {
-      "mode": "Simultaneous ready dispatch exceeds host/session/max-in-flight capacity or races another admission",
-      "detection": "atomic scheduler CAS and capacity formula",
-      "recovery": "Exactly one reservation wins; overflow remains ready; terminal event admits next tranche; no reservation at session stop."
+      "mode": "Taskplane attempts to own host capacity, scheduling, reservation, replay, or execution-DAG authority",
+      "detection": "native-dispatch receipt and retired-API severed-edge tests",
+      "recovery": "Refuse the path and restore deterministic intent-only output; Codex native spawn remains the sole concurrency transport and budgets stop only the next dispatch."
     },
     {
       "mode": "Evidence store test or recovery crosses repository/run namespaces",
@@ -1932,9 +1939,9 @@
       "recovery": "Refuse operation; teardown only exact store-created disposable namespace."
     },
     {
-      "mode": "Execution DAG loses edges/timestamps across replan",
-      "detection": "append-only generation/supersession validation and edge-complete Retro test",
-      "recovery": "Block Retro/release-green until DAG reconciliation restores an unambiguous lineage."
+      "mode": "Native wave/claim/gate trace is missing, non-finite, or cannot be bound to the expected dispatch",
+      "detection": "spawn-observation binding and native-trace metric validation",
+      "recovery": "Keep budget, Retro, and release consumers closed; never reconstruct scheduler state or fabricate timing."
     },
     {
       "mode": "Host action capability is replayed, cross-bound, expired, injected through files, or absent",
@@ -2028,8 +2035,8 @@
       "owner": "evidence persistence"
     },
     {
-      "risk": "Duplicate, out-of-order, oversized, or partial-host events double-count usage or fabricate completion",
-      "mitigation": "Fingerprint+sequence identity, idempotent duplicates, bounded pending queue, 64KiB event cap, 256-event cap, and partial-host attention that cannot become green.",
+      "risk": "Duplicate or reordered native terminal/attention observations double-count usage or produce a second model wake",
+      "mitigation": "Command-runtime receipts preserve both terminal and attention orderings, deliver each state once, and make crash replay idempotent without a Taskplane scheduler queue.",
       "owner": "runtime event"
     },
     {
@@ -2048,9 +2055,9 @@
       "owner": "testability"
     },
     {
-      "risk": "Maximum fan-out overcommits host/session capacity or loses overflow under races",
-      "mitigation": "Atomic capacity formula, scheduler CAS reservation, durable ready overflow, terminal tranche admission, and scale/race tests.",
-      "owner": "scalability"
+      "risk": "Taskplane duplicates Codex concurrency or emits an incomplete/overlapping native ready set",
+      "mitigation": "Pure pair classification and deterministic ready-set tests prove every disjoint task is emitted once while overlaps remain held; retired scheduler APIs and fields are severed.",
+      "owner": "native dispatch boundary"
     },
     {
       "risk": "A local receipt or unauthenticated actor string is overstated as authenticity proof",
@@ -2094,7 +2101,7 @@
     },
     {
       "path": "design/schemas/r0001-evidence-schemas.json",
-      "application": "Machine-readable closed receipt and repository-preparation shapes; unknown authority fields require a new schema id."
+      "application": "Machine-readable v2 Design bundle for native dispatch, observation, budgets, metrics, closed authority receipts, and repository preparation; retired scheduler definitions are absent and unknown authority fields require a new runtime schema id."
     }
   ],
   "lens_evidence": [
@@ -2102,11 +2109,11 @@
       "lens": "solution-design",
       "verdict": "pass",
       "blockers": 0,
-      "evidence": "PASS rebound on exact ecfc48ec2f5f R-0001 content: the 16-commit CI-repair delta was inspected and classified as integrated non-replay inventory; the separately scanned requirement-enriched graph is a6a3c1e72c0c268648e3727cdcec904f60c41442a1f77bf16231bbdb84cd90a6 with unchanged 50-module/156-edge topology and complete quality. The five alternatives, contract-first evidence spine, nine acyclic owners, lane/barrier ownership, six contracts, 12 canonical AC mappings, W01-W32 seams, N/N-1 schemas, atomic evidence, hermetic/live-host seams, bounded event/admission/DAG behavior, protected platform proof, and no-cryptographic-authenticity scope remain semantically unchanged. Open questions and blockers are zero.",
+      "evidence": "PASS bounded Design revision 2 correction following the terminal EM finding. The previously approved 2026-08-26 HOW amendment is now represented consistently: all 12 acceptance outcomes, W01-W32 closure, six contracts, release barriers, graph baseline, zero Build lenses, event-driven waits, and non-cryptographic authority limits remain; Taskplane emits deterministic non-authoritative dispatch sets, Codex alone owns spawn concurrency, the host hook observes actual spawns and usage, budgets stop only the next dispatch, and Retro consumes native wave/claim/gate trace. The unreleased Design schema bundle advances to v2, retired scheduler-admission/execution-DAG definitions are absent, and all declared acceptance and wiring selectors resolve against the real checkout. This row remains self-attested and non-independent; it does not substitute for terminal EM or human release authority.",
       "produced_by": "tp-designer",
       "self_attested": true,
       "independent": false,
-      "content_fingerprint": "550aaeaacf8993baa53b2211a1c8d29b74fd143d1878704c30e1acfdfef08c03"
+      "content_fingerprint": "96021883df4c2af7396e092ac69fb3400399bc4c0ce80e2361b70e0effa4bef7"
     }
   ],
   "open_questions": [],
@@ -2228,7 +2235,7 @@
       },
       {
         "id": "taskplane/dispatch_telemetry.py",
-        "responsibility": "event ledger, usage budgets, partial-host state, Retro metrics",
+        "responsibility": "native dispatch observation bindings, usage budgets, and Retro metric inputs",
         "imports": [
           "taskplane/delivery_policy.py",
           "taskplane/plan_topology.py",
@@ -2561,28 +2568,25 @@
     ]
   },
   "event_protocol": {
-    "wait_contract": "Reuse incumbent taskplane.wait-policy/v1 and taskplane.event-wait-invocation/v1 with mode=event, timeout_seconds=1800, scheduled_polling=false, reissue_after=[completion, attention], and exact outstanding members. EventWaiter is injected; deterministic tests use RecordedEventWaiter and FakeClock with no real wait.",
-    "event_identity": "taskplane.dispatch-event/v1 is bound to dispatch_id, producer/thread id, monotonic producer sequence, event kind, payload digest, and event fingerprint.",
-    "ordering": "The ledger accepts the next contiguous sequence. An identical duplicate fingerprint is idempotent; contradictory duplicate identity fails. Out-of-order events wait in a bounded pending map until predecessors arrive.",
-    "bounds": {
-      "max_pending_events_per_dispatch": 256,
-      "max_event_bytes": 65536,
-      "timeout_seconds": 1800
-    },
+    "wait_contract": "Reuse incumbent taskplane.wait-policy/v1 and taskplane.event-wait-invocation/v1 with mode=event, timeout_seconds=1800, scheduled_polling=false, and exact outstanding members. Codex owns native agent completion; Taskplane issues one event-driven wait for the outstanding set and never model-polls or schedules host work.",
+    "native_trace_identity": "Expected native dispatch ids are bound to actual host spawn observations and subsequent command completion/attention receipts. Duplicate host observations are idempotent; a severed or contradictory observation keeps telemetry and the next-dispatch budget decision closed.",
+    "ordering": "The existing command-runtime receipt preserves concurrent terminal and attention orderings and prevents a second model wake after crash recovery. No Taskplane-owned worker event queue, admission queue, replay scheduler, or capacity state is introduced.",
+    "timeout_seconds": 1800,
     "terminal_states": [
       "complete",
       "attention",
       "failed",
-      "cancelled",
-      "partial-host"
+      "cancelled"
     ],
-    "partial_host": "At 1800 seconds or a terminal adapter disconnect, retain all valid events, record missing hosts/producers and outstanding members as partial-host, emit attention, and keep gates/release closed. Partial-host is not outage resolution and never becomes success.",
-    "wake_rule": "A completion or attention event wakes the orchestrator immediately. On wake it recalculates the ready set and dispatches every disjoint ready task before waiting again.",
+    "wake_rule": "A native completion or attention observation wakes the orchestrator. The loop recalculates the deterministic ready set, emits all disjoint ready intents to Codex, then performs one new event-driven wait for the outstanding set.",
     "tests": [
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_event_wait_is_1800_seconds_idempotent_and_wakes_on_terminal_event",
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_duplicate_and_out_of_order_events_reconcile_without_double_count",
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_event_queue_cap_and_oversize_event_fail_closed",
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_partial_host_is_terminal_attention_not_green_or_outage"
+      "taskplane/tests/test_r0001_parallel_delivery.py::test_command_completion_remains_a_native_dispatch_event",
+      "taskplane/tests/test_command_adapters.py::test_no_event_host_uses_one_runtime_blocking_wait_and_zero_model_polls",
+      "taskplane/tests/test_command_runtime.py::test_attention_and_terminal_states_are_delivered_once",
+      "taskplane/tests/test_command_runtime.py::test_concurrent_terminal_attention_orderings_preserve_both_events",
+      "taskplane/tests/test_command_runtime.py::test_crash_after_receive_uses_receipt_to_prevent_second_model_wake",
+      "taskplane/tests/test_r0007_sweep_bootstrap.py::test_event_wait_policy_is_long_lived_and_wake_driven",
+      "taskplane/tests/test_r0007_sweep_bootstrap.py::test_native_dispatch_guidance_forbids_repeat_polling"
     ]
   },
   "tradeoff_pairs": [
@@ -2608,7 +2612,7 @@
       "pair": "event wait vs scheduled polling",
       "selected": "incumbent 1800s event wait",
       "gain": "immediate completion/attention wake with no idle polls",
-      "cost": "bounded out-of-order queue and partial-host semantics"
+      "cost": "host completion/attention receipt ordering must remain idempotent across crash recovery"
     },
     {
       "pair": "verified remote advertised default vs bare HEAD",
@@ -2627,7 +2631,9 @@
     "schema": "taskplane.compatibility-policy/v1",
     "machine_readable_path": "design/compatibility.json",
     "schema_bundle_path": "design/schemas/r0001-evidence-schemas.json",
+    "schema_bundle_id": "taskplane.r0001-evidence-schemas/v2",
     "baseline_rebind": "The 4a0378e7f080..ecfc48ec2f5f 16-commit CI-repair delta changes no R-0001 evidence schema, host/plugin capability identity, N/N-1 matrix cell, migration, deprecation, or sunset rule. It is integrated implementation inventory at the same released v2.17.20 compatibility generation.",
+    "native_dispatch_amendment": "The unreleased Design-only bundle v1 is retired and v2 removes scheduler-admission/execution-DAG definitions, adds native topology/dispatch-set/observation/budget/metric definitions, and corrects the bundle's dispatchTelemetry projection to the shipped taskplane.dispatch-telemetry/v1 fields. Runtime v1 receipt identities are not rewritten.",
     "window": {
       "current": "2.17.21",
       "previous": "2.17.20",
@@ -2845,10 +2851,10 @@
         "production": "HostPrivateCapabilitySource receives opaque single-use handles from an agent-inaccessible host adapter channel and consumes them atomically after exact binding validation.",
         "hermetic": "RecordedHostActionCapabilitySource issues deterministic single-use handles for exact run/kernel/session/turn/task/stage/digest bindings and exposes replay/cross-binding/direct-filesystem-injection negatives without claiming actor authenticity."
       },
-      "TaskDispatchCapabilityFactory": {
-        "entrypoint": "plan_topology.admit_ready_batch(..., capability_factory=...)",
-        "production": "ClosedTaskDispatchCapabilityFactory constructs one default-deny capability per atomic reservation and supplies only declared tool/path/ref/network/credential handles.",
-        "hermetic": "RecordedTaskDispatchCapabilityFactory generates exact-bound capabilities and records all refused unlisted or cross-task surfaces."
+      "TaskDispatchCapabilityInventory": {
+        "entrypoint": "delivery_ports.RecordedTaskDispatchCapabilityFactory (generic hermetic inventory only)",
+        "production": "No production factory is instantiated by native Codex assignment. A future protected adapter requires a separately approved Design amendment before using this type.",
+        "hermetic": "RecordedTaskDispatchCapabilityFactory preserves exact-bound/default-deny negative coverage without participating in scheduling, capacity, reservation, or dispatch."
       },
       "PlatformCiQuery": {
         "entrypoint": "release_evidence.publish(..., platform_ci_query=..., protected_consumer=...)",
@@ -2863,7 +2869,7 @@
       "EventWaiter": {
         "entrypoint": "EventWaiter.wait(wait_policy, outstanding_members)",
         "production": "Incumbent 1800-second host event wait adapter",
-        "hermetic": "RecordedEventWaiter returns ordered/duplicate/out-of-order/timeout/partial-host events synchronously against FakeClock."
+        "hermetic": "RecordedEventWaiter returns completion/attention/timeout outcomes synchronously against FakeClock while command-runtime receipts cover duplicate/reordered terminal delivery."
       },
       "EvidenceStore": {
         "entrypoint": "EvidenceStore(caller_root, repository_fingerprint, run_namespace)",
@@ -2883,7 +2889,7 @@
     },
     "evidence_store_contract": {
       "identity": "caller_root realpath + repository_fingerprint + run_namespace; all three are required and content-bound.",
-      "isolation": "Every receipt, reservation, replay fixture copy, and fault journal lives below that exact namespace. Parallel tests use unique deterministic namespaces; no global TASKPLANE_HOME or shared active state.",
+      "isolation": "Every authoritative receipt, replay fixture copy, and fault journal lives below that exact namespace. Parallel tests use unique deterministic namespaces; no global TASKPLANE_HOME or shared active state.",
       "atomicity": "prepare writes+fsyncs a deterministic intent and returns a token; commit validates token and expected head, writes immutable bytes, fsyncs file+directory, CAS-replaces head, and returns exact receipt; repeated commit returns the same bytes.",
       "recovery": "reconcile validates intent/receipt/head lineage, completes one durable prepared commit or rolls back an uncommitted intent, and rejects forks/gaps/collisions. Recovery is idempotent.",
       "teardown": "teardown(namespace_token) removes only a store-created disposable namespace after caller-root, repository fingerprint, token, symlink, and containment revalidation; production evidence is never torn down.",
@@ -2917,40 +2923,41 @@
       "taskplane/tests/test_r0001_release_green.py::test_release_green_requeries_platform_run_identity_for_exact_pushed_sha"
     ]
   },
-  "scheduler_admission": {
-    "schema": "taskplane.dispatch-admission/v1",
-    "public_entrypoint": "plan_topology.admit_ready_batch(state, capability, budget, evidence_store, clock)",
-    "capacity_formula": "admit_count = min(count(pairwise-disjoint dependency-ready tasks), configured_host_concurrency - current_in_flight, remaining_session_budget, max_in_flight - current_in_flight)",
-    "definitions": {
-      "configured_host_concurrency": "from validated host capability receipt; absence is zero, not unlimited",
-      "remaining_session_budget": "60 - already admitted session count, floored at zero",
-      "max_in_flight": "Plan-authorized upper bound, positive and no greater than host concurrency",
-      "overflow": "Every unadmitted task remains durably ready with original readiness timestamp and reason=capacity."
+  "native_dispatch": {
+    "intent_schema": "taskplane.dispatch-set/v1",
+    "public_entrypoints": [
+      "plan_topology.classify_plan(plan)",
+      "loop.select_ready_tasks(workspace, state)",
+      "build_c.assign_scopes(workspace, state, ready_tasks)",
+      "loop.record_native_dispatch_observation(workspace, observation)",
+      "loop.wave(workspace)"
+    ],
+    "authority_split": {
+      "taskplane": "Classify dependencies and shared-owner overlap; emit a deterministic non-authoritative intent for every ready pairwise-disjoint task; validate claim/gate/submit/merge evidence; stop only the next dispatch at a binding budget ceiling.",
+      "codex": "Own native subagent spawning, concurrency, capacity, scheduling, lifecycle, and completion transport.",
+      "host_observation": "Bind expected dispatch ids to actual Codex spawn and observed usage through the always-on hook seam. Missing or contradictory observation fails closed before the next dispatch.",
+      "retired": "Taskplane host scheduler, capacity accounting, reservation/lease, admission/event queues, replay scheduler, and execution-DAG authority are absent."
     },
-    "atomic_reservation": "Under one scheduler namespace lock/CAS revision, derive deterministic sorted maximal disjoint set, reserve the whole tranche in one immutable receipt, increment session reservations, and publish a new scheduler head. A task cannot be dispatched without the reservation fingerprint.",
-    "terminal_admission": "A complete/attention/failed/cancelled/partial-host event atomically releases its in-flight slot, records the terminal state, recalculates readiness/capacity, and reserves the next tranche before returning the wake result.",
-    "no_reservation": "If capacity is zero because host concurrency/max-in-flight is exhausted, retain ready overflow and wait for a terminal event. If remaining session budget is zero or binding data is missing, create no reservation and return stop_for_human_scope_review.",
-    "race_rule": "Concurrent admit calls share expected scheduler head; exactly one CAS wins and losers reload/reconcile, preventing duplicate dispatch.",
+    "wait_rule": "After emitting all ready disjoint intents, use one event-driven wait for the outstanding native set; never reissue model polling while the wait is active.",
     "tests": [
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_atomic_batch_admission_caps_and_preserves_overflow_ready",
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_session_59_admits_one_and_stops_remaining",
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_capacity_exhaustion_creates_no_reservation_and_human_stop",
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_concurrent_reservation_race_has_one_winner",
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_huge_ready_set_is_bounded_and_lossless"
+      "taskplane/tests/test_r0001_parallel_delivery.py::test_plan_classifies_every_pair_without_host_capacity",
+      "taskplane/tests/test_r0001_parallel_delivery.py::test_native_ready_set_emits_all_disjoint_work_and_holds_overlap",
+      "taskplane/tests/test_r0001_parallel_delivery.py::test_missing_owned_tests_become_dependency_edges",
+      "taskplane/tests/test_r0001_parallel_delivery.py::test_build_c_receipt_is_native_dispatch_set_without_scheduler_fields",
+      "taskplane/tests/test_r0001_parallel_delivery.py::test_retired_scheduler_is_not_an_active_api",
+      "taskplane/tests/test_v101_fixes.py::TestScreenDispatchHook::test_native_spawn_observation_is_always_on_and_idempotent",
+      "taskplane/tests/test_v101_fixes.py::TestScreenDispatchHook::test_severed_native_observation_is_traced_and_budget_fails_closed"
     ]
   },
-  "execution_dag": {
-    "schema": "taskplane.execution-dag/v1",
-    "location": "<managed-run>/execution-dag/revisions/<ordinal>-<fingerprint>.json with CAS head; exports/retro carries a non-authoritative final projection.",
-    "nodes": "Every task and verification job has stable id, generation, shared owner, status, and readiness/admission/start/complete/attention/human timestamps from injected Clock.",
-    "edges": "Every dependency and serialized shared-owner relation is explicit. Replan appends a generation and supersession edges; prior nodes/edges/timestamps remain immutable, so the DAG is edge-complete across replans.",
-    "critical_path": "Longest duration-weighted path across dependency/shared-owner edges using start/terminal timestamps. Parallelism factor uses sum active worker seconds / delivery wall seconds.",
-    "orchestration_allowance": "At most 2 fake-clock seconds per admission tranche plus 1 fake-clock second per terminal event in the controlled wide-DAG proof.",
-    "zero_idle": "Whenever durable ready_count>0 and min(host free capacity, max-in-flight free capacity, remaining sessions)>0, scheduler_caused_idle_seconds must equal 0 and an admission receipt must share that wake transaction.",
+  "native_execution_metrics": {
+    "schema": "taskplane.execution-metrics/v1",
+    "source": "Observed native wave/claim/gate and command completion/attention timestamps; no Taskplane execution DAG is persisted or reconstructed.",
+    "parallelism_factor": "Sum observed active native-worker seconds divided by delivery wall seconds for the bound trace.",
+    "longest_serial_chain": "Longest duration-weighted path over the Plan dependency/shared-owner relations using finite bound native timestamps.",
+    "failure_rule": "Missing, non-finite, negative, or contradictory native timestamps keep Retro and release consumers closed; zero values may represent absent optional observation but never fabricate concurrency.",
     "tests": [
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_execution_dag_remains_edge_complete_across_replans",
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_wide_dag_elapsed_is_critical_path_plus_orchestration_allowance_not_sum",
-      "taskplane/tests/test_r0001_parallel_delivery.py::test_scheduler_caused_idle_is_zero_when_ready_capacity_exists"
+      "taskplane/tests/test_r0001_parallel_delivery.py::test_retro_uses_native_wave_claim_and_gate_trace",
+      "taskplane/tests/test_r0001_parallel_delivery.py::test_non_finite_native_trace_time_fails_closed"
     ]
   }
 }

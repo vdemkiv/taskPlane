@@ -2,7 +2,7 @@
   "requirement": "R-0001",
   "delivery_mode": "build",
   "automatic_lenses": [],
-  "plan_authority": "Volodymyr Demkiv — original approval plus 2026-08-26 approved amendment in Codex task 01a03619-63a9-7743-90f9-1b6b1945b6ac: retire T15 host scheduler/capacity/reservation/DAG authority and use deterministic Taskplane intents with Codex native dispatch",
+  "plan_authority": "Volodymyr Demkiv — original approval plus 2026-08-26 amendment and night-flow decision authority in Codex task 01a03619-63a9-7743-90f9-1b6b1945b6ac: Design revision 2 (evidence a12cfc95600cb0d8e90bd4ec5eb7b52f19b5d8a453e3c4e4af0be9b94fc7186c; content 96021883df4c2af7396e092ac69fb3400399bc4c0ce80e2361b70e0effa4bef7) retires Taskplane scheduler/capacity/reservation/DAG authority and binds deterministic Taskplane intents to Codex native dispatch observation",
   "tasks": [
     {
       "id": "t15-performance-runtime-integration",

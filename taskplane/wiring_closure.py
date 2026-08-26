@@ -25,7 +25,7 @@ EXPECTED_PRODUCER_COUNT = 18
 _FIVE_CLASS_BOUNDARY_PRODUCERS = frozenset(
     {
         "trusted host adapter private channel",
-        "Plan task capability factory + protected release consumer",
+        "generic task capability inventory + protected release consumer",
     }
 )
 _CANONICAL_PRODUCER_EDGE_IDS = {
@@ -74,14 +74,14 @@ _CANONICAL_PRODUCER_EDGE_IDS = {
     "taskplane/delivery_ports.py + injected implementations": frozenset(
         {"W06", "W14", "W16", "W20", "W21", "W23", "W28", "W29"}
     ),
-    "atomic admission + execution DAG": frozenset(
+    "native dispatch intent + host spawn observation": frozenset(
         {"W19", "W20", "W21", "W22", "W30"}
     ),
     "trusted host adapter private channel": frozenset(
         {"W04", "W06", "W16", "W28", "W31"}
     ),
-    "Plan task capability factory + protected release consumer": frozenset(
-        {"W01", "W02", "W14", "W16", "W19", "W30", "W32"}
+    "generic task capability inventory + protected release consumer": frozenset(
+        {"W01", "W02", "W14", "W16", "W30", "W32"}
     ),
 }
 

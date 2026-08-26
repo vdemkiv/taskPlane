@@ -11,7 +11,7 @@ import zipfile
 
 import pytest
 
-from taskplane import checkpoint, design_contract
+from taskplane import checkpoint, design_contract, dispatch_telemetry
 from taskplane.delivery_ports import FakeClock, RecordedPlatformCiQuery
 from taskplane.release_evidence import create_release_green
 from taskplane.wiring_closure import (
@@ -37,43 +37,16 @@ def _all_test_references(rows) -> list[str]:
     return references
 
 
-def _materialize_selectors(caller_root: Path, references) -> None:
-    grouped: dict[str, set[tuple[str, ...]]] = {}
-    for reference in references:
-        parts = reference.split("::")
-        grouped.setdefault(parts[0], set()).add(tuple(parts[1:]))
-    for relative, selectors in grouped.items():
-        path = caller_root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        functions = sorted(parts[0] for parts in selectors if len(parts) == 1)
-        classes: dict[str, list[str]] = {}
-        for parts in selectors:
-            if len(parts) == 2:
-                classes.setdefault(parts[0], []).append(parts[1])
-        lines = [f"def {name}():\n    pass\n" for name in functions]
-        for class_name, methods in sorted(classes.items()):
-            lines.append(f"class {class_name}:")
-            lines.extend(
-                f"    def {method}(self):\n        pass" for method in sorted(methods)
-            )
-            lines.append("")
-        path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def test_each_acceptance_row_declares_existing_test_file_and_exact_selector(
-    tmp_path,
-):
+def test_each_acceptance_row_declares_existing_test_file_and_exact_selector():
     acceptance_map = _design_contract()["acceptance_map"]
     references = [
         reference
         for row in acceptance_map
         for reference in row["tests"]
     ]
-    _materialize_selectors(tmp_path, references)
-
     receipt = validate_acceptance_map(
         acceptance_map,
-        caller_root=tmp_path,
+        caller_root=ROOT,
     )
 
     assert receipt["status"] == "closed"
@@ -84,7 +57,7 @@ def test_each_acceptance_row_declares_existing_test_file_and_exact_selector(
     missing_selector = deepcopy(acceptance_map)
     missing_selector[0]["tests"][0] += "_not_declared"
     with pytest.raises(WiringClosureError, match="exact selector") as exc:
-        validate_acceptance_map(missing_selector, caller_root=tmp_path)
+        validate_acceptance_map(missing_selector, caller_root=ROOT)
     assert missing_selector[0]["tests"][0] in str(exc.value)
 
 
@@ -199,13 +172,9 @@ def test_build_dor_refuses_unnamed_selector(tmp_path, monkeypatch):
     assert any("file.py::selector" in error for error in errors)
 
 
-def test_every_changed_producer_has_closed_consumer_edges_and_edge_tests(
-    tmp_path,
-):
+def test_every_changed_producer_has_closed_consumer_edges_and_edge_tests():
     wiring = _design_contract()["wiring_closure"]
-    _materialize_selectors(tmp_path, _all_test_references(wiring["edges"]))
-
-    receipt = validate_producer_edges(wiring, caller_root=tmp_path)
+    receipt = validate_producer_edges(wiring, caller_root=ROOT)
 
     assert receipt["schema"] == "taskplane.wiring-closure/v1"
     assert receipt["status"] == "designed"
@@ -220,17 +189,16 @@ def test_every_changed_producer_has_closed_consumer_edges_and_edge_tests(
     severed["edges"] = severed["edges"][:-1]
     severed["edge_count"] = len(severed["edges"])
     with pytest.raises(WiringClosureError, match="W32"):
-        validate_producer_edges(severed, caller_root=tmp_path)
+        validate_producer_edges(severed, caller_root=ROOT)
 
     severed_producer = deepcopy(wiring)
     severed_producer["producer_closure"][0]["consumer_classes"].pop()
     with pytest.raises(WiringClosureError, match="consumer classes"):
-        validate_producer_edges(severed_producer, caller_root=tmp_path)
+        validate_producer_edges(severed_producer, caller_root=ROOT)
 
 
-def test_producer_closure_rejects_swapped_valid_edge_ids(tmp_path):
+def test_producer_closure_rejects_swapped_valid_edge_ids():
     wiring = _design_contract()["wiring_closure"]
-    _materialize_selectors(tmp_path, _all_test_references(wiring["edges"]))
     severed = deepcopy(wiring)
     delivery_edges = severed["producer_closure"][0]["edge_ids"]
     review_edges = severed["producer_closure"][1]["edge_ids"]
@@ -242,14 +210,12 @@ def test_producer_closure_rejects_swapped_valid_edge_ids(tmp_path):
     )
 
     with pytest.raises(WiringClosureError, match="producer.*edge binding"):
-        validate_producer_edges(severed, caller_root=tmp_path)
+        validate_producer_edges(severed, caller_root=ROOT)
 
 
-def test_w31_remains_open_without_external_host_receipt(tmp_path):
+def test_w31_remains_open_without_external_host_receipt():
     wiring = _design_contract()["wiring_closure"]
-    _materialize_selectors(tmp_path, _all_test_references(wiring["edges"]))
-
-    receipt = validate_producer_edges(wiring, caller_root=tmp_path)
+    receipt = validate_producer_edges(wiring, caller_root=ROOT)
 
     assert receipt["status"] == "designed"
     assert next(
@@ -258,22 +224,56 @@ def test_w31_remains_open_without_external_host_receipt(tmp_path):
     self_declared = deepcopy(wiring)
     self_declared["status"] = "closed"
     with pytest.raises(WiringClosureError, match="W31.*external host"):
-        validate_producer_edges(self_declared, caller_root=tmp_path)
+        validate_producer_edges(self_declared, caller_root=ROOT)
 
 
-def test_all_wiring_selectors_resolve(tmp_path):
+def test_all_wiring_selectors_resolve():
     wiring = _design_contract()["wiring_closure"]
     references = _all_test_references(wiring["edges"])
-    _materialize_selectors(tmp_path, references)
-
-    receipt = validate_producer_edges(wiring, caller_root=tmp_path)
+    receipt = validate_producer_edges(wiring, caller_root=ROOT)
     assert receipt["selectors"] == sorted(set(references))
 
-    missing_file = references[0].split("::", 1)[0]
-    (tmp_path / missing_file).unlink()
+    missing_file = "taskplane/tests/test_missing_wiring_edge.py"
+    missing = deepcopy(wiring)
+    missing["edges"][0]["edge_test"] = missing_file + "::test_missing"
     with pytest.raises(WiringClosureError, match="declared test file") as exc:
-        validate_producer_edges(wiring, caller_root=tmp_path)
+        validate_producer_edges(missing, caller_root=ROOT)
     assert missing_file in str(exc.value)
+
+
+def test_native_design_schema_inventory_matches_runtime_and_retires_scheduler():
+    contract = _design_contract()
+    bundle = json.loads((
+        ROOT / "design" / "schemas" / "r0001-evidence-schemas.json"
+    ).read_text(encoding="utf-8"))
+    compatibility = json.loads((
+        ROOT / "design" / "compatibility.json"
+    ).read_text(encoding="utf-8"))
+
+    assert bundle["$id"] == "taskplane.r0001-evidence-schemas/v2"
+    definitions = bundle["$defs"]
+    assert {"dispatchAdmission", "executionDag"}.isdisjoint(definitions)
+    assert {
+        "planTopology", "dispatchSet", "dispatchTelemetryBinding",
+        "waveBudget", "executionMetrics",
+    } <= set(definitions)
+    assert {"scheduler_admission", "execution_dag"}.isdisjoint(contract)
+    assert {"dispatch_admission", "execution_dag"}.isdisjoint(
+        contract["receipt_contracts"])
+
+    expected_telemetry_fields = {
+        "schema", "duration_seconds", "fingerprint",
+        *dispatch_telemetry._DISPATCH_FIELDS,
+        *dispatch_telemetry._USAGE_FIELDS,
+    }
+    assert set(definitions["dispatchTelemetry"]["required"]) == \
+        expected_telemetry_fields
+    amendment = compatibility["design_schema_bundle_amendment"]
+    assert amendment["previous_bundle_id"].endswith("/v1")
+    assert amendment["current_bundle_id"] == bundle["$id"]
+    assert amendment["retired_definitions"] == [
+        "dispatchAdmission", "executionDag",
+    ]
 
 
 def _load_packager(name: str):

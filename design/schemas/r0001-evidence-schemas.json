@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "taskplane.r0001-evidence-schemas/v1",
+  "$id": "taskplane.r0001-evidence-schemas/v2",
   "title": "R-0001 evidence schema bundle",
-  "description": "Design-time closed schemas. Runtime evolution requires a new schema id and compatibility diff.",
+  "description": "Amended Design-time closed schemas for Codex-native dispatch. The unreleased v1 bundle's scheduler-admission and execution-DAG definitions are retired; runtime schema evolution still requires its own new schema id and compatibility diff.",
   "$defs": {
     "deliveryCapabilityReceipt": {
       "type": "object",
@@ -548,18 +548,21 @@
       "required": [
         "schema",
         "dispatch_id",
+        "thread_id",
         "thread_type",
         "task_id",
+        "dependencies",
         "shared_owner",
         "input_tokens",
         "cached_input_tokens",
         "uncached_input_tokens",
         "output_tokens",
         "reasoning_tokens",
+        "total_tokens",
         "started_at",
         "ended_at",
         "duration_seconds",
-        "wait_seconds",
+        "wait_duration_seconds",
         "correction_count",
         "events",
         "fingerprint"
@@ -569,6 +572,10 @@
           "const": "taskplane.dispatch-telemetry/v1"
         },
         "dispatch_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thread_id": {
           "type": "string",
           "minLength": 1
         },
@@ -584,6 +591,14 @@
         "task_id": {
           "type": "string",
           "minLength": 1
+        },
+        "dependencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "shared_owner": {
           "anyOf": [
@@ -616,6 +631,10 @@
           "type": "integer",
           "minimum": 0
         },
+        "total_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
         "started_at": {
           "type": "number"
         },
@@ -626,7 +645,7 @@
           "type": "number",
           "minimum": 0
         },
-        "wait_seconds": {
+        "wait_duration_seconds": {
           "type": "number",
           "minimum": 0
         },
@@ -646,144 +665,109 @@
         }
       }
     },
-    "dispatchAdmission": {
+    "planTopology": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "schema",
-        "revision",
-        "reservation_id",
-        "ready_ids",
-        "admitted_ids",
-        "overflow_ids",
-        "configured_host_concurrency",
-        "remaining_session_budget",
-        "max_in_flight",
-        "current_in_flight",
-        "predecessor_fingerprint",
-        "status",
-        "fingerprint"
-      ],
+      "required": ["schema", "task_ids", "pairs", "effective_dependencies", "missing_test_assets", "test_artifact_edges", "fingerprint"],
       "properties": {
-        "schema": {
-          "const": "taskplane.dispatch-admission/v1"
-        },
-        "revision": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "reservation_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "ready_ids": {
+        "schema": {"const": "taskplane.plan-topology/v1"},
+        "task_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "pairs": {
           "type": "array",
           "items": {
-            "type": "string"
-          }
-        },
-        "admitted_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "overflow_ids": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "configured_host_concurrency": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "remaining_session_budget": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "max_in_flight": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "current_in_flight": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "predecessor_fingerprint": {
-          "anyOf": [
-            {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            {
-              "type": "null"
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["left", "right", "disposition", "shared_owner"],
+            "properties": {
+              "left": {"type": "string", "minLength": 1},
+              "right": {"type": "string", "minLength": 1},
+              "disposition": {"enum": ["parallel", "serialized"]},
+              "shared_owner": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}
             }
-          ]
+          }
         },
-        "status": {
-          "enum": [
-            "reserved",
-            "waiting-capacity",
-            "human-stop"
-          ]
+        "effective_dependencies": {"type": "object", "additionalProperties": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}},
+        "missing_test_assets": {"type": "object", "additionalProperties": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}},
+        "test_artifact_edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["producer", "consumer", "artifact"],
+            "properties": {
+              "producer": {"type": "string", "minLength": 1},
+              "consumer": {"type": "string", "minLength": 1},
+              "artifact": {"type": "string", "minLength": 1}
+            }
+          }
         },
-        "fingerprint": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
+        "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
-    "executionDag": {
+    "dispatchSet": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "schema",
-        "run_id",
-        "generation",
-        "nodes",
-        "edges",
-        "predecessor_fingerprint",
-        "fingerprint"
-      ],
+      "required": ["schema", "id", "concurrent", "member_count", "members"],
       "properties": {
-        "schema": {
-          "const": "taskplane.execution-dag/v1"
-        },
-        "run_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "generation": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "nodes": {
-          "type": "array",
-          "items": {
-            "type": "object"
+        "schema": {"const": "taskplane.dispatch-set/v1"},
+        "id": {"type": "string", "minLength": 1},
+        "concurrent": {"const": true},
+        "member_count": {"type": "integer", "minimum": 1},
+        "members": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "dispatchTelemetryBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "dispatch_id", "thread_id", "thread_type", "task_id", "dependencies", "shared_owner", "started_at", "ended_at", "wait_duration_seconds", "correction_count", "events", "usage", "usage_source_fingerprint", "finalized_receipt_fingerprint"],
+      "properties": {
+        "schema": {"const": "taskplane.dispatch-telemetry-binding/v1"},
+        "dispatch_id": {"type": "string", "minLength": 1},
+        "thread_id": {"type": "string", "minLength": 1},
+        "thread_type": {"enum": ["main", "worker", "lens", "evaluator", "guardian"]},
+        "task_id": {"type": "string", "minLength": 1},
+        "dependencies": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "shared_owner": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "started_at": {"type": "number"},
+        "ended_at": {"type": "number"},
+        "wait_duration_seconds": {"type": "number", "minimum": 0},
+        "correction_count": {"type": "integer", "minimum": 0},
+        "events": {"type": "array", "items": {"type": "object"}},
+        "usage": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+        "usage_source_fingerprint": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "finalized_receipt_fingerprint": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]}
+      }
+    },
+    "waveBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "status", "dispatch_allowed", "usage", "ceilings", "triggered"],
+      "properties": {
+        "schema": {"const": "taskplane.wave-budget/v1"},
+        "status": {"enum": ["within_budget", "human_scope_review"]},
+        "dispatch_allowed": {"type": "boolean"},
+        "usage": {"type": "object"},
+        "ceilings": {"type": "object"},
+        "triggered": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "executionMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "active_worker_seconds", "delivery_wall_seconds", "parallelism_factor", "longest_serial_chain"],
+      "properties": {
+        "schema": {"const": "taskplane.execution-metrics/v1"},
+        "active_worker_seconds": {"type": "number", "minimum": 0},
+        "delivery_wall_seconds": {"type": "number", "minimum": 0},
+        "parallelism_factor": {"type": "number", "minimum": 0},
+        "longest_serial_chain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tasks", "seconds"],
+          "properties": {
+            "tasks": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "seconds": {"type": "number", "minimum": 0}
           }
-        },
-        "edges": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          }
-        },
-        "predecessor_fingerprint": {
-          "anyOf": [
-            {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "fingerprint": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
         }
       }
     },
@@ -1072,6 +1056,7 @@
       }
     },
     "taskDispatchCapability": {
+      "description": "Inactive generic security inventory. The Codex-native assignment path does not instantiate this type; a future production adapter requires separate Design authority.",
       "type": "object",
       "additionalProperties": false,
       "required": [
