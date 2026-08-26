@@ -1,4 +1,3 @@
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -13,7 +12,6 @@ from taskplane import (
     storage as runtime_storage,
     tp as tp_cli,
 )
-from taskplane.delivery_ports import content_fingerprint
 from taskplane.delivery_policy import (
     DeliveryPolicyError,
     automatic_lens_workers_for_dispatch,
@@ -25,6 +23,7 @@ from taskplane.evaluation_output import (
     canonical_bytes,
     validate_evaluator_value,
 )
+from taskplane.producer_observation import ProducerObservationError
 
 
 SOURCE_SHA = "a" * 40
@@ -77,27 +76,6 @@ def _empty_collection(result):
         result_validator=validate_evaluator_value,
         producer_observation_fingerprint=OBSERVATION_FINGERPRINT,
     )
-
-
-def _producer_observation(*, raw: bytes, run_id: str, task_id: str,
-                          output_path: str, source_sha: str) -> dict:
-    projection = {
-        "schema": "taskplane.producer-observation/v1",
-        "run_id": run_id,
-        "task_id": task_id,
-        "stage": "evaluate",
-        "producer": "tp-evaluator",
-        "host": "codex",
-        "host_session_or_turn": "session:turn",
-        "output_path": output_path,
-        "output_bytes": len(raw),
-        "output_sha256": hashlib.sha256(raw).hexdigest(),
-        "output_schema_id": "taskplane.evaluator-output/v1",
-        "output_contract_fingerprint": "d" * 64,
-        "source_sha": source_sha,
-        "observed_at": 1.0,
-    }
-    return {**projection, "fingerprint": content_fingerprint(projection)}
 
 
 def _complete_review_route():
@@ -220,6 +198,31 @@ def _gate_plan_to_execute(workspace: Path) -> dict:
     return loop.load(str(workspace))
 
 
+def _ready_evaluate_workspace(root: Path):
+    workspace = _plan_workspace(root)
+    state = _gate_plan_to_execute(workspace)
+    task = loop._current_task(state)
+    opened = _start_evaluate_kernel(
+        workspace, state["delivery_mode_receipt"]
+    )
+    task["status"] = "built"
+    state["step"] = "evaluate"
+    state.setdefault("review_kernel_runs", {})[
+        loop._review_kernel_binding_key("evaluate", task)
+    ] = {
+        "schema": "taskplane.review-kernel-binding/v1",
+        "run_id": opened["run_id"],
+        "workspace": str(workspace),
+        "stage": loop.EVALUATE_ROUTE_STAGE,
+        "status": "ready",
+    }
+    loop.save(str(workspace), state)
+    verdict_path = Path(runtime_storage.evaluation_path(str(workspace)))
+    verdict_path.parent.mkdir(parents=True, exist_ok=True)
+    verdict_path.write_bytes(canonical_bytes(_evaluator_result()))
+    return workspace, opened
+
+
 def test_plan_gate_requires_and_stamps_delivery_mode():
     receipt = _build_receipt()
 
@@ -330,102 +333,69 @@ def test_empty_expected_lenses_emits_successful_collection_receipt(tmp_path):
     assert len(receipt["fingerprint"]) == 64
 
 
-def test_cli_evaluate_submission_collects_observed_empty_set_before_guidance(
-    tmp_path, monkeypatch, capsys
+def test_cli_refuses_producer_observation_flag(tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        tp_cli.main([
+            "loop",
+            "--workspace",
+            str(tmp_path),
+            "submit",
+            "pass",
+            "--producer-observation",
+            "{}",
+        ])
+
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+def test_public_loop_submit_refuses_recorded_producer_double(tmp_path):
+    class RecordedProducerDouble(dict):
+        pass
+
+    recorded = RecordedProducerDouble(schema="recorded-producer-double")
+    with pytest.raises(TypeError, match="producer_observation"):
+        loop.submit(
+            str(tmp_path),
+            "pass",
+            producer_observation=recorded,
+        )
+    with pytest.raises(ProducerObservationError, match="external host"):
+        loop.bind_producer_observation(
+            {"step": "evaluate", "task": "task-a"},
+            recorded,
+            output_bytes=b"{}\n",
+            output_schema_id="taskplane.evaluator-output/v1",
+            output_contract_fingerprint="d" * 64,
+        )
+
+
+def test_missing_host_receipt_fails_before_collection_guidance_and_submission(
+    tmp_path, monkeypatch
 ):
-    workspace = _plan_workspace(tmp_path)
-    state = _gate_plan_to_execute(workspace)
-    task = loop._current_task(state)
-    opened = _start_evaluate_kernel(
-        workspace, state["delivery_mode_receipt"]
-    )
-    task["status"] = "built"
-    state["step"] = "evaluate"
-    state.setdefault("review_kernel_runs", {})[
-        loop._review_kernel_binding_key("evaluate", task)
-    ] = {
-        "schema": "taskplane.review-kernel-binding/v1",
-        "run_id": opened["run_id"],
-        "workspace": str(workspace),
-        "stage": loop.EVALUATE_ROUTE_STAGE,
-        "status": "ready",
-    }
-    loop.save(str(workspace), state)
-
-    verdict = _evaluator_result()
-    raw = canonical_bytes(verdict)
-    verdict_path = Path(runtime_storage.evaluation_path(str(workspace)))
-    verdict_path.parent.mkdir(parents=True, exist_ok=True)
-    verdict_path.write_bytes(raw)
-    observation = _producer_observation(
-        raw=raw,
-        run_id=opened["run_id"],
-        task_id=task["id"],
-        output_path=str(verdict_path.relative_to(workspace)),
-        source_sha=subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=workspace, check=True,
-            capture_output=True, text=True,
-        ).stdout.strip(),
-    )
-    guidance_calls = []
-
-    def assert_collected_before_guidance(*_args, **_kwargs):
-        completed = review._load_state(str(workspace), opened["run_id"])
-        guidance_calls.append(completed["empty_lens_collection"])
-        assert completed["status"] == "complete"
-        return {"status": "on_path", "facts": {
-            "lens_results_collected": True,
-            "output_producer_observed": True,
-        }}
+    workspace, opened = _ready_evaluate_workspace(tmp_path)
+    calls = []
 
     monkeypatch.setattr(
-        loop.runtime_eval, "guide_loop", assert_collected_before_guidance
+        loop,
+        "collect_review_bridge",
+        lambda *_args, **_kwargs: calls.append("collection"),
+    )
+    monkeypatch.setattr(
+        loop.runtime_eval,
+        "guide_loop",
+        lambda *_args, **_kwargs: calls.append("guidance"),
     )
 
-    exit_code = tp_cli.main([
-        "loop", "--workspace", str(workspace), "submit", "pass",
-        "--producer-observation", json.dumps(
-            observation, sort_keys=True, separators=(",", ":")
-        ),
-    ])
-    submitted = json.loads(capsys.readouterr().out)
-
-    assert exit_code == 0
-    assert submitted["submitted"] is True
-    assert guidance_calls[0]["expected_lenses"] == []
-    assert guidance_calls[0]["collected_lenses"] == []
-    assert submitted["submission"]["producer_observation"] == observation
-
-    severed = _plan_workspace(tmp_path / "severed")
-    severed_state = _gate_plan_to_execute(severed)
-    severed_task = loop._current_task(severed_state)
-    severed_opened = _start_evaluate_kernel(
-        severed, severed_state["delivery_mode_receipt"]
-    )
-    severed_task["status"] = "built"
-    severed_state["step"] = "evaluate"
-    severed_state.setdefault("review_kernel_runs", {})[
-        loop._review_kernel_binding_key("evaluate", severed_task)
-    ] = {
-        "schema": "taskplane.review-kernel-binding/v1",
-        "run_id": severed_opened["run_id"],
-        "workspace": str(severed),
-        "stage": loop.EVALUATE_ROUTE_STAGE,
-        "status": "ready",
-    }
-    loop.save(str(severed), severed_state)
-    severed_path = Path(runtime_storage.evaluation_path(str(severed)))
-    severed_path.parent.mkdir(parents=True, exist_ok=True)
-    severed_path.write_bytes(raw)
-
-    refused = loop.submit(str(severed), "pass")
+    refused = loop.submit(str(workspace), "pass")
+    state = loop.load(str(workspace))
 
     assert refused["submitted"] is False
-    assert "producer observation" in refused["error"]
+    assert "external host producer receipt" in refused["error"]
+    assert calls == []
+    assert "_submission" not in state
     assert review._load_state(
-        str(severed), severed_opened["run_id"]
+        str(workspace), opened["run_id"]
     )["status"] == "ready"
-    assert len(guidance_calls) == 1
 
 
 @pytest.mark.parametrize("edge", ["missing", "tampered"])

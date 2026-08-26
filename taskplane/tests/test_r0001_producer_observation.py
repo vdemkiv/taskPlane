@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from taskplane import evaluation_output, loop
+from taskplane import loop
 from taskplane.delivery_ports import (
     FakeClock,
     RecordedHostActionCapabilitySource,
@@ -166,31 +166,28 @@ def test_mismatched_or_ambiguous_host_event_fails_before_capability_consumption(
         )
 
 
-@pytest.mark.parametrize("row", [0, 1], ids=["evaluator", "em"])
-def test_loop_submission_consumes_observable_producer_receipt(tmp_path, row):
-    event, raw = _fixture_rows()[row]
-    receipt, _, _, _ = _observe(tmp_path, event, raw)
+def test_missing_host_receipt_emits_no_producer_provenance_claim():
     submission = {
-        "step": event["stage"],
-        "task": event["task_id"],
-        "evidence_paths": [event["output_path"]],
+        "step": "evaluate",
+        "task": "task-eval",
+        "evidence_paths": [".eval/verdict.json"],
     }
 
-    observed = loop.bind_producer_observation(
-        submission,
-        receipt,
-        output_bytes=raw,
-        output_schema_id=event["output_schema_id"],
-        output_contract_fingerprint=event["output_contract_fingerprint"],
-    )
+    with pytest.raises(ProducerObservationError, match="external host"):
+        loop.bind_producer_observation(
+            submission,
+            None,
+            output_bytes=b"{}\n",
+            output_schema_id="taskplane.evaluator-output/v1",
+            output_contract_fingerprint="d" * 64,
+        )
 
-    assert observed["producer_observation"] == receipt
-    assert evaluation_output.validate_submission_observation(
-        observed,
-        output_bytes=raw,
-        output_schema_id=event["output_schema_id"],
-        output_contract_fingerprint=event["output_contract_fingerprint"],
-    ) == receipt
+    assert submission == {
+        "step": "evaluate",
+        "task": "task-eval",
+        "evidence_paths": [".eval/verdict.json"],
+    }
+    assert "producer_observation" not in submission
 
 
 def test_loop_submission_rejects_missing_observation_without_outage_path():

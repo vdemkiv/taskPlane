@@ -95,7 +95,7 @@ def test_every_changed_producer_has_closed_consumer_edges_and_edge_tests(
     receipt = validate_producer_edges(wiring, caller_root=tmp_path)
 
     assert receipt["schema"] == "taskplane.wiring-closure/v1"
-    assert receipt["status"] == "closed"
+    assert receipt["status"] == "designed"
     assert receipt["edge_count"] == 32
     assert receipt["producer_count"] == 18
     assert [edge["id"] for edge in receipt["edges"]] == [
@@ -113,6 +113,39 @@ def test_every_changed_producer_has_closed_consumer_edges_and_edge_tests(
     severed_producer["producer_closure"][0]["consumer_classes"].pop()
     with pytest.raises(WiringClosureError, match="consumer classes"):
         validate_producer_edges(severed_producer, caller_root=tmp_path)
+
+
+def test_producer_closure_rejects_swapped_valid_edge_ids(tmp_path):
+    wiring = _design_contract()["wiring_closure"]
+    _materialize_selectors(tmp_path, _all_test_references(wiring["edges"]))
+    severed = deepcopy(wiring)
+    delivery_edges = severed["producer_closure"][0]["edge_ids"]
+    review_edges = severed["producer_closure"][1]["edge_ids"]
+    delivery_index = delivery_edges.index("W02")
+    review_index = review_edges.index("W05")
+    delivery_edges[delivery_index], review_edges[review_index] = (
+        review_edges[review_index],
+        delivery_edges[delivery_index],
+    )
+
+    with pytest.raises(WiringClosureError, match="producer.*edge binding"):
+        validate_producer_edges(severed, caller_root=tmp_path)
+
+
+def test_w31_remains_open_without_external_host_receipt(tmp_path):
+    wiring = _design_contract()["wiring_closure"]
+    _materialize_selectors(tmp_path, _all_test_references(wiring["edges"]))
+
+    receipt = validate_producer_edges(wiring, caller_root=tmp_path)
+
+    assert receipt["status"] == "designed"
+    assert next(
+        edge for edge in receipt["edges"] if edge["id"] == "W31"
+    )["required_status"] == "closed"
+    self_declared = deepcopy(wiring)
+    self_declared["status"] = "closed"
+    with pytest.raises(WiringClosureError, match="W31.*external host"):
+        validate_producer_edges(self_declared, caller_root=tmp_path)
 
 
 def test_all_wiring_selectors_resolve(tmp_path):

@@ -1,7 +1,8 @@
 import pytest
 
 from taskplane.delivery_ports import DeliveryPortError, RecordedHostActionCapabilitySource
-from taskplane import tp as cli
+from taskplane import loop, tp as cli
+from taskplane.producer_observation import ProducerObservationError
 
 
 def _source_and_handle(**overrides):
@@ -56,4 +57,23 @@ def test_cli_host_adapter_never_accepts_a_filesystem_capability_handle(tmp_path)
     with pytest.raises(DeliveryPortError, match="host-private"):
         cli.require_host_private_capability(
             str(injected), RecordedHostActionCapabilitySource()
+        )
+
+
+def test_recorded_source_cannot_substitute_for_private_host_receipt(tmp_path):
+    recorded_source = RecordedHostActionCapabilitySource()
+
+    with pytest.raises(TypeError, match="producer_observation"):
+        loop.submit(
+            str(tmp_path),
+            "pass",
+            producer_observation=recorded_source,
+        )
+    with pytest.raises(ProducerObservationError, match="external host"):
+        loop.bind_producer_observation(
+            {"step": "evaluate", "task": "task-a"},
+            recorded_source,
+            output_bytes=b"{}\n",
+            output_schema_id="taskplane.evaluator-output/v1",
+            output_contract_fingerprint="d" * 64,
         )
