@@ -76,7 +76,11 @@ def _events_for_run(
     paths = ([os.path.join(tp.tp_dir(ws), "trace.jsonl")]
              if active_only else tp.trace_paths(ws))
     for trace_path in paths:
-        with open(trace_path, encoding="utf-8") as f:
+        try:
+            trace_file = open(trace_path, encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        with trace_file as f:
             for line in f:
                 if not line.strip():
                     continue

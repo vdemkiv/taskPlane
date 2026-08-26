@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -608,16 +607,16 @@ def test_parallel_wave_preserves_independent_stage_and_root_identity_on_hosts(
 def test_parallel_wave_recovers_deterministic_bindings_after_split_interrupt(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
-    original_mutate = loop.mutate
+    original_persist = loop._persist_stage_loop_wave_bindings
 
-    @contextmanager
     def interrupt_after_split(*_args, **_kwargs):
         raise RuntimeError("simulated interruption after durable split")
-        yield  # pragma: no cover - makes this a context manager
 
-    monkeypatch.setattr(loop, "mutate", interrupt_after_split)
+    monkeypatch.setattr(
+        loop, "_persist_stage_loop_wave_bindings", interrupt_after_split)
     interrupted = loop.wave(str(workspace))
-    monkeypatch.setattr(loop, "mutate", original_mutate)
+    monkeypatch.setattr(
+        loop, "_persist_stage_loop_wave_bindings", original_persist)
     committed = store.load(str(parent["run_id"]))
     active_after_interrupt = set(
         committed["active_stage_projection"]["active_stage_ids"])

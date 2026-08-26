@@ -526,7 +526,9 @@ def test_retro_v4_aggregates_summaries_without_predecessor_trace_roots(
         "closed"
     assert report["stage_metrics"]["terminal"] >= 1
     assert report["stage_metrics"]["outcomes"]["closed"] >= 1
-    assert report["trace_scope"]["source"] == "bounded-stage-view"
+    assert report["trace_scope"] == {
+        "source": "active-run-trace", "from_ts": None, "events": 0,
+    }
 
 
 @pytest.mark.parametrize("projection_status", ["corrupt", "ambiguous"])

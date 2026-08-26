@@ -4259,7 +4259,9 @@ def _declared_repository_test_files(ws: str, tasks: list[dict]) -> set[str]:
 
 def select_ready_tasks(
         tasks: list[dict], *, passed: set[str],
-        repository_files: set[str]) -> tuple[list[dict], list[dict], dict]:
+        repository_files: set[str],
+        allow_isolated_variants: bool = False) \
+        -> tuple[list[dict], list[dict], dict]:
     """Select the executable pairwise-disjoint ready set from the Plan.
 
     This is the runtime consumer of ``plan_topology``.  In particular, it
@@ -4306,6 +4308,11 @@ def select_ready_tasks(
             for member in selected
             if pair_map[frozenset((task_id, str(member["id"])))]
             ["disposition"] == "serialized"
+            and not (
+                allow_isolated_variants
+                and task.get("variant")
+                and member.get("variant")
+                and task.get("variant") != member.get("variant"))
         ), None)
         if blocker is not None:
             held.append({
@@ -4875,7 +4882,8 @@ def wave(ws: str) -> dict:
     try:
         ready, held, executable_topology = select_ready_tasks(
             tasks, passed=passed,
-            repository_files=_declared_repository_test_files(ws, tasks))
+            repository_files=_declared_repository_test_files(ws, tasks),
+            allow_isolated_variants=bool(state.get("ab")))
     except plan_topology.PlanTopologyError as exc:
         return {"error": "executable Plan topology refused dispatch: " + str(exc),
                 "step": "execute", "parallel": True}
