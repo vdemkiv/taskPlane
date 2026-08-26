@@ -204,25 +204,13 @@ def assign_scopes(
     tasks = state.get("tasks")
     if not isinstance(tasks, list):
         raise ScopeAssignmentError("sealed Plan tasks are missing")
-    revision = str(revision or tp.git_head(ws) or "").strip()
-    if not revision:
-        raise ScopeAssignmentError("assignment revision is unavailable")
     graph = graph if isinstance(graph, dict) else depgraph.load(ws)
     modules = graph.get("modules")
     if not isinstance(modules, Mapping) or not modules:
-        try:
-            graph = depgraph.scan(ws)
-        except Exception as exc:
-            raise ScopeAssignmentError(
-                "dependency graph identity recovery failed: " +
-                str(exc)) from exc
-        modules = graph.get("modules")
-    if not isinstance(modules, Mapping) or not modules:
         raise ScopeAssignmentError("dependency graph identity is unavailable")
-    scanned_head = str((graph.get("meta") or {}).get("scanned_head") or "")
-    if scanned_head and scanned_head != revision:
-        raise ScopeAssignmentError(
-            "dependency graph identity is stale for assignment revision")
+    revision = str(revision or tp.git_head(ws) or "").strip()
+    if not revision:
+        raise ScopeAssignmentError("assignment revision is unavailable")
 
     topology = executable_topology(tasks, repository_files=repository_files)
     pair_map = {

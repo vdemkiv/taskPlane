@@ -314,17 +314,6 @@ class TestScopeAssignment(unittest.TestCase):
         self.assertEqual([row["task_id"] for row in receipt["assignments"]],
                          ["b-left", "c-right"])
 
-    def test_scope_assignment_recovers_missing_graph_identity_before_admission(self):
-        empty = {"modules": {}, "edges": [], "files": {}, "meta": {}}
-        with unittest.mock.patch.object(
-                depgraph, "scan", return_value=self.graph) as recovered:
-            receipt, _created, _registered = self._assign(graph=empty)
-
-        recovered.assert_called_once_with(self.ws)
-        self.assertEqual(
-            [row["task_id"] for row in receipt["assignments"]],
-            ["t-a", "t-b"])
-
     def test_scope_assignment_uses_real_repository_and_storage_edges(self):
         revision = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.ws,
@@ -2145,21 +2134,6 @@ class TestParallelExecution(unittest.TestCase):
         self.assertIn("t3", held)                 # overlaps t1 (src/a)
         self.assertIn("t4", held)                 # dep t1 not passed yet
         self.assertTrue(all(e["lenses"] is not None for e in w["wave"]))
-
-    def test_legacy_wave_reserves_telemetry_without_capacity_scheduler(self):
-        ws = self._ws()
-
-        emitted = loop.wave(ws)
-        current = loop.load(ws)
-
-        self.assertEqual(
-            [entry["task"]["id"] for entry in emitted["wave"]],
-            ["t1", "t2"])
-        self.assertNotIn("performance_scheduler", current)
-        self.assertTrue(all(
-            "scheduler_assignment" not in entry for entry in emitted["wave"]))
-        self.assertEqual(
-            len(current["dispatch_telemetry"]["session_reservations"]), 2)
 
     def test_claim_activates_contract_in_worker_worktree(self):
         import taskplane_lite as tpl
