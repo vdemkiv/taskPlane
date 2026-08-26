@@ -5,51 +5,11 @@
   "plan_authority": "Volodymyr Demkiv — 'approve' in Codex task 01a03619-63a9-7743-90f9-1b6b1945b6ac",
   "tasks": [
     {
-      "id": "t10-design-wiring-closure-owner",
-      "scope": ["taskplane/wiring_closure.py", "taskplane/loop.py", "taskplane/tp.py", "taskplane/tests/test_r0001_design_wiring.py", "taskplane/tests/test_r0001_delivery_mode.py", "taskplane/tests/test_r0001_producer_observation.py", "taskplane/tests/test_r0001_host_capability.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_design_wiring.py::test_producer_closure_rejects_swapped_valid_edge_ids taskplane/tests/test_r0001_design_wiring.py::test_w31_remains_open_without_external_host_receipt taskplane/tests/test_r0001_delivery_mode.py::test_cli_refuses_producer_observation_flag taskplane/tests/test_r0001_delivery_mode.py::test_public_loop_submit_refuses_recorded_producer_double taskplane/tests/test_r0001_delivery_mode.py::test_missing_host_receipt_fails_before_collection_guidance_and_submission taskplane/tests/test_r0001_producer_observation.py::test_missing_host_receipt_emits_no_producer_provenance_claim taskplane/tests/test_r0001_host_capability.py::test_recorded_source_cannot_substitute_for_private_host_receipt taskplane/tests/test_r0001_delivery_mode.py::test_build_mode_dispatch_creates_zero_automatic_lens_workers",
-      "req": "R-0001", "deps": [], "type": "fix", "contracts": ["contract:delivery-mode-receipt", "contract:producer-observation", "contract:design-wiring-closure"],
-      "new_modules": ["taskplane/wiring_closure.py"], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["The Plan gate declares delivery mode, stamps it into receipts, and the engine prevents build-mode dispatch from instantiating automatic lens workers."]
-    },
-    {
-      "id": "t11-design-checkpoint-adapters",
-      "scope": ["taskplane/design_contract.py", "taskplane/checkpoint.py", "taskplane/tests/test_r0001_design_wiring.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_design_wiring.py",
-      "req": "R-0001", "deps": ["t10-design-wiring-closure-owner"], "type": "integration", "contracts": ["contract:design-wiring-closure"],
-      "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Every acceptance criterion names exact test files and selectors in the Design Contract, and the checkpoint refuses by name when any declared test file is absent."]
-    },
-    {
-      "id": "t12-performance-delta-brief",
-      "scope": ["taskplane/brief_projection.py", "taskplane/tests/test_r0001_wave_budgets.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_wave_budgets.py",
-      "req": "R-0001", "deps": ["t11-design-checkpoint-adapters"], "type": "performance", "contracts": ["contract:delivery-mode-receipt"],
-      "new_modules": ["taskplane/brief_projection.py"], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review."]
-    },
-    {
-      "id": "t13-performance-plan-topology",
-      "scope": ["taskplane/plan_topology.py", "taskplane/tests/test_r0001_parallel_delivery.py", "taskplane/tests/test_r0001_dispatch_capability.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_dispatch_capability.py",
-      "req": "R-0001", "deps": ["t11-design-checkpoint-adapters"], "type": "performance", "contracts": ["contract:delivery-mode-receipt"],
-      "new_modules": ["taskplane/plan_topology.py", "plan"], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain."]
-    },
-    {
-      "id": "t14-performance-dispatch-telemetry",
-      "scope": ["taskplane/dispatch_telemetry.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_test_harness.py",
-      "req": "R-0001", "deps": ["t11-design-checkpoint-adapters"], "type": "performance", "contracts": ["contract:delivery-mode-receipt"],
-      "new_modules": ["taskplane/dispatch_telemetry.py"], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review.", "The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain."]
-    },
-    {
       "id": "t15-performance-runtime-integration",
-      "scope": ["taskplane/loop.py", "taskplane/build_c.py", "taskplane/tp.py", "taskplane/progress.py", "taskplane/command_runtime.py", "taskplane/spend.py", "taskplane/retro.py", "taskplane/tests/test_r0001_wave_budgets.py", "taskplane/tests/test_r0001_parallel_delivery.py", "taskplane/tests/test_r0001_dispatch_capability.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_dispatch_capability.py",
-      "req": "R-0001", "deps": ["t12-performance-delta-brief", "t13-performance-plan-topology", "t14-performance-dispatch-telemetry"], "type": "integration",
-      "contracts": ["contract:delivery-mode-receipt", "contract:design-wiring-closure"], "new_modules": [], "design_edges": [],
+      "scope": ["taskplane/brief_projection.py", "taskplane/plan_topology.py", "taskplane/dispatch_telemetry.py", "taskplane/loop.py", "taskplane/build_c.py", "taskplane/tp.py", "taskplane/progress.py", "taskplane/command_runtime.py", "taskplane/spend.py", "taskplane/retro.py", "taskplane/tests/test_r0001_wave_budgets.py", "taskplane/tests/test_r0001_parallel_delivery.py", "taskplane/tests/test_r0001_dispatch_capability.py", "taskplane/tests/test_r0001_test_harness.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0001_wave_budgets.py taskplane/tests/test_r0001_parallel_delivery.py taskplane/tests/test_r0001_dispatch_capability.py taskplane/tests/test_r0001_test_harness.py",
+      "req": "R-0001", "deps": [], "type": "integration",
+      "contracts": ["contract:delivery-mode-receipt", "contract:design-wiring-closure"], "new_modules": ["taskplane/brief_projection.py", "taskplane/plan_topology.py", "plan", "taskplane/dispatch_telemetry.py"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "criteria": ["Normal loop next output is delta-shaped and under 4000 tokens, and any wave hitting 8 hours, 60 sessions, 150M total tokens, or 25M uncached input stops for human scope review.", "The Plan classifies every task pair as parallel or serialized for a named shared owner; all ready pairwise-disjoint agent tasks dispatch simultaneously through direct assignment, long workers emit events, and Retro reports parallelism factor plus longest serial chain."]
     },
     {
@@ -90,7 +50,7 @@
       "tests": "python3 -m pytest -q taskplane/tests",
       "req": "R-0001", "deps": ["t17a-verify-a2-live-host", "t17b-verify-wiring-release-repository", "t17c-verify-performance-events"], "type": "reliability",
       "contracts": ["contract:delivery-mode-receipt", "contract:review-kernel-authority", "contract:producer-observation", "contract:design-wiring-closure", "contract:release-green-evidence", "contract:repository-preparation"],
-      "new_modules": ["taskplane/delivery_ports.py", "(root)", ".claude-plugin", ".codex-plugin", ".github/workflows", "design", "docs", "lenses", "lenses/references", "scripts", "skills/tp-go", "taskplane", "taskplane/tests", "taskplane/delivery_policy.py", "taskplane/review_authority.py", "taskplane/producer_observation.py", "taskplane/release_evidence.py", "exports/verification"],
+      "new_modules": ["taskplane/delivery_ports.py", "(root)", ".claude-plugin", ".codex-plugin", ".github/workflows", "design", "docs", "lenses", "lenses/references", "scripts", "skills/tp-go", "taskplane", "taskplane/tests", "taskplane/delivery_policy.py", "taskplane/review_authority.py", "taskplane/producer_observation.py", "taskplane/wiring_closure.py", "taskplane/release_evidence.py", "exports/verification"],
       "design_edges": [
         "plan->contract:delivery-mode-receipt:contract-flow", "contract:delivery-mode-receipt->taskplane:contract-flow", "taskplane->contract:review-kernel-authority:contract-flow", "contract:review-kernel-authority->exports:contract-flow", "taskplane->contract:producer-observation:contract-flow", "contract:producer-observation->exports:contract-flow", "design->contract:design-wiring-closure:contract-flow", "contract:design-wiring-closure->plan:contract-flow", "contract:design-wiring-closure->taskplane:contract-flow", "taskplane->contract:release-green-evidence:contract-flow", "contract:release-green-evidence->scripts:contract-flow", "contract:release-green-evidence->.github/workflows:contract-flow", "contract:release-green-evidence->.codex-plugin:contract-flow", "contract:release-green-evidence->.claude-plugin:contract-flow", "taskplane->contract:repository-preparation:contract-flow", "contract:repository-preparation->taskplane/tests:contract-flow", "taskplane->taskplane/tests:wiring", "taskplane->docs:wiring", "taskplane->scripts:wiring", "scripts->.codex-plugin:wiring", "scripts->.claude-plugin:wiring", "lenses/references->scripts:wiring", "lenses/references->lenses:wiring", ".github/workflows->scripts:wiring", "taskplane->exports:wiring", "plan->taskplane:wiring", "taskplane->skills/tp-go:wiring", "taskplane->(root):wiring", "(root)->.github/workflows:wiring", "taskplane/delivery_policy.py->taskplane:consumed-by", "taskplane/review_authority.py->taskplane:consumed-by", "taskplane/producer_observation.py->taskplane:consumed-by", "taskplane/wiring_closure.py->taskplane:consumed-by", "taskplane/release_evidence.py->taskplane:consumed-by", "taskplane/plan_topology.py->taskplane:consumed-by", "taskplane/brief_projection.py->taskplane:consumed-by", "taskplane/dispatch_telemetry.py->taskplane:consumed-by", "taskplane/wiring_closure.py->taskplane/release_evidence.py:provides", "taskplane/delivery_policy.py->taskplane/brief_projection.py:provides", "taskplane/delivery_policy.py->taskplane/dispatch_telemetry.py:provides", "taskplane/plan_topology.py->taskplane/dispatch_telemetry.py:provides", "taskplane/delivery_ports.py->taskplane/review_authority.py:provides", "taskplane/delivery_ports.py->taskplane/producer_observation.py:provides", "taskplane/delivery_ports.py->taskplane/release_evidence.py:provides", "taskplane/delivery_ports.py->taskplane/plan_topology.py:provides", "taskplane/delivery_ports.py->taskplane/dispatch_telemetry.py:provides", "taskplane/delivery_ports.py->taskplane:provides"
       ],
