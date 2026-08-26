@@ -23,6 +23,13 @@ import storage as runtime_storage  # noqa: E402
 import run_store  # noqa: E402
 import checkpoint  # noqa: E402
 import build_c  # noqa: E402
+from delivery_ports import (  # noqa: E402
+    FakeClock,
+    RecordedTaskDispatchCapabilityFactory,
+    SandboxEvidenceStore,
+    content_fingerprint,
+)
+from plan_topology import ExecutionDagRevisionStore  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -157,6 +164,40 @@ class TestScopeAssignment(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
+    def _runtime_authority(self, tasks, revision):
+        plan_fingerprint = hashlib.sha256(json.dumps(
+            tasks, sort_keys=True, separators=(",", ":"), default=str
+        ).encode("utf-8")).hexdigest()
+        run_id = "build-c-" + hashlib.sha256(json.dumps({
+            "revision": revision, "plan_fingerprint": plan_fingerprint,
+        }, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8")).hexdigest()
+        material = {
+            "schema": "taskplane.scheduler-host-capability/v1",
+            "run_id": run_id,
+            "source_sha": revision,
+            "plan_fingerprint": plan_fingerprint,
+            "configured_host_concurrency": len(tasks),
+            "max_in_flight": len(tasks),
+            "issued_at": 0,
+            "expires_at": 100,
+            "cryptographic_authenticity_claimed": False,
+        }
+        authority_root = tempfile.mkdtemp(dir=self.tmp)
+        return {
+            "state": {"tasks": tasks, "run_id": run_id,
+                      "plan_fingerprint": plan_fingerprint},
+            "host_capability_receipt": {
+                **material, "fingerprint": content_fingerprint(material)},
+            "capability_factory":
+                RecordedTaskDispatchCapabilityFactory(),
+            "evidence_store": SandboxEvidenceStore(
+                authority_root, "scope-assignment", run_id),
+            "execution_dag_store": ExecutionDagRevisionStore(
+                authority_root),
+            "clock": FakeClock(wall_time=10),
+        }
+
     def _assign(self, **overrides):
         created = []
         registered = []
@@ -172,15 +213,23 @@ class TestScopeAssignment(unittest.TestCase):
                     "task_id": task_id, "path": worker,
                     "branch_tip": "a" * 40}
 
+        revision = "a" * 40
+        authority = self._runtime_authority(self.tasks, revision)
         args = {
             "graph": self.graph,
             "create_worktree": create,
             "register_worktree": register,
-            "revision": "a" * 40,
+            "revision": revision,
+            "host_capability_receipt":
+                authority["host_capability_receipt"],
+            "capability_factory": authority["capability_factory"],
+            "evidence_store": authority["evidence_store"],
+            "execution_dag_store": authority["execution_dag_store"],
+            "clock": authority["clock"],
         }
         args.update(overrides)
         receipt = build_c.assign_scopes(
-            self.ws, {"tasks": self.tasks}, **args)
+            self.ws, authority["state"], **args)
         return receipt, created, registered
 
     def test_scope_assignment_runs_disjoint_scopes_concurrently_and_serializes_overlap(self):
@@ -202,20 +251,39 @@ class TestScopeAssignment(unittest.TestCase):
         self.assertEqual([row[0] for row in registered], ["t-a", "t-b"])
 
         encoded = json.dumps(receipt, sort_keys=True).lower()
-        for forbidden in ("wave", "claim", "build_lease", "build-lease",
+        for forbidden in ("wave", "build_lease", "build-lease",
                           "slot_lease", "lens_state", "evaluate", "fix"):
             self.assertNotIn(forbidden, encoded)
+        for assignment in receipt["assignments"]:
+            capability = assignment["capability"]
+            self.assertIs(
+                capability["cryptographic_authenticity_claimed"], False)
+            authority_projection = dict(capability)
+            authority_projection.pop("cryptographic_authenticity_claimed")
+            authority_encoded = json.dumps(
+                authority_projection, sort_keys=True).lower()
+            for forbidden in ("jwt", "signature", "mac", "key",
+                              "authenticity"):
+                self.assertNotIn(forbidden, authority_encoded)
 
     def test_scope_assignment_uses_real_repository_and_storage_edges(self):
         revision = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.ws,
             text=True, encoding="utf-8", errors="replace").strip()
 
+        tasks = [{
+            "id": "t-live", "scope": ["src/a/**"], "deps": [],
+            "status": "pending",
+        }]
+        authority = self._runtime_authority(tasks, revision)
         receipt = build_c.assign_scopes(
-            self.ws, {"tasks": [{
-                "id": "t-live", "scope": ["src/a/**"], "deps": [],
-                "status": "pending",
-            }]}, graph=self.graph, revision=revision)
+            self.ws, authority["state"], graph=self.graph,
+            revision=revision,
+            host_capability_receipt=authority["host_capability_receipt"],
+            capability_factory=authority["capability_factory"],
+            evidence_store=authority["evidence_store"],
+            execution_dag_store=authority["execution_dag_store"],
+            clock=authority["clock"])
 
         assignment = receipt["assignments"][0]
         self.assertTrue(os.path.isdir(assignment["worktree"]))
