@@ -4403,6 +4403,9 @@ SCHEDULER_CAPACITY_BINDING_SCHEMA = \
     "taskplane.scheduler-capacity-binding/v1"
 SCHEDULER_TRUSTED_PARALLEL_SOURCE = \
     "human-attributed-sealed-plan-parallel"
+SCHEDULER_ACTIVE_LOOP_STATUSES = frozenset({
+    "running", "built", "submitted",
+})
 
 
 def _managed_scheduler_run_id(ws: str) -> str:
@@ -4873,6 +4876,21 @@ def _trusted_parallel_tranche(
     if status_in_flight != set(in_flight):
         return [], "sealed Plan scheduler in-flight status projection is " \
             "not exact"
+    if not isinstance(sealed_plan_tasks, list) or any(
+            not isinstance(task, Mapping) or
+            not isinstance(task.get("id"), str) or not task.get("id") or
+            not isinstance(task.get("status"), str)
+            for task in sealed_plan_tasks):
+        return [], "sealed Plan loop task state is malformed"
+    loop_task_ids = [task["id"] for task in sealed_plan_tasks]
+    if len(set(loop_task_ids)) != len(loop_task_ids):
+        return [], "sealed Plan loop task ids are duplicated"
+    loop_active = {
+        task["id"] for task in sealed_plan_tasks
+        if task["status"] in SCHEDULER_ACTIVE_LOOP_STATUSES
+    }
+    if loop_active != status_in_flight:
+        return [], "sealed Plan loop active task projection is not exact"
     missing = topology.get("missing_test_assets") or {}
     ready = []
     for task_id in topology.get("task_ids") or []:
@@ -5110,7 +5128,7 @@ def scheduler_capacity_from_plan(
                 return {"error": "active scheduler reservation Plan task set "
                                  "is stale"}
             if any(str(loop_tasks[reservation["task_id"]].get("status") or "")
-                   not in {"running", "built", "submitted"}
+                   not in SCHEDULER_ACTIVE_LOOP_STATUSES
                    for reservation in current_reservations):
                 return {"error": "active scheduler reservation task state is "
                                  "stale"}
@@ -5271,7 +5289,7 @@ def scheduler_capacity_from_plan(
         else:
             task_in_flight = any(
                 isinstance(task, Mapping) and str(task.get("status") or "") in
-                {"running", "built", "submitted"}
+                SCHEDULER_ACTIVE_LOOP_STATUSES
                 for task in locked.get("tasks") or [])
             scheduler_in_flight = bool(
                 (scheduler or {}).get("in_flight") if scheduler else False)

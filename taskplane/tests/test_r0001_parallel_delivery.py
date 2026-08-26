@@ -1496,6 +1496,57 @@ def test_scheduler_capacity_from_plan_trusted_parallel_closes_in_flight_set(
     assert traces == []
 
 
+@pytest.mark.parametrize("status", ["running", "built", "submitted"])
+def test_scheduler_capacity_from_plan_trusted_parallel_closes_loop_active_set(
+    tmp_path, monkeypatch, status,
+):
+    state = _trusted_parallel_loop_state()
+    next(task for task in state["tasks"] if task["id"] == "t17b") \
+        ["status"] = status
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
+                        traces.append((_a, _k)))
+    state_path = Path(loop._loop_path(str(tmp_path)))
+    before_bytes = state_path.read_bytes()
+    before_assertions = loop.load(str(tmp_path)).get(
+        "scheduler_capacity_operator_assertions")
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "loop active task projection" in result["error"]
+    assert state_path.read_bytes() == before_bytes
+    assert loop.load(str(tmp_path)).get(
+        "scheduler_capacity_operator_assertions") == before_assertions
+    assert traces == []
+
+
+@pytest.mark.parametrize("status", ["running", "built", "submitted"])
+def test_scheduler_capacity_from_plan_trusted_parallel_accepts_exact_active_set(
+    tmp_path, monkeypatch, status,
+):
+    state = _trusted_parallel_loop_state()
+    t17a = next(task for task in state["tasks"] if task["id"] == "t17a")
+    t17a["status"] = status
+    if status == "running":
+        t17a["_submission"] = {"submitted": True}
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "error" not in result, result
+    assert result["receipt"]["configured_host_concurrency"] == 3
+
+
 def test_scheduler_capacity_from_plan_trusted_parallel_binds_evidence_store(
     tmp_path, monkeypatch,
 ):
