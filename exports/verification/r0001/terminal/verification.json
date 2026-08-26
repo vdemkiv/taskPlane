@@ -1,0 +1,277 @@
+{
+  "schema": "taskplane.r0001-terminal-verification/v1",
+  "recorded_at": "2026-08-26T17:37:49Z",
+  "identity": {
+    "run_id": "design-rebind-main-ecfc48e",
+    "requirement_id": "R-0001",
+    "task_id": "t18-terminal-full-matrix-and-closure",
+    "role": "tp-executor",
+    "branch": "tp/t18-terminal-full-matrix-and-closure",
+    "tested_source_sha": "48dba00b8816bfcbea05ba2587f9e3679d7fe7ca",
+    "test_tree_sha": "800bccbc41b332252c32fa713e1b27006bd9abd4",
+    "design_fingerprint": "74c2e2422a5232290c91eb18ae2e74355906a3b3839b9c5968dcc433839a535e",
+    "plan_fingerprint": "f663d015150330da01db9c58352f97437471731ef2a820fce2379d67fe4b042b",
+    "delivery_mode_receipt": "1933a9506e642fd0e085c16cb7e31fc94b1c59ba4d845370739fabf1f2aafe5d"
+  },
+  "authority": {
+    "execution_override_verbatim": "Human explicitly authorized replacing the interrupted serial full-suite run with parallel disjoint file shards and isolated reruns",
+    "scope_effect": "Execution shape only. The declared suite remained taskplane/tests, the target SHA remained exact, and no product or test modification was authorized.",
+    "release_authority": false,
+    "push_authority": false,
+    "tag_authority": false,
+    "install_authority": false,
+    "publish_authority": false,
+    "irreversible_action_taken": false,
+    "cryptographic_authenticity_claimed": false
+  },
+  "chronology": [
+    {
+      "at": "2026-08-26T12:39:00-04:00",
+      "event": "T18 claimed at exact source SHA with Ready true, no blockers, and no warnings."
+    },
+    {
+      "at": "between 2026-08-26T12:39:00-04:00 and 2026-08-26T12:45:34-04:00",
+      "event": "The single serial command python3 -m pytest -q taskplane/tests reached visible 2% progress and was interrupted. It produced no JUnit receipt and contributes no result count."
+    },
+    {
+      "at": "2026-08-26T12:45:34-04:00",
+      "event": "The first authorized disjoint primary shard began."
+    },
+    {
+      "at": "2026-08-26T13:04:19-04:00",
+      "event": "The nine original primary shard receipts were complete; shard 05 required bounded replacement."
+    },
+    {
+      "at": "2026-08-26T13:29:05-04:00",
+      "event": "Shard 05 replacement and the final test_evidence_bundle node receipt completed."
+    }
+  ],
+  "partition": {
+    "algorithm": "Enumerate taskplane/tests/test_*.py, preserve the glob's deterministic lexical order for equal-size ties, stable-sort by file size descending, then assign index modulo 10 plus one. This produced five 23-file bins and five 22-file bins.",
+    "disjointness": {
+      "test_file_inventory": 225,
+      "covered_test_files": 225,
+      "missing_test_files": [],
+      "multiply_assigned_test_files": [],
+      "primary_unique_final_node_results": 4526,
+      "duplicate_primary_node_results": 0
+    },
+    "original_bins": [
+      "01",
+      "02",
+      "03",
+      "04",
+      "06",
+      "07",
+      "08",
+      "09",
+      "10"
+    ],
+    "shard_05_replacement": {
+      "05a_files": [
+        "taskplane/tests/test_eval_recorder.py",
+        "taskplane/tests/test_v230_cli.py",
+        "taskplane/tests/test_codex_hook_selection.py",
+        "taskplane/tests/test_v200_artifacts.py",
+        "taskplane/tests/test_stage_handoff.py",
+        "taskplane/tests/test_r0001_host_capability.py"
+      ],
+      "05b_files": [
+        "taskplane/tests/test_v230_loop.py",
+        "taskplane/tests/test_r0006_baseline.py",
+        "taskplane/tests/test_render_observation.py",
+        "taskplane/tests/test_stage_r0003_preservation.py",
+        "taskplane/tests/test_worktree_cleanup_governance.py",
+        "taskplane/tests/test_r0002_cross_host_conformance.py"
+      ],
+      "05c_files": [
+        "taskplane/tests/test_field_report_9464.py",
+        "taskplane/tests/test_windows_portability.py",
+        "taskplane/tests/test_command_runtime.py",
+        "taskplane/tests/test_review_session.py",
+        "taskplane/tests/test_review_structured_criteria.py",
+        "taskplane/tests/test_eval_dor.py"
+      ],
+      "05d_files": [
+        "taskplane/tests/test_binding_obligations.py",
+        "taskplane/tests/test_external_store.py",
+        "taskplane/tests/test_language_references.py",
+        "taskplane/tests/test_review_untrusted_evidence.py"
+      ],
+      "test_evidence_bundle_file": "taskplane/tests/test_evidence_bundle.py",
+      "test_evidence_bundle_partition": {
+        "engine_nodes": 7,
+        "gate_nodes": 3,
+        "unavailable_nodes": 4,
+        "write_nodes": 2,
+        "degrade_nodes": 5,
+        "suite_nodes": 11,
+        "total_nodes": 32,
+        "unique_nodes": 32,
+        "failed_nodes": 0
+      }
+    }
+  },
+  "results": {
+    "junit_inventory": "junit-inventory.json",
+    "primary": {
+      "receipt_count": 22,
+      "attempts_including_reruns": 5460,
+      "unique_final_node_results": 4526,
+      "passed": 4375,
+      "failed": 144,
+      "skipped": 7,
+      "errors": 0,
+      "summed_test_seconds": 8585.759,
+      "status": "failed"
+    },
+    "isolated_reruns": {
+      "receipt_count": 8,
+      "attempts_including_reruns": 1012,
+      "unique_final_node_results": 834,
+      "passed": 691,
+      "failed": 143,
+      "skipped": 0,
+      "errors": 0,
+      "summed_test_seconds": 1901.098,
+      "confirmed_primary_failures": 143,
+      "status": "confirmed-product-regressions"
+    },
+    "count_caveat": "Summed seconds are cumulative shard/test time, not parallel wall-clock time. JUnit tests attributes include rerun attempts; unique final testcase elements are reported separately."
+  },
+  "failure_families": [
+    {
+      "id": "ci-import-path-and-encoding",
+      "primary_failures": 9,
+      "isolated_confirmations": 8,
+      "isolated_receipt": "r0001-t18-isolated-corpus.xml",
+      "representative_selectors": [
+        "taskplane/tests/test_eval_gate.py::TestTheBaselineStoreDoesNotBreakTheCorpusScorer::test_the_corpus_run_still_exits_0",
+        "taskplane/tests/test_subprocess_encoding.py::TestNoSubprocessDecodesWithTheAmbientLocale::test_every_text_mode_subprocess_names_its_encoding"
+      ],
+      "observed_behavior": "The corpus subprocess fails importing taskplane.delivery_ports from delivery_policy with ModuleNotFoundError: No module named taskplane. Four text-mode subprocess call sites omit explicit UTF-8 encoding.",
+      "not_isolated": "taskplane/tests/test_eval_recorder.py::TestTheFixtureIsInvisibleToTheRepositorysOwnTooling::test_the_corpus_run_names_the_fixture_skipped_and_exits_zero remained a primary failure but was not included in the isolated corpus rerun."
+    },
+    {
+      "id": "pickup-revision-attestation",
+      "primary_failures": 46,
+      "isolated_confirmations": 46,
+      "isolated_receipt": "r0001-t18-isolated-pickup.xml",
+      "representative_selectors": [
+        "taskplane/tests/test_pickup.py::test_stateless_checkpoint_preserves_active_virtualenv_interpreter_symlink_and_attests_revision",
+        "taskplane/tests/test_pickup.py::test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestration_state"
+      ],
+      "observed_behavior": "Checkpoint validation raises focused_proof lacks the runtime-observed repository revision, cascading through happy path, negative matrix, resume, and interrupted-publication behavior."
+    },
+    {
+      "id": "scheduler-empty-legacy-waves-and-telemetry-recovery",
+      "primary_failures": 12,
+      "isolated_confirmations": 12,
+      "isolated_receipts": [
+        "r0001-t18-isolated-loop.xml",
+        "r0001-t18-isolated-crosshost-design.xml",
+        "r0001-t18-isolated-stageintegration.xml",
+        "r0001-t18-isolated-misc.xml"
+      ],
+      "representative_selectors": [
+        "taskplane/tests/test_loop.py::TestParallelExecution::test_parallel_gates_flow_to_evaluate_then_next_wave",
+        "taskplane/tests/test_stage_cross_host.py::test_wave_recovers_after_first_child_resume_without_resplitting",
+        "taskplane/tests/test_stage_loop_integration.py::test_wave_replays_all_unclaimed_children_after_pre_output_crash",
+        "taskplane/tests/test_selection.py::TestSelectionStep::test_same_scope_non_variants_still_serialize"
+      ],
+      "observed_behavior": "Legacy-ready waves return an empty dispatch instead of t3, maximum-cardinality scope assignment lacks graph identity, and cross-host/stage recovery loses expected _stage_bindings or stage dispatch state."
+    },
+    {
+      "id": "design-transitions-and-authority-binding",
+      "primary_failures": 7,
+      "isolated_confirmations": 7,
+      "isolated_receipts": [
+        "r0001-t18-isolated-crosshost-design.xml",
+        "r0001-t18-isolated-misc.xml"
+      ],
+      "representative_selectors": [
+        "taskplane/tests/test_design_workflow.py::DesignWorkflowTest::test_design_only_finishes_after_approval",
+        "taskplane/tests/test_v230_design.py::M2RequirementPinnedInApproval::test_requirement_edit_after_approval_does_not_freeze_design"
+      ],
+      "observed_behavior": "A passing Design gate remains at design rather than reaching design_approval, while requirement pinning and independent-evidence binding compatibility assertions fail."
+    },
+    {
+      "id": "workflow-and-codex-compatibility",
+      "primary_failures": 19,
+      "isolated_confirmations": 19,
+      "isolated_receipts": [
+        "r0001-t18-isolated-loop.xml",
+        "r0001-t18-isolated-stagewaves.xml"
+      ],
+      "representative_selectors": [
+        "taskplane/tests/test_codex_compat.py::TestEmitWorkflowRefusal::test_stage_emit_workflow_refuses_on_codex",
+        "taskplane/tests/test_stage_waves.py::TestStageEmitterWorkflowPath::test_execute_wave_compiles_to_one_run_covering_the_wave"
+      ],
+      "observed_behavior": "Codex workflow emission returns success where refusal is required; workflow-path payloads omit dispatch_path/workflow fields and break byte-identity, kill-switch, status, and supported-runtime compatibility."
+    },
+    {
+      "id": "cycle-and-seal-drift",
+      "primary_failures": 44,
+      "isolated_confirmations": 44,
+      "isolated_receipts": [
+        "r0001-t18-isolated-importcycle.xml",
+        "r0001-t18-isolated-loop.xml"
+      ],
+      "representative_selectors": [
+        "taskplane/tests/test_r0006_import_cycle_ratchet.py::test_checked_in_workflow_matches_content_addressed_seal",
+        "taskplane/tests/test_r0006_graph_boundaries.py::test_boundary_cut_shrinks_to_the_measured_residual_sccs"
+      ],
+      "observed_behavior": "The checked-in workflow digest is ad14a00ec79956f401d3c9151fe106c4997959f2a0762061c3a31eb9765b0b45 while the seal expects e61df03fbec44633d945490f9df0c7c2f56e074b5f2da2915343035377bfb505; history and residual-SCC checks fail from that drift."
+    },
+    {
+      "id": "token-ceiling",
+      "primary_failures": 1,
+      "isolated_confirmations": 1,
+      "isolated_receipt": "r0001-t18-isolated-misc.xml",
+      "representative_selector": "taskplane/tests/test_review_cost.py::TokenCeilingThroughTheScreener::test_over_the_ceiling_blocks",
+      "observed_behavior": "A 200000-token command is approved instead of blocked."
+    },
+    {
+      "id": "runtime-eval-submit-behavior",
+      "primary_failures": 6,
+      "isolated_confirmations": 6,
+      "isolated_receipt": "r0001-t18-isolated-misc.xml",
+      "representative_selectors": [
+        "taskplane/tests/test_r0007_governed_commands.py::test_submit_checkpoint_runs_live_runtime_and_mints_receipt",
+        "taskplane/tests/test_runtime_eval_guidance.py::TestRuntimeEvalLoopWiring::test_pass_submission_automatically_corrects_then_recovers"
+      ],
+      "observed_behavior": "Pass submission does not return the expected runtime_eval correction envelope, and governed checkpoint receipt/wiring behavior fails its mutation-sensitive selectors."
+    }
+  ],
+  "graph": {
+    "source": "/private/tmp/taskplane-retro-design.H8AFJ3/home/runs/design-rebind-main-ecfc48e/graph/worktrees/t18-terminal-full-matrix-and-closure-8d426899/graph.json",
+    "source_sha256": "40d6dbdc8167506b5a8c76991ce130b68a585460afef135333b2afe8d025166b",
+    "content_fingerprint": "eaca9178edd8f981562d204ca4a569e0577b2889c084a27489a9d1271c590990",
+    "quality_fingerprint": "9fbefee76a17ab4f8c6e3ecc917a31a6b7e0f1b7958e2811259361a46cb5cf47",
+    "scanned_head": "48dba00b8816bfcbea05ba2587f9e3679d7fe7ca",
+    "modules": 45,
+    "edges": 156,
+    "degraded": false,
+    "terminal_seal": "withheld"
+  },
+  "wiring_closure": {
+    "ledger": "W01-W32",
+    "structural_predecessor_evidence": "T17b's declared release/wiring suite was green after W09 reference repair.",
+    "w31_external_producer_proof": "unavailable and deferred by the predecessor evaluation",
+    "terminal_full_matrix": "failed",
+    "terminal_seal": "withheld",
+    "release_green": false
+  },
+  "lenses": {
+    "instantiated": [],
+    "count": 0,
+    "policy": "No lenses through Build."
+  },
+  "verdict": {
+    "outcome": "fail",
+    "reason": "The complete exact-SHA partition produced 144 final failing node results in eight independently classified integration-regression families. The terminal graph and W01-W32 release closure cannot be sealed.",
+    "product_failure": true,
+    "availability_failure": false,
+    "release_green": false
+  }
+}

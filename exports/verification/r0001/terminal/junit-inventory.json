@@ -1,0 +1,370 @@
+{
+  "schema": "taskplane.r0001-terminal-junit-inventory/v1",
+  "recorded_at": "2026-08-26T17:37:49Z",
+  "target_sha": "48dba00b8816bfcbea05ba2587f9e3679d7fe7ca",
+  "test_tree_sha": "800bccbc41b332252c32fa713e1b27006bd9abd4",
+  "external_receipt_root": "/private/tmp",
+  "count_semantics": {
+    "attempts": "The JUnit tests attribute, including pytest rerun attempts.",
+    "final_cases": "The number of testcase elements retained in the JUnit XML.",
+    "passed": "Final testcase elements with neither failure, error, nor skipped child.",
+    "failed": "Final testcase elements with a failure or error child.",
+    "skipped": "Final testcase elements with a skipped child."
+  },
+  "primary": [
+    {
+      "file": "r0001-t18-shard-01.xml",
+      "sha256": "bef90402b74c6d5c67844340e22335c2c9920e150b770b95de84f92bf2461349",
+      "attempts": 670,
+      "final_cases": 573,
+      "passed": 563,
+      "failed": 6,
+      "skipped": 4,
+      "errors": 0,
+      "summed_seconds": 693.229
+    },
+    {
+      "file": "r0001-t18-shard-02.xml",
+      "sha256": "6c51dde5e645dd5e680e223fd72fddad03057dbaee4be5f8339a2257b5a50f5b",
+      "attempts": 563,
+      "final_cases": 490,
+      "passed": 487,
+      "failed": 3,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 1077.076
+    },
+    {
+      "file": "r0001-t18-shard-03.xml",
+      "sha256": "0f2fa101a83ebde153d8178c87b3d8364576f24e3535da7d52eb424307f3f310",
+      "attempts": 688,
+      "final_cases": 457,
+      "passed": 448,
+      "failed": 8,
+      "skipped": 1,
+      "errors": 0,
+      "summed_seconds": 796.229
+    },
+    {
+      "file": "r0001-t18-shard-04.xml",
+      "sha256": "7b04c89a325a6e6bcc9f7ac9ebf74ac69f03038378831722f3ee9f5de20137fd",
+      "attempts": 432,
+      "final_cases": 426,
+      "passed": 408,
+      "failed": 17,
+      "skipped": 1,
+      "errors": 0,
+      "summed_seconds": 787.100
+    },
+    {
+      "file": "r0001-t18-shard-05a.xml",
+      "sha256": "ad043c942138489021310ed4102ad2d8aca81903df40908f6fdcd303d3f8c16e",
+      "attempts": 152,
+      "final_cases": 134,
+      "passed": 133,
+      "failed": 1,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 531.304
+    },
+    {
+      "file": "r0001-t18-shard-05b.xml",
+      "sha256": "30327883930c52b66c892fd96a91e5773b0b3f8695d31a8bef83fd2465e7f724",
+      "attempts": 94,
+      "final_cases": 94,
+      "passed": 94,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 238.342
+    },
+    {
+      "file": "r0001-t18-shard-05c.xml",
+      "sha256": "a8475674392ca0a0654f8084e92b9715ed87a6a8cc6f021b3a6419718c3b10ed",
+      "attempts": 136,
+      "final_cases": 122,
+      "passed": 122,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 4.307
+    },
+    {
+      "file": "r0001-t18-shard-05d-binding.xml",
+      "sha256": "5e9685680c1e3b0cc2d2e3cb5c42103ba4dc705ed7e083590e76c769f670085c",
+      "attempts": 26,
+      "final_cases": 26,
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 22.331
+    },
+    {
+      "file": "r0001-t18-shard-05d-external.xml",
+      "sha256": "9dafaba9d818220e17270f2f472f2949ebb292d80955166b697cd48ca3c2fc50",
+      "attempts": 10,
+      "final_cases": 10,
+      "passed": 9,
+      "failed": 0,
+      "skipped": 1,
+      "errors": 0,
+      "summed_seconds": 8.834
+    },
+    {
+      "file": "r0001-t18-shard-05d-language.xml",
+      "sha256": "67e1c88f112a5a9d3769663322ba17302ad9021ce6bfedc0c2943fad2ea47750",
+      "attempts": 13,
+      "final_cases": 8,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 0.139
+    },
+    {
+      "file": "r0001-t18-shard-05d-untrusted.xml",
+      "sha256": "f97b7e3ff2c0c5e5940a16dbe66f75f87caba0c69bb705aa0a918e6a32e43afb",
+      "attempts": 7,
+      "final_cases": 7,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 0.963
+    },
+    {
+      "file": "r0001-t18-evidence-engine.xml",
+      "sha256": "a0e10a3029897febca2f1ee7292a4c0f75ba8d3ac138e94f1275ff9da34e6c61",
+      "attempts": 7,
+      "final_cases": 7,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 217.987
+    },
+    {
+      "file": "r0001-t18-evidence-gate.xml",
+      "sha256": "50d7dc1dd7942c0101617fae02f361248acee563f83e43c520130609338f575d",
+      "attempts": 3,
+      "final_cases": 3,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 107.678
+    },
+    {
+      "file": "r0001-t18-evidence-unavailable.xml",
+      "sha256": "e8affd18d4bfdc9ff625d4e093dce7cd622f7eb1b6ed0ac24eea39e5ff679d04",
+      "attempts": 4,
+      "final_cases": 4,
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 145.911
+    },
+    {
+      "file": "r0001-t18-evidence-write.xml",
+      "sha256": "a3294095f75d2bb32005de662bba407ef17a34934c6cba9b4c04bd69334c6e00",
+      "attempts": 2,
+      "final_cases": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 65.097
+    },
+    {
+      "file": "r0001-t18-evidence-degrade.xml",
+      "sha256": "c04f576d2e64cf0b617a5dd230a6647830c41def0e56e3da3ecfc522270c2f8c",
+      "attempts": 5,
+      "final_cases": 5,
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 177.632
+    },
+    {
+      "file": "r0001-t18-evidence-suite.xml",
+      "sha256": "b491f6a3505dcc36d94947816b711dd96cca6a3cb1110bc4eeb088fc5731baab",
+      "attempts": 11,
+      "final_cases": 11,
+      "passed": 11,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 304.743
+    },
+    {
+      "file": "r0001-t18-shard-06.xml",
+      "sha256": "bf472dcf7eac677955aedfee7b129de9c750e1e15d756805fd677f90dd35ccc2",
+      "attempts": 702,
+      "final_cases": 404,
+      "passed": 400,
+      "failed": 4,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 771.290
+    },
+    {
+      "file": "r0001-t18-shard-07.xml",
+      "sha256": "15a367330d54a25c06af984e25318e1a2ecffefa26cc17c301c227dcfaefe69f",
+      "attempts": 548,
+      "final_cases": 512,
+      "passed": 501,
+      "failed": 11,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 303.273
+    },
+    {
+      "file": "r0001-t18-shard-08.xml",
+      "sha256": "18f5dbbc17fa8be6c9b165f6092e9a4184b29c04e249e941d1a4b053f598fb33",
+      "attempts": 467,
+      "final_cases": 442,
+      "passed": 399,
+      "failed": 43,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 704.834
+    },
+    {
+      "file": "r0001-t18-shard-09.xml",
+      "sha256": "439c6ac68c5024b6a28c727f02c4485ec3abacceb4c52cfa824beb528e4f9b4b",
+      "attempts": 537,
+      "final_cases": 439,
+      "passed": 389,
+      "failed": 50,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 1072.795
+    },
+    {
+      "file": "r0001-t18-shard-10.xml",
+      "sha256": "05945c2fcf5559cfefea3f7bedc84bcb23b4d8bd1c584357ad6e749cb71f770c",
+      "attempts": 383,
+      "final_cases": 350,
+      "passed": 349,
+      "failed": 1,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 554.665
+    }
+  ],
+  "isolated_reruns": [
+    {
+      "file": "r0001-t18-isolated-corpus.xml",
+      "sha256": "300c39fc2a356ffd41e701df590117cfbcbe9bd3275f470e8cd8785d1ca7191b",
+      "attempts": 307,
+      "final_cases": 200,
+      "passed": 192,
+      "failed": 8,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 91.724
+    },
+    {
+      "file": "r0001-t18-isolated-loop.xml",
+      "sha256": "4e1b3d089f34a3948a6d932174673c41c2adbbb9f46ebe6fd587254a89e3c0b2",
+      "attempts": 225,
+      "final_cases": 166,
+      "passed": 160,
+      "failed": 6,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 368.316
+    },
+    {
+      "file": "r0001-t18-isolated-crosshost-design.xml",
+      "sha256": "ead883c8515a4002c86be3078f08072fb0fadbdc25a606336451992fbb0a014e",
+      "attempts": 31,
+      "final_cases": 31,
+      "passed": 23,
+      "failed": 8,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 180.326
+    },
+    {
+      "file": "r0001-t18-isolated-stagewaves.xml",
+      "sha256": "9c4b8df0b1f0634f0170dcb8653a3d4a60dbb336e78addf0353bfac82eac1427",
+      "attempts": 114,
+      "final_cases": 110,
+      "passed": 93,
+      "failed": 17,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 303.473
+    },
+    {
+      "file": "r0001-t18-isolated-importcycle.xml",
+      "sha256": "3fa027042b7cb1ea3dfb2dc560506076d52e3d93172906ab7492d33227ddae17",
+      "attempts": 101,
+      "final_cases": 101,
+      "passed": 58,
+      "failed": 43,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 106.583
+    },
+    {
+      "file": "r0001-t18-isolated-stageintegration.xml",
+      "sha256": "61d5b1258a899de6d5639f1c5eb93667fb9a29ccc3f66a9e340ed42ec6147eed",
+      "attempts": 48,
+      "final_cases": 48,
+      "passed": 45,
+      "failed": 3,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 308.857
+    },
+    {
+      "file": "r0001-t18-isolated-pickup.xml",
+      "sha256": "41ec2d1aeea54dd01f61a23177b940bcc277344b37b763e6d7bba30b89ed84ce",
+      "attempts": 54,
+      "final_cases": 54,
+      "passed": 8,
+      "failed": 46,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 101.287
+    },
+    {
+      "file": "r0001-t18-isolated-misc.xml",
+      "sha256": "86c0e7a63280a244c3d7b32bde40bedd0baec9d2d22da2fb27dabc5a6f6e0df5",
+      "attempts": 132,
+      "final_cases": 124,
+      "passed": 112,
+      "failed": 12,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 440.532
+    }
+  ],
+  "aggregate": {
+    "primary": {
+      "receipt_count": 22,
+      "attempts": 5460,
+      "final_cases": 4526,
+      "passed": 4375,
+      "failed": 144,
+      "skipped": 7,
+      "errors": 0,
+      "summed_seconds": 8585.759
+    },
+    "isolated_reruns": {
+      "receipt_count": 8,
+      "attempts": 1012,
+      "final_cases": 834,
+      "passed": 691,
+      "failed": 143,
+      "skipped": 0,
+      "errors": 0,
+      "summed_seconds": 1901.098
+    }
+  }
+}

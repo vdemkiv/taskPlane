@@ -1,0 +1,35 @@
+{
+  "schema": "taskplane.r0001-terminal-event/v1",
+  "event_id": "ee97599da72a2ba39d8131cc40be8dbae008f8b7d5541b7df2951d647f3a7808",
+  "sequence": 1,
+  "kind": "fail",
+  "observed_at": "2026-08-26T17:37:49Z",
+  "task_id": "t18-terminal-full-matrix-and-closure",
+  "target_sha": "48dba00b8816bfcbea05ba2587f9e3679d7fe7ca",
+  "execution_override": "Human explicitly authorized replacing the interrupted serial full-suite run with parallel disjoint file shards and isolated reruns",
+  "result": {
+    "unique_final_node_results": 4526,
+    "passed": 4375,
+    "failed": 144,
+    "skipped": 7,
+    "errors": 0,
+    "isolated_confirmations": 143
+  },
+  "evidence": {
+    "verification": {
+      "path": "exports/verification/r0001/terminal/verification.json",
+      "sha256": "f000db5eefd23dea5eb8203ffa5b03280263c06093be7667bea50a903788bcec"
+    },
+    "junit_inventory": {
+      "path": "exports/verification/r0001/terminal/junit-inventory.json",
+      "sha256": "49e72b8499d3b20360978e8afb919d90e9efb82180fc61b1e0f21052f0f78286"
+    }
+  },
+  "closure": {
+    "graph_terminal_seal": "withheld",
+    "w01_w32_terminal_closure": "withheld",
+    "release_green": "withheld"
+  },
+  "lenses_run": 0,
+  "release_authority": "none"
+}
