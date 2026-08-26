@@ -4861,6 +4861,18 @@ def _trusted_parallel_tranche(
     if any(not isinstance(status, str) or status not in allowed_statuses
            for status in statuses.values()):
         return [], "sealed Plan scheduler status value is malformed"
+    if any(not isinstance(task_id, str) or not task_id or
+           not isinstance(reservation_fingerprint, str) or
+           re.fullmatch(r"[0-9a-f]{64}", reservation_fingerprint) is None
+           for task_id, reservation_fingerprint in in_flight.items()):
+        return [], "sealed Plan scheduler in-flight entry is malformed"
+    status_in_flight = {
+        task_id for task_id, status in statuses.items()
+        if status == "in_flight"
+    }
+    if status_in_flight != set(in_flight):
+        return [], "sealed Plan scheduler in-flight status projection is " \
+            "not exact"
     missing = topology.get("missing_test_assets") or {}
     ready = []
     for task_id in topology.get("task_ids") or []:
