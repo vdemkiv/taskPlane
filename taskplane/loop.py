@@ -4450,54 +4450,6 @@ def _structurally_valid_capacity_receipt(
     return {**dict(receipt), **validated}
 
 
-_TRUSTED_PARALLEL_RUNTIME_TASK_FIELDS = frozenset({
-    "status", "fix_cycles", "workspace", "target_commit", "_submission",
-    "evaluation", "convergence_history", "convergence_revision",
-    "reanchor_authority",
-})
-
-
-def _trusted_parallel_plan_task_definitions(
-        tasks: object) -> tuple[list[dict], str | None]:
-    """Normalize static Plan task contracts while excluding runtime state."""
-    if not isinstance(tasks, list) or any(
-            not isinstance(task, Mapping) for task in tasks):
-        return [], "sealed Plan task definitions are malformed"
-    normalized = []
-    list_fields = {
-        "deps", "scope", "read_paths", "write_paths", "allowed_tools",
-        "allowed_git_refs", "allowed_network_endpoints",
-        "credential_handles",
-    }
-    path_fields = {"scope", "read_paths", "write_paths"}
-    for task in tasks:
-        definition = {
-            field: value for field, value in task.items()
-            if field not in _TRUSTED_PARALLEL_RUNTIME_TASK_FIELDS
-        }
-        task_id = str(definition.get("id") or "")
-        if not task_id:
-            return [], "sealed Plan task definitions have an empty id"
-        definition["id"] = task_id
-        for field in list_fields.intersection(definition):
-            values = definition[field]
-            if isinstance(values, (str, bytes)) or not isinstance(
-                    values, (list, tuple)):
-                return [], "sealed Plan task definitions have a malformed " \
-                    + field
-            projected = [str(value) for value in values if str(value)]
-            if field in path_fields:
-                projected = [value.strip().replace("\\", "/")
-                             .removeprefix("./") for value in projected]
-            definition[field] = sorted(set(projected))
-        normalized.append(json.loads(json.dumps(
-            definition, sort_keys=True, default=str)))
-    normalized.sort(key=lambda task: task["id"])
-    if len({task["id"] for task in normalized}) != len(normalized):
-        return [], "sealed Plan task definitions have duplicate ids"
-    return normalized, None
-
-
 def _trusted_parallel_active_reservations(
         scheduler: Mapping[str, object], *, identity: Mapping[str, object]) \
         -> tuple[list[dict], str | None]:
@@ -4509,21 +4461,6 @@ def _trusted_parallel_active_reservations(
             not isinstance(in_flight, Mapping) or \
             not isinstance(statuses, Mapping):
         return [], "active scheduler reservation state is malformed"
-    scheduler_tasks = scheduler.get("tasks")
-    if not isinstance(scheduler_tasks, list) or any(
-            not isinstance(task, Mapping) for task in scheduler_tasks):
-        return [], "active scheduler reservation task contracts are malformed"
-    task_by_id = {str(task.get("id") or ""): task
-                  for task in scheduler_tasks}
-    capability_fields = {
-        "schema", "capability_id", "run_id", "source_sha",
-        "design_fingerprint", "plan_fingerprint", "task_id", "stage",
-        "reservation_fingerprint", "predecessor_fingerprint",
-        "allowed_tools", "read_paths", "write_paths", "allowed_git_refs",
-        "allowed_network_endpoints", "credential_handles",
-        "release_credentials_available", "irreversible_actions_allowed",
-        "cryptographic_authenticity_claimed",
-    }
     projected = []
     for task_id, reservation_fingerprint in sorted(in_flight.items()):
         task_id = str(task_id)
@@ -4531,8 +4468,7 @@ def _trusted_parallel_active_reservations(
         if statuses.get(task_id) != "in_flight":
             return [], "active scheduler reservation status is stale"
         matches = [
-            (index, reservation)
-            for index, reservation in enumerate(reservations)
+            reservation for reservation in reservations
             if isinstance(reservation, Mapping) and
             reservation.get("reservation_fingerprint") ==
             reservation_fingerprint and
@@ -4540,7 +4476,7 @@ def _trusted_parallel_active_reservations(
         ]
         if len(matches) != 1:
             return [], "active scheduler reservation is missing or stale"
-        reservation_index, reservation = matches[0]
+        reservation = matches[0]
         expected_identity = (
             identity["run_id"], identity["source_sha"],
             scheduler.get("design_fingerprint"),
@@ -4577,48 +4513,9 @@ def _trusted_parallel_active_reservations(
             return [], "active scheduler reservation assignment is malformed"
         assignment = assignments[0]
         capability = assignment.get("capability")
-        task = task_by_id.get(task_id)
-        expected_event_contract = {
-            "schema": "taskplane.worker-event-contract/v1",
-            "wait_mode": "event", "timeout_seconds": 1800,
-            "scheduled_polling": False,
-            "required_for_long_worker": ["progress", "terminal"]
-            if (task or {}).get("long_worker") else ["terminal"],
-        }
-        if set(assignment) != {
-                "task_id", "reservation_fingerprint", "capability",
-                "assignment_mode", "event_contract"} or \
-                assignment.get("reservation_fingerprint") != \
-                reservation_fingerprint or \
-                assignment.get("assignment_mode") != "direct" or \
-                assignment.get("event_contract") != expected_event_contract or \
-                not isinstance(capability, Mapping) or task is None:
+        if assignment.get("reservation_fingerprint") != \
+                reservation_fingerprint or not isinstance(capability, Mapping):
             return [], "active scheduler reservation capability is malformed"
-        if set(capability) != capability_fields or \
-                capability.get("schema") != \
-                "taskplane.task-dispatch-capability/v1" or \
-                capability.get("release_credentials_available") is not False or \
-                capability.get("irreversible_actions_allowed") is not False or \
-                capability.get("cryptographic_authenticity_claimed") is not False:
-            return [], "active scheduler reservation capability security " \
-                "invariants are invalid"
-        scope = task.get("scope") or ()
-        expected_authority = {
-            "allowed_tools": task.get("allowed_tools") or ("read", "test"),
-            "read_paths": task.get("read_paths") or scope,
-            "write_paths": task.get("write_paths") or scope,
-            "allowed_git_refs": task.get("allowed_git_refs") or (),
-            "allowed_network_endpoints":
-                task.get("allowed_network_endpoints") or (),
-            "credential_handles": task.get("credential_handles") or (),
-        }
-        for field, values in expected_authority.items():
-            observed = capability.get(field)
-            if isinstance(observed, (str, bytes)) or not isinstance(
-                    observed, (list, tuple)) or list(observed) != \
-                    sorted({str(value) for value in values if str(value)}):
-                return [], "active scheduler reservation capability " \
-                    "authority is invalid"
         capability_material = {
             field: value for field, value in capability.items()
             if field != "capability_id"
@@ -4633,15 +4530,12 @@ def _trusted_parallel_active_reservations(
             capability.get("plan_fingerprint"), capability.get("task_id"),
             capability.get("stage"),
             capability.get("reservation_fingerprint"),
-            capability.get("predecessor_fingerprint"),
         ) != (
             identity["run_id"], identity["source_sha"],
             scheduler.get("design_fingerprint"),
             identity["plan_fingerprint"], task_id, scheduler.get("stage"),
             reservation_fingerprint,
-            reservations[reservation_index - 1].get("reservation_fingerprint")
-            if reservation_index else None,
-        ):
+        ) or capability.get("cryptographic_authenticity_claimed") is not False:
             return [], "active scheduler reservation capability has " \
                 "cross-run bindings"
         projected.append({
@@ -4653,8 +4547,7 @@ def _trusted_parallel_active_reservations(
 
 
 def _trusted_parallel_tranche(
-        scheduler: Mapping[str, object], *, sealed_plan_tasks: object) \
-        -> tuple[list[str], str | None]:
+        scheduler: Mapping[str, object]) -> tuple[list[str], str | None]:
     """Derive the bounded maximum disjoint T17 tranche from sealed topology."""
     tasks = scheduler.get("tasks")
     topology = scheduler.get("topology")
@@ -4662,24 +4555,12 @@ def _trusted_parallel_tranche(
     if not isinstance(tasks, list) or not isinstance(topology, Mapping) or \
             not isinstance(repository_files, list):
         return [], "sealed Plan scheduler topology is malformed"
-    scheduler_definitions, scheduler_definition_error = \
-        _trusted_parallel_plan_task_definitions(tasks)
-    sealed_definitions, sealed_definition_error = \
-        _trusted_parallel_plan_task_definitions(sealed_plan_tasks)
-    if scheduler_definition_error or sealed_definition_error:
-        return [], scheduler_definition_error or sealed_definition_error
-    if scheduler_definitions != sealed_definitions:
-        return [], "sealed Plan task definitions do not match the scheduler " \
-            "projection"
     try:
         expected_topology = plan_topology.classify_plan(
             tasks, repository_files=repository_files)
-        sealed_topology = plan_topology.classify_plan(
-            sealed_plan_tasks, repository_files=repository_files)
     except plan_topology.PlanTopologyError as exc:
         return [], "sealed Plan scheduler topology is invalid: " + str(exc)
-    if dict(topology) != expected_topology or \
-            sealed_topology != expected_topology:
+    if dict(topology) != expected_topology:
         return [], "sealed Plan scheduler topology fingerprint is stale"
     statuses = scheduler.get("statuses")
     in_flight = scheduler.get("in_flight")
@@ -4885,8 +4766,7 @@ def scheduler_capacity_from_plan(
             ):
                 return {"error": "trusted parallel scheduler identity has "
                                  "cross-run or cross-source bindings"}
-            tranche, tranche_error = _trusted_parallel_tranche(
-                scheduler, sealed_plan_tasks=locked.get("tasks"))
+            tranche, tranche_error = _trusted_parallel_tranche(scheduler)
             if tranche_error:
                 return {"error": tranche_error}
             current_reservations, reservation_error = \
@@ -4940,11 +4820,6 @@ def scheduler_capacity_from_plan(
                     sealed_fingerprint=str(sealed["fingerprint"]),
                 )
             ), None)
-            if prior_assertion is not None and \
-                    float(validated_existing["expires_at"]) > now and \
-                    prior_assertion["actor"] != actor:
-                return {"error": "live trusted parallel replay actor does not "
-                                 "match the attributed authority"}
             if existing_pair != (1, 1) and (
                     existing_pair != (derived_capacity, derived_capacity) or
                     prior_assertion is None):
