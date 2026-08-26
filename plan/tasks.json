@@ -1,4 +1,8 @@
 {
+  "requirement": "R-0001",
+  "delivery_mode": "build",
+  "automatic_lenses": [],
+  "plan_authority": "Volodymyr Demkiv — 'approve' in Codex task 01a03619-63a9-7743-90f9-1b6b1945b6ac",
   "tasks": [
     {
       "id": "t01-public-delivery-ports",
