@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from taskplane.delivery_ports import content_fingerprint
+if __package__:
+    from .delivery_ports import content_fingerprint
+else:  # pragma: no cover - exercised by isolated legacy-import subprocess
+    from delivery_ports import content_fingerprint
 
 
 DELIVERY_MODE_RECEIPT_SCHEMA = "taskplane.delivery-mode-receipt/v1"

@@ -507,6 +507,29 @@ class TestTheFixtureIsInvisibleToTheRepositorysOwnTooling(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("skipped fixture-repo", r.stdout)
 
+    def test_the_corpus_engine_loads_in_legacy_direct_module_mode(self):
+        """The scorer adds ``taskplane/`` itself, not its repository parent.
+
+        Keep that shipped direct-module entry point independent of pytest's
+        ambient package path: package-only imports inside a new loop module
+        otherwise make the real corpus command fail before it can score.
+        """
+        r = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]); import loop; "
+                "assert loop.STEP_ROLE",
+                os.path.join(REPO, "taskplane"),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+
 
 # ============================================================= the recorder
 
