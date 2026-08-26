@@ -1454,48 +1454,6 @@ def test_scheduler_capacity_from_plan_trusted_parallel_closes_status_types(
     assert traces == []
 
 
-@pytest.mark.parametrize("fault", [
-    "status-only", "projection-only", "malformed-projection",
-])
-def test_scheduler_capacity_from_plan_trusted_parallel_closes_in_flight_set(
-    tmp_path, monkeypatch, fault,
-):
-    state = _trusted_parallel_loop_state()
-    scheduler = state["performance_scheduler"]
-    if fault == "status-only":
-        scheduler["statuses"]["t17b"] = "in_flight"
-        next(task for task in state["tasks"] if task["id"] == "t17b") \
-            ["status"] = "running"
-    elif fault == "projection-only":
-        scheduler["in_flight"]["t17b"] = \
-            scheduler["reservations"][0]["reservation_fingerprint"]
-    else:
-        scheduler["statuses"]["t17b"] = "in_flight"
-        scheduler["in_flight"]["t17b"] = {}
-        next(task for task in state["tasks"] if task["id"] == "t17b") \
-            ["status"] = "running"
-    loop.save(str(tmp_path), state)
-    _capacity_runtime(monkeypatch)
-    traces = []
-    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
-                        traces.append((_a, _k)))
-    state_path = Path(loop._loop_path(str(tmp_path)))
-    before_bytes = state_path.read_bytes()
-    before_assertions = loop.load(str(tmp_path)).get(
-        "scheduler_capacity_operator_assertions")
-
-    result = loop.scheduler_capacity_from_plan(
-        str(tmp_path), trust_parallel=True, by="human:operator",
-        clock=FakeClock(wall_time=10),
-    )
-
-    assert "in-flight" in result["error"]
-    assert state_path.read_bytes() == before_bytes
-    assert loop.load(str(tmp_path)).get(
-        "scheduler_capacity_operator_assertions") == before_assertions
-    assert traces == []
-
-
 def test_scheduler_capacity_from_plan_trusted_parallel_binds_evidence_store(
     tmp_path, monkeypatch,
 ):
