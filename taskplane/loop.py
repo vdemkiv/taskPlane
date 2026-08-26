@@ -4501,7 +4501,7 @@ def _trusted_parallel_plan_task_definitions(
 def _trusted_parallel_active_reservations(
         scheduler: Mapping[str, object], *, identity: Mapping[str, object]) \
         -> tuple[list[dict], str | None]:
-    """Validate and project every exact capability behind current in-flight work."""
+    """Validate the closed reservation chain before projecting in-flight work."""
     reservations = scheduler.get("reservations")
     in_flight = scheduler.get("in_flight")
     statuses = scheduler.get("statuses")
@@ -4524,29 +4524,55 @@ def _trusted_parallel_active_reservations(
         "release_credentials_available", "irreversible_actions_allowed",
         "cryptographic_authenticity_claimed",
     }
-    projected = []
-    for task_id, reservation_fingerprint in sorted(in_flight.items()):
-        task_id = str(task_id)
-        reservation_fingerprint = str(reservation_fingerprint or "")
-        if statuses.get(task_id) != "in_flight":
-            return [], "active scheduler reservation status is stale"
-        matches = [
-            (index, reservation)
-            for index, reservation in enumerate(reservations)
-            if isinstance(reservation, Mapping) and
-            reservation.get("reservation_fingerprint") ==
-            reservation_fingerprint and
-            task_id in (reservation.get("members") or [])
-        ]
-        if len(matches) != 1:
-            return [], "active scheduler reservation is missing or stale"
-        reservation_index, reservation = matches[0]
-        expected_identity = (
-            identity["run_id"], identity["source_sha"],
-            scheduler.get("design_fingerprint"),
-            identity["plan_fingerprint"], scheduler.get("stage"),
-            (scheduler.get("topology") or {}).get("fingerprint"),
-        )
+    material_fields = {
+        "schema", "run_id", "source_sha", "design_fingerprint",
+        "plan_fingerprint", "stage", "scheduler_revision",
+        "topology_fingerprint", "members",
+    }
+    reservation_fields = material_fields | {
+        "reservation_fingerprint", "dispatch_set", "assignments",
+        "reserved_at", "evidence_fingerprint",
+    }
+    expected_identity = (
+        identity["run_id"], identity["source_sha"],
+        scheduler.get("design_fingerprint"), identity["plan_fingerprint"],
+        scheduler.get("stage"),
+        (scheduler.get("topology") or {}).get("fingerprint"),
+    )
+    validated = {}
+    predecessor_fingerprint = None
+    for reservation in reservations:
+        if not isinstance(reservation, Mapping) or \
+                set(reservation) != reservation_fields:
+            return [], "scheduler reservation chain contains a malformed " \
+                "reservation"
+        reservation_fingerprint = reservation.get("reservation_fingerprint")
+        members = reservation.get("members")
+        assignments = reservation.get("assignments")
+        scheduler_revision = reservation.get("scheduler_revision")
+        reserved_at = reservation.get("reserved_at")
+        evidence_fingerprint = reservation.get("evidence_fingerprint")
+        if reservation.get("schema") != \
+                "taskplane.dispatch-reservation/v1" or \
+                not isinstance(reservation_fingerprint, str) or \
+                re.fullmatch(r"[0-9a-f]{64}",
+                             reservation_fingerprint) is None or \
+                not isinstance(members, list) or not members or \
+                any(not isinstance(member, str) or member not in task_by_id
+                    for member in members) or \
+                len(set(members)) != len(members) or \
+                not isinstance(assignments, list) or \
+                isinstance(scheduler_revision, bool) or \
+                not isinstance(scheduler_revision, int) or \
+                scheduler_revision < 0 or isinstance(reserved_at, bool) or \
+                not isinstance(reserved_at, (int, float)) or \
+                not math.isfinite(float(reserved_at)) or \
+                (evidence_fingerprint is not None and (
+                    not isinstance(evidence_fingerprint, str) or
+                    re.fullmatch(r"[0-9a-f]{64}",
+                                 evidence_fingerprint) is None)):
+            return [], "scheduler reservation chain contains malformed " \
+                "reservation fields"
         observed_identity = (
             reservation.get("run_id"), reservation.get("source_sha"),
             reservation.get("design_fingerprint"),
@@ -4555,99 +4581,122 @@ def _trusted_parallel_active_reservations(
         )
         if observed_identity != expected_identity:
             return [], "active scheduler reservation has cross-run bindings"
-        material_fields = {
-            "schema", "run_id", "source_sha", "design_fingerprint",
-            "plan_fingerprint", "stage", "scheduler_revision",
-            "topology_fingerprint", "members",
-        }
-        if reservation.get("schema") != \
-                "taskplane.dispatch-reservation/v1" or \
-                not material_fields.issubset(reservation):
-            return [], "active scheduler reservation is malformed"
         material = {field: reservation[field] for field in material_fields}
         if reservation_fingerprint != \
                 plan_topology.content_fingerprint(material):
             return [], "active scheduler reservation fingerprint is invalid"
-        assignments = [
-            assignment for assignment in reservation.get("assignments") or []
-            if isinstance(assignment, Mapping) and
-            assignment.get("task_id") == task_id
-        ]
-        if len(assignments) != 1:
-            return [], "active scheduler reservation assignment is malformed"
-        assignment = assignments[0]
-        capability = assignment.get("capability")
-        task = task_by_id.get(task_id)
-        expected_event_contract = {
-            "schema": "taskplane.worker-event-contract/v1",
-            "wait_mode": "event", "timeout_seconds": 1800,
-            "scheduled_polling": False,
-            "required_for_long_worker": ["progress", "terminal"]
-            if (task or {}).get("long_worker") else ["terminal"],
-        }
-        if set(assignment) != {
-                "task_id", "reservation_fingerprint", "capability",
-                "assignment_mode", "event_contract"} or \
-                assignment.get("reservation_fingerprint") != \
-                reservation_fingerprint or \
-                assignment.get("assignment_mode") != "direct" or \
-                assignment.get("event_contract") != expected_event_contract or \
-                not isinstance(capability, Mapping) or task is None:
-            return [], "active scheduler reservation capability is malformed"
-        if set(capability) != capability_fields or \
-                capability.get("schema") != \
-                "taskplane.task-dispatch-capability/v1" or \
-                capability.get("release_credentials_available") is not False or \
-                capability.get("irreversible_actions_allowed") is not False or \
-                capability.get("cryptographic_authenticity_claimed") is not False:
-            return [], "active scheduler reservation capability security " \
-                "invariants are invalid"
-        scope = task.get("scope") or ()
-        expected_authority = {
-            "allowed_tools": task.get("allowed_tools") or ("read", "test"),
-            "read_paths": task.get("read_paths") or scope,
-            "write_paths": task.get("write_paths") or scope,
-            "allowed_git_refs": task.get("allowed_git_refs") or (),
-            "allowed_network_endpoints":
-                task.get("allowed_network_endpoints") or (),
-            "credential_handles": task.get("credential_handles") or (),
-        }
-        for field, values in expected_authority.items():
-            observed = capability.get(field)
-            if isinstance(observed, (str, bytes)) or not isinstance(
-                    observed, (list, tuple)) or list(observed) != \
-                    sorted({str(value) for value in values if str(value)}):
+        dispatch_set = reservation.get("dispatch_set")
+        if not isinstance(dispatch_set, Mapping) or set(dispatch_set) != {
+                "schema", "concurrent", "members", "member_count"} or \
+                dispatch_set.get("schema") != \
+                "taskplane.direct-assignment-set/v1" or \
+                dispatch_set.get("concurrent") is not True or \
+                dispatch_set.get("members") != members or \
+                dispatch_set.get("member_count") != len(members):
+            return [], "scheduler reservation dispatch set is malformed"
+        if len(assignments) != len(members) or any(
+                not isinstance(assignment, Mapping)
+                for assignment in assignments):
+            return [], "scheduler reservation assignment set is malformed"
+        assignment_ids = [assignment.get("task_id")
+                          for assignment in assignments]
+        if assignment_ids != members or len(set(assignment_ids)) != \
+                len(assignment_ids):
+            return [], "scheduler reservation assignment set is not exact"
+        assignment_capabilities = {}
+        for assignment in assignments:
+            task_id = assignment["task_id"]
+            task = task_by_id[task_id]
+            capability = assignment.get("capability")
+            expected_event_contract = {
+                "schema": "taskplane.worker-event-contract/v1",
+                "wait_mode": "event", "timeout_seconds": 1800,
+                "scheduled_polling": False,
+                "required_for_long_worker": ["progress", "terminal"]
+                if task.get("long_worker") else ["terminal"],
+            }
+            if set(assignment) != {
+                    "task_id", "reservation_fingerprint", "capability",
+                    "assignment_mode", "event_contract"} or \
+                    assignment.get("reservation_fingerprint") != \
+                    reservation_fingerprint or \
+                    assignment.get("assignment_mode") != "direct" or \
+                    assignment.get("event_contract") != \
+                    expected_event_contract or \
+                    not isinstance(capability, Mapping):
+                return [], "scheduler reservation assignment is malformed"
+            if set(capability) != capability_fields or \
+                    capability.get("schema") != \
+                    "taskplane.task-dispatch-capability/v1" or \
+                    capability.get("release_credentials_available") is not False or \
+                    capability.get("irreversible_actions_allowed") is not False or \
+                    capability.get("cryptographic_authenticity_claimed") is not False:
+                return [], "active scheduler reservation capability security " \
+                    "invariants are invalid"
+            scope = task.get("scope") or ()
+            expected_authority = {
+                "allowed_tools":
+                    task.get("allowed_tools") or ("read", "test"),
+                "read_paths": task.get("read_paths") or scope,
+                "write_paths": task.get("write_paths") or scope,
+                "allowed_git_refs": task.get("allowed_git_refs") or (),
+                "allowed_network_endpoints":
+                    task.get("allowed_network_endpoints") or (),
+                "credential_handles": task.get("credential_handles") or (),
+            }
+            for field, values in expected_authority.items():
+                observed = capability.get(field)
+                if isinstance(observed, (str, bytes)) or not isinstance(
+                        observed, (list, tuple)) or list(observed) != \
+                        sorted({str(value) for value in values if str(value)}):
+                    return [], "active scheduler reservation capability " \
+                        "authority is invalid"
+            capability_material = {
+                field: value for field, value in capability.items()
+                if field != "capability_id"
+            }
+            if capability.get("capability_id") != \
+                    plan_topology.content_fingerprint(capability_material):
                 return [], "active scheduler reservation capability " \
-                    "authority is invalid"
-        capability_material = {
-            field: value for field, value in capability.items()
-            if field != "capability_id"
+                    "fingerprint is invalid"
+            if (
+                capability.get("run_id"), capability.get("source_sha"),
+                capability.get("design_fingerprint"),
+                capability.get("plan_fingerprint"), capability.get("task_id"),
+                capability.get("stage"),
+                capability.get("reservation_fingerprint"),
+                capability.get("predecessor_fingerprint"),
+            ) != (
+                identity["run_id"], identity["source_sha"],
+                scheduler.get("design_fingerprint"),
+                identity["plan_fingerprint"], task_id,
+                scheduler.get("stage"), reservation_fingerprint,
+                predecessor_fingerprint,
+            ):
+                return [], "active scheduler reservation capability has " \
+                    "cross-run bindings"
+            assignment_capabilities[task_id] = capability["capability_id"]
+        if reservation_fingerprint in validated:
+            return [], "scheduler reservation fingerprint is duplicated"
+        validated[reservation_fingerprint] = {
+            "members": list(members),
+            "capabilities": assignment_capabilities,
         }
-        if capability.get("capability_id") != \
-                plan_topology.content_fingerprint(capability_material):
-            return [], "active scheduler reservation capability fingerprint " \
-                "is invalid"
-        if (
-            capability.get("run_id"), capability.get("source_sha"),
-            capability.get("design_fingerprint"),
-            capability.get("plan_fingerprint"), capability.get("task_id"),
-            capability.get("stage"),
-            capability.get("reservation_fingerprint"),
-            capability.get("predecessor_fingerprint"),
-        ) != (
-            identity["run_id"], identity["source_sha"],
-            scheduler.get("design_fingerprint"),
-            identity["plan_fingerprint"], task_id, scheduler.get("stage"),
-            reservation_fingerprint,
-            reservations[reservation_index - 1].get("reservation_fingerprint")
-            if reservation_index else None,
-        ):
-            return [], "active scheduler reservation capability has " \
-                "cross-run bindings"
+        predecessor_fingerprint = reservation_fingerprint
+
+    projected = []
+    for task_id, reservation_fingerprint in sorted(in_flight.items()):
+        task_id = str(task_id)
+        reservation_fingerprint = str(reservation_fingerprint or "")
+        reservation = validated.get(reservation_fingerprint)
+        if statuses.get(task_id) != "in_flight":
+            return [], "active scheduler reservation status is stale"
+        if reservation is None or task_id not in reservation["members"]:
+            return [], "active scheduler reservation is missing or stale"
         projected.append({
             "task_id": task_id,
             "reservation_fingerprint": reservation_fingerprint,
-            "capability_id": capability["capability_id"],
+            "capability_id": reservation["capabilities"][task_id],
         })
     return projected, None
 

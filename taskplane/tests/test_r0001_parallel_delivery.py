@@ -1,6 +1,7 @@
 import contextlib
 import copy
 import json
+from pathlib import Path
 import threading
 
 import pytest
@@ -1302,6 +1303,69 @@ def test_scheduler_capacity_from_plan_trusted_parallel_closes_capability_flags(
 
     assert "capability" in result["error"]
     assert loop.load(str(tmp_path)) == before
+
+
+@pytest.mark.parametrize("fault", [
+    "extra", "missing", "duplicate", "malformed-extra",
+])
+def test_scheduler_capacity_from_plan_trusted_parallel_closes_assignment_set(
+    tmp_path, monkeypatch, fault,
+):
+    state = _trusted_parallel_loop_state()
+    assignments = state["performance_scheduler"]["reservations"][0] \
+        ["assignments"]
+    if fault == "extra":
+        extra = copy.deepcopy(assignments[0])
+        extra["task_id"] = "t17b"
+        assignments.append(extra)
+    elif fault == "missing":
+        assignments.clear()
+    elif fault == "duplicate":
+        assignments.append(copy.deepcopy(assignments[0]))
+    else:
+        assignments.append({"task_id": "ghost"})
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
+                        traces.append((_a, _k)))
+    state_path = Path(loop._loop_path(str(tmp_path)))
+    before_bytes = state_path.read_bytes()
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "assignment" in result["error"]
+    assert state_path.read_bytes() == before_bytes
+    assert traces == []
+
+
+@pytest.mark.parametrize("prior", [None, {}, "malformed", {
+    "reservation_fingerprint": 7,
+}])
+def test_scheduler_capacity_from_plan_trusted_parallel_closes_prior_reservations(
+    tmp_path, monkeypatch, prior,
+):
+    state = _trusted_parallel_loop_state()
+    state["performance_scheduler"]["reservations"].insert(0, prior)
+    loop.save(str(tmp_path), state)
+    _capacity_runtime(monkeypatch)
+    traces = []
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k:
+                        traces.append((_a, _k)))
+    state_path = Path(loop._loop_path(str(tmp_path)))
+    before_bytes = state_path.read_bytes()
+
+    result = loop.scheduler_capacity_from_plan(
+        str(tmp_path), trust_parallel=True, by="human:operator",
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert "reservation" in result["error"]
+    assert state_path.read_bytes() == before_bytes
+    assert traces == []
 
 
 @pytest.mark.parametrize("fault", ["malformed", "stale", "cross-run"])
