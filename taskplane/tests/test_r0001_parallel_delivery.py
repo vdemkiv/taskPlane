@@ -230,6 +230,63 @@ def test_long_worker_complete_without_progress_fails_without_mutation():
     assert state["statuses"]["long"] == "in_flight"
 
 
+def test_non_positive_worker_sequence_fails_closed_before_valid_reconciliation():
+    factory = RecordedTaskDispatchCapabilityFactory()
+    state = _state([
+        _task("a", scope=("a",)),
+        _task("b", deps=("a",), scope=("b",)),
+    ])
+    _admit(state, concurrency=1, max_in_flight=1)
+    before = copy.deepcopy(state)
+    admission = {
+        "host_capability": {"configured_host_concurrency": 1},
+        "budget": {"max_in_flight": 1, "session_limit": 60},
+        "clock": FakeClock(wall_time=2),
+        "capability_factory": factory,
+    }
+
+    for sequence in (0, -1):
+        with pytest.raises(PlanTopologyError, match="at least 1"):
+            record_worker_event(
+                state,
+                {"event_id": f"a-{sequence}", "task_id": "a",
+                 "sequence": sequence, "kind": "progress", "at": 1},
+                **admission,
+            )
+        assert state == before
+
+    progress = record_worker_event(
+        state, {"event_id": "a-1", "task_id": "a", "sequence": 1,
+                "kind": "progress", "at": 1},
+        **admission,
+    )
+    complete_event = {
+        "event_id": "a-2", "task_id": "a", "sequence": 2,
+        "kind": "complete", "at": 2,
+    }
+    terminal = record_worker_event(state, complete_event, **admission)
+
+    assert progress["terminal"] is False
+    assert terminal["terminal"] is True
+    assert terminal["admission"]["dispatch_set"]["members"] == ["b"]
+    assert state["events"] == [
+        {"event_id": "a-1", "task_id": "a", "sequence": 1,
+         "kind": "progress", "at": 1},
+        complete_event,
+    ]
+    assert state["statuses"] == {"a": "complete", "b": "in_flight"}
+    assert len(state["reservations"]) == 2
+
+    terminalized = copy.deepcopy(state)
+    duplicate = record_worker_event(state, complete_event, **admission)
+    assert duplicate == {
+        "schema": "taskplane.worker-event-result/v1",
+        "status": "duplicate",
+        "terminal": True,
+    }
+    assert state == terminalized
+
+
 @pytest.mark.parametrize(
     "at",
     [

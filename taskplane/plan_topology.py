@@ -934,8 +934,8 @@ def record_worker_event(
             raise PlanTopologyError("worker event identity is invalid")
         if kind not in EVENT_KINDS:
             raise PlanTopologyError(f"unknown worker event kind: {kind}")
-        if int(event["sequence"]) < 0:
-            raise PlanTopologyError("worker event sequence cannot be negative")
+        if int(event["sequence"]) < 1:
+            raise PlanTopologyError("worker event sequence must be at least 1")
         _finite_number(event["at"], "worker event at")
         task = next(row for row in state["tasks"] if row["id"] == task_id)
         existing = next(
