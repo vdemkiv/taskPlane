@@ -35,6 +35,7 @@ def performance_projection(state: dict) -> dict:
 
 
 def _execution_state(tasks: list, events: list) -> dict:
+    """Legacy-only projection for runs without the R-0001 scheduler."""
     dependencies = {
         str(task.get("id")): [str(value) for value in task.get("deps") or []]
         for task in tasks if isinstance(task, dict) and task.get("id")
@@ -58,8 +59,31 @@ def _execution_state(tasks: list, events: list) -> dict:
             task_id: {"start": started, "terminal": terminals[task_id]}
             for task_id, started in starts.items() if task_id in terminals
         },
-        "scheduler_caused_idle_seconds": 0,
+        "scheduler_caused_idle_seconds": sum(
+            float(row.get("scheduler_caused_idle_seconds") or 0)
+            for row in events if isinstance(row, dict)
+            and row.get("event") == "scheduler_metrics"),
     }
+
+
+def _authoritative_execution_state(
+        state: dict, tasks: list, events: list) -> tuple[dict, str]:
+    scheduler = state.get("performance_scheduler")
+    if isinstance(scheduler, dict):
+        # This validates statuses, events, and metric computability before
+        # Retro signs the report.  The persisted execution DAG remains the
+        # authority; trace rows are not used to reconstruct it.
+        dispatch_telemetry.scheduler_projection(scheduler)
+        dag = scheduler.get("execution_dag")
+        if not isinstance(dag, dict) or \
+                dag.get("schema") != "taskplane.execution-dag/v1" or \
+                not str(dag.get("fingerprint") or ""):
+            raise ValueError("authoritative execution DAG is unavailable")
+        return scheduler, "persisted-scheduler-dag"
+    if isinstance(state.get("dispatch_telemetry"), dict):
+        raise ValueError(
+            "dispatch telemetry exists without its authoritative scheduler")
+    return _execution_state(tasks, events), "legacy-trace-compatibility"
 
 
 def _events_for_run(ws: str, state: dict) -> tuple[list, float | None]:
@@ -205,6 +229,10 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
         "- longest serial chain: " +
         " -> ".join(chain.get("tasks") or []) +
         f" ({chain.get('seconds', 0)}s)",
+        f"- scheduler-caused idle: "
+        f"{performance.get('scheduler_caused_idle_seconds', 0)}s",
+        f"- execution metric source: "
+        f"{report.get('execution_metric_source', 'unknown')}",
     ])
     foreign = report.get("foreign_interference") or {}
     if foreign.get("headline"):
@@ -428,6 +456,16 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "edges": len(graph.get("edges") or []),
             "components": len(graph.get("components") or {}),
         }
+        try:
+            execution_state, execution_metric_source = \
+                _authoritative_execution_state(state, tasks, events)
+            execution_metrics = performance_projection(execution_state)
+        except (ValueError, TypeError,
+                dispatch_telemetry.DispatchTelemetryError) as exc:
+            return {"error": "retro performance evidence is unavailable — "
+                    "loop remains open",
+                    "detail": f"{exc.__class__.__name__}: {exc}",
+                    "step": "retro", "retro_id": retro_id}
         report = {
             "goal": state.get("goal"),
             "tasks": [{"id": row.get("id"), "status": row.get("status"),
@@ -442,8 +480,20 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "graph_true_up": graph_true_up,
             "trace_scope": {"from_ts": trace_from, "events": len(events)},
             "lessons": lessons,
-            "execution_metrics": performance_projection(
-                _execution_state(tasks, events)),
+            "execution_metrics": execution_metrics,
+            "execution_metric_source": execution_metric_source,
+            "execution_dag": ({
+                "schema": execution_state["execution_dag"]["schema"],
+                "fingerprint": execution_state["execution_dag"][
+                    "fingerprint"],
+                "generations": len(
+                    execution_state["execution_dag"].get("generations") or []),
+                "nodes": len(
+                    execution_state["execution_dag"].get("nodes") or []),
+                "edges": len(
+                    execution_state["execution_dag"].get("edges") or []),
+            } if execution_metric_source == "persisted-scheduler-dag"
+               else None),
         }
         if stage_native:
             report["stage_view"] = stage_view

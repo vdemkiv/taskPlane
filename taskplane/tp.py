@@ -2270,6 +2270,15 @@ def _screen(a) -> int:
             import spend as _spend
             _tpath = _spend.event_transcript(event)
             _rep = _spend.read_transcript(_tpath) if _tpath else None
+            if _tpath:
+                _provider = "codex" if "turn_id" in event else "claude"
+                _observed = _spend.read_provider_transcript(
+                    _tpath, provider=_provider)
+                if _observed.get("available"):
+                    import loop as _loop_runtime
+                    _loop_runtime.record_observed_dispatch_usage(
+                        ws, task_id=str(tid),
+                        normalized_usage=_observed, source=_tpath)
             if _rep and _rep.get("available"):
                 _tok_ok, _tok_why = _spend.status(contract, _rep["effective"])
                 if not _tok_ok:
@@ -3275,6 +3284,7 @@ def _should_project_loop_next(action: str, payload) -> bool:
         action == "next"
         and isinstance(payload, dict)
         and not payload.get("error")
+        and payload.get("step") not in STAGE_WAVE_NAMES
         and _stage_wave_run(payload) is None
     )
 

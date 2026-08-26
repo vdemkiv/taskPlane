@@ -1,8 +1,16 @@
+import contextlib
 import threading
 
 import pytest
 
-from taskplane import build_c, command_runtime, loop, progress, retro
+from taskplane import (
+    build_c,
+    command_runtime,
+    dispatch_telemetry,
+    loop,
+    progress,
+    retro,
+)
 from taskplane.delivery_ports import (
     DeliveryPortError,
     FakeClock,
@@ -434,3 +442,163 @@ def test_runtime_event_progress_and_command_adapters_consume_telemetry():
     assert command_event["schema"] == "taskplane.dispatch-event/v1"
     assert command_event["kind"] == "complete"
     assert command_event["task_id"] == "a"
+
+
+def test_live_scheduler_admits_waits_wakes_and_persists_replan_dag(
+    tmp_path, monkeypatch,
+):
+    tasks = [
+        _task("a", scope=("src/a.py",)),
+        _task("b", deps=("a",), scope=("src/b.py",)),
+    ]
+    state = {
+        "goal": "runtime", "parallel": True, "step": "execute",
+        "tasks": [{**row, "status": "pending"} for row in tasks],
+    }
+
+    @contextlib.contextmanager
+    def mutate(_ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", mutate)
+    monkeypatch.setattr(loop, "load", lambda _ws: state)
+    monkeypatch.setattr(loop, "_stage_loop_mutation_refusal", lambda _ws: None)
+    first = loop._admit_scheduler_wave(
+        str(tmp_path), [state["tasks"][0]], repository_files=set(),
+        capacity={"configured_host_concurrency": 1,
+                  "max_in_flight": 1, "session_limit": 60},
+        clock=FakeClock(wall_time=1),
+    )
+    assignment = first["assignments"][0]
+    scheduler = state["performance_scheduler"]
+    state["dispatch_telemetry"] = dispatch_telemetry.new_ledger(
+        run_id=scheduler["run_id"], source_sha=scheduler["source_sha"],
+        design_fingerprint=scheduler["design_fingerprint"],
+        plan_fingerprint=scheduler["plan_fingerprint"], started_at=0,
+    )
+    dispatch_telemetry.bind_dispatch(
+        state["dispatch_telemetry"],
+        {
+            "dispatch_id": "dispatch-a", "thread_id": "thread-a",
+            "thread_type": "worker", "task_id": "a",
+            "dependencies": [], "shared_owner": None,
+            "started_at": 1, "ended_at": 1,
+            "wait_duration_seconds": 0, "correction_count": 0,
+            "events": [],
+        },
+        reservation_fingerprint=assignment["reservation_fingerprint"],
+        capability_id=assignment["capability"]["capability_id"],
+    )
+    command_event = command_runtime.dispatch_event({
+        "schema": command_runtime.SCHEMA,
+        "handle": "a" * 32, "revision": 2, "state": "succeeded",
+        "created_at": 1, "updated_at": 2,
+        "identity": {
+            "schema": "taskplane.governed-command-identity/v1",
+            "run_id": scheduler["run_id"], "task_id": "a",
+        },
+        "wave_id": "execute-wave",
+    })
+    command_event["dispatch_id"] = "dispatch-a"
+    command_event["thread_id"] = "thread-a"
+    command_event["fingerprint"] = "event-a"
+    wake = loop.handle_host_input(
+        str(tmp_path), {"type": "worker_event",
+                        "dispatch_event": command_event})
+
+    assert wake["accepted"] is True
+    assert wake["wake"]["event_count"] == 1
+    assert wake["wake"]["terminal"] is False
+    assert state["performance_scheduler"]["events"][-1]["kind"] == "progress"
+
+    state["tasks"][0]["status"] = "passed"
+    terminal = loop._record_scheduler_terminal(
+        str(tmp_path), task_id="a", kind="complete", at=3)
+    assert terminal["terminal"] is True
+    assert terminal["admission"]["dispatch_set"]["members"] == ["b"]
+    second = loop._admit_scheduler_wave(
+        str(tmp_path), [state["tasks"][1]], repository_files=set(),
+        capacity={"configured_host_concurrency": 1,
+                  "max_in_flight": 1, "session_limit": 60},
+        clock=FakeClock(wall_time=4),
+    )
+    assert second["dispatch_set"]["members"] == ["b"]
+
+    state["tasks"][1]["status"] = "passed"
+    loop._record_scheduler_terminal(
+        str(tmp_path), task_id="b", kind="complete", at=5)
+    state["tasks"].append({
+        **_task("c", deps=("b",), scope=("src/c.py",)),
+        "status": "pending",
+    })
+    third = loop._admit_scheduler_wave(
+        str(tmp_path), [state["tasks"][2]], repository_files=set(),
+        capacity={"configured_host_concurrency": 1,
+                  "max_in_flight": 1, "session_limit": 60},
+        clock=FakeClock(wall_time=6),
+    )
+    dag = state["performance_scheduler"]["execution_dag"]
+    assert third["dispatch_set"]["members"] == ["c"]
+    assert len(dag["generations"]) == 2
+    assert ["g0:a", "g1:a", "supersession"] in dag["edges"]
+    assert retro._authoritative_execution_state(
+        state, state["tasks"], [{"event": "loop_wave", "ts": 999}]
+    )[1] == "persisted-scheduler-dag"
+
+
+def test_build_c_direct_receipt_carries_reservation_capability_and_capacity(
+    tmp_path, monkeypatch,
+):
+    tasks = [{**_task("a", scope=("src/a.py",)), "status": "pending"}]
+    graph = {"modules": {"a": {"files": ["src/a.py"]}},
+             "edges": [], "files": {}, "meta": {}}
+    monkeypatch.setattr(build_c.depgraph, "scope_modules",
+                        lambda _ws, _scope: ["a"])
+
+    def register(_ws, worker, task_id):
+        return {"schema": "taskplane.managed-task-worktree/v1",
+                "task_id": task_id, "path": worker,
+                "branch_tip": "a" * 40}
+
+    def wait_policy(_name, count):
+        return {"schema": "taskplane.wait-policy/v1", "mode": "event",
+                "scheduled_polling": False, "timeout_seconds": 1800,
+                "reissue_after": ["completion", "attention"],
+                "outstanding_count": count, "outstanding_set": "build-c"}
+
+    def wait_invocation(_policy, members):
+        return {"schema": "taskplane.event-wait-invocation/v1",
+                "operation": "wait_for_events", "scheduled": False,
+                "reissue": False, "outstanding_members": members}
+
+    receipt = build_c.assign_scopes(
+        str(tmp_path), {"tasks": tasks}, graph=graph,
+        revision="a" * 40,
+        create_worktree=lambda *_args: str(tmp_path / "worker"),
+        register_worktree=register,
+        wait_policy_factory=wait_policy,
+        wait_invocation_factory=wait_invocation,
+        repository_files=set(),
+    )
+    assignment = receipt["assignments"][0]
+    assert receipt["reservation_fingerprint"] == \
+        assignment["reservation_fingerprint"]
+    assert assignment["capability"]["reservation_fingerprint"] == \
+        receipt["reservation_fingerprint"]
+    assert assignment["capability"]["write_paths"] == ("src/a.py",)
+
+    with pytest.raises(build_c.ScopeAssignmentError, match="event wait"):
+        build_c.assign_scopes(
+            str(tmp_path), {"tasks": tasks}, graph=graph,
+            revision="a" * 40,
+            create_worktree=lambda *_args: str(tmp_path / "worker"),
+            register_worktree=register,
+            wait_policy_factory=lambda *_args: {
+                "schema": "taskplane.wait-policy/v1", "mode": "event",
+                "scheduled_polling": False, "timeout_seconds": 1800,
+                "reissue_after": ["completion", "attention"],
+                "outstanding_count": 0,
+            },
+            wait_invocation_factory=wait_invocation,
+            repository_files=set(),
+        )

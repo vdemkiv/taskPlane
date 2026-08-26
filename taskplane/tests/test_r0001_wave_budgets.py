@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import json
 
 import pytest
@@ -129,6 +130,15 @@ def test_delta_projection_preserves_existing_stage_task_path() -> None:
     }
 
     assert tp._should_project_loop_next("next", stage_action) is False
+    # R-0004 predates structured task identities.  Its fail-open task rail
+    # also covers legacy stage payloads that name only the stage and brief;
+    # the R-0001 projection must not reshape those exact bytes.
+    assert tp._should_project_loop_next(
+        "next", {"step": "evaluate", "brief": "unchanged"}
+    ) is False
+    assert tp._should_project_loop_next(
+        "next", {"step": "fix", "brief": "unchanged"}
+    ) is False
     assert tp._should_project_loop_next(
         "next", {"step": "plan", "instruction": "prepare the plan"}
     ) is True
@@ -266,3 +276,78 @@ def test_dispatch_telemetry_records_all_required_fields_and_thread_types() -> No
         "reasoning_tokens": 0,
         "total_tokens": 120,
     }
+
+
+@pytest.mark.parametrize(
+    ("cached", "uncached", "total", "trigger"),
+    [
+        (150_000_000, 0, 150_000_000, "total_tokens"),
+        (0, 25_000_000, 25_000_000, "uncached_input_tokens"),
+    ],
+)
+def test_observed_production_usage_stops_the_next_live_wave_at_equality(
+    tmp_path, monkeypatch, cached: int, uncached: int, total: int,
+    trigger: str,
+) -> None:
+    ledger = dispatch_telemetry.new_ledger(
+        run_id="run", source_sha="a" * 40,
+        design_fingerprint="design", plan_fingerprint="plan",
+        started_at=0,
+    )
+    dispatch_telemetry.bind_dispatch(
+        ledger,
+        {
+            "dispatch_id": "dispatch-a", "thread_id": "thread-a",
+            "thread_type": "worker", "task_id": "a",
+            "dependencies": [], "shared_owner": None,
+            "started_at": 1, "ended_at": 1,
+            "wait_duration_seconds": 0, "correction_count": 0,
+            "events": [],
+        },
+        reservation_fingerprint="reservation-a",
+        capability_id="capability-a",
+    )
+    state = {
+        "parallel": True, "step": "execute", "goal": "budget",
+        "tasks": [{"id": "a", "status": "pending", "deps": [],
+                   "scope": ["src/a.py"], "tests": "true"}],
+        "dispatch_telemetry": ledger,
+    }
+
+    @contextlib.contextmanager
+    def mutate(_ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", mutate)
+    monkeypatch.setattr(loop, "load", lambda _ws: state)
+    monkeypatch.setattr(loop, "_stage_loop_mutation_refusal", lambda _ws: None)
+    monkeypatch.setattr(loop, "_validated_delivery_mode", lambda _state: None)
+    monkeypatch.setattr(loop, "SystemClock", lambda: FakeClock(wall_time=2))
+
+    observed = {
+        "schema": spend.USAGE_SCHEMA, "provider": "codex",
+        "available": True, "reason": None,
+        "uncached_input_tokens": uncached,
+        "cached_input_tokens": cached,
+        "cache_creation_tokens": 0, "output_tokens": 0,
+        "raw_total_tokens": total, "effective_tokens": total,
+    }
+    loop.record_observed_dispatch_usage(
+        str(tmp_path), task_id="a", normalized_usage=observed,
+        source=str(tmp_path / "worker.jsonl"),
+    )
+    admitted = loop.finalize_observed_dispatch_usage(
+        str(tmp_path), task_id="a", ended_at=2)
+    stopped = loop.wave(str(tmp_path))
+
+    assert admitted["status"] == "admitted"
+    assert stopped["step"] == "human_scope_review"
+    assert stopped["wave"] == []
+    assert stopped["budget"]["triggered"] == [{
+        "field": trigger,
+        "observed": dispatch_telemetry.WAVE_BUDGET_CEILINGS[trigger],
+        "ceiling": dispatch_telemetry.WAVE_BUDGET_CEILINGS[trigger],
+    }]
+    assert dispatch_telemetry.wave_usage(
+        state["dispatch_telemetry"], FakeClock(wall_time=2)
+    )[trigger] == dispatch_telemetry.WAVE_BUDGET_CEILINGS[trigger]

@@ -25,6 +25,7 @@ RECEIPT_SCHEMA = "taskplane.dispatch-telemetry/v1"
 EVENT_SCHEMA = "taskplane.dispatch-event/v1"
 BUDGET_SCHEMA = "taskplane.wave-budget/v1"
 SCHEDULER_PROJECTION_SCHEMA = "taskplane.scheduler-progress/v1"
+DISPATCH_BINDING_SCHEMA = "taskplane.dispatch-telemetry-binding/v1"
 
 THREAD_TYPES = frozenset({"main", "worker", "lens", "evaluator", "guardian"})
 EVENT_KINDS = frozenset({
@@ -105,6 +106,7 @@ def new_ledger(*, run_id: str, source_sha: str, design_fingerprint: str,
         "revision": 0,
         "session_reservations": [],
         "dispatches": [],
+        "bindings": [],
         "evidence_head": None,
     }
 
@@ -140,7 +142,171 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
         if not dispatch_id or dispatch_id in ids:
             raise DispatchTelemetryError("dispatch telemetry identity is duplicated")
         ids.add(dispatch_id)
+    bindings = ledger.get("bindings", [])
+    if not isinstance(bindings, list):
+        raise DispatchTelemetryError("dispatch telemetry bindings must be a list")
+    binding_ids: set[str] = set()
+    for binding in bindings:
+        if not isinstance(binding, Mapping) or \
+                binding.get("schema") != DISPATCH_BINDING_SCHEMA:
+            raise DispatchTelemetryError("dispatch telemetry binding is invalid")
+        dispatch_id = str(binding.get("dispatch_id") or "")
+        if not dispatch_id or dispatch_id in binding_ids:
+            raise DispatchTelemetryError(
+                "dispatch telemetry binding identity is duplicated")
+        binding_ids.add(dispatch_id)
+        if not str(binding.get("reservation_fingerprint") or "") or \
+                not str(binding.get("capability_id") or ""):
+            raise DispatchTelemetryError(
+                "dispatch telemetry binding lacks reservation authority")
+        if binding.get("usage") is not None:
+            _usage(binding["usage"])
     return dict(ledger)
+
+
+def _usage(value: Mapping[str, Any]) -> dict[str, int]:
+    if not isinstance(value, Mapping) or set(value) != _USAGE_FIELDS:
+        raise DispatchTelemetryError(
+            "observed usage requires exactly the dispatch token counters")
+    normalized = {
+        field: _nonnegative_integer(value.get(field), f"usage.{field}")
+        for field in _USAGE_FIELDS
+    }
+    if normalized["cached_input_tokens"] + \
+            normalized["uncached_input_tokens"] != \
+            normalized["input_tokens"]:
+        raise DispatchTelemetryError(
+            "cached and uncached input do not reconcile")
+    if normalized["total_tokens"] < normalized["input_tokens"] + \
+            normalized["output_tokens"]:
+        raise DispatchTelemetryError("total tokens do not reconcile")
+    return normalized
+
+
+def bind_dispatch(
+        ledger: MutableMapping[str, Any], dispatch: Mapping[str, Any], *,
+        reservation_fingerprint: str, capability_id: str) -> dict[str, Any]:
+    """Bind one live host dispatch to its scheduler reservation.
+
+    Usage may arrive later from the hook transcript.  The binding therefore
+    reserves the session now and keeps the exact authority/capacity receipt
+    needed to admit the final observed counters without caller-authored
+    lookalikes.
+    """
+    validate_ledger(ledger)
+    unknown = set(dispatch).difference(_DISPATCH_FIELDS)
+    missing = _DISPATCH_FIELDS.difference(dispatch)
+    if unknown or missing:
+        raise DispatchTelemetryError(
+            "dispatch binding is closed: "
+            f"missing={sorted(missing)} unknown={sorted(unknown)}")
+    reservation_fingerprint = str(reservation_fingerprint or "").strip()
+    capability_id = str(capability_id or "").strip()
+    if not reservation_fingerprint or not capability_id:
+        raise DispatchTelemetryError(
+            "dispatch binding requires reservation fingerprint and capability")
+    # Validate the dispatch half with a reconciled zero usage block.
+    _receipt(dispatch, {field: 0 for field in _USAGE_FIELDS})
+    material = {
+        "schema": DISPATCH_BINDING_SCHEMA,
+        **dict(dispatch),
+        "reservation_fingerprint": reservation_fingerprint,
+        "capability_id": capability_id,
+        "usage": None,
+        "usage_source_fingerprint": None,
+        "finalized_receipt_fingerprint": None,
+    }
+    bindings = ledger.setdefault("bindings", [])
+    existing = next((row for row in bindings
+                     if row["dispatch_id"] == material["dispatch_id"]), None)
+    if existing is not None:
+        stable_fields = {
+            key: value for key, value in existing.items()
+            if key not in {"usage", "usage_source_fingerprint",
+                           "finalized_receipt_fingerprint"}
+        }
+        expected = {
+            key: value for key, value in material.items()
+            if key not in {"usage", "usage_source_fingerprint",
+                           "finalized_receipt_fingerprint"}
+        }
+        if stable_fields != expected:
+            raise DispatchTelemetryError("dispatch binding id collision")
+        return dict(existing)
+    reserve_session(
+        ledger, dispatch_id=str(material["dispatch_id"]),
+        thread_type=str(material["thread_type"]),
+        reserved_at=material["started_at"])
+    bindings.append(material)
+    ledger["revision"] = int(ledger["revision"]) + 1
+    return dict(material)
+
+
+def observe_usage(
+        ledger: MutableMapping[str, Any], *, dispatch_id: str,
+        usage: Mapping[str, Any], source_fingerprint: str) -> dict[str, Any]:
+    """Persist one monotonic cumulative provider observation."""
+    validate_ledger(ledger)
+    binding = next((row for row in ledger.get("bindings", [])
+                    if row["dispatch_id"] == str(dispatch_id)), None)
+    if binding is None:
+        raise DispatchTelemetryError("observed usage has no live dispatch binding")
+    if binding.get("finalized_receipt_fingerprint"):
+        raise DispatchTelemetryError("dispatch usage is already finalized")
+    source_fingerprint = str(source_fingerprint or "").strip()
+    if not source_fingerprint:
+        raise DispatchTelemetryError("usage source fingerprint is required")
+    prior_source = binding.get("usage_source_fingerprint")
+    if prior_source not in (None, source_fingerprint):
+        raise DispatchTelemetryError("dispatch usage source changed")
+    normalized = _usage(usage)
+    prior = binding.get("usage")
+    if isinstance(prior, Mapping) and any(
+            normalized[field] < int(prior[field]) for field in _USAGE_FIELDS):
+        raise DispatchTelemetryError("observed dispatch usage moved backwards")
+    binding["usage"] = normalized
+    binding["usage_source_fingerprint"] = source_fingerprint
+    ledger["revision"] = int(ledger["revision"]) + 1
+    return dict(binding)
+
+
+def finalize_usage(
+        ledger: MutableMapping[str, Any], *, dispatch_id: str,
+        ended_at: int | float, clock: Clock,
+        events: Sequence[Mapping[str, Any]] | None = None,
+        evidence_store: Any = None) -> dict[str, Any]:
+    """Admit the final observed counters for one bound live dispatch."""
+    validate_ledger(ledger)
+    binding = next((row for row in ledger.get("bindings", [])
+                    if row["dispatch_id"] == str(dispatch_id)), None)
+    if binding is None:
+        raise DispatchTelemetryError("final usage has no live dispatch binding")
+    if binding.get("usage") is None:
+        raise DispatchTelemetryError("final usage has no provider observation")
+    if binding.get("finalized_receipt_fingerprint"):
+        receipt = next((row for row in ledger["dispatches"]
+                        if row["fingerprint"] ==
+                        binding["finalized_receipt_fingerprint"]), None)
+        if receipt is None:
+            raise DispatchTelemetryError("finalized usage receipt is missing")
+        return {
+            "schema": "taskplane.dispatch-telemetry-admission/v1",
+            "status": "duplicate", "receipt": dict(receipt),
+            "budget": budget_projection(ledger, clock),
+        }
+    dispatch = {
+        field: binding[field] for field in _DISPATCH_FIELDS
+    }
+    dispatch["ended_at"] = ended_at
+    if events is not None:
+        dispatch["events"] = [dict(row) for row in events]
+    result = admit(
+        ledger, dispatch, dict(binding["usage"]), clock,
+        evidence_store=evidence_store)
+    if result["status"] in {"admitted", "duplicate"} and result.get("receipt"):
+        binding["finalized_receipt_fingerprint"] = \
+            result["receipt"]["fingerprint"]
+    return result
 
 
 def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float]:
@@ -302,17 +468,7 @@ def _receipt(dispatch: Mapping[str, Any], usage: Mapping[str, Any]) -> dict[str,
     ended = _nonnegative_number(dispatch.get("ended_at"), "ended_at")
     if ended < started:
         raise DispatchTelemetryError("dispatch ended before it started")
-    normalized_usage = {
-        field: _nonnegative_integer(usage.get(field), f"usage.{field}")
-        for field in _USAGE_FIELDS
-    }
-    if normalized_usage["cached_input_tokens"] + \
-            normalized_usage["uncached_input_tokens"] != \
-            normalized_usage["input_tokens"]:
-        raise DispatchTelemetryError("cached and uncached input do not reconcile")
-    if normalized_usage["total_tokens"] < \
-            normalized_usage["input_tokens"] + normalized_usage["output_tokens"]:
-        raise DispatchTelemetryError("total tokens do not reconcile")
+    normalized_usage = _usage(usage)
     material = {
         "schema": RECEIPT_SCHEMA,
         **strings,

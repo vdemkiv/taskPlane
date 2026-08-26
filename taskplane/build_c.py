@@ -21,9 +21,14 @@ import taskplane_lite as tp
 
 if __package__:
     from . import delivery_policy, plan_topology
+    from .delivery_ports import (
+        RecordedTaskDispatchCapabilityFactory,
+        SystemClock,
+    )
 else:  # pragma: no cover - direct CLI module loading
     import delivery_policy
     import plan_topology
+    from delivery_ports import RecordedTaskDispatchCapabilityFactory, SystemClock
 
 
 PROGRAM_LEDGER_SCHEMA = "taskplane.program-phase-ledger/v1"
@@ -246,7 +251,11 @@ def assign_scopes(
                                "blocked_by": blocking_pair["left"]
                                if blocking_pair["left"] != candidate["task_id"]
                                else blocking_pair["right"],
-                               "reason": blocking_pair["shared_owner"]})
+                               "reason": ("scope_overlap"
+                                          if str(blocking_pair[
+                                              "shared_owner"]).startswith(
+                                          "scope:") else
+                                          blocking_pair["shared_owner"])})
         else:
             selected.append(candidate)
     if not selected:
@@ -256,6 +265,55 @@ def assign_scopes(
     wait_policy, wait_invocation = _assignment_wait(
         member_ids, wait_policy_factory=wait_policy_factory,
         wait_invocation_factory=wait_invocation_factory)
+    configured_host_concurrency = int(
+        wait_policy.get("outstanding_count") or 0)
+    if configured_host_concurrency < 1:
+        raise ScopeAssignmentError(
+            "direct assignment host concurrency binding is unavailable")
+    design_fingerprint = str(
+        state.get("design_fingerprint") or "legacy-design")
+    plan_fingerprint = str(state.get("plan_fingerprint") or "")
+    if not plan_fingerprint:
+        plan_fingerprint = hashlib.sha256(json.dumps(
+            tasks, sort_keys=True, separators=(",", ":"), default=str
+        ).encode("utf-8")).hexdigest()
+    run_id = str(state.get("run_id") or "")
+    if not run_id:
+        run_id = "build-c-" + hashlib.sha256(json.dumps({
+            "revision": revision, "plan_fingerprint": plan_fingerprint,
+        }, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8")).hexdigest()
+    scheduler = plan_topology.new_scheduler_state(
+        tasks, run_id=run_id, source_sha=revision,
+        design_fingerprint=design_fingerprint,
+        plan_fingerprint=plan_fingerprint, stage="BUILD-C",
+        repository_files=repository_files,
+        statuses={
+            str(row.get("id")): (
+                "complete" if row.get("status") in {"passed", "accepted"}
+                else "ready")
+            for row in tasks if isinstance(row, Mapping) and row.get("id")
+        },
+    )
+    scheduler_admission = plan_topology.admit_ready_batch(
+        scheduler,
+        {"configured_host_concurrency": configured_host_concurrency},
+        {"max_in_flight": configured_host_concurrency,
+         "session_limit": 60},
+        None, SystemClock(),
+        capability_factory=RecordedTaskDispatchCapabilityFactory(),
+    )
+    if scheduler_admission.get("status") != "admitted" or \
+            list((scheduler_admission.get("dispatch_set") or {}).get(
+                "members") or []) != member_ids or \
+            not str(scheduler_admission.get(
+                "reservation_fingerprint") or ""):
+        raise ScopeAssignmentError(
+            "direct assignment reservation/capacity binding was refused")
+    scheduler_assignments = {
+        str(row["task_id"]): dict(row)
+        for row in scheduler_admission["assignments"]
+    }
     dispatch_material = {"revision": revision, "members": member_ids}
     dispatch_id = "build-c-direct-" + hashlib.sha256(json.dumps(
         dispatch_material, sort_keys=True, separators=(",", ":")
@@ -278,6 +336,19 @@ def assign_scopes(
             "task_id": task_id, "scope": candidate["scope"],
             "graph_modules": candidate["modules"], "worktree": worker,
             "registration": dict(registration),
+            "reservation_fingerprint":
+                scheduler_admission["reservation_fingerprint"],
+            # Keep the legacy stateless receipt free of every old claim-state
+            # marker while carrying the capability id and all enforceable
+            # default-deny bindings.  The issuer's authenticity disclaimer is
+            # metadata, not worker authority, and remains bound into the id.
+            "capability": {
+                key: value for key, value in
+                scheduler_assignments[task_id]["capability"].items()
+                if key != "cryptographic_authenticity_claimed"
+            },
+            "event_contract":
+                scheduler_assignments[task_id]["event_contract"],
         })
 
     material = {
@@ -290,6 +361,10 @@ def assign_scopes(
         },
         "wait_policy": wait_policy,
         "wait_invocation": wait_invocation,
+        "reservation_fingerprint":
+            scheduler_admission["reservation_fingerprint"],
+        "topology_fingerprint": topology["fingerprint"],
+        "scheduler_revision": scheduler["revision"],
     }
     return {**material, "fingerprint": hashlib.sha256(json.dumps(
         material, sort_keys=True, separators=(",", ":")
