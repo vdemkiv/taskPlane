@@ -2797,6 +2797,8 @@ def cmd_loop(a) -> int:
                 pass                 # audit must never break the gate
     elif action == "wave":
         out = loopmod.wave(ws)
+    elif action == "scheduler-capacity-from-plan":
+        out = loopmod.scheduler_capacity_from_plan(ws)
     elif action == "claim":
         out = loopmod.claim(ws, a.task_id, a.agent_workspace)
     elif action == "approve":
@@ -7159,6 +7161,10 @@ def main(argv=None) -> int:
                     help="acknowledge degraded screen enforcement")
     lw.add_argument("--by", default=None,
                     help="human identity required with --advisory")
+    lsub.add_parser(
+        "scheduler-capacity-from-plan",
+        help="mint a fixed one-worker scheduler receipt from the active "
+             "sealed zero-lens Build Plan")
     lc = lsub.add_parser("claim", help="a worker claims one wave task into its own worktree")
     lc.add_argument("task_id")
     lc.add_argument("--agent-workspace", required=True,
