@@ -6,7 +6,7 @@
   "tasks": [
     {
       "id": "t10-design-wiring-closure-owner",
-      "scope": ["taskplane/wiring_closure.py", "taskplane/review.py", "taskplane/tests/test_r0001_design_wiring.py", "taskplane/loop.py", "taskplane/tests/test_r0001_delivery_mode.py"],
+      "scope": ["taskplane/wiring_closure.py", "taskplane/review.py", "taskplane/tp.py", "taskplane/tests/test_r0001_design_wiring.py", "taskplane/loop.py", "taskplane/tests/test_r0001_delivery_mode.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_r0001_delivery_mode.py",
       "req": "R-0001", "deps": [], "type": "feature", "contracts": ["contract:design-wiring-closure"],
       "new_modules": ["taskplane/wiring_closure.py"], "design_edges": [],
