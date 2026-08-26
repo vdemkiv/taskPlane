@@ -1,0 +1,52 @@
+{
+  "schema": "taskplane.r0001.scoped-verification/v1",
+  "recorded_at": "2026-08-26T15:21:56Z",
+  "identity": {
+    "run_id": "design-rebind-main-ecfc48e",
+    "requirement_id": "R-0001",
+    "task_id": "t17b-verify-wiring-release-repository",
+    "role": "tp-executor",
+    "branch": "tp/t17b-verify-wiring-release-repository",
+    "tested_revision": "e1e38d4800c46e23a10eb3c509f12f6d248c3e13"
+  },
+  "contract_fingerprints": {
+    "design": "74c2e2422a5232290c91eb18ae2e74355906a3b3839b9c5968dcc433839a535e",
+    "plan": "f663d015150330da01db9c58352f97437471731ef2a820fce2379d67fe4b042b",
+    "delivery_mode_receipt": "1933a9506e642fd0e085c16cb7e31fc94b1c59ba4d845370739fabf1f2aafe5d",
+    "dispatch_capability": "49501267bc7a2a182177268b54e61ebc03bcd10b5461ba42e5b5c538dca9de8b",
+    "reservation": "986e9c95e2981ae1c09eb913bb26280f7b477d30b78731f8c9d2c81741ce1837"
+  },
+  "verification": {
+    "command": "python3 -m pytest -q taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_release_freshness.py taskplane/tests/test_r0001_release_green.py taskplane/tests/test_r0001_forward_release.py taskplane/tests/test_r0001_compatibility.py taskplane/tests/test_r0001_repository_default_branch.py",
+    "exit_code": 1,
+    "duration_seconds": 10.94,
+    "passed": 70,
+    "failed": 1,
+    "status": "failed",
+    "failed_selector": "taskplane/tests/test_release_freshness.py::TestGeneratedCliReference::test_committed_reference_matches_live_parser",
+    "failure_classification": "release-freshness mismatch: the committed CLI reference is stale relative to the live parser",
+    "wiring_edge": "W09",
+    "release_rule_satisfied": false
+  },
+  "artifact_fingerprints": {
+    "docs/cli-reference.md": "sha256:7dfbf9f7ed000e8d0dcf28f7e0e75b54ccab018264b59939136481b7c9a1a633",
+    "live_cli_reference": "sha256:b7d32e1ddda73377ff969be72d8f07345226ce95784bd38a2c44ae4f56ace9a3",
+    "taskplane/tests/test_r0001_design_wiring.py": "sha256:c358f6a5e2be79d4ec75fa3e215ec5214ffc5a805fac7f77da3c75c4dcbf748a",
+    "taskplane/tests/test_release_freshness.py": "sha256:f6042d4d9ca24ec53ec3842b35164258fe51f1d538ceb50702c120f7413a9b96",
+    "taskplane/tests/test_r0001_release_green.py": "sha256:ee17e10a31eee6cbd5c7ba4cb506b50d2cf8425b34d47cadbf744d95dca93ed8",
+    "taskplane/tests/test_r0001_forward_release.py": "sha256:99c9cdf9b12554bc7b4d2578bbb1a3b7028edc8ceb1728da6531554fbd96efc6",
+    "taskplane/tests/test_r0001_compatibility.py": "sha256:871dec786d58b601bd1d55709a2a481ab01d23ed57429f8d7e3a2b0f57a61002",
+    "taskplane/tests/test_r0001_repository_default_branch.py": "sha256:5c1afb1ce8a9693f774e2e2b764fbad2016b3bc6302729f3b934c02160325028"
+  },
+  "authority": {
+    "host_observed": false,
+    "platform_observed": false,
+    "release_authority": false,
+    "irreversible_action_taken": false,
+    "note": "This repository-resident record reports local scoped verification only. It is not platform-CI, pushed-SHA, actor-authenticity, release-green, or publication evidence."
+  },
+  "disposition": {
+    "result": "fail",
+    "reason": "The declared suite is not green at the tested revision. Correcting docs/cli-reference.md is outside this task's evidence-only write scope."
+  }
+}
