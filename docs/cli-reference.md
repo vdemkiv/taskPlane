@@ -81,6 +81,7 @@ not repeated in the tables.
 | `tp.py loop replan` | human: archive frozen tasks and return to Plan for a corrected plan plus fresh approval |
 | `tp.py loop resolve` | resolve a blocked loop: retry, pass, skip, defer or abort |
 | `tp.py loop retro` | print the loop retrospective |
+| `tp.py loop scheduler-capacity-from-plan` | mint a fixed one-worker scheduler receipt from the active sealed zero-lens Build Plan |
 | `tp.py loop select` | A/B selection gate: pick the variant that ships (or 'hybrid') |
 | `tp.py loop status` | show the loop's stage, tasks and gates |
 | `tp.py loop submit` | worker submits evidence without transitioning state; the orchestrator gates |
@@ -812,6 +813,15 @@ Positional arguments:
 ## `tp.py loop retro`
 
 print the loop retrospective
+
+## `tp.py loop scheduler-capacity-from-plan`
+
+mint a fixed one-worker scheduler receipt from the active sealed zero-lens Build Plan
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY | human attribution required with --trust-parallel; recorded verbatim without a cryptographic authenticity claim |
+| `--trust-parallel` | flag | use attributed human trust to derive bounded T17 parallel capacity from the sealed Plan (never host observation) |
 
 ## `tp.py loop select`
 

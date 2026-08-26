@@ -1,0 +1,6 @@
+command: python3 -m pytest -q taskplane/tests/test_r0001_delivery_mode.py taskplane/tests/test_r0001_review_authority.py taskplane/tests/test_r0001_producer_observation.py taskplane/tests/test_r0001_host_capability.py taskplane/tests/test_r0001_live_host_canary.py
+target_sha: 75a3f4f6498ff48875203b6edfb23c9be3a90117
+exit_code: 0
+
+...............................................s                         [100%]
+47 passed, 1 skipped in 22.71s
