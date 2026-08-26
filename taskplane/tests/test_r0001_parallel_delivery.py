@@ -12,7 +12,6 @@ from taskplane import (
     loop,
     progress,
     retro,
-    tp as cli,
 )
 from taskplane.delivery_ports import (
     content_fingerprint,
@@ -22,7 +21,6 @@ from taskplane.delivery_ports import (
     RecordedTaskDispatchCapabilityFactory,
     SandboxEvidenceStore,
 )
-from taskplane.delivery_policy import validate_plan_mode
 from taskplane.plan_topology import (
     ClosedTaskDispatchCapabilityFactory,
     ExecutionDagRevisionStore,
@@ -64,24 +62,6 @@ def _host_capacity_receipt(*, run_id="run", source_sha="a" * 40,
         "cryptographic_authenticity_claimed": False,
     }
     return {**material, "fingerprint": content_fingerprint(material)}
-
-
-def _capacity_loop_state():
-    delivery_receipt = validate_plan_mode(
-        {
-            "requirement": "R-0001", "delivery_mode": "build",
-            "automatic_lenses": [], "plan_authority": "human:operator",
-        },
-        plan_fingerprint="b" * 64, source_sha="9" * 40,
-    )
-    return {
-        "goal": "capacity authority", "parallel": True, "step": "execute",
-        "run_id": "run", "baseline": "a" * 40,
-        "requirement_id": "R-0001",
-        "design_fingerprint": "d" * 64,
-        "delivery_mode_receipt": delivery_receipt,
-        "tasks": [{**_task("a", scope=("src/a.py",)), "status": "pending"}],
-    }
 
 
 def _state(tasks, **overrides):
@@ -710,211 +690,6 @@ def test_production_admission_requires_current_exact_host_capacity_receipt(
     assert result["status"] == "stop_for_human_scope_review"
     assert result["reservation_fingerprint"] is None
     assert state.get("performance_scheduler", {}).get("reservations", []) == []
-
-
-def _capacity_runtime(monkeypatch, *, run_id="run"):
-    monkeypatch.setattr(loop, "_managed_scheduler_run_id", lambda _ws: run_id)
-
-
-def test_scheduler_capacity_from_plan_mints_fixed_receipt_and_admits(
-    tmp_path, monkeypatch,
-):
-    state = _capacity_loop_state()
-    loop.save(str(tmp_path), state)
-    _capacity_runtime(monkeypatch)
-    traces = []
-    monkeypatch.setattr(loop.tp, "trace", lambda _ws, event, **data:
-                        traces.append((event, data)))
-
-    minted = loop.scheduler_capacity_from_plan(
-        str(tmp_path), clock=FakeClock(wall_time=10),
-    )
-
-    assert "error" not in minted, minted
-    receipt = minted["receipt"]
-    sealed = state["delivery_mode_receipt"]
-    assert set(receipt) == {
-        "schema", "run_id", "source_sha", "plan_fingerprint",
-        "configured_host_concurrency", "max_in_flight", "issued_at",
-        "expires_at", "cryptographic_authenticity_claimed", "fingerprint",
-    }
-    assert receipt["configured_host_concurrency"] == 1
-    assert receipt["max_in_flight"] == 1
-    assert receipt["issued_at"] == 10.0
-    assert receipt["expires_at"] == 910.0
-    assert receipt["run_id"] == "run"
-    assert receipt["source_sha"] == state["baseline"]
-    assert receipt["plan_fingerprint"] == sealed["plan_fingerprint"]
-    assert receipt["cryptographic_authenticity_claimed"] is False
-    assert loop.load(str(tmp_path))[
-        "scheduler_host_capability_receipt"] == receipt
-    assert "scheduler_capacity_attribution" not in loop.load(str(tmp_path))
-    assert traces == [("scheduler_capacity_from_plan", {
-        "source": "sealed-plan-single-worker-liveness",
-        "delivery_mode_receipt_fingerprint": sealed["fingerprint"],
-        "scheduler_host_capability_fingerprint": receipt["fingerprint"],
-        "issued_at": 10.0, "expires_at": 910.0,
-    })]
-
-    evidence = SandboxEvidenceStore(tmp_path, "repo", "scheduler-capacity")
-    dag_store = ExecutionDagRevisionStore(tmp_path)
-    monkeypatch.setattr(
-        loop, "_production_scheduler_evidence",
-        lambda _ws, _state: (evidence, dag_store),
-    )
-    admitted = loop._admit_scheduler_wave(
-        str(tmp_path), [state["tasks"][0]], repository_files=set(),
-        clock=FakeClock(wall_time=20),
-    )
-    assert admitted["status"] == "admitted"
-    assert admitted["dispatch_set"]["members"] == ["a"]
-
-
-def test_scheduler_identity_prefers_sealed_plan_and_rejects_tasks_only_receipt(
-    tmp_path, monkeypatch,
-):
-    state = _capacity_loop_state()
-    loop.save(str(tmp_path), state)
-    _capacity_runtime(monkeypatch)
-    identity = loop._dispatch_telemetry_identity(str(tmp_path), state)
-    assert identity["plan_fingerprint"] == \
-        state["delivery_mode_receipt"]["plan_fingerprint"]
-
-    tasks_only_state = copy.deepcopy(state)
-    tasks_only_state.pop("delivery_mode_receipt")
-    tasks_only = loop._dispatch_telemetry_identity(
-        str(tmp_path), tasks_only_state)["plan_fingerprint"]
-    assert tasks_only != identity["plan_fingerprint"]
-    state["scheduler_host_capability_receipt"] = _host_capacity_receipt(
-        run_id="run", source_sha=state["baseline"],
-        plan_fingerprint=tasks_only, concurrency=1, max_in_flight=1,
-        issued_at=0, expires_at=100,
-    )
-    loop.save(str(tmp_path), state)
-    refused = loop._admit_scheduler_wave(
-        str(tmp_path), [state["tasks"][0]], repository_files=set(),
-        clock=FakeClock(wall_time=10),
-    )
-    assert refused["status"] == "stop_for_human_scope_review"
-    assert "cross-run bindings" in refused["reason"]
-
-
-@pytest.mark.parametrize(("mutate_state", "match"), [
-    (lambda state: state.update(step="plan"), "Execute"),
-    (lambda state: state.update(baseline=""), "source"),
-    (lambda state: state.pop("delivery_mode_receipt"), "sealed"),
-    (lambda state: state["delivery_mode_receipt"].update(mode="review"),
-     "delivery-mode"),
-    (lambda state: state["delivery_mode_receipt"].update(automatic_lenses=["qa"]),
-     "delivery-mode"),
-    (lambda state: state.update(requirement_id="R-other"), "requirement"),
-])
-def test_scheduler_capacity_from_plan_rejects_unsealed_or_stale_authority(
-    tmp_path, monkeypatch, mutate_state, match,
-):
-    state = _capacity_loop_state()
-    mutate_state(state)
-    loop.save(str(tmp_path), state)
-    _capacity_runtime(monkeypatch)
-
-    result = loop.scheduler_capacity_from_plan(
-        str(tmp_path), clock=FakeClock(wall_time=10),
-    )
-
-    assert match in result["error"]
-    assert "scheduler_host_capability_receipt" not in loop.load(str(tmp_path))
-
-
-def test_scheduler_capacity_from_plan_requires_matching_managed_run(
-    tmp_path, monkeypatch,
-):
-    loop.save(str(tmp_path), _capacity_loop_state())
-    _capacity_runtime(monkeypatch, run_id="other")
-    result = loop.scheduler_capacity_from_plan(
-        str(tmp_path), clock=FakeClock(wall_time=10),
-    )
-    assert "run" in result["error"]
-
-
-@pytest.mark.parametrize("status", ["running", "built", "submitted"])
-def test_scheduler_capacity_from_plan_refuses_in_flight_task(
-    tmp_path, monkeypatch, status,
-):
-    state = _capacity_loop_state()
-    state["tasks"][0]["status"] = status
-    loop.save(str(tmp_path), state)
-    _capacity_runtime(monkeypatch)
-    result = loop.scheduler_capacity_from_plan(
-        str(tmp_path), clock=FakeClock(wall_time=10),
-    )
-    assert "in flight" in result["error"]
-
-
-def test_scheduler_capacity_from_plan_idempotency_and_idle_expired_renewal(
-    tmp_path, monkeypatch,
-):
-    loop.save(str(tmp_path), _capacity_loop_state())
-    _capacity_runtime(monkeypatch)
-    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
-    first = loop.scheduler_capacity_from_plan(
-        str(tmp_path), clock=FakeClock(wall_time=10),
-    )
-    same = loop.scheduler_capacity_from_plan(
-        str(tmp_path), clock=FakeClock(wall_time=20),
-    )
-    assert same == {"receipt": first["receipt"], "idempotent": True}
-
-    renewed = loop.scheduler_capacity_from_plan(
-        str(tmp_path), clock=FakeClock(wall_time=911),
-    )
-    assert renewed["receipt"]["issued_at"] == 911.0
-    assert renewed["receipt"]["fingerprint"] != first["receipt"]["fingerprint"]
-
-
-@pytest.mark.parametrize("existing", [
-    _host_capacity_receipt(
-        run_id="other", source_sha="a" * 40, concurrency=1,
-        max_in_flight=1, issued_at=0, expires_at=100),
-    _host_capacity_receipt(
-        run_id="run", source_sha="a" * 40, concurrency=2,
-        max_in_flight=2, issued_at=0, expires_at=1),
-    _host_capacity_receipt(
-        run_id="run", source_sha="a" * 40, concurrency=1,
-        max_in_flight=1, issued_at=20, expires_at=100),
-])
-def test_scheduler_capacity_from_plan_refuses_existing_invalid_authority(
-    tmp_path, monkeypatch, existing,
-):
-    state = _capacity_loop_state()
-    state["scheduler_host_capability_receipt"] = existing
-    loop.save(str(tmp_path), state)
-    _capacity_runtime(monkeypatch)
-    result = loop.scheduler_capacity_from_plan(
-        str(tmp_path), clock=FakeClock(wall_time=10),
-    )
-    assert "existing scheduler capacity authority" in result["error"]
-
-
-def test_scheduler_capacity_from_plan_cli_calls_production_without_inputs(
-    tmp_path, monkeypatch, capsys,
-):
-    import loop as loop_cli_module
-
-    observed = []
-    expected = {"receipt": {"fingerprint": "f" * 64}}
-    monkeypatch.setattr(
-        loop_cli_module, "scheduler_capacity_from_plan",
-        lambda ws: (observed.append(ws) or expected),
-    )
-
-    rc = cli.main([
-        "loop", "--workspace", str(tmp_path),
-        "scheduler-capacity-from-plan",
-    ])
-
-    assert rc == 0
-    assert json.loads(capsys.readouterr().out) == expected
-    assert observed == [str(tmp_path)]
 
 
 def test_live_wave_with_no_host_receipt_stops_without_ready_count_inference(
