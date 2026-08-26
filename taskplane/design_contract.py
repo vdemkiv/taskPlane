@@ -154,132 +154,22 @@ class DesignAcceptanceError(ValueError):
     """The Design acceptance map cannot bind Build to exact test identities."""
 
 
-def _acceptance_selector(value: object) -> tuple[str, str]:
-    identity = str(value or "")
-    parts = identity.split("::")
-    if identity != identity.strip() or len(parts) not in (2, 3) or any(
-            not part for part in parts):
-        raise DesignAcceptanceError(
-            f"test must name an exact file.py::selector: {identity or '<empty>'}")
-    relative = parts[0]
-    pure = PurePosixPath(relative)
-    if ("\\" in relative or pure.is_absolute() or pure.suffix != ".py"
-            or any(part in ("", ".", "..") for part in pure.parts)):
-        raise DesignAcceptanceError(
-            f"test must name a safe repository-relative file.py::selector: "
-            f"{identity}")
-    selectors = parts[1:]
-    if any(not part.isidentifier() for part in selectors) or (
-            len(selectors) == 1 and not selectors[0].startswith("test_")) or (
-            len(selectors) == 2 and (
-                not selectors[0].startswith("Test")
-                or not selectors[1].startswith("test_"))):
-        raise DesignAcceptanceError(
-            f"test must name an exact Python file.py::selector: {identity}")
-    return pure.as_posix(), "::".join(selectors)
-
-
 def acceptance_test_map(contract: Mapping) -> dict[str, list[str]] | None:
-    """Return the Design AC→exact-selector map when one is declared.
-
-    Older ``taskplane.design/v1`` contracts can omit ``acceptance_map`` and
-    retain their compatibility behavior.  Once that map is present, however,
-    every row must declare a non-empty, duplicate-free set of exact selector
-    identities; an all-rows-omitted map must not disable Design or checkpoint
-    validation.
-    """
-    if not isinstance(contract, Mapping) or "acceptance_map" not in contract:
-        return None
-    rows = contract.get("acceptance_map")
-    if not isinstance(rows, list):
-        raise DesignAcceptanceError("acceptance_map must be a list")
-    result: dict[str, list[str]] = {}
-    for index, row in enumerate(rows, 1):
-        criterion = str(row.get("criterion") or "").strip() \
-            if isinstance(row, Mapping) else ""
-        if not criterion:
-            raise DesignAcceptanceError(
-                f"acceptance row {index} criterion is missing")
-        if criterion in result:
-            raise DesignAcceptanceError(
-                f"acceptance criterion is duplicated: {criterion}")
-        tests = row.get("tests")
-        if (not isinstance(tests, Sequence)
-                or isinstance(tests, (str, bytes)) or not tests):
-            raise DesignAcceptanceError(
-                f"acceptance criterion has no exact tests: {criterion}")
-        identities = []
-        for value in tests:
-            _acceptance_selector(value)
-            identities.append(str(value))
-        if len(identities) != len(set(identities)):
-            raise DesignAcceptanceError(
-                f"acceptance criterion has duplicate tests: {criterion}")
-        result[criterion] = identities
-    return result
+    """Preserve the public Design API over the pure selector owner."""
+    try:
+        return wiring_closure.acceptance_test_map(contract)
+    except wiring_closure.WiringClosureError as exc:
+        raise DesignAcceptanceError(str(exc)) from exc
 
 
 def checkpoint_acceptance_tests(
     ws: str, contract: Mapping, ac_ids: Sequence[str]
 ) -> dict | None:
-    """Resolve Design-declared tests for one checkpoint before execution."""
-    mapping = acceptance_test_map(contract)
-    if mapping is None:
-        return None
-    criteria = list(mapping)
-    selected: list[str] = []
-    for ac_id in ac_ids:
-        criterion = ac_id if ac_id in mapping else None
-        if criterion is None:
-            ordinal = re.fullmatch(r"AC-?0*([1-9][0-9]*)", ac_id,
-                                   flags=re.IGNORECASE)
-            index = int(ordinal.group(1)) - 1 if ordinal else -1
-            if 0 <= index < len(criteria):
-                criterion = criteria[index]
-        if criterion is None:
-            raise DesignAcceptanceError(
-                f"checkpoint acceptance criterion is not declared: {ac_id}")
-        if criterion in selected:
-            raise DesignAcceptanceError(
-                f"checkpoint acceptance criterion resolves more than once: "
-                f"{criterion}")
-        selected.append(criterion)
-
-    root = Path(ws).resolve()
-    selectors: list[str] = []
-    files: list[str] = []
-    collected: dict[str, frozenset[str]] = {}
-    for criterion in selected:
-        for identity in mapping[criterion]:
-            relative, selector = _acceptance_selector(identity)
-            candidate = root.joinpath(*PurePosixPath(relative).parts)
-            try:
-                path = candidate.resolve(strict=True)
-            except FileNotFoundError as exc:
-                raise DesignAcceptanceError(
-                    f"declared test file is missing: {relative} "
-                    f"(for {identity})") from exc
-            try:
-                path.relative_to(root)
-            except ValueError as exc:
-                raise DesignAcceptanceError(
-                    f"declared test file escapes checkpoint worktree: "
-                    f"{relative}") from exc
-            if not path.is_file():
-                raise DesignAcceptanceError(
-                    f"declared test file is not regular: {relative}")
-            if relative not in collected:
-                collected[relative] = wiring_closure.collect_test_selectors(path)
-            if selector not in collected[relative]:
-                raise DesignAcceptanceError(
-                    f"exact selector is missing: {identity}")
-            files.append(relative)
-            selectors.append(identity)
-    return {
-        "criteria": selected,
-        "files": sorted(set(files)),
-        "selectors": sorted(set(selectors)),
-    }
+    """Preserve the public Design API over the pure selector owner."""
+    try:
+        return wiring_closure.checkpoint_acceptance_tests(ws, contract, ac_ids)
+    except wiring_closure.WiringClosureError as exc:
+        raise DesignAcceptanceError(str(exc)) from exc
 
 
 def edge_key(row) -> str:

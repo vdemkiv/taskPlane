@@ -82,9 +82,13 @@ def _fresh_python(source: str, *args: str) -> dict:
 
 def test_boundary_imports_follow_the_approved_non_circular_contract() -> None:
     imports = {name: _imports(TASKPLANE / f"{name}.py") for name in (
-        "depgraph", "decompose", "graph_decomposition", "graph_primitives",
-        "lens_signals", "tp")}
+        "checkpoint", "depgraph", "decompose", "graph_decomposition",
+        "graph_primitives", "lens_signals", "tp", "wiring_closure")}
 
+    assert "design_contract" not in imports["checkpoint"]
+    assert "wiring_closure" in imports["checkpoint"]
+    assert not ({"build_c", "checkpoint", "design_contract", "loop", "review"}
+                & imports["wiring_closure"])
     assert "decompose" not in imports["depgraph"]
     assert "depgraph" not in imports["decompose"]
     assert "lens_signals" not in imports["decompose"]

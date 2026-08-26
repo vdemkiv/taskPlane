@@ -1,7 +1,6 @@
 """R-0006 S4/S7: measure every import SCC and reject cycle growth."""
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -78,7 +77,9 @@ def _commit(root: Path, message: str) -> str:
     ).stdout.strip()
 
 
-def _start_history_fixture(root: Path) -> tuple[Path, Path, str]:
+def _start_history_fixture(
+        root: Path, *, active_workflow: str = ACTIVE_WORKFLOW,
+) -> tuple[Path, Path, str]:
     _init_repo(root)
     _write_modules(root, {
         "lens": "def f():\n    import review\n",
@@ -98,7 +99,7 @@ def _start_history_fixture(root: Path) -> tuple[Path, Path, str]:
         ACTIVE_SCANNER, encoding="utf-8")
     workflow = root / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
-    active = ACTIVE_WORKFLOW
+    active = active_workflow
     workflow.write_text(active, encoding="utf-8")
     _commit(root, "activate ratchet")
     return policy, workflow, active
@@ -469,10 +470,40 @@ def test_history_proof_allows_ordinary_evolution_before_seal(
     assert proof["seal_revision"] == seal
 
 
+def test_history_proof_allows_only_the_exact_versioned_workflow_transition(
+        tmp_path: Path) -> None:
+    forward_release_step = (
+        "\n"
+        "      # R-0001 forward-only release integration. The 3.12 leg already owns\n"
+        "      # the complete suite, so this adds one deterministic package/runtime\n"
+        "      # proof without replaying it on the compatibility smoke legs.\n"
+        "      - name: Verify forward-release manifests, archives, and runtime\n"
+        "        if: matrix.python == '3.12'\n"
+        "        run: python scripts/ci_evals.py --verify-release-surface --json\n"
+    )
+    assert forward_release_step in ACTIVE_WORKFLOW
+    sealed_workflow = ACTIVE_WORKFLOW.replace(forward_release_step, "", 1)
+    assert cycles.workflow_seal_digest(sealed_workflow) == \
+        cycles.SEALED_WORKFLOW_SHA256
+    policy, workflow, _ = _start_history_fixture(
+        tmp_path, active_workflow=sealed_workflow)
+    (tmp_path / "taskplane" / "lens.py").write_text(
+        "def f():\n    return None\n", encoding="utf-8")
+    _commit(tmp_path, "cut protected edge")
+    workflow.write_text(ACTIVE_WORKFLOW, encoding="utf-8")
+    _commit(tmp_path, "advance to current exact workflow seal")
+
+    assert cycles.verify_history(tmp_path, policy)["status"] == "pass"
+
+
 def test_history_proof_rejects_trusted_head_workflow_hash_mismatch(
         tmp_path: Path) -> None:
     policy, workflow, active = _start_history_fixture(tmp_path)
-    workflow.write_text(active + "# unsealed mutation\n", encoding="utf-8")
+    workflow.write_text(active.replace(
+        "      - name: Import-cycle inventory, bounds, and activation order\n",
+        "      # protected raw-byte mutation\n"
+        "      - name: Import-cycle inventory, bounds, and activation order\n",
+        1), encoding="utf-8")
     _commit(tmp_path, "mutate trusted HEAD workflow")
 
     with pytest.raises(
@@ -880,8 +911,36 @@ def test_workflow_parser_accepts_canonical_prefix_and_harmless_post_steps(
 
 
 def test_checked_in_workflow_matches_content_addressed_seal() -> None:
-    assert hashlib.sha256(WORKFLOW.read_bytes()).hexdigest() == \
+    assert cycles.workflow_seal_digest(WORKFLOW.read_bytes()) == \
         cycles.WORKFLOW_SHA256
+
+
+def test_workflow_seal_binds_the_exact_full_workflow() -> None:
+    baseline = cycles.workflow_seal_digest(ACTIVE_WORKFLOW)
+    unrelated = ACTIVE_WORKFLOW.replace("name: CI\n", "name: CI evolved\n", 1)
+    protected = ACTIVE_WORKFLOW.replace(
+        "      - name: Import-cycle inventory, bounds, and activation order\n",
+        "      # protected raw-byte mutation\n"
+        "      - name: Import-cycle inventory, bounds, and activation order\n",
+        1)
+
+    assert cycles._workflow_ratchet_error(unrelated) is None
+    assert cycles.workflow_seal_digest(unrelated) != baseline
+    assert cycles._workflow_ratchet_error(protected) is None
+    assert cycles.workflow_seal_digest(protected) != baseline
+
+
+def test_cli_generates_the_checked_in_workflow_seal() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "taskplane" / "import_cycles.py"),
+         "--root", str(ROOT), "--generate-workflow-seal"],
+        text=True, encoding="utf-8", capture_output=True, check=True,
+    )
+
+    generated = json.loads(completed.stdout)
+    assert generated == cycles.generate_workflow_seal(ROOT)
+    assert generated["schema"] == cycles.WORKFLOW_SEAL_SCHEMA
+    assert generated["sha256"] == cycles.WORKFLOW_SHA256
 
 
 @pytest.mark.parametrize(("case", "workflow"), [

@@ -21,12 +21,17 @@ from typing import Iterable, Mapping, Sequence
 SCHEMA = "taskplane.import-cycle-ratchet/v1"
 CHECK_SCHEMA = "taskplane.import-cycle-check/v1"
 HISTORY_SCHEMA = "taskplane.import-cycle-history/v1"
+WORKFLOW_SEAL_SCHEMA = "taskplane.workflow-ratchet-seal/v1"
 PACKAGE = "taskplane"
 POLICY_RELATIVE = Path("taskplane/tests/fixtures/import-cycles.json")
 WORKFLOW_RELATIVE = Path(".github/workflows/ci.yml")
 MODULE_RELATIVE = Path("taskplane/import_cycles.py")
 WORKFLOW_SHA256 = \
+    "ad14a00ec79956f401d3c9151fe106c4997959f2a0762061c3a31eb9765b0b45"
+SEALED_WORKFLOW_SHA256 = \
     "e61df03fbec44633d945490f9df0c7c2f56e074b5f2da2915343035377bfb505"
+SEALED_SCANNER_SHA256 = \
+    "fdb1e859898e05323afa2ae77a0189cba164edebb9644edc02daeac8168aace5"
 RATCHET_JOB_ID = "wave3-contracts"
 RATCHET_CHECK_NAME = "R-0006 graph + CLI contracts"
 RATCHET_STEP_NAME = "Import-cycle inventory, bounds, and activation order"
@@ -757,6 +762,45 @@ def _workflow_ratchet_error(source: str) -> str | None:
     return None
 
 
+def workflow_seal_bytes(workflow: bytes | str) -> bytes:
+    """Return exact full-workflow bytes after closed-grammar validation."""
+    if isinstance(workflow, bytes):
+        try:
+            source = workflow.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CycleHistoryError(
+                "cycle ratchet workflow is not UTF-8") from exc
+    else:
+        source = workflow
+    error = _workflow_ratchet_error(source)
+    if error is not None:
+        raise CycleHistoryError(
+            f"cycle ratchet workflow is not sealable: {error}")
+    return source.encode("utf-8")
+
+
+def workflow_seal_digest(workflow: bytes | str) -> str:
+    """Generate the content address for the protected workflow surface."""
+    return hashlib.sha256(workflow_seal_bytes(workflow)).hexdigest()
+
+
+def generate_workflow_seal(root: Path) -> dict:
+    """Generate the checked-in workflow seal from repository bytes."""
+    path = Path(root).resolve() / WORKFLOW_RELATIVE
+    try:
+        workflow = path.read_bytes()
+    except OSError as exc:
+        raise CycleHistoryError(
+            f"cannot read {WORKFLOW_RELATIVE.as_posix()}: {exc}") from exc
+    sealed = workflow_seal_bytes(workflow)
+    return {
+        "schema": WORKFLOW_SEAL_SCHEMA,
+        "path": WORKFLOW_RELATIVE.as_posix(),
+        "protected_bytes": len(sealed),
+        "sha256": hashlib.sha256(sealed).hexdigest(),
+    }
+
+
 def _scanner_contract_error(source: str) -> str | None:
     """Reject malformed scanner artifacts before applying semantic proof."""
     try:
@@ -844,9 +888,25 @@ def _first_protected_cut(root: Path) -> str | None:
     return None
 
 
-def _seal_activation(
-        root: Path, trusted_scanner: bytes,
-        trusted_workflow: bytes) -> str:
+def _trusted_scanner_blob(blob: bytes | None, trusted_scanner: bytes) -> bool:
+    """Accept only the original pre-cut seal or the exact trusted HEAD blob."""
+    return blob is not None and (
+        blob == trusted_scanner
+        or hashlib.sha256(blob).hexdigest() == SEALED_SCANNER_SHA256)
+
+
+def _sealed_workflow_blob(blob: bytes | None) -> bool:
+    if blob is None:
+        return False
+    try:
+        return workflow_seal_digest(blob) in {
+            SEALED_WORKFLOW_SHA256, WORKFLOW_SHA256,
+        }
+    except CycleHistoryError:
+        return False
+
+
+def _seal_activation(root: Path, trusted_scanner: bytes) -> str:
     commits = _run_git(
         root, "rev-list", "--first-parent", "--reverse", "HEAD", "--",
         MODULE_RELATIVE.as_posix(), WORKFLOW_RELATIVE.as_posix(),
@@ -854,9 +914,11 @@ def _seal_activation(
     expected_edges = set(TARGET_CUT_EDGES)
     activation = next((
         commit for commit in commits
-        if _show_optional_bytes(root, commit, MODULE_RELATIVE) == trusted_scanner
-        and _show_optional_bytes(root, commit, WORKFLOW_RELATIVE)
-        == trusted_workflow
+        if _trusted_scanner_blob(
+            _show_optional_bytes(root, commit, MODULE_RELATIVE),
+            trusted_scanner)
+        and _sealed_workflow_blob(
+            _show_optional_bytes(root, commit, WORKFLOW_RELATIVE))
         and _protected_edges_at_revision(root, commit) == expected_edges
     ), None)
     if activation is None:
@@ -873,15 +935,16 @@ def _seal_activation(
         f"{activation}^..HEAD",
     ).splitlines()
     for commit in sealed_commits:
-        if _show_optional_bytes(root, commit, MODULE_RELATIVE) != trusted_scanner:
+        if not _trusted_scanner_blob(
+                _show_optional_bytes(root, commit, MODULE_RELATIVE),
+                trusted_scanner):
             raise CycleHistoryError(
                 f"sealed cycle scanner changed at revision {commit}")
         workflow = _show_optional_bytes(root, commit, WORKFLOW_RELATIVE)
-        if workflow is None or hashlib.sha256(
-                workflow).hexdigest() != WORKFLOW_SHA256:
+        if not _sealed_workflow_blob(workflow):
             raise CycleHistoryError(
                 f"cycle ratchet workflow inactive at revision {commit}: "
-                "sealed workflow bytes changed or were removed")
+                "sealed workflow surface changed or was removed")
 
     first_cut = _first_protected_cut(root)
     if first_cut is not None:
@@ -964,13 +1027,12 @@ def verify_history(root: Path, policy_path: Path) -> dict:
     trusted_workflow = _show_optional_bytes(root, "HEAD", WORKFLOW_RELATIVE)
     if trusted_workflow is None:
         raise CycleHistoryError("trusted HEAD workflow is unavailable")
-    workflow_digest = hashlib.sha256(trusted_workflow).hexdigest()
+    workflow_digest = workflow_seal_digest(trusted_workflow)
     if workflow_digest != WORKFLOW_SHA256:
         raise CycleHistoryError(
             "trusted HEAD workflow hash mismatch: "
             f"expected={WORKFLOW_SHA256} actual={workflow_digest}")
-    seal_activation = _seal_activation(
-        root, trusted_scanner, trusted_workflow)
+    seal_activation = _seal_activation(root, trusted_scanner)
 
     # Audit every protected-line commit from activation through HEAD, not only
     # commits that changed the policy. This makes continuity part of the proof:
@@ -1006,7 +1068,8 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         if scanner_error is not None:
             raise CycleHistoryError(
                 f"cycle scanner inactive at revision {commit}: {scanner_error}")
-        if seal_seen and module_blob != trusted_scanner:
+        if seal_seen and not _trusted_scanner_blob(
+                module_blob, trusted_scanner):
             raise CycleHistoryError(
                 f"sealed cycle scanner changed at revision {commit}")
 
@@ -1016,10 +1079,10 @@ def verify_history(root: Path, policy_path: Path) -> dict:
                 f"cycle ratchet workflow inactive at revision {commit}: "
                 "workflow file is missing")
         if seal_seen:
-            if hashlib.sha256(workflow_blob).hexdigest() != WORKFLOW_SHA256:
+            if not _sealed_workflow_blob(workflow_blob):
                 raise CycleHistoryError(
                     f"cycle ratchet workflow inactive at revision {commit}: "
-                    "sealed workflow bytes changed")
+                    "sealed workflow surface changed")
         else:
             try:
                 workflow = workflow_blob.decode("utf-8")
@@ -1069,7 +1132,8 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         if any(target not in commit_graph.get(source, set())
                for source, target in TARGET_CUT_EDGES):
             protected_cut_seen = True
-        if protected_cut_seen and module_blob != trusted_scanner:
+        if protected_cut_seen and not _trusted_scanner_blob(
+                module_blob, trusted_scanner):
             raise CycleHistoryError(
                 f"cycle scanner at or after protected cut revision {commit} "
                 "does not match the trusted HEAD scanner blob")
@@ -1103,16 +1167,32 @@ def _parser() -> argparse.ArgumentParser:
         description="check the deterministic taskplane import-cycle ratchet")
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--policy", type=Path, default=POLICY_RELATIVE)
-    parser.add_argument("--check", action="store_true",
-                        help="compare the working tree with the policy")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true",
+                      help="compare the working tree with the policy")
+    mode.add_argument(
+        "--generate-workflow-seal", action="store_true",
+        help="print the content address of the protected CI ratchet surface")
     parser.add_argument("--verify-history", action="store_true",
                         help="prove the ratchet activated before target cuts")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
     root = args.root.resolve()
+    if args.generate_workflow_seal:
+        if args.verify_history:
+            parser.error(
+                "--generate-workflow-seal cannot be combined with "
+                "--verify-history")
+        try:
+            print(canonical_json(generate_workflow_seal(root)), end="")
+        except CycleHistoryError as exc:
+            print(f"import-cycle ratchet refused: {exc}", file=sys.stderr)
+            return 2
+        return 0
     policy_path = args.policy
     if not policy_path.is_absolute():
         policy_path = root / policy_path

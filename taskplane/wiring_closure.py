@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
+import re
 from typing import Any
 
 
@@ -278,6 +279,94 @@ def _resolve_selectors(
             raise WiringClosureError(f"exact selector is missing: {identity}")
         resolved.append(identity)
     return sorted(set(resolved))
+
+
+def acceptance_test_map(
+    contract: Mapping[str, Any],
+) -> dict[str, list[str]] | None:
+    """Return the Design AC-to-selector map when one is declared.
+
+    Older Design Contracts may omit ``acceptance_map``.  Once present, the
+    map is closed: every criterion owns a non-empty, duplicate-free list of
+    exact test identities.  This pure projection is shared by Design and the
+    BUILD-C checkpoint adapter so the adapter never imports Design runtime.
+    """
+    if not isinstance(contract, Mapping) or "acceptance_map" not in contract:
+        return None
+    rows = contract.get("acceptance_map")
+    if not isinstance(rows, list):
+        raise WiringClosureError("acceptance_map must be a list")
+    result: dict[str, list[str]] = {}
+    for index, row in enumerate(rows, 1):
+        criterion = str(row.get("criterion") or "").strip() \
+            if isinstance(row, Mapping) else ""
+        if not criterion:
+            raise WiringClosureError(
+                f"acceptance row {index} criterion is missing")
+        if criterion in result:
+            raise WiringClosureError(
+                f"acceptance criterion is duplicated: {criterion}")
+        tests = row.get("tests")
+        if (not isinstance(tests, Sequence)
+                or isinstance(tests, (str, bytes)) or not tests):
+            raise WiringClosureError(
+                f"acceptance criterion has no exact tests: {criterion}")
+        identities = []
+        for value in tests:
+            _selector_identity(value)
+            identities.append(str(value))
+        if len(identities) != len(set(identities)):
+            raise WiringClosureError(
+                f"acceptance criterion has duplicate tests: {criterion}")
+        result[criterion] = identities
+    return result
+
+
+def checkpoint_acceptance_tests(
+    caller_root: str | Path,
+    contract: Mapping[str, Any],
+    ac_ids: Sequence[str],
+) -> dict[str, list[str]] | None:
+    """Resolve Design-declared tests for one checkpoint before execution."""
+    mapping = acceptance_test_map(contract)
+    if mapping is None:
+        return None
+    criteria = list(mapping)
+    selected: list[str] = []
+    for ac_id in ac_ids:
+        criterion = ac_id if ac_id in mapping else None
+        if criterion is None:
+            ordinal = re.fullmatch(
+                r"AC-?0*([1-9][0-9]*)", ac_id, flags=re.IGNORECASE)
+            index = int(ordinal.group(1)) - 1 if ordinal else -1
+            if 0 <= index < len(criteria):
+                criterion = criteria[index]
+        if criterion is None:
+            raise WiringClosureError(
+                f"checkpoint acceptance criterion is not declared: {ac_id}")
+        if criterion in selected:
+            raise WiringClosureError(
+                "checkpoint acceptance criterion resolves more than once: "
+                f"{criterion}")
+        selected.append(criterion)
+
+    identities = [
+        identity
+        for criterion in selected
+        for identity in mapping[criterion]
+    ]
+    selectors = _resolve_selectors(
+        identities,
+        caller_root=caller_root,
+        selector_collector=collect_test_selectors,
+    )
+    files = sorted({_selector_identity(identity)[0]
+                    for identity in identities})
+    return {
+        "criteria": selected,
+        "files": files,
+        "selectors": selectors,
+    }
 
 
 def validate_acceptance_map(
