@@ -69,6 +69,16 @@ class _DesignEnv(unittest.TestCase):
 
     def _base_contract(self, graph_fp=None):
         graph_fp = graph_fp or self._graph_fp()
+        acceptance_tests = {
+            "design is approved before planning": [
+                "taskplane/tests/test_r0001_design_wiring.py::"
+                "test_present_acceptance_map_cannot_omit_tests_from_every_row",
+            ],
+            "the proposed graph stays separate": [
+                "taskplane/tests/test_r0001_design_wiring.py::"
+                "test_checkpoint_refuses_named_missing_test_file",
+            ],
+        }
         return {
             "schema": "taskplane.design/v1",
             "requirement": self.req["id"],
@@ -118,7 +128,8 @@ class _DesignEnv(unittest.TestCase):
             "acceptance_map": [
                 {"criterion": criterion,
                  "design_element": "design approval gate",
-                 "validation": "state-machine regression test"}
+                 "validation": "state-machine regression test",
+                 "tests": acceptance_tests[criterion]}
                 for criterion in self.req["acceptance"]],
             "risks": [{"risk": "persisted-state regression",
                        "mitigation": "keep Design opt-in",

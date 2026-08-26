@@ -64,6 +64,16 @@ class DesignWorkflowTest(unittest.TestCase):
         graph_fingerprint = graph_fingerprint or (
             depgraph.load(self.ws).get("meta") or {}).get(
                 "content_fingerprint")
+        acceptance_tests = {
+            "design is approved before planning": [
+                "taskplane/tests/test_r0001_design_wiring.py::"
+                "test_present_acceptance_map_cannot_omit_tests_from_every_row",
+            ],
+            "the proposed graph stays separate": [
+                "taskplane/tests/test_r0001_design_wiring.py::"
+                "test_checkpoint_refuses_named_missing_test_file",
+            ],
+        }
         contract = {
             "schema": "taskplane.design/v1",
             "requirement": self.req["id"],
@@ -115,7 +125,8 @@ class DesignWorkflowTest(unittest.TestCase):
             "acceptance_map": [
                 {"criterion": criterion,
                  "design_element": "design approval gate",
-                 "validation": "state-machine regression test"}
+                 "validation": "state-machine regression test",
+                 "tests": acceptance_tests[criterion]}
                 for criterion in self.req["acceptance"]
             ],
             "risks": [{"risk": "persisted-state regression",
@@ -205,6 +216,28 @@ class DesignWorkflowTest(unittest.TestCase):
         state = loop.load(self.ws)
         self.assertEqual(len(state["design_fingerprint"]), 64)
         self.assertEqual(state["design_approved_by"], "human — approved")
+
+    def test_design_gate_without_exact_acceptance_tests_records_no_authority(
+            self):
+        loop.init(self.ws, "design this", spec_path="specs/x.md",
+                  requirement_id=self.req["id"], design=True)
+        loop.next_action(self.ws)
+        contract = self._write_design()
+        del contract["acceptance_map"][0]["tests"]
+        contract["lens_evidence"][0]["content_fingerprint"] = \
+            dc.design_content_fingerprint(self.ws, contract)
+        with open(os.path.join(self.ws, "design", "contract.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(contract, f, indent=2)
+
+        gated = loop.gate(self.ws, "pass")
+
+        self.assertEqual(gated["step"], "design")
+        self.assertIn("acceptance criterion has no exact tests", " ".join(
+            gated["dod"]["errors"]))
+        state = loop.load(self.ws)
+        self.assertNotIn("design_fingerprint", state)
+        self.assertNotIn("design_approved_by", state)
 
     def test_design_only_finishes_after_approval(self):
         loop.init(self.ws, "design only", spec_path="specs/x.md",
