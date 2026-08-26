@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -176,6 +177,8 @@ def _usage_projection(wave_usage: Mapping[str, Any] | None) -> dict[str, Any]:
         observed = wave_usage[field]
         if isinstance(observed, bool) or not isinstance(observed, (int, float)):
             raise BriefProjectionError(f"wave_usage.{field} must be numeric")
+        if isinstance(observed, float) and not math.isfinite(observed):
+            raise BriefProjectionError(f"wave_usage.{field} must be finite")
         if observed < 0:
             raise BriefProjectionError(f"wave_usage.{field} cannot be negative")
         normalized[field] = observed

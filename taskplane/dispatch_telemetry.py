@@ -8,6 +8,7 @@ the resulting facts without starting workers or mutating loop authority.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any
 
@@ -65,6 +66,8 @@ class DispatchTelemetryError(delivery_policy.DeliveryPolicyError):
 def _nonnegative_number(value: object, label: str) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise DispatchTelemetryError(f"{label} must be numeric")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise DispatchTelemetryError(f"{label} must be finite")
     if value < 0:
         raise DispatchTelemetryError(f"{label} cannot be negative")
     return value

@@ -69,6 +69,18 @@ class PlanTopologyError(RuntimeError):
     """The Plan or a scheduler transition is structurally unsafe."""
 
 
+def _finite_number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PlanTopologyError(f"{label} must be numeric")
+    try:
+        normalized = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise PlanTopologyError(f"{label} must be finite") from exc
+    if not math.isfinite(normalized):
+        raise PlanTopologyError(f"{label} must be finite")
+    return normalized
+
+
 _ADMISSION_LOCK = threading.RLock()
 _DAG_STORE_LOCK = threading.RLock()
 
@@ -924,6 +936,7 @@ def record_worker_event(
             raise PlanTopologyError(f"unknown worker event kind: {kind}")
         if int(event["sequence"]) < 0:
             raise PlanTopologyError("worker event sequence cannot be negative")
+        _finite_number(event["at"], "worker event at")
         task = next(row for row in state["tasks"] if row["id"] == task_id)
         existing = next(
             (row for row in state["events"] if row["event_id"] == event_id), None
@@ -1059,10 +1072,22 @@ def append_replan_generation(
 
 def execution_metrics(state: Mapping[str, Any]) -> dict[str, Any]:
     """Compute the Retro parallelism and duration-weighted critical path."""
-    times = {
-        task_id: values for task_id, values in (state.get("task_times") or {}).items()
-        if values.get("start") is not None and values.get("terminal") is not None
-    }
+    scheduler_idle = _finite_number(
+        state.get("scheduler_caused_idle_seconds") or 0,
+        "scheduler-caused idle time",
+    )
+    times = {}
+    for task_id, values in (state.get("task_times") or {}).items():
+        if values.get("start") is None or values.get("terminal") is None:
+            continue
+        times[task_id] = {
+            "start": _finite_number(
+                values["start"], f"task {task_id} start time",
+            ),
+            "terminal": _finite_number(
+                values["terminal"], f"task {task_id} terminal time",
+            ),
+        }
     if not times:
         return {
             "schema": "taskplane.execution-metrics/v1",
@@ -1070,16 +1095,22 @@ def execution_metrics(state: Mapping[str, Any]) -> dict[str, Any]:
             "delivery_wall_seconds": 0,
             "parallelism_factor": 0,
             "longest_serial_chain": {"tasks": [], "seconds": 0},
-            "scheduler_caused_idle_seconds": float(state.get("scheduler_caused_idle_seconds") or 0),
+            "scheduler_caused_idle_seconds": scheduler_idle,
         }
     durations = {
-        task_id: max(0.0, float(values["terminal"]) - float(values["start"]))
+        task_id: max(0.0, values["terminal"] - values["start"])
         for task_id, values in times.items()
     }
-    starts = [float(values["start"]) for values in times.values()]
-    terminals = [float(values["terminal"]) for values in times.values()]
-    wall = max(terminals) - min(starts)
-    active = sum(durations.values())
+    durations = {
+        task_id: _finite_number(value, f"task {task_id} active time")
+        for task_id, value in durations.items()
+    }
+    starts = [values["start"] for values in times.values()]
+    terminals = [values["terminal"] for values in times.values()]
+    wall = _finite_number(
+        max(terminals) - min(starts), "delivery wall time",
+    )
+    active = _finite_number(sum(durations.values()), "active worker time")
     dependencies = state["topology"]["effective_dependencies"]
     cache: dict[str, tuple[float, list[str]]] = {}
 
@@ -1104,11 +1135,17 @@ def execution_metrics(state: Mapping[str, Any]) -> dict[str, Any]:
         (critical(task_id) for task_id in sorted(durations)),
         key=lambda item: (item[0], [-ord(ch) for ch in "/".join(item[1])]),
     )
+    longest_seconds = _finite_number(
+        longest_seconds, "longest serial chain time",
+    )
+    parallelism = _finite_number(
+        active / wall if wall else 0, "parallelism factor",
+    )
     return {
         "schema": "taskplane.execution-metrics/v1",
         "active_worker_seconds": active,
         "delivery_wall_seconds": wall,
-        "parallelism_factor": active / wall if wall else 0,
+        "parallelism_factor": parallelism,
         "longest_serial_chain": {"tasks": longest_tasks, "seconds": longest_seconds},
-        "scheduler_caused_idle_seconds": float(state.get("scheduler_caused_idle_seconds") or 0),
+        "scheduler_caused_idle_seconds": scheduler_idle,
     }

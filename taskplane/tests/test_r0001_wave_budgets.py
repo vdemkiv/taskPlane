@@ -203,6 +203,86 @@ def test_any_binding_budget_ceiling_stops_for_human_scope_review(
     assert owner_stop["status"] == "human_scope_review"
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_dispatch_telemetry_rejects_non_finite_time_boundaries(value: float) -> None:
+    with pytest.raises(dispatch_telemetry.DispatchTelemetryError, match="finite"):
+        dispatch_telemetry.new_ledger(
+            run_id="run", source_sha="a" * 40,
+            design_fingerprint="design", plan_fingerprint="plan",
+            started_at=value,
+        )
+
+    ledger = dispatch_telemetry.new_ledger(
+        run_id="run", source_sha="a" * 40,
+        design_fingerprint="design", plan_fingerprint="plan",
+        started_at=0,
+    )
+    with pytest.raises(dispatch_telemetry.DispatchTelemetryError, match="finite"):
+        dispatch_telemetry.budget_projection(
+            ledger, FakeClock(wall_time=value),
+        )
+    with pytest.raises(dispatch_telemetry.DispatchTelemetryError, match="finite"):
+        dispatch_telemetry.dispatch_event(
+            dispatch_id="dispatch", thread_id="thread", thread_type="worker",
+            task_id="task", sequence=1, kind="complete", at=value,
+        )
+
+
+@pytest.mark.parametrize("field", dispatch_telemetry.WAVE_BUDGET_CEILINGS)
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_budget_projection_rejects_non_finite_override_matrix(
+    field: str, value: float,
+) -> None:
+    ledger = dispatch_telemetry.new_ledger(
+        run_id="run", source_sha="a" * 40,
+        design_fingerprint="design", plan_fingerprint="plan",
+        started_at=0,
+    )
+
+    with pytest.raises(dispatch_telemetry.DispatchTelemetryError, match="finite"):
+        dispatch_telemetry.budget_projection(
+            ledger, FakeClock(wall_time=0), overrides={field: value},
+        )
+
+
+@pytest.mark.parametrize("field", dispatch_telemetry.WAVE_BUDGET_CEILINGS)
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_brief_projection_rejects_non_finite_wave_usage_matrix(
+    field: str, value: float,
+) -> None:
+    usage = {
+        "elapsed_seconds": 0,
+        "sessions": 0,
+        "total_tokens": 0,
+        "uncached_input_tokens": 0,
+    }
+    usage[field] = value
+
+    with pytest.raises(brief_projection.BriefProjectionError, match="finite"):
+        brief_projection.project(_loop_action(), wave_usage=usage)
+
+
 def test_dispatch_telemetry_records_all_required_fields_and_thread_types() -> None:
     ledger = dispatch_telemetry.new_ledger(
         run_id="run", source_sha="a" * 40,

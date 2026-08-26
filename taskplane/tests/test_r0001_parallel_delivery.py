@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import json
 import threading
 
@@ -227,6 +228,65 @@ def test_long_worker_complete_without_progress_fails_without_mutation():
 
     assert state["events"] == []
     assert state["statuses"]["long"] == "in_flight"
+
+
+@pytest.mark.parametrize(
+    "at",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_non_finite_worker_event_time_fails_without_any_state_mutation(at):
+    state = _state([
+        _task("a", scope=("a",)),
+        _task("b", deps=("a",), scope=("b",)),
+    ])
+    _admit(state, concurrency=1, max_in_flight=1)
+    before = copy.deepcopy(state)
+
+    with pytest.raises(PlanTopologyError, match="finite"):
+        record_worker_event(
+            state,
+            {"event_id": "a-1", "task_id": "a", "sequence": 1,
+             "kind": "complete", "at": at},
+            host_capability={"configured_host_concurrency": 1},
+            budget={"max_in_flight": 1, "session_limit": 60},
+            clock=FakeClock(wall_time=2),
+            capability_factory=RecordedTaskDispatchCapabilityFactory(),
+        )
+
+    assert state == before
+    assert execution_metrics(state) == {
+        "schema": "taskplane.execution-metrics/v1",
+        "active_worker_seconds": 0,
+        "delivery_wall_seconds": 0,
+        "parallelism_factor": 0,
+        "longest_serial_chain": {"tasks": [], "seconds": 0},
+        "scheduler_caused_idle_seconds": 0.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("start", float("nan"), id="start-nan"),
+        pytest.param("terminal", float("inf"), id="terminal-positive-infinity"),
+        pytest.param("terminal", float("-inf"), id="terminal-negative-infinity"),
+    ],
+)
+def test_execution_metrics_fail_closed_on_non_finite_authoritative_time(
+    field, value,
+):
+    state = _state([_task("a", scope=("a",))])
+    state["task_times"] = {"a": {"start": 0, "terminal": 1}}
+    state["task_times"]["a"][field] = value
+
+    with pytest.raises(PlanTopologyError, match="finite"):
+        execution_metrics(state)
+    with pytest.raises(PlanTopologyError, match="finite"):
+        retro.performance_projection(state)
 
 
 def test_retro_reports_parallelism_factor_and_longest_serial_chain():
