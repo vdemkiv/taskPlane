@@ -4498,115 +4498,8 @@ def _trusted_parallel_plan_task_definitions(
     return normalized, None
 
 
-def _trusted_parallel_evidence_chain(
-        scheduler: Mapping[str, object], reservations: list,
-        evidence_store: object | None) -> str | None:
-    """Bind every admission receipt to the immutable telemetry store chain."""
-    scheduler_head = scheduler.get("evidence_head")
-    fingerprints = [reservation.get("evidence_fingerprint")
-                    for reservation in reservations]
-    if all(fingerprint is None for fingerprint in fingerprints):
-        if scheduler_head is not None:
-            return "scheduler evidence head exists without reservation evidence"
-        if evidence_store is None:
-            return None
-        return "scheduler reservation evidence is missing from production " \
-            "state"
-    if any(not isinstance(fingerprint, str) or re.fullmatch(
-            r"[0-9a-f]{64}", fingerprint) is None
-            for fingerprint in fingerprints) or \
-            scheduler_head != fingerprints[-1]:
-        return "scheduler evidence chain fingerprints are malformed or stale"
-    store_path = getattr(evidence_store, "path", None)
-    if not isinstance(store_path, (str, bytes, os.PathLike)):
-        return "scheduler evidence store is unavailable"
-    root = os.path.realpath(os.fspath(store_path))
-    telemetry = os.path.realpath(os.path.join(root, "telemetry"))
-    if os.path.commonpath((root, telemetry)) != root:
-        return "scheduler evidence store containment is invalid"
-    receipt_fields = {
-        "domain", "operation_id", "predecessor_fingerprint", "payload",
-        "payload_fingerprint", "prepare_token", "fingerprint",
-    }
-    intent_fields = {
-        "domain", "operation_id", "expected_head", "payload",
-        "payload_fingerprint", "token",
-    }
-    predecessor = None
-    try:
-        for reservation, fingerprint in zip(reservations, fingerprints):
-            receipt_path = os.path.realpath(os.path.join(
-                telemetry, "receipts", fingerprint + ".json"))
-            if os.path.commonpath((telemetry, receipt_path)) != telemetry or \
-                    not os.path.isfile(receipt_path) or \
-                    os.path.islink(receipt_path):
-                return "scheduler evidence receipt is absent from its store"
-            with open(receipt_path, encoding="utf-8") as stream:
-                receipt = json.load(stream)
-            if not isinstance(receipt, Mapping) or \
-                    set(receipt) != receipt_fields:
-                return "scheduler evidence receipt schema is malformed"
-            receipt_material = {field: value for field, value in receipt.items()
-                                if field != "fingerprint"}
-            if receipt.get("fingerprint") != fingerprint or \
-                    plan_topology.content_fingerprint(receipt_material) != \
-                    fingerprint or receipt.get("domain") != "telemetry" or \
-                    receipt.get("operation_id") != "dispatch-" + str(
-                        reservation["reservation_fingerprint"]) or \
-                    receipt.get("predecessor_fingerprint") != predecessor:
-                return "scheduler evidence receipt bindings are invalid"
-            payload = base64.b64decode(receipt.get("payload"), validate=True)
-            if receipt.get("payload_fingerprint") != \
-                    plan_topology.content_fingerprint(payload):
-                return "scheduler evidence payload fingerprint is invalid"
-            decoded = json.loads(payload)
-            expected_payload = {
-                field: value for field, value in reservation.items()
-                if field != "evidence_fingerprint"
-            }
-            if decoded != expected_payload:
-                return "scheduler evidence payload does not match reservation"
-            token = receipt.get("prepare_token")
-            if not isinstance(token, str) or re.fullmatch(
-                    r"[0-9a-f]{64}", token) is None:
-                return "scheduler evidence prepare token is malformed"
-            intent_path = os.path.realpath(os.path.join(
-                telemetry, "intents", token + ".json"))
-            if os.path.commonpath((telemetry, intent_path)) != telemetry or \
-                    not os.path.isfile(intent_path) or os.path.islink(intent_path):
-                return "scheduler evidence intent is absent from its store"
-            with open(intent_path, encoding="utf-8") as stream:
-                intent = json.load(stream)
-            if not isinstance(intent, Mapping) or set(intent) != intent_fields:
-                return "scheduler evidence intent schema is malformed"
-            intent_material = {field: value for field, value in intent.items()
-                               if field != "token"}
-            if intent.get("token") != token or \
-                    plan_topology.content_fingerprint(intent_material) != token or \
-                    intent.get("domain") != receipt["domain"] or \
-                    intent.get("operation_id") != receipt["operation_id"] or \
-                    intent.get("expected_head") != predecessor or \
-                    intent.get("payload") != receipt["payload"] or \
-                    intent.get("payload_fingerprint") != \
-                    receipt["payload_fingerprint"]:
-                return "scheduler evidence intent bindings are invalid"
-            predecessor = fingerprint
-        for name in ("HEAD", "STATE"):
-            path = os.path.join(telemetry, name)
-            if not os.path.isfile(path) or os.path.islink(path):
-                return "scheduler evidence store head is missing"
-            with open(path, encoding="utf-8") as stream:
-                if stream.read().strip() != scheduler_head:
-                    return "scheduler evidence store head is stale"
-    except (OSError, TypeError, ValueError, json.JSONDecodeError,
-            base64.binascii.Error):
-        return "scheduler evidence chain is malformed"
-    return None
-
-
 def _trusted_parallel_active_reservations(
-        scheduler: Mapping[str, object], *, identity: Mapping[str, object],
-        evidence_store: object | None = None) \
+        scheduler: Mapping[str, object], *, identity: Mapping[str, object]) \
         -> tuple[list[dict], str | None]:
     """Validate the closed reservation chain before projecting in-flight work."""
     reservations = scheduler.get("reservations")
@@ -4640,11 +4533,6 @@ def _trusted_parallel_active_reservations(
         "reservation_fingerprint", "dispatch_set", "assignments",
         "reserved_at", "evidence_fingerprint",
     }
-    revision_head = scheduler.get("revision")
-    if isinstance(revision_head, bool) or \
-            not isinstance(revision_head, int) or \
-            revision_head != len(reservations):
-        return [], "scheduler reservation revision head is malformed or stale"
     expected_identity = (
         identity["run_id"], identity["source_sha"],
         scheduler.get("design_fingerprint"), identity["plan_fingerprint"],
@@ -4653,7 +4541,7 @@ def _trusted_parallel_active_reservations(
     )
     validated = {}
     predecessor_fingerprint = None
-    for ordinal, reservation in enumerate(reservations):
+    for reservation in reservations:
         if not isinstance(reservation, Mapping) or \
                 set(reservation) != reservation_fields:
             return [], "scheduler reservation chain contains a malformed " \
@@ -4676,8 +4564,7 @@ def _trusted_parallel_active_reservations(
                 not isinstance(assignments, list) or \
                 isinstance(scheduler_revision, bool) or \
                 not isinstance(scheduler_revision, int) or \
-                scheduler_revision != ordinal or \
-                isinstance(reserved_at, bool) or \
+                scheduler_revision < 0 or isinstance(reserved_at, bool) or \
                 not isinstance(reserved_at, (int, float)) or \
                 not math.isfinite(float(reserved_at)) or \
                 (evidence_fingerprint is not None and (
@@ -4797,11 +4684,6 @@ def _trusted_parallel_active_reservations(
         }
         predecessor_fingerprint = reservation_fingerprint
 
-    evidence_error = _trusted_parallel_evidence_chain(
-        scheduler, reservations, evidence_store)
-    if evidence_error:
-        return [], evidence_error
-
     projected = []
     for task_id, reservation_fingerprint in sorted(in_flight.items()):
         task_id = str(task_id)
@@ -4855,12 +4737,6 @@ def _trusted_parallel_tranche(
     task_ids = {str(task_id) for task_id in topology.get("task_ids") or []}
     if set(statuses) != task_ids or not set(in_flight).issubset(task_ids):
         return [], "sealed Plan scheduler statuses are stale"
-    allowed_statuses = set(plan_topology.TERMINAL_STATUSES) | {
-        "ready", "in_flight",
-    }
-    if any(not isinstance(status, str) or status not in allowed_statuses
-           for status in statuses.values()):
-        return [], "sealed Plan scheduler status value is malformed"
     missing = topology.get("missing_test_assets") or {}
     ready = []
     for task_id in topology.get("task_ids") or []:
@@ -4941,29 +4817,22 @@ def _trusted_parallel_assertion_structure(value: object) -> bool:
             not isinstance(capacity, int) or isinstance(capacity, bool) or \
             capacity != value.get("max_in_flight") or \
             capacity < 2 or capacity > SCHEDULER_TRUSTED_PARALLEL_CAP or \
-            len(tranche) != capacity or \
+            len(tranche) != capacity or len(set(tranche)) != len(tranche) or \
             any(not isinstance(task_id, str) or re.fullmatch(
                 r"t17[a-z0-9_-]+", task_id, flags=re.IGNORECASE) is None
                 for task_id in tranche) or \
-            len(set(tranche)) != len(tranche) or \
-            len(reservations) > capacity or \
             isinstance(asserted_at, bool) or \
             not isinstance(asserted_at, (int, float)) or \
             not math.isfinite(float(asserted_at)):
         return False
-    reservation_task_ids = []
     for reservation in reservations:
         if not isinstance(reservation, Mapping) or set(reservation) != {
                 "task_id", "reservation_fingerprint", "capability_id"} or \
-                not isinstance(reservation.get("task_id"), str) or \
                 reservation.get("task_id") not in tranche or any(
                     re.fullmatch(r"[0-9a-f]{64}", str(
                         reservation.get(field) or "")) is None
                     for field in ("reservation_fingerprint", "capability_id")):
             return False
-        reservation_task_ids.append(reservation["task_id"])
-    if len(set(reservation_task_ids)) != len(reservation_task_ids):
-        return False
     material = {field: item for field, item in value.items()
                 if field != "fingerprint"}
     return value.get("fingerprint") == \
@@ -5069,23 +4938,9 @@ def scheduler_capacity_from_plan(
                 scheduler, sealed_plan_tasks=locked.get("tasks"))
             if tranche_error:
                 return {"error": tranche_error}
-            scheduler_evidence_store = None
-            state_claims_evidence = scheduler.get("evidence_head") is not \
-                None or any(
-                    isinstance(reservation, Mapping) and
-                    reservation.get("evidence_fingerprint") is not None
-                    for reservation in scheduler.get("reservations") or [])
-            try:
-                scheduler_evidence_store, _ = \
-                    _production_scheduler_evidence(ws, locked)
-            except Exception as exc:
-                if state_claims_evidence:
-                    return {"error": "scheduler evidence store is "
-                                     "unavailable: " + str(exc)}
             current_reservations, reservation_error = \
                 _trusted_parallel_active_reservations(
-                    scheduler, identity=identity,
-                    evidence_store=scheduler_evidence_store)
+                    scheduler, identity=identity)
             if reservation_error:
                 return {"error": reservation_error}
             loop_tasks = {
@@ -5134,12 +4989,6 @@ def scheduler_capacity_from_plan(
                     sealed_fingerprint=str(sealed["fingerprint"]),
                 )
             ), None)
-            if prior_assertion is not None and (
-                    prior_assertion["derived_tranche_members"] != tranche or
-                    prior_assertion["current_reservations"] !=
-                    current_reservations):
-                return {"error": "trusted parallel replay assertion evidence "
-                                 "does not match the current scheduler"}
             if prior_assertion is not None and \
                     float(validated_existing["expires_at"]) > now and \
                     prior_assertion["actor"] != actor:
