@@ -21,9 +21,10 @@ import taskplane_lite as tp
 import storage as runtime_storage
 
 try:
-    from . import dispatch_telemetry
+    from . import dispatch_telemetry, plan_topology
 except ImportError:  # pragma: no cover - direct module loading
     import dispatch_telemetry
+    import plan_topology
 
 
 _STAGE_VIEW_LIMIT = 100
@@ -67,23 +68,46 @@ def _execution_state(tasks: list, events: list) -> dict:
 
 
 def _authoritative_execution_state(
-        state: dict, tasks: list, events: list) -> tuple[dict, str]:
+        state: dict, tasks: list, events: list, *,
+        execution_dag_store=None) -> tuple[dict, str]:
     scheduler = state.get("performance_scheduler")
     if isinstance(scheduler, dict):
         # This validates statuses, events, and metric computability before
         # Retro signs the report.  The persisted execution DAG remains the
         # authority; trace rows are not used to reconstruct it.
         dispatch_telemetry.scheduler_projection(scheduler)
-        dag = scheduler.get("execution_dag")
-        if not isinstance(dag, dict) or \
-                dag.get("schema") != "taskplane.execution-dag/v1" or \
-                not str(dag.get("fingerprint") or ""):
+        if execution_dag_store is None:
+            raise ValueError(
+                "authoritative execution DAG store is unavailable")
+        head = execution_dag_store.read_head()
+        if head != scheduler.get("execution_dag_head"):
+            raise ValueError(
+                "scheduler execution DAG head contradicts stored authority")
+        dag = execution_dag_store.read_dag()
+        if dag.get("fingerprint") != head.get("fingerprint"):
             raise ValueError("authoritative execution DAG is unavailable")
-        return scheduler, "persisted-scheduler-dag"
+        authoritative = json.loads(json.dumps(scheduler))
+        authoritative["execution_dag"] = dag
+        return authoritative, "managed-run-execution-dag-head"
     if isinstance(state.get("dispatch_telemetry"), dict):
         raise ValueError(
             "dispatch telemetry exists without its authoritative scheduler")
     return _execution_state(tasks, events), "legacy-trace-compatibility"
+
+
+def _managed_execution_dag_store(ws: str, state: dict):
+    locator = runtime_storage.load_workspace_locator(ws)
+    scheduler = state.get("performance_scheduler")
+    run_id = str((scheduler or {}).get("run_id") or "")
+    if not isinstance(locator, dict) or not run_id or \
+            str(locator.get("run_id") or "") != run_id:
+        raise ValueError("authoritative managed-run locator is unavailable")
+    home = os.path.realpath(str(locator.get("home") or ""))
+    managed_run = os.path.realpath(os.path.join(home, "runs", run_id))
+    if not os.path.isdir(managed_run) or \
+            os.path.commonpath((home, managed_run)) != home:
+        raise ValueError("authoritative managed-run root is unavailable")
+    return plan_topology.ExecutionDagRevisionStore(managed_run)
 
 
 def _events_for_run(ws: str, state: dict) -> tuple[list, float | None]:
@@ -458,7 +482,13 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
         }
         try:
             execution_state, execution_metric_source = \
-                _authoritative_execution_state(state, tasks, events)
+                _authoritative_execution_state(
+                    state, tasks, events,
+                    execution_dag_store=(
+                        _managed_execution_dag_store(ws, state)
+                        if isinstance(state.get("performance_scheduler"), dict)
+                        else None),
+                )
             execution_metrics = performance_projection(execution_state)
         except (ValueError, TypeError,
                 dispatch_telemetry.DispatchTelemetryError) as exc:
@@ -492,7 +522,8 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                     execution_state["execution_dag"].get("nodes") or []),
                 "edges": len(
                     execution_state["execution_dag"].get("edges") or []),
-            } if execution_metric_source == "persisted-scheduler-dag"
+            } if execution_metric_source ==
+            "managed-run-execution-dag-head"
                else None),
         }
         if stage_native:

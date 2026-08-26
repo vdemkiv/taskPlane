@@ -22,13 +22,13 @@ import taskplane_lite as tp
 if __package__:
     from . import delivery_policy, plan_topology
     from .delivery_ports import (
-        RecordedTaskDispatchCapabilityFactory,
+        LocatorEvidenceStore,
         SystemClock,
     )
 else:  # pragma: no cover - direct CLI module loading
     import delivery_policy
     import plan_topology
-    from delivery_ports import RecordedTaskDispatchCapabilityFactory, SystemClock
+    from delivery_ports import LocatorEvidenceStore, SystemClock
 
 
 PROGRAM_LEDGER_SCHEMA = "taskplane.program-phase-ledger/v1"
@@ -183,7 +183,9 @@ def assign_scopes(
         wait_policy_factory: Callable[[str, int], dict] | None = None,
         wait_invocation_factory: Callable[[Mapping[str, object],
                                            list[str]], dict] | None = None,
-        repository_files=None) \
+        repository_files=None, host_capability_receipt=None,
+        capability_factory=None, evidence_store=None,
+        execution_dag_store=None, clock=None) \
         -> dict:
     """Assign the first deterministic set of ready graph-disjoint tasks.
 
@@ -261,17 +263,9 @@ def assign_scopes(
     if not selected:
         raise ScopeAssignmentError("no ready scope can be assigned")
 
-    member_ids = [row["task_id"] for row in selected]
-    wait_policy, wait_invocation = _assignment_wait(
-        member_ids, wait_policy_factory=wait_policy_factory,
-        wait_invocation_factory=wait_invocation_factory)
-    configured_host_concurrency = int(
-        wait_policy.get("outstanding_count") or 0)
-    if configured_host_concurrency < 1:
-        raise ScopeAssignmentError(
-            "direct assignment host concurrency binding is unavailable")
-    design_fingerprint = str(
-        state.get("design_fingerprint") or "legacy-design")
+    clock = clock or SystemClock()
+    design_fingerprint = str(state.get("design_fingerprint") or
+                             hashlib.sha256(b"legacy-design").hexdigest())
     plan_fingerprint = str(state.get("plan_fingerprint") or "")
     if not plan_fingerprint:
         plan_fingerprint = hashlib.sha256(json.dumps(
@@ -283,6 +277,27 @@ def assign_scopes(
             "revision": revision, "plan_fingerprint": plan_fingerprint,
         }, sort_keys=True, separators=(",", ":")).encode(
             "utf-8")).hexdigest()
+    try:
+        capacity = plan_topology.validate_scheduler_host_capability(
+            host_capability_receipt if host_capability_receipt is not None
+            else state.get("scheduler_host_capability_receipt"),
+            run_id=run_id, source_sha=revision,
+            plan_fingerprint=plan_fingerprint, clock=clock)
+    except plan_topology.PlanTopologyError as exc:
+        raise ScopeAssignmentError(
+            "direct assignment host capacity refused: " + str(exc)) from exc
+    if capacity["configured_host_concurrency"] == 0 or \
+            capacity["max_in_flight"] == 0:
+        raise ScopeAssignmentError(
+            "direct assignment host capacity is zero — human scope review")
+    expected_member_count = min(
+        len(selected), capacity["configured_host_concurrency"],
+        capacity["max_in_flight"])
+    expected_member_ids = [row["task_id"]
+                           for row in selected[:expected_member_count]]
+    wait_policy, wait_invocation = _assignment_wait(
+        expected_member_ids, wait_policy_factory=wait_policy_factory,
+        wait_invocation_factory=wait_invocation_factory)
     scheduler = plan_topology.new_scheduler_state(
         tasks, run_id=run_id, source_sha=revision,
         design_fingerprint=design_fingerprint,
@@ -295,21 +310,60 @@ def assign_scopes(
             for row in tasks if isinstance(row, Mapping) and row.get("id")
         },
     )
+    if evidence_store is None or execution_dag_store is None:
+        locator = runtime_storage.load_workspace_locator(ws)
+        if not isinstance(locator, Mapping) or \
+                str(locator.get("run_id") or "") != run_id:
+            raise ScopeAssignmentError(
+                "direct assignment evidence requires the exact managed run")
+        home = os.path.realpath(str(locator.get("home") or ""))
+        managed_run = os.path.realpath(os.path.join(home, "runs", run_id))
+        if not os.path.isdir(managed_run) or \
+                os.path.commonpath((home, managed_run)) != home:
+            raise ScopeAssignmentError(
+                "direct assignment managed run root is unavailable")
+        repository_identity = str(
+            locator.get("repo_id") or locator.get("repository_key") or "")
+        if not repository_identity:
+            raise ScopeAssignmentError(
+                "direct assignment repository identity is unavailable")
+        repository_fingerprint = hashlib.sha256(
+            repository_identity.encode("utf-8")).hexdigest()
+        evidence_store = evidence_store or LocatorEvidenceStore(
+            managed_run, repository_fingerprint, "build-c-scheduler")
+        execution_dag_store = (execution_dag_store or
+                               plan_topology.ExecutionDagRevisionStore(
+                                   managed_run))
+    scheduler["execution_dag_head"] = execution_dag_store.persist(
+        scheduler["execution_dag"], expected_head=None)
     scheduler_admission = plan_topology.admit_ready_batch(
         scheduler,
-        {"configured_host_concurrency": configured_host_concurrency},
-        {"max_in_flight": configured_host_concurrency,
+        {"configured_host_concurrency":
+             capacity["configured_host_concurrency"]},
+        {"max_in_flight": capacity["max_in_flight"],
          "session_limit": 60},
-        None, SystemClock(),
-        capability_factory=RecordedTaskDispatchCapabilityFactory(),
+        evidence_store, clock,
+        capability_factory=(capability_factory or
+                            plan_topology.
+                            ClosedTaskDispatchCapabilityFactory()),
     )
     if scheduler_admission.get("status") != "admitted" or \
-            list((scheduler_admission.get("dispatch_set") or {}).get(
-                "members") or []) != member_ids or \
             not str(scheduler_admission.get(
                 "reservation_fingerprint") or ""):
         raise ScopeAssignmentError(
             "direct assignment reservation/capacity binding was refused")
+    admitted_ids = list((scheduler_admission.get("dispatch_set") or {}).get(
+        "members") or [])
+    if admitted_ids != expected_member_ids:
+        raise ScopeAssignmentError(
+            "direct assignment reservation contradicted host capacity")
+    admitted = set(admitted_ids)
+    serialized.extend({
+        "task_id": row["task_id"], "blocked_by": None,
+        "reason": "host_capacity",
+    } for row in selected if row["task_id"] not in admitted)
+    selected = [row for row in selected if row["task_id"] in admitted]
+    member_ids = admitted_ids
     scheduler_assignments = {
         str(row["task_id"]): dict(row)
         for row in scheduler_admission["assignments"]
@@ -338,15 +392,8 @@ def assign_scopes(
             "registration": dict(registration),
             "reservation_fingerprint":
                 scheduler_admission["reservation_fingerprint"],
-            # Keep the legacy stateless receipt free of every old claim-state
-            # marker while carrying the capability id and all enforceable
-            # default-deny bindings.  The issuer's authenticity disclaimer is
-            # metadata, not worker authority, and remains bound into the id.
-            "capability": {
-                key: value for key, value in
-                scheduler_assignments[task_id]["capability"].items()
-                if key != "cryptographic_authenticity_claimed"
-            },
+            "capability": dict(
+                scheduler_assignments[task_id]["capability"]),
             "event_contract":
                 scheduler_assignments[task_id]["event_contract"],
         })
@@ -365,6 +412,7 @@ def assign_scopes(
             scheduler_admission["reservation_fingerprint"],
         "topology_fingerprint": topology["fingerprint"],
         "scheduler_revision": scheduler["revision"],
+        "execution_dag_head": scheduler["execution_dag_head"],
     }
     return {**material, "fingerprint": hashlib.sha256(json.dumps(
         material, sort_keys=True, separators=(",", ":")

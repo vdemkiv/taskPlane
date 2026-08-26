@@ -73,7 +73,7 @@ if __package__:
     from . import plan_topology
     from . import producer_observation as producer_observation_policy
     from .delivery_ports import (
-        RecordedTaskDispatchCapabilityFactory,
+        LocatorEvidenceStore,
         SystemClock,
     )
 else:  # pragma: no cover - direct CLI module loading
@@ -82,7 +82,7 @@ else:  # pragma: no cover - direct CLI module loading
     import dispatch_telemetry
     import plan_topology
     import producer_observation as producer_observation_policy
-    from delivery_ports import RecordedTaskDispatchCapabilityFactory, SystemClock
+    from delivery_ports import LocatorEvidenceStore, SystemClock
 
 LOOP_FILE = "loop.json"
 
@@ -4339,8 +4339,8 @@ def _dispatch_telemetry_identity(ws: str, state: Mapping[str, object]) -> dict:
             "goal": state.get("goal"),
         }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     source_sha = str(state.get("baseline") or tp.git_head(ws) or "unknown")
-    design_fingerprint = str(
-        state.get("design_fingerprint") or "legacy-design")
+    design_fingerprint = str(state.get("design_fingerprint") or
+                             hashlib.sha256(b"legacy-design").hexdigest())
     plan_fingerprint = str(state.get("plan_fingerprint") or "")
     if not plan_fingerprint:
         runtime_fields = {
@@ -4422,10 +4422,17 @@ def _current_scheduler(
             scheduler.get("execution_dag") or {}, tasks, clock)
         replacement["events"] = list(scheduler.get("events") or [])
         replacement["task_times"] = dict(scheduler.get("task_times") or {})
+        replacement["reservations"] = list(
+            scheduler.get("reservations") or [])
+        replacement["sessions_admitted"] = int(
+            scheduler.get("sessions_admitted") or 0)
+        replacement["evidence_head"] = scheduler.get("evidence_head")
         replacement["scheduler_caused_idle_seconds"] = float(
             scheduler.get("scheduler_caused_idle_seconds") or 0)
         replacement["prior_generation_fingerprint"] = str(
             (scheduler.get("execution_dag") or {}).get("fingerprint") or "")
+        replacement["execution_dag_head"] = scheduler.get(
+            "execution_dag_head")
         scheduler = replacement
     else:
         scheduler = json.loads(json.dumps(scheduler))
@@ -4444,6 +4451,36 @@ def _current_scheduler(
         elif prior != "in_flight":
             scheduler["statuses"][task_id] = "ready"
     return scheduler
+
+
+def _production_scheduler_evidence(ws: str, state: Mapping[str, object]):
+    """Resolve the exact managed-run evidence owners for production."""
+    locator = runtime_storage.load_workspace_locator(ws)
+    identity = _dispatch_telemetry_identity(ws, state)
+    if not isinstance(locator, Mapping) or \
+            str(locator.get("run_id") or "") != identity["run_id"]:
+        raise plan_topology.PlanTopologyError(
+            "scheduler evidence requires the exact managed run locator")
+    home = os.path.realpath(str(locator.get("home") or ""))
+    managed_run = os.path.realpath(os.path.join(
+        home, "runs", identity["run_id"]))
+    if not home or not os.path.isabs(home) or \
+            os.path.commonpath((home, managed_run)) != home or \
+            not os.path.isdir(managed_run):
+        raise plan_topology.PlanTopologyError(
+            "scheduler managed run root is unavailable")
+    repository_identity = str(
+        locator.get("repo_id") or locator.get("repository_key") or "")
+    if not repository_identity:
+        raise plan_topology.PlanTopologyError(
+            "scheduler repository identity is unavailable")
+    repository_fingerprint = hashlib.sha256(
+        repository_identity.encode("utf-8")).hexdigest()
+    return (
+        LocatorEvidenceStore(
+            managed_run, repository_fingerprint, "scheduler"),
+        plan_topology.ExecutionDagRevisionStore(managed_run),
+    )
 
 
 def _replayed_scheduler_admission(
@@ -4476,28 +4513,83 @@ def _replayed_scheduler_admission(
 
 def _admit_scheduler_wave(
         ws: str, ready: list[dict], *, repository_files: set[str],
-        capacity: Mapping[str, object], clock: SystemClock) -> dict:
+        clock: SystemClock, capacity: Mapping[str, object] | None = None,
+        capability_factory=None, evidence_store=None,
+        execution_dag_store=None) -> dict:
     """Persist/replay the capability-bound admission consumed by wave()."""
-    if not isinstance(capacity, Mapping) or \
-            int(capacity.get("configured_host_concurrency") or 0) < 1 or \
-            int(capacity.get("max_in_flight") or 0) < 1 or \
-            int(capacity.get("session_limit") or 0) < 1:
-        raise plan_topology.PlanTopologyError(
-            "wave admission lacks its complete capacity binding")
-    capacity_binding = {
-        "schema": "taskplane.scheduler-capacity-binding/v1",
-        "configured_host_concurrency": int(
-            capacity["configured_host_concurrency"]),
-        "max_in_flight": int(capacity["max_in_flight"]),
-        "session_limit": int(capacity["session_limit"]),
-    }
     ready_ids = {str(task["id"]) for task in ready}
     with mutate(ws) as locked:
         if locked is None:
             raise plan_topology.PlanTopologyError("no active loop")
         scheduler = _current_scheduler(
             ws, locked, repository_files=repository_files, clock=clock)
+        if capacity is None:
+            try:
+                validated = plan_topology.validate_scheduler_host_capability(
+                    locked.get("scheduler_host_capability_receipt"),
+                    run_id=scheduler["run_id"],
+                    source_sha=scheduler["source_sha"],
+                    plan_fingerprint=scheduler["plan_fingerprint"],
+                    clock=clock)
+            except plan_topology.PlanTopologyError as exc:
+                locked["performance_scheduler"] = scheduler
+                return {
+                    "schema": plan_topology.ADMISSION_SCHEMA,
+                    "status": "stop_for_human_scope_review",
+                    "reason": str(exc), "reservation_fingerprint": None,
+                    "dispatch_set": None, "assignments": [],
+                    "overflow_ready": sorted(ready_ids), "held": [],
+                }
+            capacity = {
+                **validated,
+                "session_limit": dispatch_telemetry.
+                    WAVE_BUDGET_CEILINGS["sessions"],
+            }
+            capacity_authority = "validated-host-receipt"
+            receipt_fingerprint = str(locked[
+                "scheduler_host_capability_receipt"]["fingerprint"])
+        else:
+            if not isinstance(capacity, Mapping) or \
+                    int(capacity.get("configured_host_concurrency") or 0) < 1 or \
+                    int(capacity.get("max_in_flight") or 0) < 1 or \
+                    int(capacity.get("session_limit") or 0) < 1:
+                raise plan_topology.PlanTopologyError(
+                    "wave admission lacks its complete capacity binding")
+            capacity_authority = "explicit-test-port"
+            receipt_fingerprint = None
+        capacity_binding = {
+            "schema": "taskplane.scheduler-capacity-binding/v1",
+            "authority": capacity_authority,
+            "host_capability_fingerprint": receipt_fingerprint,
+            "configured_host_concurrency": int(
+                capacity["configured_host_concurrency"]),
+            "max_in_flight": int(capacity["max_in_flight"]),
+            "session_limit": int(capacity["session_limit"]),
+        }
+        if capacity_binding["configured_host_concurrency"] == 0 or \
+                capacity_binding["max_in_flight"] == 0:
+            locked["performance_scheduler"] = scheduler
+            return {
+                "schema": plan_topology.ADMISSION_SCHEMA,
+                "status": "stop_for_human_scope_review",
+                "reason": "validated host capacity is zero",
+                "reservation_fingerprint": None, "dispatch_set": None,
+                "assignments": [], "overflow_ready": sorted(ready_ids),
+                "held": [],
+            }
         scheduler["capacity_binding"] = capacity_binding
+        if evidence_store is None or execution_dag_store is None:
+            if capacity_authority != "validated-host-receipt":
+                raise plan_topology.PlanTopologyError(
+                    "hermetic scheduler requires explicit evidence stores")
+            production_evidence, production_dag = \
+                _production_scheduler_evidence(ws, locked)
+            evidence_store = evidence_store or production_evidence
+            execution_dag_store = execution_dag_store or production_dag
+        expected_dag_head = ((scheduler.get("execution_dag_head") or {})
+                             .get("fingerprint"))
+        scheduler["execution_dag_head"] = execution_dag_store.persist(
+            scheduler["execution_dag"], expected_head=expected_dag_head)
         replay = _replayed_scheduler_admission(scheduler, ready_ids)
         if replay is not None:
             locked["performance_scheduler"] = scheduler
@@ -4513,8 +4605,10 @@ def _admit_scheduler_wave(
                                      dispatch_telemetry.
                                      WAVE_BUDGET_CEILINGS["sessions"]),
             },
-            None, clock,
-            capability_factory=RecordedTaskDispatchCapabilityFactory(),
+            evidence_store, clock,
+            capability_factory=(capability_factory or
+                                plan_topology.
+                                ClosedTaskDispatchCapabilityFactory()),
         )
         locked["performance_scheduler"] = scheduler
         return admission
@@ -4573,7 +4667,8 @@ def finalize_observed_dispatch_usage(
 
 
 def _record_scheduler_terminal(
-        ws: str, *, task_id: str, kind: str, at: float | None = None) -> dict:
+        ws: str, *, task_id: str, kind: str, at: float | None = None,
+        capability_factory=None, evidence_store=None) -> dict:
     """Persist a terminal event and atomically reserve the next tranche."""
     clock = SystemClock()
     with mutate(ws) as locked:
@@ -4598,6 +4693,29 @@ def _record_scheduler_terminal(
                 int(capacity.get("session_limit") or 0) < 1:
             return {"status": "unavailable", "reason":
                     "scheduler terminal event lacks its capacity binding"}
+        if capacity.get("authority") == "validated-host-receipt":
+            try:
+                validated = plan_topology.validate_scheduler_host_capability(
+                    locked.get("scheduler_host_capability_receipt"),
+                    run_id=scheduler["run_id"],
+                    source_sha=scheduler["source_sha"],
+                    plan_fingerprint=scheduler["plan_fingerprint"],
+                    clock=clock)
+            except plan_topology.PlanTopologyError as exc:
+                return {"status": "stop_for_human_scope_review",
+                        "reason": str(exc)}
+            if validated != {
+                    "configured_host_concurrency": int(
+                        capacity["configured_host_concurrency"]),
+                    "max_in_flight": int(capacity["max_in_flight"]),
+            }:
+                return {"status": "stop_for_human_scope_review",
+                        "reason": "scheduler host capacity changed"}
+            if evidence_store is None:
+                evidence_store, _ = _production_scheduler_evidence(ws, locked)
+        elif evidence_store is None:
+            return {"status": "unavailable", "reason":
+                    "hermetic terminal event requires an evidence store"}
         sequence = 1 + max((int(row.get("sequence") or 0)
                             for row in scheduler.get("events") or []
                             if row.get("task_id") == task_id), default=0)
@@ -4619,7 +4737,9 @@ def _record_scheduler_terminal(
                 "max_in_flight": int(capacity["max_in_flight"]),
                 "session_limit": int(capacity["session_limit"]),
             },
-            capability_factory=RecordedTaskDispatchCapabilityFactory(),
+            evidence_store=evidence_store,
+            capability_factory=(capability_factory or plan_topology.
+                                ClosedTaskDispatchCapabilityFactory()),
         )
         locked["performance_scheduler"] = scheduler
         result = dict(wake["results"][0])
@@ -5132,11 +5252,8 @@ def wave(ws: str) -> dict:
     # stage projection may be retried after a crash before public output; the
     # intent owner and telemetry owner are both idempotent, so the retry must
     # replay the same reservations rather than mutate loop authority again.
-    wave_wait_policy = (event_wait_policy("execute-wave", len(ready))
-                        if ready else None)
-    wave_wait_invocation = (event_wait_invocation(
-        wave_wait_policy, [str(task["id"]) for task in ready])
-        if ready else None)
+    wave_wait_policy = None
+    wave_wait_invocation = None
     scheduler_admission = None
     scheduler_assignments: dict[str, dict] = {}
     if ready:
@@ -5144,14 +5261,6 @@ def wave(ws: str) -> dict:
             scheduler_admission = _admit_scheduler_wave(
                 ws, ready,
                 repository_files=_declared_repository_test_files(ws, tasks),
-                capacity={
-                    "configured_host_concurrency":
-                        int(wave_wait_policy["outstanding_count"]),
-                    "max_in_flight": int(
-                        wave_wait_policy["outstanding_count"]),
-                    "session_limit": dispatch_telemetry.
-                        WAVE_BUDGET_CEILINGS["sessions"],
-                },
                 clock=SystemClock(),
             )
         except (plan_topology.PlanTopologyError, ValueError, TypeError) as exc:
@@ -5177,6 +5286,9 @@ def wave(ws: str) -> dict:
         }
         ready = [task for task in ready
                  if str(task["id"]) in scheduler_assignments]
+        wave_wait_policy = event_wait_policy("execute-wave", len(ready))
+        wave_wait_invocation = event_wait_invocation(
+            wave_wait_policy, [str(task["id"]) for task in ready])
     dispatches: dict[str, dict] = {}
     dispatch_intents: dict[str, dict] = {}
     for task in ready:

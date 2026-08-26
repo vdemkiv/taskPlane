@@ -1,4 +1,5 @@
 import contextlib
+import json
 import threading
 
 import pytest
@@ -12,12 +13,16 @@ from taskplane import (
     retro,
 )
 from taskplane.delivery_ports import (
+    content_fingerprint,
     DeliveryPortError,
     FakeClock,
     RecordedEventWaiter,
     RecordedTaskDispatchCapabilityFactory,
+    SandboxEvidenceStore,
 )
 from taskplane.plan_topology import (
+    ClosedTaskDispatchCapabilityFactory,
+    ExecutionDagRevisionStore,
     PlanTopologyError,
     admit_ready_batch,
     append_replan_generation,
@@ -39,6 +44,23 @@ def _task(task_id, *, deps=(), scope=(), tests="", long_worker=False):
         "allowed_tools": ["read", "test"],
         "allowed_git_refs": [f"refs/heads/{task_id}"],
     }
+
+
+def _host_capacity_receipt(*, run_id="run", source_sha="a" * 40,
+                           plan_fingerprint="b" * 64, issued_at=0,
+                           expires_at=100, concurrency=2, max_in_flight=2):
+    material = {
+        "schema": "taskplane.scheduler-host-capability/v1",
+        "run_id": run_id,
+        "source_sha": source_sha,
+        "plan_fingerprint": plan_fingerprint,
+        "configured_host_concurrency": concurrency,
+        "max_in_flight": max_in_flight,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "cryptographic_authenticity_claimed": False,
+    }
+    return {**material, "fingerprint": content_fingerprint(material)}
 
 
 def _state(tasks, **overrides):
@@ -444,6 +466,156 @@ def test_runtime_event_progress_and_command_adapters_consume_telemetry():
     assert command_event["task_id"] == "a"
 
 
+@pytest.mark.parametrize("receipt_kind", [
+    "absent", "malformed", "stale", "cross-run",
+])
+def test_production_admission_requires_current_exact_host_capacity_receipt(
+    tmp_path, monkeypatch, receipt_kind,
+):
+    state = {
+        "goal": "capacity authority", "parallel": True, "step": "execute",
+        "run_id": "run", "baseline": "a" * 40,
+        "design_fingerprint": "d" * 64,
+        "plan_fingerprint": "b" * 64,
+        "tasks": [{**_task("a", scope=("src/a.py",)), "status": "pending"}],
+    }
+    if receipt_kind != "absent":
+        receipt = _host_capacity_receipt()
+        if receipt_kind == "malformed":
+            receipt = {**receipt, "configured_host_concurrency": "two"}
+        elif receipt_kind == "stale":
+            receipt = _host_capacity_receipt(issued_at=0, expires_at=1)
+        elif receipt_kind == "cross-run":
+            receipt = _host_capacity_receipt(run_id="other")
+        state["scheduler_host_capability_receipt"] = receipt
+
+    @contextlib.contextmanager
+    def mutate(_ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", mutate)
+    result = loop._admit_scheduler_wave(
+        str(tmp_path), [state["tasks"][0]], repository_files=set(),
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert result["status"] == "stop_for_human_scope_review"
+    assert result["reservation_fingerprint"] is None
+    assert state.get("performance_scheduler", {}).get("reservations", []) == []
+
+
+def test_live_wave_with_no_host_receipt_stops_without_ready_count_inference(
+    tmp_path, monkeypatch,
+):
+    state = {
+        "goal": "no fabricated capacity", "parallel": True,
+        "step": "execute", "run_id": "run", "baseline": "a" * 40,
+        "design_fingerprint": "d" * 64,
+        "plan_fingerprint": "b" * 64,
+        "tasks": [
+            {**_task("a", scope=("src/a.py",)), "status": "pending"},
+            {**_task("b", scope=("src/b.py",)), "status": "pending"},
+        ],
+    }
+
+    @contextlib.contextmanager
+    def mutate(_ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", mutate)
+    monkeypatch.setattr(loop, "load", lambda _ws: state)
+    monkeypatch.setattr(loop, "_stage_loop_mutation_refusal", lambda _ws: None)
+    monkeypatch.setattr(loop, "_validated_delivery_mode", lambda _state: None)
+    monkeypatch.setattr(loop, "SystemClock", lambda: FakeClock(wall_time=10))
+    result = loop.wave(str(tmp_path))
+
+    assert result["step"] == "human_scope_review"
+    assert result["wave"] == []
+    assert result["scheduler_admission"]["reservation_fingerprint"] is None
+    assert state["performance_scheduler"]["reservations"] == []
+
+
+def test_production_default_uses_closed_factory_and_persists_dag(
+    tmp_path, monkeypatch,
+):
+    state = {
+        "goal": "production", "parallel": True, "step": "execute",
+        "run_id": "run", "baseline": "a" * 40,
+        "design_fingerprint": "d" * 64,
+        "plan_fingerprint": "b" * 64,
+        "tasks": [{**_task("a", scope=("src/a.py",)), "status": "pending"}],
+        "scheduler_host_capability_receipt": _host_capacity_receipt(
+            concurrency=1, max_in_flight=1),
+    }
+
+    @contextlib.contextmanager
+    def mutate(_ws):
+        yield state
+
+    monkeypatch.setattr(loop, "mutate", mutate)
+    evidence = SandboxEvidenceStore(tmp_path, "repo", "scheduler")
+    dag_store = ExecutionDagRevisionStore(tmp_path)
+    monkeypatch.setattr(
+        loop, "_production_scheduler_evidence",
+        lambda _ws, _state: (evidence, dag_store),
+    )
+    created = []
+    original = ClosedTaskDispatchCapabilityFactory.create
+
+    def observed(self, **bindings):
+        created.append(dict(bindings))
+        return original(self, **bindings)
+
+    monkeypatch.setattr(ClosedTaskDispatchCapabilityFactory, "create", observed)
+    result = loop._admit_scheduler_wave(
+        str(tmp_path), [state["tasks"][0]], repository_files=set(),
+        clock=FakeClock(wall_time=10),
+    )
+
+    assert result["status"] == "admitted"
+    assert len(created) == 1
+    head = dag_store.read_head()
+    assert head["fingerprint"] == \
+        state["performance_scheduler"]["execution_dag"]["fingerprint"]
+    assert state["performance_scheduler"]["execution_dag_head"] == head
+
+
+def test_execution_dag_revision_bytes_cas_fork_and_crash_recovery(tmp_path):
+    store = ExecutionDagRevisionStore(tmp_path)
+    first = _state([_task("a")])["execution_dag"]
+    first_head = store.persist(first, expected_head=None)
+    first_path = (tmp_path / "execution-dag" / "revisions" /
+                  f"0-{first['fingerprint']}.json")
+    immutable = first_path.read_bytes()
+    assert first_head["revision_path"] == \
+        f"execution-dag/revisions/0-{first['fingerprint']}.json"
+    assert store.persist(first, expected_head=first["fingerprint"]) == first_head
+    assert first_path.read_bytes() == immutable
+
+    second = append_replan_generation(
+        first, [_task("a"), _task("b", deps=("a",))],
+        FakeClock(wall_time=2))
+    with pytest.raises(PlanTopologyError, match="CAS"):
+        store.persist(second, expected_head="f" * 64)
+
+    crash_root = tmp_path / "crash"
+    crash_store = ExecutionDagRevisionStore(crash_root)
+    revision_dir = crash_root / "execution-dag" / "revisions"
+    revision_dir.mkdir(parents=True, exist_ok=True)
+    crash_path = revision_dir / f"0-{first['fingerprint']}.json"
+    crash_path.write_bytes((json.dumps(
+        first, sort_keys=True, separators=(",", ":")) + "\n").encode())
+    recovered = crash_store.persist(first, expected_head=None)
+    assert recovered == crash_store.read_head()
+    assert crash_store.persist(first, expected_head=first["fingerprint"]) == \
+        recovered
+
+    fork_path = revision_dir / ("0-" + "e" * 64 + ".json")
+    fork_path.write_bytes(b"{}\n")
+    with pytest.raises(PlanTopologyError, match="fork"):
+        crash_store.read_head()
+
+
 def test_live_scheduler_admits_waits_wakes_and_persists_replan_dag(
     tmp_path, monkeypatch,
 ):
@@ -463,11 +635,16 @@ def test_live_scheduler_admits_waits_wakes_and_persists_replan_dag(
     monkeypatch.setattr(loop, "mutate", mutate)
     monkeypatch.setattr(loop, "load", lambda _ws: state)
     monkeypatch.setattr(loop, "_stage_loop_mutation_refusal", lambda _ws: None)
+    evidence = SandboxEvidenceStore(tmp_path, "repo", "live-scheduler")
+    dag_store = ExecutionDagRevisionStore(tmp_path)
+    factory = RecordedTaskDispatchCapabilityFactory()
     first = loop._admit_scheduler_wave(
         str(tmp_path), [state["tasks"][0]], repository_files=set(),
         capacity={"configured_host_concurrency": 1,
                   "max_in_flight": 1, "session_limit": 60},
         clock=FakeClock(wall_time=1),
+        capability_factory=factory, evidence_store=evidence,
+        execution_dag_store=dag_store,
     )
     assignment = first["assignments"][0]
     scheduler = state["performance_scheduler"]
@@ -513,7 +690,8 @@ def test_live_scheduler_admits_waits_wakes_and_persists_replan_dag(
 
     state["tasks"][0]["status"] = "passed"
     terminal = loop._record_scheduler_terminal(
-        str(tmp_path), task_id="a", kind="complete", at=3)
+        str(tmp_path), task_id="a", kind="complete", at=3,
+        capability_factory=factory, evidence_store=evidence)
     assert terminal["terminal"] is True
     assert terminal["admission"]["dispatch_set"]["members"] == ["b"]
     second = loop._admit_scheduler_wave(
@@ -521,12 +699,15 @@ def test_live_scheduler_admits_waits_wakes_and_persists_replan_dag(
         capacity={"configured_host_concurrency": 1,
                   "max_in_flight": 1, "session_limit": 60},
         clock=FakeClock(wall_time=4),
+        capability_factory=factory, evidence_store=evidence,
+        execution_dag_store=dag_store,
     )
     assert second["dispatch_set"]["members"] == ["b"]
 
     state["tasks"][1]["status"] = "passed"
     loop._record_scheduler_terminal(
-        str(tmp_path), task_id="b", kind="complete", at=5)
+        str(tmp_path), task_id="b", kind="complete", at=5,
+        capability_factory=factory, evidence_store=evidence)
     state["tasks"].append({
         **_task("c", deps=("b",), scope=("src/c.py",)),
         "status": "pending",
@@ -536,14 +717,17 @@ def test_live_scheduler_admits_waits_wakes_and_persists_replan_dag(
         capacity={"configured_host_concurrency": 1,
                   "max_in_flight": 1, "session_limit": 60},
         clock=FakeClock(wall_time=6),
+        capability_factory=factory, evidence_store=evidence,
+        execution_dag_store=dag_store,
     )
     dag = state["performance_scheduler"]["execution_dag"]
     assert third["dispatch_set"]["members"] == ["c"]
     assert len(dag["generations"]) == 2
     assert ["g0:a", "g1:a", "supersession"] in dag["edges"]
     assert retro._authoritative_execution_state(
-        state, state["tasks"], [{"event": "loop_wave", "ts": 999}]
-    )[1] == "persisted-scheduler-dag"
+        state, state["tasks"], [{"event": "loop_wave", "ts": 999}],
+        execution_dag_store=dag_store,
+    )[1] == "managed-run-execution-dag-head"
 
 
 def test_build_c_direct_receipt_carries_reservation_capability_and_capacity(
@@ -571,14 +755,26 @@ def test_build_c_direct_receipt_carries_reservation_capability_and_capacity(
                 "operation": "wait_for_events", "scheduled": False,
                 "reissue": False, "outstanding_members": members}
 
+    state = {
+        "tasks": tasks, "run_id": "run", "baseline": "a" * 40,
+        "design_fingerprint": "d" * 64,
+        "plan_fingerprint": "b" * 64,
+    }
+    host_receipt = _host_capacity_receipt(
+        concurrency=1, max_in_flight=1)
+    evidence = SandboxEvidenceStore(tmp_path, "repo", "build-c")
+    dag_store = ExecutionDagRevisionStore(tmp_path)
     receipt = build_c.assign_scopes(
-        str(tmp_path), {"tasks": tasks}, graph=graph,
+        str(tmp_path), state, graph=graph,
         revision="a" * 40,
         create_worktree=lambda *_args: str(tmp_path / "worker"),
         register_worktree=register,
         wait_policy_factory=wait_policy,
         wait_invocation_factory=wait_invocation,
         repository_files=set(),
+        host_capability_receipt=host_receipt,
+        evidence_store=evidence, execution_dag_store=dag_store,
+        clock=FakeClock(wall_time=10),
     )
     assignment = receipt["assignments"][0]
     assert receipt["reservation_fingerprint"] == \
@@ -586,10 +782,21 @@ def test_build_c_direct_receipt_carries_reservation_capability_and_capacity(
     assert assignment["capability"]["reservation_fingerprint"] == \
         receipt["reservation_fingerprint"]
     assert assignment["capability"]["write_paths"] == ("src/a.py",)
+    assert set(assignment["capability"]) == {
+        "schema", "capability_id", "run_id", "source_sha",
+        "design_fingerprint", "plan_fingerprint", "task_id", "stage",
+        "reservation_fingerprint", "predecessor_fingerprint",
+        "allowed_tools", "read_paths", "write_paths", "allowed_git_refs",
+        "allowed_network_endpoints", "credential_handles",
+        "release_credentials_available", "irreversible_actions_allowed",
+        "cryptographic_authenticity_claimed",
+    }
+    assert assignment["capability"]["cryptographic_authenticity_claimed"] \
+        is False
 
     with pytest.raises(build_c.ScopeAssignmentError, match="event wait"):
         build_c.assign_scopes(
-            str(tmp_path), {"tasks": tasks}, graph=graph,
+            str(tmp_path), state, graph=graph,
             revision="a" * 40,
             create_worktree=lambda *_args: str(tmp_path / "worker"),
             register_worktree=register,
@@ -601,4 +808,7 @@ def test_build_c_direct_receipt_carries_reservation_capability_and_capacity(
             },
             wait_invocation_factory=wait_invocation,
             repository_files=set(),
+            host_capability_receipt=host_receipt,
+            evidence_store=evidence, execution_dag_store=dag_store,
+            clock=FakeClock(wall_time=10),
         )

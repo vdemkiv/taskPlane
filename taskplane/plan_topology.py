@@ -10,9 +10,12 @@ otherwise disjoint.
 from __future__ import annotations
 
 from copy import deepcopy
+import contextlib
 import fnmatch
 import json
+import os
 from pathlib import Path
+import re
 import shlex
 import threading
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
@@ -20,7 +23,10 @@ from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 try:
     from .delivery_ports import (
         Clock,
+        DeliveryPortError,
         EventWaiter,
+        IRREVERSIBLE_TOOLS,
+        TaskDispatchCapability,
         TaskDispatchCapabilityFactory,
         canonical_json,
         content_fingerprint,
@@ -28,7 +34,10 @@ try:
 except ImportError:  # pragma: no cover - direct module loading
     from delivery_ports import (  # type: ignore
         Clock,
+        DeliveryPortError,
         EventWaiter,
+        IRREVERSIBLE_TOOLS,
+        TaskDispatchCapability,
         TaskDispatchCapabilityFactory,
         canonical_json,
         content_fingerprint,
@@ -51,6 +60,8 @@ TERMINAL_STATUSES = COMPLETE_STATUSES | frozenset({
 })
 DEFAULT_EVENT_QUEUE_CAP = 256
 MAX_EVENT_BYTES = 64 * 1024
+HOST_CAPABILITY_SCHEMA = "taskplane.scheduler-host-capability/v1"
+EXECUTION_DAG_HEAD_SCHEMA = "taskplane.execution-dag-head/v1"
 
 
 class PlanTopologyError(RuntimeError):
@@ -58,6 +69,336 @@ class PlanTopologyError(RuntimeError):
 
 
 _ADMISSION_LOCK = threading.RLock()
+_DAG_STORE_LOCK = threading.RLock()
+
+
+class ClosedTaskDispatchCapabilityFactory:
+    """Production default-deny capability producer.
+
+    Unlike the recorded hermetic port, this factory retains no capability
+    inventory.  Its only output is the closed, exact-bound worker authority.
+    """
+
+    _LIST_FIELDS = (
+        "allowed_tools", "read_paths", "write_paths", "allowed_git_refs",
+        "allowed_network_endpoints", "credential_handles",
+    )
+    _REQUIRED = {
+        "run_id", "source_sha", "design_fingerprint", "plan_fingerprint",
+        "task_id", "stage", "reservation_fingerprint",
+        "predecessor_fingerprint",
+    }
+
+    @staticmethod
+    def _digest(value: object, label: str, *, sha: bool = False) -> str:
+        text = str(value or "")
+        lengths = {40, 64} if sha else {64}
+        if len(text) not in lengths or not re.fullmatch(r"[0-9a-f]+", text):
+            raise DeliveryPortError(f"invalid dispatch capability {label}")
+        return text
+
+    def create(self, **bindings: Any) -> TaskDispatchCapability:
+        missing = self._REQUIRED.difference(bindings)
+        if missing:
+            raise DeliveryPortError(
+                f"missing dispatch capability bindings: {sorted(missing)}")
+        unknown = set(bindings).difference(
+            self._REQUIRED | set(self._LIST_FIELDS))
+        if unknown:
+            raise DeliveryPortError(
+                f"unknown dispatch capability bindings: {sorted(unknown)}")
+        projection = {
+            "run_id": str(bindings["run_id"] or "").strip(),
+            "source_sha": self._digest(
+                bindings["source_sha"], "source_sha", sha=True),
+            "design_fingerprint": self._digest(
+                bindings["design_fingerprint"], "design_fingerprint"),
+            "plan_fingerprint": self._digest(
+                bindings["plan_fingerprint"], "plan_fingerprint"),
+            "task_id": str(bindings["task_id"] or "").strip(),
+            "stage": str(bindings["stage"] or "").strip(),
+            "reservation_fingerprint": self._digest(
+                bindings["reservation_fingerprint"],
+                "reservation_fingerprint"),
+            "predecessor_fingerprint": bindings["predecessor_fingerprint"],
+        }
+        if not projection["run_id"] or not projection["task_id"] or \
+                not projection["stage"]:
+            raise DeliveryPortError(
+                "dispatch capability identity cannot be empty")
+        predecessor = projection["predecessor_fingerprint"]
+        if predecessor is not None:
+            projection["predecessor_fingerprint"] = self._digest(
+                predecessor, "predecessor_fingerprint")
+        for field in self._LIST_FIELDS:
+            raw = bindings.get(field, ())
+            if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
+                raise DeliveryPortError(
+                    f"dispatch capability {field} must be a sequence")
+            values = tuple(sorted({str(value) for value in raw
+                                   if str(value)}))
+            if "*" in values:
+                raise DeliveryPortError(
+                    f"wildcard authority is forbidden: {field}")
+            projection[field] = values
+        forbidden = IRREVERSIBLE_TOOLS.intersection(
+            projection["allowed_tools"])
+        if forbidden:
+            raise DeliveryPortError(
+                f"workers cannot receive irreversible tools: "
+                f"{sorted(forbidden)}")
+        if any("release" in handle.lower()
+               for handle in projection["credential_handles"]):
+            raise DeliveryPortError(
+                "workers cannot receive release credentials")
+        projection.update(
+            schema="taskplane.task-dispatch-capability/v1",
+            release_credentials_available=False,
+            irreversible_actions_allowed=False,
+            cryptographic_authenticity_claimed=False,
+        )
+        projection["capability_id"] = content_fingerprint(projection)
+        return TaskDispatchCapability(projection)
+
+
+def validate_scheduler_host_capability(
+        receipt: object, *, run_id: str, source_sha: str,
+        plan_fingerprint: str, clock: Clock) -> dict[str, int]:
+    """Validate the sole production authority for scheduler capacity."""
+    fields = {
+        "schema", "run_id", "source_sha", "plan_fingerprint",
+        "configured_host_concurrency", "max_in_flight", "issued_at",
+        "expires_at", "cryptographic_authenticity_claimed", "fingerprint",
+    }
+    if not isinstance(receipt, Mapping) or set(receipt) != fields or \
+            receipt.get("schema") != HOST_CAPABILITY_SCHEMA:
+        raise PlanTopologyError(
+            "scheduler host capability receipt is missing or malformed")
+    material = {key: receipt[key] for key in fields if key != "fingerprint"}
+    if receipt.get("fingerprint") != content_fingerprint(material):
+        raise PlanTopologyError(
+            "scheduler host capability receipt fingerprint is invalid")
+    if receipt.get("cryptographic_authenticity_claimed") is not False:
+        raise PlanTopologyError(
+            "scheduler host capability cannot claim cryptographic authenticity")
+    if (receipt.get("run_id"), receipt.get("source_sha"),
+            receipt.get("plan_fingerprint")) != (
+                run_id, source_sha, plan_fingerprint):
+        raise PlanTopologyError(
+            "scheduler host capability receipt has cross-run bindings")
+    concurrency = receipt.get("configured_host_concurrency")
+    max_in_flight = receipt.get("max_in_flight")
+    issued_at = receipt.get("issued_at")
+    expires_at = receipt.get("expires_at")
+    if any(isinstance(value, bool) for value in (
+            concurrency, max_in_flight, issued_at, expires_at)) or \
+            not isinstance(concurrency, int) or \
+            not isinstance(max_in_flight, int) or \
+            not isinstance(issued_at, (int, float)) or \
+            not isinstance(expires_at, (int, float)) or \
+            concurrency < 0 or max_in_flight < 0 or \
+            max_in_flight > concurrency or expires_at <= issued_at:
+        raise PlanTopologyError(
+            "scheduler host capability receipt is malformed")
+    now = float(clock.wall_time())
+    if now < float(issued_at) or now >= float(expires_at):
+        raise PlanTopologyError(
+            "scheduler host capability receipt is stale")
+    return {
+        "configured_host_concurrency": concurrency,
+        "max_in_flight": max_in_flight,
+    }
+
+
+class ExecutionDagRevisionStore:
+    """Immutable execution-DAG revisions below one exact managed run root."""
+
+    _REVISION = re.compile(r"(?P<ordinal>[0-9]+)-(?P<fingerprint>[0-9a-f]{64})[.]json\Z")
+
+    def __init__(self, managed_run_root: str | os.PathLike[str]) -> None:
+        supplied = Path(managed_run_root)
+        if supplied.is_symlink():
+            raise PlanTopologyError("managed run root cannot be a symlink")
+        supplied.mkdir(parents=True, exist_ok=True)
+        self.managed_run_root = supplied.resolve(strict=True)
+        self.root = self.managed_run_root / "execution-dag"
+        self.revisions = self.root / "revisions"
+        self.revisions.mkdir(parents=True, exist_ok=True)
+        if self.root.is_symlink() or self.revisions.is_symlink():
+            raise PlanTopologyError("execution DAG store cannot be a symlink")
+        self.head_path = self.root / "HEAD"
+
+    @staticmethod
+    def _validated_dag(dag: object) -> tuple[dict[str, Any], bytes]:
+        if not isinstance(dag, Mapping) or \
+                dag.get("schema") != EXECUTION_DAG_SCHEMA:
+            raise PlanTopologyError("execution DAG revision is invalid")
+        value = deepcopy(dict(dag))
+        fingerprint = str(value.pop("fingerprint", ""))
+        if not re.fullmatch(r"[0-9a-f]{64}", fingerprint) or \
+                content_fingerprint(value) != fingerprint:
+            raise PlanTopologyError("execution DAG fingerprint is invalid")
+        value["fingerprint"] = fingerprint
+        return value, canonical_json(value)
+
+    def _revision_rows(self) -> dict[int, list[Path]]:
+        rows: dict[int, list[Path]] = {}
+        for path in self.revisions.iterdir():
+            match = self._REVISION.fullmatch(path.name)
+            if match:
+                rows.setdefault(int(match.group("ordinal")), []).append(path)
+        if any(len(paths) != 1 for paths in rows.values()):
+            raise PlanTopologyError("execution DAG revision fork detected")
+        return rows
+
+    def _read_head_unlocked(self) -> dict[str, Any] | None:
+        rows = self._revision_rows()
+        if not self.head_path.exists():
+            return None
+        try:
+            head = json.loads(self.head_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise PlanTopologyError(
+                f"execution DAG head is malformed: {exc}") from exc
+        fields = {"schema", "ordinal", "fingerprint", "revision_path",
+                  "predecessor_fingerprint"}
+        if not isinstance(head, dict) or set(head) != fields or \
+                head.get("schema") != EXECUTION_DAG_HEAD_SCHEMA or \
+                isinstance(head.get("ordinal"), bool) or \
+                not isinstance(head.get("ordinal"), int) or \
+                int(head["ordinal"]) < 0:
+            raise PlanTopologyError("execution DAG head is malformed")
+        ordinal = int(head["ordinal"])
+        expected_name = f"{ordinal}-{head.get('fingerprint')}.json"
+        expected_relative = f"execution-dag/revisions/{expected_name}"
+        if head.get("revision_path") != expected_relative or \
+                ordinal not in rows or rows[ordinal][0].name != expected_name:
+            raise PlanTopologyError(
+                "execution DAG head does not name its immutable revision")
+        prior_fingerprint = None
+        for value in range(ordinal + 1):
+            if value not in rows:
+                raise PlanTopologyError("execution DAG revision gap detected")
+            match = self._REVISION.fullmatch(rows[value][0].name)
+            try:
+                revision_dag, revision_bytes = self._validated_dag(json.loads(
+                    rows[value][0].read_text(encoding="utf-8")))
+            except (OSError, ValueError) as exc:
+                raise PlanTopologyError(
+                    f"execution DAG immutable revision is malformed: {exc}") \
+                    from exc
+            if match is None or match.group("fingerprint") != \
+                    revision_dag["fingerprint"] or \
+                    revision_bytes != rows[value][0].read_bytes():
+                raise PlanTopologyError(
+                    "execution DAG immutable revision bytes changed")
+            if value == ordinal and head.get(
+                    "predecessor_fingerprint") != prior_fingerprint:
+                raise PlanTopologyError(
+                    "execution DAG head lineage is invalid")
+            prior_fingerprint = revision_dag["fingerprint"]
+        dag, encoded = self._validated_dag(json.loads(
+            rows[ordinal][0].read_text(encoding="utf-8")))
+        if encoded != rows[ordinal][0].read_bytes() or \
+                dag["fingerprint"] != head["fingerprint"]:
+            raise PlanTopologyError(
+                "execution DAG immutable revision bytes changed")
+        return head
+
+    def read_head(self) -> dict[str, Any]:
+        with _DAG_STORE_LOCK:
+            head = self._read_head_unlocked()
+            if head is None:
+                raise PlanTopologyError("execution DAG head is unavailable")
+            return dict(head)
+
+    def read_dag(self) -> dict[str, Any]:
+        """Read and revalidate the exact immutable revision named by HEAD."""
+        with _DAG_STORE_LOCK:
+            head = self._read_head_unlocked()
+            if head is None:
+                raise PlanTopologyError("execution DAG head is unavailable")
+            path = self.managed_run_root / str(head["revision_path"])
+            dag, encoded = self._validated_dag(json.loads(
+                path.read_text(encoding="utf-8")))
+            if encoded != path.read_bytes():
+                raise PlanTopologyError(
+                    "execution DAG immutable revision bytes changed")
+            return dag
+
+    @staticmethod
+    def _write_once(path: Path, encoded: bytes) -> None:
+        try:
+            descriptor = os.open(
+                path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            if path.read_bytes() != encoded:
+                raise PlanTopologyError(
+                    "execution DAG immutable revision collision")
+            return
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+
+    def _write_head(self, head: Mapping[str, Any]) -> None:
+        temporary = self.head_path.with_name(
+            f"HEAD.tmp-{os.getpid()}-{threading.get_ident()}")
+        encoded = canonical_json(dict(head))
+        with temporary.open("wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, self.head_path)
+        directory = os.open(self.root, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def persist(self, dag: object, *, expected_head: str | None) -> dict[str, Any]:
+        value, encoded = self._validated_dag(dag)
+        fingerprint = value["fingerprint"]
+        with _DAG_STORE_LOCK:
+            current = self._read_head_unlocked()
+            if current is not None and current["fingerprint"] == fingerprint:
+                return dict(current)
+            actual = current["fingerprint"] if current is not None else None
+            if actual != expected_head:
+                raise PlanTopologyError("execution DAG head CAS mismatch")
+            ordinal = int(current["ordinal"]) + 1 if current else 0
+            rows = self._revision_rows()
+            existing = rows.get(ordinal, [])
+            revision = self.revisions / f"{ordinal}-{fingerprint}.json"
+            if existing and existing[0] != revision:
+                raise PlanTopologyError("execution DAG revision fork detected")
+            self._write_once(revision, encoded)
+            # Re-read under the same namespace lock immediately before the
+            # atomic replace.  An exact orphan is crash recovery; a different
+            # head is a CAS conflict and can never be overwritten.
+            observed = self._read_head_unlocked()
+            observed_fingerprint = (observed["fingerprint"]
+                                    if observed is not None else None)
+            if observed_fingerprint not in {expected_head, fingerprint}:
+                raise PlanTopologyError("execution DAG head CAS mismatch")
+            predecessor = (current["fingerprint"] if current else None)
+            head = {
+                "schema": EXECUTION_DAG_HEAD_SCHEMA,
+                "ordinal": ordinal,
+                "fingerprint": fingerprint,
+                "revision_path":
+                    f"execution-dag/revisions/{revision.name}",
+                "predecessor_fingerprint": predecessor,
+            }
+            self._write_head(head)
+            return dict(head)
 
 
 def _path(value: object) -> str:
