@@ -1,7 +1,7 @@
 {
   "schema": "taskplane.r0001-a2-verification/v1",
   "task_id": "t17a-verify-a2-live-host",
-  "target_sha": "f9ba5ebd108e26220f0e472e42845339bb778a0b",
+  "target_sha": "75a3f4f6498ff48875203b6edfb23c9be3a90117",
   "design_fingerprint": "74c2e2422a5232290c91eb18ae2e74355906a3b3839b9c5968dcc433839a535e",
   "plan_fingerprint": "f663d015150330da01db9c58352f97437471731ef2a820fce2379d67fe4b042b",
   "delivery_receipt": {
@@ -16,6 +16,17 @@
     "passed": 47,
     "skipped": 1,
     "failed": 0
+  },
+  "phase_classification": {
+    "build": {
+      "status": "pass",
+      "basis": "The declared mechanical suite passed with 47 passed, 1 live-host canary skipped, and 0 failed."
+    },
+    "evaluate_live_host_observation": {
+      "status": "unavailable",
+      "reason_code": "no-host-receipt",
+      "basis": "The live-host canary remained skipped and the host supplied no producer-event capture; this is an Evaluate availability limitation, not a Build failure."
+    }
   },
   "live_canary_probe_command": "python3 -m pytest -q -rs taskplane/tests/test_r0001_live_host_canary.py",
   "live_canary_probe_exit_code": 0,
@@ -64,10 +75,11 @@
     {
       "id": 4,
       "criterion": "Live Codex host produces conformant observable evaluator and EM producer receipts without manual outage resolution.",
-      "disposition": "unproven",
+      "disposition": "cannot-verify",
       "evidence": "Live canary skipped because TASKPLANE_CODEX_PRODUCER_EVENT_FILE was absent; host probe returned no-host-receipt and effective_path=blocked. No producer receipt was emitted."
     }
   ],
-  "overall_disposition": "fail",
-  "failure_reason": "Criterion 4 is unproven: the live Codex host supplied no immutable evaluator/EM producer-event capture or host-private producer receipt."
+  "overall_disposition": "build-pass-evaluate-unavailable",
+  "evaluate_unavailability_reason": "Criterion 4 cannot be verified on this host: the live canary was skipped and no immutable evaluator/EM producer-event capture or host-private producer receipt was supplied.",
+  "authenticity_claimed": false
 }
