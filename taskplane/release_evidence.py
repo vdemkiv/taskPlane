@@ -164,6 +164,49 @@ class ReleaseEvidenceError(ValueError):
     """Release evidence is incomplete, stale, ambiguous, or over-authorized."""
 
 
+def terminal_release_evidence_surface(
+    identity: Mapping[str, Any], evidence: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Prepare release evidence as one non-authoritative terminal surface."""
+    from taskplane import terminal_truth
+    return terminal_truth.prepare_terminal_surface(
+        "release_evidence", identity, dict(evidence)
+    )
+
+
+def validate_terminal_release_claim(
+    terminal_receipt: Mapping[str, Any],
+    candidate_wiring_receipt: Mapping[str, Any],
+    *,
+    repository_fingerprint: str,
+    full_source_sha: str,
+    requirement_id: str,
+) -> dict[str, Any]:
+    """Reject opaque/foreign wiring before accepting any release claim."""
+    from taskplane import terminal_truth, wiring_closure
+    try:
+        wiring = wiring_closure.validate_candidate_checkout_receipt(
+            candidate_wiring_receipt,
+            expected_repository_fingerprint=repository_fingerprint,
+            expected_head_sha=full_source_sha,
+            expected_requirement_id=requirement_id,
+        )
+    except wiring_closure.WiringClosureError as exc:
+        raise ReleaseEvidenceError(str(exc)) from exc
+    try:
+        terminal = terminal_truth.assert_terminal_authority(
+            terminal_receipt,
+            expected_sha=full_source_sha,
+            expected_requirement_id=requirement_id,
+        )
+    except terminal_truth.TerminalTruthError as exc:
+        raise ReleaseEvidenceError(exc.detail) from exc
+    if terminal["bundle"]["identity"]["candidate_wiring_fingerprint"] != \
+            wiring["fingerprint"]:
+        raise ReleaseEvidenceError("terminal authority names another wiring receipt")
+    return terminal
+
+
 def _text(value: Any, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ReleaseEvidenceError(f"{field_name} is required")

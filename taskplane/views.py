@@ -227,6 +227,17 @@ def canonical_report_projection(report: str, identity: dict) -> dict:
             "body": str(report or "")}
 
 
+def terminal_public_report_surface(identity: dict, report: dict) -> dict:
+    """Prepare the public-report member of the exact-SHA terminal bundle."""
+    try:
+        from taskplane import terminal_truth
+    except ImportError:  # direct executable/import compatibility
+        import terminal_truth
+    return terminal_truth.prepare_terminal_surface(
+        "public_report", identity, dict(report)
+    )
+
+
 def projection_identity_problem(projection: dict,
                                 expected: dict) -> "str | None":
     """Why a projection is stale/contradictory, or None."""

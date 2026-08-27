@@ -22,9 +22,11 @@ from pathlib import Path
 
 try:
     from taskplane import taskplane_lite as contract_engine
+    from taskplane import terminal_truth
     from taskplane import wiring_closure
 except ImportError:  # direct executable/import compatibility
     import taskplane_lite as contract_engine
+    import terminal_truth
     import wiring_closure
 
 
@@ -96,6 +98,40 @@ class CheckpointSpecError(ValueError):
 
 class CheckpointReceiptError(CheckpointSpecError):
     """Engine-observed checkpoint evidence cannot mint a green receipt."""
+
+
+def validate_candidate_wiring_for_checkpoint(
+    receipt: Mapping,
+    *,
+    repository_fingerprint: str,
+    full_source_sha: str,
+    requirement_id: str,
+) -> dict:
+    """Require the live real-checkout producer before terminal checkpointing."""
+    try:
+        return wiring_closure.validate_candidate_checkout_receipt(
+            receipt,
+            expected_repository_fingerprint=repository_fingerprint,
+            expected_head_sha=full_source_sha,
+            expected_requirement_id=requirement_id,
+        )
+    except wiring_closure.WiringClosureError as exc:
+        raise CheckpointReceiptError(str(exc)) from exc
+
+
+def terminal_tasks_and_gates_surface(
+    identity: Mapping,
+    *,
+    tasks: Sequence[Mapping],
+    gates: Sequence[Mapping],
+) -> dict:
+    """Prepare the tasks/gates projection without granting terminal status."""
+    return terminal_truth.prepare_terminal_surface(
+        "tasks_and_gates",
+        identity,
+        {"tasks": [dict(item) for item in tasks],
+         "gates": [dict(item) for item in gates]},
+    )
 
 
 def _canonical_digest(value: object) -> str:

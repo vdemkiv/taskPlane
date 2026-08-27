@@ -90,6 +90,48 @@ class RepositoryAcquisitionError(RuntimeError):
         self.preparation_result = copy.deepcopy(preparation_result)
 
 
+def guard_terminal_delivery(
+    terminal_receipt: Mapping,
+    *,
+    action: str,
+    current_sha: str,
+    resulting_sha: str | None = None,
+    external_authority: bool = False,
+) -> dict:
+    """Refuse delivery claims that do not preserve the finalized exact SHA."""
+    try:
+        from taskplane import terminal_truth
+    except ImportError:  # direct executable/import compatibility
+        import terminal_truth
+    normalized_action = str(action or "").strip().lower()
+    if normalized_action not in {"done", "merge", "push", "tag", "publish", "release"}:
+        raise RepositoryAcquisitionError("terminal_truth", "delivery action is invalid")
+    try:
+        checked = terminal_truth.assert_terminal_authority(
+            terminal_receipt, expected_sha=current_sha
+        )
+    except terminal_truth.TerminalTruthError as exc:
+        raise RepositoryAcquisitionError("terminal_truth", exc.detail) from exc
+    terminal_sha = checked["bundle"]["identity"]["full_source_sha"]
+    if normalized_action == "merge" and resulting_sha is None:
+        raise RepositoryAcquisitionError(
+            "terminal_truth",
+            "merge requires the observed resulting_sha for exact-SHA revalidation",
+        )
+    if resulting_sha is not None and str(resulting_sha) != terminal_sha:
+        raise RepositoryAcquisitionError(
+            "terminal_truth",
+            "SHA-changing merge invalidates exact-SHA terminal finalization",
+        )
+    if normalized_action in {"push", "tag", "publish", "release"} and \
+            external_authority is not True:
+        raise RepositoryAcquisitionError(
+            "external_authority",
+            f"{normalized_action} is not authorized by terminal truth",
+        )
+    return checked
+
+
 def _canonical_fingerprint(value: object) -> str:
     encoded = json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
