@@ -34,12 +34,14 @@ import shutil
 import stat
 import sys
 import tempfile
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import decompose  # noqa: E402
 import depgraph as dg  # noqa: E402
 import lens_signals as ls  # noqa: E402
+import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 
 
@@ -396,6 +398,30 @@ class TestExternalStorePathsStayBounded(unittest.TestCase):
         self.assertNotEqual(left_key, right_key,
                             "the complete canonical path must still bind the key")
         self.assertRegex(left_key, r"-[0-9a-f]{8}$")
+
+
+class TestReviewSourcePinningAcrossWindowsStatApis(unittest.TestCase):
+    """Path and handle stat views can differ without the file changing."""
+
+    @staticmethod
+    def _snapshot(*, mode, ino=17, dev=9, size=12, mtime=100, ctime=200):
+        return types.SimpleNamespace(
+            st_dev=dev, st_ino=ino, st_mode=mode, st_size=size,
+            st_mtime_ns=mtime, st_ctime_ns=ctime)
+
+    def test_cross_api_metadata_shape_uses_file_identity_not_tuple_equality(self):
+        path = self._snapshot(mode=stat.S_IFREG | 0o644, ctime=200)
+        handle = self._snapshot(mode=stat.S_IFREG | 0o666, ctime=0)
+
+        self.assertTrue(loop._review_source_snapshot_unchanged(
+            path, handle, handle, path, source_size=12))
+
+    def test_a_different_opened_file_is_still_rejected(self):
+        path = self._snapshot(mode=stat.S_IFREG | 0o644, ino=17)
+        other = self._snapshot(mode=stat.S_IFREG | 0o666, ino=18)
+
+        self.assertFalse(loop._review_source_snapshot_unchanged(
+            path, other, other, path, source_size=12))
 
 
 if __name__ == "__main__":
