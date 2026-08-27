@@ -17,6 +17,7 @@ from unittest import mock
 
 import taskplane_lite as tp
 import tp as cli
+import storage
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -282,6 +283,13 @@ class TestHookEventClaims(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
 
     def test_cli_hook_wrapper_executes_native_and_bridge_event_once(self):
+        subprocess.run(["git", "init", "-q"], cwd=self.ws, check=True)
+        identity = storage.resolve_repository_identity(self.ws)
+        layout = storage.resolve_layout(
+            identity, run_id="run-hook-claim", home=self.home)
+        storage.write_workspace_locator(
+            self.ws, identity=identity, layout=layout,
+            run_id="run-hook-claim")
         calls = []
         event = {
             "hook_event_name": "PreToolUse", "session_id": "s1",

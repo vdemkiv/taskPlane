@@ -4361,9 +4361,8 @@ def _run_hook_command(a) -> int:
         else getattr(a, "workspace", None))
     receipt_home = runtime_storage.bind_hook_taskplane_home(
         workspace, os.environ)
-    if receipt_home is not None:
-        host_caps.record_runtime_hook_receipt(
-            receipt_home, hook_path=hook_path, event=event)
+    host_caps.record_runtime_hook_receipt(
+        receipt_home, hook_path=hook_path, event=event)
     claim = tp.claim_hook_event(
         workspace, a.cmd, event, hook_path=hook_path)
     if not claim.get("execute"):

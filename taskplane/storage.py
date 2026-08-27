@@ -319,17 +319,26 @@ def load_workspace_locator(checkout: str) -> dict | None:
 
 
 def bind_hook_taskplane_home(
-        checkout: str, environment: MutableMapping[str, str]) -> str | None:
-    """Bind a hook process to its checkout locator without home fallback.
+        checkout: str, environment: MutableMapping[str, str]) -> str:
+    """Bind a governed hook process to its dedicated checkout locator.
 
-    Unmanaged checkouts have no locator and therefore produce no durable hook
-    receipt. A governed checkout must use the locator's exact canonical home;
-    an inherited conflicting or noncanonical value is a closed failure.
+    Calling this function declares that the invocation is a Taskplane hook,
+    so an absent locator is a severed authority edge rather than evidence of
+    an unmanaged checkout. The locator must name a dedicated canonical home;
+    an inherited conflicting/noncanonical value and the user's default home
+    are closed failures.
     """
     locator = load_workspace_locator(checkout)
     if locator is None:
-        return None
+        raise StorageIdentityError(
+            "Taskplane hook requires a governed workspace locator")
     expected = str(locator["home"])
+    default_home = os.path.realpath(os.path.abspath(os.path.join(
+        os.path.expanduser(str(environment.get("HOME") or "~")),
+        ".taskplane")))
+    if os.path.normcase(expected) == os.path.normcase(default_home):
+        raise StorageIdentityError(
+            "Taskplane hook workspace locator cannot use the default home")
     configured = str(environment.get("TASKPLANE_HOME") or "")
     if configured:
         canonical = os.path.realpath(
