@@ -5441,8 +5441,7 @@ def project_key(workspace: str) -> str:
     to '-', so distinct projects whose paths differ only by punctuation —
     /x/my-app, /x/my_app, /x/my.app — all map to ONE key and silently share a
     store (KB, requirements, and loop.json — a gate in one corrupts the other).
-    Appending an 8-char hash of the canonical path guarantees every
-    distinct path gets its own store while keeping the slug human-readable."""
+    An 8-char hash guarantees distinct keys while the slug stays readable."""
     # A managed hybrid checkout carries one validated, ignored locator.  It
     # binds every clone/worktree of the same hosted repository to the same
     # durable project knowledge root while run state remains run-scoped.
@@ -5453,15 +5452,7 @@ def project_key(workspace: str) -> str:
         return str(locator["repository_key"])
     ap = _workspace_identity(workspace)
     slug = _path_slug(workspace)
-    # Keep unmanaged-store paths below the legacy Windows MAX_PATH boundary.
-    # A test checkout can already live beneath a deeply nested runner temp
-    # root; repeating that entire absolute path in ``projects/<key>`` made
-    # ordinary ReviewKernel artifacts cross 260 characters.  The digest is
-    # still derived from the complete canonical path, so bounding only the
-    # readable prefix does not weaken collision resistance.  Preserve every
-    # existing short key byte-for-byte; ``_adopt_alias_store`` migrates an
-    # incumbent long-key store by its self-describing workspace metadata.
-    readable = slug if len(slug) <= 80 else slug[:80].rstrip("-")
+    readable = slug[:80].rstrip("-") if len(slug) > 80 else slug
     return f"{readable}-{hashlib.sha1(ap.encode('utf-8')).hexdigest()[:8]}"
 
 

@@ -3717,27 +3717,6 @@ def _review_source_stat(value) -> tuple:
             value.st_mtime_ns, value.st_ctime_ns)
 
 
-def _review_source_snapshot_unchanged(
-        before, opened_before, opened_after, after, source_size: int) -> bool:
-    """Verify one lstat/open/fstat/read/lstat pin across host stat APIs.
-
-    Windows does not promise every metadata field is represented identically
-    by path-based ``lstat`` and handle-based ``fstat``.  Comparing the four
-    complete tuples therefore rejects an unchanged file there.  Keep strict
-    equality within each API, then use Python's cross-platform ``samestat``
-    identity check across the path/handle boundary.
-    """
-    return (
-        _review_source_stat(before) == _review_source_stat(after)
-        and _review_source_stat(opened_before) ==
-        _review_source_stat(opened_after)
-        and os.path.samestat(before, opened_before)
-        and stat.S_ISREG(before.st_mode)
-        and stat.S_ISREG(opened_before.st_mode)
-        and int(opened_after.st_size) == int(source_size)
-    )
-
-
 def _verified_review_module_source(checkout_root: str,
                                    module_name: str) -> dict:
     """Pin verified bytes for one direct target-checkout Python module."""
@@ -3790,8 +3769,13 @@ def _verified_review_module_source(checkout_root: str,
         raise RuntimeError(
             f"target review module changed while pinned: {module_name}") \
             from exc
-    if not _review_source_snapshot_unchanged(
-            before, opened_before, opened_after, after, len(source)) or \
+    handle_stable = _review_source_stat(opened_before) == \
+        _review_source_stat(opened_after)
+    if _review_source_stat(before) != _review_source_stat(after) or not handle_stable or \
+            not os.path.samestat(before, opened_before) or \
+            not stat.S_ISREG(before.st_mode) or \
+            not stat.S_ISREG(opened_before.st_mode) or \
+            int(opened_after.st_size) != len(source) or \
             os.path.realpath(path) != path:
         raise RuntimeError(
             f"target review module changed while pinned: {module_name}")

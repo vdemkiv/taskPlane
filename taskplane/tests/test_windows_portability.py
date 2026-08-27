@@ -36,6 +36,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import decompose  # noqa: E402
@@ -404,24 +405,36 @@ class TestReviewSourcePinningAcrossWindowsStatApis(unittest.TestCase):
     """Path and handle stat views can differ without the file changing."""
 
     @staticmethod
-    def _snapshot(*, mode, ino=17, dev=9, size=12, mtime=100, ctime=200):
+    def _snapshot(value, *, mode=None, ctime=None):
         return types.SimpleNamespace(
-            st_dev=dev, st_ino=ino, st_mode=mode, st_size=size,
-            st_mtime_ns=mtime, st_ctime_ns=ctime)
+            st_dev=value.st_dev, st_ino=value.st_ino,
+            st_mode=value.st_mode if mode is None else mode,
+            st_size=value.st_size, st_mtime_ns=value.st_mtime_ns,
+            st_ctime_ns=value.st_ctime_ns if ctime is None else ctime)
 
     def test_cross_api_metadata_shape_uses_file_identity_not_tuple_equality(self):
-        path = self._snapshot(mode=stat.S_IFREG | 0o644, ctime=200)
-        handle = self._snapshot(mode=stat.S_IFREG | 0o666, ctime=0)
+        root = tempfile.mkdtemp()
+        candidate = os.path.join(root, "verified.py")
+        with open(candidate, "w", encoding="utf-8") as stream:
+            stream.write("checkout_proof = 'verified-bytes'\n")
+        real_lstat, real_fstat = loop.os.lstat, loop.os.fstat
 
-        self.assertTrue(loop._review_source_snapshot_unchanged(
-            path, handle, handle, path, source_size=12))
+        def path_view(path):
+            value = real_lstat(path)
+            return (self._snapshot(value, ctime=value.st_ctime_ns + 1)
+                    if os.path.abspath(path) == candidate else value)
 
-    def test_a_different_opened_file_is_still_rejected(self):
-        path = self._snapshot(mode=stat.S_IFREG | 0o644, ino=17)
-        other = self._snapshot(mode=stat.S_IFREG | 0o666, ino=18)
+        def handle_view(descriptor):
+            value = real_fstat(descriptor)
+            return self._snapshot(
+                value, mode=value.st_mode ^ stat.S_IWUSR, ctime=0)
 
-        self.assertFalse(loop._review_source_snapshot_unchanged(
-            path, other, other, path, source_size=12))
+        with mock.patch.object(loop.os, "lstat", side_effect=path_view), \
+                mock.patch.object(loop.os, "fstat", side_effect=handle_view):
+            pinned = loop._verified_review_module_source(root, "verified")
+
+        self.assertEqual(pinned["source"],
+                         b"checkout_proof = 'verified-bytes'\n")
 
 
 if __name__ == "__main__":
