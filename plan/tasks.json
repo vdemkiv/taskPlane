@@ -7,7 +7,7 @@
     {
       "id": "t01-ac1-native-authority-readiness",
       "scope": ["taskplane/native_authority.py", "taskplane/tests/test_r0013_native_authority.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_authority.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_authority.py::test_complete_native_capability_map_is_required_by_design_and_plan",
       "req": "R-0013", "deps": [], "type": "architecture",
       "contracts": ["contract:design.codex-native-capability-inventory"], "new_modules": ["taskplane/native_authority.py"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
@@ -25,7 +25,7 @@
     {
       "id": "t03-ac3-zero-lens-readiness",
       "scope": ["taskplane/delivery_policy.py", "taskplane/review.py", "taskplane/evaluation_output.py", "taskplane/tests/test_r0013_zero_lens.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_zero_lens.py taskplane/tests/test_r0001_delivery_mode.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_zero_lens.py::test_empty_expected_collection_is_valid_success taskplane/tests/test_r0013_zero_lens.py::test_nonempty_malformed_or_outage_fallback_refuses_before_dispatch_or_gate taskplane/tests/test_r0001_delivery_mode.py::test_empty_expected_lenses_emits_successful_collection_receipt",
       "req": "R-0013", "deps": [], "type": "security",
       "contracts": ["contract:delivery.execution-zero-lens"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
@@ -34,7 +34,7 @@
     {
       "id": "t04-ac4-native-dispatch-readiness",
       "scope": ["taskplane/plan_topology.py", "taskplane/build_c.py", "taskplane/command_runtime.py", "taskplane/tests/test_r0013_native_dispatch.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_dispatch.py taskplane/tests/test_command_adapters.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_dispatch.py::test_every_ready_disjoint_unit_is_emitted_once_in_one_native_set taskplane/tests/test_r0013_native_dispatch.py::test_build_c_consumes_one_sealed_ready_set_without_reclassification taskplane/tests/test_r0013_native_dispatch.py::test_one_native_wait_wakes_on_completion_or_attention taskplane/tests/test_r0013_native_dispatch.py::test_silent_transport_deadline_returns_one_attention_before_wave_ceiling taskplane/tests/test_command_adapters.py::test_no_event_host_uses_one_runtime_blocking_wait_and_zero_model_polls",
       "req": "R-0013", "deps": [], "type": "integration",
       "contracts": ["contract:delivery.codex-native-dispatch", "contract:delivery.event-driven-wait"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
@@ -52,7 +52,7 @@
     {
       "id": "t06-ac6-native-budget-readiness",
       "scope": ["taskplane/brief_projection.py", "taskplane/dispatch_telemetry.py", "taskplane/progress.py", "taskplane/spend.py", "taskplane/tests/test_r0013_native_budget.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_budget.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_budget.py::test_missing_or_malformed_host_usage_fails_closed_before_next_dispatch taskplane/tests/test_r0013_native_budget.py::test_breach_stops_before_any_next_spawn taskplane/tests/test_r0013_native_budget.py::test_active_usage_contributes_to_all_four_budget_totals taskplane/tests/test_r0013_native_budget.py::test_delta_handoff_is_below_4000_tokens_and_contains_only_required_fields taskplane/tests/test_r0013_native_budget.py::test_second_fix_evaluate_failure_requires_human_decision",
       "req": "R-0013", "deps": [], "type": "performance",
       "contracts": ["contract:delivery.bounded-stage-handoff"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
@@ -70,7 +70,7 @@
     {
       "id": "t08-native-delivery-integration",
       "scope": ["taskplane/loop.py", "taskplane/tp.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_authority.py::test_loop_wave_never_calls_stage_split_resume_or_execution_root_claim taskplane/tests/test_r0013_native_authority.py::test_cut_ready_to_native_intent_fails_before_worktree_or_state taskplane/tests/test_r0013_zero_lens.py::test_build_fix_evaluate_and_em_start_zero_taskplane_lens_workers taskplane/tests/test_r0013_native_dispatch.py::test_severed_readiness_dispatch_completion_and_wait_fail_without_fallback taskplane/tests/test_r0013_native_dispatch.py::test_stage_journal_has_no_agent_dispatch_or_execution_root_projection taskplane/tests/test_r0013_native_budget.py::test_live_hook_dispatch_populates_active_observed_tokens taskplane/tests/test_r0013_native_budget.py::test_cut_screen_dispatch_to_telemetry_binding_refuses_dispatch taskplane/tests/test_r0013_real_checkout_wiring.py::test_cut_design_wiring_validator_from_checkpoint_fails_closed",
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_authority.py::test_static_delivery_roots_reject_forbidden_taskplane_authority taskplane/tests/test_r0013_native_authority.py::test_loop_wave_never_calls_stage_split_resume_or_execution_root_claim taskplane/tests/test_r0013_native_authority.py::test_cut_ready_to_native_intent_fails_before_worktree_or_state taskplane/tests/test_r0013_zero_lens.py::test_build_fix_evaluate_and_em_start_zero_taskplane_lens_workers taskplane/tests/test_r0013_native_dispatch.py::test_severed_readiness_dispatch_completion_and_wait_fail_without_fallback taskplane/tests/test_r0013_native_dispatch.py::test_stage_journal_has_no_agent_dispatch_or_execution_root_projection taskplane/tests/test_r0013_native_budget.py::test_live_hook_dispatch_populates_active_observed_tokens taskplane/tests/test_r0013_native_budget.py::test_cut_screen_dispatch_to_telemetry_binding_refuses_dispatch taskplane/tests/test_r0013_real_checkout_wiring.py::test_cut_design_wiring_validator_from_checkpoint_fails_closed",
       "req": "R-0013", "deps": ["t01-ac1-native-authority-readiness", "t02-ac2-design-sweep-readiness", "t03-ac3-zero-lens-readiness", "t04-ac4-native-dispatch-readiness", "t05-ac5-plan-boundary-readiness", "t06-ac6-native-budget-readiness", "t07-ac7-terminal-truth-readiness"], "type": "integration",
       "contracts": ["contract:design.codex-native-capability-inventory", "contract:design.quick-concurrent-all-lens-sweep", "contract:delivery.execution-zero-lens", "contract:delivery.codex-native-dispatch", "contract:delivery.event-driven-wait", "contract:delivery.acceptance-wave-ceiling", "contract:delivery.bounded-stage-handoff", "contract:delivery.exact-sha-terminal-truth"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
