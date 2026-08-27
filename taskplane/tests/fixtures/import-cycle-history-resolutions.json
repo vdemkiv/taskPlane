@@ -26,6 +26,42 @@
       "violation_codes": [
         "new-cyclic-member"
       ]
+    },
+    {
+      "affected_modules": [
+        "taskplane.audit",
+        "taskplane.collision",
+        "taskplane.dashboard",
+        "taskplane.defect_claim",
+        "taskplane.depgraph",
+        "taskplane.design_contract",
+        "taskplane.evidence",
+        "taskplane.lens",
+        "taskplane.lens_signals",
+        "taskplane.loop",
+        "taskplane.loop_status",
+        "taskplane.regression",
+        "taskplane.requirements",
+        "taskplane.retro",
+        "taskplane.review",
+        "taskplane.review_evidence",
+        "taskplane.review_progression",
+        "taskplane.review_repair",
+        "taskplane.review_retry",
+        "taskplane.runtime_eval",
+        "taskplane.stage_entities",
+        "taskplane.stage_handoff",
+        "taskplane.taskplane_lite",
+        "taskplane.views"
+      ],
+      "commit_count": 2,
+      "history_sha256": "ced4597ca917f6b571625922a5f6698cc385b28e61aa827a5c0dc6f469b7a5c7",
+      "introduced_revision": "e158c216f4b74799d96358932c71eff4257ea9f3",
+      "reason": "The Windows CI repairs temporarily added explanatory physical lines inside both protected SCCs without changing membership or edges. Revision cbbb152 compacted the same behavior back to both exact ceilings; this receipt binds only the two failing revisions and authorizes no future growth.",
+      "repaired_revision": "cbbb152f70ef25e90b5a4cb31843f1b7f85d6588",
+      "violation_codes": [
+        "physical-loc-growth"
+      ]
     }
   ],
   "schema": "taskplane.import-cycle-history-resolutions/v1"

@@ -31,9 +31,12 @@ HISTORY_RESOLUTIONS_RELATIVE = Path(
 WORKFLOW_RELATIVE = Path(".github/workflows/ci.yml")
 MODULE_RELATIVE = Path("taskplane/import_cycles.py")
 WORKFLOW_SHA256 = \
-    "ad14a00ec79956f401d3c9151fe106c4997959f2a0762061c3a31eb9765b0b45"
+    "bacbceab1fcd8fa45803b37824f6b6b901bd6b224f389508fcf42d596dd9282e"
 SEALED_WORKFLOW_SHA256 = \
     "e61df03fbec44633d945490f9df0c7c2f56e074b5f2da2915343035377bfb505"
+TRUSTED_WORKFLOW_PREDECESSOR_SHA256S = frozenset({
+    "ad14a00ec79956f401d3c9151fe106c4997959f2a0762061c3a31eb9765b0b45",
+})
 SEALED_SCANNER_SHA256 = \
     "fdb1e859898e05323afa2ae77a0189cba164edebb9644edc02daeac8168aace5"
 # Every post-seal scanner predecessor is an exact reviewed artifact, never a
@@ -42,6 +45,7 @@ SEALED_SCANNER_SHA256 = \
 # an unlisted intermediate mutation still fails the continuous-history proof.
 TRUSTED_SCANNER_PREDECESSOR_SHA256S = frozenset({
     "c89eddc3d2ed09846b63495a31f927e8678db2052ffe47bca7795636b1d787b0",
+    "1728a688ffb8a6e09f7410c9d6ba3da88ec8bfc0590b377cdf5fe7b7d8792752",
 })
 RATCHET_JOB_ID = "wave3-contracts"
 RATCHET_CHECK_NAME = "R-0006 graph + CLI contracts"
@@ -1009,7 +1013,7 @@ def _sealed_workflow_blob(blob: bytes | None) -> bool:
     try:
         return workflow_seal_digest(blob) in {
             SEALED_WORKFLOW_SHA256, WORKFLOW_SHA256,
-        }
+        } | TRUSTED_WORKFLOW_PREDECESSOR_SHA256S
     except CycleHistoryError:
         return False
 

@@ -390,6 +390,10 @@ def test_target_cut_edge_set_is_exactly_closed() -> None:
 def test_trusted_scanner_predecessor_receipts_are_exactly_closed() -> None:
     assert cycles.TRUSTED_SCANNER_PREDECESSOR_SHA256S == frozenset({
         "c89eddc3d2ed09846b63495a31f927e8678db2052ffe47bca7795636b1d787b0",
+        "1728a688ffb8a6e09f7410c9d6ba3da88ec8bfc0590b377cdf5fe7b7d8792752",
+    })
+    assert cycles.TRUSTED_WORKFLOW_PREDECESSOR_SHA256S == frozenset({
+        "ad14a00ec79956f401d3c9151fe106c4997959f2a0762061c3a31eb9765b0b45",
     })
 
 
@@ -476,8 +480,13 @@ def test_history_proof_allows_ordinary_evolution_before_seal(
     assert proof["seal_revision"] == seal
 
 
-def test_history_proof_allows_only_the_exact_versioned_workflow_transition(
+def test_history_proof_allows_only_the_exact_versioned_workflow_transitions(
         tmp_path: Path) -> None:
+    full_history_checkout = (
+        "        with:\n"
+        "          fetch-depth: 0\n"
+        "          persist-credentials: false\n"
+    )
     forward_release_step = (
         "\n"
         "      # R-0001 forward-only release integration. The 3.12 leg already owns\n"
@@ -488,7 +497,10 @@ def test_history_proof_allows_only_the_exact_versioned_workflow_transition(
         "        run: python scripts/ci_evals.py --verify-release-surface --json\n"
     )
     assert forward_release_step in ACTIVE_WORKFLOW
-    sealed_workflow = ACTIVE_WORKFLOW.replace(forward_release_step, "", 1)
+    previous_workflow = ACTIVE_WORKFLOW.replace(full_history_checkout, "", 1)
+    assert cycles.workflow_seal_digest(previous_workflow) in \
+        cycles.TRUSTED_WORKFLOW_PREDECESSOR_SHA256S
+    sealed_workflow = previous_workflow.replace(forward_release_step, "", 1)
     assert cycles.workflow_seal_digest(sealed_workflow) == \
         cycles.SEALED_WORKFLOW_SHA256
     policy, workflow, _ = _start_history_fixture(
@@ -496,8 +508,10 @@ def test_history_proof_allows_only_the_exact_versioned_workflow_transition(
     (tmp_path / "taskplane" / "lens.py").write_text(
         "def f():\n    return None\n", encoding="utf-8")
     _commit(tmp_path, "cut protected edge")
+    workflow.write_text(previous_workflow, encoding="utf-8")
+    _commit(tmp_path, "advance to forward-release workflow seal")
     workflow.write_text(ACTIVE_WORKFLOW, encoding="utf-8")
-    _commit(tmp_path, "advance to current exact workflow seal")
+    _commit(tmp_path, "advance to full-history workflow seal")
 
     assert cycles.verify_history(tmp_path, policy)["status"] == "pass"
 
