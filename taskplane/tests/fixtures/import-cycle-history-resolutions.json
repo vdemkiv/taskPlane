@@ -1,0 +1,32 @@
+{
+  "resolutions": [
+    {
+      "affected_modules": [
+        "taskplane.build_c"
+      ],
+      "commit_count": 39,
+      "history_sha256": "4bebbc0bf678b2455f178663d00e4cbd10a5ada73ea7707c6417ab45830439f6",
+      "introduced_revision": "2757822ede49177fc52de8c173302286364d6206",
+      "reason": "The bounded DEFINE projection temporarily joined build_c to the protected SCC. Revision 259330ed restored the R-0006 boundaries; this receipt binds every failing revision and does not authorize matching future growth.",
+      "repaired_revision": "259330ed753fb821b65d540f95b07b2ecbf70e4d",
+      "violation_codes": [
+        "new-cyclic-member"
+      ]
+    },
+    {
+      "affected_modules": [
+        "taskplane.build_c",
+        "taskplane.checkpoint"
+      ],
+      "commit_count": 34,
+      "history_sha256": "96a922e9ccfc7cda79e8879e94000592658ec74f6549194be3b430e9c8e0b7e6",
+      "introduced_revision": "f52f581d621baeb5c2842084fde1d3b466cad796",
+      "reason": "The T11 checkpoint adapters temporarily joined build_c and checkpoint to the protected SCC. Revision 009b3934 severed that cycle; this receipt binds the complete failing span and permits no future recurrence.",
+      "repaired_revision": "009b3934db61cc567e795d9ec46e111320fb7802",
+      "violation_codes": [
+        "new-cyclic-member"
+      ]
+    }
+  ],
+  "schema": "taskplane.import-cycle-history-resolutions/v1"
+}

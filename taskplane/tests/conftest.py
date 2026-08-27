@@ -32,6 +32,37 @@ if _repo_root not in _sys.path:
 from taskplane.tests import _SESSION_HOME  # noqa: F401,E402
 
 
+def _workflow_command_value(value, *, property_value=False):
+    """Escape one GitHub workflow-command field without changing pytest."""
+    text = str(value).replace("%", "%25").replace("\r", "%0D").replace(
+        "\n", "%0A")
+    if property_value:
+        text = text.replace(":", "%3A").replace(",", "%2C")
+    return text
+
+
+def pytest_runtest_logreport(report):
+    """Expose the exact failed test through public check annotations.
+
+    Raw Actions logs require authentication even for this public repository,
+    while check annotations are public. Emitting the normal workflow command
+    keeps the hosted Windows signal diagnosable without changing collection,
+    ordering, fixtures, or outcomes.
+    """
+    if not report.failed or not _os.environ.get("GITHUB_ACTIONS"):
+        return
+    path, line, _domain = report.location
+    nodeid = getattr(report, "nodeid", path)
+    detail = getattr(report, "longreprtext", str(report.longrepr))
+    detail = detail[-6000:]
+    props = (
+        f"file={_workflow_command_value(path, property_value=True)},"
+        f"line={int(line) + 1},"
+        f"title={_workflow_command_value(nodeid, property_value=True)}"
+    )
+    print(f"::error {props}::{_workflow_command_value(detail)}", flush=True)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_taskplane_home(tmp_path, monkeypatch):
     monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "tp-store"))

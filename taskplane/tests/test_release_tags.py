@@ -318,6 +318,30 @@ class TestItCatchesAMisplacedTag(_RepoCase):
         self.assertNotEqual(obj, commit, "expected an annotated tag")
         self.assertEqual(tags["v1.0.0"], commit)
 
+    def test_a_tagged_release_on_a_merged_side_parent_is_real(self):
+        """v2.17.17's exact shape: its tagged manifest commit is reachable
+        through a no-ff merge, but the merge's first-parent tree had already
+        advanced. It is a release, not a fictional CHANGELOG row or tag."""
+        c10 = self.repo.release("1.0.0")
+        self.repo.tag("1.0.0", c10)
+        _git(self.dir, "checkout", "-q", "-b", "release-side")
+        side = self.repo.release("1.0.5")
+        self.repo.tag("1.0.5", side)
+
+        _git(self.dir, "checkout", "-q", "main")
+        self.repo.versions = ["1.0.0"]
+        self.repo.release("1.1.0")
+        self.repo.tag("1.1.0")
+        _git(self.dir, "merge", "-q", "--no-ff", "-s", "ours",
+             "release-side", "-m", "merge released side parent")
+        self.repo.versions = ["1.0.0", "1.1.0"]
+        self.repo.changelog_claims("1.0.5")
+
+        result = self.repo.audit()
+        self.assertEqual(result["problems"], [])
+        self.assertIn("1.0.5", result["shipped"])
+        self.assertEqual(result["tagged_side_releases"], ["1.0.5"])
+
 
 class TestItCatchesAFictionalRelease(_RepoCase):
     def test_a_changelog_row_no_tree_ever_declared_is_C4(self):

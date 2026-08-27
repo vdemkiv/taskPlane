@@ -387,6 +387,12 @@ def test_target_cut_edge_set_is_exactly_closed() -> None:
     )
 
 
+def test_trusted_scanner_predecessor_receipts_are_exactly_closed() -> None:
+    assert cycles.TRUSTED_SCANNER_PREDECESSOR_SHA256S == frozenset({
+        "c89eddc3d2ed09846b63495a31f927e8678db2052ffe47bca7795636b1d787b0",
+    })
+
+
 def test_history_proof_finds_activation_before_all_five_cuts(
         tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -601,6 +607,68 @@ def test_history_proof_rejects_intermediate_raise_then_restore(
             cycles.CycleHistoryError,
             match="cycle ratchet violation|policy growth"):
         cycles.verify_history(tmp_path, policy_path)
+
+
+def test_history_proof_accepts_only_an_exact_repaired_violation_span(
+        tmp_path: Path) -> None:
+    policy, _, _ = _start_history_fixture(tmp_path)
+    lens = tmp_path / "taskplane" / "lens.py"
+    lens.write_text("def f():\n    import review\n    import extra\n",
+                    encoding="utf-8")
+    (tmp_path / "taskplane" / "extra.py").write_text(
+        "import lens\n", encoding="utf-8")
+    introduced = _commit(tmp_path, "introduce one cyclic member")
+    (tmp_path / "README.md").write_text(
+        "violation still present\n", encoding="utf-8")
+    lingering = _commit(tmp_path, "ordinary commit during repair")
+    lens.write_text("def f():\n    import review\n", encoding="utf-8")
+    repaired = _commit(tmp_path, "remove the cyclic member")
+
+    observations = []
+    for revision in (introduced, lingering):
+        baseline = json.loads(cycles._show_optional(
+            tmp_path, revision, cycles.POLICY_RELATIVE))
+        measured = cycles._inventory_from_sources(
+            cycles._revision_sources(tmp_path, revision),
+            source_revision=revision)
+        result = cycles.check_inventory(baseline, measured)
+        assert result["status"] == "fail"
+        observations.append({
+            "revision": revision, "violations": result["violations"]})
+
+    ledger = {
+        "schema": cycles.HISTORY_RESOLUTIONS_SCHEMA,
+        "resolutions": [{
+            "introduced_revision": introduced,
+            "repaired_revision": repaired,
+            "commit_count": 2,
+            "violation_codes": ["new-cyclic-member"],
+            "affected_modules": ["taskplane.extra"],
+            "history_sha256": cycles.history_resolution_digest(observations),
+            "reason": (
+                "The added module temporarily joined the protected SCC; the "
+                "named repair removed its reverse edge, and this receipt binds "
+                "every failing revision rather than permitting a pattern."),
+        }],
+    }
+    resolution_path = tmp_path / cycles.HISTORY_RESOLUTIONS_RELATIVE
+    resolution_path.write_text(
+        json.dumps(ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    proof = cycles.verify_history(tmp_path, policy)
+    assert proof["resolved_history"] == [{
+        "introduced_revision": introduced,
+        "repaired_revision": repaired,
+        "commit_count": 2,
+        "history_sha256": ledger["resolutions"][0]["history_sha256"],
+    }]
+
+    ledger["resolutions"][0]["history_sha256"] = "0" * 64
+    resolution_path.write_text(
+        json.dumps(ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(
+            cycles.CycleHistoryError, match="exact measured violations"):
+        cycles.verify_history(tmp_path, policy)
 
 
 def test_history_proof_rejects_a_cut_in_the_activation_commit(

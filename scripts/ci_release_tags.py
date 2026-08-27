@@ -14,13 +14,16 @@ never checked against the only source that can settle it — the version the
 manifests actually held, commit by commit, on the mainline.
 
 So this is the check. The manifest history is the source of truth; tags and
-the CHANGELOG are claims about it, and both are verified here.
+the CHANGELOG are claims about it, and both are verified here. First-parent
+history identifies releases that require tags. A correctly versioned tag on
+a reachable merged side parent identifies the rarer release that shipped
+without ever becoming a first-parent tree (v2.17.17 is the real example).
 
   C1  every version the manifest held on the mainline has a `v<version>` tag
       (except the newest, which may be the release in flight — so at most ONE
       untagged release can ever exist, which is the whole point)
   C2  every release tag resolves to a commit reachable from the mainline
-  C3  a tag's commit declares that version in its manifest
+  C3  every tag's commit declares that version in its manifest
   C4  every CHANGELOG version was either shipped or is listed in NOT_SHIPPED
       with a reason
   C5  nothing in NOT_SHIPPED was actually shipped — an exemption that starts
@@ -163,6 +166,32 @@ def audit(root=ROOT):
     problems = []
     newest = max(intro, key=vkey)
 
+    # Validate EVERY tag, not only tags whose version appeared on the
+    # first-parent manifest path. A no-ff merge can make a released, tagged
+    # side-parent commit reachable without making that intermediate version
+    # a first-parent tree. Ignoring those tags made the real v2.17.17 release
+    # fail C4 and C6 despite its tag naming a reachable tree whose manifests
+    # all declare 2.17.17. An abandoned side branch still fails C2, and a tag
+    # on the wrong tree still fails C3.
+    exact_reachable_tags = {}
+    for name, sha in sorted(tags.items(), key=lambda item: vkey(item[0][1:])):
+        v = name[1:]
+        reachable = git(root, "merge-base", "--is-ancestor", sha, ref)[0] == 0
+        if not reachable:
+            problems.append({
+                "check": "C2", "version": v,
+                "detail": f"{name} -> {sha[:9]} is NOT reachable from {ref}"})
+            continue
+        declared = version_at(root, sha)
+        if declared != v and v not in NOT_SHIPPED:
+            problems.append({
+                "check": "C3", "version": v,
+                "detail": f"{name} -> {sha[:9]}, whose manifest declares "
+                          f"{declared!r}, not {v!r}"})
+            continue
+        if declared == v:
+            exact_reachable_tags[v] = sha
+
     for v in sorted(intro, key=vkey):
         name = "v" + v
         sha = tags.get(name)
@@ -175,18 +204,6 @@ def audit(root=ROOT):
                           f"{name} tag. Fix: git tag -a {name} "
                           f"{intro[v][:9]} -m \"{name}\" && git push origin "
                           f"{name}"})
-            continue
-        if git(root, "merge-base", "--is-ancestor", sha, ref)[0] != 0:
-            problems.append({
-                "check": "C2", "version": v,
-                "detail": f"{name} -> {sha[:9]} is NOT reachable from {ref}"})
-            continue
-        declared = version_at(root, sha)
-        if declared != v and v not in NOT_SHIPPED:
-            problems.append({
-                "check": "C3", "version": v,
-                "detail": f"{name} -> {sha[:9]}, whose manifest declares "
-                          f"{declared!r}, not {v!r}"})
 
     # The version the WORKING TREE declares is the release in flight: its
     # CHANGELOG row is written before the bump reaches the mainline, which
@@ -211,7 +228,12 @@ def audit(root=ROOT):
     if in_flight:
         prepared.add(in_flight)
 
-    shipped = set(intro)
+    shipped_records = dict(intro)
+    for v, sha in exact_reachable_tags.items():
+        shipped_records.setdefault(v, sha)
+    shipped = set(shipped_records)
+    tagged_side_releases = sorted(set(exact_reachable_tags) - set(intro),
+                                  key=vkey)
     for v in changelog_versions(root):
         if v in shipped or v in NOT_SHIPPED or v in prepared:
             continue
@@ -240,7 +262,9 @@ def audit(root=ROOT):
     return {"ok": not problems, "mainline": ref, "newest": newest,
             "in_flight": in_flight,
             "prepared": sorted(prepared, key=vkey),
-            "shipped": {v: intro[v] for v in sorted(intro, key=vkey)},
+            "shipped": {v: shipped_records[v]
+                        for v in sorted(shipped_records, key=vkey)},
+            "tagged_side_releases": tagged_side_releases,
             "tags": {k: tags[k] for k in sorted(tags, key=lambda t: vkey(t[1:]))},
             "not_shipped": sorted(NOT_SHIPPED), "skipped": sorted(SKIPPED),
             "problems": problems}

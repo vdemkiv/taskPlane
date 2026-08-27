@@ -21,9 +21,13 @@ from typing import Iterable, Mapping, Sequence
 SCHEMA = "taskplane.import-cycle-ratchet/v1"
 CHECK_SCHEMA = "taskplane.import-cycle-check/v1"
 HISTORY_SCHEMA = "taskplane.import-cycle-history/v1"
+HISTORY_RESOLUTIONS_SCHEMA = \
+    "taskplane.import-cycle-history-resolutions/v1"
 WORKFLOW_SEAL_SCHEMA = "taskplane.workflow-ratchet-seal/v1"
 PACKAGE = "taskplane"
 POLICY_RELATIVE = Path("taskplane/tests/fixtures/import-cycles.json")
+HISTORY_RESOLUTIONS_RELATIVE = Path(
+    "taskplane/tests/fixtures/import-cycle-history-resolutions.json")
 WORKFLOW_RELATIVE = Path(".github/workflows/ci.yml")
 MODULE_RELATIVE = Path("taskplane/import_cycles.py")
 WORKFLOW_SHA256 = \
@@ -32,6 +36,13 @@ SEALED_WORKFLOW_SHA256 = \
     "e61df03fbec44633d945490f9df0c7c2f56e074b5f2da2915343035377bfb505"
 SEALED_SCANNER_SHA256 = \
     "fdb1e859898e05323afa2ae77a0189cba164edebb9644edc02daeac8168aace5"
+# Every post-seal scanner predecessor is an exact reviewed artifact, never a
+# semantic pattern. Adding the current HEAD scanner to history on the next
+# revision therefore requires naming the immediately previous trusted bytes;
+# an unlisted intermediate mutation still fails the continuous-history proof.
+TRUSTED_SCANNER_PREDECESSOR_SHA256S = frozenset({
+    "c89eddc3d2ed09846b63495a31f927e8678db2052ffe47bca7795636b1d787b0",
+})
 RATCHET_JOB_ID = "wave3-contracts"
 RATCHET_CHECK_NAME = "R-0006 graph + CLI contracts"
 RATCHET_STEP_NAME = "Import-cycle inventory, bounds, and activation order"
@@ -501,6 +512,99 @@ def format_failures(result: Mapping) -> str:
     return "\n".join(lines)
 
 
+def history_resolution_digest(records: Sequence[Mapping]) -> str:
+    """Content address one complete, ordered historical violation span."""
+    body = json.dumps(list(records), sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
+
+
+def _closed_history_keys(record: Mapping, expected: set[str], label: str) -> None:
+    actual = set(record)
+    if actual != expected:
+        raise CycleHistoryError(
+            f"{label} keys are not closed: "
+            f"missing={sorted(expected - actual)}, "
+            f"unexpected={sorted(actual - expected)}")
+
+
+def _hex_string(value: object, length: int) -> bool:
+    return isinstance(value, str) and len(value) == length and all(
+        char in "0123456789abcdef" for char in value)
+
+
+def _load_history_resolutions(
+        root: Path, protected_commits: Sequence[str]) -> list[dict]:
+    """Load exact repaired violation intervals, never a pattern waiver.
+
+    A repaired interval names every affected first-parent commit indirectly
+    through its closed [introduced, repaired) bounds and binds their complete
+    measured violations with one digest. The repair commit itself remains
+    subject to the ordinary ratchet and must pass. This lets the verifier
+    retain truthful evidence of a historical defect without making the
+    protected line permanently unshippable or accepting any future growth.
+    """
+    path = root / HISTORY_RESOLUTIONS_RELATIVE
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CycleHistoryError(
+            f"history resolution ledger is unreadable: {exc}") from exc
+    if not isinstance(value, Mapping):
+        raise CycleHistoryError("history resolution ledger must be an object")
+    _closed_history_keys(value, {"schema", "resolutions"},
+                         "history resolution ledger")
+    if value["schema"] != HISTORY_RESOLUTIONS_SCHEMA or not isinstance(
+            value["resolutions"], list):
+        raise CycleHistoryError("history resolution ledger schema is invalid")
+
+    positions = {commit: index for index, commit in enumerate(protected_commits)}
+    expected = {
+        "introduced_revision", "repaired_revision", "commit_count",
+        "violation_codes", "affected_modules", "history_sha256", "reason",
+    }
+    out = []
+    previous_repair = -1
+    for index, row in enumerate(value["resolutions"]):
+        label = f"history resolution[{index}]"
+        if not isinstance(row, Mapping):
+            raise CycleHistoryError(f"{label} must be an object")
+        _closed_history_keys(row, expected, label)
+        introduced = row["introduced_revision"]
+        repaired = row["repaired_revision"]
+        if not _hex_string(introduced, 40) or not _hex_string(repaired, 40):
+            raise CycleHistoryError(f"{label} revisions must be full commit ids")
+        if introduced not in positions or repaired not in positions:
+            raise CycleHistoryError(
+                f"{label} revisions are not both on protected first-parent history")
+        start = positions[introduced]
+        end = positions[repaired]
+        if start >= end or start < previous_repair:
+            raise CycleHistoryError(
+                f"{label} must be ordered, non-overlapping, and repaired later")
+        previous_repair = end
+        if isinstance(row["commit_count"], bool) or not isinstance(
+                row["commit_count"], int) or row["commit_count"] != end - start:
+            raise CycleHistoryError(
+                f"{label} commit_count must equal its exact protected span")
+        for field in ("violation_codes", "affected_modules"):
+            values = row[field]
+            if not isinstance(values, list) or not values or values != sorted(
+                    set(values)) or not all(isinstance(item, str) and item
+                                            for item in values):
+                raise CycleHistoryError(
+                    f"{label} {field} must be a sorted non-empty string list")
+        if not _hex_string(row["history_sha256"], 64):
+            raise CycleHistoryError(f"{label} history_sha256 is invalid")
+        if not isinstance(row["reason"], str) or len(row["reason"].strip()) < 80:
+            raise CycleHistoryError(
+                f"{label} needs a specific repair reason (at least 80 characters)")
+        out.append({**row, "_start": start, "_end": end})
+    return out
+
+
 def _show_optional(root: Path, revision: str, path: Path) -> str | None:
     result = subprocess.run(
         ["git", "show", f"{revision}:{path.as_posix()}"], cwd=root,
@@ -889,10 +993,14 @@ def _first_protected_cut(root: Path) -> str | None:
 
 
 def _trusted_scanner_blob(blob: bytes | None, trusted_scanner: bytes) -> bool:
-    """Accept only the original pre-cut seal or the exact trusted HEAD blob."""
-    return blob is not None and (
+    """Accept only content-addressed scanner lineage or trusted HEAD bytes."""
+    if blob is None:
+        return False
+    digest = hashlib.sha256(blob).hexdigest()
+    return (
         blob == trusted_scanner
-        or hashlib.sha256(blob).hexdigest() == SEALED_SCANNER_SHA256)
+        or digest == SEALED_SCANNER_SHA256
+        or digest in TRUSTED_SCANNER_PREDECESSOR_SHA256S)
 
 
 def _sealed_workflow_blob(blob: bytes | None) -> bool:
@@ -1048,6 +1156,14 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         raise CycleHistoryError(
             "ratchet activation is not on the HEAD first-parent history")
 
+    resolutions = _load_history_resolutions(root, protected_commits)
+    resolution_for_commit = {}
+    resolution_observations = [[] for _ in resolutions]
+    for resolution_index, resolution in enumerate(resolutions):
+        for commit in protected_commits[
+                resolution["_start"]:resolution["_end"]]:
+            resolution_for_commit[commit] = resolution_index
+
     previous_policy = activation_policy
     last_policy_commit = activation
     protected_cut_seen = False
@@ -1141,10 +1257,45 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         measured_commit = _inventory_from_sources(
             commit_sources, source_revision=commit)
         enforced = check_inventory(candidate, measured_commit)
-        if enforced["status"] != "pass":
+        resolution_index = resolution_for_commit.get(commit)
+        if resolution_index is not None:
+            resolution_observations[resolution_index].append({
+                "revision": commit,
+                "violations": enforced["violations"],
+            })
+        if enforced["status"] != "pass" and resolution_index is None:
             raise CycleHistoryError(
                 f"cycle ratchet violation at revision {commit}: " +
                 format_failures(enforced))
+
+    resolution_proof = []
+    for resolution, observations in zip(
+            resolutions, resolution_observations):
+        label = resolution["introduced_revision"]
+        if len(observations) != resolution["commit_count"] or not observations \
+                or observations[0]["revision"] != label or any(
+                    not row["violations"] for row in observations):
+            raise CycleHistoryError(
+                f"history resolution {label} does not cover one continuous "
+                "failing interval")
+        codes = sorted({violation["code"] for row in observations
+                        for violation in row["violations"]})
+        modules = sorted({module for row in observations
+                          for violation in row["violations"]
+                          for module in violation["affected_modules"]})
+        digest = history_resolution_digest(observations)
+        if codes != resolution["violation_codes"] or \
+                modules != resolution["affected_modules"] or \
+                digest != resolution["history_sha256"]:
+            raise CycleHistoryError(
+                f"history resolution {label} does not match the exact "
+                "measured violations")
+        resolution_proof.append({
+            "introduced_revision": label,
+            "repaired_revision": resolution["repaired_revision"],
+            "commit_count": len(observations),
+            "history_sha256": digest,
+        })
 
     if canonical_json(previous_policy) != canonical_json(current_policy):
         raise CycleHistoryError(
@@ -1159,6 +1310,7 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         "measurement_revision": activation_parent,
         "current_policy_revision": current_policy["source_revision"],
         "target_edges": [list(edge) for edge in TARGET_CUT_EDGES],
+        "resolved_history": resolution_proof,
     }
 
 
