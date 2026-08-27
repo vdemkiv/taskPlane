@@ -380,6 +380,23 @@ class TestEmittedArtifactPathsAreSlashShaped(unittest.TestCase):
                     "and fix the emitter, do not freeze the divergence.")
 
 
+class TestExternalStorePathsStayBounded(unittest.TestCase):
+    """A runner temp path must not be repeated unboundedly in its store."""
+
+    def test_long_checkout_keys_keep_a_bounded_readable_prefix(self):
+        left = os.path.join(os.sep, *("nested-segment" for _ in range(12)),
+                            "left")
+        right = os.path.join(os.sep, *("nested-segment" for _ in range(12)),
+                             "right")
+        left_key = tp.project_key(left)
+        right_key = tp.project_key(right)
+
+        self.assertLessEqual(len(left_key), 89)
+        self.assertLessEqual(len(right_key), 89)
+        self.assertNotEqual(left_key, right_key,
+                            "the complete canonical path must still bind the key")
+        self.assertRegex(left_key, r"-[0-9a-f]{8}$")
+
 
 if __name__ == "__main__":
     unittest.main()

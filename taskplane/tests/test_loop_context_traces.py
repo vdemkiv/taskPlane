@@ -386,16 +386,19 @@ class TestGraphImpactHeads(unittest.TestCase):
         task = dict(TASK, workspace=worktree)
 
         seen = []
-        original = review.start_review
+        original = loop._review_kernel
 
-        def spy(w, *a, **kw):
-            seen.append(w)
-            return original(w, *a, **kw)
+        def spy(project_ws, diff_ws, *a, **kw):
+            seen.append(diff_ws)
+            return original(project_ws, diff_ws, *a, **kw)
 
         _state(self.ws, "evaluate", baseline=self.base, task=task,
                parallel=False)
-        with mock.patch.object(review, "start_review", spy):
-            loop.next_action(self.ws)
+        with mock.patch.object(loop, "_review_kernel", spy):
+            action = loop.next_action(self.ws)
+        self.assertEqual(
+            (action.get("review_kernel") or {}).get("status"), "ready",
+            action)
         self.assertEqual(seen, [self.ws], "serial kernel reads the project")
 
         seen.clear()
@@ -406,8 +409,11 @@ class TestGraphImpactHeads(unittest.TestCase):
         with mock.patch.object(
                 loop, "_parallel_evaluate_workspace",
                 return_value=(worktree, None)), \
-                mock.patch.object(review, "start_review", spy):
-            loop.next_action(self.ws)
+                mock.patch.object(loop, "_review_kernel", spy):
+            action = loop.next_action(self.ws)
+        self.assertEqual(
+            (action.get("review_kernel") or {}).get("status"), "ready",
+            action)
         self.assertEqual(seen, [worktree], "parallel kernel reads the claim")
 
     def test_every_graph_impact_site_carries_the_heads(self):

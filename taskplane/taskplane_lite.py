@@ -5453,7 +5453,16 @@ def project_key(workspace: str) -> str:
         return str(locator["repository_key"])
     ap = _workspace_identity(workspace)
     slug = _path_slug(workspace)
-    return f"{slug}-{hashlib.sha1(ap.encode('utf-8')).hexdigest()[:8]}"
+    # Keep unmanaged-store paths below the legacy Windows MAX_PATH boundary.
+    # A test checkout can already live beneath a deeply nested runner temp
+    # root; repeating that entire absolute path in ``projects/<key>`` made
+    # ordinary ReviewKernel artifacts cross 260 characters.  The digest is
+    # still derived from the complete canonical path, so bounding only the
+    # readable prefix does not weaken collision resistance.  Preserve every
+    # existing short key byte-for-byte; ``_adopt_alias_store`` migrates an
+    # incumbent long-key store by its self-describing workspace metadata.
+    readable = slug if len(slug) <= 80 else slug[:80].rstrip("-")
+    return f"{readable}-{hashlib.sha1(ap.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _adopt_alias_store(workspace: str, new_root: str) -> None:
