@@ -415,8 +415,8 @@ class TestReviewSourcePinningAcrossWindowsStatApis(unittest.TestCase):
     def test_cross_api_metadata_shape_uses_file_identity_not_tuple_equality(self):
         root = tempfile.mkdtemp()
         candidate = os.path.join(root, "verified.py")
-        with open(candidate, "w", encoding="utf-8") as stream:
-            stream.write("checkout_proof = 'verified-bytes'\n")
+        with open(candidate, "wb") as stream:
+            stream.write(b"checkout_proof = 'verified-bytes'\n")
         real_lstat, real_fstat = loop.os.lstat, loop.os.fstat
 
         def path_view(path):
