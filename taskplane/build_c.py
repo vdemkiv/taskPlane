@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import hashlib
 import json
+import math
 import os
 import re
 
@@ -121,6 +122,32 @@ def executable_topology(tasks: list[Mapping[str, object]], *,
         tasks, repository_files=repository_files)
 
 
+def _requires_sealed_native_ready_set(
+        state: Mapping[str, object], tasks: list[object]) -> bool:
+    """Identify the R-0013/native path without affecting legacy callers."""
+    if state.get("delivery_path") in {
+            "r0013-native", "sealed-native", "codex-native"}:
+        return True
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            continue
+        requirement = task.get("req")
+        requirements = (requirement if isinstance(requirement, (list, tuple))
+                        else [requirement])
+        if any(str(value or "").strip().upper() == "R-0013"
+               for value in requirements):
+            return True
+        contracts = task.get("contracts") or ()
+        if isinstance(contracts, str):
+            contracts = [contracts]
+        if any(str(value).strip() in {
+                "contract:delivery.codex-native-dispatch",
+                "contract:delivery.codex-native-event-wait",
+        } for value in contracts):
+            return True
+    return False
+
+
 def _direct_worktree(ws: str, task_id: str, revision: str) -> str:
     """Create one isolated worktree through the incumbent repository owner."""
     path = runtime_storage.task_worktree_path(ws, task_id)
@@ -137,7 +164,8 @@ def _assignment_wait(
         member_ids: list[str], *,
         wait_policy_factory: Callable[[str, int], dict] | None,
         wait_invocation_factory: Callable[[Mapping[str, object],
-                                           list[str]], dict] | None) \
+                                           list[str]], dict] | None,
+        require_absolute_deadline: bool = False) \
         -> tuple[dict, dict]:
     if wait_policy_factory is None or wait_invocation_factory is None:
         wait_policy_factory = wait_policy_factory or _wait_policy_factory
@@ -156,6 +184,19 @@ def _assignment_wait(
             int(policy.get("outstanding_count") or 0) != len(member_ids):
         raise ScopeAssignmentError(
             "direct assignment requires one non-polling event wait")
+    if require_absolute_deadline:
+        deadline_at = policy.get("deadline_at")
+        wave_deadline_at = policy.get("wave_deadline_at")
+        reserve = policy.get("reconciliation_reserve_seconds")
+        if any(isinstance(value, bool) or not isinstance(value, (int, float))
+               or not math.isfinite(float(value))
+               for value in (deadline_at, wave_deadline_at, reserve)) or \
+                float(reserve) <= 0 or \
+                float(deadline_at) >= float(wave_deadline_at) or \
+                float(deadline_at) > float(wave_deadline_at) - float(reserve):
+            raise ScopeAssignmentError(
+                "direct assignment requires an absolute child deadline "
+                "before the wave ceiling")
     invocation = wait_invocation_factory(policy, member_ids)
     if not isinstance(invocation, Mapping) or \
             invocation.get("schema") != \
@@ -166,6 +207,13 @@ def _assignment_wait(
             list(invocation.get("outstanding_members") or []) != member_ids:
         raise ScopeAssignmentError(
             "direct assignment event wait invocation is invalid")
+    if require_absolute_deadline and (
+            not isinstance(invocation.get("deadline_at"), (int, float)) or
+            isinstance(invocation.get("deadline_at"), bool) or
+            not math.isfinite(float(invocation["deadline_at"])) or
+            float(invocation["deadline_at"]) != float(policy["deadline_at"])):
+        raise ScopeAssignmentError(
+            "direct assignment event wait deadline is invalid")
     return dict(policy), dict(invocation)
 
 
@@ -197,6 +245,11 @@ def assign_scopes(
     tasks = state.get("tasks")
     if not isinstance(tasks, list):
         raise ScopeAssignmentError("sealed Plan tasks are missing")
+    sealed_input = state.get("ready_set")
+    requires_sealed_set = _requires_sealed_native_ready_set(state, tasks)
+    if requires_sealed_set and sealed_input is None:
+        raise ScopeAssignmentError(
+            "R-0013/native dispatch requires a sealed ready_set")
     graph = graph if isinstance(graph, dict) else depgraph.load(ws)
     modules = graph.get("modules")
     if not isinstance(modules, Mapping) or not modules:
@@ -205,65 +258,99 @@ def assign_scopes(
     if not revision:
         raise ScopeAssignmentError("assignment revision is unavailable")
 
-    topology = executable_topology(tasks, repository_files=repository_files)
-    pair_map = {
-        frozenset((str(row["left"]), str(row["right"]))): row
-        for row in topology["pairs"]
-    }
-    passed = {str(row.get("id")) for row in tasks
-              if isinstance(row, Mapping) and
-              row.get("status") in {"passed", "accepted"}}
-    candidates = []
-    for row in tasks:
-        if not isinstance(row, Mapping) or row.get("status") != "pending":
-            continue
-        task_id = str(row.get("id") or "").strip()
-        scope = list(row.get("scope") or [])
-        deps = set(topology["effective_dependencies"].get(task_id) or [])
-        if not task_id or not scope or not deps <= passed:
-            continue
-        if (topology.get("missing_test_assets") or {}).get(task_id):
-            continue
-        graph_modules = depgraph.scope_modules(ws, scope)
-        if not graph_modules or any(value not in modules
-                                    for value in graph_modules):
-            raise ScopeAssignmentError(
-                f"task {task_id} has ambiguous graph identity")
-        candidates.append({"task_id": task_id, "scope": scope,
-                           "modules": sorted(graph_modules)})
+    using_sealed_set = sealed_input is not None
+    if using_sealed_set:
+        try:
+            sealed = plan_topology.validate_ready_set(sealed_input, tasks)
+        except plan_topology.PlanTopologyError as exc:
+            raise ScopeAssignmentError(str(exc)) from exc
+        topology_fingerprint = str(sealed["topology_fingerprint"])
+        selected = []
+        for member in sealed["members"]:
+            task_id = str(member["task_id"])
+            scope = list(member["scope"])
+            graph_modules = depgraph.scope_modules(ws, scope)
+            if not graph_modules or any(value not in modules
+                                        for value in graph_modules):
+                raise ScopeAssignmentError(
+                    f"task {task_id} has ambiguous graph identity")
+            selected.append({
+                "task_id": task_id, "scope": scope,
+                "modules": sorted(graph_modules),
+                "task_fingerprint": member["task_fingerprint"],
+            })
+        serialized = [dict(row) for row in sealed["held"]]
+    else:
+        # Compatibility for retained pre-R-0013 callers.  The production
+        # native path supplies ``ready_set`` and therefore never enters this
+        # classification branch.
+        topology = executable_topology(
+            tasks, repository_files=repository_files)
+        topology_fingerprint = str(topology["fingerprint"])
+        pair_map = {
+            frozenset((str(row["left"]), str(row["right"]))): row
+            for row in topology["pairs"]
+        }
+        passed = {str(row.get("id")) for row in tasks
+                  if isinstance(row, Mapping) and
+                  row.get("status") in {"passed", "accepted"}}
+        candidates = []
+        for row in tasks:
+            if not isinstance(row, Mapping) or row.get("status") != "pending":
+                continue
+            task_id = str(row.get("id") or "").strip()
+            scope = list(row.get("scope") or [])
+            deps = set(topology["effective_dependencies"].get(task_id) or [])
+            if not task_id or not scope or not deps <= passed:
+                continue
+            if (topology.get("missing_test_assets") or {}).get(task_id):
+                continue
+            graph_modules = depgraph.scope_modules(ws, scope)
+            if not graph_modules or any(value not in modules
+                                        for value in graph_modules):
+                raise ScopeAssignmentError(
+                    f"task {task_id} has ambiguous graph identity")
+            candidates.append({"task_id": task_id, "scope": scope,
+                               "modules": sorted(graph_modules)})
 
-    if not candidates:
+        selected = []
+        serialized = []
+        for candidate in candidates:
+            blocking_pair = next((
+                pair_map[frozenset((candidate["task_id"],
+                                    member["task_id"]))]
+                for member in selected
+                if pair_map[frozenset((candidate["task_id"],
+                                       member["task_id"]))]["disposition"]
+                == "serialized"
+            ), None)
+            if blocking_pair is None:
+                selected.append(candidate)
+                continue
+            blocker = (blocking_pair["left"]
+                       if blocking_pair["left"] != candidate["task_id"]
+                       else blocking_pair["right"])
+            owner = str(blocking_pair["shared_owner"])
+            serialized.append({
+                "task_id": candidate["task_id"],
+                "blocked_by": blocker,
+                "reason": ("scope_overlap" if owner.startswith("scope:")
+                           else owner),
+            })
+
+    if not selected:
         raise ScopeAssignmentError("no ready scope can be assigned")
-
-    selected: list[dict] = []
-    serialized = []
-    for candidate in candidates:
-        blocking_pair = next((
-            pair_map[frozenset((candidate["task_id"], member["task_id"]))]
-            for member in selected
-            if pair_map[frozenset((
-                candidate["task_id"], member["task_id"]))]["disposition"]
-            == "serialized"
-        ), None)
-        if blocking_pair is None:
-            selected.append(candidate)
-            continue
-        blocker = (blocking_pair["left"]
-                   if blocking_pair["left"] != candidate["task_id"]
-                   else blocking_pair["right"])
-        owner = str(blocking_pair["shared_owner"])
-        serialized.append({
-            "task_id": candidate["task_id"],
-            "blocked_by": blocker,
-            "reason": ("scope_overlap" if owner.startswith("scope:")
-                       else owner),
-        })
 
     member_ids = [row["task_id"] for row in selected]
     wait_policy, wait_invocation = _assignment_wait(
         member_ids, wait_policy_factory=wait_policy_factory,
-        wait_invocation_factory=wait_invocation_factory)
-    dispatch_material = {"revision": revision, "members": member_ids}
+        wait_invocation_factory=wait_invocation_factory,
+        require_absolute_deadline=using_sealed_set)
+    dispatch_material = {
+        "revision": revision, "members": member_ids,
+        "ready_set_fingerprint": (
+            sealed["fingerprint"] if using_sealed_set else None),
+    }
     dispatch_id = "build-c-direct-" + hashlib.sha256(json.dumps(
         dispatch_material, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")).hexdigest()[:20]
@@ -297,7 +384,9 @@ def assign_scopes(
         },
         "wait_policy": wait_policy,
         "wait_invocation": wait_invocation,
-        "topology_fingerprint": topology["fingerprint"],
+        "topology_fingerprint": topology_fingerprint,
+        **({"ready_set_fingerprint": sealed["fingerprint"]}
+           if using_sealed_set else {}),
     }
     return {**material, "fingerprint": hashlib.sha256(json.dumps(
         material, sort_keys=True, separators=(",", ":")

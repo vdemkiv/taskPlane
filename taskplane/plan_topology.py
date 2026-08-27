@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover - direct module loading
 
 
 TOPOLOGY_SCHEMA = "taskplane.plan-topology/v1"
+SEALED_READY_SET_SCHEMA = "taskplane.sealed-ready-set/v1"
 
 
 class PlanTopologyError(RuntimeError):
@@ -219,6 +220,223 @@ def classify_plan(
     }
     material["fingerprint"] = content_fingerprint(material)
     return material
+
+
+def _ready_task_fingerprint(row: Mapping[str, Any], *,
+                            effective_dependencies: Sequence[str]) -> str:
+    """Bind a ready-set member to the immutable execution-facing Plan row."""
+    return content_fingerprint({
+        "id": str(row.get("id") or ""),
+        "scope": sorted({_path(value) for value in row.get("scope") or ()
+                         if _path(value)}),
+        "deps": sorted(str(value) for value in effective_dependencies),
+        "tests": row.get("tests"),
+        "req": row.get("req"),
+        "contracts": sorted(str(value) for value in
+                            row.get("contracts") or ()),
+    })
+
+
+def seal_ready_set(
+    tasks: Sequence[Mapping[str, Any]], *, passed: Iterable[str],
+    repository_files: Iterable[str] | None = None,
+    allow_isolated_variants: bool = False,
+) -> dict[str, Any]:
+    """Classify readiness once and seal one deterministic native set.
+
+    The receipt is intent, not host admission.  Every pending member is
+    represented exactly once as either ready or held, and every held row
+    names the dependency or ownership fact that serialized it.  Consumers
+    validate the fingerprint and Plan-row bindings; they never classify the
+    tasks a second time or truncate the ready set by host capacity.
+    """
+    rows = _task_rows(tasks)
+    by_id = {row["id"]: row for row in rows}
+    declared_test_files = {
+        path for row in rows
+        for path in _declared_test_files(row.get("tests"))
+    }
+    repository_test_files = sorted(_repository_inventory(
+        declared_test_files, repository_files))
+    topology = classify_plan(
+        rows, repository_files=repository_test_files)
+    passed_ids = sorted({str(value) for value in passed})
+    unknown_passed = sorted(set(passed_ids) - set(by_id))
+    if unknown_passed:
+        raise PlanTopologyError(
+            f"ready-set passed ids are unknown: {unknown_passed}")
+    pair_map = {
+        frozenset((str(row["left"]), str(row["right"]))): row
+        for row in topology["pairs"]
+    }
+    members: list[dict[str, Any]] = []
+    held: list[dict[str, str]] = []
+    for task_id in topology["task_ids"]:
+        task = by_id[task_id]
+        if task.get("status", "pending") != "pending":
+            continue
+        dependencies = list(topology["effective_dependencies"][task_id])
+        unmet = sorted(set(dependencies) - set(passed_ids))
+        if unmet:
+            pair = next((
+                pair_map[frozenset((task_id, dependency))]
+                for dependency in unmet
+                if frozenset((task_id, dependency)) in pair_map
+            ), None)
+            held.append({
+                "task_id": task_id,
+                "reason": "waiting on deps: " + ",".join(unmet),
+                "shared_owner": str((pair or {}).get("shared_owner") or
+                                    f"dependency:{unmet[0]}"),
+            })
+            continue
+        missing = list(
+            (topology.get("missing_test_assets") or {}).get(task_id) or [])
+        if missing:
+            held.append({
+                "task_id": task_id,
+                "reason": "missing test assets: " + ",".join(missing),
+                "shared_owner": "test-artifact:" + missing[0],
+            })
+            continue
+        blocking_pair = next((
+            pair_map[frozenset((task_id, str(member["task_id"])))]
+            for member in members
+            if pair_map[frozenset((task_id, str(member["task_id"])))]
+            ["disposition"] == "serialized"
+            and not (
+                allow_isolated_variants
+                and task.get("variant")
+                and by_id[str(member["task_id"])].get("variant")
+                and task.get("variant") !=
+                by_id[str(member["task_id"])].get("variant")
+            )
+        ), None)
+        if blocking_pair is not None:
+            held.append({
+                "task_id": task_id,
+                "reason": "serialized by " +
+                          str(blocking_pair["shared_owner"]),
+                "shared_owner": str(blocking_pair["shared_owner"]),
+            })
+            continue
+        scope = list(task["scope"])
+        members.append({
+            "task_id": task_id,
+            "scope": scope,
+            "effective_dependencies": dependencies,
+            "task_fingerprint": _ready_task_fingerprint(
+                task, effective_dependencies=dependencies),
+        })
+
+    material = {
+        "schema": SEALED_READY_SET_SCHEMA,
+        "topology_fingerprint": topology["fingerprint"],
+        "source_tasks_fingerprint": content_fingerprint(rows),
+        # Preserve the exact admitted test-artifact view so validation can
+        # reconstruct the approved topology without consulting a later
+        # working tree.  Only declared test files are relevant here.
+        "repository_test_files": repository_test_files,
+        "allow_isolated_variants": bool(allow_isolated_variants),
+        "passed_ids": passed_ids,
+        "members": members,
+        "held": held,
+    }
+    return {**material, "fingerprint": content_fingerprint(material)}
+
+
+def validate_ready_set(
+    receipt: Mapping[str, Any], tasks: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Validate a sealed set against its Plan-bound admitted topology."""
+    if not isinstance(receipt, Mapping):
+        raise PlanTopologyError("sealed ready set is missing")
+    required = {
+        "schema", "topology_fingerprint", "source_tasks_fingerprint",
+        "repository_test_files", "allow_isolated_variants",
+        "passed_ids", "members", "held", "fingerprint",
+    }
+    if set(receipt) != required or \
+            receipt.get("schema") != SEALED_READY_SET_SCHEMA:
+        raise PlanTopologyError("sealed ready set schema is invalid")
+    material = {key: receipt[key] for key in required - {"fingerprint"}}
+    if receipt.get("fingerprint") != content_fingerprint(material):
+        raise PlanTopologyError("sealed ready set fingerprint is invalid")
+    rows = _task_rows(tasks)
+    if receipt.get("source_tasks_fingerprint") != content_fingerprint(rows):
+        raise PlanTopologyError("sealed ready set does not bind the Plan")
+    if not isinstance(receipt.get("topology_fingerprint"), str) or \
+            not receipt["topology_fingerprint"].strip():
+        raise PlanTopologyError("sealed ready set topology is missing")
+    passed_ids = receipt.get("passed_ids")
+    if not isinstance(passed_ids, list) or \
+            any(not isinstance(task_id, str) or not task_id
+                for task_id in passed_ids) or \
+            passed_ids != sorted(set(passed_ids)):
+        raise PlanTopologyError("sealed ready set passed ids are invalid")
+    repository_test_files = receipt.get("repository_test_files")
+    if not isinstance(repository_test_files, list) or \
+            any(not isinstance(path, str) or not _path(path)
+                for path in repository_test_files) or \
+            repository_test_files != sorted(set(repository_test_files)):
+        raise PlanTopologyError(
+            "sealed ready set repository test files are invalid")
+    if not isinstance(receipt.get("allow_isolated_variants"), bool):
+        raise PlanTopologyError(
+            "sealed ready set variant policy is invalid")
+    by_id = {row["id"]: row for row in rows}
+    pending_ids = {
+        row["id"] for row in rows
+        if row.get("status", "pending") == "pending"
+    }
+    members = receipt.get("members")
+    held = receipt.get("held")
+    if not isinstance(members, list) or not isinstance(held, list):
+        raise PlanTopologyError("sealed ready set rows are invalid")
+    member_ids: list[str] = []
+    for member in members:
+        if not isinstance(member, Mapping) or set(member) != {
+                "task_id", "scope", "effective_dependencies",
+                "task_fingerprint"}:
+            raise PlanTopologyError("sealed ready member is invalid")
+        task_id = str(member.get("task_id") or "")
+        row = by_id.get(task_id)
+        dependencies = member.get("effective_dependencies")
+        if row is None or not isinstance(dependencies, list) or \
+                any(not isinstance(dependency, str) or not dependency
+                    for dependency in dependencies) or \
+                dependencies != sorted(set(dependencies)) or \
+                member.get("scope") != row["scope"] or \
+                member.get("task_fingerprint") != _ready_task_fingerprint(
+                    row, effective_dependencies=dependencies):
+            raise PlanTopologyError(
+                f"sealed ready member does not bind the Plan: {task_id}")
+        member_ids.append(task_id)
+    held_ids: list[str] = []
+    for row in held:
+        if not isinstance(row, Mapping) or set(row) != {
+                "task_id", "reason", "shared_owner"} or \
+                not str(row.get("reason") or "").strip() or \
+                not str(row.get("shared_owner") or "").strip():
+            raise PlanTopologyError("sealed held member is invalid")
+        held_ids.append(str(row.get("task_id") or ""))
+    all_ids = member_ids + held_ids
+    if len(set(all_ids)) != len(all_ids) or set(all_ids) != pending_ids:
+        raise PlanTopologyError(
+            "sealed ready set must cover each pending task exactly once")
+    # Rebuild the canonical partition from the Plan and the admitted
+    # test-artifact view.  This proves every held dependency/reason/owner and
+    # every ready member came from the sealed topology; rehashing an invented
+    # held row is insufficient.
+    canonical = seal_ready_set(
+        rows, passed=passed_ids,
+        repository_files=repository_test_files,
+        allow_isolated_variants=receipt["allow_isolated_variants"],
+    )
+    if canonical != dict(receipt):
+        raise PlanTopologyError(
+            "sealed ready set does not match its approved topology")
+    return dict(receipt)
 
 
 def execution_metrics(state: Mapping[str, Any]) -> dict[str, Any]:

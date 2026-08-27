@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -44,6 +45,8 @@ ATTENTION_STATES = frozenset({
 })
 MEANINGFUL_STATES = TERMINAL_STATES | ATTENTION_STATES
 VALID_STATES = MEANINGFUL_STATES | {"created", "running"}
+NATIVE_ADAPTER_SCHEMA = "taskplane.codex-native-adapter/v1"
+NATIVE_WAIT_OBSERVATION_SCHEMA = "taskplane.native-wait-observation/v1"
 
 _SECRET_PATTERNS = (
     re.compile(r"\b(?:sk|pk)-[A-Za-z0-9_-]{20,}\b"),
@@ -106,6 +109,10 @@ class InterruptedWait(CommandRuntimeError):
     """The caller stopped waiting; the command continues unchanged."""
 
 
+class NativeObservationUnavailable(CommandRuntimeError):
+    """A one-shot native wait returned neither an event nor its deadline."""
+
+
 def dispatch_event(snapshot: Mapping) -> dict:
     """Adapt a durable command transition to the shared event protocol."""
     if not isinstance(snapshot, Mapping) or snapshot.get("schema") != SCHEMA:
@@ -131,6 +138,196 @@ def dispatch_event(snapshot: Mapping) -> dict:
         at=float(snapshot.get("updated_at") or snapshot.get("created_at") or 0),
         payload={"wave_id": snapshot.get("wave_id"), "state": state},
     )
+
+
+def _finite_native(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise CommandRuntimeError(f"{label} must be finite")
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        raise CommandRuntimeError(f"{label} must be finite")
+    return normalized
+
+
+def native_outstanding_fingerprint(members: list[str]) -> str:
+    """Fingerprint one ordered, unique native outstanding set."""
+    if not members or any(not isinstance(member, str) or not member.strip()
+                          for member in members) or \
+            len(set(members)) != len(members):
+        raise CommandRuntimeError("native outstanding members are invalid")
+    return _canonical_digest({"members": list(members)})
+
+
+def native_wait_request(*, run_id: str, outstanding_set: str,
+                        members: list[str], intent_fingerprint: str,
+                        source_sha: str, deadline_at: float,
+                        idempotency_key: str) -> dict:
+    """Create the closed host request for one event-driven native wait."""
+    member_fingerprint = native_outstanding_fingerprint(members)
+    material = {
+        "schema": NATIVE_ADAPTER_SCHEMA,
+        "operation": "wait_for_events",
+        "run_id": str(run_id),
+        "task_name": str(outstanding_set),
+        "intent_fingerprint": str(intent_fingerprint),
+        "source_sha": str(source_sha),
+        "deadline_at": _finite_native(deadline_at, "native wait deadline"),
+        "idempotency_key": str(idempotency_key),
+        "outstanding_set_fingerprint": member_fingerprint,
+    }
+    request = {
+        **material,
+        "request_fingerprint": _canonical_digest(material),
+    }
+    _validate_native_wait_request(request, members=members)
+    return request
+
+
+def _validate_native_wait_request(request: Mapping[str, object], *,
+                                  members: list[str]) -> dict:
+    required = {
+        "schema", "operation", "run_id", "task_name",
+        "intent_fingerprint", "source_sha", "deadline_at",
+        "idempotency_key", "outstanding_set_fingerprint",
+        "request_fingerprint",
+    }
+    if not isinstance(request, Mapping) or set(request) != required or \
+            request.get("schema") != NATIVE_ADAPTER_SCHEMA or \
+            request.get("operation") != "wait_for_events":
+        raise CommandRuntimeError("native wait request is invalid")
+    for key in required - {"schema", "operation", "deadline_at"}:
+        if not str(request.get(key) or "").strip():
+            raise CommandRuntimeError(
+                f"native wait request {key} is missing")
+    _finite_native(request.get("deadline_at"), "native wait deadline")
+    expected_members = native_outstanding_fingerprint(members)
+    if request.get("outstanding_set_fingerprint") != expected_members:
+        raise CommandRuntimeError(
+            "native wait request outstanding set is mixed")
+    material = {key: value for key, value in request.items()
+                if key != "request_fingerprint"}
+    if request.get("request_fingerprint") != _canonical_digest(material):
+        raise CommandRuntimeError(
+            "native wait request fingerprint is invalid")
+    return dict(request)
+
+
+def _validate_native_wait_result(
+        result: Mapping[str, object], *, request: Mapping[str, object]) -> dict:
+    required = {
+        "schema", "operation", "status", "observed_at",
+        "native_agent_id", "run_id", "task_name",
+        "outstanding_set_fingerprint", "intent_fingerprint", "source_sha",
+        "idempotency_key", "request_fingerprint", "result_fingerprint",
+    }
+    allowed = required | {"attention_kind"}
+    if not isinstance(result, Mapping) or not required.issubset(result) or \
+            set(result) - allowed or \
+            result.get("schema") != NATIVE_ADAPTER_SCHEMA or \
+            result.get("operation") != request.get("operation"):
+        raise CommandRuntimeError("native wait result is invalid")
+    status = str(result.get("status") or "")
+    if status not in {"completion", "attention"}:
+        raise CommandRuntimeError("native wait result status is invalid")
+    if status == "attention" and not str(
+            result.get("attention_kind") or "").strip():
+        raise CommandRuntimeError("native attention kind is missing")
+    if status == "completion" and "attention_kind" in result:
+        raise CommandRuntimeError("native completion contains attention data")
+    if not str(result.get("native_agent_id") or "").strip():
+        raise CommandRuntimeError("native wait result agent is missing")
+    material = {key: value for key, value in result.items()
+                if key != "result_fingerprint"}
+    if result.get("result_fingerprint") != _canonical_digest(material):
+        raise CommandRuntimeError("native wait result fingerprint is invalid")
+    binding_fields = {
+        "run_id", "task_name", "outstanding_set_fingerprint",
+        "intent_fingerprint", "source_sha", "idempotency_key",
+        "request_fingerprint",
+    }
+    foreign = sorted(key for key in binding_fields
+                     if result.get(key) != request.get(key))
+    if foreign:
+        raise CommandRuntimeError(
+            "native wait result is foreign to its request: " +
+            ", ".join(foreign))
+    observed_at = _finite_native(
+        result.get("observed_at"), "native wait observed_at")
+    if observed_at > float(request["deadline_at"]):
+        raise CommandRuntimeError(
+            "native wait result was observed after its deadline")
+    return dict(result)
+
+
+def consume_native_wait(
+        request: Mapping[str, object], result: Mapping[str, object] | None, *,
+        members: list[str], now: float, elapsed_seconds: float,
+        usage_identity: Mapping[str, object]) -> dict:
+    """Consume one completion/attention wake or one bounded deadline.
+
+    This is a pure observation boundary: it creates no queue, timer, retry or
+    replacement work.  Replaying identical input returns byte-identical
+    evidence, while a silent pre-deadline return fails instead of polling.
+    """
+    checked_request = _validate_native_wait_request(request, members=members)
+    observed_now = _finite_native(now, "native wait clock")
+    elapsed = _finite_native(elapsed_seconds, "native wait elapsed")
+    if elapsed < 0 or not isinstance(usage_identity, Mapping) or \
+            not usage_identity:
+        raise CommandRuntimeError("native wait attribution is invalid")
+    usage_fingerprint = _canonical_digest(dict(usage_identity))
+    common = {
+        "schema": NATIVE_WAIT_OBSERVATION_SCHEMA,
+        "run_id": checked_request["run_id"],
+        "outstanding_set": checked_request["task_name"],
+        "outstanding_members": list(members),
+        "outstanding_set_fingerprint": checked_request[
+            "outstanding_set_fingerprint"],
+        "intent_fingerprint": checked_request["intent_fingerprint"],
+        "source_sha": checked_request["source_sha"],
+        "deadline_at": checked_request["deadline_at"],
+        "idempotency_key": checked_request["idempotency_key"],
+        "elapsed_seconds": elapsed,
+        "usage_fingerprint": usage_fingerprint,
+        "scheduled_polling": False,
+        "reissue": False,
+        "replacement": False,
+    }
+    if result is None:
+        if observed_now < float(checked_request["deadline_at"]):
+            raise NativeObservationUnavailable(
+                "native event transport returned before completion, "
+                "attention, or deadline")
+        material = {
+            **common,
+            "kind": "attention",
+            "attention_kind": "NATIVE_WAIT_DEADLINE",
+            # Attribute the deterministic contract deadline, not a later
+            # caller clock, so replay remains byte-identical.
+            "observed_at": float(checked_request["deadline_at"]),
+            "stop_required": True,
+            "human_actions": [
+                "reduce-scope", "end-wave", "architecture-review"],
+        }
+    else:
+        checked_result = _validate_native_wait_result(
+            result, request=checked_request)
+        if float(checked_result["observed_at"]) > observed_now:
+            raise CommandRuntimeError(
+                "native wait result was observed after the caller clock")
+        material = {
+            **common,
+            "kind": checked_result["status"],
+            "attention_kind": checked_result.get("attention_kind"),
+            "observed_at": float(checked_result["observed_at"]),
+            "native_agent_id": checked_result.get("native_agent_id"),
+            "native_result_fingerprint": checked_result[
+                "result_fingerprint"],
+            "stop_required": checked_result["status"] == "attention",
+            "human_actions": ([] if checked_result["status"] == "completion"
+                              else ["bounded-correction", "human-escalation"]),
+        }
+    return {**material, "fingerprint": _canonical_digest(material)}
 
 
 def _fingerprint(value: str) -> str:
