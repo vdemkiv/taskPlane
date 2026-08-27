@@ -60,7 +60,7 @@ def pytest_runtest_logreport(report):
         f"line={int(line) + 1},"
         f"title={_workflow_command_value(nodeid, property_value=True)}"
     )
-    command = f"::error {props}::{_workflow_command_value(detail)}\n"
+    command = f"\n::error {props}::{_workflow_command_value(detail)}\n"
     # pytest's fd/sys capture can swallow a normal print from this hook until
     # after the runner's workflow-command parser has stopped observing it.
     # Write to the inherited runner descriptor so the annotation is parsed in
