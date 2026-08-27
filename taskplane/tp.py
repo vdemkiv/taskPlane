@@ -4359,13 +4359,11 @@ def _run_hook_command(a) -> int:
     workspace = _workspace(
         event_cwd if isinstance(event_cwd, str) and event_cwd
         else getattr(a, "workspace", None))
-    try:
+    receipt_home = runtime_storage.bind_hook_taskplane_home(
+        workspace, os.environ)
+    if receipt_home is not None:
         host_caps.record_runtime_hook_receipt(
-            tp.store_home(), hook_path=hook_path, event=event)
-    except Exception:
-        # Runtime receipt is onboarding evidence, never a reason to break the
-        # enforcement hook that is already executing.
-        pass
+            receipt_home, hook_path=hook_path, event=event)
     claim = tp.claim_hook_event(
         workspace, a.cmd, event, hook_path=hook_path)
     if not claim.get("execute"):

@@ -20,7 +20,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from taskplane import progress
+from taskplane import progress, storage
 from taskplane.host_capabilities import (
     Observation,
     RUNTIME_RECEIPT_MAX_AGE_SECONDS,
@@ -255,11 +255,13 @@ def _main(argv: list[str]) -> int:
     hook_contract = discover_hook_contract(PLUGIN_ROOT)
     if host_contract != hook_contract:
         raise ValueError("plugin and hook host-native contracts differ")
+    workspace = os.environ.get("TASKPLANE_WORKSPACE") or os.getcwd()
+    storage.bind_hook_taskplane_home(workspace, os.environ)
     # Exercise the optional output surface on every adapter start. Missing or
     # stale capability evidence intentionally produces the complete accessible
     # fallback; it never turns native UI into workflow authority.
     project_progress_surface(
-        os.environ.get("TASKPLANE_WORKSPACE") or os.getcwd(), host=host,
+        workspace, host=host,
         host_version=os.environ.get("TASKPLANE_HOST_VERSION"))
     return 0
 

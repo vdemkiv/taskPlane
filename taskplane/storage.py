@@ -7,6 +7,7 @@ path it happens to use.
 """
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from dataclasses import asdict, dataclass
 import hashlib
 import json
@@ -300,9 +301,12 @@ def load_workspace_locator(checkout: str) -> dict | None:
     primary = os.path.realpath(str(value.get("primary_checkout") or root))
     if not os.path.isabs(primary):
         raise StorageIdentityError("workspace locator has no primary checkout")
-    home = os.path.realpath(str(value.get("home") or ""))
-    if not home or not os.path.isabs(home):
+    stored_home = str(value.get("home") or "")
+    home = os.path.realpath(os.path.abspath(os.path.expanduser(stored_home)))
+    if not stored_home or not os.path.isabs(stored_home):
         raise StorageIdentityError("workspace locator has no canonical home")
+    if os.path.normcase(stored_home) != os.path.normcase(home):
+        raise StorageIdentityError("workspace locator home is not canonical")
     paths = value.get("paths")
     if not isinstance(paths, dict) or set(paths) != {
             "state", "graph", "evidence", "lenses", "artifacts"}:
@@ -312,6 +316,31 @@ def load_workspace_locator(checkout: str) -> dict | None:
                 os.path.commonpath((home, os.path.realpath(item))) != home:
             raise StorageIdentityError("workspace locator path escapes its home")
     return value
+
+
+def bind_hook_taskplane_home(
+        checkout: str, environment: MutableMapping[str, str]) -> str | None:
+    """Bind a hook process to its checkout locator without home fallback.
+
+    Unmanaged checkouts have no locator and therefore produce no durable hook
+    receipt. A governed checkout must use the locator's exact canonical home;
+    an inherited conflicting or noncanonical value is a closed failure.
+    """
+    locator = load_workspace_locator(checkout)
+    if locator is None:
+        return None
+    expected = str(locator["home"])
+    configured = str(environment.get("TASKPLANE_HOME") or "")
+    if configured:
+        canonical = os.path.realpath(
+            os.path.abspath(os.path.expanduser(configured)))
+        if os.path.normcase(configured) != os.path.normcase(canonical):
+            raise StorageIdentityError("hook TASKPLANE_HOME is not canonical")
+        if os.path.normcase(canonical) != os.path.normcase(expected):
+            raise StorageIdentityError(
+                "hook TASKPLANE_HOME does not match the workspace locator")
+    environment["TASKPLANE_HOME"] = expected
+    return expected
 
 
 def managed_path(checkout: str, area: str, *parts: str) -> str | None:
