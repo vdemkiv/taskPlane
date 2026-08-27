@@ -37,7 +37,7 @@ T00 and T08 both touch `taskplane/tp.py`, and T00 and T07 both touch `taskplane/
 
 ## Seven outcomes, four P0 controls, and all 21 pair classifications
 
-The unique criterion set remains exactly AC1–AC7, copied verbatim into `tasks.json`; T00 re-attests AC1, AC4, and AC7 as a prerequisite and creates no eighth outcome. Duplicated ownership on T08/T09 remains integration or terminal re-attestation. The only P0 controls remain P0-1 atomic exact-SHA finalization (AC7), P0-2 native budget telemetry and enforcement (AC6), P0-3 host-native dispatch authority (AC1 and AC4), and P0-4 real-checkout wiring closure (AC7).
+The unique criterion set remains exactly AC1–AC7, copied verbatim into `tasks.json`; T00 re-attests only AC1 and AC4 as the bootstrap prerequisite and creates no eighth outcome. Assigning final-candidate AC7 to T00 was impossible before T08 integration and T09 terminal closure, so AC7 remains fully assigned to T07/T09, with T08 carrying only its integration re-attestation. This evaluator-contract correction does not relax T00: its source fix, `2.17.23` synchronization, package, exact branch push, exact local install, and genuine live-hook proof all remain completion barriers. The only P0 controls remain P0-1 atomic exact-SHA finalization (AC7), P0-2 native budget telemetry and enforcement (AC6), P0-3 host-native dispatch authority (AC1 and AC4), and P0-4 real-checkout wiring closure (AC7).
 
 The Design's exact outcome-level pair policy remains authoritative. A serialized row is an acceptance/evidence dependency, not permission to idle disjoint leaf implementation: all seven leaf owners may build in Wave 1, while T08 and T09 enforce the named receipt barriers before the dependent acceptance can close.
 
