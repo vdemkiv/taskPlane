@@ -136,9 +136,35 @@ def evaluator_output_schema() -> dict:
     }
 
 
-def validate_evaluator_value(value: dict) -> dict:
-    """Validate an already-decoded evaluator result against the authority."""
+def validate_evaluator_value(
+        value: dict, *, expected_lenses: list[str] | None = None) -> dict:
+    """Validate evaluator output and, when requested, zero-lens execution."""
+    if expected_lenses is not None:
+        if not isinstance(expected_lenses, list):
+            raise OutputValidationError(
+                "expected_lenses_type", "expected_lenses must be a list")
+        if expected_lenses:
+            raise OutputValidationError(
+                "nonempty_expected_lenses",
+                "zero-lens evaluation requires expected_lenses=[]",
+            )
+        availability = value.get("evaluation") if isinstance(value, dict) \
+            else None
+        if not isinstance(availability, dict) or \
+                availability.get("status") != "complete" or \
+                availability.get("reason_code") != "none":
+            raise OutputValidationError(
+                "zero_lens_completion_required",
+                "zero-lens evaluation requires an exact evaluation "
+                "completion block with status=complete and "
+                "reason_code=none; omission or outage fallback is forbidden",
+            )
     _validate(value, evaluator_output_schema())
+    if expected_lenses is not None and value.get("lenses") != []:
+        raise OutputValidationError(
+            "nonempty_collected_lenses",
+            "zero-lens evaluation requires lenses=[]",
+        )
     return value
 
 

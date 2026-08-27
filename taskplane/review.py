@@ -171,7 +171,8 @@ def collect_expected_set(
         result: dict, result_validator: Callable[[dict], object],
         producer_observation_fingerprint: str,
         predecessor_fingerprint: str | None = None,
-        outage_resolver: Callable[..., object] | None = None) -> dict:
+        outage_resolver: Callable[..., object] | None = None,
+        outage_fallback: bool = False) -> dict:
     """Collect a schema-valid empty expected set as ordinary success.
 
     ``outage_resolver`` is accepted only as an observable severed-edge seam;
@@ -182,6 +183,13 @@ def collect_expected_set(
         from . import delivery_policy
     else:  # pragma: no cover - direct CLI module loading
         import delivery_policy
+
+    if not isinstance(outage_fallback, bool):
+        raise delivery_policy.DeliveryPolicyError(
+            "outage_fallback must be boolean")
+    if outage_fallback:
+        raise delivery_policy.DeliveryPolicyError(
+            "zero-lens collection forbids outage fallback")
 
     return delivery_policy.create_empty_lens_collection_receipt(
         run_id=run_id,
