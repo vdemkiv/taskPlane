@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -21,11 +22,26 @@ DELTA_SCHEMA = "taskplane.loop-next-delta/v1"
 REFUSAL_SCHEMA = "taskplane.loop-next-delta-refusal/v1"
 REFERENCE_SCHEMA = "taskplane.content-reference/v1"
 MEASUREMENT_SCHEMA = "taskplane.brief-measurement/v1"
+STAGE_DELTA_SCHEMA = "taskplane.stage-delta-handoff/v1"
 
 # The projection uses a deliberately conservative upper bound: one UTF-8 byte
 # counts as one token.  Passing this bound therefore cannot hide a larger
 # model-token payload, and requires no host-specific tokenizer dependency.
 MAX_TOKEN_UPPER_BOUND = 4_000
+
+STAGE_DELTA_FIELDS = frozenset({
+    "schema", "source_sha", "requirement_id", "active_contracts",
+    "acceptance_outcomes", "new_evidence", "unresolved_decisions",
+    "outstanding_native_set", "observed_usage",
+    "predecessor_fingerprint", "fingerprint",
+})
+_HANDOFF_USAGE_FIELDS = frozenset({
+    "elapsed_seconds", "unique_sessions", "total_tokens",
+    "uncached_input_tokens",
+})
+_HANDOFF_REFERENCE_FIELDS = frozenset({
+    "schema", "kind", "fingerprint", "bytes",
+})
 
 # These are the binding R-0001 ceilings.  This module only projects their
 # consequence.  Dispatch admission remains owned by delivery_policy and
@@ -104,6 +120,172 @@ def _canonical_bytes(value: Any) -> bytes:
 def canonical_text(value: Any) -> str:
     """Return the exact UTF-8 canonical text used by references and bounds."""
     return _canonical_bytes(value).decode("utf-8")
+
+
+def _closed_string_list(
+        value: Any, label: str, *, pattern: str, max_length: int) -> list[str]:
+    if not isinstance(value, (list, tuple)) or isinstance(value, (str, bytes)):
+        raise BriefProjectionError(f"{label} must be a list")
+    result = []
+    for item in value:
+        identity = str(item or "").strip()
+        if len(identity) > max_length or not re.fullmatch(pattern, identity):
+            raise BriefProjectionError(
+                f"{label} must contain only bounded typed identities")
+        result.append(identity)
+    if not result or \
+            len(set(result)) != len(result):
+        raise BriefProjectionError(f"{label} must contain unique identities")
+    return result
+
+
+def _handoff_reference(
+        value: Any, label: str, *, expected_kind: str) -> dict[str, Any]:
+    """Validate one body-free, closed, content-addressed handoff reference."""
+    if not isinstance(value, Mapping) or set(value) != \
+            _HANDOFF_REFERENCE_FIELDS:
+        raise BriefProjectionError(
+            f"{label} must be a closed content-addressed reference")
+    if value.get("schema") != REFERENCE_SCHEMA or \
+            value.get("kind") != expected_kind:
+        raise BriefProjectionError(
+            f"{label} must be a typed {expected_kind} reference")
+    fingerprint = str(value.get("fingerprint") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        raise BriefProjectionError(
+            f"{label}.fingerprint must be one SHA-256 fingerprint")
+    size = value.get("bytes")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise BriefProjectionError(f"{label}.bytes must be non-negative")
+    return {
+        "schema": REFERENCE_SCHEMA,
+        "kind": expected_kind,
+        "fingerprint": fingerprint,
+        "bytes": size,
+    }
+
+
+def _handoff_reference_list(
+        value: Any, label: str, *, expected_kind: str) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)) or isinstance(value, (str, bytes)):
+        raise BriefProjectionError(f"{label} must be a list of references")
+    result = [
+        _handoff_reference(
+            member, f"{label}[{index}]", expected_kind=expected_kind)
+        for index, member in enumerate(value)
+    ]
+    fingerprints = [row["fingerprint"] for row in result]
+    if len(fingerprints) != len(set(fingerprints)):
+        raise BriefProjectionError(
+            f"{label} cannot repeat a content fingerprint")
+    return result
+
+
+def _handoff_usage(value: Mapping[str, Any]) -> dict[str, int | float]:
+    if not isinstance(value, Mapping):
+        raise BriefProjectionError("observed_usage must be a mapping")
+    material = dict(value)
+    if "sessions" in material and "unique_sessions" not in material:
+        material["unique_sessions"] = material.pop("sessions")
+    if set(material) != _HANDOFF_USAGE_FIELDS:
+        raise BriefProjectionError(
+            "observed_usage requires exactly elapsed_seconds, unique_sessions, "
+            "total_tokens, and uncached_input_tokens")
+    normalized: dict[str, int | float] = {}
+    for field in sorted(_HANDOFF_USAGE_FIELDS):
+        observed = material[field]
+        if isinstance(observed, bool) or not isinstance(observed, (int, float)):
+            raise BriefProjectionError(f"observed_usage.{field} must be numeric")
+        if isinstance(observed, float) and not math.isfinite(observed):
+            raise BriefProjectionError(f"observed_usage.{field} must be finite")
+        if observed < 0:
+            raise BriefProjectionError(
+                f"observed_usage.{field} cannot be negative")
+        normalized[field] = observed
+    return normalized
+
+
+def stage_delta_handoff(
+        *, source_sha: str, requirement_id: str,
+        active_contracts: list[str] | tuple[str, ...],
+        acceptance_outcomes: list[str] | tuple[str, ...],
+        new_evidence: Any, unresolved_decisions: Any,
+        outstanding_native_set: Any, observed_usage: Mapping[str, Any],
+        predecessor_fingerprint: str | None) -> dict[str, Any]:
+    """Build one closed stage-to-stage delta under the 4,000-token ceiling.
+
+    The output contains exactly the Design-owned fields.  Variable stage
+    material is representable only as closed content-addressed references, so
+    transcripts, prompts, messages, model outputs, source, diffs, secrets, and
+    personal-content bodies cannot enter the handoff under alternate keys.
+    """
+    sha = str(source_sha or "").strip().lower()
+    requirement = str(requirement_id or "").strip().upper()
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+        raise BriefProjectionError("source_sha must be one exact full Git SHA")
+    if not re.fullmatch(r"R-[0-9]{4,12}", requirement):
+        raise BriefProjectionError("requirement_id must be one typed requirement id")
+    predecessor = None if predecessor_fingerprint is None else \
+        str(predecessor_fingerprint).strip().lower()
+    if predecessor is not None and not re.fullmatch(r"[0-9a-f]{64}", predecessor):
+        raise BriefProjectionError(
+            "predecessor_fingerprint must be one SHA-256 fingerprint")
+    material = {
+        "schema": STAGE_DELTA_SCHEMA,
+        "source_sha": sha,
+        "requirement_id": requirement,
+        "active_contracts": _closed_string_list(
+            active_contracts, "active_contracts",
+            pattern=r"contract:[A-Za-z0-9][A-Za-z0-9_.:-]*",
+            max_length=160),
+        "acceptance_outcomes": _closed_string_list(
+            acceptance_outcomes, "acceptance_outcomes",
+            pattern=r"AC[0-9]+(?:[._:-][A-Za-z0-9]+)*",
+            max_length=64),
+        "new_evidence": _handoff_reference_list(
+            new_evidence, "new_evidence", expected_kind="evidence"),
+        "unresolved_decisions": _handoff_reference_list(
+            unresolved_decisions, "unresolved_decisions",
+            expected_kind="decision"),
+        "outstanding_native_set": (
+            None if outstanding_native_set is None else
+            _handoff_reference(
+                outstanding_native_set, "outstanding_native_set",
+                expected_kind="native-set")
+        ),
+        "observed_usage": _handoff_usage(observed_usage),
+        "predecessor_fingerprint": predecessor,
+    }
+    # Canonical serialization validates the closed typed material before the
+    # fingerprint is issued.  No prompt, message, model output, transcript, or
+    # other inline body has a representable field in this schema.
+    material["fingerprint"] = hashlib.sha256(_canonical_bytes(material)).hexdigest()
+    if set(material) != STAGE_DELTA_FIELDS:
+        raise BriefProjectionError("stage delta shape is not closed")
+    if len(_canonical_bytes(material)) >= MAX_TOKEN_UPPER_BOUND:
+        raise BriefProjectionError(
+            "stage delta handoff must be strictly below 4000 tokens")
+    return material
+
+
+def validate_stage_delta_handoff(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Rebuild and byte-compare one untrusted stage delta."""
+    if not isinstance(value, Mapping) or set(value) != STAGE_DELTA_FIELDS:
+        raise BriefProjectionError("stage delta requires exactly its closed fields")
+    rebuilt = stage_delta_handoff(
+        source_sha=value.get("source_sha"),
+        requirement_id=value.get("requirement_id"),
+        active_contracts=value.get("active_contracts"),
+        acceptance_outcomes=value.get("acceptance_outcomes"),
+        new_evidence=value.get("new_evidence"),
+        unresolved_decisions=value.get("unresolved_decisions"),
+        outstanding_native_set=value.get("outstanding_native_set"),
+        observed_usage=value.get("observed_usage"),
+        predecessor_fingerprint=value.get("predecessor_fingerprint"),
+    )
+    if rebuilt != dict(value):
+        raise BriefProjectionError("stage delta fingerprint or content mismatched")
+    return rebuilt
 
 
 def measure(value: Mapping[str, Any]) -> dict[str, Any]:

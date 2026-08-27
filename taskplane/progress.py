@@ -24,6 +24,8 @@ STATES = frozenset(("executing", "tool-wait", "agent-wait", "human-wait",
 DEFAULT_MAX_BYTES = 64 * 1024
 DEFAULT_ETA_MAX_AGE_SECONDS = 300.0
 MAX_HISTORY = 32
+ACTIVE_NATIVE_STATES = frozenset(
+    ("executing", "tool-wait", "agent-wait", "human-wait", "resumed"))
 
 
 # Host-native presentation primitives live with the progress read model rather
@@ -100,6 +102,31 @@ class NativeProgressSession:
             "last_update": values.get("last_update", snapshot.sequence),
             "tokens": values.get("tokens"),
         }
+
+
+def require_active_observed_tokens(snapshot: Mapping[str, Any]) -> int:
+    """Return binding active token truth or refuse an unmeasured snapshot.
+
+    The ordinary status view remains presentation-only and may describe
+    unavailable telemetry.  Dispatch admission uses this stricter seam so a
+    missing/null/malformed active observation can never be read as zero.
+    """
+    if not isinstance(snapshot, Mapping) or snapshot.get("schema") != \
+            SNAPSHOT_SCHEMA:
+        raise ValueError("native progress snapshot is invalid")
+    state = str(snapshot.get("state") or "")
+    if state not in STATES:
+        raise ValueError("native progress state is invalid")
+    observed = snapshot.get("observed_tokens")
+    if state in ACTIVE_NATIVE_STATES and (
+            isinstance(observed, bool) or not isinstance(observed, int)
+            or observed < 0):
+        raise ValueError(
+            "active native observed_tokens must be finite and non-null")
+    if isinstance(observed, bool) or not isinstance(observed, int) \
+            or observed < 0:
+        raise ValueError("native observed_tokens are unavailable")
+    return observed
 
 
 def project_agent_topology(events: list[dict]) -> dict:

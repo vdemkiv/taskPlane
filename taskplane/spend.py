@@ -52,6 +52,10 @@ def dispatch_usage(normalized: dict) -> dict:
     total = _nonnegative_integer(normalized.get("raw_total_tokens"))
     if None in {cached, uncached, output, total}:
         raise ValueError("provider usage counters are incomplete")
+    reasoning_value = normalized.get("reasoning_tokens", 0)
+    reasoning = _nonnegative_integer(reasoning_value)
+    if reasoning is None:
+        raise ValueError("provider reasoning token telemetry is malformed")
     input_tokens = cached + uncached
     if total < input_tokens + output:
         raise ValueError("provider usage totals do not reconcile")
@@ -60,10 +64,19 @@ def dispatch_usage(normalized: dict) -> dict:
         "cached_input_tokens": cached,
         "uncached_input_tokens": uncached,
         "output_tokens": output,
-        "reasoning_tokens": _nonnegative_integer(
-            normalized.get("reasoning_tokens")) or 0,
+        "reasoning_tokens": reasoning,
         "total_tokens": total,
     }
+
+
+def observed_dispatch_usage(usage: dict, *, provider: str) -> dict:
+    """Normalize one live provider block and require dispatch-grade truth."""
+    normalized = normalize_usage(usage, provider=provider)
+    if normalized.get("available") is not True:
+        raise ValueError(
+            "observed provider usage is unavailable: "
+            + str(normalized.get("reason") or "unknown measurement failure"))
+    return dispatch_usage(normalized)
 
 
 def _nonnegative_number(value: Any) -> float | None:
@@ -236,6 +249,15 @@ def normalize_usage(usage: dict, *, provider: str) -> dict:
                  + cached * WEIGHTS["cache_read"]
                  + created * WEIGHTS["cache_write"]
                  + output * WEIGHTS["output"])
+    reasoning = usage.get("reasoning_tokens", 0)
+    if provider_name == "codex":
+        output_details = usage.get("output_tokens_details")
+        if isinstance(output_details, dict) and "reasoning_tokens" in output_details:
+            reasoning = output_details.get("reasoning_tokens")
+    reasoning = _nonnegative_integer(reasoning)
+    if reasoning is None:
+        return _unavailable(provider_name,
+                            "reasoning token telemetry is corrupt")
     return {
         "schema": USAGE_SCHEMA, "provider": provider_name,
         "available": True, "reason": None,
@@ -243,6 +265,7 @@ def normalize_usage(usage: dict, *, provider: str) -> dict:
         "cached_input_tokens": int(cached),
         "cache_creation_tokens": int(created),
         "output_tokens": int(output), "raw_total_tokens": int(raw),
+        "reasoning_tokens": reasoning,
         "effective_tokens": int(effective),
     }
 
