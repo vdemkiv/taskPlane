@@ -4,10 +4,12 @@ from pathlib import Path
 
 from taskplane.delivery_ports import SubprocessGitRunner
 from taskplane.release_evidence import (
+    COMPATIBILITY_PREVIOUS_VERSION,
     CURRENT_VERSION,
     HISTORICAL_GRAPH_REVISION,
     PREVIOUS_RELEASE_COMMIT,
     PREVIOUS_VERSION,
+    SUPERSEDED_CANDIDATE_VERSION,
     forward_history_receipt,
     validate_forward_history,
 )
@@ -28,15 +30,23 @@ def test_v21720_remains_released_incomplete():
     }
 
 
-def test_forward_candidate_is_exactly_v21722():
+def test_forward_candidate_is_exactly_v21723():
     history = forward_history_receipt()
 
-    assert CURRENT_VERSION == "2.17.22"
+    assert CURRENT_VERSION == "2.17.23"
+    assert PREVIOUS_VERSION == "2.17.20"
+    assert COMPATIBILITY_PREVIOUS_VERSION == "2.17.22"
+    assert SUPERSEDED_CANDIDATE_VERSION == "2.17.22"
     assert history["forward_generation"] == {
-        "version": "2.17.22",
-        "repair_of": "2.17.20",
+        "version": "2.17.23",
+        "repair_of": "2.17.22",
         "history_rewrite": False,
     }
+
+
+def test_forward_candidate_is_exactly_v21722():
+    """Retain the immutable R-0001 wiring selector as a historical alias."""
+    test_forward_candidate_is_exactly_v21723()
 
 
 def test_historical_graph_revision_is_attributed_without_history_rewrite():

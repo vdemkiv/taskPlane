@@ -324,21 +324,15 @@ def bind_hook_taskplane_home(
 
     Calling this function declares that the invocation is a Taskplane hook,
     so an absent locator is a severed authority edge rather than evidence of
-    an unmanaged checkout. The locator must name a dedicated canonical home;
-    an inherited conflicting/noncanonical value and the user's default home
-    are closed failures.
+    an unmanaged checkout. The locator must name a canonical home. An
+    inherited conflicting or noncanonical value is a closed failure; an
+    explicit secure locator for the canonical user default remains valid.
     """
     locator = load_workspace_locator(checkout)
     if locator is None:
         raise StorageIdentityError(
             "Taskplane hook requires a governed workspace locator")
     expected = str(locator["home"])
-    default_home = os.path.realpath(os.path.abspath(os.path.join(
-        os.path.expanduser(str(environment.get("HOME") or "~")),
-        ".taskplane")))
-    if os.path.normcase(expected) == os.path.normcase(default_home):
-        raise StorageIdentityError(
-            "Taskplane hook workspace locator cannot use the default home")
     configured = str(environment.get("TASKPLANE_HOME") or "")
     if configured:
         canonical = os.path.realpath(

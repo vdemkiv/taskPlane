@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,6 +11,7 @@ import sys
 
 import pytest
 
+from taskplane import storage
 from taskplane.host_capabilities import Observation, negotiate_host_surfaces
 from taskplane.host_native import HostSurfaceSnapshot
 
@@ -108,6 +110,14 @@ def test_codex_and_claude_packages_declare_one_canonical_contract(
     installed = tmp_path / "installed-taskplane"
     for directory in (".codex-plugin", ".claude-plugin", "hooks", "taskplane"):
         shutil.copytree(ROOT / directory, installed / directory)
+    subprocess.run(["git", "init", "-q"], cwd=installed, check=True)
+    receipt_home = tmp_path / "receipt-home"
+    identity = storage.resolve_repository_identity(str(installed))
+    layout = storage.resolve_layout(
+        identity, run_id="installed-contract", home=str(receipt_home))
+    storage.write_workspace_locator(
+        str(installed), identity=identity, layout=layout,
+        run_id="installed-contract")
     commands = {
         "codex": [sys.executable,
                   str(installed / "hooks/host_native_runtime.py"),
@@ -119,7 +129,9 @@ def test_codex_and_claude_packages_declare_one_canonical_contract(
     for host, command in commands.items():
         checked = subprocess.run(command, cwd=installed, check=False,
                                  capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace")
+                                 encoding="utf-8", errors="replace",
+                                 env={**os.environ,
+                                      "TASKPLANE_HOME": str(receipt_home)})
         assert checked.returncode == 0, f"{host}: {checked.stderr}"
 
 

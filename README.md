@@ -128,19 +128,19 @@ mapped to models by env config, verifiable with `tp loop verify-dispatch`.
 Recent releases. [CHANGELOG.md](CHANGELOG.md) is the
 authoritative, complete history — if the two ever disagree, the CHANGELOG wins.
 
-> **Forward-repair status.** v2.17.20 remains released-incomplete. v2.17.21 is
-> the source-integration boundary now on `main` and is superseded for
-> Marketplace upload; packaging moves forward as v2.17.22, which is not
-> released. Historical graph revision `2757822e` remains an attributed
+> **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
+> remains the source-integration boundary on `main`. The unreleased v2.17.22
+> Marketplace candidate is superseded; local verification moves forward as
+> v2.17.23, which is not released. Historical graph revision `2757822e` remains an attributed
 > inherited limitation: no history rewrite, no re-release of v2.17.20, and no
-> verifier weakening. Building the v2.17.22 artifact is not an upload or
+> verifier weakening. Building the v2.17.23 artifact is not an upload or
 > release claim; those actions retain their separate human authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.17.22** | **Marketplace upload candidate — not released.** Packages the completed two-part R-0001 delivery after the native-dispatch correction: Taskplane emits deterministic intent while Codex owns concurrency; real-checkout Design wiring rejects retired scheduler selectors; repository startup, release evidence, token telemetry, event-driven waits, stateless pickup, and deterministic OpenAI/Claude package surfaces remain closed. The unavailable W31 live-host capture stays explicitly unverified rather than being promoted into release-green evidence. |
-| **v2.17.21** | **Source-integration boundary — superseded for Marketplace upload.** The complete R-0001 delivery was integrated and pushed to `main` at this version, including forward release evidence, hosted default-branch preparation, package parity, and the later removal of duplicate scheduler authority. v2.17.22 is the upload candidate; this row does not claim a Marketplace upload or installation. |
-| **v2.17.20** | **Repository-only pickup can resume from committed receipts with explicit attributed human authority.** `tp pickup <design-contract> --trust-source <exact-source-sha>` records the supplied flag and exact source SHA verbatim and permits continuation only when the repository-resident shelf evidence agrees structurally. This is an operator trust assertion, not cryptographic authentication of the operator, producer, shelf, or repository origin. Missing, malformed, mismatched, or structurally tampered evidence fails closed; the existing v1 symmetric shelf flow through its private-secret path is unchanged. |
+| **v2.17.23** | **Local verification candidate — not released.** Repairs secure hook-home binding so an explicit locator for either a dedicated home or canonical `$HOME/.taskplane` is valid, while missing, noncanonical, or conflicting authority still fails before receipts. The candidate preserves locator-bound propagation through native, bridge, generated launcher, and host runtime paths; it is not an upload, installation, or release claim. |
+| **v2.17.22** | **Superseded Marketplace candidate — not released.** Packaged the completed two-part R-0001 delivery after the native-dispatch correction, but its bootstrap binder incorrectly rejected an explicit secure locator for canonical `$HOME/.taskplane`. It remains compatibility N-1 for the v2.17.23 candidate and was never promoted into released truth. |
+| **v2.17.21** | **Source-integration boundary.** The complete R-0001 delivery was integrated and pushed to `main` at this version, including forward release evidence, hosted default-branch preparation, package parity, and the later removal of duplicate scheduler authority. This historical row does not claim a Marketplace upload or installation. |
 ## Install
 
 How you install taskplane depends on your **account type**, and the paths are

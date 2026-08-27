@@ -6,8 +6,8 @@ import pytest
 
 from taskplane.delivery_ports import FakeClock, RecordedPlatformCiQuery, content_fingerprint
 from taskplane.release_evidence import (
+    COMPATIBILITY_PREVIOUS_VERSION,
     CURRENT_VERSION,
-    PREVIOUS_VERSION,
     ReleaseEvidenceError,
     classify_schema_changes,
     compatibility_cell,
@@ -119,11 +119,12 @@ def test_mixed_plugin_host_n_n_minus_1_matrix():
     assert validate_mixed_version_matrix_receipt(matrix, policy=policy) == matrix
     assert {(row["plugin"], row["host"]) for row in matrix["cells"]} == {
         (CURRENT_VERSION, CURRENT_VERSION),
-        (CURRENT_VERSION, PREVIOUS_VERSION),
-        (PREVIOUS_VERSION, CURRENT_VERSION),
-        (PREVIOUS_VERSION, PREVIOUS_VERSION),
+        (CURRENT_VERSION, COMPATIBILITY_PREVIOUS_VERSION),
+        (COMPATIBILITY_PREVIOUS_VERSION, CURRENT_VERSION),
+        (COMPATIBILITY_PREVIOUS_VERSION, COMPATIBILITY_PREVIOUS_VERSION),
     }
-    assert compatibility_cell(CURRENT_VERSION, PREVIOUS_VERSION, policy=policy)[
+    assert compatibility_cell(
+        CURRENT_VERSION, COMPATIBILITY_PREVIOUS_VERSION, policy=policy)[
         "release"
     ] == "refuse-missing-N-capability"
     assert matrix["cryptographic_authenticity_claimed"] is False

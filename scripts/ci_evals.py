@@ -521,7 +521,8 @@ def verify_forward_release_surface(root):
     runtime_path = repository / "taskplane" / "release_evidence.py"
     expected_graph = "2757822ede49177fc52de8c173302286364d6206"
     wanted = {
-        "CURRENT_VERSION", "PREVIOUS_VERSION", "HISTORICAL_GRAPH_REVISION",
+        "CURRENT_VERSION", "PREVIOUS_VERSION",
+        "COMPATIBILITY_PREVIOUS_VERSION", "HISTORICAL_GRAPH_REVISION",
     }
     try:
         release = _literal_assignments(runtime_path, wanted)
@@ -530,10 +531,12 @@ def verify_forward_release_surface(root):
         errors.append(f"cannot read release runtime identity: {exc}")
     if set(release) != wanted:
         errors.append("release runtime identity is incomplete")
-    if release.get("CURRENT_VERSION") != "2.17.22":
-        errors.append("forward candidate is not exactly 2.17.22")
+    if release.get("CURRENT_VERSION") != "2.17.23":
+        errors.append("forward candidate is not exactly 2.17.23")
     if release.get("PREVIOUS_VERSION") != "2.17.20":
-        errors.append("v2.17.20 is not preserved as the previous generation")
+        errors.append("v2.17.20 is not preserved as the last released generation")
+    if release.get("COMPATIBILITY_PREVIOUS_VERSION") != "2.17.22":
+        errors.append("v2.17.22 is not preserved as compatibility N-1")
     if release.get("HISTORICAL_GRAPH_REVISION") != expected_graph:
         errors.append("historical graph revision 2757822e is not exact")
 
@@ -542,6 +545,7 @@ def verify_forward_release_surface(root):
             sys.executable, "-B", "-c",
             "import json; from taskplane import release_evidence as r; "
             "print(json.dumps([r.CURRENT_VERSION, r.PREVIOUS_VERSION, "
+            "r.COMPATIBILITY_PREVIOUS_VERSION, "
             "r.HISTORICAL_GRAPH_REVISION]))",
         ],
         cwd=repository, text=True, encoding="utf-8", errors="replace",
@@ -549,6 +553,7 @@ def verify_forward_release_surface(root):
     )
     expected_runtime = [
         release.get("CURRENT_VERSION"), release.get("PREVIOUS_VERSION"),
+        release.get("COMPATIBILITY_PREVIOUS_VERSION"),
         release.get("HISTORICAL_GRAPH_REVISION"),
     ]
     try:
@@ -581,8 +586,8 @@ def verify_forward_release_surface(root):
         errors.append("candidate manifests are not single-sourced to runtime version")
 
     required_doc_phrases = (
-        "v2.17.20", "released-incomplete", "v2.17.21", "superseded",
-        "v2.17.22", "not released",
+        "v2.17.20", "released-incomplete", "v2.17.21",
+        "v2.17.22", "superseded", "v2.17.23", "not released",
         "2757822e", "inherited limitation", "no history rewrite",
         "no re-release", "no verifier weakening",
     )
@@ -691,7 +696,8 @@ def verify_forward_release_surface(root):
         "schema": FORWARD_RELEASE_SURFACE_SCHEMA,
         "status": "release-surface-green" if not errors else "refused",
         "version": release.get("CURRENT_VERSION"),
-        "previous_version": release.get("PREVIOUS_VERSION"),
+        "previous_version": release.get("COMPATIBILITY_PREVIOUS_VERSION"),
+        "last_released_version": release.get("PREVIOUS_VERSION"),
         "historical_graph_revision": release.get("HISTORICAL_GRAPH_REVISION"),
         "manifest_versions": versions,
         "archives": archives,
@@ -1873,7 +1879,7 @@ def _parser():
     p.add_argument("--prove-pushed-sha", action="store_true",
                    help="fetch and prove exact pushed-SHA CI evidence")
     p.add_argument("--verify-release-surface", action="store_true",
-                   help="prove 2.17.22 manifests and both install archives")
+                   help="prove 2.17.23 manifests and both install archives")
     p.add_argument("--checked-sha", metavar="SHA",
                    help="full commit SHA whose required checks were observed")
     p.add_argument("--check-receipts", metavar="FILE",

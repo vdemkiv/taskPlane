@@ -40,8 +40,10 @@ PROTECTED_RELEASE_AUTHORIZATION_SCHEMA = (
     "taskplane.protected-release-authorization/v1"
 )
 
-CURRENT_VERSION = "2.17.22"
+CURRENT_VERSION = "2.17.23"
 PREVIOUS_VERSION = "2.17.20"
+COMPATIBILITY_PREVIOUS_VERSION = "2.17.22"
+SUPERSEDED_CANDIDATE_VERSION = "2.17.22"
 PREVIOUS_RELEASE_TAG = "v2.17.20"
 PREVIOUS_RELEASE_COMMIT = "4a0378e7f080136d27f01d4ab7ecdf9bac8a1ad6"
 HISTORICAL_GRAPH_REVISION = "2757822ede49177fc52de8c173302286364d6206"
@@ -793,7 +795,7 @@ def forward_history_receipt() -> dict[str, Any]:
             },
             "forward_generation": {
                 "version": CURRENT_VERSION,
-                "repair_of": PREVIOUS_VERSION,
+                "repair_of": SUPERSEDED_CANDIDATE_VERSION,
                 "history_rewrite": False,
             },
             "historical_graph": {
@@ -858,8 +860,8 @@ def validate_compatibility_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     window = policy.get("window")
     if not isinstance(window, Mapping) or window.get("current") != CURRENT_VERSION or window.get(
         "previous"
-    ) != PREVIOUS_VERSION:
-        raise ReleaseEvidenceError("compatibility window must be N=2.17.22/N-1=2.17.20")
+    ) != COMPATIBILITY_PREVIOUS_VERSION:
+        raise ReleaseEvidenceError("compatibility window must be N=2.17.23/N-1=2.17.22")
     evolution = policy.get("json_evolution")
     if not isinstance(evolution, Mapping) or evolution.get("authority_objects") != "closed" or evolution.get(
         "additionalProperties"
@@ -878,9 +880,9 @@ def validate_compatibility_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
     matrix = policy.get("matrix")
     expected_pairs = {
         (CURRENT_VERSION, CURRENT_VERSION),
-        (CURRENT_VERSION, PREVIOUS_VERSION),
-        (PREVIOUS_VERSION, CURRENT_VERSION),
-        (PREVIOUS_VERSION, PREVIOUS_VERSION),
+        (CURRENT_VERSION, COMPATIBILITY_PREVIOUS_VERSION),
+        (COMPATIBILITY_PREVIOUS_VERSION, CURRENT_VERSION),
+        (COMPATIBILITY_PREVIOUS_VERSION, COMPATIBILITY_PREVIOUS_VERSION),
     }
     if not isinstance(matrix, list) or len(matrix) != 4 or {
         (row.get("plugin"), row.get("host"))

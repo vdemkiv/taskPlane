@@ -170,7 +170,8 @@ def test_missing_locator_fails_closed_for_both_hooks_and_host_native_bootstrap(
     assert not (default_user_home / ".taskplane" / "host-receipts").exists()
 
 
-def test_hook_home_binding_rejects_noncanonical_and_default_home(tmp_path):
+def test_hook_home_binding_rejects_noncanonical_and_accepts_secure_default_home(
+        tmp_path):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
@@ -191,6 +192,15 @@ def test_hook_home_binding_rejects_noncanonical_and_default_home(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=default_checkout, check=True)
     default_home = user_home / ".taskplane"
     _write_locator(default_checkout, default_home, "run-default")
-    with pytest.raises(storage.StorageIdentityError, match="default home"):
+    environment = {"HOME": str(user_home)}
+    assert storage.bind_hook_taskplane_home(
+        str(default_checkout), environment) == str(default_home)
+    assert environment["TASKPLANE_HOME"] == str(default_home)
+
+    locator_path = Path(storage._locator_path(str(default_checkout)))
+    locator = json.loads(locator_path.read_text(encoding="utf-8"))
+    locator["home"] = str(default_home / ".." / default_home.name)
+    locator_path.write_text(json.dumps(locator) + "\n", encoding="utf-8")
+    with pytest.raises(storage.StorageIdentityError, match="not canonical"):
         storage.bind_hook_taskplane_home(
             str(default_checkout), {"HOME": str(user_home)})

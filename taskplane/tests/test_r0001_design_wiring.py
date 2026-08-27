@@ -23,10 +23,19 @@ from taskplane.wiring_closure import (
 
 ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = "lenses/references/prompt-injection-defense.md"
+R0001_CLOSED_DESIGN_REVISION = "c9ec81a021ac74b048bfa58abfbfec870e49711a"
 
 
 def _design_contract() -> dict:
-    return json.loads((ROOT / "design" / "contract.json").read_text())
+    # R-0013 legitimately owns the live Design Contract. These release
+    # regressions validate the immutable, already-closed R-0001 contract
+    # without rewriting that historical record or confusing it with HEAD.
+    result = subprocess.run(
+        ["git", "show", f"{R0001_CLOSED_DESIGN_REVISION}:design/contract.json"],
+        cwd=ROOT, text=True, encoding="utf-8", errors="replace",
+        capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
 
 
 def _all_test_references(rows) -> list[str]:
@@ -344,7 +353,7 @@ def test_release_green_binds_reviewed_prompt_injection_reference_digest():
     }
     receipt = create_release_green(
         source_sha=source_sha,
-        version="2.17.22",
+        version="2.17.23",
         wiring_closure_fingerprint="1" * 64,
         feature_receipt_digests=["2" * 64],
         full_matrix_receipts=["3" * 64],
