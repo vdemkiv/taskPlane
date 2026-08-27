@@ -537,9 +537,10 @@ def test_real_loop_journey_emits_one_bounded_dispatch_on_every_host(
     assert len(fingerprints) == 1
 
 
-def test_parallel_wave_preserves_independent_stage_and_root_identity_on_hosts(
+def test_parallel_wave_preserves_native_intent_and_wait_identity_on_hosts(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
+    manifest_before = copy.deepcopy(store.load(str(parent["run_id"])))
 
     emitted = loop.wave(str(workspace))
 
@@ -548,110 +549,57 @@ def test_parallel_wave_preserves_independent_stage_and_root_identity_on_hosts(
         "t-left", "t-right"]
     identities: dict[str, tuple[str, str]] = {}
     for entry in emitted["wave"]:
-        dispatch = entry["stage_runtime_dispatch"]
         task_id = str(entry["task"]["id"])
-        stage_id = str(dispatch["startup"]["stage_id"])
-        root_id = str(
-            dispatch["startup"]["execution_claim"]["execution_root_id"])
-        assert root_id == f"execution-{stage_id}"
-        assert stage_id != parent["stage_id"]
-        assert root_id != parent["execution_root_id"]
-        identities[task_id] = (stage_id, root_id)
+        intent = entry["dispatch_intent"]
+        identities[task_id] = (
+            str(intent["intent_id"]), str(entry["task_name"]))
+        payload = {
+            "dispatch_intent": intent,
+            "wait_policy": entry["wait_policy"],
+            "wait_invocation": emitted["wait_invocation"],
+        }
+        for host, _capability_status, _expected_surface in HOST_CASES:
+            transported = json.loads(json.dumps(payload))
+            assert transported == payload, host
 
-        canonical = _snapshot(dispatch).to_dict()
-        for host, capability_status, expected_surface in HOST_CASES:
-            transported = json.loads(json.dumps(dispatch))
-            assert taskplane_lite.stage_startup_bytes(transported) == \
-                taskplane_lite.stage_startup_bytes(dispatch)
-            selection = negotiate_host_surfaces(
-                host=host,
-                host_version="2.17.13-compatible",
-                observations={
-                    "stage_runtime": Observation(
-                        status=capability_status,
-                        source=f"wave:{task_id}:{host}",
-                        confidence="high",
-                    ),
-                },
-                surfaces=STAGE_SURFACE,
-            )["stage_runtime"]
-            projected = _snapshot(transported).project(selection)
-            assert projected["canonical"] == canonical
-            assert projected["presentation"]["kind"] == expected_surface
-            runtime = projected["canonical"]["values"]["stage_runtime"]
-            assert runtime["startup"]["stage_id"] == stage_id
-            assert runtime["startup"]["execution_claim"][
-                "execution_root_id"] == root_id
-
-    assert len({stage_id for stage_id, _root in identities.values()}) == 2
-    assert len({root_id for _stage, root_id in identities.values()}) == 2
-    history = loop.stage_command(str(workspace), "history", {
-        "schema": "taskplane.stage-command/v1",
-        "run_id": parent["run_id"],
-        "limit": 10,
-    })
-    summaries = {row["stage_id"]: row for row in history["stages"]}
-    assert summaries[parent["stage_id"]]["state"] == "terminal"
-    assert summaries[parent["stage_id"]]["outcome"] == "closed"
-    for stage_id, root_id in identities.values():
-        assert summaries[stage_id]["state"] == "active"
-        assert summaries[stage_id]["parent_stage_ids"] == [parent["stage_id"]]
-        assert summaries[stage_id]["execution_root_id"] == root_id
-    projection = store.load(str(parent["run_id"]))[
-        "active_stage_projection"]
-    assert projection["foreground_stage_id"] is None
-    assert set(projection["active_stage_ids"]) == {
-        stage_id for stage_id, _root in identities.values()}
+    assert len({intent_id for intent_id, _name in identities.values()}) == 2
+    assert len({name for _intent_id, name in identities.values()}) == 2
+    assert emitted["wait_invocation"]["outstanding_members"] == [
+        "t-left", "t-right"]
+    encoded = json.dumps(emitted, sort_keys=True).lower()
+    assert "stage_runtime_dispatch" not in encoded
+    assert "execution_root" not in encoded
+    assert not (loop.load(str(workspace)) or {}).get("_stage_bindings")
+    assert store.load(str(parent["run_id"])) == manifest_before
 
 
-def test_parallel_wave_recovers_deterministic_bindings_after_split_interrupt(
+def test_parallel_wave_ignores_historical_split_persistence_adapter(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
-    original_persist = loop._persist_stage_loop_wave_bindings
+    manifest_before = copy.deepcopy(store.load(str(parent["run_id"])))
 
-    def interrupt_after_split(*_args, **_kwargs):
-        raise RuntimeError("simulated interruption after durable split")
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("native delivery invoked stage split persistence")
 
     monkeypatch.setattr(
-        loop, "_persist_stage_loop_wave_bindings", interrupt_after_split)
-    interrupted = loop.wave(str(workspace))
-    monkeypatch.setattr(
-        loop, "_persist_stage_loop_wave_bindings", original_persist)
-    committed = store.load(str(parent["run_id"]))
-    active_after_interrupt = set(
-        committed["active_stage_projection"]["active_stage_ids"])
-    split_receipts = [
-        receipt for receipt in committed["stage_operations"].values()
-        if receipt.get("operation") == "split_stage"
-    ]
+        loop, "_persist_stage_loop_wave_bindings", forbidden)
+    monkeypatch.setattr(loop, "_stage_loop_wave_dispatches", forbidden)
+    first = loop.wave(str(workspace))
+    second = loop.wave(str(workspace))
 
-    assert "simulated interruption after durable split" in \
-        interrupted["error"]
-    assert len(active_after_interrupt) == 2
-    assert len(split_receipts) == 1
-    assert "_stage_bindings" not in loop.load(str(workspace))
-
-    recovered = loop.wave(str(workspace))
-
-    assert "error" not in recovered, recovered
-    recovered_ids = {
-        str(entry["task"]["id"]):
-        str(entry["stage_runtime_dispatch"]["startup"]["stage_id"])
-        for entry in recovered["wave"]
-    }
-    assert set(recovered_ids.values()) == active_after_interrupt
-    current = loop.load(str(workspace))
-    assert {
-        task_id: binding["build"]
-        for task_id, binding in current["_stage_bindings"].items()
-    } == recovered_ids
-    after_recovery = store.load(str(parent["run_id"]))
-    assert after_recovery["active_stage_projection"] == \
-        committed["active_stage_projection"]
-    assert len([
-        receipt for receipt in after_recovery["stage_operations"].values()
-        if receipt.get("operation") == "split_stage"
-    ]) == 1
+    for emitted in (first, second):
+        assert "error" not in emitted, emitted
+        assert [entry["task"]["id"] for entry in emitted["wave"]] == [
+            "t-left", "t-right"]
+        assert emitted["wait_invocation"]["outstanding_members"] == [
+            "t-left", "t-right"]
+        assert emitted["held"] == []
+    assert [entry["dispatch_intent"]["intent_id"]
+            for entry in first["wave"]] == [
+                entry["dispatch_intent"]["intent_id"]
+                for entry in second["wave"]]
+    assert not (loop.load(str(workspace)) or {}).get("_stage_bindings")
+    assert store.load(str(parent["run_id"])) == manifest_before
 
 
 def test_pristine_new_run_wave_refuses_legacy_or_implicit_root_dispatch(
@@ -691,70 +639,36 @@ def test_pristine_new_run_wave_refuses_legacy_or_implicit_root_dispatch(
     assert state_path.read_bytes() == before_state
 
 
-def test_wave_recovers_after_first_child_resume_without_resplitting(
+def test_native_wave_never_resumes_historical_stage_children(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
-    original_dispatch = loop._stage_loop_dispatch
-    observed: list[str] = []
+    manifest_before = copy.deepcopy(store.load(str(parent["run_id"])))
 
-    def interrupt_second_dispatch(*args, **kwargs):
-        stage_id = str(kwargs.get("stage_id") or "")
-        observed.append(stage_id)
-        if len(observed) == 2:
-            raise RuntimeError("simulated crash after first child resume")
-        return original_dispatch(*args, **kwargs)
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("native wave attempted a stage child resume")
 
-    monkeypatch.setattr(loop, "_stage_loop_dispatch", interrupt_second_dispatch)
-    interrupted = loop.wave(str(workspace))
-    monkeypatch.setattr(loop, "_stage_loop_dispatch", original_dispatch)
-    committed = store.load(str(parent["run_id"]))
-    bindings_before = copy.deepcopy(
-        loop.load(str(workspace))["_stage_bindings"])
-    active_before = set(
-        committed["active_stage_projection"]["active_stage_ids"])
+    monkeypatch.setattr(loop, "_stage_loop_dispatch", forbidden)
+    monkeypatch.setattr(loop, "_stage_loop_wave_dispatches", forbidden)
+    emitted = loop.wave(str(workspace))
 
-    assert "simulated crash after first child resume" in interrupted["error"]
-    assert len(observed) == 2
-    assert set(observed) == active_before
-    assert len([
-        row for row in committed["stage_operations"].values()
-        if row.get("operation") == "split_stage"
-    ]) == 1
-
-    recovered = loop.wave(str(workspace))
-
-    assert "error" not in recovered, recovered
-    recovered_identities = {
-        entry["task"]["id"]: (
-            entry["stage_runtime_dispatch"]["startup"]["stage_id"],
-            entry["stage_runtime_dispatch"]["startup"]["execution_claim"][
-                "execution_root_id"],
-        )
-        for entry in recovered["wave"]
-    }
-    assert recovered_identities == {
-        task_id: (binding["build"], f"execution-{binding['build']}")
-        for task_id, binding in bindings_before.items()
-    }
-    after = store.load(str(parent["run_id"]))
-    assert set(after["active_stage_projection"][
-        "active_stage_ids"]) == active_before
-    assert len([
-        row for row in after["stage_operations"].values()
-        if row.get("operation") == "split_stage"
-    ]) == 1
+    assert "error" not in emitted, emitted
+    assert [entry["task"]["id"] for entry in emitted["wave"]] == [
+        "t-left", "t-right"]
+    assert emitted["wait_invocation"]["outstanding_members"] == [
+        "t-left", "t-right"]
+    assert all(entry["dispatch_intent"]["intent_id"]
+               for entry in emitted["wave"])
+    assert not (loop.load(str(workspace)) or {}).get("_stage_bindings")
+    assert store.load(str(parent["run_id"])) == manifest_before
 
 
-def test_interim_parallel_evaluate_leaves_only_the_other_task_root_active(
+def test_interim_parallel_evaluate_advances_without_stage_tree_mutation(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
+    manifest_before = copy.deepcopy(store.load(str(parent["run_id"])))
     emitted = loop.wave(str(workspace))
     assert "error" not in emitted, emitted
-    initial_state = loop.load(str(workspace))
-    build_bindings = {
-        task_id: binding["build"]
-        for task_id, binding in initial_state["_stage_bindings"].items()
-    }
+    assert not (loop.load(str(workspace)) or {}).get("_stage_bindings")
     monkeypatch.setattr(loop, "_task_dod_errors", lambda *_a, **_k: [])
     monkeypatch.setattr(
         loop.runtime_storage, "refresh_task_worktree_tip",
@@ -764,9 +678,9 @@ def test_interim_parallel_evaluate_leaves_only_the_other_task_root_active(
         str(workspace), "pass", task_id="t-left")
 
     assert "error" not in built, built
+    assert "stage_transition" not in built
     evaluating = loop.load(str(workspace))
-    evaluate_id = evaluating["_stage_bindings"]["t-left"]["evaluate"]
-    assert evaluate_id not in set(build_bindings.values())
+    assert not evaluating.get("_stage_bindings")
     evaluating["step"] = "evaluate"
     evaluating["current_task"] = 0
     loop.save(str(workspace), evaluating)
@@ -780,24 +694,13 @@ def test_interim_parallel_evaluate_leaves_only_the_other_task_root_active(
     evaluated = loop.gate.__wrapped__(str(workspace), "pass")
 
     assert "error" not in evaluated, evaluated
+    assert "stage_transition" not in evaluated
     final_state = loop.load(str(workspace))
     assert final_state["step"] == "execute"
     assert final_state["tasks"][0]["status"] == "passed"
-    manifest = store.load(str(parent["run_id"]))
-    active_ids = set(manifest["active_stage_projection"][
-        "active_stage_ids"])
-    assert active_ids == {build_bindings["t-right"]}
-    summaries = {
-        stage_id: head["summary"]
-        for stage_id, head in manifest["stage_heads"].items()
-    }
-    assert summaries[build_bindings["t-left"]]["state"] == "terminal"
-    assert summaries[evaluate_id]["state"] == "terminal"
-    assert summaries[build_bindings["t-right"]]["state"] == "active"
-    assert not any(
-        summary["state"] == "active" and
-        summary["deliverables"] == ["t-left"]
-        for summary in summaries.values())
+    assert final_state["tasks"][1]["status"] == "pending"
+    assert not final_state.get("_stage_bindings")
+    assert store.load(str(parent["run_id"])) == manifest_before
 
 
 @pytest.mark.parametrize("field", sorted(FORBIDDEN_RUNTIME_FIELDS))

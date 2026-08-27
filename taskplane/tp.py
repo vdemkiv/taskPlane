@@ -1488,14 +1488,36 @@ def cmd_screen_dispatch(a) -> int:
             if exp is not None and exp.get("intent_id"):
                 try:
                     import loop as _loop_runtime
-                    _loop_runtime.record_native_dispatch_observation(
+                    observation = \
+                        _loop_runtime.record_native_dispatch_observation(
                         ws, expected=exp, native_task_name=str(agent))
+                    if not isinstance(observation, dict) or \
+                            observation.get("status") == "unavailable":
+                        raise RuntimeError(
+                            "native dispatch observation was not committed")
                 except Exception as telemetry_error:
-                    tp.trace(
-                        ws, "native_dispatch_telemetry_unavailable",
-                        task=exp.get("ref"),
-                        error=f"{type(telemetry_error).__name__}: "
-                              f"{telemetry_error}")
+                    reason = (
+                        "taskplane native dispatch telemetry failed closed "
+                        f"for {exp.get('ref') or agent!r} "
+                        f"({type(telemetry_error).__name__}: "
+                        f"{telemetry_error}); the dispatch is denied before "
+                        "the native task starts.")
+                    try:
+                        tp.trace(
+                            ws, "native_dispatch_telemetry_unavailable",
+                            task=exp.get("ref"),
+                            error=f"{type(telemetry_error).__name__}: "
+                                  f"{telemetry_error}")
+                    except Exception:
+                        # Trace durability is secondary to the hook decision:
+                        # a broken audit sink must never turn this denial into
+                        # a permitted native start.
+                        pass
+                    print(json.dumps({"hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason}}))
+                    return 0
             if foreign_message:
                 print(json.dumps({"systemMessage": foreign_message}))
             return 0

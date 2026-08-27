@@ -4966,16 +4966,6 @@ def wave(ws: str) -> dict:
     except plan_topology.PlanTopologyError as exc:
         return {"error": "executable Plan topology refused dispatch: " + str(exc),
                 "step": "execute", "parallel": True}
-    remaining_sessions = max(
-        0, dispatch_telemetry.WAVE_BUDGET_CEILINGS["sessions"] -
-        int(budget_projection["usage"]["sessions"]))
-    if len(ready) > remaining_sessions:
-        overflow, ready = ready[remaining_sessions:], ready[:remaining_sessions]
-        held.extend({
-            "task": task["id"],
-            "reason": "session budget limit — next human-scoped tranche",
-            "shared_owner": "budget:sessions",
-        } for task in overflow)
     # A/B variants deliberately overlap in isolated worktrees.  The approved
     # Plan topology remains the default; variant isolation is the one existing
     # runtime exception and never makes non-variant work parallel.
@@ -5002,6 +4992,23 @@ def wave(ws: str) -> dict:
         event_wait_invocation(
             wave_wait_policy, [str(task["id"]) for task in ready])
         if ready else None)
+    # Validate the sealed zero-lens authorization for the entire ready set
+    # before persisting even one native intent.  A severed member therefore
+    # refuses the whole emitted set without leaving partial dispatch state.
+    prepared_routing: dict[str, tuple[dict, dict | None]] = {}
+    for task in ready:
+        task_ws = task.get("workspace") or \
+            runtime_storage.task_worktree_path(ws, task["id"])
+        if not os.path.isdir(task_ws):
+            task_ws = ws
+        try:
+            prepared_routing[str(task["id"])] = \
+                build_dispatch_lens_routing(
+                    state, task, workspace=task_ws)
+        except delivery_policy.DeliveryPolicyError as exc:
+            return {"error": "build delivery mode refused before dispatch: "
+                    + str(exc), "step": "execute", "parallel": True}
+
     dispatches: dict[str, dict] = {}
     dispatch_intents: dict[str, dict] = {}
     for task in ready:
@@ -5019,37 +5026,10 @@ def wave(ws: str) -> dict:
                     "step": "execute", "parallel": True}
         dispatch_intents[task_id] = intent
 
-    try:
-        stage_dispatches = _stage_loop_wave_dispatches(ws, state, ready)
-    except Exception as exc:
-        return {"error": "stage-native wave dispatch failed closed: "
-                f"{exc.__class__.__name__}: {exc}",
-                "step": "execute", "parallel": True}
-
-    # A recovered split can already have verified resume receipts for some
-    # children.  The dispatch helper returns only the still-undispatched task
-    # ids; do not turn omitted children into fresh legacy/root dispatches.
-    post_stage_state = load(ws) or state
-    post_bindings = post_stage_state.get("_stage_bindings") or {}
-    if ready and isinstance(post_bindings, Mapping) and all(
-            isinstance(post_bindings.get(str(task["id"])), Mapping) and
-            post_bindings[str(task["id"])].get("build")
-            for task in ready):
-        ready = [task for task in ready
-                 if str(task["id"]) in stage_dispatches]
-
     entries = []
     for t in ready:
         dispatch = dispatches[str(t["id"])]
-        task_ws = t.get("workspace") or runtime_storage.task_worktree_path(ws, t["id"])
-        if not os.path.isdir(task_ws):
-            task_ws = ws
-        try:
-            prime, delivery_dispatch = build_dispatch_lens_routing(
-                state, t, workspace=task_ws)
-        except delivery_policy.DeliveryPolicyError as exc:
-            return {"error": "build delivery mode refused before dispatch: "
-                    + str(exc), "step": "execute", "parallel": True}
+        prime, delivery_dispatch = prepared_routing[str(t["id"])]
         recalled = kb.retrieve(ws, files=t.get("scope") or [],
                                tags=[t["id"]], limit=3)
         rid = t.get("req") or state.get("requirement_id")
@@ -5074,14 +5054,6 @@ def wave(ws: str) -> dict:
             **({"enforcement": enforcement} if enforcement else {}),
         }
         entry["wait_policy"] = dict(wave_wait_policy)
-        stage_dispatch = stage_dispatches.get(str(t["id"]))
-        if stage_dispatch is None and not stage_dispatches:
-            stage_dispatch = _stage_loop_dispatch(
-                ws, state, slot=str(t["id"]),
-                declared_scope=_stage_loop_scope(
-                    t.get("scope"), tp.DEFAULT_OUT_OF_SCOPE))
-        if stage_dispatch is not None:
-            entry["stage_runtime_dispatch"] = stage_dispatch
         entry["dispatch_intent"] = dispatch_intents[str(t["id"])]
         entries.append(entry)
     tp.trace(ws, "loop_wave", ready=[t["id"] for t in ready],
@@ -5864,18 +5836,23 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             "context": reqs.render_context([req_rec])},
         "instruction": _instruction(step, state, act_ws),
     }
-    try:
-        stage_dispatch = _stage_loop_dispatch(
-            ws, state, slot=str((task or {}).get("id") or step),
-            declared_scope=_stage_loop_scope(
-                contract["coding"]["scope_paths"],
-                contract["coding"].get("out_of_scope_paths") or []))
-    except Exception as exc:
-        return {"error": "stage-native loop dispatch failed closed: "
-                f"{exc.__class__.__name__}: {exc}",
-                "step": step, "status": status(ws)}
-    if stage_dispatch is not None:
-        result["stage_runtime_dispatch"] = stage_dispatch
+    # Native Build/Fix/Evaluate delivery is described by the exact intent
+    # below.  StageLifecycle remains the genuine governance boundary for
+    # non-delivery stages, but it must not project a second per-agent tree or
+    # execution-root authority onto Codex-native workers.
+    if step not in {"execute", "evaluate", "fix"}:
+        try:
+            stage_dispatch = _stage_loop_dispatch(
+                ws, state, slot=str((task or {}).get("id") or step),
+                declared_scope=_stage_loop_scope(
+                    contract["coding"]["scope_paths"],
+                    contract["coding"].get("out_of_scope_paths") or []))
+        except Exception as exc:
+            return {"error": "stage-native loop dispatch failed closed: "
+                    f"{exc.__class__.__name__}: {exc}",
+                    "step": step, "status": status(ws)}
+        if stage_dispatch is not None:
+            result["stage_runtime_dispatch"] = stage_dispatch
     if step in {"execute", "evaluate", "fix"}:
         dispatch_member = str((task or {}).get("id") or step)
         result["dispatch_intent"] = _native_dispatch_intent(
@@ -8038,31 +8015,6 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     return {"error": f"task {task_id}: managed worktree "
                                      f"target binding failed: {exc}",
                             "step": step}
-            stage_state = dict(locked)
-            stage_state["current_task"] = next(
-                index for index, row in enumerate(locked["tasks"])
-                if row.get("id") == task_id)
-            completion = _stage_loop_gate_completion(
-                ws, stage_state, step=step, outcome=outcome, note=note,
-                submission=submission,
-                target_commit=((prepared_registration or {}).get(
-                    "branch_tip")))
-            try:
-                stage_transition = _stage_loop_transition(
-                    ws, stage_state, from_step="execute", to_step="evaluate",
-                    terminal_outcome=("done" if outcome == "pass"
-                                      else "discarded"),
-                    completion=completion)
-            except Exception as exc:
-                return {"error": "stage-native loop transition failed closed: "
-                        f"{exc.__class__.__name__}: {exc}", "step": step}
-            if isinstance(stage_transition, Mapping):
-                successor = ((stage_transition.get("result") or {}).get(
-                    "successor_head") or {}).get("summary") or {}
-                successor_id = successor.get("stage_id")
-                if successor_id:
-                    locked.setdefault("_stage_bindings", {}).setdefault(
-                        str(task_id), {})["evaluate"] = str(successor_id)
             t["status"] = "built"
             if prepared_registration is not None:
                 t["target_commit"] = prepared_registration["branch_tip"]
@@ -8080,9 +8032,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             running = [x["id"] for x in locked["tasks"]
                        if x.get("status") == "running"]
         return {"step": "execute", "task": task_id, "built": True,
-                "still_running": running, "status": status(ws),
-                **({"stage_transition": stage_transition}
-                   if stage_transition is not None else {})}
+                "still_running": running, "status": status(ws)}
 
     # H4 (v2.2.1): the pm gate was the one fail-open step — it advanced with
     # no spec and no submission. Symmetric minimal DoD: the authored
@@ -8599,18 +8549,19 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                 state["engineering_review_request_changes"] = \
                     em_request_changes
                 state["step"] = "escalated"
-        try:
-            stage_transition = _stage_loop_transition(
-                ws, state, from_step=step, to_step=state["step"],
-                completion=completion,
-                terminal_only=(
-                    step == "evaluate" and outcome == "pass" and
-                    state.get("parallel") and state.get("step") == "execute"))
-        except Exception as exc:
-            state.clear()
-            state.update(stage_state_before)
-            return {"error": "stage-native loop transition failed closed: "
-                    f"{exc.__class__.__name__}: {exc}", "step": step}
+        # Build/Fix/Evaluate task state is governed here, while Codex owns the
+        # native agent tree.  Do not mirror those task transitions into a
+        # second StageLifecycle hierarchy or execution-root authority.
+        if step not in {"execute", "evaluate", "fix"}:
+            try:
+                stage_transition = _stage_loop_transition(
+                    ws, state, from_step=step, to_step=state["step"],
+                    completion=completion)
+            except Exception as exc:
+                state.clear()
+                state.update(stage_state_before)
+                return {"error": "stage-native loop transition failed closed: "
+                        f"{exc.__class__.__name__}: {exc}", "step": step}
     if step == "em" and outcome == "pass":
         # One more COMPLETED engineering review: advance the audit cadence
         # (every Nth em review runs as a full audit sweep). A cadence-store

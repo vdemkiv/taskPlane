@@ -582,7 +582,7 @@ def test_next_action_attaches_stage_runtime_dispatch(tmp_path, monkeypatch) \
     assert result["stage_runtime_dispatch"] is marker
 
 
-def test_wave_attaches_stage_runtime_dispatch_to_each_entry(
+def test_wave_emits_native_intent_without_stage_runtime_dispatch(
         tmp_path, monkeypatch) -> None:
     ws = _workspace(tmp_path)
     state = loop.init(ws, "build the bounded handoff", spec_path="spec.md",
@@ -593,16 +593,22 @@ def test_wave_attaches_stage_runtime_dispatch_to_each_entry(
                    "tests": "true", "deps": [], "status": "pending"}],
     })
     loop.save(ws, state)
-    marker = {"schema": "taskplane.stage-dispatch/v1", "startup": {}}
-    monkeypatch.setattr(loop, "_stage_loop_dispatch", lambda *_a, **_k: marker)
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("native delivery must not use StageLifecycle")
+
+    monkeypatch.setattr(loop, "_stage_loop_dispatch", forbidden)
+    monkeypatch.setattr(loop, "_stage_loop_wave_dispatches", forbidden)
 
     result = loop.wave(ws)
 
     assert len(result["wave"]) == 1
-    assert result["wave"][0]["stage_runtime_dispatch"] is marker
+    assert result["wave"][0]["dispatch_intent"]["intent_id"]
+    assert "stage_runtime_dispatch" not in result["wave"][0]
+    assert result["wait_invocation"]["outstanding_members"] == ["t01"]
+    assert not (loop.load(ws) or {}).get("_stage_bindings")
 
 
-def test_parallel_wave_uses_distinct_child_stage_roots_and_bound_foreground(
+def test_parallel_wave_emits_one_native_set_without_execution_roots(
         tmp_path, monkeypatch) -> None:
     ws = _workspace(tmp_path)
     state = loop.init(ws, "dispatch two independent roots", parallel=True)
@@ -617,68 +623,25 @@ def test_parallel_wave_uses_distinct_child_stage_roots_and_bound_foreground(
     })
     loop.save(ws, state)
 
-    def dispatch(task_id):
-        return {
-            "schema": "taskplane.stage-dispatch/v1",
-            "startup": {
-                "stage_id": f"stage-build-{task_id}",
-                "execution_claim": {
-                    "execution_root_id": f"execution-stage-build-{task_id}",
-                },
-            },
-        }
-
     monkeypatch.setattr(
         loop, "_stage_loop_wave_dispatches",
-        lambda _ws, _state, ready: {
-            task["id"]: dispatch(task["id"]) for task in ready})
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("Taskplane child-stage scheduler was invoked")))
 
     result = loop.wave(ws)
-    identities = {
-        (entry["stage_runtime_dispatch"]["startup"]["stage_id"],
-         entry["stage_runtime_dispatch"]["startup"]["execution_claim"][
-             "execution_root_id"])
-        for entry in result["wave"]
-    }
 
-    assert len(result["wave"]) == 2
-    assert len(identities) == 2
-
-    manifest = {
-        "schema": "taskplane.run/v4", "run_id": "run-r0004",
-        "active_stage_projection": {
-            "active_stage_ids": ["stage-build-t01", "stage-build-t02"],
-            "foreground_stage_id": None,
-        },
-    }
-
-    class Store:
-        @staticmethod
-        def load(_run_id):
-            return manifest
-
-    bound = copy.deepcopy(state)
-    bound["_stage_bindings"] = {
-        "t01": {"build": "stage-build-t01"},
-        "t02": {"build": "stage-build-t02"},
-    }
-    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "enabled")
-    monkeypatch.setattr(
-        loop.runtime_storage, "load_workspace_locator",
-        lambda _ws: {"run_id": "run-r0004", "home": "/run-store"})
-    monkeypatch.setattr(loop, "_stage_store", lambda *_a: Store())
-    monkeypatch.setattr(
-        loop, "_indexed_stage",
-        lambda *_a: {
-            "stage_id": "stage-build-t01", "stage_kind": "build",
-            "authority": {},
-        })
-    monkeypatch.setattr(
-        loop, "_stage_lifecycle", lambda *_a: (object(), object()))
-
-    context = loop._stage_loop_context(ws, bound)
-
-    assert context["stage"]["stage_id"] == "stage-build-t01"
+    assert [entry["task"]["id"] for entry in result["wave"]] == [
+        "t01", "t02"]
+    assert len({entry["dispatch_intent"]["intent_id"]
+                for entry in result["wave"]}) == 2
+    assert result["wait_invocation"]["outstanding_members"] == [
+        "t01", "t02"]
+    assert result["held"] == []
+    encoded = json.dumps(result, sort_keys=True).lower()
+    assert "stage_runtime_dispatch" not in encoded
+    assert "execution_root" not in encoded
+    assert "tranche" not in encoded
+    assert not (loop.load(ws) or {}).get("_stage_bindings")
 
 
 def test_real_wave_recovers_task_bindings_after_post_split_crash(
@@ -728,7 +691,7 @@ def test_real_wave_recovers_task_bindings_after_post_split_crash(
     } == child_ids
 
 
-def test_interim_evaluate_terminalizes_only_without_starting_bogus_build(
+def test_native_evaluate_advances_without_mutating_historical_stage_tree(
         tmp_path, monkeypatch) -> None:
     from taskplane.tests.test_stage_cross_host import _write_reanchorable_pass
 
@@ -788,19 +751,19 @@ def test_interim_evaluate_terminalizes_only_without_starting_bogus_build(
     monkeypatch.setattr(loop.tp, "engine_skew_refusal", lambda *_a, **_k: None)
     monkeypatch.setattr(loop, "_submission_staleness", lambda *_a, **_k: None)
     monkeypatch.setattr(loop, "_automatic_merge_cleanup", lambda *_a: None)
+    manifest_before = copy.deepcopy(store.load(root["run_id"]))
+    bindings_before = copy.deepcopy(
+        loop.load(ws).get("_stage_bindings") or {})
 
     gated = loop.gate.__wrapped__(ws, "pass")
 
     assert "error" not in gated, gated
     assert gated["step"] == "execute"
-    assert gated["stage_transition"]["operation"] == "terminalize"
-    manifest = store.load(root["run_id"])
-    active_ids = manifest["active_stage_projection"]["active_stage_ids"]
-    assert active_ids == [loop.load(ws)["_stage_bindings"]["t02"]["build"]]
-    assert {
-        manifest["stage_heads"][stage_id]["summary"]["stage_kind"]
-        for stage_id in active_ids
-    } == {"build"}
+    assert "stage_transition" not in gated
+    final_state = loop.load(ws)
+    assert final_state["tasks"][0]["status"] == "passed"
+    assert final_state.get("_stage_bindings") == bindings_before
+    assert store.load(root["run_id"]) == manifest_before
 
 
 def test_gate_rolls_back_on_stage_failure_then_returns_transition_receipt(
@@ -1639,7 +1602,7 @@ def test_transition_reconciles_receipt_after_stage_commit_before_singleton(
     ]) == 1
 
 
-def test_wave_replays_all_unclaimed_children_after_pre_output_crash(
+def test_native_wave_ignores_historical_stage_replay_state(
         tmp_path, monkeypatch) -> None:
     ws, store, stage, _started = _start_real_stage_loop(
         tmp_path / "wave-pre-output", monkeypatch, stage_kind="build",
@@ -1656,39 +1619,30 @@ def test_wave_replays_all_unclaimed_children_after_pre_output_crash(
         "tasks": tasks,
     })
     loop.save(ws, state)
-    real_dispatches = loop._stage_loop_wave_dispatches
-    captured = {}
-
-    def crash_before_public_output(*args, **kwargs):
-        captured.update(copy.deepcopy(real_dispatches(*args, **kwargs)))
-        raise RuntimeError("crash before complete wave output")
-
+    historical_manifest = copy.deepcopy(store.load(stage["run_id"]))
     monkeypatch.setattr(
-        loop, "_stage_loop_wave_dispatches", crash_before_public_output)
-    interrupted = loop.wave(ws)
+        loop, "_stage_loop_wave_dispatches",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("historical StageLifecycle replay was invoked")))
 
-    assert "before complete wave output" in interrupted["error"]
-    assert set(captured) == {"t01", "t02"}
-    state_path = Path(loop._loop_path(ws))
-    before_retry_state = state_path.read_bytes()
-    after_crash = copy.deepcopy(store.load(stage["run_id"]))
-    assert len([
-        receipt for receipt in after_crash["stage_operations"].values()
-        if receipt.get("operation") == "split_stage"
-    ]) == 1
-    assert len([
-        receipt for receipt in after_crash["stage_operations"].values()
-        if receipt.get("operation") == "resume_stage"
-    ]) == 2
-    monkeypatch.setattr(loop, "_stage_loop_wave_dispatches", real_dispatches)
+    first = loop.wave(ws)
+    second = loop.wave(ws)
 
-    replayed = loop.wave(ws)
-
-    assert "error" not in replayed, replayed
-    replayed_by_task = {
-        entry["task"]["id"]: entry["stage_runtime_dispatch"]
-        for entry in replayed["wave"]
-    }
-    assert replayed_by_task == captured
-    assert state_path.read_bytes() == before_retry_state
-    assert store.load(stage["run_id"]) == after_crash
+    for emitted in (first, second):
+        assert "error" not in emitted, emitted
+        assert [entry["task"]["id"] for entry in emitted["wave"]] == [
+            "t01", "t02"]
+        assert emitted["wait_invocation"]["outstanding_members"] == [
+            "t01", "t02"]
+        assert emitted["held"] == []
+        encoded = json.dumps(emitted, sort_keys=True).lower()
+        assert "stage_runtime_dispatch" not in encoded
+        assert "execution_root" not in encoded
+        assert "replay" not in encoded
+        assert "tranche" not in encoded
+    assert [entry["dispatch_intent"]["intent_id"]
+            for entry in first["wave"]] == [
+                entry["dispatch_intent"]["intent_id"]
+                for entry in second["wave"]]
+    assert not (loop.load(ws) or {}).get("_stage_bindings")
+    assert store.load(stage["run_id"]) == historical_manifest

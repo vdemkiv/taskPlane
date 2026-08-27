@@ -215,7 +215,12 @@ class TestScreenDispatchHook(unittest.TestCase):
 
         result = self._run(self._codex_event(task_name, effort="medium"))
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), "")
+        denied = json.loads(result.stdout)
+        self.assertEqual(
+            denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "native dispatch telemetry failed closed",
+            denied["hookSpecificOutput"]["permissionDecisionReason"])
         trace_path = os.path.join(tp.tp_dir(self.ws), "trace.jsonl")
         with open(trace_path, encoding="utf-8") as handle:
             trace = [json.loads(line) for line in handle if line.strip()]
