@@ -5,10 +5,50 @@
   "plan_authority": "Codex-native orchestration is the sole execution authority. Taskplane governs contracts, classifies dependencies and scopes, emits deterministic intents, prepares worktrees and checkpoints, and observes evidence only; delivery uses direct Codex assignments. Taskplane owns no scheduler, capacity model, reservation, admission queue, replay queue, lease-concurrency, worker-lifecycle, or execution-DAG authority. delivery_mode=build; automatic_lenses=[]",
   "tasks": [
     {
+      "id": "t00-bootstrap-dedicated-home",
+      "scope": [
+        ".codex/hooks.json",
+        ".claude-plugin/marketplace.json",
+        ".claude-plugin/plugin.json",
+        ".codex-plugin/plugin.json",
+        "CHANGELOG.md",
+        "README.md",
+        "design/compatibility.json",
+        "design/schemas/r0001-evidence-schemas.json",
+        "hooks/hooks.json",
+        "hooks/host_native_runtime.py",
+        "scripts/ci_evals.py",
+        "scripts/package_openai.py",
+        "taskplane/release_evidence.py",
+        "taskplane/storage.py",
+        "taskplane/tp.py",
+        "taskplane/tests/test_codex_hook_selection.py",
+        "taskplane/tests/test_host_capabilities.py",
+        "taskplane/tests/test_host_native_compatibility.py",
+        "taskplane/tests/test_r0001_compatibility.py",
+        "taskplane/tests/test_r0001_design_wiring.py",
+        "taskplane/tests/test_r0001_forward_release.py",
+        "taskplane/tests/test_r0001_release_green.py",
+        "taskplane/tests/test_r0013_bootstrap_home.py",
+        "taskplane/tests/test_release_freshness.py",
+        "taskplane/tests/test_stage_release_matrix.py",
+        "taskplane/tests/test_status_and_large_delivery.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_codex_hook_selection.py taskplane/tests/test_host_capabilities.py taskplane/tests/test_host_native_compatibility.py taskplane/tests/test_r0013_bootstrap_home.py taskplane/tests/test_status_and_large_delivery.py taskplane/tests/test_r0001_compatibility.py taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_r0001_forward_release.py taskplane/tests/test_r0001_release_green.py taskplane/tests/test_release_freshness.py taskplane/tests/test_stage_release_matrix.py && python3 scripts/ci_evals.py --verify-release-surface && python3 scripts/package_openai.py",
+      "req": "R-0013", "deps": [], "type": "security",
+      "contracts": ["contract:delivery.codex-native-dispatch"], "new_modules": [".taskplane", "(root)"], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "criteria": [
+        "AC1: Before Plan authorization, Design contains the complete evidenced Codex-native capability inventory and responsibility map; the Design and architecture gate refuse Taskplane-owned scheduling, capacity, reservation, admission, replay, lease-concurrency, worker-lifecycle, or execution-DAG authority, and removing a native mapping or introducing duplicate authority makes both static and behavioral seam proofs fail and blocks Design or Plan before Build.",
+        "AC4: At every governed stage, each ready pairwise-disjoint task or criterion appears exactly once in one deterministic native Codex dispatch set, overlaps are held only for recorded dependency or ownership, and one event-driven wait wakes on completion or attention; severed readiness, dispatch, completion, or wait wiring fails closed without replacement Taskplane scheduling state.",
+        "AC7: On the final clean candidate, atomic reconciliation proves Git HEAD, governed progress, run journal, tasks and gates, public report, repository verification report, release evidence, and exports terminal evidence all name the identical full SHA, terminal status, requirement, and evidence fingerprints; every named selector, receipt, and producer edge is validated and executed in the actual pinned and final candidate checkout, generated temporary substitutes are prohibited, opaque or foreign wiring fingerprints cannot authorize terminal or release truth, and severing any named edge makes the exact production test fail; finalization publishes all terminal projections for the exact SHA or none, and stale, executing, missing, mixed, contradictory, severed-edge, or partial truth blocks Done, merge, push, and release claims, while retry converges without overwriting immutable evidence and no retained run remains executing after delivery reaches main."
+      ]
+    },
+    {
       "id": "t01-ac1-native-authority-readiness",
       "scope": ["taskplane/native_authority.py", "taskplane/tests/test_r0013_native_authority.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_authority.py::test_complete_native_capability_map_is_required_by_design_and_plan",
-      "req": "R-0013", "deps": [], "type": "architecture",
+      "req": "R-0013", "deps": ["t00-bootstrap-dedicated-home"], "type": "architecture",
       "contracts": ["contract:design.codex-native-capability-inventory"], "new_modules": ["taskplane/native_authority.py"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC1: Before Plan authorization, Design contains the complete evidenced Codex-native capability inventory and responsibility map; the Design and architecture gate refuse Taskplane-owned scheduling, capacity, reservation, admission, replay, lease-concurrency, worker-lifecycle, or execution-DAG authority, and removing a native mapping or introducing duplicate authority makes both static and behavioral seam proofs fail and blocks Design or Plan before Build."]
@@ -17,7 +57,7 @@
       "id": "t02-ac2-design-sweep-readiness",
       "scope": ["taskplane/design_sweep.py", "taskplane/tests/test_r0013_design_sweep.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_r0013_design_sweep.py",
-      "req": "R-0013", "deps": [], "type": "reliability",
+      "req": "R-0013", "deps": ["t00-bootstrap-dedicated-home"], "type": "reliability",
       "contracts": ["contract:design.quick-concurrent-all-lens-sweep"], "new_modules": ["taskplane/design_sweep.py"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC2: Design trace contains exactly one quick result for each of all 26 registered lenses, independent lens work is concurrent, and every result is dispositioned; a missing result, serial or repeated all-26 pass, automatic full/deep sweep, or any all-lens worker outside Design blocks completion."]
@@ -26,7 +66,7 @@
       "id": "t03-ac3-zero-lens-readiness",
       "scope": ["taskplane/delivery_policy.py", "taskplane/review.py", "taskplane/evaluation_output.py", "taskplane/tests/test_r0013_zero_lens.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_r0013_zero_lens.py::test_empty_expected_collection_is_valid_success taskplane/tests/test_r0013_zero_lens.py::test_nonempty_malformed_or_outage_fallback_refuses_before_dispatch_or_gate taskplane/tests/test_r0001_delivery_mode.py::test_empty_expected_lenses_emits_successful_collection_receipt",
-      "req": "R-0013", "deps": [], "type": "security",
+      "req": "R-0013", "deps": ["t00-bootstrap-dedicated-home"], "type": "security",
       "contracts": ["contract:delivery.execution-zero-lens"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC3: Real traces and the native session ledger show zero Taskplane lens-worker starts in Build, Fix, Evaluate, and execution-time EM, and a valid empty expected-lens collection succeeds without outage handling; any attempted start, non-empty expectation, malformed empty result, or outage fallback fails before dispatch or gate success."]
@@ -35,7 +75,7 @@
       "id": "t04-ac4-native-dispatch-readiness",
       "scope": ["taskplane/plan_topology.py", "taskplane/build_c.py", "taskplane/command_runtime.py", "taskplane/tests/test_r0013_native_dispatch.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_dispatch.py::test_every_ready_disjoint_unit_is_emitted_once_in_one_native_set taskplane/tests/test_r0013_native_dispatch.py::test_build_c_consumes_one_sealed_ready_set_without_reclassification taskplane/tests/test_r0013_native_dispatch.py::test_one_native_wait_wakes_on_completion_or_attention taskplane/tests/test_r0013_native_dispatch.py::test_silent_transport_deadline_returns_one_attention_before_wave_ceiling taskplane/tests/test_command_adapters.py::test_no_event_host_uses_one_runtime_blocking_wait_and_zero_model_polls",
-      "req": "R-0013", "deps": [], "type": "integration",
+      "req": "R-0013", "deps": ["t00-bootstrap-dedicated-home"], "type": "integration",
       "contracts": ["contract:delivery.codex-native-dispatch", "contract:delivery.event-driven-wait"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC4: At every governed stage, each ready pairwise-disjoint task or criterion appears exactly once in one deterministic native Codex dispatch set, overlaps are held only for recorded dependency or ownership, and one event-driven wait wakes on completion or attention; severed readiness, dispatch, completion, or wait wiring fails closed without replacement Taskplane scheduling state."]
@@ -44,7 +84,7 @@
       "id": "t05-ac5-plan-boundary-readiness",
       "scope": ["taskplane/design_contract.py", "taskplane/tests/test_r0013_wave_ceiling.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_r0013_wave_ceiling.py",
-      "req": "R-0013", "deps": [], "type": "architecture",
+      "req": "R-0013", "deps": ["t00-bootstrap-dedicated-home"], "type": "architecture",
       "contracts": ["contract:delivery.acceptance-wave-ceiling"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC5: The approved Plan contains exactly these seven acceptance outcomes and never more than eight, classifies every pair as parallel or serialized with a named dependency or shared owner, and places every independent pair in the same available native wave; a ninth outcome, missing classification, unexplained serial edge, or false-disjoint overlap blocks Plan or dispatch."]
@@ -53,7 +93,7 @@
       "id": "t06-ac6-native-budget-readiness",
       "scope": ["taskplane/brief_projection.py", "taskplane/dispatch_telemetry.py", "taskplane/progress.py", "taskplane/spend.py", "taskplane/tests/test_r0013_native_budget.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_budget.py::test_missing_or_malformed_host_usage_fails_closed_before_next_dispatch taskplane/tests/test_r0013_native_budget.py::test_breach_stops_before_any_next_spawn taskplane/tests/test_r0013_native_budget.py::test_active_usage_contributes_to_all_four_budget_totals taskplane/tests/test_r0013_native_budget.py::test_delta_handoff_is_below_4000_tokens_and_contains_only_required_fields taskplane/tests/test_r0013_native_budget.py::test_second_fix_evaluate_failure_requires_human_decision",
-      "req": "R-0013", "deps": [], "type": "performance",
+      "req": "R-0013", "deps": ["t00-bootstrap-dedicated-home"], "type": "performance",
       "contracts": ["contract:delivery.bounded-stage-handoff"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC6: Each stage receives a delta handoff strictly below 4000 tokens with all required identities and observed usage and no inherited full transcript; throughout an active production wave native wall-time and unique-session telemetry and observed_tokens are present, finite, and never null, and before every dispatch the wave is below 8 hours, 60 unique sessions, 150M total tokens, and 25M uncached input, with equality, a breach, or missing data stopping for human scope review and unable to continue silently; a second failed fix/evaluate cycle requires a human architecture or scope decision."]
@@ -62,7 +102,7 @@
       "id": "t07-ac7-terminal-truth-readiness",
       "scope": ["taskplane/wiring_closure.py", "taskplane/terminal_truth.py", "taskplane/repository.py", "taskplane/views.py", "taskplane/release_evidence.py", "taskplane/checkpoint.py", "taskplane/tests/test_r0013_terminal_finalization.py", "taskplane/tests/test_r0013_real_checkout_wiring.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_r0013_terminal_finalization.py::test_finalization_refuses_each_missing_nonterminal_or_mixed_sha_surface taskplane/tests/test_r0013_terminal_finalization.py::test_finalize_replay_is_idempotent_on_one_sha taskplane/tests/test_r0013_terminal_finalization.py::test_crash_before_terminal_cas_publishes_no_terminal_authority taskplane/tests/test_r0013_terminal_finalization.py::test_post_cas_missing_projection_blocks_then_reconciles_byte_identically taskplane/tests/test_r0013_terminal_finalization.py::test_terminal_fault_matrix_covers_prepare_fsync_cas_and_reconcile_boundaries taskplane/tests/test_r0013_terminal_finalization.py::test_unauthorized_task_cannot_advance_terminal_head taskplane/tests/test_r0013_terminal_finalization.py::test_cleanup_waits_for_successful_reconciliation_receipt taskplane/tests/test_r0013_terminal_finalization.py::test_sha_changing_merge_invalidates_finalization taskplane/tests/test_r0013_real_checkout_wiring.py::test_candidate_receipt_refuses_non_git_temp_or_head_mismatch taskplane/tests/test_r0013_real_checkout_wiring.py::test_release_refuses_opaque_or_foreign_checkout_wiring_fingerprint",
-      "req": "R-0013", "deps": [], "type": "reliability",
+      "req": "R-0013", "deps": ["t00-bootstrap-dedicated-home"], "type": "reliability",
       "contracts": ["contract:delivery.exact-sha-terminal-truth", "resource:exports.exact-sha-terminal-truth"], "new_modules": ["taskplane/terminal_truth.py", "exports/terminal"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC7: On the final clean candidate, atomic reconciliation proves Git HEAD, governed progress, run journal, tasks and gates, public report, repository verification report, release evidence, and exports terminal evidence all name the identical full SHA, terminal status, requirement, and evidence fingerprints; every named selector, receipt, and producer edge is validated and executed in the actual pinned and final candidate checkout, generated temporary substitutes are prohibited, opaque or foreign wiring fingerprints cannot authorize terminal or release truth, and severing any named edge makes the exact production test fail; finalization publishes all terminal projections for the exact SHA or none, and stale, executing, missing, mixed, contradictory, severed-edge, or partial truth blocks Done, merge, push, and release claims, while retry converges without overwriting immutable evidence and no retained run remains executing after delivery reaches main."]
