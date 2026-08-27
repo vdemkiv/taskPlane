@@ -159,7 +159,7 @@ class TestGeneratedCliReference(unittest.TestCase):
 
 
 class TestForwardRepairDocumentation(unittest.TestCase):
-    def test_v21723_is_forward_only_and_preserves_historical_disposition(self):
+    def test_v21724_is_forward_only_and_preserves_historical_disposition(self):
         for path in ("README.md", "CHANGELOG.md"):
             text = _read(path)
             prose = " ".join(text.replace(">", "").split())
@@ -169,6 +169,7 @@ class TestForwardRepairDocumentation(unittest.TestCase):
             self.assertIn("superseded", prose, path)
             self.assertIn("v2.17.22", prose, path)
             self.assertIn("v2.17.23", prose, path)
+            self.assertIn("v2.17.24", prose, path)
             self.assertIn("not released", prose, path)
             self.assertIn("2757822e", prose, path)
             self.assertIn("inherited limitation", prose, path)

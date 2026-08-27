@@ -13,7 +13,7 @@ import pytest
 
 from taskplane import checkpoint, design_contract, dispatch_telemetry
 from taskplane.delivery_ports import FakeClock, RecordedPlatformCiQuery
-from taskplane.release_evidence import create_release_green
+from taskplane.release_evidence import CURRENT_VERSION, create_release_green
 from taskplane.wiring_closure import (
     WiringClosureError,
     validate_acceptance_map,
@@ -266,6 +266,8 @@ def test_native_design_schema_inventory_matches_runtime_and_retires_scheduler():
         "planTopology", "dispatchSet", "dispatchTelemetryBinding",
         "waveBudget", "executionMetrics",
     } <= set(definitions)
+    assert definitions["releaseGreen"]["properties"]["version"]["const"] == \
+        CURRENT_VERSION
     assert {"scheduler_admission", "execution_dag"}.isdisjoint(contract)
     assert {"dispatch_admission", "execution_dag"}.isdisjoint(
         contract["receipt_contracts"])
@@ -353,7 +355,7 @@ def test_release_green_binds_reviewed_prompt_injection_reference_digest():
     }
     receipt = create_release_green(
         source_sha=source_sha,
-        version="2.17.23",
+        version="2.17.24",
         wiring_closure_fingerprint="1" * 64,
         feature_receipt_digests=["2" * 64],
         full_matrix_receipts=["3" * 64],

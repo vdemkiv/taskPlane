@@ -286,6 +286,85 @@ def bind_producer_observation(
         "caller-supplied producer observation is refused"
     )
 
+
+def producer_output_identity(ws: str, state: Mapping[str, object],
+                             task: Mapping[str, object] | None, step: str,
+                             *, active_contract: Mapping[str, object] | None =
+                             None) -> dict:
+    """Derive the one engine-owned output identity a host stop may observe."""
+    if step not in {"evaluate", "em"}:
+        raise producer_observation_policy.ProducerObservationError(
+            "producer observation is only defined for evaluate or em")
+    binding = review_kernel_binding(dict(state), step, dict(task or {}))
+    if not binding or not str(binding.get("run_id") or "").strip():
+        raise producer_observation_policy.ProducerObservationError(
+            f"{step} ReviewKernel binding is missing")
+    run_id = str(binding["run_id"])
+    task_id = str((task or {}).get("id") or "engineering-signoff")
+    producer = STEP_ROLE[step]
+    dispatch = producer_observation_policy.validate_producer_dispatch(
+        (active_contract or {}).get("producer_dispatch"), run_id=run_id,
+        task_id=task_id, stage=step, producer=producer)
+    source_sha = tp.git_head(ws)
+    if step == "evaluate":
+        contract = (active_contract or {}).get("output_contract")
+        if not isinstance(contract, Mapping) or \
+                contract.get("stage") != "evaluate" or \
+                contract.get("task") != task_id or \
+                contract.get("producer") != "tp-evaluator":
+            raise producer_observation_policy.ProducerObservationError(
+                "external host producer receipt cannot be matched: active "
+                "evaluator output contract is missing or mismatched")
+        output_path = str(contract.get("result_path") or "")
+        resolved = (output_path if os.path.isabs(output_path) else
+                    os.path.join(ws, output_path))
+        try:
+            with open(resolved, "rb") as stream:
+                output_bytes = stream.read()
+        except OSError as exc:
+            raise producer_observation_policy.ProducerObservationError(
+                "evaluator result bytes are missing") from exc
+        output_schema_id = str(contract.get("output_schema_id") or "")
+        contract_fingerprint = \
+            producer_observation_policy.content_fingerprint(dict(contract))
+    else:
+        paths = [runtime_storage.review_public_path(ws, "findings.json"),
+                 runtime_storage.review_public_path(ws, "report.md")]
+        exact = []
+        for path in paths:
+            try:
+                with open(path, "rb") as stream:
+                    exact.append((path, stream.read()))
+            except OSError as exc:
+                raise producer_observation_policy.ProducerObservationError(
+                    "EM result bytes are missing") from exc
+        output_path = json.dumps(paths, separators=(",", ":"))
+        output_bytes = producer_observation_policy.exact_output_bundle(exact)
+        output_schema_id = "taskplane.em-output/v1"
+        delivery = _validated_delivery_mode(dict(state))
+        contract_fingerprint = producer_observation_policy.content_fingerprint({
+            "schema": "taskplane.em-output-contract/v1",
+            "run_id": run_id,
+            "task_id": task_id,
+            "stage": "em",
+            "output_paths": paths,
+            "delivery_mode_receipt": (delivery or {}).get("fingerprint"),
+        })
+    return {
+        "workspace": ws,
+        "evidence_root": tp.store_root(ws),
+        "run_id": run_id,
+        "task_id": task_id,
+        "stage": step,
+        "producer": producer,
+        "output_path": output_path,
+        "output_bytes": output_bytes,
+        "output_schema_id": output_schema_id,
+        "output_contract_fingerprint": contract_fingerprint,
+        "source_sha": source_sha,
+        "producer_dispatch": dispatch,
+    }
+
 STAGE_COMMAND_SCHEMA = "taskplane.stage-command-result/v1"
 STAGE_HISTORY_SCHEMA = "taskplane.stage-history-page/v1"
 STAGE_HISTORY_MAX_ITEMS = 100
@@ -5567,9 +5646,9 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         base_ref = state.get("baseline") or "HEAD"
         try:
             review_delivery_authority = _DELIVERY_MODE_AUTHORITY_UNSET
-            if step == "evaluate":
+            if step in {"evaluate", "em"}:
                 delivery_receipt = _validated_delivery_mode(state)
-                if delivery_receipt is None and str(
+                if step == "evaluate" and delivery_receipt is None and str(
                         state.get("design_fingerprint") or "").strip():
                     raise delivery_policy.DeliveryPolicyError(
                         "delivery-mode receipt is required for a "
@@ -5584,6 +5663,27 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 graph=depgraph.load(graph_ws), impact=imp or {},
                 requirement=req_rec, retry_context=retry_context,
                 delivery_mode_receipt=review_delivery_authority)
+            if step == "em" and review_delivery_authority is not \
+                    _DELIVERY_MODE_AUTHORITY_UNSET and \
+                    review_kernel.get("status") == "ready" and \
+                    review_kernel.get("slots") == []:
+                # EM has no automatic lens producers under the sealed Build
+                # authority. Complete that engine-owned empty set now so the
+                # engineering producer can synthesize the final report from
+                # a canonical revision; its own exact report/findings bytes
+                # are still host-observed and consumed at submit time.
+                collected = collect_review_bridge(
+                    diff_ws, publish=False, run_id=review_kernel["run_id"],
+                    evaluator_result={
+                        "delivery_mode_receipt":
+                            review_delivery_authority["fingerprint"]},
+                    producer_observation_fingerprint=
+                        review_delivery_authority["fingerprint"],
+                    collection_stage="EM", result_validator=lambda value: value)
+                review_kernel = {**review_kernel,
+                                 "status": collected.get("status"),
+                                 "empty_lens_collection": collected.get(
+                                     "empty_lens_collection")}
             review_kernel = _bind_stateless_review_contract_actions(
                 diff_ws, review_kernel,
                 task_id=str((task or {}).get("id") or
@@ -5642,6 +5742,32 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     model_tier, model = dispatch["model_tier"], dispatch["model"]
     reasoning_effort, task_name = (dispatch["reasoning_effort"],
                                    dispatch["task_name"])
+    if step in {"evaluate", "em"} and \
+            _validated_delivery_mode(state) is not None:
+        run_id = str((review_kernel or {}).get("run_id") or "").strip()
+        task_id = str((task or {}).get("id") or "engineering-signoff")
+        if not run_id:
+            raise producer_observation_policy.ProducerObservationError(
+                f"{step} producer dispatch lacks ReviewKernel identity")
+        dispatch_projection = {
+            "run_id": run_id,
+            "task_id": task_id,
+            "stage": step,
+            "producer": STEP_ROLE[step],
+            "task_name": task_name,
+            "role_marker": dispatch["role_marker"],
+            "model": model,
+            "reasoning_effort": reasoning_effort,
+        }
+        contract["producer_dispatch"] = {
+            **dispatch_projection,
+            "fingerprint": producer_observation_policy.content_fingerprint(
+                dispatch_projection),
+        }
+        # The native task name is resolved only after routing. Persist the
+        # exact emitted identity in the already-active contract before the
+        # host can receive the dispatch payload.
+        tp.activate(act_ws, contract, snapshot=snapshot)
     tp.trace(ws, "model_tier", step=step,
              task=(task or {}).get("id"), tier=model_tier, model=model,
              reasoning_effort=reasoning_effort)
@@ -6672,7 +6798,9 @@ def _claimed_execute_suite_binding():
 def collect_review_bridge(review_ws: str, *, publish: bool,
                           run_id: str,
                           evaluator_result: dict | None = None,
-                          producer_observation_fingerprint: str | None = None
+                          producer_observation_fingerprint: str | None = None,
+                          collection_stage: str = "Evaluate",
+                          result_validator=None,
                           ) -> dict:
     """Collect a ReviewKernel run and release its exact producer slots.
 
@@ -6691,16 +6819,21 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
         if evaluator_result is None or \
                 producer_observation_fingerprint is None:
             raise review_kernel.ReviewKernelError(
-                "zero-lens Evaluate collection requires a schema-valid "
-                "evaluator result and validated producer observation")
+                "zero-lens collection requires a schema-valid producer "
+                "result and validated observation")
+        validator = result_validator
+        if validator is None:
+            validator = (evaluation_output.validate_evaluator_value
+                         if collection_stage == "Evaluate" else
+                         lambda value: value)
         empty_collection = review_kernel.collect_expected_set(
             run_id=run_id,
             task_id=str((state.get("target") or {}).get("task") or ""),
-            stage="Evaluate",
+            stage=collection_stage,
             expected_lenses=state["expected_lenses"],
             collected_lenses=[],
             result=evaluator_result,
-            result_validator=evaluation_output.validate_evaluator_value,
+            result_validator=validator,
             producer_observation_fingerprint=
                 producer_observation_fingerprint,
         )
@@ -6713,9 +6846,10 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
 
 
 def _collect_zero_lens_evaluate_before_guidance(
-        ws: str, act_ws: str, state: dict, task: dict) -> None:
-    """Seal an observed zero-slot Evaluate result before runtime guidance."""
-    binding = review_kernel_binding(state, "evaluate", task)
+        ws: str, act_ws: str, state: dict, task: dict,
+        *, step: str = "evaluate") -> dict | None:
+    """Consume the one native receipt and seal an ordinary empty set."""
+    binding = review_kernel_binding(state, step, task)
     if not binding:
         return None
     kernel_ws = str(binding.get("workspace") or act_ws)
@@ -6726,10 +6860,37 @@ def _collect_zero_lens_evaluate_before_guidance(
     if kernel.get("expected_lenses") != [] or kernel.get("slots") != []:
         raise review_kernel.ReviewKernelError(
             "sealed zero-lens Evaluate authority produced lens slots")
-    raise producer_observation_policy.ProducerObservationError(
-        "a genuine external host producer receipt is required; W31 remains "
-        "open before collection, guidance, or submission"
-    )
+    active_contract = tp.load_active(act_ws) or {}
+    material = producer_output_identity(
+        act_ws, state, task, step, active_contract=active_contract)
+    observation = producer_observation_policy.consume_matching_observation(
+        **material)
+    if step == "evaluate":
+        result = evaluation_output.validate_evaluator_value(
+            json.loads(material["output_bytes"].decode("utf-8")))
+        collection_stage = "Evaluate"
+        validator = evaluation_output.validate_evaluator_value
+    else:
+        findings_path = runtime_storage.review_public_path(
+            act_ws, "findings.json")
+        report_path = runtime_storage.review_public_path(act_ws, "report.md")
+        findings, read_errors = _read_json(findings_path)
+        if read_errors:
+            raise producer_observation_policy.ProducerObservationError(
+                "EM findings result is invalid")
+        with open(report_path, "rb") as stream:
+            report_bytes = stream.read()
+        result = {"findings": findings,
+                  "report_sha256": hashlib.sha256(report_bytes).hexdigest()}
+        collection_stage = "EM"
+        validator = lambda value: value
+    if step == "evaluate":
+        collect_review_bridge(
+            kernel_ws, publish=False, run_id=binding["run_id"],
+            evaluator_result=result,
+            producer_observation_fingerprint=observation["fingerprint"],
+            collection_stage=collection_stage, result_validator=validator)
+    return observation
 
 
 def _acceptance_evidence_errors(ws: str, state: dict, task: dict,
@@ -7497,14 +7658,19 @@ def submit(ws: str, outcome: str, note: str = "",
 
     runtime_guidance = None
     checkpoint_receipt = None
+    producer_observation = None
     if outcome == "pass":
-        if step == "evaluate":
+        if step in {"evaluate", "em"}:
             try:
-                _collect_zero_lens_evaluate_before_guidance(
-                    ws, act_ws, state, task)
+                producer_observation = (
+                    _collect_zero_lens_evaluate_before_guidance(
+                        ws, act_ws, state, task)
+                    if step == "evaluate" else
+                    _collect_zero_lens_evaluate_before_guidance(
+                        ws, act_ws, state, task, step=step))
             except Exception as exc:
                 return {
-                    "error": "runtime eval producer collection failed: "
+                    "error": f"runtime {step} producer collection failed: "
                              f"{exc.__class__.__name__}: {exc}",
                     "submitted": False, "transitioned": False,
                 }
@@ -7580,6 +7746,8 @@ def submit(ws: str, outcome: str, note: str = "",
     }
     if checkpoint_receipt is not None:
         submission["checkpoint_receipt"] = checkpoint_receipt
+    if isinstance(producer_observation, Mapping):
+        submission["producer_observation"] = producer_observation
     with mutate(ws) as locked:
         if locked is None:
             return {"error": "no active loop"}
@@ -7643,6 +7811,25 @@ def _submission_staleness(ws: str, submission: dict) -> str | None:
         if current_graph_fp != graph_fp:
             return "dependency graph changed after worker submission"
     return None
+
+
+def _producer_observation_errors(
+        act_ws: str, state: dict, task: dict | None, step: str,
+        submission: Mapping[str, object] | None, *, clock=None) -> list[str]:
+    """Re-attest the durable, consumed native receipt at the final gate."""
+    if _validated_delivery_mode(state) is None or step not in {"evaluate", "em"}:
+        return []
+    try:
+        material = producer_output_identity(
+            act_ws, state, task, step,
+            active_contract=tp.load_active(act_ws) or {})
+        producer_observation_policy.validate_consumed_matching_observation(
+            (submission or {}).get("producer_observation"), **material,
+            clock=clock)
+    except Exception as exc:
+        return ["producer observation validation failed: "
+                f"{exc.__class__.__name__}: {exc}"]
+    return []
 
 
 def _stage_loop_gate_completion(
@@ -8049,7 +8236,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         # leave the walk below byte-unchanged.
         if (skew := tp.engine_skew_refusal(ws, state.get("_submission"))):
             return skew
-        evidence_errors = _evaluation_errors(act_ws, state, task)
+        evidence_errors = _producer_observation_errors(
+            act_ws, state, task, step, state.get("_submission"))
+        evidence_errors.extend(_evaluation_errors(act_ws, state, task))
         if evidence_errors:
             tp.trace(ws, "loop_gate_blocked", step=step,
                      reason="evaluation_evidence", errors=evidence_errors)
@@ -8085,7 +8274,10 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                      error=f"{exc.__class__.__name__}: {exc}")
     signoff_evidence = None
     if outcome == "pass" and step == "em":
-        signoff_evidence, signoff_errors = _signoff_evidence_binding(ws, state)
+        signoff_errors = _producer_observation_errors(
+            ws, state, task, step, state.get("_submission"))
+        signoff_evidence, binding_errors = _signoff_evidence_binding(ws, state)
+        signoff_errors.extend(binding_errors)
         if signoff_errors:
             tp.trace(ws, "loop_gate_blocked", step=step,
                      reason="terminal_signoff_evidence",

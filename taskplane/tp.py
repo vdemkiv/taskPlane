@@ -1665,7 +1665,7 @@ def cmd_subagent_start(a) -> int:
 
 
 def cmd_subagent_stop(a) -> int:
-    """Trace Codex subagent completion without creating a new gate."""
+    """Trace completion and observe sealed evaluator/EM output bytes."""
     event = _subagent_event()
     ws = _subagent_workspace(event)
     tp.trace(ws, "subagent_stop", agent_id=event.get("agent_id"),
@@ -1673,7 +1673,65 @@ def cmd_subagent_stop(a) -> int:
              turn_id=event.get("turn_id"),
              has_transcript=bool(event.get("agent_transcript_path")),
              has_message=bool(event.get("last_assistant_message")))
+    producer_error = None
+    try:
+        import loop as _loop_runtime
+        import producer_observation as _producer_observation
+        state = _loop_runtime.load(ws)
+        step = (state or {}).get("step")
+        task = _loop_runtime._current_task(state or {})
+        required_delivery = (step in {"evaluate", "em"} and
+                             (state or {}).get(
+                                 "delivery_mode_receipt") is not None)
+        delivery = (_loop_runtime._validated_delivery_mode(state or {})
+                    if step in {"evaluate", "em"} else None)
+        existing = (state or {}).get("_submission") or {}
+        if delivery is not None and step in {"evaluate", "em"}:
+            if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() \
+                    not in {"native", "bridge"}:
+                raise _producer_observation.ProducerObservationError(
+                    "producer observation requires a claimed host hook")
+            contract = tp.load_active(ws) or {}
+            binding = contract.get("submission_contract") or {}
+            expected_task = str((task or {}).get("id") or
+                                "engineering-signoff")
+            if binding.get("stage") != step or \
+                    binding.get("task") != expected_task:
+                raise _producer_observation.ProducerObservationError(
+                    "active submission contract does not match producer")
+            material = _loop_runtime.producer_output_identity(
+                ws, state, task, step, active_contract=contract)
+            if isinstance(existing.get("producer_observation"), dict):
+                _producer_observation.validate_consumed_matching_observation(
+                    existing["producer_observation"], **material)
+            else:
+                receipt = _producer_observation.record_codex_subagent_stop(
+                    event=event,
+                    hook_claim_id=str(
+                        event.get("_taskplane_hook_claim_id") or ""),
+                    **material)
+                tp.trace(ws, "producer_observation_recorded", step=step,
+                         task=expected_task, run_id=material["run_id"],
+                         fingerprint=receipt["fingerprint"][:12])
+    except Exception as exc:
+        if ('delivery' in locals() and delivery is not None) or \
+                ('required_delivery' in locals() and required_delivery):
+            producer_error = f"{type(exc).__name__}: {exc}"
+            tp.trace(ws, "producer_observation_failed", step=(state or {}).get(
+                "step") if 'state' in locals() else None,
+                error=type(exc).__name__)
     submission = _submission_stop_check(event)
+    if producer_error:
+        reason = ("taskplane blocked lifecycle completion: sealed zero-lens "
+                  "producer observation failed closed (" + producer_error +
+                  "). Recovery: preserve the exact result bytes and retry "
+                  "completion through the native Codex lifecycle.")
+        print(json.dumps({"decision": "block", "reason": reason,
+                          "hookSpecificOutput": {
+                              "hookEventName": "SubagentStop",
+                              "permissionDecision": "deny",
+                              "permissionDecisionReason": reason}}))
+        return 2
     if submission and submission.get("block"):
         _emit_submission_stop_block("SubagentStop", submission)
         return 2
@@ -4369,6 +4427,10 @@ def _run_hook_command(a) -> int:
         return _replay_hook_response(
             a.cmd, str(claim.get("response_class") or "block"))
 
+    if a.cmd == "subagent-stop":
+        event = dict(event)
+        event["_taskplane_hook_claim_id"] = claim.get("claim_id")
+        raw = json.dumps(event, separators=(",", ":"))
     original_stdin = sys.stdin
     captured = io.StringIO()
     try:

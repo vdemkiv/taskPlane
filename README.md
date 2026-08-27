@@ -130,17 +130,19 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the source-integration boundary on `main`. The unreleased v2.17.22
-> Marketplace candidate is superseded; local verification moves forward as
-> v2.17.23, which is not released. Historical graph revision `2757822e` remains an attributed
-> inherited limitation: no history rewrite, no re-release of v2.17.20, and no
-> verifier weakening. Building the v2.17.23 artifact is not an upload or
-> release claim; those actions retain their separate human authority.
+> Marketplace candidate and v2.17.23 local candidate are superseded; local
+> verification moves forward as v2.17.24, which is not released. Historical
+> graph revision `2757822e` remains an attributed inherited limitation: no
+> history rewrite, no re-release of v2.17.20, and no verifier weakening.
+> Preparing or validating v2.17.24 is not a tag, upload, Marketplace
+> publication, push, or release claim; those actions retain separate human
+> authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.17.23** | **Local verification candidate — not released.** Repairs secure hook-home binding so an explicit locator for either a dedicated home or canonical `$HOME/.taskplane` is valid, while missing, noncanonical, or conflicting authority still fails before receipts. The candidate preserves locator-bound propagation through native, bridge, generated launcher, and host runtime paths; it is not an upload, installation, or release claim. |
-| **v2.17.22** | **Superseded Marketplace candidate — not released.** Packaged the completed two-part R-0001 delivery after the native-dispatch correction, but its bootstrap binder incorrectly rejected an explicit secure locator for canonical `$HOME/.taskplane`. It remains compatibility N-1 for the v2.17.23 candidate and was never promoted into released truth. |
-| **v2.17.21** | **Source-integration boundary.** The complete R-0001 delivery was integrated and pushed to `main` at this version, including forward release evidence, hosted default-branch preparation, package parity, and the later removal of duplicate scheduler authority. This historical row does not claim a Marketplace upload or installation. |
+| **v2.17.24** | **Local verification candidate — not released.** Applies the minimal R-0013 bootstrap correction: W31 uses the Codex-native producer-consumer path, and execution-time EM honors governed zero-lens delivery instead of requiring a lens producer. This row claims no tag, upload, installation, Marketplace publication, push, or release. |
+| **v2.17.23** | **Superseded local candidate — not released.** Repaired secure hook-home binding and preserved locator-bound propagation through native, bridge, generated launcher, and host runtime paths, but did not close the W31 producer-consumer and execution-time zero-lens EM bootstrap seams. It remains compatibility N-1 for v2.17.24 and was never promoted into released truth. |
+| **v2.17.22** | **Superseded Marketplace candidate — not released.** Packaged the completed two-part R-0001 delivery after the native-dispatch correction, but its bootstrap binder incorrectly rejected an explicit secure locator for canonical `$HOME/.taskplane`. It was never promoted into released truth. |
 ## Install
 
 How you install taskplane depends on your **account type**, and the paths are

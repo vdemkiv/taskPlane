@@ -50,6 +50,7 @@ import contextlib
 import importlib.util
 import inspect
 import io
+import hashlib
 import json
 import os
 import re
@@ -1034,109 +1035,45 @@ def _walk_pass_eval(ws):
     _author_kernel_results(act_ws)
     submitted = loop.submit(ws, "pass")
     assert submitted.get("submitted"), submitted
-    return loop.gate(ws, "pass")
+    gated = loop.gate(ws, "pass")
+    assert gated.get("step") == "em", gated
+    return gated
 
 
-def _walk_collect_observed_evaluate(ws, act_ws, state, task):
+def _walk_collect_observed_evaluate(ws, act_ws, state, task, *,
+                                    step="evaluate"):
     """Model the external host adapter for this compatibility-only walk."""
-    import hashlib
-    import time
-
-    import evaluation_output
-    import review
-    from delivery_ports import (
-        FakeClock,
-        RecordedHostActionCapabilitySource,
-        RecordedProducerEventSource,
-        SandboxEvidenceStore,
-        content_fingerprint,
+    from producer_observation import (
+        consume_matching_observation,
+        record_codex_subagent_stop,
     )
-    from producer_observation import observe_submission
-
+    material = loop.producer_output_identity(
+        act_ws, state, task, step,
+        active_contract=tp_lite.load_active(act_ws) or {})
+    if step == "em":
+        return consume_matching_observation(**material)
+    import evaluation_output
     binding = loop.review_kernel_binding(state, "evaluate", task)
     kernel_ws = str(binding.get("workspace") or act_ws)
     run_id = binding["run_id"]
-    output_path = os.path.join(act_ws, ".eval", "verdict.json")
-    with open(output_path, "rb") as stream:
-        output_bytes = stream.read()
-    output_digest = hashlib.sha256(output_bytes).hexdigest()
-    contract_fingerprint = content_fingerprint({
-        "schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
-        "run_id": run_id,
-        "task_id": task["id"],
-        "stage": "evaluate",
-    })
-    now = time.time()
-    host_session_id = "stage-wave-compat-session"
-    host_turn_id = f"evaluate-{run_id}"
-    event = {
-        "schema": "taskplane.host-producer-event/v1",
-        "event_id": f"stage-wave-evaluate-{run_id}",
-        "host": "codex",
-        "host_session_id": host_session_id,
-        "host_turn_id": host_turn_id,
-        "run_id": run_id,
-        "task_id": task["id"],
-        "stage": "evaluate",
-        "producer": "tp-evaluator",
-        "output_path": ".eval/verdict.json",
-        "output_bytes": len(output_bytes),
-        "output_sha256": output_digest,
-        "output_schema_id": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
-        "output_contract_fingerprint": contract_fingerprint,
-        "source_sha": tp_lite.git_head(act_ws),
-        "observed_at": now,
-    }
-    source = RecordedHostActionCapabilitySource()
-    handle = source.issue(
-        capability_id=f"stage-wave-cap-{run_id}",
-        purpose="producer_observation",
-        sequence=1,
-        host_session_id=host_session_id,
-        host_turn_id=host_turn_id,
-        run_id=run_id,
-        kernel_id=None,
-        task_id=task["id"],
-        stage="evaluate",
-        request_or_output_digest=output_digest,
-        contract_fingerprint=contract_fingerprint,
-        issued_at=now - 1,
-        expires_at=now + 60,
-        nonce=f"stage-wave-{run_id}",
-    )
-    receipt = observe_submission(
-        run_id=run_id,
-        task_id=task["id"],
-        stage="evaluate",
-        producer="tp-evaluator",
-        host="codex",
-        host_session_id=host_session_id,
-        host_turn_id=host_turn_id,
-        output_path=".eval/verdict.json",
-        output_bytes=output_bytes,
-        output_schema_id=evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
-        output_contract_fingerprint=contract_fingerprint,
-        source_sha=event["source_sha"],
-        capability_handle=handle,
-        event_source=RecordedProducerEventSource([event]),
-        capability_source=source,
-        evidence_store=SandboxEvidenceStore(
-            tp_lite.tp_dir(ws), "stage-wave-compat", run_id),
-        clock=FakeClock(wall_time=now, monotonic=1.0),
-    )
-    observation = evaluation_output.validate_submission_observation(
-        {"step": "evaluate", "task": task["id"],
-         "producer_observation": receipt},
-        output_bytes=output_bytes,
-        output_schema_id=evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
-        output_contract_fingerprint=contract_fingerprint,
-    )
+    event = {"hook_event_name": "SubagentStop",
+             "session_id": "stage-wave-compat-session",
+             "turn_id": f"evaluate-{run_id}",
+             "agent_id": f"evaluate-{run_id}",
+             "agent_type": material["producer_dispatch"]["task_name"],
+             "task_name": material["producer_dispatch"]["task_name"]}
+    claim = hashlib.sha256(tp_lite.hook_event_identity(
+        act_ws, "subagent-stop", event).encode("utf-8")).hexdigest()
+    record_codex_subagent_stop(
+        event=event, hook_claim_id=claim, **material)
+    observation = consume_matching_observation(**material)
     loop.collect_review_bridge(
         kernel_ws, publish=False, run_id=run_id,
         evaluator_result=evaluation_output.validate_evaluator_value(
-            json.loads(output_bytes)),
+            json.loads(material["output_bytes"])),
         producer_observation_fingerprint=observation["fingerprint"],
     )
+    return observation
 
 
 def _walk_pass_em(ws, state):
@@ -1154,7 +1091,10 @@ def _walk_pass_em(ws, state):
     kernel = review._load_state(ws)
     store = review_evidence.ArtifactStore(ws)
     _author_kernel_results(ws)
-    collected = review.collect_review(ws, publish=False)
+    if kernel.get("status") == "complete" and kernel.get("slots") == []:
+        collected = kernel
+    else:
+        collected = review.collect_review(ws, publish=False)
     assert collected["status"] == "complete"
     changed = [f for f in loop._diff_files(
         ws, state.get("baseline") or "HEAD")
@@ -1181,7 +1121,21 @@ def _walk_pass_em(ws, state):
                 "drift": []}}
     with open(findings_path, "w", encoding="utf-8") as f:
         json.dump({"meta": meta, "findings": findings["findings"]}, f)
-    assert loop.submit(ws, "pass")["submitted"]
+    from producer_observation import record_codex_subagent_stop
+    material = loop.producer_output_identity(
+        ws, loop.load(ws), loop._current_task(loop.load(ws)), "em",
+        active_contract=tp_lite.load_active(ws) or {})
+    event = {"hook_event_name": "SubagentStop",
+             "session_id": "stage-wave-compat-session",
+             "turn_id": "em-turn", "agent_id": "em-agent",
+             "agent_type": material["producer_dispatch"]["task_name"],
+             "task_name": material["producer_dispatch"]["task_name"]}
+    claim = hashlib.sha256(tp_lite.hook_event_identity(
+        ws, "subagent-stop", event).encode("utf-8")).hexdigest()
+    record_codex_subagent_stop(
+        event=event, hook_claim_id=claim, **material)
+    submitted = loop.submit(ws, "pass")
+    assert submitted.get("submitted"), submitted
     return loop.gate(ws, "pass")
 
 

@@ -36,7 +36,7 @@ The old controller, run records, task branches, and worktrees are preserved for 
 
 Before any fresh Build task is dispatched:
 
-1. Verify the installed marketplace manifest is exactly Taskplane 2.17.22.
+1. Verify the local verification candidate manifests are exactly Taskplane 2.17.24 before installing or exercising the bootstrap correction; this does not itself claim installation or release.
 2. Verify the source checkout is clean and at the intended exact `origin/main` SHA.
 3. Set the dedicated R-0013 home for every Taskplane command.
 4. Verify `tp kb where` resolves the intended R-0013 home before loop creation.

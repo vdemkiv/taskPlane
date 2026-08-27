@@ -133,7 +133,8 @@ def release_runtime_constants() -> dict[str, str]:
     path = ROOT / "taskplane" / "release_evidence.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     wanted = {
-        "CURRENT_VERSION", "PREVIOUS_VERSION", "HISTORICAL_GRAPH_REVISION",
+        "CURRENT_VERSION", "PREVIOUS_VERSION",
+        "COMPATIBILITY_PREVIOUS_VERSION", "HISTORICAL_GRAPH_REVISION",
     }
     values: dict[str, str] = {}
     for node in tree.body:
@@ -259,6 +260,8 @@ def validate_archive(path: Path, version: str) -> tuple:
                 "Claude manifest version must match release runtime version")
         require(release["PREVIOUS_VERSION"] == "2.17.20",
                 "forward repair must preserve v2.17.20 as the previous release")
+        require(release["COMPATIBILITY_PREVIOUS_VERSION"] == "2.17.23",
+                "forward repair compatibility N-1 must be v2.17.23")
         require(release["HISTORICAL_GRAPH_REVISION"] ==
                 "2757822ede49177fc52de8c173302286364d6206",
                 "forward repair must preserve historical graph revision 2757822e")

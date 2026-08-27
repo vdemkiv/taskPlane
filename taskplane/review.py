@@ -118,9 +118,9 @@ def _evaluate_delivery_mode_authority(
     """Validate an explicitly supplied zero-lens Evaluate authority."""
     if receipt is _DELIVERY_MODE_AUTHORITY_UNSET:
         return None
-    if stage != "build":
+    if stage not in {"build", "review"}:
         raise ReviewKernelError(
-            "Evaluate delivery-mode authority cannot govern a legacy or EM review")
+            "delivery-mode authority cannot govern this review stage")
     if receipt is None:
         raise ReviewKernelError("Evaluate delivery-mode authority is missing")
     if __package__:
@@ -5153,15 +5153,17 @@ def _collect_review_transaction(
                 import delivery_policy
             if empty_lens_collection is None:
                 raise ReviewKernelError(
-                    "zero-lens Evaluate collection requires a validated "
-                    "evaluator result and producer observation")
+                    "zero-lens collection requires a validated producer "
+                    "result and observation")
             authorized_empty_collection = \
                 delivery_policy.validate_empty_lens_collection_receipt(
                     empty_lens_collection)
             task_id = str((state.get("target") or {}).get("task") or "")
+            expected_stage = ("Evaluate" if state.get("stage") == "build"
+                              else "EM")
             if authorized_empty_collection["run_id"] != state["run_id"] or \
                     authorized_empty_collection["task_id"] != task_id or \
-                    authorized_empty_collection["stage"] != "Evaluate":
+                    authorized_empty_collection["stage"] != expected_stage:
                 raise ReviewKernelError(
                     "empty-lens collection receipt does not match ReviewKernel")
         elif empty_lens_collection is not None:
