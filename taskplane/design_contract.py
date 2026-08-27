@@ -154,6 +154,317 @@ class DesignAcceptanceError(ValueError):
     """The Design acceptance map cannot bind Build to exact test identities."""
 
 
+R0013_ACCEPTANCE_OUTCOMES = tuple(f"AC{number}" for number in range(1, 8))
+ACCEPTANCE_OUTCOME_CEILING = 8
+ACCEPTANCE_PAIR_MAP_SCHEMA = "taskplane.acceptance-pair-map/v1"
+_ACCEPTANCE_OUTCOME_ID = re.compile(r"^\s*(AC[1-9][0-9]*)\s*:")
+_ACCEPTANCE_ARTIFACT_TOKEN = re.compile(r"[a-z0-9]+")
+
+# Closed proof identities copied from the approved R-0013 Design pair map and
+# Plan pair table.  Serialization is not inferred from prose vocabulary: each
+# approved serial pair must cite these exact dependency identities, and the one
+# shared-owner claim must also resolve to the concrete shared Plan owner.
+R0013_SERIALIZED_PAIR_PROOFS = {
+    ("AC1", "AC4"): {
+        "dependencies": ("ac1 authority map", "removed stage edge"),
+    },
+    ("AC1", "AC7"): {
+        "dependencies": ("ac1 native authority receipt",),
+    },
+    ("AC2", "AC7"): {
+        "dependencies": ("design sweep receipt",),
+    },
+    ("AC3", "AC4"): {
+        "dependencies": ("ac3 zero lens execution authorization",),
+        "shared_owner": "loop adapter",
+    },
+    ("AC3", "AC7"): {
+        "dependencies": ("execution zero lens receipt",),
+    },
+    ("AC4", "AC5"): {
+        "dependencies": ("ac5 exhaustive plan pair map",),
+    },
+    ("AC4", "AC6"): {
+        "dependencies": ("ac6 non null usage", "budget decision"),
+    },
+    ("AC4", "AC7"): {
+        "dependencies": ("native dispatch", "wait receipts"),
+    },
+    ("AC5", "AC7"): {
+        "dependencies": ("exact seven outcome plan receipt",),
+    },
+    ("AC6", "AC7"): {
+        "dependencies": ("native usage", "bounded handoff receipts"),
+    },
+}
+
+
+def _criterion_outcome(value: object) -> str | None:
+    match = _ACCEPTANCE_OUTCOME_ID.match(str(value or ""))
+    return match.group(1) if match else None
+
+
+def _normalized_artifact_name(value: object) -> str:
+    return " ".join(_ACCEPTANCE_ARTIFACT_TOKEN.findall(str(value).lower()))
+
+
+def _shared_plan_owner_aliases(task: Mapping) -> set[str]:
+    """Names by which a multi-outcome Plan owner can be cited honestly."""
+    aliases: set[str] = set()
+    task_id = _normalized_artifact_name(task.get("id"))
+    task_id = re.sub(r"^t[0-9]+\s+", "", task_id)
+    if task_id:
+        aliases.add(task_id)
+    owner = _normalized_artifact_name(task.get("owner"))
+    if owner:
+        aliases.add(owner)
+    scopes = task.get("scope") or []
+    if isinstance(scopes, list):
+        for scope in scopes:
+            stem = _normalized_artifact_name(
+                PurePosixPath(str(scope or "")).stem)
+            if not stem:
+                continue
+            if task.get("type") == "integration":
+                aliases.add(f"{stem} adapter")
+    return aliases
+
+
+def acceptance_wave_errors(
+    contract: Mapping, tasks: Sequence[Mapping]
+) -> list[str]:
+    """Validate R-0013's bounded acceptance wave without host authority.
+
+    The approved Design owns the outcome identities, leaf file owners and
+    exhaustive pair policy. The Plan owns the concrete leaf task scopes.
+    Keeping the check pure lets both the Plan gate and native ready-set
+    adapter consume it without introducing scheduling or lifecycle state.
+    """
+    errors: list[str] = []
+    expected = R0013_ACCEPTANCE_OUTCOMES
+    expected_set = set(expected)
+    expected_pairs = {
+        (left, right)
+        for index, left in enumerate(expected)
+        for right in expected[index + 1:]
+    }
+
+    ownership = contract.get("outcome_ownership")
+    if not isinstance(ownership, Mapping):
+        return ["acceptance wave outcome_ownership must be an object"]
+
+    outcomes = ownership.get("acceptance_outcomes")
+    if not isinstance(outcomes, list) or outcomes != list(expected):
+        errors.append(
+            "acceptance wave must contain exactly AC1 through AC7 in order")
+    try:
+        maximum = int(ownership.get("maximum_outcomes"))
+    except (TypeError, ValueError):
+        maximum = -1
+    if maximum != ACCEPTANCE_OUTCOME_CEILING:
+        errors.append("acceptance wave maximum_outcomes must be exactly 8")
+    if isinstance(outcomes, list) and len(outcomes) > ACCEPTANCE_OUTCOME_CEILING:
+        errors.append("acceptance wave exceeds the eight-outcome ceiling")
+
+    lanes = ownership.get("leaf_lanes")
+    lane_scopes: dict[str, set[str]] = {}
+    lane_owners: set[str] = set()
+    if not isinstance(lanes, list):
+        errors.append("acceptance wave leaf_lanes must be a list")
+        lanes = []
+    for lane in lanes:
+        if not isinstance(lane, Mapping):
+            errors.append("every acceptance leaf lane must be an object")
+            continue
+        outcome = str(lane.get("outcome") or "").strip()
+        owner = str(lane.get("owner") or "").strip()
+        files = lane.get("exclusive_files")
+        if outcome not in expected_set:
+            errors.append(f"acceptance leaf lane has unknown outcome: {outcome or '?'}")
+            continue
+        if outcome in lane_scopes:
+            errors.append(f"acceptance outcome has duplicate leaf lanes: {outcome}")
+            continue
+        if not owner or owner in lane_owners:
+            errors.append(
+                f"acceptance leaf lane needs one unique named owner: {outcome}")
+        else:
+            lane_owners.add(owner)
+        if (not isinstance(files, list) or not files
+                or any(not str(path or "").strip() for path in files)
+                or len({str(path) for path in files}) != len(files)):
+            errors.append(
+                f"acceptance leaf lane needs unique exclusive files: {outcome}")
+            lane_scopes[outcome] = set()
+        else:
+            lane_scopes[outcome] = {str(path) for path in files}
+    missing_lanes = sorted(expected_set - set(lane_scopes))
+    if missing_lanes:
+        errors.append("acceptance wave is missing leaf lanes: "
+                      + ", ".join(missing_lanes))
+
+    planned_outcomes: set[str] = set()
+    leaf_task_scopes: dict[str, set[str]] = {}
+    shared_owner_aliases: dict[tuple[str, str], set[str]] = {
+        pair: set() for pair in expected_pairs
+    }
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            errors.append("every Plan task must be an object")
+            continue
+        criterion_ids: list[str] = []
+        criteria = task.get("criteria") or []
+        if not isinstance(criteria, list):
+            errors.append(
+                f"Plan task {task.get('id') or '?'} criteria must be a list")
+            continue
+        for criterion in criteria:
+            outcome = _criterion_outcome(criterion)
+            if outcome is None:
+                errors.append(
+                    f"Plan task {task.get('id') or '?'} has a criterion "
+                    "without an AC outcome id")
+                continue
+            criterion_ids.append(outcome)
+            planned_outcomes.add(outcome)
+            if outcome not in expected_set:
+                errors.append(f"Plan contains unknown acceptance outcome: {outcome}")
+        unique_ids = set(criterion_ids)
+        if len(unique_ids & expected_set) > 1:
+            aliases = _shared_plan_owner_aliases(task)
+            ordered = [outcome for outcome in expected
+                       if outcome in unique_ids]
+            for index, left in enumerate(ordered):
+                for right in ordered[index + 1:]:
+                    shared_owner_aliases[(left, right)].update(aliases)
+        if not (task.get("deps") or []) and len(unique_ids) == 1:
+            outcome = next(iter(unique_ids))
+            scope = task.get("scope") or []
+            if outcome in leaf_task_scopes:
+                errors.append(
+                    f"Plan has duplicate dependency-free leaf tasks for {outcome}")
+            elif not isinstance(scope, list) or not scope:
+                errors.append(f"Plan leaf task for {outcome} has no owned scope")
+            else:
+                leaf_task_scopes[outcome] = {str(path) for path in scope}
+    if planned_outcomes != expected_set:
+        missing = sorted(expected_set - planned_outcomes)
+        if missing:
+            errors.append("Plan omits acceptance outcomes: " + ", ".join(missing))
+        extras = sorted(planned_outcomes - expected_set)
+        if extras:
+            errors.append("Plan exceeds the approved acceptance outcomes: "
+                          + ", ".join(extras))
+    missing_leaf_tasks = sorted(expected_set - set(leaf_task_scopes))
+    if missing_leaf_tasks:
+        errors.append("Plan is missing dependency-free acceptance leaf tasks: "
+                      + ", ".join(missing_leaf_tasks))
+    for outcome in sorted(expected_set & set(leaf_task_scopes)
+                          & set(lane_scopes)):
+        if leaf_task_scopes[outcome] != lane_scopes[outcome]:
+            errors.append(
+                f"Plan leaf scope does not match the exclusive owner for {outcome}")
+
+    pair_map = contract.get("pair_classification")
+    if not isinstance(pair_map, Mapping):
+        errors.append("acceptance pair classification must be an object")
+        return errors
+    if pair_map.get("schema") != ACCEPTANCE_PAIR_MAP_SCHEMA:
+        errors.append(
+            f"acceptance pair map schema must be {ACCEPTANCE_PAIR_MAP_SCHEMA}")
+    try:
+        declared_count = int(pair_map.get("expected_pair_count"))
+    except (TypeError, ValueError):
+        declared_count = -1
+    if declared_count != len(expected_pairs):
+        errors.append("acceptance pair map expected_pair_count must be 21")
+    rows = pair_map.get("pairs")
+    if not isinstance(rows, list):
+        errors.append("acceptance pair map pairs must be a list")
+        rows = []
+    if len(rows) != len(expected_pairs):
+        errors.append("acceptance pair map must contain exactly 21 rows")
+
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            errors.append("every acceptance pair row must be an object")
+            continue
+        left = str(row.get("left") or "").strip()
+        right = str(row.get("right") or "").strip()
+        key = (left, right)
+        if key not in expected_pairs:
+            errors.append(
+                f"acceptance pair row is unknown or out of order: {left}-{right}")
+            continue
+        if key in seen:
+            errors.append(f"acceptance pair row is duplicated: {left}-{right}")
+            continue
+        seen.add(key)
+        disposition = row.get("disposition")
+        reason = str(row.get("reason") or "").strip()
+        if disposition not in {"parallel", "serialized"}:
+            errors.append(
+                f"acceptance pair has invalid disposition: {left}-{right}")
+            continue
+        approved_proof = R0013_SERIALIZED_PAIR_PROOFS.get(key)
+        approved_disposition = (
+            "serialized" if approved_proof is not None else "parallel"
+        )
+        if disposition != approved_disposition:
+            errors.append(
+                "acceptance pair disposition differs from the approved closed "
+                f"pair map: {left}-{right}")
+            continue
+        if not reason:
+            errors.append(f"acceptance pair lacks a reason: {left}-{right}")
+        if disposition == "serialized":
+            if row.get("available_wave") is not None:
+                errors.append(
+                    f"serialized acceptance pair cannot claim a wave: {left}-{right}")
+            normalized_reason = _normalized_artifact_name(reason)
+            dependencies = approved_proof.get("dependencies") or ()
+            missing_dependencies = [
+                dependency for dependency in dependencies
+                if dependency not in normalized_reason
+            ]
+            shared_owner = approved_proof.get("shared_owner")
+            valid_shared_owner = not shared_owner or (
+                shared_owner in normalized_reason
+                and shared_owner in shared_owner_aliases.get(key, set())
+            )
+            valid_serial_proof = (
+                not missing_dependencies and valid_shared_owner
+            )
+            if reason and not valid_serial_proof:
+                errors.append(
+                    "serialized acceptance pair lacks a named dependency or "
+                    "shared owner proven by approved artifacts: "
+                    f"{left}-{right}")
+            continue
+        wave = str(row.get("available_wave") or "").strip()
+        if not wave:
+            errors.append(
+                f"parallel acceptance pair lacks an available wave: {left}-{right}")
+        elif wave != "leaf-wave-1":
+            errors.append(
+                "every independent acceptance pair must share one available "
+                "native wave: exact first native wave leaf-wave-1 required for "
+                f"{left}-{right}")
+        for source, scopes in (("Design", lane_scopes),
+                               ("Plan", leaf_task_scopes)):
+            overlap = scopes.get(left, set()) & scopes.get(right, set())
+            if overlap:
+                errors.append(
+                    f"false-disjoint {source} acceptance pair {left}-{right} "
+                    "overlaps: " + ", ".join(sorted(overlap)))
+    missing_pairs = sorted(expected_pairs - seen)
+    if missing_pairs:
+        errors.append("acceptance pair map is missing: " + ", ".join(
+            f"{left}-{right}" for left, right in missing_pairs))
+    return errors
+
+
 def acceptance_test_map(contract: Mapping) -> dict[str, list[str]] | None:
     """Preserve the public Design API over the pure selector owner."""
     try:
@@ -735,6 +1046,8 @@ def design_plan_errors(ws: str, state: dict) -> list:
     except DesignAcceptanceError as exc:
         return ["design acceptance tests are invalid: " + str(exc)]
     tasks = state.get("tasks") or []
+    if contract.get("requirement") == "R-0013":
+        errors.extend(acceptance_wave_errors(contract, tasks))
     planned_modules = set()
     planned_contracts = set()
     planned_edges = set()
