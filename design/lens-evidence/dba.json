@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "dba",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "pass",
+  "blockers": 0,
+  "evidence": "Quick Design-only DBA review of specs/spec.md, design/design.md, and design/contract.json. The Design introduces no database engine, schema, migration, ORM model, table, index, or query path; its immutable content-addressed files and CAS head are filesystem evidence mechanics, so database selection, modeling, constraints, indexing, and query-plan checks do not apply.",
+  "findings": []
+}

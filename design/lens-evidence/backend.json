@@ -1,0 +1,18 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "backend",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "evidence": "Quick Design-only backend review of specs/spec.md, design/design.md, and design/contract.json. The design otherwise defines closed trust-boundary validation, serialized budget admission, one finalization lock, CAS publication, and idempotent crash reconciliation. One terminal multi-write contract is internally ambiguous.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 548,
+      "issue": "The finalization write set is not closed: surface_ids already counts exports_terminal_evidence among the eight surfaces, but prepare requires all eight surface projections plus a redacted exports projection.",
+      "why": "A backend coordinator cannot implement or validate atomic multi-write completion deterministically when the contract permits either eight writes with exports included or nine writes with exports separate; one interpretation can leave an untracked projection outside the complete digest set.",
+      "suggestion": "Define one canonical write set. Prefer stating that the eight surface_ids include the redacted exports projection, derive prepare/commit/reconcile and the digest set from that enumeration, and test that no ninth projection exists outside it."
+    }
+  ]
+}

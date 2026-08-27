@@ -1,0 +1,18 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "privacy-compliance",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "evidence": "Quick Design-only privacy/compliance review. The Design minimizes persisted telemetry, excludes prompts/transcripts/source and personal-content fields, keeps detailed session data private, and limits repository exports to redacted aggregates. One retention/deletion mechanism is inconsistent with the Product boundary and remains prose-only.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 554,
+      "issue": "Detailed per-session telemetry is declared deleted or irreversibly minimized after terminal commit, although Product requires retention until AC7 reconciliation completes; the Design also names no idempotent cleanup mechanism, completion receipt, or accountable owner.",
+      "why": "Session-level telemetry can be linkable operational metadata. Deleting it before reconciliation can impair recovery, while a prose-only cleanup promise does not prove bounded retention or deletion of the private copy.",
+      "suggestion": "Make successful reconciliation of all eight terminal surfaces the cleanup trigger; assign the native-budget or terminal-truth owner; define an idempotent purge/irreversible-minimization operation and receipt; preserve data on cleanup failure; and add a selector proving private session detail is absent after that receipt while only redacted aggregates remain in exports."
+    }
+  ]
+}

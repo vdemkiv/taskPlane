@@ -1,0 +1,18 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "sre",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 1,
+  "evidence": "The provisional Design provides closed failure signals, fail-closed telemetry and terminal recovery, bounded identifiers, and actionable rollback paths. Its critical native event wait is not deadline-bounded, so loss of completion/attention events can strand the wave past the accepted eight-hour stop boundary.",
+  "findings": [
+    {
+      "severity": "blocker",
+      "file": "design/contract.json",
+      "line": 499,
+      "issue": "The critical native event wait is specified as long-lived and wakeable only by completion or attention, but it has no absolute deadline or timeout-to-attention behavior when Codex event transport stops producing events.",
+      "why": "An outstanding worker or lost host event can leave delivery blocked indefinitely. The budget is checked before starts and names an eight-hour ceiling, but no event may arrive to return control and enforce that ceiling, so the new host dependency has an unbounded failure mode on the critical path.",
+      "suggestion": "Bind the single wait to the remaining absolute wave deadline, with the child deadline strictly earlier than the eight-hour ceiling; define expiry as one host-native attention outcome that records the outstanding-set fingerprint and elapsed/usage identities, stops for human scope review, and never reissues or polls automatically. Add a selector where completion and attention transport are silent and prove the deadline path returns bounded failure before the ceiling."
+    }
+  ]
+}

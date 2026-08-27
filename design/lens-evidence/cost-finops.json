@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "cost-finops",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "pass",
+  "blockers": 0,
+  "evidence": "All new spend multipliers are bounded before dispatch: handoffs are below 4,000 tokens; elapsed time, sessions, total tokens, and uncached input have strict ceilings; equality or missing usage stops; the Design sweep, acceptance outcomes, producer-edge proofs, and Fix/Evaluate cycles have fixed counts. Active usage is counted, concurrent starts are CAS-screened, detailed session telemetry is minimized after finalization, and no new billable infrastructure, unbounded model loop, high-cardinality telemetry, or growing unowned store is proposed.",
+  "findings": []
+}

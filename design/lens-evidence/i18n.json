@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "i18n",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "pass",
+  "blockers": 0,
+  "evidence": "Quick Design-only localization/i18n review of specs/spec.md, design/design.md, and design/contract.json. The provisional Design changes synchronous Python governance, native-dispatch observation, Git-checkout evidence, and exact-SHA terminal projections; it introduces no locale catalog, translated UI or notification copy, locale-sensitive input or formatting, currency handling, future-event scheduling, bidi layout/interpolation, or human-readable text slicing/collation surface. The i18n lens is therefore explicitly non-applicable to this Design.",
+  "findings": []
+}

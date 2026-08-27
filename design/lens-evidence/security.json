@@ -1,0 +1,18 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "security",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "evidence": "The provisional Design strongly limits worker credentials and irreversible authority, validates exact Git identities, rejects foreign or opaque wiring evidence, minimizes telemetry, and makes terminal publication fail closed. One authorization boundary remains underspecified: CAS integrity coordinates bytes and concurrency but does not itself prove that only the authorized root finalizer can grant terminal authority.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 549,
+      "issue": "The terminal commit contract specifies a lock, digest verification, fsync, and CAS of head.json, but does not define or validate the caller's authorization or a write-isolation boundary for the terminal authority store.",
+      "why": "A lock and content hash prevent races and accidental corruption, not an unauthorized process from preparing a self-consistent bundle and advancing the authority head. This leaves the security NFR that workers receive no irreversible authority dependent on deployment convention rather than a fail-closed Design contract.",
+      "suggestion": "Make terminal commit root-orchestrator-only through an explicit unforgeable finalization capability bound to the run, exact candidate SHA, approved Design/Plan fingerprints, and expected predecessor; deny worker and candidate-test processes write access to the bundle/head store; validate the capability at commit_delivery; and add a negative selector proving an otherwise valid bundle from an unauthorized task cannot advance head.json."
+    }
+  ]
+}

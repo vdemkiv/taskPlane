@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "mobile",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "pass",
+  "blockers": 0,
+  "evidence": "Quick Design-only mobile engineering review of specs/spec.md, design/design.md, and design/contract.json. The provisional Design changes synchronous Python governance, Git-checkout evidence, dispatch observation, and filesystem terminal projection owners; it proposes no iOS or Android target, native source or project metadata, mobile SDK/deployment target, lifecycle or offline flow, runtime permission, privacy manifest, store submission surface, third-party mobile SDK, or adaptive/large-screen behavior. The mobile lens is therefore explicitly non-applicable to this Design.",
+  "findings": []
+}

@@ -1,0 +1,18 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "tech-writer",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "evidence": "Quick Design-only truth review of design/design.md and design/contract.json. The native-authority, execution, failure, rollback, and privacy descriptions are internally navigable, but the terminal-projection count contradicts its own closed surface list.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "design/design.md",
+      "line": 218,
+      "issue": "The finalization procedure says it prepares all eight named terminal projections plus a redacted exports projection, while design/contract.json:547 already includes exports_terminal_evidence in its eight surface_ids and the contract repeatedly requires exactly 8/8 projections.",
+      "why": "This is a falsifiable reference contradiction at the implementation boundary: a reader can reasonably implement nine projections from the procedure or eight from the closed schema and acceptance targets.",
+      "suggestion": "State one cardinality consistently. Prefer saying that the eight named terminal projections include the redacted exports projection, and make the matching prepare text in design/contract.json:548 use the same wording."
+    }
+  ]
+}

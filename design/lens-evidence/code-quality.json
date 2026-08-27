@@ -1,0 +1,18 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "code-quality",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "evidence": "Quick Design-only review of specs/spec.md, design/design.md, and design/contract.json. The terminal surface enumeration is otherwise consistent at eight, but the prepare contract describes an additional exports projection and leaves the implementation boundary ambiguous.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 548,
+      "issue": "The prepare contract says to create all eight surface projections plus the redacted exports projection, while exports_terminal_evidence is already one of the eight surface_ids at line 547 and the edge and quality targets require exactly eight.",
+      "why": "These copies must agree: as written, an implementer can reasonably produce either eight projections or a ninth exports projection, making the supposedly closed terminal bundle shape and its atomicity tests ambiguous.",
+      "suggestion": "Choose one shape and state it once. Prefer keeping exports_terminal_evidence inside the eight-item surface_ids list and change prepare to say that the eight include the redacted exports projection; make E18 and the 8/8 target derive from that same enumeration."
+    }
+  ]
+}

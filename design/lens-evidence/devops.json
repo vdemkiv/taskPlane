@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "devops",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "pass",
+  "blockers": 0,
+  "evidence": "The Design binds build and validation to an exact clean Git SHA, requires tracked real-checkout inputs, adds no dependency, requires both incumbent package archives to contain the new owners, and permits final integration only when it preserves the finalized SHA. Rollout is staged through disjoint leaf work then one integration owner, with fail-closed validation and a concrete pre/post-CAS rollback path. No CI workflow, deploy environment, secret flow, migration runner, container, or IaC change is proposed, so those DevOps checks abstain.",
+  "findings": []
+}

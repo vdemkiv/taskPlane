@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "time-to-market",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "pass",
+  "blockers": 0,
+  "evidence": "Quick Design-only time-to-market review of specs/spec.md, design/design.md, and design/contract.json. The selected adapter-quarantine approach reuses incumbent topology, BUILD-C, zero-lens, wait, telemetry, wiring, repository, and reporting seams; adds only three narrow owners; maps every critical-path lane and the single shared-adapter integration barrier to AC1-AC7; and rejects scheduler, service, database, dependency, and documentation-only scope. No deliberate deferral is proposed that needs a debt record or later-cost comparison. Reversibility is explicit in both directions: thin adapters can be removed before terminal CAS, immutable post-CAS evidence advances by successor bundle rather than rewrite, and the public/immutable schema and exact-SHA doors are disclosed and deliberately gated. The missing KB current-state inventory is also explicitly bounded by an exact-tip source inventory and complete baseline graph rather than replaced with a new platform component.",
+  "findings": []
+}

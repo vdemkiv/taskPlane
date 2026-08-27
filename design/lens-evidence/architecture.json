@@ -1,0 +1,19 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "architecture",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "confidence": "low",
+  "evidence": "CONVERGENCE: the selected native-authority quarantine matches R-0013 and the pinned graph is complete at 45 modules/155 edges/562 files. DIVERGENCE and ABSENCE cannot be authoritatively classified because knowledge/architecture.md is missing and the current-state inventory is empty. MAP used: design->design, exports->exports, native delivery/finalization owners->taskplane, verification->taskplane/tests. Named tradeoff points: authority integrity versus transition complexity; logical terminal atomicity versus temporary read availability; fail-closed evidence versus delivery continuity.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 568,
+      "issue": "The proposed graph treats native_authority.py, design_sweep.py, and terminal_truth.py as independently verifiable modules and later requires a strict scan to prove singleton SCCs, but the pinned baseline scanner maps every taskplane/*.py file into the single taskplane module; no decomposition or architecture map is designed to make those owner boundaries and edges observable.",
+      "why": "The Design's central boundary claim cannot be measured at the graph granularity it cites. A final scan can report only the aggregate taskplane node, so it cannot prove that the three new owners are acyclic, isolated from transition adapters, or coupled only through the declared contracts.",
+      "suggestion": "Before Plan, add the minimal architecture/decomposition map for the touched shape: Codex native orchestration, Taskplane governance adapters, native-authority validator, Design-sweep validator, terminal-truth coordinator, eight terminal-surface producers, exports projection, and tests. Define the scanner/decomposition input that realizes those nodes, redeclare proposed edges at that same granularity, and make the strict final graph check compare against that map; persist the map in knowledge/architecture.md (or an accepted architecture decision)."
+    }
+  ]
+}

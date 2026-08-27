@@ -1,0 +1,18 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "data-safety",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 1,
+  "evidence": "Quick Design-only data-safety review of specs/spec.md, design/design.md, and design/contract.json. No database migration or engine-specific DDL is proposed; the immutable bundle, digest verification, CAS head, lineage checks, and idempotent reconciliation are otherwise a sound retry-safe shape. One destructive retention step is ordered before the Product-authorized recovery boundary.",
+  "findings": [
+    {
+      "severity": "blocker",
+      "file": "design/contract.json",
+      "line": 554,
+      "issue": "The Design allows detailed per-session usage to be deleted or irreversibly minimized immediately after terminal commit, even though a post-CAS crash can leave derived projections absent and the Product contract requires retaining that telemetry until AC7 terminal reconciliation completes.",
+      "why": "Irreversible minimization before reconciliation has verified all surface digests can remove the source evidence needed to diagnose or recover a partial post-CAS state. This contradicts specs/spec.md:197-199 and makes the documented crash-recovery sequence destructive before its verification boundary.",
+      "suggestion": "Move deletion/minimization behind a successful reconciliation receipt that proves all eight authoritative surface digests and the native-usage aggregate are readable and consistent. Define cleanup as idempotent, retain the immutable aggregate needed for replay verification, and specify that any reconciliation or cleanup failure preserves the private detail for retry rather than deleting it."
+    }
+  ]
+}

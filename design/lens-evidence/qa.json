@@ -1,0 +1,19 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "qa",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "confidence": "high",
+  "evidence": "All seven acceptance criteria have named failing-capable selectors, negative-path coverage, production-path validation, real-checkout edge mutations, and a final full-suite run. One AC7 crash-recovery branch lacks an exact named selector.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 404,
+      "issue": "AC7 requires fault injection before and after every prepare/fsync/CAS/reconcile seam, but its exact selector list names only a pre-CAS crash test; no selector explicitly proves the post-CAS state where the authority head exists while a derived projection is absent, global reads remain nonterminal, and reconciliation restores the exact immutable bytes.",
+      "why": "The atomicity strategy depends on this distinct recovery branch. The pre-CAS refusal and generic idempotent-replay selectors can both pass while post-CAS partial publication or reconciliation is broken, leaving the DoD claim at line 614 and the zero-partial-authority target at line 625 without failing-capable evidence.",
+      "suggestion": "Add a parameterized terminal fault-matrix selector covering before/after prepare, fsync, CAS, and reconcile; at minimum name a post-CAS test that removes one derived projection, asserts terminal reads and Done/merge/push/release remain blocked, runs reconcile, and verifies byte-identical restoration plus idempotent retry."
+    }
+  ]
+}

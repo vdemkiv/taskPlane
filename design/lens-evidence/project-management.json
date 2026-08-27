@@ -1,0 +1,18 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "project-management",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 1,
+  "evidence": "Quick Design-only project/delivery review of specs/spec.md, design/design.md, and design/contract.json. Ownership, rollback feasibility, one-way-door handling, and the seven-leaf/shared-adapter shape are otherwise explicit, but the executable integration dependency contract is internally inconsistent.",
+  "findings": [
+    {
+      "severity": "blocker",
+      "file": "design/contract.json",
+      "line": 436,
+      "issue": "The integration lane's machine-readable depends_on set omits AC2 even though its adjacent rule and design/design.md:228-234 require all seven leaf owners to be green, while it includes AC7 as a completed dependency even though AC7 validation requires the final integrated candidate and terminal adapters that this lane connects.",
+      "why": "This makes the delivery order non-executable: a consumer of depends_on can start shared integration before the Design-sweep leaf is ready, or deadlock waiting for AC7 completion that itself needs the shared integration. That dependency inversion invalidates the stated leaf-wave to integration to final-validation sequence.",
+      "suggestion": "Replace acceptance-id dependencies with explicit leaf-readiness receipts for all seven lanes (including AC2), let the integration lane depend on those receipts, and place AC7 end-to-end acceptance/finalization after the integration receipt; update the pair map and prose to use the same milestones."
+    }
+  ]
+}

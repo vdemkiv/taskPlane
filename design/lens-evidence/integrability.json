@@ -1,0 +1,26 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "integrability",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "evidence": "The Design names versioned receipts and the external Codex orchestration boundary, but Codex can evolve independently and immutable receipt history must remain consumable after upgrades. No breaking change is proposed without a replacement version, so there is no blocker; two published-boundary contract details need Design changes.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 481,
+      "issue": "Receipt evolution is reduced to closed objects, fail-closed unknown fields/schema ids, and a new schema id, while the Design introduces dispatch-telemetry/v2 and retains immutable historical evidence without declaring supported predecessor versions, deploy order, or retirement conditions.",
+      "why": "A persisted receipt cannot be redeployed in lockstep with its reader. A version label alone does not establish whether a change is additive or breaking, which readers must dual-read, or when an old schema may safely stop being accepted.",
+      "suggestion": "Add a per-receipt compatibility table naming producer and consumers, additive-versus-breaking rules, supported predecessor ids, producer/consumer rollout order, retention or sunset condition, and the required automated compatibility fixture for every schema transition; explicitly cover dispatch-telemetry/v1 to v2 and legacy terminal readers."
+    },
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 584,
+      "issue": "The Taskplane-to-Codex intent/handoff boundary is named, but its versioned request/result shape and machine-readable error and retryability semantics are not defined.",
+      "why": "Codex and the plugin are independently versioned systems. Without stable error identities and retryability rules, callers cannot distinguish a permanent contract refusal from a transient observation or CAS conflict, and host payload growth can become an outage.",
+      "suggestion": "Define one versioned native-adapter envelope with required and optional fields, unknown-field tolerance, stable error codes, and an explicit retryable/idempotent classification for start observation, completion/attention, wait, and CAS-conflict outcomes; require a host-adapter compatibility test against that envelope."
+    }
+  ]
+}

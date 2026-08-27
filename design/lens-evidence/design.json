@@ -1,0 +1,26 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "design",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "evidence": "The provisional Design defines the system states, refusal boundaries, and recovery mechanics well, but it does not yet design the corresponding operator-facing partial/error states and recovery affordances for two user-visible control paths.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 508,
+      "issue": "Budget equality, breach, or missing usage collapses to the machine state `human_scope_review`, without a user-facing state contract that says what happened, preserves the current wave context, or names the available next actions.",
+      "why": "This is an error/recovery surface reached by an accepted production path. A stop that only reports an internal status is incomplete unless the operator can understand the consequence and choose a concrete way forward without losing place.",
+      "suggestion": "Define the human checkpoint payload and flow: show the measured value beside its ceiling, explain why dispatch stopped in user language, preserve the current outstanding set, and expose explicit scoped actions such as reduce scope, end the wave, or return to architecture review, with the resume consequence for each choice."
+    },
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 551,
+      "issue": "After a post-CAS crash, readers become nonterminal until reconciliation restores every digest, but the changed public-report/operator surfaces have no designed partial, reconciling, failed, or recovered states and no retry/escalation affordance.",
+      "why": "The Design intentionally exposes a reachable partial state. Without a visible state inventory and recovery path, an operator can see a nonterminal delivery after commit with no indication whether work is progressing, safe to retry, or requires intervention.",
+      "suggestion": "Specify the operator state model for finalization—preparing, committing, reconciling, complete, and failed—plus stable user-facing copy, progress appropriate to the potentially long reconciliation, an idempotent retry action, escalation details, and preservation of the last trustworthy candidate context."
+    }
+  ]
+}

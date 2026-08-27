@@ -1,0 +1,25 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "solution-design",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 1,
+  "evidence": "Quick independent Design-only solution-design review of specs/spec.md, design/design.md, design/contract.json, the cited pinned current-state seams, and the verified Python reference. The selected native-authority quarantine is grounded, proportional, numerically bounded, and mapped to failing-capable validation, but the machine-readable integration dependency graph cannot realize its own stated rollout order.",
+  "findings": [
+    {
+      "severity": "blocker",
+      "file": "design/contract.json",
+      "line": 436,
+      "issue": "The integration lane omits AC2 even though its rule requires all seven leaf APIs to be green, and it depends on completed AC7 even though AC7 end-to-end validation requires the terminal and shared adapters this integration lane connects.",
+      "why": "This creates both an early-start hole and a dependency cycle: a planner following depends_on may integrate before the Design-sweep leaf is ready, or wait forever for AC7 completion that cannot occur until integration has shipped. Plan cannot decompose this Design without inventing a different milestone graph.",
+      "suggestion": "Replace acceptance-outcome dependencies with explicit leaf-readiness receipts for all seven lanes, including AC2. Make the integration lane depend on those implementation receipts, then make AC7 end-to-end checkout/finalization acceptance depend on the integration receipt; align the pair map and design/design.md sequence to those same milestones."
+    }
+  ],
+  "references_applied": [
+    {
+      "path": "lenses/references/python-solution-design.md",
+      "content_sha256": "9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7",
+      "application": "Verified synchronous ownership, trust-boundary validation, separation of domain owners from transition adapters, no new runtime dependency or global locator, package-content coverage, and whether the proposed Python work can be decomposed without an unresolved sequencing decision."
+    }
+  ]
+}

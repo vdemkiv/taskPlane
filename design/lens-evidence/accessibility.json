@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "accessibility",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "pass",
+  "blockers": 0,
+  "evidence": "Quick Design-only accessibility review of specs/spec.md, design/design.md, and design/contract.json. The provisional Design changes synchronous Python governance, native-dispatch observation, Git-checkout evidence, and exact-SHA terminal projection ownership; it introduces no browser or native UI, interactive control, keyboard/focus path, ARIA contract, accessible-name surface, visual contrast or pointer interaction, authentication flow, or review-widget presentation. WCAG 2.2 AA implementation concerns are therefore explicitly non-applicable to this Design.",
+  "findings": []
+}

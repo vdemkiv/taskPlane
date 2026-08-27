@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "testability",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "pass",
+  "blockers": 0,
+  "evidence": "The provisional Design makes each new production boundary directly constructible and controllable: native authority and Design-sweep validation are pure value checks; terminal and wiring paths inject GitRunner, EvidenceStore, Clock/FakeClock, FaultInjector, selector/edge runners, and EventWaiter; host activity enters as closed observations rather than inline network calls. Exact public entry points, negative selectors, one-edge mutations, concurrency observations, crash seams, idempotent replay, and same-process/shared-resource isolation rules make every proposed branch reachable without monkey-patching internals or using a live third party.",
+  "findings": []
+}

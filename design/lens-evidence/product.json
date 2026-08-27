@@ -1,0 +1,26 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "product",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "evidence": "The Design maps all seven acceptance outcomes to owned boundaries, public entry points, exact selectors, non-happy refusals, rollback, and compatibility paths without evident scope creep. Product changes are required because the acceptance criteria are compound and the delivery outcome lacks a complete success-metric decision contract.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "specs/spec.md",
+      "line": 106,
+      "issue": "AC1-AC7 each combine multiple independently passable capabilities and refusal cases into one acceptance criterion; for example AC1 combines inventory completeness, authority prohibition, static proof, behavioral proof, and two gate outcomes.",
+      "why": "A compound criterion can be partially satisfied and still reported as met, so the seven-outcome map does not provide singular pass/fail acceptance boundaries.",
+      "suggestion": "Keep the seven product outcomes and wave ceiling, but give each AC a closed checklist of singular normative assertions with an explicit all-assertions-must-pass aggregation rule; bind each existing exact selector to one assertion rather than treating the whole paragraph as one testable thought."
+    },
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 628,
+      "issue": "The quality targets are implementation conformance thresholds, but the Design does not define the baseline, observation window, guardrail, and keep/iterate/remove decision rule for the user outcome that this corrective wave is intended to improve.",
+      "why": "Passing selectors can show the controls exist, but cannot settle whether governed delivery actually reduces the four P0 failure modes without unacceptable impact on successful completion or operator effort.",
+      "suggestion": "Add a bounded post-wave outcome contract: baseline P0 incidence and successful-wave completion/operator-cost measure, target threshold, measurement window, guardrail, and an explicit decision rule for retaining, iterating, or reverting the corrective controls."
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "scalability",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "evidence": "The delivery-time fan-outs are bounded: 26 Design lenses, seven acceptance outcomes, 21 pair rows, fewer than 60 sessions per wave, and eight terminal surfaces. One non-gating growth issue remains: reconciliation is specified as a full scan of immutable bundle history.",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "design/contract.json",
+      "line": 550,
+      "issue": "terminal_truth.reconcile_delivery scans every immutable bundle and verifies every surface digest on each reconciliation, with no indexed head walk, checkpoint, or bounded repair scope.",
+      "why": "The work grows linearly with retained terminal bundles, a clock-controlled collection. At 10,000 completed waves and eight surfaces per bundle, one reconciliation can require roughly 80,000 digest checks before completing delivery recovery.",
+      "suggestion": "Keep full immutable history, but define normal reconciliation as head/predecessor plus missing-or-dirty projections using a content-addressed index or verified checkpoint; reserve an explicit offline audit mode for full-history scans."
+    }
+  ]
+}

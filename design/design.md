@@ -1,266 +1,341 @@
-# R-0001 Design — corrective delivery architecture
+# R-0013 Design — native delivery and terminal truth
 
-Status: approved HOW, amended 2026-08-26 by attributed human authority in Codex task `01a03619-63a9-7743-90f9-1b6b1945b6ac`. This revision replaces only the retired T15 concurrency mechanism; it does not widen R-0001 product scope, authorize release, or relabel prior evidence.
+Status: **final Design candidate awaiting the human Design gate**. The one
+authorized quick, concurrent, Design-only all-26-lens sweep is complete:
+10 lenses passed and 16 requested changes. Every finding is dispositioned in
+`design/contract.json`; the four original blockers are resolved in this Design.
+This is not approval, Plan, Build authorization, merge authority, or a release
+claim.
 
-## 2026-08-26 native-dispatch amendment
+## Outcome
 
-Volodymyr Demkiv directed and approved removal of the Taskplane host scheduler/capacity/reservation/replay/execution-DAG/event-queue layer after establishing that Codex already owns native subagent concurrency. The shelved implementation remains immutable inventory on `codex/r0001-parallel-enabler-shelved` at `fe74e2c73389dd83251c54e240c4ce11f1201619`; it is not active Design authority.
+Select a **native-authority adapter quarantine with an atomic evidence
+coordinator**:
 
-The replacement authority split is exact: Taskplane classifies dependency/shared-owner relations, emits one deterministic non-authoritative native dispatch set for every ready pairwise-disjoint task, observes actual Codex spawns and provider usage through the existing host hook, stops only the next dispatch at a binding ceiling, and derives Retro metrics from native wave/claim/gate trace. Codex `spawn_agent` is the sole concurrency transport. Taskplane retains claims, submit, independent evidence, orchestrator-only gates, merge-on-pass, the incumbent event-driven wait, and human checkpoints. The generic default-deny task capability type remains inactive security inventory and is not instantiated by the native assignment path.
+- Codex remains the sole owner of agent creation, canonical task identity,
+  capacity, admission to native slots, parent/child lifecycle, messages,
+  follow-ups, interruption, completion/attention transport, and event waits.
+- Taskplane remains a planner, contract/gate enforcer, checkout preparer, and
+  evidence observer. It emits one deterministic intent set for all ready
+  pairwise-disjoint work; it never schedules, reserves, leases concurrency,
+  owns a worker lifecycle, persists an execution DAG, or replays work.
+- The live duplicate-authority path is removed from native dispatch:
+  `loop.wave` no longer calls `_stage_loop_wave_dispatches`, creates per-agent
+  `StageLifecycle` children, resumes agent attempts, claims per-agent execution
+  roots, persists `_stage_bindings`, or emits `stage_runtime_dispatch`.
+  `StageLifecycle` remains only for governed phase/gate/evidence history.
+- A Design-only collector validates one quick native result for each of the 26
+  catalog lenses. Build, Fix, Evaluate, and execution-time EM use direct Codex
+  assignments with `expected_lenses=[]` and create zero Taskplane lens workers.
+- Existing Plan topology, direct BUILD-C assignment, event-wait, brief, and
+  dispatch telemetry owners are tightened rather than replaced.
+- One new exact-SHA finalizer consumes native-usage evidence and a receipt from
+  the real pinned/final Git checkout, then logically publishes every terminal
+  projection through one immutable bundle and one CAS head. No individual
+  projection is terminal authority on its own.
+- Normal reconciliation is bounded to the head, its predecessor, and indexed
+  missing/dirty projections. It exposes explicit preparing, committing,
+  reconciling, complete, and failed operator states; a separate offline audit
+  performs full-history verification.
 
-## Decision
+No W31/cold-start, history/tag repair, P1/P2, completed R-0001 replay, R-0011,
+push, tag, publication, or external release mutation enters this Design.
 
-Use a **contract-first evidence spine with narrow owner adapters**, delivered in the signed order: A2 mechanisms first; the forward v2.17.22 release-repair lane second; Design test/wiring enforcement third; performance/orchestration fourth; and the measured pickup cold-start gate last. The spine introduces small standard-library owners for injected delivery ports, delivery policy, review rebind authority, host producer observations, Design wiring closure, release evidence, plan topology, delta briefs, and dispatch telemetry. Existing `loop.py`, `review.py`, `build_c.py`, `checkpoint.py`, `repository.py`, and `retro.py` remain execution boundaries but call those owners through explicit typed contracts.
+## First Design check: Codex-native responsibility inventory
 
-This split is deliberate. Current `loop.py` is a shared hot owner for Plan readiness, stage briefing, lens routing, review startup, dispatch, gates, and release-adjacent evidence. Adding all corrective policy there would serialize otherwise disjoint work and make severed edges difficult to prove. The selected design keeps transition order in `loop.py` while moving validation and receipt construction to testable, side-effect-bounded modules.
+This check precedes the alternatives and selected approach. It is grounded in
+the installed Taskplane 2.17.22 native-dispatch reference and committed bytes
+at `27ab9fecad3cf3b477e02678f6fa4d9ec721f54e`; the current host advertises 13
+total collaboration slots including the root, but that observation is not a
+constant or Taskplane policy.
 
-The following meanings are fixed:
+| Capability | Native authority | Taskplane may do | Taskplane must never do | Evidence |
+|---|---|---|---|---|
+| Spawn and task identity | `collaboration.spawn_agent` creates the native agent id and canonical task path | Emit the exact task name, role marker, role payload, model/effort and bind the observed start to its intent | Create a spawn runner, agent registry, alias/rename layer, or synthetic worker id | installed `skills/tp-go/references/codex-native-dispatch.md:12-24`; pinned `.codex/hooks.json:73-99`; `taskplane/loop.py:4390-4426` |
+| Capacity and admission | Codex dynamically owns available native slots | Classify dependencies and disjoint scopes; offer every ready disjoint intent | Encode the observed 13 slots, reserve capacity, tranche by host capacity, admit workers, or queue overflow | native-dispatch reference:25-28; `taskplane/plan_topology.py:1-7,141-221`; `taskplane/tests/test_r0001_parallel_delivery.py:29-56` |
+| Parent/child delegation | Codex owns the native agent tree; a child may natively delegate | Preserve workflow parent/predecessor metadata and one brief-to-one-task identity | Create a second agent tree, per-agent stage child, attempt hierarchy, or execution root | native-dispatch reference:12-24; pinned `taskplane/stage_entities.py:1085-1175,1619-1718` shows the conflicting incumbent path |
+| Messaging and correction | `send_message`, `followup_task`, and `interrupt_agent` own transport and lifecycle action | State bounded correction/escalation policy and preserve partial evidence | Implement a message queue, auto-replacement, waiver, cancellation scheduler, or replay | native-dispatch reference:29-42 |
+| Completion and attention | Codex lifecycle/final-result events are the completion truth | Bind expected intent to observed completion/attention and validate exact membership | Fabricate completion, infer it from Taskplane state, or maintain a worker lifecycle | native-dispatch reference:25-42; pinned `taskplane/command_runtime.py`; `.codex/hooks.json:73-99` |
+| Event-driven wait | `collaboration.wait_agent` wakes on native completion or attention | Declare one outstanding set and one long-lived event wait; reissue only after a wake | Poll, schedule time-based model wakes, run an event queue, or replay outstanding work | native-dispatch reference:25-33; pinned `taskplane/build_c.py:124-170`; command-runtime regression selectors |
+| Lifecycle and usage telemetry | Codex `SubagentStart`/`SubagentStop` plus provider observations own host facts | Observe, bind, aggregate, redact and enforce the human budgets before a later spawn | Claim lifecycle authority, invent usage, accept null active usage, or reconstruct an execution DAG | pinned `.codex/hooks.json:73-99`; `taskplane/dispatch_telemetry.py:1-54,92-199`; `taskplane/progress.py:209-353` |
 
-- `feature-green` is a focused, exact-SHA acceptance receipt that may advance Build. It has no tag, install, publication, or release authority.
-- `release-green` is a different final-SHA receipt. It requires the closed wiring ledger, terminal full matrix, package/manifests evidence, and an independently re-queried hosted-platform run/check identity for the exact pushed SHA. A protected consumer then obtains an outside-model human recheck before an irreversible action. Local receipts alone are not platform or actor authenticity proof.
-- `released-unverified` is an attributed human override record with a non-empty exact list of skipped proofs. It is evidence of an exception and can never be consumed as `release-green`; it does not claim cryptographic authenticity.
-- v2.17.20 stays `released-incomplete`. v2.17.21 is the superseded source-integration boundary; the Marketplace upload candidate is v2.17.22. Historical graph revision `2757822ede49177fc52de8c173302286364d6206` remains an attributed inherited limitation; no history rewrite, re-release, or verifier weakening is designed.
+### Discovered contradiction on the pinned tip
 
-## Grounded current state
+The existing `plan_topology.classify_plan`, `loop.select_ready_tasks`, native
+dispatch intent, BUILD-C worktree preparation, hook screening, contract
+activation, checkpoints and gates are valid governance seams. However,
+`loop.wave` currently calls `_stage_loop_wave_dispatches`
+(`taskplane/loop.py:4943-4948`). For a multi-task ready set that helper calls
+`StageLifecycle.split_stage`, creates one child and execution root per agent,
+persists `_stage_bindings`, and emits `stage_runtime_dispatch`.
+`StageLifecycle._claim_execution_root` calls
+`storage.claim_stage_execution_root_for_run`. This is Taskplane-owned
+execution-DAG/attempt authority parallel to Codex. Default-off packaging does
+not make it harmless; the mode is packaged and has required tests. AC1 cannot
+pass while this edge remains live.
 
-The Design is rebound to clean detached HEAD `ecfc48ec2f5f4c25dd0d9bab4d6751bc2f130845` and authoritative requirement-enriched dependency graph `a6a3c1e72c0c268648e3727cdcec904f60c41442a1f77bf16231bbdb84cd90a6` (50 modules, 156 edges: 150 scanner edges plus six recorded R-0001 contract edges). Graph scan quality is complete/not degraded and `scanned_head` is the exact Design base. The graph policy remains local depth 3, `contract-only`, contract depth 1, requirement depth 1.
+The correction is narrow: remove the native-dispatch call edge and its
+per-agent stage projections, preserve the existing stage journal for phase,
+gate, handoff and evidence history, and refuse any renamed active-root path
+from Codex dispatch. Historical stage records remain readable; they are never
+used to resume, replay, admit, or identify a native worker.
 
-Observed current behavior:
+## Current-state delta
 
-1. `loop._plan_dor_errors` validates scopes, commands, criteria, contracts, graph readiness, and Design readiness, but no sealed delivery mode or pairwise topology is required.
-2. `loop.next_action` primes lenses for Execute/Fix and creates a ReviewKernel for Evaluate/EM. `loop.wave` also calls `lens_router.prime_scope`; build dispatch therefore still carries automatic lens work.
-3. `loop._evaluation_errors` derives `expected_lenses` from a ReviewKernel and understands a normal complete kernel, but there is no explicit successful empty-collection receipt contract. Producer-receipt absence can flow into evaluator-outage handling.
-4. `review.start_review` seals a routed run and slots; `loop.next_action` persists a binding. There is no bounded human-only append-only rebind contract that distinguishes an unstarted kernel from any slot with start/write/collection evidence.
-5. Leased lens results have strong host observations in `review.py`, while evaluator and final-EM output contracts say observations are required without one closed live-Codex producer-to-gate path.
-6. `design_contract.design_dod_errors` maps criterion text to narrative validation, but does not require exact test files/selectors or a closed producer-consumer wiring ledger. `checkpoint.validate_checkpoint_spec` checks its single focused proof file, not the Design-declared per-AC set.
-7. Release provenance, freshness, pushed-SHA classification, workflow matrix, version manifests, archives, docs, and runtime checks exist across scripts and tests, but no one release-green receipt closes them. The 16-commit CI repair delta now fixes the current v2.17.20 generated CLI reference and README window; those changes are integrated inventory, not R-0001 work.
-8. `RepositoryManager.acquire_repository` fetches a hosted mirror and then dereferences bare `HEAD`. A newly initialized mirror can retain `refs/heads/master` while the fetched default is `origin/main`, producing the observed ambiguous-HEAD startup failure.
-9. `loop.next_action` returns a broad rediscovered payload rather than a stable-reference delta. Existing spend/progress/lens telemetry does not enforce all four wave ceilings or persist the required per-dispatch/thread-type fields. Retro does not compute parallelism factor or longest serial chain.
-10. The released v2.17.20 security-methodology reference mandates `references/prompt-injection-defense.md`, but that file is absent from the installed package. The source-to-package-to-security-lens edge is broken.
+The engine's KB current state is empty, so this Design is bounded to the
+amended spec, graph and cited exact-tip sources. The as-built graph baseline is
+`a44e2b1c6d3bb737858c1d17e520615fec5a3c0534ec3668c0fb8eb18d88a067`
+(45 modules, 155 edges, 562 files; complete, not degraded) scanned at the
+pinned SHA. The amended Product spec is SHA-256
+`e8d984c54e0900643f68d13d88d87f6f2fe6659ef84956519627a27afa12b3ed`.
 
-Sources inspected: `taskplane/loop.py`, `taskplane/build_c.py`, `taskplane/checkpoint.py`, `taskplane/design_contract.py`, `taskplane/review.py`, `taskplane/review_retry.py`, `taskplane/evaluation_output.py`, `taskplane/evaluator_health.py`, `taskplane/repository.py`, `taskplane/preflight.py`, `taskplane/retro.py`, `taskplane/progress.py`, `taskplane/spend.py`, `taskplane/lens_telemetry.py`, `taskplane/command_runtime.py`, `taskplane/pickup.py`, `taskplane/tp.py`, `scripts/ci_evals.py`, packaging scripts, `.github/workflows/ci.yml`, release manifests, release/freshness/repository tests, the accepted retro, and its signed authority amendment.
+Existing useful mechanisms:
 
-The engine supplied no `knowledge.current_state`, and the repository has no `architecture.md`. This Design therefore makes only a bounded exact-HEAD claim from the cited files, tests, baseline graph, accepted retro, and signed amendment. The component map, lane barriers, and graph DoR/DoD below are R-0001 authority only; final graph scan and independent review must re-attest them.
-
-### Exact-tip rebind verification
-
-The exact `4a0378e7f080..ecfc48ec2f5f` range contains 16 CI compatibility/regression commits across 60 files. It integrates four relevant classes of inventory: (1) `build_c.py` now receives loop-owned state and event-wait services through `bind_loop_runtime`, removing its lazy imports of `loop`/`review`; (2) Review uses the graph and runtime bundle from the same canonical tree, and degraded graphs retain architecture plus security; (3) evidence, stage-startup telemetry, repository identity, cleanup replay, and their fixtures are repaired; and (4) current plugin descriptions, CLI reference, configuration, and README release window are fresh. None introduces delivery-mode receipts, empty-lens success, human kernel rebind, evaluator/EM producer observation, Design wiring closure, release-green authority, native-dispatch observation/budgets, hosted-default preparation, or the missing prompt-injection reference.
-
-The clean authoritative graph was scanned separately before this uncommitted Design overlay, then replayed with the same six recorded R-0001→contract edges. Its module and edge topology is identical to the approved 4a0378e baseline; only source hashes, scanned revision, and content fingerprint changed. The separate `73abaaaad36e18663bde23523d28a4dcef9474e57ce4307721eda3ef02e3d309` 44/152 graph is rejected as a binding because it observed Design overlay files and omitted the recorded requirement edges.
-
-Compatibility is unchanged by the implementation delta: no R-0001 receipt schema, host/plugin capability, migration, deprecation, or sunset rule changed. The approved forward-only design advances its release identity to v2.17.22 while retaining v2.17.20 as the released compatibility baseline.
+- `plan_topology.classify_plan` produces an exhaustive pair map without host
+  capacity.
+- `loop.select_ready_tasks` projects dependency- and owner-safe readiness.
+- `build_c.assign_scopes` prepares registered worktrees and an event wait, but
+  currently recomputes topology; it will consume the one sealed ready set.
+- `delivery_policy` and `review.collect_expected_set` already define the
+  zero-lens and explicit empty-collection primitives.
+- `dispatch_telemetry` has exact identities and hard ceilings, but active
+  bindings begin with null usage, aggregate tokens omit active bindings, and
+  hook ingestion is best-effort/swallowed.
+- `wiring_closure` validates selector syntax and AST presence, but is
+  hard-coded to R-0001 counts and does not execute production reachability in
+  the candidate Git checkout.
+- `RepositoryManager.merge_registered_task`, loop/Retro, progress snapshots,
+  `views.publish_report`, repository verification and release evidence are
+  separate transitions. `publish_report` can fail open and no coordinator
+  proves one terminal SHA across them.
 
 ## Alternatives
 
-### A. Contract-first evidence spine with narrow adapters — selected
-
-Gains: policy is single-sourced; producer and consumer identities are executable; new owners give Plan disjoint scopes; release claims become impossible without complete evidence; each seam has a severed-edge test. Costs: several small modules and additive receipt schemas; a compatibility projection is needed for existing loop output and historical focused receipts. Revisit if measured coupling shows two adjacent owners always change together for two releases; merge only after graph and test evidence.
-
-### B. Patch the existing `loop.py`/`review.py` paths in place
-
-Gains: fewer files and short-term call-site edits. Costs: one shared owner serializes A2, Design enforcement, performance, and release work; mode, budgets, observations, and release authority remain mixed with transitions; severed-edge tests become source-introspection rather than behavior; rollback is all-or-nothing. Revisit only for an emergency one-line refusal fix, never for this multi-contract program.
-
-### C. Put correctness in CI/workflows only
-
-Gains: release checks are visible and parallelizable without local state changes. Costs: build lens creation, empty-lens handling, human rebind, live-host observations, `loop next` size, and repository startup all occur before CI; local tags/install could still bypass workflow-only evidence. Revisit only for redundant remote attestation after local/runtime contracts are closed.
-
-### D. Status quo plus operator discipline
-
-Gains: no implementation. Costs: it reproduces the accepted defects and the fourth unverified ship; it cannot satisfy any of the new enforcement criteria. Revisit never under R-0001.
-
-### E. Cryptographically authenticated actor authority — shelved
-
-Gains: signatures and repository-verifiable keys could establish actor authenticity across untrusted producer hosts. Costs: this adds protected keys, signer/verifier integration, trust bootstrap, rotation/revocation, and a materially larger security surface. The accepted human decision explicitly shelves it: R-0001 adds no signature, MAC, key, signer, verifier, or authenticity claim. Revisit only for a second operator, an untrusted producer host, external evidence verification, or a new human authorization. Until then actor strings are attributed but unauthenticated.
-
-## Selected modules and boundaries
-
-New narrow owners under `taskplane/`:
-
-- `delivery_ports.py`: public Protocols for `Clock`, `EventWaiter`, `ProducerEventSource`, `HostActionCapabilitySource`, `EvidenceStore`, `PlatformCiQuery`, `GitRunner`, and `FaultInjector`. Production and deterministic test implementations share these boundaries. `TaskDispatchCapabilityFactory` remains generic hermetic security inventory only; native Codex assignment has no production factory.
-- `delivery_policy.py`: frozen delivery-mode and wave-budget values; parse/validate factories; `taskplane.delivery-mode-receipt/v1`; budget-stop decision. Modes are closed (`build`, `review`, `design`), with automatic lenses allowed only for Design. Raw Plan mappings never cross this boundary.
-- `review_authority.py`: kernel lifecycle projection and append-only `taskplane.review-kernel-override/v1`; accepts only attributed human authority, exact prior/new binding fingerprints, reason, timestamp, and zero-start proof. Any slot start, producer assignment, write observation, collection reservation, or revision makes the kernel immutable.
-- `producer_observation.py`: host-neutral `taskplane.producer-observation/v1` for evaluator and EM outputs, bound to run/task/stage/producer/host session or turn/output path/bytes/SHA/schema/contract/revision. Codex and Claude adapters supply host facts; gates consume only validated observations.
-- `wiring_closure.py`: closed Design AC test map and producer-consumer edge ledger; exact file/selector resolution; `taskplane.wiring-closure/v1` fingerprint. It is pure validation and imports no loop/review runtime.
-- `release_evidence.py`: mutually exclusive feature-green, release-green, and release-override constructors/validators; only release-green exports release authority.
-- `plan_topology.py`: exhaustive unordered task-pair classification (`parallel` or `serialized-because-<shared-owner>`), ready-set validation, verification fan-out topology, and critical-path inputs.
-- `brief_projection.py`: delta-shaped `loop next` projection containing current action, new evidence, and content-addressed references to unchanged data; canonical token/byte measurement and refusal over 4,000 tokens.
-- `dispatch_telemetry.py`: append-only per-dispatch facts, binding budget aggregation, thread type, duration/wait/corrections, progress/completion/attention events, parallelism factor and critical-path calculation.
-
-Existing owners receive bounded adapters only:
-
-- `loop.py`: invokes policy/topology/brief/observation/release validators at existing Plan, dispatch, submission, gate, and next-action seams. It does not implement their schemas.
-- `build_c.py`: consumes an approved build-mode receipt and topology-ready set; refuses any lens-worker factory; dispatches all pairwise-disjoint ready work and preserves the existing event wait through the incumbent ecfc48e `bind_loop_runtime` dependency-inversion seam. R-0001 extends that seam and does not restore lazy `build_c → loop/review` imports.
-- `review.py` and `evaluation_output.py`: use producer observations and empty-collection receipt; no host-specific authority is inferred from authored JSON.
-- `design_contract.py` and `checkpoint.py`: consume the AC test map and wiring ledger; checkpoint reports the exact missing file and selector before command start.
-- `repository.py` and `preflight.py`: resolve remote default ref after fetch, prove it exists, set/read the mirror default binding explicitly, then resolve the commit; never dereference an unverified bare `HEAD`.
-- `progress.py`, `command_runtime.py`, `spend.py`, and `retro.py`: emit/aggregate the telemetry contract. Telemetry unavailability cannot fabricate green; missing binding budget data blocks continuation for human scope review.
-- `pickup.py`: emits first-executing-checkpoint timing markers used by the final cold-start measurement. No pickup behavior is redesigned.
-- `tp.py`: exposes only bounded CLI projections for human kernel rebind and evidence/status; generated CLI docs remain a required freshness consumer.
-
-## Delivery sequence and parallel lanes
-
-The program order is binding, while tasks inside a numbered phase use maximum disjoint fan-out.
-
-1. **A2 feature package:** delivery mode + zero-lens collection; review rebind; evaluator/EM producer observations. These are separate write owners and run concurrently after the shared receipt schemas are frozen. A focused exact-SHA receipt makes the package feature-green only.
-2. **Forward v2.17.22 release-repair lane:** consume the ecfc48e CI fixes as integrated inventory (do not reimplement them), advance final docs/manifests freshness for v2.17.22, repair the still-missing security reference edge, fix hosted default-branch startup, add release override/evidence, preserve the A5 historical disposition, and converge on one candidate SHA. Cheap docs/manifests/package/default-branch jobs fan out; one full matrix follows; pushed-SHA proof is terminal. v2.17.20 remains unchanged in history.
-3. **Design enforcement:** AC test map and wiring ledger validators plus Build DoR/checkpoint adapters. This phase dogfoods the exact R-0001 map in this Design Contract.
-4. **Performance/orchestration:** topology, delta brief, telemetry/budget stop, progress wakeups, verification fan-out, Retro metrics. Disjoint module owners dispatch together; adapters into `loop.py` serialize under the named `loop-transition-owner` only.
-5. **Cold-start gate:** from a fresh checkout at the same final pushed SHA and empty private Taskplane home, measure command start to the first executing pickup checkpoint. A value below 120 seconds yields the resume receipt. Failure blocks R-0013 and opens only a bounded cold-start repair.
-
-No tag/install/publication occurs merely because a phase is feature-green. The final release-green constructor consumes the final exact SHA, complete wiring fingerprint, terminal full matrix, package/manifests proofs, and successful fetched pushed-SHA proof.
-
-## Receipt and data contracts
-
-All receipts use canonical JSON (UTF-8, sorted keys, compact separators, newline), closed fields, SHA-256 content fingerprints, exact source SHA, and predecessor digests.
-
-`taskplane.delivery-mode-receipt/v1` records requirement, Plan fingerprint, mode, automatic-lens policy, attributed Plan authority, and exact SHA. Build dispatch accepts only `mode=build` and `automatic_lenses=[]`.
-
-`taskplane.empty-lens-collection/v1` records run/task/stage, `expected_lenses: []`, `collected_lenses: []`, schema-valid evaluator/EM output fingerprint, producer-observation fingerprint, and `status: complete`. It is a normal success, never an outage identity.
-
-`taskplane.review-kernel-override/v1` records prior binding, replacement binding, zero-start evidence, human authority receipt, reason, and predecessor digest. Receipts are append-only. The lifecycle predicate checks durable slot and collection evidence, not merely a mutable status string.
-
-`taskplane.producer-observation/v1` binds the real host event to exact output bytes and the expected output contract. Missing, stale, mismatched, ambiguous, or caller-authored observations fail before evaluator/EM gate consumption; they are not translated into a human outage decision.
-
-`taskplane.wiring-closure/v1` contains the exact AC tests and every edge below. Each row names producer, artifact/contract, consumer, required status, and exact severed/freshness selector. A closed fingerprint is carried into Plan, Build, feature evidence, and release evidence.
-
-`taskplane.dispatch-telemetry/v1` records dispatch identity, thread type (`main`, `worker`, `lens`, `evaluator`, `guardian`), input, cached input, uncached input, output, reasoning tokens, start/end/duration, wait duration, correction count, task/dependency/owner, and events. Aggregation stops before another dispatch when elapsed >= 8h, sessions >= 60, total tokens >= 150M, or uncached input >= 25M.
-
-`taskplane.host-action-capability/v1`, `taskplane.task-dispatch-capability/v1`, and `taskplane.platform-ci-proof/v1` are closed authority-boundary schemas described below. All set `cryptographic_authenticity_claimed: false` where applicable. They add continuity, least authority, and independent platform facts without claiming actor authenticity.
-
-## Wiring closure ledger
-
-Each edge is mandatory and has an exact implementation-time test:
-
-| ID | Producer → artifact/contract → consumer | Test |
-|---|---|---|
-| W01 | Plan gate → delivery-mode receipt → loop/build dispatch | `taskplane/tests/test_r0001_delivery_mode.py::test_sever_delivery_mode_receipt_to_dispatch_fails_closed` |
-| W02 | build dispatch → zero lens-worker intent → host dispatcher | `taskplane/tests/test_r0001_delivery_mode.py::test_build_mode_dispatch_creates_zero_automatic_lens_workers` |
-| W03 | empty expected set + valid result → empty-collection receipt → Evaluate/EM gate | `taskplane/tests/test_r0001_delivery_mode.py::test_empty_expected_lenses_emits_successful_collection_receipt` |
-| W04 | human authority → append-only override → ReviewKernel binding | `taskplane/tests/test_r0001_review_authority.py::test_human_override_rebinds_only_unstarted_kernel` |
-| W05 | slot lifecycle events → immutability predicate → override refusal | `taskplane/tests/test_r0001_review_authority.py::test_started_slot_rebind_is_immutable` |
-| W06 | Codex/Claude host event → producer observation → evaluator gate | `taskplane/tests/test_r0001_producer_observation.py::test_severed_host_observation_blocks_submission_without_outage_resolution` |
-| W07 | Design AC map → Plan task tests → checkpoint path/selector validation | `taskplane/tests/test_r0001_design_wiring.py::test_checkpoint_refuses_named_missing_test_file` |
-| W08 | Design wiring ledger → Build DoR → release evidence | `taskplane/tests/test_r0001_design_wiring.py::test_every_changed_producer_has_closed_consumer_edges_and_edge_tests` |
-| W09 | `tp.py` parser → generator → `docs/cli-reference.md` | `taskplane/tests/test_release_freshness.py::TestGeneratedCliReference::test_committed_reference_matches_live_parser` |
-| W10 | version manifests + changelog → README three-row release window | `taskplane/tests/test_release_freshness.py::TestReleaseWindow::test_readme_keeps_exactly_three_current_changelog_rows` |
-| W11 | runtime/skills/hooks/docs sources → both packagers → archives/install consumers | `taskplane/tests/test_r0001_release_green.py::test_runtime_and_public_surfaces_are_in_both_installable_archives` |
-| W12 | security methodology → prompt-injection reference → package → security lens loader | `taskplane/tests/test_r0001_design_wiring.py::test_security_methodology_reference_exists_is_packaged_and_loads` |
-| W13 | manifests → marketplace/package validators → installed version 2.17.22 | `taskplane/tests/test_r0001_forward_release.py::test_forward_candidate_is_exactly_v21722` |
-| W14 | CI workflow → cheap jobs/shards/full matrix → check receipts | `taskplane/tests/test_r0001_release_green.py::test_ci_matrix_and_terminal_full_matrix_are_closed` |
-| W15 | feature receipt → Build gate only | `taskplane/tests/test_r0001_release_green.py::test_feature_green_cannot_authorize_release` |
-| W16 | wiring + full matrix + package + pushed proof → release-green → tag/install/publication | `taskplane/tests/test_r0001_release_green.py::test_release_green_requires_wiring_matrix_full_matrix_and_pushed_sha` |
-| W17 | attributed skipped-proof human authority → released-unverified receipt → audit/history only | `taskplane/tests/test_r0001_release_green.py::test_release_override_records_released_unverified_and_every_skipped_proof` |
-| W18 | loop state/new evidence → delta brief → CLI/host consumers | `taskplane/tests/test_r0001_wave_budgets.py::test_loop_next_delta_projection_is_under_4000_tokens` |
-| W19 | Plan pair map → deterministic native dispatch set → BUILD-C direct assignment through Codex | `taskplane/tests/test_r0001_parallel_delivery.py::test_native_ready_set_emits_all_disjoint_work_and_holds_overlap` |
-| W20 | Codex command lifecycle → native completion/attention trace → event wait/orchestrator wake | `taskplane/tests/test_r0001_parallel_delivery.py::test_command_completion_remains_a_native_dispatch_event` |
-| W21 | host usage/session receipts → dispatch telemetry → budget stop | `taskplane/tests/test_r0001_wave_budgets.py::test_any_binding_budget_ceiling_stops_for_human_scope_review` |
-| W22 | native wave/claim/gate trace → Retro → parallelism factor/longest serial chain | `taskplane/tests/test_r0001_parallel_delivery.py::test_retro_uses_native_wave_claim_and_gate_trace` |
-| W23 | remote advertised default → fetched remote ref → mirror binding → checkout SHA | `taskplane/tests/test_r0001_repository_default_branch.py::test_non_master_default_branch_survives_severed_bare_head` |
-| W24 | pickup command/timing events → cold-start receipt → R-0013 resume guard | `taskplane/tests/test_r0001_pickup_cold_start.py::test_r0013_resume_refuses_without_passing_cold_start_receipt` |
-| W25 | v2.17.20/historical graph disposition → release history/evidence → verifier | `taskplane/tests/test_r0001_forward_release.py::test_historical_graph_revision_is_attributed_without_history_rewrite` |
-| W26 | host/plugin adapters → capability handshake → Plan/dispatch/release cutover | `taskplane/tests/test_r0001_compatibility.py::test_mixed_plugin_host_n_n_minus_1_matrix` |
-| W27 | checked-in schemas + compatibility policy → diff/N/N-1 receipts → release-green | `taskplane/tests/test_r0001_compatibility.py::test_release_green_requires_compatibility_matrix_receipt` |
-| W28 | recorded/live producer event sources → replay/canary receipts → observation/release-green | `taskplane/tests/test_r0001_producer_observation.py::test_recorded_event_source_replay_is_hermetic_and_deterministic` |
-| W29 | EvidenceStore prepare/commit/reconcile → atomic receipt lineage → five evidence domains | `taskplane/tests/test_r0001_test_harness.py::test_all_domains_expose_prepare_commit_and_idempotent_recovery_fault_seams` |
-| W30 | expected Taskplane dispatch → actual Codex spawn/usage observation → next-dispatch budget stop, claim/gate, Retro | `taskplane/tests/test_v101_fixes.py::TestScreenDispatchHook::test_native_spawn_observation_is_always_on_and_idempotent` |
-| W31 | host-private channel → single-use exact-bound action capability → rebind/observation protected entry | `taskplane/tests/test_r0001_host_capability.py::test_rebind_capability_is_single_use_and_exact_bound` |
-| W32 | generic capability inventory + protected release consumer → inactive default-deny type/platform proof → future-adapter/release barrier | `taskplane/tests/test_r0001_dispatch_capability.py::test_generic_capability_remains_exact_bound_and_default_deny` |
-
-W12 specifically closes the newly observed released-tip defect. Its positive case proves the source file exists, both package builders include it, an installed archive can resolve it from `security-methodology.md`, and bytes match source. It also requires an independently reviewed document whose semantic contract is explicitly `detect → obstruct → flag`, binds that reviewed digest into wiring closure and release-green, and tests missing/stale/semantically incomplete cases. Design does not invent the document's contents.
-
-## Review-bound architecture and runtime details
-
-### Owners, graph, lanes, and barriers
-
-The nine new owner modules form an acyclic graph. No owner imports a transition adapter. `delivery_ports.py` is dependency-free; `review_authority.py`, `producer_observation.py`, `release_evidence.py`, `plan_topology.py`, and `dispatch_telemetry.py` consume its injected protocols. `delivery_policy.py` feeds only `brief_projection.py` and `dispatch_telemetry.py`; `wiring_closure.py` feeds only `release_evidence.py`; `plan_topology.py` feeds only `dispatch_telemetry.py`. Existing adapters consume owners in one direction. Any undeclared import, reverse edge, cycle, or fan-in/fan-out drift blocks release-green.
-
-Plan must assign exclusive new-owner files to disjoint lanes. Shared adapters serialize behind named barriers: `loop.py` under `loop-transition-owner`; `review.py` and `evaluation_output.py` under `review-integration-owner`; `tp.py`/generated CLI under `cli-owner`; `retro.py` under `retro-owner`; packaging/manifests/workflow under `release-surface-owner`. Owners finish and publish focused evidence before the associated adapter owner begins. This retains fan-out while preventing concurrent edits to shared integration files.
-
-### Atomic evidence, events, and recovery
-
-Authoritative evidence is kept in the managed run store as immutable canonical JSON files plus expected-head CAS pointers, namespaced by caller root, repository fingerprint, and run id. Review rebinds live under `review-authority/<kernel-id>/overrides/`; release evidence under `release-evidence/<target-sha>/<kind>/`; telemetry and producer observations use the same primitive. Native dispatch sets are non-authoritative intents, while host spawn/usage observations and claim/gate receipts are evidence. Repository `exports/retro/...` files are content-bound projections, not authority, avoiding a Git-SHA self-reference. Prepare writes and fsyncs intent; commit writes and fsyncs immutable bytes then CASes the head; reconciliation is idempotent and rejects forks, gaps, collisions, mixed lineages, and contradictory heads. Public fault seams cover before/after bytes, CAS, domain state, and recovery.
-
-The incumbent `taskplane.wait-policy/v1` remains event-driven with one 1,800-second wait and zero model polling. Existing command-runtime receipts make terminal and attention delivery idempotent across reordered observations and crash recovery. Completion/attention wakes the orchestrator, which recomputes the deterministic ready set, emits all disjoint intents to Codex, then waits once for the outstanding native set. Taskplane introduces no worker event queue, admission queue, replay scheduler, or capacity state.
-
-### Compatibility and repository preparation
-
-Host/plugin cutover is emit-before-require, not atomic. N=2.17.22 and N-1=2.17.20 readers use schema discrimination and closed objects. New plugin/new host, new/old, old/new, and old/old are all tested. Missing N capability may retain declared feature compatibility but never release-green. Authority schema changes require a new schema id and a machine-readable compatibility diff; legacy focused or unobserved evidence is historical/feature-only and cannot be upgraded into release authority. The checked-in authorities are `design/compatibility.json` and `design/schemas/r0001-evidence-schemas.json`.
-
-`taskplane.repository-preparation-request/v1` fully binds locator, remote, requested/default ref policy, caller root, repository fingerprint, run namespace, retry predecessor, and request fingerprint. `taskplane.repository-preparation/v1` returns a stable status/refusal id, exact retryability, repository/default-ref/fetch/resolved-SHA/checkout facts, predecessor, and fingerprint. Unknown fields fail; idempotent retry requires the same request and predecessor; ambiguous/missing defaults never dereference bare `HEAD`.
-
-### Hermetic seams and native dispatch observation
-
-AC4's deterministic proof uses an immutable recorded `ProducerEventSource`; a separately classified live Codex canary is a release input. Injected wall/monotonic `Clock` and `EventWaiter` eliminate sleeps. `EvidenceStore` gives deterministic parallel namespaces and scoped teardown. `GitRunner` uses local bare remotes for public-entry W23 coverage. `FaultInjector` enumerates prepare/commit/recovery seams for review rebind, producer observation, telemetry, release evidence, and remote-default preparation.
-
-`plan_topology.classify_plan` proves every task-pair dependency/shared-owner relation. `loop.select_ready_tasks` and `build_c.assign_scopes` emit one stable `taskplane.dispatch-set/v1` containing every ready pairwise-disjoint task. The receipt deliberately has no capacity, reservation, lease, queue, capability, or execution-DAG fields. Codex owns actual spawn concurrency. `tp.py` observes each native spawn at the existing host hook and binds it to the expected dispatch id; missing or contradictory observation fails the next budget/dispatch decision closed. Retro computes parallelism factor and longest serial chain from finite native wave/claim/gate and completion timestamps; it never reconstructs a Taskplane execution DAG.
-
-### Bounded security authority
-
-`taskplane.host-action-capability/v1` is a host-issued, single-use, **non-cryptographic** continuity token delivered through an agent-inaccessible host channel. It binds purpose, opaque nonce, monotonic sequence, host session/turn, run, kernel, task, stage, request/output digest, and contract fingerprint. The protected consumer consumes it atomically before publishing evidence. Replay, cross-run/kernel/task/stage/session/output use, expiry, digest mismatch, duplicate sequence, missing handle, or direct-filesystem injection fails before rebind, observation, receipt, or gate mutation. Its schema fixes `cryptographic_authenticity_claimed: false`: it does not prove the actor identity, and unauthenticated actor strings remain an accepted inherited limitation.
-
-`taskplane.task-dispatch-capability/v1` remains a closed generic security type for future protected adapters. Its hermetic tests preserve exact binding and default-deny semantics, but the active native Codex assignment path does not instantiate it and does not use its reservation/predecessor inventory fields. No production factory, scheduler authority, release credential, or push/tag/install/publish permission is implied. A future production consumer requires a separately approved Design amendment. An outside-model human recheck remains required at the protected release consumer for every irreversible action.
-
-`taskplane.platform-ci-proof/v1` is created only from an independent hosted-platform query by the protected release consumer immediately before release. It binds repository, protected default branch, exact pushed SHA, workflow run id, check-run ids/names/conclusions, query freshness, and platform response digest. Local receipts cannot populate this port or establish platform/actor authenticity. Any signature/MAC/key/verifier edge or authenticity language is Design drift; the cryptographic option stays shelved.
-
-## Acceptance tests
-
-The canonical map is machine-readable in `design/contract.json`. Summary:
-
-1. AC1: `test_r0001_delivery_mode.py` — Plan receipt, build zero-lens dispatch, severed receipt.
-2. AC2: `test_r0001_delivery_mode.py` — valid empty collection, malformed result, no outage path.
-3. AC3: `test_r0001_review_authority.py` — human unstarted rebind, started immutability, append-only attribution.
-4. AC4: `test_r0001_producer_observation.py` — live Codex evaluator/EM observations and severed observation.
-5. AC5: `test_r0001_design_wiring.py` — exact selector resolution, missing-file refusal, Build DoR.
-6. AC6: `test_r0001_design_wiring.py`, `test_release_freshness.py`, and release packaging tests — full edge closure and freshness.
-7. AC7: `test_r0001_release_green.py` — distinct authority, complete prerequisites, override semantics, consumer refusal.
-8. AC8: `test_r0001_wave_budgets.py` — <4,000-token brief, every binding ceiling, complete telemetry.
-9. AC9: `test_r0001_parallel_delivery.py` — every pair classified, maximum ready fan-out, named serialization, wakeups, fan-out matrix, Retro metrics.
-10. AC10: `test_r0001_repository_default_branch.py` — fetched default before HEAD, non-master sever, ambiguous/missing refusal.
-11. AC11: `test_r0001_pickup_cold_start.py` — same-SHA empty-home <120 seconds and resume refusal.
-12. AC12: `test_r0001_forward_release.py` — immutable v2.17.20 disposition, exact v2.17.22 forward candidate, historical graph attribution, unchanged verifier strength.
-
-## Failure behavior
-
-All authority failures occur before their consumer action:
-
-- Missing/malformed/mismatched delivery mode: no build dispatch and no lens construction.
-- Non-empty build automatic-lens set: no host dispatch.
-- Empty expected set with invalid result or missing observation: no success receipt; no outage reinterpretation.
-- Rebind without attributed human authority or after any slot start evidence: append-only refusal, prior binding unchanged.
-- Missing/stale producer observation: evaluator/EM gate remains closed.
-- Missing test file/selector or wiring edge/test: Design/Build DoR remains closed and names the exact identity.
-- Missing release evidence: tag/install/publication remains closed. An override records skipped facts but cannot become green.
-- Brief >4,000 tokens: emit a bounded refusal plus stable artifact reference; do not truncate authority fields.
-- Any binding budget ceiling: stop before new dispatch and request human scope review.
-- Missing/ambiguous remote default ref: no bare-HEAD dereference or checkout.
-- Cold start >=120 seconds or identity mismatch: no R-0013 resume.
-- Missing/replayed/cross-bound/file-injected host capability: no rebind or producer observation and no partial evidence.
-- Any undeclared worker tool/path/ref/network/credential or irreversible request: refuse before invocation; workers never receive release credentials.
-- Missing/stale/wrong-SHA hosted-platform proof or missing outside-model human recheck: no tag/install/publication; local receipts do not substitute.
-- Missing, stale, or semantically incomplete prompt-injection reference: W12 and release-green remain open.
-
-## Observability and budgets
-
-Repository-resident Retro evidence records every dispatch and thread type, including guardian sessions. Counters use host-observed usage when available and fail closed for binding totals when required fields are absent. Signals include delivery mode, expected/created lens counts, kernel binding/override digest, producer-observation status, wiring fingerprint, feature/release disposition, brief token count, elapsed/session/token thresholds, ready/held/running tasks, progress event age, default-branch identity, cold-start duration, parallelism factor, and longest serial chain.
-
-Alerts are loop actions rather than background services: mode/lens contradiction; attempted started-kernel rebind; missing producer observation; broken wiring; release consumer without release-green; brief token overflow; budget ceiling; idle orchestrator with ready work; stale long worker; ambiguous default branch; cold-start failure.
-
-## Rollout and rollback
-
-Roll forward through the five ordered phases. Each new schema is additive and versioned; old focused receipts remain readable but cannot grant new release authority. Host/plugin behavior uses capability handshake emit, observe, then human-authorized require with N/N-1 dual-read rather than an atomic cutover. The first phase runs in refusal-observe mode only in focused fixtures, then enforcement is enabled before another production wave. Protected release consumers switch only after the compatibility matrix passes. Current-only release fixes and inherited CI agent work are integrated, not reimplemented.
-
-Rollback is by phase before release authority: remove the thin adapter and its new module together, restore the prior consumer behavior, and retain all append-only receipts. Never rewrite or delete an override, producer observation, release disposition, or historical graph record. After release consumers require `release-green/v1`, rollback may disable publication but must not accept legacy focused evidence as release authority. v2.17.20 is never retagged or reclassified.
-
-## Graph readiness and done proof
-
-DoR: exact clean HEAD `ecfc48ec2f5f4c25dd0d9bab4d6751bc2f130845` and graph `a6a3c1e72c0c268648e3727cdcec904f60c41442a1f77bf16231bbdb84cd90a6` (50/156, six recorded, complete quality) match; all modules/contract ids exist; the signed order is reflected in dependencies; every AC has exact test file/selectors and controlled dependencies; all 32 wiring edges have a named severed/freshness selector; component fan-in/fan-out and lane barriers are declared; checked-in schemas/compatibility policy parse; the 16-commit CI repairs are mapped as integrated non-replay inventory; no R-0013 or product implementation enters Design.
-
-DoD: rescan the final SHA; compare realized modules/edges to the overlay; require every acceptance and W01–W32 selector to resolve against the real checkout; sever each edge; verify owner cycles/fan-in/fan-out and graph drift; prove lane barriers, CAS recovery, command-runtime event idempotency, N/N-1 compatibility, and hermetic replay; prove deterministic native ready-set emission, always-on Codex spawn observation, next-dispatch budget stopping, finite native-trace metrics, and absence of Taskplane scheduler/capacity/reservation/replay/event-queue/execution-DAG authority; inspect adapters for schema duplication; prove no automatic Build lens worker; prove host-capability replay/direct-injection refusal and inactive generic default-deny capability inventory; prove no cryptographic authenticity claim or worker release credential; produce feature-green and release-green as distinct receipts; re-query the protected platform for exact pushed-SHA run/check identities and obtain an outside-model human recheck; run the terminal full matrix; bind the reviewed prompt-injection reference digest through both packages; and retain v2.17.20 plus graph revision 2757822e unchanged.
-
-## Solution-design lens
-
-Self-attested Design evidence is recorded once in the contract and will be rebound to the final content fingerprint after the visual/fingerprint pass. The human approval gate must treat it as self-attested and wait for the independent Design-boundary lens set. There are no open product questions in the accepted requirement and signed amendment.
-
-## Visualization
-
-A sequence/dependency visual is materially useful because five ordered phases contain parallel lanes and two different green authorities. `design/visual.html` will show that order, the disjoint owners, the release barrier, and the cold-start resume gate; it is explanatory only and not authority.
+### A. Native-authority adapter quarantine plus exact-SHA evidence coordinator
+
+Keep the existing pure policy owners and direct BUILD-C path. Add three small
+owners: `native_authority.py`, `design_sweep.py`, and `terminal_truth.py`;
+generalize `wiring_closure.py` to execute real-checkout proofs. Remove the
+stage-native agent-dispatch edge and make existing transition modules thin
+adapters.
+
+Gains: smallest removal of duplicate authority; no second scheduler; every P0
+control has a public entry point and severed-edge test; disjoint leaf work can
+fan out before a narrow shared-adapter integration barrier. Costs: new closed
+receipts and strict failure modes make previously best-effort telemetry/report
+paths blocking for a governed production wave. Revisit when Codex exposes a
+new stable native capability requiring one new inventory row, or two new
+owners repeatedly co-change and should be collapsed.
+
+The explicit trade is **authority integrity and terminal reliability gained**
+for **operability and short-term modifiability spent**. This selected choice is
+the proposed decision record `D-R0013-native-adapter-quarantine`; the Design
+gate accepts or rejects it, and no worker may accept it.
+
+### B. Keep stage-native mode as a Taskplane scheduler facade
+
+Rename stage splits, execution-root claims and dispatch rows as host adapters,
+then teach Taskplane to reserve/admit against Codex capacity.
+
+Gains: reuses the current stage-native tests and per-agent stage history.
+Costs: directly violates AC1/P0-3; duplicates native capacity, lifecycle and
+execution-DAG authority; makes event replay and recovery ambiguous. Revisit
+only if Codex explicitly delegates those authorities through a new human-
+approved product contract. It is rejected now.
+
+This alternative spends authority integrity and lifecycle consistency to gain
+short-term operability and modifiability, the inverse of the selected trade.
+
+### C. Documentation and CI assertions only
+
+Document the native boundary, retain runtime behavior, and add static
+blacklists plus a final CI job.
+
+Gains: few runtime edits and easy rollback. Costs: current name blacklists
+already miss the live stage-native path; cannot close null active telemetry,
+runtime lens starts, real-checkout reachability, or atomic terminal truth.
+Revisit as redundant CI defense after the runtime contracts are implemented.
+
+### D. Status quo
+
+Continue relying on old R-0001 Design claims and operator discipline.
+
+Gains: no implementation. Costs: all four accepted P0 failures remain, and
+the Design would be grounded in a false native-authority premise. Revisit:
+never while R-0013 is active.
+
+## Selected boundaries and contracts
+
+The selected approach is A. All nine Product contract ids stay canonical.
+Taskplane adds no service, dependency, daemon, queue, database, crypto,
+credential, or host scheduler. Python remains synchronous and standard-library
+only; host event waiting remains outside the engine process.
+
+New owners:
+
+- `taskplane/native_authority.py`: immutable capability/responsibility rows,
+  the delivery-root call-edge validator, forbidden-authority semantic rules,
+  and exact native-observation binding. It has no spawn/wait implementation.
+- `taskplane/design_sweep.py`: validates one Design generation containing one
+  quick result for every catalog id, native concurrency observations and one
+  disposition per result. It never launches a worker.
+- `taskplane/terminal_truth.py`: prepares immutable exact-SHA projections,
+  validates all prerequisite receipts, and commits one logical terminal bundle
+  by an orchestrator-only, run/SHA/Design/Plan/predecessor-bound finalization
+  capability. Workers and candidate-test processes cannot write the authority
+  store. Surface adapters resolve terminal status through this bundle.
+
+The graph scanner consumes the accepted decomposition map in
+`design/contract.json#/architecture_decomposition`. It realizes separate nodes
+for Codex native orchestration, Taskplane governance adapters, native-authority
+validation, Design-sweep validation, terminal coordination, the eight terminal
+surface producers (including `exports/`), and tests. The strict final scan
+compares those nodes and declared edges rather than claiming that the baseline
+aggregate `taskplane` node can prove file-owner isolation.
+
+Changed owners:
+
+- `taskplane/wiring_closure.py` becomes requirement-count agnostic and produces
+  `taskplane.candidate-checkout-wiring/v1` only after tracked selectors and
+  named producer edges execute from a registered Git checkout whose repository
+  identity, HEAD and tree match the candidate. A sibling registered Git
+  worktree at the same commit may host a one-edge mutation; copied/generated
+  test sources and arbitrary temporary directories never qualify.
+- `delivery_policy.py`, `review.py`, `evaluation_output.py` and `loop.py`
+  remove execution-time lens routing. Direct evaluator/EM output remains
+  schema-validated acceptance evidence with an explicit empty-lens receipt.
+- `plan_topology.py`, `build_c.py`, `loop.py` and `command_runtime.py` pass one
+  sealed ready set to worktree/contract preparation, native intent output and
+  one native event wait. `build_c` no longer recomputes readiness.
+- `brief_projection.py`, `dispatch_telemetry.py`, `progress.py`, `spend.py` and
+  the dispatch screen require non-null finite active observations and enforce
+  equality as a human stop. Telemetry failure is no longer swallowed for an
+  active production wave.
+- `repository.py`, `progress.py`, loop journal/task/gate state,
+  `views.publish_report`, repository verification, release evidence and
+  `exports/` receive content-addressed projections from the one final bundle.
+
+## Production sequence
+
+1. **Design-only broad signal.** Root Codex dispatches one quick native task
+   per catalog lens in available concurrent batches. `design_sweep` validates
+   exactly 26 unique results for one Design content fingerprint and records
+   dispositions. It rejects serial-all, repeats, full/deep mode and use at any
+   non-Design stage.
+2. **Disjoint leaf build.** Pure native-authority, Design-sweep, zero-lens,
+   topology, budget/handoff, wiring and terminal owners build in disjoint
+   scopes. Each leaf publishes a typed readiness receipt. A single integration
+   owner starts only after all seven readiness receipts—including AC2—exist,
+   then exclusively edits shared `loop.py`/`tp.py` adapters. Its integration
+   receipt precedes AC7 end-to-end checkout/finalization acceptance, so AC7 is
+   never a prerequisite for its own integration. No two workers write one
+   shared adapter.
+3. **Native execution.** Taskplane seals the exhaustive pair map and ready set,
+   prepares worktrees/contracts, and emits every ready disjoint intent once.
+   Codex performs native spawn/admission. The dispatch screen atomically binds
+   a non-null usage observation or refuses that native start. One native wait
+   covers the accepted outstanding set. It receives an absolute child deadline
+   strictly before the eight-hour wave ceiling. Completion or native attention
+   is the normal wake; silent transport expiry becomes exactly one attributed
+   attention outcome with the outstanding-set fingerprint and usage, stops for
+   human scope review, and never polls, reissues, or replaces work.
+4. **Feature validation.** Direct evaluator and EM assignments carry zero lens
+   expectations. Every criterion runs its exact selectors. The real-checkout
+   runner then executes every named selector and edge proof in the pinned and
+   final Git checkout; its mutation worktree proves each edge-sensitive
+   selector fails when its one production edge is severed.
+5. **Atomic finalization.** On a clean candidate SHA, the finalizer prepares
+   exactly eight named terminal projections, including the redacted `exports/`
+   projection,
+   as immutable content-addressed bytes. It validates native usage, real-
+   checkout wiring and full-suite receipts, fsyncs the bundle, then CASes one
+   terminal head. Readers accept no projection without that head and the full
+   digest set. A crash before CAS publishes none; a crash after CAS is repaired
+   idempotently from immutable bytes. Final local integration must preserve the
+   SHA (fast-forward); any SHA-changing merge requires fresh finalization.
+
+The production state shown to the operator is `preparing`, `committing`,
+`reconciling`, `complete`, or `failed`. A failed state preserves the last
+trustworthy candidate, immutable bundle bytes, private telemetry, exact failed
+boundary, and an idempotent retry action. Only a successful reconciliation
+receipt proving all eight digests and the native aggregate permits the
+terminal-truth owner to delete or irreversibly minimize private session detail;
+cleanup failure preserves detail for retry and emits no cleanup receipt.
+
+## Seven-outcome ownership and parallelism
+
+The Plan must name exactly seven acceptance outcomes (and no more than eight).
+Leaf implementation may use a narrow eighth integration task, but it introduces
+no acceptance outcome and owns only the shared adapters after the seven leaf
+readiness receipts are green. The closed 21-pair matrix in
+`design/contract.json` is Plan
+authority: pairs are parallel unless it records an evidence dependency or
+shared file owner. AC7 validation waits for all prerequisite receipts, while
+its pure finalizer/wiring code can be built in the first native wave.
+
+Each of AC1–AC7 retains its single Product outcome and has a closed singular
+subassertion list in the contract. An outcome passes only when every listed
+subassertion and its exact selector pass; partial success cannot be aggregated
+as acceptance. Outcome effectiveness is then observed for the next three
+production waves against the R-0001 baseline: zero recurrence of the four P0
+failure classes is the target, successful-wave completion must not regress,
+and any P0 recurrence forces iteration while completion regression forces a
+human keep/iterate/remove decision.
+
+## Failure, observability and rollback
+
+The engine emits only bounded identities and aggregates: source SHA,
+requirement/contract/criterion/task/stage ids, content fingerprints, native
+dispatch/wait states, finite timestamps/durations and token totals. It stores
+no prompts, transcript, diff/source bytes, model-output bodies, secrets,
+credentials or personal content. Detailed per-session telemetry stays private
+through successful eight-surface reconciliation and is deleted or irreversibly
+minimized only after an idempotent cleanup receipt; cleanup or reconciliation
+failure preserves it for retry. `exports/` contains only the aggregate terminal
+projection.
+
+Budget stops show the measured value beside its ceiling, the preserved
+outstanding-set identity, and the available attributed choices: reduce scope
+and create a successor wave, end the wave, or return to architecture review.
+No choice silently resumes the stopped dispatch set.
+
+Receipt evolution and the Codex boundary are explicit. The contract includes a
+producer/consumer compatibility table, predecessor support, deploy order and
+retirement condition. The versioned native adapter envelope uses stable error
+codes and classifies every conflict or observation failure as retryable and
+idempotent, or permanent and human-attention-required.
+
+Missing inventory rows, a forbidden call edge, lens starts, a non-empty lens
+expectation, missing native observation, budget equality, false-ready work,
+polling, a ninth outcome, a >=4000-token handoff, a foreign checkout, an opaque
+wiring fingerprint, a severed producer edge, mixed SHA, nonterminal progress,
+partial projections or a CAS fork all fail closed at their named public entry
+point. No fallback scheduler, outage resolution or synthetic evidence exists.
+
+Rollback before final integration removes the thin adapter and its new owner
+while retaining immutable evidence. Stage journal readers remain compatible;
+only the per-agent dispatch projection is retired. After a terminal CAS,
+rollback cannot rewrite evidence: a new candidate SHA receives a new bundle
+and predecessor link. Legacy reports remain readable but never satisfy R-0013
+terminal authority.
+
+## Final evidence state
+
+The Python solution-design reference at SHA-256
+`9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7`
+was applied: synchronous ownership is explicit, validation sits at host/JSON/
+Git/persistence boundaries, domain owners are separated from transition
+adapters, packaging adds only Python files to both incumbent archives, and no
+new dependency or global service locator is introduced. Strict type/import,
+package-content, focused, mutation, severed-edge and full-suite checks are
+Design DoD inputs.
+
+The evidence directory contains exactly 26 unique lens results bound to
+provisional content fingerprint
+`40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236`.
+Ten source verdicts are pass and sixteen are changes. The four source blockers
+(data safety, project management, solution design, and SRE) are resolved by the
+safe cleanup boundary, acyclic receipt graph, and bounded native wait described
+above. `lens_evidence` records every source path, digest, finding disposition,
+and the final Design content fingerprint. No second lens sweep occurred. This
+Design does not self-approve; the human Design gate remains mandatory.

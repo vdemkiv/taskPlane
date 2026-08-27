@@ -1,308 +1,302 @@
-# Remaining `tp pickup` delivery — attributed operator trust
+# R-0013 — first corrective wave: native delivery and terminal truth
 
-## Attributed human scope decision
+## Product authority
 
-`human:user` selected an operator-trust continuation for R-0002. AC4 requires
-the explicit invocation `--trust-source <exact-source-sha>`; it does not claim
-cryptographic authenticity. The asymmetric-approval proposal is shelved and
-must not enter this delivery.
+This specification is the Product authority for the first corrective wave
+derived from the accepted R-0001 two-wave retrospective. The retrospective at
+`/private/tmp/taskplane-r0001-two-wave-retro-20260826/RETROSPECTIVE.md` is
+evidence inventory only; its P0 register at lines 212–215 is adopted exactly
+as described below.
+
+This wave is bound to source revision
+`27ab9fecad3cf3b477e02678f6fa4d9ec721f54e`. It contains exactly seven
+acceptance criteria. It does not replay completed R-0001 feature or release
+work and does not authorize Design, Plan, implementation, gates, merge, push,
+tag, publication, or release through Product authoring.
 
 ## Problem
 
-The stateless `tp pickup <design-contract>` path and its first four bounded
-tasks are complete, but repository-only AC4 resume needs an explicit human
-authority input that a fresh checkout can compare with the shelf and receipt
-lineage without inheriting private Taskplane state. The remaining delivery
-must record and enforce that attributed operator-trust input while describing
-its security limitation honestly.
+R-0001 ultimately produced green code, but its delivery process permitted four
+P0 failures: terminal sources disagreed after delivery, native usage telemetry
+did not enforce accepted budgets, Taskplane duplicated authority already owned
+by Codex, and generated substitutes allowed wiring checks to pass without
+proving the real production checkout. The next governed production Build must
+not begin until these four controls are explicit, testable delivery
+requirements.
 
-## Users and context
+## Users and outcomes
 
-- A human operator selects one existing shelf Design Contract from a clean
-  checkout and supplies `--trust-source <exact-source-sha>`.
-- The flag value is the exact source SHA the human chooses to trust. It must
-  equal the shelf's exact authorized source SHA and the source identity already
-  bound to the Design fingerprint and repository receipt lineage.
-- A second checkout starts with no private Taskplane home and no private-store
-  handoff. It resumes using Git-tracked shelf and `exports/` evidence plus the
-  newly supplied attributed operator-trust flag.
-- The existing v1 symmetric shelf-signature path remains available only
-  through its incumbent private-secret runtime path and is unchanged.
-- The target candidate is Taskplane 2.17.20. Push, tag, publication, release,
-  and `origin/main` mutation remain separate human authority.
+- A human authorizing a governed wave receives a small acceptance boundary and
+  a hard stop before cost, authority, or scope expands.
+- Codex remains the sole owner of native agent spawning, concurrency,
+  capacity, lifecycle, completion, attention, and event transport.
+- Taskplane describes requirements, contracts, dependencies, disjoint scopes,
+  gates, checkpoints, and evidence without acquiring host execution authority.
+- Design receives one bounded broad review signal, while Build, Fix, Evaluate,
+  and execution-time EM run with zero Taskplane lens workers.
+- Operators and automation receive one atomic, exact-SHA terminal truth backed
+  by production-reachable wiring rather than generated substitutes.
 
-## Inherited limitation — standing state, not new R-0002 debt
+## Adopted P0 register
 
-Human gate approvals currently record unauthenticated actor strings. The only
-shelf signature currently available is computed with a symmetric secret held
-in private runtime state. The `--trust-source` mode neither removes nor
-strengthens those facts and must never be described as authenticating the
-human, producer, shelf signature, or engine receipt. This is documented
-inherited standing state, not debt newly incurred by R-0002, and no `req debt`
-record is authorized for it.
+1. **P0-1 — atomic exact-SHA finalization** is enforced by AC7. Progress, the
+   run journal, reports, verification and release evidence must terminalize on
+   one exact SHA or merge/push is refused; no retained run may remain
+   `executing` after delivery reaches main.
+2. **P0-2 — native budget telemetry and enforcement** is enforced by AC6.
+   Native wall time, unique sessions, total and uncached tokens enter the
+   governed run, `observed_tokens` is never null for an active production
+   wave, and a threshold breach cannot silently continue.
+3. **P0-3 — host-native dispatch invariant** is enforced by AC1 and AC4.
+   Codex owns concurrency. Taskplane may express dependency and disjoint-scope
+   intent but may not add scheduling, reservation, admission, capacity,
+   lifecycle, replay, lease-concurrency, or execution-DAG authority; static
+   and behavioral seams must detect duplication.
+4. **P0-4 — real-checkout wiring closure** is enforced by AC7. Named selectors,
+   receipts, and producer edges are executed in the actual pinned and final
+   candidate checkout. Generated temporary substitutes are prohibited;
+   opaque or foreign wiring fingerprints grant no terminal or release
+   authority; severing any named edge makes the exact production test fail.
 
-## Completed inventory — retain, do not replay
+## Functional requirements
 
-The amended Plan must retain these facts as non-executable history:
-
-1. **T01 / AC1 evidence:**
-   `70f311ad75de33a530a6ba43ac213883a1e95c3f`.
-2. **T02 / AC2 evidence:**
-   `5cc647cabd8bd8528b3044184e38d3317f593f27`.
-3. **T03 released-tip prerequisite evidence:**
-   `5c28165f800fffcac20aa2004d9a2b38efb195cf`.
-4. **T04 / AC3 evidence:**
-   `0c19087e3eb28d70869f2752f12c2d3742f33810`.
-5. Repository-only resume implementation at
-   `3ee3a17a695bf059f90504507a8eb5fe690fb52d` and retry-safe atomic receipt
-   publication at `a73f125e762670323d0e4a8fbbef3a1edf3ea958` remain
-   implementation inventory and must not be replayed or replaced.
-
-AC1–AC3 may execute only as unchanged regression coverage within AC5. They and
-the atomic-publication repair must not receive new implementation, checkpoint,
-evaluation, or acceptance tasks.
-
-## In scope
-
-1. Extend the public pickup invocation with the required exact flag
-   `--trust-source <exact-source-sha>` for repository-only AC4 resume.
-2. Treat the flag as attributed human operator authority for this invocation.
-   Record the exact flag name and exact value verbatim in the pickup receipt;
-   do not normalize, abbreviate, replace, or infer the recorded authority.
-3. Require the value to be a well-formed exact Git source SHA and to equal the
-   shelf's exact authorized source SHA. Preserve the existing binding among
-   that SHA, the canonical Design fingerprint, receipt path/digests,
-   predecessor chain, element, criterion, assigned revision, checkpoint, and
-   merge outcome.
-4. From a fresh second checkout with no private Taskplane home or first-
-   checkout handoff, use the explicitly repeated trust-source flag plus
-   Git-tracked shelf and receipt evidence to resume the next manual criterion
-   through the incumbent pickup path.
-5. Fail closed before BUILD-C on a missing flag, malformed SHA, SHA mismatch,
-   missing or malformed shelf evidence, structural shelf tampering, receipt
-   digest/path mismatch, predecessor mismatch, fork, gap, collision, or mixed
-   SHA/Design-fingerprint/lineage identity.
-6. On every such refusal, preserve every prior committed receipt byte-for-byte,
-   create no authoritative partial receipt, and authorize no checkpoint or
-   merge.
-7. Preserve zero run, track, claim, lease, wave, active-loop, or private-
-   handoff state and preserve one-acceptance-criterion-at-a-time checkpoint
-   discipline. AC4 behavior and its direct positive and negative proofs land
-   in the same bounded implementation commit.
-8. Preserve the existing `tp pickup` → direct BUILD-C assignment → engine
-   checkpoint → merge-on-green path, exact assigned-revision checks,
-   retry-safe atomic `exports/` publication, and receipt directory identity
-   keyed by exact source SHA plus Design fingerprint.
-9. Preserve v1 symmetric shelf handling through its current private-secret
-   path without changing its contract, key source, signature behavior, or
-   claims.
-10. After AC4 passes, update only the bounded shipped version/release surfaces
-    to 2.17.20 and run AC5 on the exact final clean candidate SHA.
-11. After AC5 passes, run one quick security and one quick QA review
-    concurrently against that exact SHA and evidence set, then one
-    engineering-manager review against the same SHA. Stop for explicit human
-    push authority.
-
-## No-authenticity claim
-
-The operator-trust mode proves only that the caller supplied an attributed
-exact source SHA and that repository structures agree with it. It does not
-cryptographically authenticate the actor string, human approval, producer,
-shelf document, engine receipt, or origin of repository bytes. Public output,
-receipts, documentation, tests, review evidence, and release notes must use
-operator-trust language and must not use `authenticated`, `cryptographically
-verified`, `signed by the human`, or an equivalent authenticity claim for this
-mode.
-
-## Out of scope
-
-- Repository-verifiable asymmetric authenticity in the current delivery.
-- Any signer, verifier, public/private key workflow, signing dependency,
-  allowed-signers runtime, certificate authority, key-management service,
-  rotation/revocation mechanism, or hand-rolled cryptography.
-- Changes to the existing v1 symmetric shelf-signature implementation or its
-  private-secret runtime path.
-- Changes to protected completed-work surfaces beyond the narrow public CLI,
-  pickup authority/receipt projection, direct pickup tests, and bounded release
-  metadata named below.
-- Reimplementation or replay of T01–T04, AC1–AC3, repository-resume
-  groundwork, or retry-safe atomic receipt publication.
-- Phase 0, E0, any R-0011 work, or any unrelated R-0013 intake, Design, Plan,
-  review, or delivery content.
-- Changes to hook security, hook receipts, enforcement strength, the legacy
-  loop, or the legacy run/track/claim/lease/wave lifecycle.
-- A second BUILD-C, checkpoint, merge, Design approval, worktree, or receipt
-  engine; automatic full/deep/serial-all/all-lens review sweeps.
-- Push, tag, marketplace/package publication, release, or any mutation of
-  `origin/main` before explicit human authority.
-- Changes to retained worktrees, paused branches, dormant runtimes, or any
-  Taskplane home other than the isolated pickup delivery home.
+1. Design begins with an evidence-backed inventory of Codex-native dispatch,
+   concurrency, capacity, lifecycle, completion, attention, and event-wait
+   capabilities. Every proposed delivery responsibility maps to native reuse,
+   retained Taskplane governance, or an evidenced gap.
+2. Design prohibits duplicate Taskplane authority or machinery. Taskplane may
+   express dependency, disjoint-scope, gate, claim, checkpoint, and evidence
+   intent but does not own host scheduling, capacity, reservation, admission,
+   lease concurrency, worker lifecycle, replay queues, or an execution DAG.
+3. Design runs exactly one quick concurrent all-26-lens sweep and dispositions
+   every result as Design input. No automatic full, deep, serial-all, or
+   repeated all-lens sweep is authorized.
+4. Build, Fix, Evaluate, and execution-time EM start zero Taskplane lens
+   workers. An empty expected-lens set is an explicit valid success state;
+   direct native Codex evaluator and EM assignments are not lenses.
+5. Every ready pairwise-disjoint unit across governed stages is offered
+   together for native Codex parallel dispatch. Overlap serializes only for a
+   named dependency or shared owner, and one event-driven wait follows the
+   exact outstanding set without scheduled or repeated model polling.
+6. This wave is limited to the seven acceptance criteria below and no governed
+   wave may exceed eight. Every criterion pair is classified parallel or
+   serialized for an evidenced dependency or shared owner, and independent
+   criteria dispatch in parallel.
+7. Every stage transition uses a delta handoff below 4,000 tokens containing
+   exact SHA, requirement, active contracts, acceptance scope, new evidence,
+   unresolved decisions, outstanding set, and observed usage. The wave stops
+   before 8 hours, 60 unique sessions, 150M total tokens, or 25M uncached
+   input tokens.
+8. Completion atomically reconciles Git, governed progress, the run journal,
+   task and gate state, public and repository verification reports, release
+   evidence, and repository-resident terminal evidence to one exact candidate
+   SHA and one terminal disposition.
+9. Design and terminal gates validate every named selector, receipt, and
+   producer edge in the actual pinned and final candidate checkout. Generated
+   temporary substitutes are prohibited, opaque or foreign wiring
+   fingerprints grant no authority, and severing a named edge makes the exact
+   production test fail.
+10. The accepted retrospective remains evidence inventory only. Completed
+    R-0001 feature/release work, W31 and cold-start work, history/tag repair,
+    P1/P2 follow-ups, R-0011, unrelated R-0013 backlog, and external release
+    mutation are excluded.
 
 ## Acceptance criteria
 
-1. **AC4 — a fresh second checkout resumes through explicit attributed
-   operator trust with no private-store handoff.** After one manual criterion
-   and its atomic pickup receipt are committed, a fresh second checkout with an
-   empty/nonexistent Taskplane home and no access to the first checkout must
-   invoke pickup with `--trust-source <exact-source-sha>`. The exact flag and
-   full SHA value must be recorded verbatim in the new pickup receipt as
-   attributed human authority; the SHA must equal the shelf's exact authorized
-   source SHA and the existing exact-SHA/Design-fingerprint/receipt-lineage
-   identity. The next existing BUILD-C checkpoint must run with zero
-   run/track/claim/lease/wave/private-handoff state, and output must make no
-   cryptographic-authenticity claim. Focused negative proofs for a missing
-   flag, malformed SHA, SHA mismatch, malformed/missing shelf evidence,
-   structural tampering, digest/path/predecessor mismatch, fork, gap,
-   collision, and mixed lineage identity must all refuse before BUILD-C,
-   preserve prior receipts byte-identically, create no authoritative partial
-   receipt, and authorize no merge. The unchanged v1 private-secret symmetric
-   path must retain its existing focused green coverage.
-2. **AC5 — full suite on the final SHA: no new failures.** After the AC4 commit
-   and consistent 2.17.20 version/release metadata are committed, verify the
-   checkout is clean and run `python -m pytest taskplane/tests -q` with the
-   pinned delivery interpreter on that exact candidate SHA. The suite must
-   include unchanged pickup, v1 symmetric, atomic-publication, hook, and
-   legacy-loop regressions and report zero new failures. Any failure blocks
-   final review and grants no broad repair authority.
-3. **2.17.20 release surfaces are consistent and bounded.** README,
-   CHANGELOG, Codex plugin manifest, Claude plugin manifest, and marketplace
-   manifest must all identify 2.17.20, parse successfully, describe the
-   operator-trust limitation accurately, and perform no push, tag, publication,
-   release, or `origin/main` mutation.
-
-## Post-acceptance release gate — loop owned
-
-**Final review and authority stop are exact-SHA bound.** Quick security and QA
-must complete concurrently against the AC5 SHA, followed by an engineering-
-manager review against the identical SHA and evidence fingerprints. The
-workflow stops before every external release mutation and requires explicit
-human push authority.
-
-This gate is mandatory after AC5, but it is not an implementation task or an
-evaluator-owned acceptance criterion. The loop owns its security/QA → EM →
-human push-authority sequence, matching the original `Ship:` instruction.
-
-## Required failure behavior
-
-- Trust-source validation is pre-BUILD-C. No rejected authority/shelf/lineage
-  case may reach assignment, checkpoint execution, receipt publication, or
-  integration.
-- The receipt records the human-supplied flag and full SHA without converting
-  the record into a cryptographic-authenticity claim.
-- A matching SHA never excuses dirty checkout bytes, malformed shelf evidence,
-  structural/digest/path/predecessor/fork/gap/collision failure, stale Design
-  fingerprint, mixed checkpoint identity, or a non-green result.
-- An interruption or publication failure keeps prior committed receipts
-  byte-identical and remains safe to retry through the already-delivered atomic
-  publication behavior.
-
-## Design backlog — not picked up now
-
-- **Element:** `asymmetric-approval-authority`
-- **Inventory:** the blocked/conditional Design document only; it is not an
-  approved current-delivery contract, Plan task, implementation target,
-  evaluation claim, or new R-0002 debt record.
-- **Preferred future runtime:** OpenSSH `ssh-keygen -Y` verification with a
-  committed allowed-signers trust file. Verification fails closed when
-  OpenSSH is unavailable. The future design adds no signing dependency and no
-  hand-rolled cryptography.
-- **Pickup triggers:** a second operator, an untrusted producer host, or an
-  external evidence-verification requirement.
-- **Current disposition:** shelved by attributed human decision; explicitly not
-  picked up in this delivery.
-
-Because Taskplane 2.17.19 cannot delete contracts from requirement metadata,
-`contract:pickup.asymmetric-authenticity` and
-`resource:repository.pickup-public-verification-material` remain historical
-backlog inventory on R-0002. They MUST NOT create Plan tasks, implementation
-scope, acceptance/evaluation claims, graph-realization claims, or release
-claims in this delivery.
-
-## Contract handoff
-
-### Active canonical boundary ids
-
-```yaml
-contracts:
-  - contract:pickup.stateless-front-door
-  - contract:pickup.operator-trust-source
-  - contract:design.approved-contract
-  - contract:build-c.direct-assignment
-  - contract:build-c.acceptance-checkpoint
-  - contract:repository.merge-on-green
-  - resource:exports.pickup-receipts
-```
-
-### Historical backlog-only metadata
-
-```yaml
-historical_contracts_not_authorized_for_delivery:
-  - contract:pickup.asymmetric-authenticity
-  - resource:repository.pickup-public-verification-material
-```
-
-### Scope
-
-```yaml
-scope_paths:
-  - taskplane/tp.py
-  - taskplane/pickup.py
-  - taskplane/tests/test_pickup.py
-  - exports/**
-  - README.md
-  - CHANGELOG.md
-  - .codex-plugin/plugin.json
-  - .claude-plugin/plugin.json
-  - .claude-plugin/marketplace.json
-out_of_scope:
-  - hooks/**
-  - .taskplane/codex-hook.py
-  - taskplane/loop.py
-  - taskplane/build_c.py
-  - taskplane/checkpoint.py
-  - taskplane/design_contract.py
-  - taskplane/repository.py
-  - taskplane/storage.py
-  - taskplane/taskplane_lite.py
-  - plan/**
-  - backlog/**
-  - components.yaml
-  - .github/**
-  - deploy/**
-  - '**/.env'
-  - '**/secrets/**'
-dod:
-  test_command: python -m pytest taskplane/tests -q
-```
-
-If AC4 cannot be met inside these active scope paths without modifying a
-protected or asymmetric/signing surface, stop for a new human scope decision.
+1. **AC1 — Design proves native capability reuse and refuses duplicate
+   authority.** Before Plan authorization, Design contains the complete
+   evidenced Codex-native capability inventory and responsibility map. The
+   Design and architecture gate refuse Taskplane-owned scheduling, capacity,
+   reservation, admission, replay, lease-concurrency, worker-lifecycle, or
+   execution-DAG authority. Removing a native mapping or introducing duplicate
+   authority makes both the static and behavioral seam proofs fail and blocks
+   Design or Plan before Build.
+2. **AC2 — the only all-lens sweep is quick, concurrent, and Design-only.**
+   Design trace contains exactly one quick result for each of all 26 registered
+   lenses, independent lens work is concurrent, and every result is
+   dispositioned. A missing result, serial or repeated all-26 pass, automatic
+   full/deep sweep, or any all-lens worker outside Design blocks completion.
+3. **AC3 — execution starts zero Taskplane lens workers.** Real traces and the
+   native session ledger show zero Taskplane lens-worker starts in Build, Fix,
+   Evaluate, and execution-time EM, and a valid empty expected-lens collection
+   succeeds without outage handling. Any attempted start, non-empty
+   expectation, malformed empty result, or outage fallback fails before
+   dispatch or gate success.
+4. **AC4 — independent work is native-parallel and waits are event-driven.**
+   At every governed stage, each ready pairwise-disjoint task or criterion
+   appears exactly once in one deterministic native Codex dispatch set,
+   overlaps are held only for recorded dependency or ownership, and one
+   event-driven wait wakes on completion or attention. Severed readiness,
+   dispatch, completion, or wait wiring fails closed without replacement
+   Taskplane scheduling state.
+5. **AC5 — the wave ceiling and parallel-criterion rule are enforced.** The
+   approved Plan contains exactly these seven acceptance outcomes and never
+   more than eight, classifies every pair as parallel or serialized with a
+   named dependency or shared owner, and places every independent pair in the
+   same available native wave. A ninth outcome, missing classification,
+   unexplained serial edge, or false-disjoint overlap blocks Plan or dispatch.
+6. **AC6 — handoffs and operating budgets are bounded by observed native
+   truth.** Each stage receives a delta handoff strictly below 4,000 tokens
+   with all required identities and observed usage and no inherited full
+   transcript. Throughout an active production wave, native wall-time and
+   unique-session telemetry and `observed_tokens` are present, finite, and
+   never null. Before every dispatch the wave is below 8 hours, 60 unique
+   sessions, 150M total tokens, and 25M uncached input; equality, a breach, or
+   missing data stops for human scope review and cannot silently continue. A
+   second failed fix/evaluate cycle requires a human architecture or scope
+   decision.
+7. **AC7 — atomic exact-SHA terminal truth includes real-checkout wiring
+   closure.** On the final clean candidate, atomic reconciliation proves Git
+   HEAD, governed progress, run journal, tasks and gates, public report,
+   repository verification report, release evidence, and `exports/` terminal
+   evidence all name the identical full SHA, terminal status, requirement, and
+   evidence fingerprints. Every named selector, receipt, and producer edge is
+   validated and executed in the actual pinned and final candidate checkout;
+   generated temporary substitutes are prohibited, and opaque or foreign
+   wiring fingerprints cannot authorize terminal or release truth. Severing
+   any named edge makes the exact production test fail. Finalization publishes
+   all terminal projections for the exact SHA or none; stale, `executing`,
+   missing, mixed, contradictory, severed-edge, or partial truth blocks Done,
+   merge, push, and release claims. Retry converges without overwriting prior
+   immutable evidence, and no retained run remains `executing` after delivery
+   reaches main.
 
 ## Non-functional requirements
 
-- **security:** Operator-trust mode validates a human-supplied exact source SHA
-  against the shelf and existing SHA/Design-fingerprint/lineage identities and
-  fails closed before BUILD-C on every named mismatch. It makes no
-  cryptographic-authenticity claim, adds no secret/key/verifier dependency, and
-  leaves the v1 private-secret symmetric path unchanged.
-- **architecture:** Add only the narrow `--trust-source` CLI-to-pickup authority
-  projection and receipt field. Preserve the incumbent BUILD-C, checkpoint,
-  merge, atomic-publication, hook, legacy-loop, and v1 symmetric boundaries;
-  create no signer/verifier/key workflow or alternate runtime.
-- **data-safety:** The full flag and SHA are recorded verbatim as attributed
-  human authority; structural and lineage checks remain exact. All negative
-  paths preserve prior receipts byte-identically, create no authoritative
-  partial file, and authorize no checkpoint or merge.
-- **sre:** A cold same-SHA checkout with no private Taskplane home resumes
-  deterministically when the explicit trust source matches and fails by named
-  pre-BUILD-C reason when it is missing, malformed, mismatched, or paired with
-  invalid shelf/lineage evidence.
-- **integrability:** The new optional-authority mode preserves the completed
-  stateless pickup path, existing v1 symmetric behavior, public CLI contract,
-  exact full-suite command, and bounded 2.17.20 release surfaces without
-  changing hooks or the legacy loop.
+- **security:** Codex retains exclusive host execution authority. Workers
+  receive no scheduler, capacity, reservation, lease, replay, credential,
+  push, tag, publish, or irreversible authority. Duplicate or undeclared
+  capability fails closed before dispatch.
+- **architecture:** Design starts from verified Codex-native capabilities and
+  Taskplane remains an intent, contract, gate, and evidence layer. No renamed
+  or direct Taskplane scheduler, admission system, capacity model, lifecycle
+  manager, replay queue, lease-concurrency layer, or execution DAG is allowed.
+- **data-safety:** Terminal truth and usage evidence is exact-SHA bound,
+  immutable where historical, retry-safe, and rejects stale, mixed, partial,
+  forked, foreign, opaque, or contradictory updates while preserving prior
+  committed evidence bytes.
+- **sre:** Normal progress is event-driven with no scheduled polling. Missing
+  or non-finite telemetry, unobserved outstanding work, budget equality, or
+  terminal-source disagreement stops safely and identifies the unsatisfied
+  boundary.
+- **integrability:** Native Codex dispatch and existing Taskplane governance
+  entry points remain the only active production path. Named selectors,
+  receipts, producer edges, severed-edge proofs, and the final suite run
+  against the real candidate checkout, never synthesized substitutes; legacy
+  behavior outside this wave remains green.
+- **cost-finops:** Every stage handoff is below 4,000 tokens and observed root,
+  worker, and internal-helper usage stops new dispatch before 8 hours, 60
+  unique sessions, 150M total tokens, or 25M uncached input.
+- **privacy-compliance:** Telemetry is limited to delivery-control metadata
+  required by AC6 and AC7: exact SHA and non-content fingerprints,
+  requirement/contract/acceptance/task/stage identifiers, dispatch/wait and
+  terminal state, timestamps and durations, session/thread type, and aggregate
+  token counts. It must not capture source or diff bytes, prompts,
+  transcripts, model-output bodies, secrets or credentials, or personal-
+  content fields. Unexpected or free-text content is redacted or refused
+  before persistence or export. Detailed per-session telemetry remains only
+  in the private runtime until AC7 terminal reconciliation completes and is
+  then deleted or irreversibly minimized; repository `exports/` retains only
+  the redacted aggregate exact-SHA terminal projection required by AC7, never
+  a raw-session archive.
+
+## In scope
+
+- Product definition and subsequent Design/Plan boundaries for the seven
+  acceptance criteria above and only the four adopted P0 controls.
+- Existing delivery-policy, loop transition, direct-scope assignment, review,
+  evaluation, EM, progress, usage, event-wait, reporting, and terminal evidence
+  surfaces only as Design-inspected candidates.
+- Real-checkout selector, receipt, producer-edge, focused, mutation, and
+  severed-edge proof plus the final Taskplane test suite at the exact candidate
+  SHA.
+- A redacted repository-resident exact-SHA terminal projection under
+  `exports/`.
+
+## Out of scope
+
+- W31 live-host/cold-start work, historical tag or release repair, pushed-SHA
+  release closure, and all other P1/P2 retrospective follow-ups.
+- Replay or expansion of completed R-0001 feature and release work, R-0011,
+  unrelated R-0013 backlog, or another product delivery.
+- A Taskplane scheduler, reservation/admission service, host capacity model,
+  worker manager, execution DAG, replay queue, lease-concurrency layer, or
+  equivalent renamed authority.
+- Execution-time Taskplane lens workers, automatic full/deep/all-lens sweeps,
+  repeated Design sweeps, or serial all-26 review.
+- Push, tag, publication, marketplace upload, release, credential use, or
+  `origin/main` mutation.
+- Implementation during Product, Design, or Plan authoring and unrelated CI,
+  import-cycle, release-tag, package, manifest, README, or CHANGELOG changes.
+
+## Contract handoff
+
+### Active canonical boundary ids and relations
+
+```yaml
+contracts:
+  - id: contract:design.codex-native-capability-inventory
+    relation: provides
+  - id: contract:design.quick-concurrent-all-lens-sweep
+    relation: changes
+  - id: contract:delivery.execution-zero-lens
+    relation: changes
+  - id: contract:delivery.codex-native-dispatch
+    relation: changes
+  - id: contract:delivery.event-driven-wait
+    relation: changes
+  - id: contract:delivery.acceptance-wave-ceiling
+    relation: changes
+  - id: contract:delivery.bounded-stage-handoff
+    relation: changes
+  - id: contract:delivery.exact-sha-terminal-truth
+    relation: changes
+  - id: resource:exports.exact-sha-terminal-truth
+    relation: provides
+```
+
+### Context files
+
+```yaml
+context_files:
+  - specs/spec.md
+  - .taskplane/codex-hook.py
+  - skills/tp-go/**
+  - lenses/**
+  - taskplane/loop.py
+  - taskplane/build_c.py
+  - taskplane/review.py
+  - taskplane/evaluation_output.py
+  - taskplane/progress.py
+  - taskplane/spend.py
+  - taskplane/command_runtime.py
+  - taskplane/retro.py
+  - taskplane/tp.py
+  - taskplane/tests/test_loop.py
+  - taskplane/tests/test_command_adapters.py
+  - taskplane/tests/test_command_runtime.py
+  - taskplane/tests/test_v101_fixes.py
+  - docs/**
+  - exports/**
+```
+
+### Definition of Done
+
+```yaml
+dod:
+  acceptance_count: 7
+  adopted_p0_controls: 4
+  design_only_lens_sweep: quick-concurrent-all-26
+  execution_taskplane_lens_workers: 0
+  native_dispatch_owner: Codex
+  wait_mode: event
+  real_checkout_wiring: required
+  terminal_identity: atomic-exact-candidate-SHA
+  test_command: python3 -m pytest taskplane/tests -q
+```
 
 ## Open questions
 
-None. The human selected attributed operator trust and explicitly shelved
-asymmetric authenticity until a named trigger occurs.
+None. Absence of a native capability or a real-checkout wiring proof is a
+fail-closed Design finding, not permission to invent duplicate Taskplane
+authority or accept a generated substitute.

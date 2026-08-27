@@ -1,0 +1,24 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "tradeoffs",
+  "content_fingerprint": "40db587023b4f0494800b3494114dd68264a69131a87f53e2ad9dc9aaa26a236",
+  "verdict": "changes",
+  "blockers": 0,
+  "confidence": "medium",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 54,
+      "issue": "The significant cross-module choice lists gains and costs but never names the quality attribute it optimizes and the attribute it spends.",
+      "suggestion": "Add an explicit quality-attribute pair to the selected trade-off, for example authority integrity/reliability gained versus operability/modifiability spent, and apply the same labels to the closest rejected alternative."
+    },
+    {
+      "severity": "major",
+      "file": "design/contract.json",
+      "line": 115,
+      "issue": "The chosen approach is stated as a decision in the Design Contract but is not identified as a proposed D-record in the decision registry.",
+      "suggestion": "Create a proposed R-0013 decision record for native-adapter-quarantine with the four alternatives, gained/given-up/revisit evidence, and affected module globs; leave acceptance to the human Design gate."
+    }
+  ]
+}
