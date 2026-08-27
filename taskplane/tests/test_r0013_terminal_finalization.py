@@ -68,7 +68,8 @@ def _real_registered_checkout(tmp_path: Path, *, repository_fingerprint=REPOSITO
         cwd=root, check=True,
     )
     head = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True,
+        encoding="utf-8", errors="replace",
     ).strip()
     original_gettempdir = wiring_closure.tempfile.gettempdir
     wiring_closure.tempfile.gettempdir = lambda: str(tmp_path / "not-candidate-root")
@@ -115,6 +116,8 @@ def candidate_wiring_receipt(registration, *, unbroken_edge=None):
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             tracked = sibling / selector.split("::", 1)[0]
             function = selector.split("::", 1)[1]

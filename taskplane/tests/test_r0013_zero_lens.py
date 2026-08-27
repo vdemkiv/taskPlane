@@ -31,7 +31,8 @@ def _workspace(tmp_path):
     subprocess.run(["git", "commit", "-qm", "baseline"], cwd=ws,
                    check=True)
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ws,
-                          check=True, capture_output=True, text=True).stdout.strip()
+                          check=True, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace").stdout.strip()
     return ws, head
 
 

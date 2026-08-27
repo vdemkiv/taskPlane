@@ -55,7 +55,7 @@ REQUIRED_NATIVE_OWNERS: Mapping[str, str] = {
         "Codex SubagentStart/SubagentStop and provider usage observations"),
 }
 
-REQUIRED_TASKPLANE_ROLES: Mapping[str, str] = {
+REQUIRED_NATIVE_ROLES: Mapping[str, str] = {
     "spawn-and-task-identity": (
         "Emit exact task_name/role_marker/payload/model/effort and bind "
         "observed start to intent."),
@@ -354,7 +354,7 @@ def _validate_inventory(design: Mapping[str, object]) -> dict[str, Any]:
             raise NativeAuthorityError(
                 f"native capability {capability} gives Taskplane forbidden "
                 f"duplicate authority: {duplicate}")
-        if taskplane_role != REQUIRED_TASKPLANE_ROLES[capability]:
+        if taskplane_role != REQUIRED_NATIVE_ROLES[capability]:
             raise NativeAuthorityError(
                 f"native capability {capability} differs from the closed "
                 "bounded Taskplane role")

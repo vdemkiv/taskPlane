@@ -87,7 +87,7 @@ def test_new_codex_task_writes_current_compatible_receipt_only_to_locator_bound_
             result = subprocess.run(
                 commands[(hook_path, event_name)], cwd=checkout, shell=True,
                 input=json.dumps(event), text=True, capture_output=True,
-                env=environment)
+                env=environment, encoding="utf-8", errors="replace")
             assert result.returncode == 0, result.stderr
 
     receipts = {}
@@ -121,7 +121,8 @@ def test_new_codex_task_writes_current_compatible_receipt_only_to_locator_bound_
         input=json.dumps({**stable_identity,
                           "hook_event_name": "SubagentStart",
                           "session_id": "conflicting-task"}),
-        text=True, capture_output=True, env=conflicting)
+        text=True, capture_output=True, env=conflicting,
+        encoding="utf-8", errors="replace")
     assert rejected.returncode != 0
     assert {
         hook_path: (dedicated_home / "host-receipts" /
@@ -157,13 +158,15 @@ def test_missing_locator_fails_closed_for_both_hooks_and_host_native_bootstrap(
         result = subprocess.run(
             _manifest_command(manifest, "PreToolUse"), cwd=checkout,
             shell=True, input=json.dumps(event), text=True,
-            capture_output=True, env=environment)
+            capture_output=True, env=environment,
+            encoding="utf-8", errors="replace")
         assert result.returncode != 0
 
     host_native = subprocess.run(
         ["python3", str(ROOT / "hooks" / "host_native_runtime.py"),
          "check", "--host", "codex"], cwd=checkout, text=True,
-        capture_output=True, env=environment)
+        capture_output=True, env=environment,
+        encoding="utf-8", errors="replace")
     assert host_native.returncode != 0
     assert not Path(taskplane_lite.hook_claim_journal_path(
         str(checkout))).exists()

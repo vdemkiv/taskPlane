@@ -51,6 +51,8 @@ def test_public_edge_mutation_registrar_returns_live_dirty_sibling(tmp_path):
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     tracked_relative = \
         wiring_closure.R0013_NAMED_SELECTOR_INVENTORY[0].split("::", 1)[0]
@@ -60,7 +62,8 @@ def test_public_edge_mutation_registrar_returns_live_dirty_sibling(tmp_path):
         encoding="utf-8",
     )
     expected_diff = subprocess.check_output(
-        ["git", "diff", "--binary", "--", "."], cwd=sibling, text=True
+        ["git", "diff", "--binary", "--", "."], cwd=sibling, text=True,
+        encoding="utf-8", errors="replace",
     ).strip()
     original_gettempdir = wiring_closure.tempfile.gettempdir
     wiring_closure.tempfile.gettempdir = lambda: str(tmp_path / "not-a-checkout")

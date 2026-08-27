@@ -617,6 +617,7 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
         screen_environment = os.environ.copy()
         screen_environment.update(
             {"TASKPLANE_TASK": producer_slot,
+             "TASKPLANE_HOME": str(tmp_path / ".runtime-home"),
              "TASKPLANE_HOOK_PATH": "native"})
         started = subprocess.run(
             [*native_cli, "subagent-start"], cwd=workspace,

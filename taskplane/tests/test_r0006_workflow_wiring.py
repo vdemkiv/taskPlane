@@ -32,25 +32,23 @@ def _workspace(tmp_path):
     return str(workspace)
 
 
-def test_successful_fix_gate_refreshes_evaluate_target_to_repaired_tip(
+def test_successful_fix_gate_refreshes_target_without_legacy_transition(
         tmp_path, monkeypatch):
     workspace = _workspace(tmp_path)
     repaired_tip = "2" * 40
     refreshed = []
-    completions = []
 
     def refresh(primary, task_id):
         refreshed.append((primary, task_id))
         return {"branch_tip": repaired_tip}
 
-    def transition(_workspace, _state, **kwargs):
-        completions.append(kwargs["completion"])
-        return {"operation": "terminalize_and_start"}
+    def forbidden_transition(*_args, **_kwargs):
+        raise AssertionError("Fix must not call the legacy stage transition")
 
     monkeypatch.setattr(loop, "_task_dod_errors", lambda *_args: [])
     monkeypatch.setattr(
         loop.runtime_storage, "refresh_task_worktree_tip", refresh)
-    monkeypatch.setattr(loop, "_stage_loop_transition", transition)
+    monkeypatch.setattr(loop, "_stage_loop_transition", forbidden_transition)
 
     result = loop.gate.__wrapped__(workspace, "pass")
 
@@ -59,8 +57,6 @@ def test_successful_fix_gate_refreshes_evaluate_target_to_repaired_tip(
     assert state["step"] == "evaluate"
     assert state["tasks"][0]["target_commit"] == repaired_tip
     assert refreshed == [(workspace, "t02")]
-    assert completions[0]["_stage_output"]["build"]["target_commit"] == \
-        repaired_tip
 
 
 def test_fix_gate_fails_closed_when_repaired_target_cannot_be_bound(
