@@ -60,7 +60,15 @@ def pytest_runtest_logreport(report):
         f"line={int(line) + 1},"
         f"title={_workflow_command_value(nodeid, property_value=True)}"
     )
-    print(f"::error {props}::{_workflow_command_value(detail)}", flush=True)
+    command = f"::error {props}::{_workflow_command_value(detail)}\n"
+    # pytest's fd/sys capture can swallow a normal print from this hook until
+    # after the runner's workflow-command parser has stopped observing it.
+    # Write to the inherited runner descriptor so the annotation is parsed in
+    # real time; the fallback preserves useful local output on exotic hosts.
+    try:
+        _os.write(1, command.encode("utf-8", errors="replace"))
+    except OSError:
+        print(command, end="", flush=True)
 
 
 @pytest.fixture(autouse=True)
