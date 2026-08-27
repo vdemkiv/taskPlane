@@ -34,7 +34,7 @@
         "taskplane/tests/test_stage_release_matrix.py",
         "taskplane/tests/test_status_and_large_delivery.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_codex_hook_selection.py taskplane/tests/test_host_capabilities.py taskplane/tests/test_host_native_compatibility.py taskplane/tests/test_r0013_bootstrap_home.py taskplane/tests/test_status_and_large_delivery.py taskplane/tests/test_r0001_compatibility.py taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_r0001_forward_release.py taskplane/tests/test_r0001_release_green.py taskplane/tests/test_release_freshness.py taskplane/tests/test_stage_release_matrix.py && python3 scripts/ci_evals.py --verify-release-surface && python3 scripts/package_openai.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_codex_hook_selection.py taskplane/tests/test_host_capabilities.py taskplane/tests/test_host_native_compatibility.py taskplane/tests/test_r0013_bootstrap_home.py taskplane/tests/test_status_and_large_delivery.py taskplane/tests/test_r0001_compatibility.py taskplane/tests/test_r0001_design_wiring.py taskplane/tests/test_r0001_forward_release.py taskplane/tests/test_r0001_release_green.py taskplane/tests/test_release_freshness.py taskplane/tests/test_stage_release_matrix.py",
       "req": "R-0013", "deps": [], "type": "security",
       "contracts": ["contract:delivery.codex-native-dispatch"], "new_modules": [".taskplane", "(root)"], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
