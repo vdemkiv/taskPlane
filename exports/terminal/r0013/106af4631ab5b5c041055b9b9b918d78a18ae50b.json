@@ -1,0 +1,13 @@
+{
+  "schema": "taskplane.exact-sha-terminal-projection-tombstone/v1",
+  "active": false,
+  "superseded_candidate_sha": "106af4631ab5b5c041055b9b9b918d78a18ae50b",
+  "reason": "This projection predates the R-0002 remediation candidate and must not be treated as current evidence.",
+  "successor_template": "successor-template.json",
+  "successor_schema": "taskplane.r0013-exact-candidate-successor/v1",
+  "authority": {
+    "release": "not-granted",
+    "main_mutation": "not-granted",
+    "publication": "not-granted"
+  }
+}
