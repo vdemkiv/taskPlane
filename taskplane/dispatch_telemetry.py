@@ -7,17 +7,23 @@ the next dispatch when a delivery budget is reached.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import math
+import os
 import re
+import secrets
+import stat as stat_runtime
 from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any
 
 try:
-    from . import delivery_policy
+    from . import delivery_policy, spend as spend_runtime
     from .delivery_ports import Clock, canonical_json, content_fingerprint
 except ImportError:  # pragma: no cover - direct module loading
     import delivery_policy  # type: ignore
+    import spend as spend_runtime
     from delivery_ports import Clock, canonical_json, content_fingerprint  # type: ignore
 
 
@@ -29,6 +35,19 @@ DISPATCH_BINDING_SCHEMA = "taskplane.dispatch-telemetry-binding/v1"
 USAGE_INTEGRITY_SCHEMA = "taskplane.dispatch-usage-integrity/v1"
 DISPATCH_SCREEN_SCHEMA = "taskplane.native-dispatch-budget-screen/v1"
 CYCLE_DECISION_SCHEMA = "taskplane.fix-evaluate-cycle-decision/v1"
+TRANSCRIPT_PROJECTION_SCHEMA = "taskplane.transcript-usage-checkpoint/v1"
+USAGE_CAPABILITY_SCHEMA = "taskplane.host-usage-capability/v1"
+
+# Incremental totals are useful only inside the engine instance that observed
+# them.  A persisted checkpoint from another process is deliberately treated
+# as an untrusted cache miss and recomputed from the bounded transcript.  This
+# process-private key prevents a caller from editing totals (or another bound
+# field), recomputing a public digest, and turning the edit into host-observed
+# usage truth.
+_TRANSCRIPT_CHECKPOINT_AUTHORITY = secrets.token_bytes(32)
+
+MAX_TRANSCRIPT_PROJECTION_BYTES = 64 * 1024 * 1024
+MAX_TRANSCRIPT_USAGE_IDENTITIES = 100_000
 
 THREAD_TYPES = frozenset({"main", "worker", "lens", "evaluator", "guardian"})
 EVENT_KINDS = frozenset({
@@ -68,6 +87,316 @@ _STABLE_DISPATCH_IDENTITY_FIELDS = frozenset({
 
 class DispatchTelemetryError(delivery_policy.DeliveryPolicyError):
     """Telemetry input is incomplete, contradictory, or over its bound."""
+
+
+def _transcript_usage_row(row: Mapping[str, Any]) \
+        -> tuple[dict[str, Any] | None, str | None]:
+    """Return one provider usage block and its stable message identity."""
+    containers = []
+    for key in ("message", "response", "payload", "event"):
+        value = row.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+    containers.append(row)
+    for container in containers:
+        usage = container.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        identity = next((str(container.get(key)) for key in (
+            "id", "message_id", "response_id", "request_id")
+            if container.get(key) not in (None, "")), None)
+        if identity is None:
+            identity = next((str(row.get(key)) for key in (
+                "id", "message_id", "response_id", "request_id")
+                if row.get(key) not in (None, "")), None)
+        return usage, identity
+    return None, None
+
+
+def _unavailable_transcript_projection(
+        provider: str, reason: str, *, byte_limit: int,
+        bytes_read: int = 0) -> dict[str, Any]:
+    return {
+        "schema": TRANSCRIPT_PROJECTION_SCHEMA,
+        "status": "unavailable", "provider": str(provider),
+        "reason": str(reason), "bytes_read": int(bytes_read),
+        "byte_limit": int(byte_limit), "effective_tokens": None,
+        "usage": None, "source_fingerprint": None,
+    }
+
+
+def _checkpoint_authority(value: bytes | None) -> bytes:
+    authority = (_TRANSCRIPT_CHECKPOINT_AUTHORITY if value is None else value)
+    if not isinstance(authority, bytes) or len(authority) < 32:
+        raise DispatchTelemetryError(
+            "transcript checkpoint authority is invalid")
+    return authority
+
+
+def _seal_transcript_checkpoint(
+        checkpoint: Mapping[str, Any], authority: bytes) -> dict:
+    """Content-address and authenticate every checkpoint field as one unit."""
+    sealed = dict(checkpoint)
+    sealed["authority_id"] = hashlib.sha256(authority).hexdigest()
+    content_sha256 = content_fingerprint(sealed)
+    sealed["content_sha256"] = content_sha256
+    sealed["authenticator"] = hmac.new(
+        authority,
+        (TRANSCRIPT_PROJECTION_SCHEMA + "\0" + content_sha256).encode(
+            "utf-8"), hashlib.sha256).hexdigest()
+    return sealed
+
+
+def _authorized_transcript_checkpoint(
+        checkpoint: Mapping[str, Any], authority: bytes) -> bool:
+    """Accept only an intact checkpoint minted by this engine instance."""
+    try:
+        candidate = dict(checkpoint)
+        authenticator = candidate.pop("authenticator")
+        content_sha256 = candidate.pop("content_sha256")
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not isinstance(content_sha256, str) or re.fullmatch(
+            r"[0-9a-f]{64}", content_sha256) is None or \
+            not isinstance(authenticator, str) or re.fullmatch(
+                r"[0-9a-f]{64}", authenticator) is None:
+        return False
+    if candidate.get("authority_id") != hashlib.sha256(
+            authority).hexdigest() or not hmac.compare_digest(
+                content_fingerprint(candidate), content_sha256):
+        return False
+    expected = hmac.new(
+        authority,
+        (TRANSCRIPT_PROJECTION_SCHEMA + "\0" + content_sha256).encode(
+            "utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(authenticator, expected)
+
+
+def project_transcript_usage(
+        path: str, *, provider: str,
+        checkpoint: Mapping[str, Any] | None = None,
+        checkpoint_authority: bytes | None = None,
+        byte_limit: int = MAX_TRANSCRIPT_PROJECTION_BYTES
+        ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Project one selected transcript with a content-bound checkpoint.
+
+    Every call reads at most ``byte_limit`` bytes and authenticates the entire
+    previously consumed prefix before reusing totals.  Stable path/device/
+    inode/size/timestamps alone are never treated as proof that an earlier
+    prefix survived a same-inode rewrite.
+    """
+    if isinstance(byte_limit, bool) or not isinstance(byte_limit, int) or \
+            byte_limit <= 0 or byte_limit > MAX_TRANSCRIPT_PROJECTION_BYTES:
+        raise DispatchTelemetryError(
+            "transcript projection byte limit is invalid")
+    authority = _checkpoint_authority(checkpoint_authority)
+    selected = os.path.realpath(str(path or ""))
+    try:
+        with open(selected, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat_runtime.S_ISREG(before.st_mode):
+                return _unavailable_transcript_projection(
+                    provider, "selected transcript is not a regular file",
+                    byte_limit=byte_limit), None
+            if before.st_size > byte_limit:
+                return _unavailable_transcript_projection(
+                    provider, "selected transcript exceeds the byte cap",
+                    byte_limit=byte_limit), None
+            payload = stream.read(before.st_size + 1)
+            after = os.fstat(stream.fileno())
+    except OSError as exc:
+        return _unavailable_transcript_projection(
+            provider, exc.__class__.__name__, byte_limit=byte_limit), None
+    stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns",
+                     "st_ctime_ns")
+    if len(payload) != before.st_size or any(
+            getattr(before, field) != getattr(after, field)
+            for field in stable_fields):
+        return _unavailable_transcript_projection(
+            provider, "selected transcript changed during projection",
+            byte_limit=byte_limit, bytes_read=len(payload)), None
+
+    path_fingerprint = hashlib.sha256(selected.encode("utf-8")).hexdigest()
+    prior = dict(checkpoint) if isinstance(checkpoint, Mapping) else {}
+    reusable_shape = _authorized_transcript_checkpoint(prior, authority) and \
+        prior.get("schema") == TRANSCRIPT_PROJECTION_SCHEMA and \
+        prior.get("path_fingerprint") == path_fingerprint and \
+        prior.get("provider") == str(provider) and \
+        prior.get("device") == int(before.st_dev) and \
+        prior.get("inode") == int(before.st_ino) and \
+        isinstance(prior.get("offset"), int) and \
+        not isinstance(prior.get("offset"), bool) and \
+        0 <= int(prior["offset"]) <= before.st_size and \
+        isinstance(prior.get("size"), int) and \
+        not isinstance(prior.get("size"), bool) and \
+        0 <= int(prior["size"]) <= before.st_size and \
+        isinstance(prior.get("mtime_ns"), int) and \
+        not isinstance(prior.get("mtime_ns"), bool) and \
+        isinstance(prior.get("ctime_ns"), int) and \
+        not isinstance(prior.get("ctime_ns"), bool) and \
+        isinstance(prior.get("consumed_prefix_sha256"), str) and \
+        re.fullmatch(r"[0-9a-f]{64}",
+                     str(prior.get("consumed_prefix_sha256"))) is not None and \
+        isinstance(prior.get("totals"), Mapping) and \
+        isinstance(prior.get("seen_identity_hashes"), list) and \
+        len(prior["seen_identity_hashes"]) <= \
+        MAX_TRANSCRIPT_USAGE_IDENTITIES and all(
+            isinstance(value, str) and
+            re.fullmatch(r"[0-9a-f]{64}", value)
+            for value in prior["seen_identity_hashes"])
+    reusable = False
+    if reusable_shape:
+        candidate_offset = int(prior["offset"])
+        prefix_digest = hashlib.sha256(
+            payload[:candidate_offset]).hexdigest()
+        size_progress = int(prior["size"]) <= before.st_size
+        timestamp_progress = (
+            int(before.st_mtime_ns) >= int(prior["mtime_ns"]) and
+            int(before.st_ctime_ns) >= int(prior["ctime_ns"]))
+        unchanged_metadata = (
+            int(prior["size"]) != before.st_size or
+            (int(before.st_mtime_ns) == int(prior["mtime_ns"]) and
+             int(before.st_ctime_ns) == int(prior["ctime_ns"])))
+        empty_regrowth = candidate_offset == 0 and int(
+            prior["size"]) != before.st_size
+        reusable = bool(
+            size_progress and timestamp_progress and unchanged_metadata and
+            not empty_regrowth and
+            prefix_digest == prior["consumed_prefix_sha256"])
+    if reusable:
+        offset = int(prior["offset"])
+        try:
+            totals = {key: _nonnegative_integer(
+                prior["totals"].get(key, 0), f"checkpoint.{key}")
+                for key in (
+                    "uncached_input_tokens", "cached_input_tokens",
+                    "cache_creation_tokens", "output_tokens",
+                    "reasoning_tokens", "raw_total_tokens",
+                    "effective_tokens", "messages", "duplicates_removed")}
+        except DispatchTelemetryError:
+            return _unavailable_transcript_projection(
+                provider, "transcript usage checkpoint is malformed",
+                byte_limit=byte_limit), None
+        seen = set(str(value) for value in prior["seen_identity_hashes"])
+    else:
+        offset = 0
+        totals = {key: 0 for key in (
+            "uncached_input_tokens", "cached_input_tokens",
+            "cache_creation_tokens", "output_tokens", "reasoning_tokens",
+            "raw_total_tokens", "effective_tokens", "messages",
+            "duplicates_removed")}
+        seen: set[str] = set()
+
+    appended = payload[offset:]
+
+    complete_end = appended.rfind(b"\n") + 1
+    complete = appended[:complete_end]
+    for raw in complete.splitlines():
+        if len(raw) > 2 * 1024 * 1024:
+            return _unavailable_transcript_projection(
+                provider, "selected transcript record exceeds the byte cap",
+                byte_limit=byte_limit, bytes_read=len(payload)), None
+        try:
+            row = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, ValueError):
+            return _unavailable_transcript_projection(
+                provider, "selected transcript has a malformed complete record",
+                byte_limit=byte_limit, bytes_read=len(payload)), None
+        if not isinstance(row, Mapping):
+            continue
+        usage, identity = _transcript_usage_row(row)
+        if usage is None:
+            continue
+        identity_fingerprint = hashlib.sha256(
+            identity.encode("utf-8")).hexdigest() if identity else None
+        if identity_fingerprint and identity_fingerprint in seen:
+            totals["duplicates_removed"] += 1
+            continue
+        normalized = spend_runtime.normalize_usage(
+            usage, provider=str(provider))
+        if normalized.get("available") is not True:
+            return _unavailable_transcript_projection(
+                provider, str(normalized.get("reason") or
+                              "provider usage is unavailable"),
+                byte_limit=byte_limit, bytes_read=len(payload)), None
+        if identity_fingerprint:
+            if len(seen) >= MAX_TRANSCRIPT_USAGE_IDENTITIES:
+                return _unavailable_transcript_projection(
+                    provider, "selected transcript identity cap exceeded",
+                    byte_limit=byte_limit, bytes_read=len(payload)), None
+            seen.add(identity_fingerprint)
+        for key in ("uncached_input_tokens", "cached_input_tokens",
+                    "cache_creation_tokens", "output_tokens",
+                    "reasoning_tokens", "raw_total_tokens",
+                    "effective_tokens"):
+            totals[key] += int(normalized.get(key, 0))
+        totals["messages"] += 1
+
+    next_offset = offset + complete_end
+    consumed_prefix_sha256 = hashlib.sha256(
+        payload[:next_offset]).hexdigest()
+    checkpoint_row = _seal_transcript_checkpoint({
+        "schema": TRANSCRIPT_PROJECTION_SCHEMA,
+        "path_fingerprint": path_fingerprint, "provider": str(provider),
+        "device": int(before.st_dev), "inode": int(before.st_ino),
+        "mode": int(before.st_mode), "size": int(before.st_size),
+        "mtime_ns": int(before.st_mtime_ns),
+        "ctime_ns": int(before.st_ctime_ns),
+        "offset": int(next_offset),
+        "consumed_prefix_sha256": consumed_prefix_sha256,
+        "totals": totals, "seen_identity_hashes": sorted(seen),
+    }, authority)
+    usage = {
+        "input_tokens": totals["cached_input_tokens"] +
+        totals["uncached_input_tokens"],
+        "cached_input_tokens": totals["cached_input_tokens"],
+        "uncached_input_tokens": totals["uncached_input_tokens"],
+        "output_tokens": totals["output_tokens"],
+        "reasoning_tokens": totals["reasoning_tokens"],
+        "total_tokens": totals["raw_total_tokens"],
+    }
+    if totals["messages"] == 0:
+        return _unavailable_transcript_projection(
+            provider, "selected transcript has no provider usage totals",
+            byte_limit=byte_limit, bytes_read=len(payload)), checkpoint_row
+    source_fingerprint = content_fingerprint({
+        "schema": TRANSCRIPT_PROJECTION_SCHEMA,
+        "path_fingerprint": path_fingerprint,
+        "device": int(before.st_dev), "inode": int(before.st_ino),
+        "offset": int(next_offset),
+        "consumed_prefix_sha256": consumed_prefix_sha256,
+        "usage": usage,
+    })
+    return {
+        "schema": TRANSCRIPT_PROJECTION_SCHEMA, "status": "available",
+        "provider": str(provider), "reason": None,
+        "path_fingerprint": path_fingerprint,
+        "device": int(before.st_dev), "inode": int(before.st_ino),
+        "offset": int(next_offset), "size": int(before.st_size),
+        "bytes_read": len(payload), "byte_limit": int(byte_limit),
+        "messages": totals["messages"],
+        "duplicates_removed": totals["duplicates_removed"],
+        "effective_tokens": totals["effective_tokens"],
+        "usage": usage, "source_fingerprint": source_fingerprint,
+    }, checkpoint_row
+
+
+def usage_capability(usage: Mapping[str, Any] | None, *,
+                     reason: str | None = None) -> dict[str, Any]:
+    """Describe token-budget truth without turning absence into enforcement."""
+    if not isinstance(usage, Mapping):
+        return {
+            "schema": USAGE_CAPABILITY_SCHEMA, "status": "unavailable",
+            "budget_claim": False, "enforcement": "not-enforced",
+            "observed_tokens": None,
+            "reason": str(reason or "host token totals are unavailable"),
+        }
+    normalized = _usage(usage)
+    return {
+        "schema": USAGE_CAPABILITY_SCHEMA, "status": "available",
+        "budget_claim": True, "enforcement": "host-observed",
+        "observed_tokens": normalized["total_tokens"], "reason": None,
+    }
 
 
 def _nonnegative_number(value: object, label: str) -> int | float:
@@ -428,6 +757,34 @@ def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float
     }
 
 
+def ledger_usage_capability(ledger: Mapping[str, Any]) -> dict[str, Any]:
+    """Project whether this ledger has any real host-token observation."""
+    validate_ledger(ledger)
+    finalized_ids = {
+        str(row.get("dispatch_id") or "")
+        for row in ledger.get("dispatches") or []
+    }
+    rows = [
+        {field: row.get(field) for field in _USAGE_FIELDS}
+        for row in ledger.get("dispatches") or []
+    ]
+    rows.extend(
+        dict(binding["usage"])
+        for binding in ledger.get("bindings") or []
+        if binding.get("usage") is not None and
+        not binding.get("finalized_receipt_fingerprint") and
+        str(binding.get("dispatch_id") or "") not in finalized_ids
+    )
+    if not rows:
+        return usage_capability(
+            None, reason="no host token totals have been observed")
+    normalized = [_usage(row) for row in rows]
+    return usage_capability({
+        field: sum(row[field] for row in normalized)
+        for field in _USAGE_FIELDS
+    })
+
+
 
 def budget_projection(ledger: Mapping[str, Any], clock: Clock, *,
                       overrides: Mapping[str, int | float] | None = None) \
@@ -449,6 +806,7 @@ def budget_projection(ledger: Mapping[str, Any], clock: Clock, *,
         for field, value in overrides.items():
             floor = _nonnegative_number(value, f"budget.{field}")
             usage[field] = max(usage[field], floor)
+    capability = ledger_usage_capability(ledger)
     triggered = [
         {"field": field, "observed": usage[field], "ceiling": ceiling}
         for field, ceiling in WAVE_BUDGET_CEILINGS.items()
@@ -458,6 +816,9 @@ def budget_projection(ledger: Mapping[str, Any], clock: Clock, *,
         "schema": BUDGET_SCHEMA,
         "status": "human_scope_review" if triggered else "within_budget",
         "dispatch_allowed": not triggered,
+        "budget_claim": bool(capability["budget_claim"]),
+        "measurement_status": capability["status"],
+        "usage_capability": capability,
         "usage": usage,
         "ceilings": dict(WAVE_BUDGET_CEILINGS),
         "triggered": triggered,
@@ -516,15 +877,20 @@ def screen_dispatch(
         budget = budget_projection(ledger, clock, overrides=overrides)
         observed = dict(budget["usage"])
         observed_fingerprint = content_fingerprint(observed)
+        capability = dict(budget["usage_capability"])
         reason = "binding native delivery budget reached"
     except DispatchTelemetryError as exc:
         observed = {"status": "unavailable", "reason": str(exc)}
         observed_fingerprint = content_fingerprint(observed)
+        capability = usage_capability(None, reason=str(exc))
         budget = {
             "schema": BUDGET_SCHEMA,
             "status": "human_scope_review",
             "dispatch_allowed": False,
             "usage": None,
+            "budget_claim": False,
+            "measurement_status": "unavailable",
+            "usage_capability": capability,
             "ceilings": dict(WAVE_BUDGET_CEILINGS),
             "triggered": [{"field": "observed_usage", "observed": None,
                            "ceiling": "finite non-null host observation"}],
@@ -540,6 +906,7 @@ def screen_dispatch(
         "outstanding_set_fingerprint": str(outstanding_set_fingerprint),
         "observed_usage": observed,
         "observed_usage_fingerprint": observed_fingerprint,
+        "usage_capability": capability,
         "budget": budget,
         "checkpoint": None,
     }

@@ -21,6 +21,7 @@ the same lens, the same read-only harness; they just stop restating a
 document that is already on disk next to them.
 """
 import copy
+import datetime
 import glob
 import hashlib
 import hmac
@@ -30,6 +31,7 @@ import re
 import signal
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import sys
@@ -61,6 +63,9 @@ BRIEF_NAME = "blast-radius.md"
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_ROUTING_FILES = 200
 MAX_ROUTING_FILE_BYTES = 64 * 1024
+MAX_HOST_TRANSCRIPT_BYTES = 64 * 1024 * 1024
+MAX_HOST_SESSION_INDEX_BYTES = 4 * 1024 * 1024
+MAX_HOST_SESSION_INDEX_RECORDS = 4096
 CANONICAL_DIFF_TOO_LARGE = 75
 KERNEL_STATE = os.path.join(".em-review", "kernel-v2", "active.json")
 KERNEL_RUNS = os.path.join(".em-review", "kernel-v2", "runs")
@@ -113,6 +118,19 @@ def _native_approval_fingerprint(decision: dict) -> str:
 
 class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
+
+
+class HostTranscriptUnavailable(ReviewKernelError):
+    """An exact host session cannot be resolved without an unbounded walk."""
+
+    def __init__(self, reason: str):
+        self.detail = {
+            "schema": "taskplane.host-transcript-resolution/v1",
+            "status": "unavailable",
+            "reason": str(reason),
+        }
+        super().__init__(json.dumps(
+            self.detail, sort_keys=True, separators=(",", ":")))
 
 
 def _evaluate_delivery_mode_authority(
@@ -634,31 +652,223 @@ def _canonical_host_root(host: str) -> str:
         home, ".codex" if host == "codex" else ".claude"))
 
 
-def _host_review_transcripts() -> list[tuple[str, str]]:
-    """Enumerate host-owned transcripts without ambient session selection."""
-    candidates = []
-    for host, rel in (("codex", ("sessions", "**", "*.jsonl")),
-                      ("claude", ("projects", "**", "*.jsonl"))):
-        root = _canonical_host_root(host)
-        for path in glob.glob(os.path.join(root, *rel), recursive=True):
-            candidates.append((host, os.path.realpath(path)))
-    return sorted(set(candidates))
+def _review_receipt_reference(
+        receipt_ref: str | None) -> tuple[str | None, str | None, str]:
+    """Parse ``host:session:receipt`` while retaining plain-id support."""
+    value = str(receipt_ref or "").strip()
+    parts = value.split(":", 2)
+    if len(parts) == 3 and parts[0] in {"codex", "claude"} and \
+            re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", parts[1]) and parts[2]:
+        return parts[0], parts[1], parts[2]
+    return None, None, value
+
+
+def _session_index_binding(info: os.stat_result) -> tuple[int, ...]:
+    return (int(info.st_dev), int(info.st_ino), int(info.st_mode),
+            int(info.st_nlink), int(info.st_size), int(info.st_mtime_ns),
+            int(info.st_ctime_ns))
+
+
+def _host_session_index(path: str, *, root: str) -> list[dict]:
+    """Read one canonical in-root index through a stable no-follow fd."""
+    canonical_root = os.path.realpath(root)
+    selected = os.path.abspath(path)
+    try:
+        if os.path.commonpath((canonical_root, selected)) != canonical_root or \
+                os.path.realpath(selected) != selected:
+            raise HostTranscriptUnavailable(
+                "host session index is not a canonical in-root file")
+    except ValueError as exc:
+        raise HostTranscriptUnavailable(
+            "host session index path is invalid") from exc
+    try:
+        before_path = os.lstat(selected)
+    except FileNotFoundError as exc:
+        raise HostTranscriptUnavailable(
+            "host session index is missing") from exc
+    except OSError as exc:
+        raise HostTranscriptUnavailable(
+            "host session index is unavailable") from exc
+    if not stat.S_ISREG(before_path.st_mode) or before_path.st_nlink != 1:
+        raise HostTranscriptUnavailable(
+            "host session index is not a unique regular file")
+    if before_path.st_size > MAX_HOST_SESSION_INDEX_BYTES:
+        raise HostTranscriptUnavailable(
+            "host session index exceeds its byte cap")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(selected, flags)
+        before_fd = os.fstat(descriptor)
+        if _session_index_binding(before_fd) != \
+                _session_index_binding(before_path) or \
+                not stat.S_ISREG(before_fd.st_mode) or before_fd.st_nlink != 1:
+            raise HostTranscriptUnavailable(
+                "host session index changed before resolution")
+        if before_fd.st_size > MAX_HOST_SESSION_INDEX_BYTES:
+            raise HostTranscriptUnavailable(
+                "host session index exceeds its byte cap")
+        remaining = int(before_fd.st_size) + 1
+        chunks = []
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        after_fd = os.fstat(descriptor)
+        after_path = os.lstat(selected)
+    except HostTranscriptUnavailable:
+        raise
+    except OSError as exc:
+        raise HostTranscriptUnavailable(
+            "host session index is unavailable") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    expected = _session_index_binding(before_fd)
+    if len(payload) != before_fd.st_size or \
+            _session_index_binding(after_fd) != expected or \
+            _session_index_binding(after_path) != expected:
+        raise HostTranscriptUnavailable(
+            "host session index changed during resolution")
+    records = []
+    for raw in payload.splitlines():
+        if not raw:
+            continue
+        if len(records) >= MAX_HOST_SESSION_INDEX_RECORDS:
+            raise HostTranscriptUnavailable(
+                "host session index exceeds its record cap")
+        try:
+            row = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise HostTranscriptUnavailable(
+                "host session index is malformed") from exc
+        if not isinstance(row, dict):
+            raise HostTranscriptUnavailable(
+                "host session index is malformed")
+        records.append(row)
+    return records
+
+
+def _codex_session_paths(root: str, session_id: str) -> list[str]:
+    """Derive exact Codex rollout paths from one indexed UUIDv7 identity."""
+    rows = [row for row in _host_session_index(os.path.join(
+        root, "session_index.jsonl"), root=root)
+        if row.get("id") == session_id]
+    if len(rows) != 1:
+        raise HostTranscriptUnavailable(
+            "host session identity is missing or ambiguous in its index")
+    match = re.fullmatch(
+        r"([0-9a-fA-F]{8})-([0-9a-fA-F]{4})-7[0-9a-fA-F]{3}-"
+        r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}", session_id)
+    if not match:
+        raise HostTranscriptUnavailable(
+            "indexed Codex session identity is not a UUIDv7")
+    milliseconds = int(match.group(1) + match.group(2), 16)
+    instants = {
+        datetime.datetime.fromtimestamp(milliseconds / 1000),
+        datetime.datetime.fromtimestamp(
+            milliseconds / 1000, tz=datetime.timezone.utc).replace(
+                tzinfo=None),
+    }
+    paths = []
+    for instant in instants:
+        stamp = instant.strftime("%Y-%m-%dT%H-%M-%S")
+        candidate = os.path.realpath(os.path.join(
+            root, "sessions", instant.strftime("%Y"),
+            instant.strftime("%m"), instant.strftime("%d"),
+            f"rollout-{stamp}-{session_id}.jsonl"))
+        try:
+            if os.path.commonpath((root, candidate)) == root and \
+                    os.path.isfile(candidate):
+                paths.append(candidate)
+        except ValueError:
+            continue
+    return sorted(set(paths))
+
+
+def _claude_session_paths(root: str, session_id: str) -> list[str]:
+    """Derive one exact Claude transcript from its bounded history index."""
+    rows = [row for row in _host_session_index(os.path.join(
+        root, "history.jsonl"), root=root)
+        if row.get("sessionId") == session_id]
+    projects = {str(row.get("project") or "") for row in rows
+                if str(row.get("project") or "")}
+    if len(projects) != 1:
+        raise HostTranscriptUnavailable(
+            "host session identity is missing or ambiguous in its index")
+    project = next(iter(projects))
+    project_key = re.sub(r"[/\\\\]", "-", project)
+    candidate = os.path.realpath(os.path.join(
+        root, "projects", project_key, session_id + ".jsonl"))
+    try:
+        if os.path.commonpath((root, candidate)) != root:
+            raise HostTranscriptUnavailable(
+                "indexed host session path escapes its canonical root")
+    except ValueError as exc:
+        raise HostTranscriptUnavailable(
+            "indexed host session path is invalid") from exc
+    return [candidate] if os.path.isfile(candidate) else []
+
+
+def _host_review_transcripts(
+        receipt_ref: str | None = None) -> list[tuple[str, str]]:
+    """Resolve exactly one indexed host transcript without walking history."""
+    host_hint, session_hint, _ = _review_receipt_reference(receipt_ref)
+    if session_hint is None and host_hint is None:
+        ambient = (("codex", os.environ.get("CODEX_THREAD_ID")),
+                   ("claude", os.environ.get("CLAUDE_SESSION_ID")))
+        resolved = []
+        for ambient_host, ambient_session in ambient:
+            value = str(ambient_session or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", value):
+                continue
+            try:
+                resolved.extend(_host_review_transcripts(
+                    f"{ambient_host}:{value}:ambient-selection"))
+            except HostTranscriptUnavailable:
+                continue
+        if len(resolved) == 1:
+            return resolved
+        if len(resolved) > 1:
+            raise HostTranscriptUnavailable(
+                "ambient host session identity is ambiguous")
+        raise HostTranscriptUnavailable(
+            "an exact host session identity is unavailable")
+    if host_hint is None or session_hint is None:
+        raise HostTranscriptUnavailable(
+            "an exact host session identity is required")
+    root = os.path.realpath(_canonical_host_root(host_hint))
+    paths = (_codex_session_paths(root, session_hint)
+             if host_hint == "codex" else
+             _claude_session_paths(root, session_hint))
+    if len(paths) != 1:
+        raise HostTranscriptUnavailable(
+            "indexed host transcript path is missing or ambiguous")
+    return [(host_hint, paths[0])]
 
 
 def _host_review_records(path: str) -> list[dict]:
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as stream:
-            start = max(0, size - 8 * 1024 * 1024)
+            start = max(0, size - MAX_HOST_TRANSCRIPT_BYTES)
             stream.seek(start)
+            payload = stream.read(MAX_HOST_TRANSCRIPT_BYTES)
             if start:
-                stream.readline()
-            lines = stream.readlines()
+                first_complete = payload.find(b"\n")
+                payload = (payload[first_complete + 1:]
+                           if first_complete >= 0 else b"")
     except OSError as exc:
         raise ReviewKernelError(
             "review action host transcript is unavailable") from exc
     records = []
-    for raw in lines:
+    for raw in payload.splitlines():
         if len(raw) > 2 * 1024 * 1024:
             continue
         try:
@@ -708,14 +918,15 @@ def _host_review_action_receipt(*, run_id: str, action_id: str,
     wanted_ref = str(receipt_ref or "").strip()
     if wanted_ref in {"", "latest"}:
         wanted_ref = ""
+    _, _, wanted_receipt = _review_receipt_reference(wanted_ref)
     matches = []
-    for host, path in _host_review_transcripts():
+    for host, path in _host_review_transcripts(wanted_ref):
         for record in reversed(_host_review_records(path)):
             observed = _host_user_message(host, record)
             if not observed:
                 continue
             message_id, turn_id, texts = observed
-            if expected not in texts or (wanted_ref and wanted_ref not in {
+            if expected not in texts or (wanted_receipt and wanted_receipt not in {
                     message_id, turn_id}):
                 continue
             receipt_id = message_id or turn_id
@@ -835,11 +1046,12 @@ def _host_review_execution_receipt(
     wanted_ref = str(receipt_ref or "").strip()
     if wanted_ref in {"", "latest"}:
         wanted_ref = ""
+    _, _, wanted_receipt = _review_receipt_reference(wanted_ref)
     allowed = ({"exec", "exec_command", "bash", "shell"}
                if kind == "dynamic_validation" else
                {"visualize", "browser", "screenshot", "imagegen"})
     matches = []
-    for host, path in _host_review_transcripts():
+    for host, path in _host_review_transcripts(wanted_ref):
         records = _host_review_records(path)
         after_index = max((index for index, record in enumerate(records)
                            if (lambda observed: observed and
@@ -855,7 +1067,8 @@ def _host_review_execution_receipt(
                     not _tool_action_binding(
                         result.get("input"), run_id=run_id,
                         action_id=action_id, kind=kind) or \
-                    (wanted_ref and wanted_ref != result["receipt_id"]):
+                    (wanted_receipt and
+                     wanted_receipt != result["receipt_id"]):
                 continue
             raw = _tool_result_bytes(result["result"])
             exit_code = result.get("exit_code")
