@@ -1,122 +1,291 @@
 {
-  "requirement": "R-0013",
+  "schema": "taskplane.plan/v1",
+  "requirement": "R-0002",
   "delivery_mode": "build",
   "automatic_lenses": [],
-  "plan_authority": "Codex-native orchestration is the sole execution authority. Taskplane governs contracts, classifies dependencies and scopes, emits deterministic intents, prepares worktrees and checkpoints, and observes evidence only; delivery uses direct Codex assignments. Taskplane owns no scheduler, capacity model, reservation, admission queue, replay queue, lease-concurrency, worker-lifecycle, or execution-DAG authority. delivery_mode=build; automatic_lenses=[]",
+  "design_fingerprint": "ac5709a4a381d44556318207d8f9a34c98d9bdd69ff1fe74d7408a9f9505d8fe",
+  "plan_authority": "Codex native subagents execute every ready pairwise-disjoint Build set in parallel. Taskplane classifies dependencies, emits scoped contracts, validates evidence, and holds orchestrator and human gates; it supplies zero Build, Fix, Evaluate, or execution-time EM lens workers.",
+  "impact": {"files_argument_count": 44, "touched_modules": ["(root)", ".codex-plugin", ".github/workflows", "design", "docs", "exports/terminal", "scripts", "skills/tp-help", "specs", "taskplane", "taskplane/tests"], "total_impacted": 24, "unknown_modules": [], "graph_fingerprint": "49e6d05913fc158ef52b3386afc184735ab88015a886c78cd6b2897e7a6a10e8", "scanned_revision": "00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085", "truncated_by_result_ceiling": true, "depth_truncated": false},
+  "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+  "traceability": {
+    "canonical_source": "design/contract.json#/finding_map",
+    "canonical_review": ".em-review/findings.json",
+    "inventory": {"total": 72, "high": 34, "medium": 28, "low": 10},
+    "ownership_rule": "Each finding appears exactly once in a Build owner's findings list. HG-EVAL independently evaluates all 34 highs and FINAL-EVAL independently evaluates all 72 without taking Build ownership.",
+    "low_companions": {"H2": {"L-02": "HX-GRAPH"}, "H3": {"L-01": "H3-A", "L-04": "H3-C"}, "M1": {"L-06": "M1-C", "L-10": "M1-F"}, "M2": {"L-03": "M2-A", "L-05": "M2-C", "L-07": "M2-C", "L-08": "M2-C", "L-09": "M2-C"}}
+  },
   "tasks": [
     {
-      "id": "t01-ac1-native-authority-readiness",
-      "scope": ["taskplane/native_authority.py", "taskplane/tests/test_r0013_native_authority.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_authority.py::test_complete_native_capability_map_is_required_by_design_and_plan",
-      "req": "R-0013", "deps": [], "type": "architecture",
-      "contracts": ["contract:design.codex-native-capability-inventory"], "new_modules": ["taskplane/native_authority.py"], "design_edges": [],
+      "id": "H1-A", "wave": "H1", "owner": "terminal-and-cas",
+      "scope": ["taskplane/terminal_truth.py", "taskplane/delivery_ports.py", "taskplane/tests/test_em_h1_terminal.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_terminal.py",
+      "req": "R-0002", "deps": [], "type": "reliability",
+      "contracts": ["contract:runtime.durable-state-and-authority", "contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC1: Before Plan authorization, Design contains the complete evidenced Codex-native capability inventory and responsibility map; the Design and architecture gate refuse Taskplane-owned scheduling, capacity, reservation, admission, replay, lease-concurrency, worker-lifecycle, or execution-DAG authority, and removing a native mapping or introducing duplicate authority makes both static and behavioral seam proofs fail and blocks Design or Plan before Build."]
+      "findings": ["H-03", "H-04", "H-05", "H-06"],
+      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
     },
     {
-      "id": "t02-ac2-design-sweep-readiness",
-      "scope": ["taskplane/design_sweep.py", "taskplane/tests/test_r0013_design_sweep.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_design_sweep.py",
-      "req": "R-0013", "deps": [], "type": "reliability",
-      "contracts": ["contract:design.quick-concurrent-all-lens-sweep"], "new_modules": ["taskplane/design_sweep.py"], "design_edges": [],
+      "id": "H1-B", "wave": "H1", "owner": "journal-and-observation",
+      "scope": ["taskplane/run_store.py", "taskplane/producer_observation.py", "taskplane/tests/test_em_h1_journal.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_journal.py",
+      "req": "R-0002", "deps": [], "type": "reliability",
+      "contracts": ["contract:runtime.durable-state-and-authority"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC2: Design trace contains exactly one quick result for each of all 26 registered lenses, independent lens work is concurrent, and every result is dispositioned; a missing result, serial or repeated all-26 pass, automatic full/deep sweep, or any all-lens worker outside Design blocks completion."]
+      "findings": ["H-07", "H-08"],
+      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
     },
     {
-      "id": "t03-ac3-zero-lens-readiness",
-      "scope": ["taskplane/delivery_policy.py", "taskplane/review.py", "taskplane/evaluation_output.py", "taskplane/tests/test_r0013_zero_lens.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_zero_lens.py::test_empty_expected_collection_is_valid_success taskplane/tests/test_r0013_zero_lens.py::test_nonempty_malformed_or_outage_fallback_refuses_before_dispatch_or_gate taskplane/tests/test_r0001_delivery_mode.py::test_empty_expected_lenses_emits_successful_collection_receipt",
-      "req": "R-0013", "deps": [], "type": "security",
-      "contracts": ["contract:delivery.execution-zero-lens"], "new_modules": [], "design_edges": [],
+      "id": "H1-C", "wave": "H1", "owner": "durable-store-and-readonly",
+      "scope": ["taskplane/taskplane_lite.py", "taskplane/tests/test_em_h1_store.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_store.py",
+      "req": "R-0002", "deps": [], "type": "security",
+      "contracts": ["contract:runtime.durable-state-and-authority", "contract:quality.review-remediation"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC3: Real traces and the native session ledger show zero Taskplane lens-worker starts in Build, Fix, Evaluate, and execution-time EM, and a valid empty expected-lens collection succeeds without outage handling; any attempted start, non-empty expectation, malformed empty result, or outage fallback fails before dispatch or gate success."]
+      "findings": ["H-14", "H-15", "H-30"],
+      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
     },
     {
-      "id": "t04-ac4-native-dispatch-readiness",
-      "scope": ["taskplane/plan_topology.py", "taskplane/build_c.py", "taskplane/command_runtime.py", "taskplane/tests/test_r0013_native_dispatch.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_dispatch.py::test_every_ready_disjoint_unit_is_emitted_once_in_one_native_set taskplane/tests/test_r0013_native_dispatch.py::test_build_c_consumes_one_sealed_ready_set_without_reclassification taskplane/tests/test_r0013_native_dispatch.py::test_one_native_wait_wakes_on_completion_or_attention taskplane/tests/test_r0013_native_dispatch.py::test_silent_transport_deadline_returns_one_attention_before_wave_ceiling taskplane/tests/test_command_adapters.py::test_no_event_host_uses_one_runtime_blocking_wait_and_zero_model_polls",
-      "req": "R-0013", "deps": [], "type": "integration",
-      "contracts": ["contract:delivery.codex-native-dispatch", "contract:delivery.event-driven-wait"], "new_modules": [], "design_edges": [],
+      "id": "H1-D", "wave": "H1", "owner": "release-compatibility",
+      "scope": ["scripts/package_openai.py", "design/compatibility.json", "taskplane/tests/test_em_h1_release.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_release.py",
+      "req": "R-0002", "deps": [], "type": "reliability",
+      "contracts": ["contract:release.compatibility-and-authority"], "new_modules": [],
+      "design_edges": ["scripts->contract:release.compatibility-and-authority:consumes", "design->contract:release.compatibility-and-authority:provides"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC4: At every governed stage, each ready pairwise-disjoint task or criterion appears exactly once in one deterministic native Codex dispatch set, overlaps are held only for recorded dependency or ownership, and one event-driven wait wakes on completion or attention; severed readiness, dispatch, completion, or wait wiring fails closed without replacement Taskplane scheduling state."]
+      "findings": ["H-19", "H-22", "H-26"],
+      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
     },
     {
-      "id": "t05-ac5-plan-boundary-readiness",
-      "scope": ["taskplane/design_contract.py", "taskplane/tests/test_r0013_wave_ceiling.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_wave_ceiling.py",
-      "req": "R-0013", "deps": [], "type": "architecture",
-      "contracts": ["contract:delivery.acceptance-wave-ceiling"], "new_modules": [], "design_edges": [],
+      "id": "H1-E", "wave": "H1", "owner": "validation-sandbox-deadline",
+      "scope": ["taskplane/review.py", "taskplane/tests/test_em_h1_sandbox.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_sandbox.py",
+      "req": "R-0002", "deps": [], "type": "reliability",
+      "contracts": ["contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC5: The approved Plan contains exactly these seven acceptance outcomes and never more than eight, classifies every pair as parallel or serialized with a named dependency or shared owner, and places every independent pair in the same available native wave; a ninth outcome, missing classification, unexplained serial edge, or false-disjoint overlap blocks Plan or dispatch."]
+      "findings": ["H-34"],
+      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
     },
     {
-      "id": "t06-ac6-native-budget-readiness",
-      "scope": ["taskplane/brief_projection.py", "taskplane/dispatch_telemetry.py", "taskplane/progress.py", "taskplane/spend.py", "taskplane/tests/test_r0013_native_budget.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_budget.py::test_missing_or_malformed_host_usage_fails_closed_before_next_dispatch taskplane/tests/test_r0013_native_budget.py::test_breach_stops_before_any_next_spawn taskplane/tests/test_r0013_native_budget.py::test_active_usage_contributes_to_all_four_budget_totals taskplane/tests/test_r0013_native_budget.py::test_delta_handoff_is_below_4000_tokens_and_contains_only_required_fields taskplane/tests/test_r0013_native_budget.py::test_second_fix_evaluate_failure_requires_human_decision",
-      "req": "R-0013", "deps": [], "type": "performance",
-      "contracts": ["contract:delivery.bounded-stage-handoff"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC6: Each stage receives a delta handoff strictly below 4000 tokens with all required identities and observed usage and no inherited full transcript; throughout an active production wave native wall-time and unique-session telemetry and observed_tokens are present, finite, and never null, and before every dispatch the wave is below 8 hours, 60 unique sessions, 150M total tokens, and 25M uncached input, with equality, a breach, or missing data stopping for human scope review and unable to continue silently; a second failed fix/evaluate cycle requires a human architecture or scope decision."]
+      "id": "H1-I", "wave": "H1", "owner": "foundation-integration",
+      "scope": ["taskplane/remediation_trace.py", "taskplane/tests/test_em_h1_integration.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_integration.py::test_ac2_h1_contracts_close_at_one_sha",
+      "req": "R-0002", "deps": ["H1-A", "H1-B", "H1-C", "H1-D", "H1-E"], "type": "integration",
+      "contracts": ["contract:runtime.durable-state-and-authority", "contract:release.compatibility-and-authority", "contract:quality.review-remediation", "resource:review.finding-traceability"],
+      "new_modules": ["taskplane/remediation_trace.py"], "design_edges": ["taskplane->contract:runtime.durable-state-and-authority:provides"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
+      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
     },
     {
-      "id": "t07-ac7-terminal-truth-readiness",
-      "scope": ["taskplane/wiring_closure.py", "taskplane/terminal_truth.py", "taskplane/repository.py", "taskplane/views.py", "taskplane/release_evidence.py", "taskplane/checkpoint.py", "taskplane/tests/test_r0013_terminal_finalization.py", "taskplane/tests/test_r0013_real_checkout_wiring.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_terminal_finalization.py::test_finalization_refuses_each_missing_nonterminal_or_mixed_sha_surface taskplane/tests/test_r0013_terminal_finalization.py::test_finalize_replay_is_idempotent_on_one_sha taskplane/tests/test_r0013_terminal_finalization.py::test_crash_before_terminal_cas_publishes_no_terminal_authority taskplane/tests/test_r0013_terminal_finalization.py::test_post_cas_missing_projection_blocks_then_reconciles_byte_identically taskplane/tests/test_r0013_terminal_finalization.py::test_terminal_fault_matrix_covers_prepare_fsync_cas_and_reconcile_boundaries taskplane/tests/test_r0013_terminal_finalization.py::test_unauthorized_task_cannot_advance_terminal_head taskplane/tests/test_r0013_terminal_finalization.py::test_cleanup_waits_for_successful_reconciliation_receipt taskplane/tests/test_r0013_terminal_finalization.py::test_sha_changing_merge_invalidates_finalization taskplane/tests/test_r0013_real_checkout_wiring.py::test_candidate_receipt_refuses_non_git_temp_or_head_mismatch taskplane/tests/test_r0013_real_checkout_wiring.py::test_release_refuses_opaque_or_foreign_checkout_wiring_fingerprint",
-      "req": "R-0013", "deps": [], "type": "reliability",
-      "contracts": ["contract:delivery.exact-sha-terminal-truth", "resource:exports.exact-sha-terminal-truth"], "new_modules": ["taskplane/terminal_truth.py", "exports/terminal"], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC7: On the final clean candidate, atomic reconciliation proves Git HEAD, governed progress, run journal, tasks and gates, public report, repository verification report, release evidence, and exports terminal evidence all name the identical full SHA, terminal status, requirement, and evidence fingerprints; every named selector, receipt, and producer edge is validated and executed in the actual pinned and final candidate checkout, generated temporary substitutes are prohibited, opaque or foreign wiring fingerprints cannot authorize terminal or release truth, and severing any named edge makes the exact production test fail; finalization publishes all terminal projections for the exact SHA or none, and stale, executing, missing, mixed, contradictory, severed-edge, or partial truth blocks Done, merge, push, and release claims, while retry converges without overwriting immutable evidence and no retained run remains executing after delivery reaches main."]
+      "id": "H2-A", "wave": "H2", "owner": "python-quality-ci",
+      "scope": [".github/workflows/ci.yml", "pyproject.toml", "requirements-dev.lock", "taskplane/tests/test_em_h2_quality.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_quality.py",
+      "req": "R-0002", "deps": ["H1-I"], "type": "quality",
+      "contracts": ["contract:ci.reproducible-python-quality", "contract:quality.review-remediation"], "new_modules": [],
+      "design_edges": [".github/workflows->contract:ci.reproducible-python-quality:provides", "taskplane/tests->contract:ci.reproducible-python-quality:consumes"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-09"],
+      "criteria": ["AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence."]
     },
     {
-      "id": "t08-native-delivery-integration",
-      "scope": ["taskplane/loop.py", "taskplane/tp.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_authority.py::test_static_delivery_roots_reject_forbidden_taskplane_authority taskplane/tests/test_r0013_native_authority.py::test_loop_wave_never_calls_stage_split_resume_or_execution_root_claim taskplane/tests/test_r0013_native_authority.py::test_cut_ready_to_native_intent_fails_before_worktree_or_state taskplane/tests/test_r0013_zero_lens.py::test_build_fix_evaluate_and_em_start_zero_taskplane_lens_workers taskplane/tests/test_r0013_native_dispatch.py::test_severed_readiness_dispatch_completion_and_wait_fail_without_fallback taskplane/tests/test_r0013_native_dispatch.py::test_stage_journal_has_no_agent_dispatch_or_execution_root_projection taskplane/tests/test_r0013_native_budget.py::test_live_hook_dispatch_populates_active_observed_tokens taskplane/tests/test_r0013_native_budget.py::test_cut_screen_dispatch_to_telemetry_binding_refuses_dispatch taskplane/tests/test_r0013_real_checkout_wiring.py::test_cut_design_wiring_validator_from_checkpoint_fails_closed",
-      "req": "R-0013", "deps": ["t01-ac1-native-authority-readiness", "t02-ac2-design-sweep-readiness", "t03-ac3-zero-lens-readiness", "t04-ac4-native-dispatch-readiness", "t05-ac5-plan-boundary-readiness", "t06-ac6-native-budget-readiness", "t07-ac7-terminal-truth-readiness"], "type": "integration",
-      "contracts": ["contract:design.codex-native-capability-inventory", "contract:design.quick-concurrent-all-lens-sweep", "contract:delivery.execution-zero-lens", "contract:delivery.codex-native-dispatch", "contract:delivery.event-driven-wait", "contract:delivery.acceptance-wave-ceiling", "contract:delivery.bounded-stage-handoff", "contract:delivery.exact-sha-terminal-truth"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": [
-        "AC1: Before Plan authorization, Design contains the complete evidenced Codex-native capability inventory and responsibility map; the Design and architecture gate refuse Taskplane-owned scheduling, capacity, reservation, admission, replay, lease-concurrency, worker-lifecycle, or execution-DAG authority, and removing a native mapping or introducing duplicate authority makes both static and behavioral seam proofs fail and blocks Design or Plan before Build.",
-        "AC3: Real traces and the native session ledger show zero Taskplane lens-worker starts in Build, Fix, Evaluate, and execution-time EM, and a valid empty expected-lens collection succeeds without outage handling; any attempted start, non-empty expectation, malformed empty result, or outage fallback fails before dispatch or gate success.",
-        "AC4: At every governed stage, each ready pairwise-disjoint task or criterion appears exactly once in one deterministic native Codex dispatch set, overlaps are held only for recorded dependency or ownership, and one event-driven wait wakes on completion or attention; severed readiness, dispatch, completion, or wait wiring fails closed without replacement Taskplane scheduling state.",
-        "AC6: Each stage receives a delta handoff strictly below 4000 tokens with all required identities and observed usage and no inherited full transcript; throughout an active production wave native wall-time and unique-session telemetry and observed_tokens are present, finite, and never null, and before every dispatch the wave is below 8 hours, 60 unique sessions, 150M total tokens, and 25M uncached input, with equality, a breach, or missing data stopping for human scope review and unable to continue silently; a second failed fix/evaluate cycle requires a human architecture or scope decision.",
-        "AC7: On the final clean candidate, atomic reconciliation proves Git HEAD, governed progress, run journal, tasks and gates, public report, repository verification report, release evidence, and exports terminal evidence all name the identical full SHA, terminal status, requirement, and evidence fingerprints; every named selector, receipt, and producer edge is validated and executed in the actual pinned and final candidate checkout, generated temporary substitutes are prohibited, opaque or foreign wiring fingerprints cannot authorize terminal or release truth, and severing any named edge makes the exact production test fail; finalization publishes all terminal projections for the exact SHA or none, and stale, executing, missing, mixed, contradictory, severed-edge, or partial truth blocks Done, merge, push, and release claims, while retry converges without overwriting immutable evidence and no retained run remains executing after delivery reaches main."
-      ]
+      "id": "H2-B", "wave": "H2", "owner": "production-roots-and-preview",
+      "scope": ["taskplane/native_authority.py", "taskplane/design_sweep.py", "taskplane/preview_runtime.py", "taskplane/tests/test_em_h2_wiring.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_wiring.py",
+      "req": "R-0002", "deps": ["H1-I"], "type": "architecture", "contracts": ["contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-10", "H-11", "H-12", "H-29"],
+      "criteria": ["AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence."]
     },
     {
-      "id": "t09-ac7-exact-sha-e2e-and-closure",
-      "scope": ["exports/terminal/r0013/**"],
-      "tests": "python3 -m pytest taskplane/tests -q",
-      "req": "R-0013", "deps": ["t08-native-delivery-integration"], "type": "reliability",
-      "contracts": ["contract:design.codex-native-capability-inventory", "contract:design.quick-concurrent-all-lens-sweep", "contract:delivery.execution-zero-lens", "contract:delivery.codex-native-dispatch", "contract:delivery.event-driven-wait", "contract:delivery.acceptance-wave-ceiling", "contract:delivery.bounded-stage-handoff", "contract:delivery.exact-sha-terminal-truth", "resource:exports.exact-sha-terminal-truth"],
-      "new_modules": [".codex", "design", "exports", "lenses", "plan", "skills/tp-go", "taskplane", "taskplane/tests", "taskplane/native_authority.py", "taskplane/design_sweep.py", "taskplane/terminal_truth.py", "exports/terminal"],
-      "design_edges": [
-        "design->contract:design.codex-native-capability-inventory:provides",
-        "contract:design.codex-native-capability-inventory->taskplane/native_authority.py:validated-by",
-        "taskplane/native_authority.py->plan:blocks",
-        "lenses->contract:design.quick-concurrent-all-lens-sweep:catalog-input",
-        "contract:design.quick-concurrent-all-lens-sweep->taskplane/design_sweep.py:validated-by",
-        "taskplane/design_sweep.py->design:evidence",
-        "taskplane->contract:delivery.execution-zero-lens:changes",
-        "contract:delivery.execution-zero-lens->taskplane/tests:verified-by",
-        "plan->contract:delivery.acceptance-wave-ceiling:changes",
-        "contract:delivery.acceptance-wave-ceiling->taskplane:consumed-by",
-        "taskplane->contract:delivery.codex-native-dispatch:intent",
-        "contract:delivery.codex-native-dispatch->ext:codex-native-orchestration:transported-by",
-        "ext:codex-native-orchestration->contract:delivery.event-driven-wait:completion-attention",
-        "contract:delivery.event-driven-wait->taskplane:observed-by",
-        "taskplane->contract:delivery.bounded-stage-handoff:changes",
-        "contract:delivery.bounded-stage-handoff->ext:codex-native-orchestration:handoff",
-        "taskplane->contract:delivery.exact-sha-terminal-truth:changes",
-        "contract:delivery.exact-sha-terminal-truth->taskplane/terminal_truth.py:coordinated-by",
-        "taskplane/terminal_truth.py->exports:projects",
-        "exports->resource:exports.exact-sha-terminal-truth:provides",
-        "resource:exports.exact-sha-terminal-truth->contract:delivery.exact-sha-terminal-truth:bound-by",
-        "taskplane/native_authority.py->taskplane:consumed-by",
-        "taskplane/design_sweep.py->taskplane:consumed-by",
-        "taskplane/terminal_truth.py->taskplane:consumed-by"
-      ],
+      "id": "H2-C", "wave": "H2", "owner": "review-and-budget-bounds",
+      "scope": ["taskplane/tp.py", "taskplane/review.py", "taskplane/dispatch_telemetry.py", "taskplane/tests/test_em_h2_bounds.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_bounds.py",
+      "req": "R-0002", "deps": ["H1-I"], "type": "performance", "contracts": ["contract:quality.review-remediation"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-13", "H-27", "H-28", "H-33"],
+      "criteria": ["AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence."]
+    },
+    {
+      "id": "HX-GRAPH", "wave": "H2+H3", "owner": "graph-interaction-and-routing",
+      "scope": ["components.yaml", "taskplane/depgraph.py", "taskplane/graph_primitives.py", "taskplane/lens.py", "taskplane/glob_match.py", "taskplane/tests/test_em_hx_graph.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_hx_graph.py",
+      "req": "R-0002", "deps": ["H1-I"], "type": "architecture",
+      "contracts": ["contract:dashboard.accessible-truthful-actions", "contract:delivery.production-wiring", "contract:quality.review-remediation"],
+      "new_modules": ["taskplane/glob_match.py"], "design_edges": ["taskplane/glob_match.py->contract:quality.review-remediation:provides", "taskplane->taskplane/glob_match.py:uses"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-02", "H-31", "L-02"],
+      "criteria": ["AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence.", "AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths."]
+    },
+    {
+      "id": "H2-I", "wave": "H2", "owner": "production-bounds-integration",
+      "scope": ["taskplane/tests/test_em_h2_integration.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_integration.py::test_ac3_live_wiring_bounds_and_quality",
+      "req": "R-0002", "deps": ["H2-A", "H2-B", "H2-C", "HX-GRAPH"], "type": "integration",
+      "contracts": ["contract:quality.review-remediation", "contract:delivery.production-wiring", "contract:ci.reproducible-python-quality"], "new_modules": [],
+      "design_edges": ["taskplane->contract:delivery.production-wiring:provides"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
+      "criteria": ["AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence."]
+    },
+    {
+      "id": "H3-A", "wave": "H3", "owner": "dashboard-controls",
+      "scope": ["taskplane/dashboard.py", "taskplane/tests/test_em_h3_dashboard.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h3_dashboard.py",
+      "req": "R-0002", "deps": ["H1-I"], "type": "accessibility", "contracts": ["contract:dashboard.accessible-truthful-actions"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC7: On the final clean candidate, atomic reconciliation proves Git HEAD, governed progress, run journal, tasks and gates, public report, repository verification report, release evidence, and exports terminal evidence all name the identical full SHA, terminal status, requirement, and evidence fingerprints; every named selector, receipt, and producer edge is validated and executed in the actual pinned and final candidate checkout, generated temporary substitutes are prohibited, opaque or foreign wiring fingerprints cannot authorize terminal or release truth, and severing any named edge makes the exact production test fail; finalization publishes all terminal projections for the exact SHA or none, and stale, executing, missing, mixed, contradictory, severed-edge, or partial truth blocks Done, merge, push, and release claims, while retry converges without overwriting immutable evidence and no retained run remains executing after delivery reaches main."]
+      "findings": ["H-01", "H-16", "H-17", "H-18", "H-20", "H-21", "L-01"],
+      "criteria": ["AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths."]
+    },
+    {
+      "id": "H3-C", "wave": "H3", "owner": "privacy-and-retention",
+      "scope": ["taskplane/command_runtime.py", "taskplane/loop.py", "taskplane/taskplane_lite.py", "taskplane/tests/test_em_h3_privacy.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h3_privacy.py",
+      "req": "R-0002", "deps": ["H1-I"], "type": "security", "contracts": ["contract:privacy.retention-and-disclosure"], "new_modules": [],
+      "design_edges": ["taskplane->contract:privacy.retention-and-disclosure:provides"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-23", "H-24", "H-25", "L-04"],
+      "criteria": ["AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths."]
+    },
+    {
+      "id": "H3-D", "wave": "H3", "owner": "exact-sha-terminal-export",
+      "scope": ["exports/terminal/r0013/**", "taskplane/tests/test_em_h3_terminal_export.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h3_terminal_export.py",
+      "req": "R-0002", "deps": ["H1-A", "H1-D"], "type": "reliability", "contracts": ["contract:release.compatibility-and-authority", "resource:review.exact-candidate-evidence"], "new_modules": [],
+      "design_edges": ["exports/terminal->contract:release.compatibility-and-authority:provides"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-32"],
+      "criteria": ["AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths."]
+    },
+    {
+      "id": "H3-I", "wave": "H3", "owner": "human-truth-integration",
+      "scope": ["taskplane/tests/test_em_h3_integration.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h3_integration.py::test_ac4_human_privacy_and_terminal_truth",
+      "req": "R-0002", "deps": ["H3-A", "H3-C", "H3-D", "HX-GRAPH"], "type": "integration",
+      "contracts": ["contract:dashboard.accessible-truthful-actions", "contract:privacy.retention-and-disclosure", "contract:release.compatibility-and-authority", "resource:review.exact-candidate-evidence"], "new_modules": [],
+      "design_edges": ["taskplane->contract:dashboard.accessible-truthful-actions:provides"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
+      "criteria": ["AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths."]
+    },
+    {
+      "id": "HG-EVAL", "wave": "HIGH-GATE", "owner": "independent-high-evaluator",
+      "scope": [".em-review/remediation/high-gate/**"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_integration.py taskplane/tests/test_em_h3_integration.py && python3 -m taskplane.remediation_trace verify-high --findings .em-review/findings.json --results .em-review/remediation/high-gate/results.json --candidate-sha HEAD --require-independent",
+      "req": "R-0002", "deps": ["H2-I", "H3-I"], "type": "evaluation",
+      "contracts": ["contract:review.high-closure-gate", "resource:review.finding-traceability", "resource:review.exact-candidate-evidence"], "new_modules": [".em-review/remediation"],
+      "design_edges": ["taskplane/remediation_trace.py->contract:review.high-closure-gate:provides", "contract:review.high-closure-gate->resource:review.exact-candidate-evidence:produces"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
+      "evaluates": ["H-01", "H-02", "H-03", "H-04", "H-05", "H-06", "H-07", "H-08", "H-09", "H-10", "H-11", "H-12", "H-13", "H-14", "H-15", "H-16", "H-17", "H-18", "H-19", "H-20", "H-21", "H-22", "H-23", "H-24", "H-25", "H-26", "H-27", "H-28", "H-29", "H-30", "H-31", "H-32", "H-33", "H-34"],
+      "criteria": ["AC5: Before any medium-only Build, an independent evaluator proves H-01 through H-34 closed at one candidate SHA; injecting any missing, open, suppressed, downgraded, or self-attested high result blocks medium eligibility."]
+    },
+    {
+      "id": "M1-A", "wave": "M1", "owner": "scanner-and-design-decisions",
+      "scope": ["components.yaml", "taskplane/depgraph.py", "taskplane/tests/test_em_m1_architecture.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_architecture.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "architecture", "contracts": ["contract:quality.review-remediation", "contract:release.compatibility-and-authority", "contract:runtime.durable-state-and-authority"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-02", "M-26"],
+      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
+    },
+    {
+      "id": "MX-DOCS-ARCH", "wave": "M1+M2", "owner": "loop-design-decisions",
+      "scope": ["docs/loop-design.md", "taskplane/tests/test_em_mx_loop_docs.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_mx_loop_docs.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "documentation", "contracts": ["contract:docs.generated-truth", "contract:runtime.durable-state-and-authority", "contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-22", "M-27", "M-28"],
+      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely.", "AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
+    },
+    {
+      "id": "M1-B", "wave": "M1", "owner": "typing-and-cost-failclosed",
+      "scope": ["taskplane/dispatch_telemetry.py", "taskplane/lens.py", "taskplane/tests/test_em_m1_typing_cost.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_typing_cost.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "quality", "contracts": ["contract:ci.reproducible-python-quality", "contract:quality.review-remediation"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-03", "M-04"],
+      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
+    },
+    {
+      "id": "M1-C", "wave": "M1", "owner": "ci-dependencies-and-assets",
+      "scope": [".github/workflows/ci.yml", "requirements-dev.lock", "CONTRIBUTING.md", "taskplane/tests/test_em_m1_ci_dependencies.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_ci_dependencies.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "security", "contracts": ["contract:ci.reproducible-python-quality"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-06", "M-07", "M-17", "M-18", "L-06"],
+      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
+    },
+    {
+      "id": "M1-D", "wave": "M1", "owner": "mandatory-production-proofs",
+      "scope": ["taskplane/tests/test_r0013_design_sweep.py", "taskplane/tests/test_r0001_live_host_canary.py", "taskplane/tests/test_em_m1_proof_paths.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_proof_paths.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "quality", "contracts": ["contract:ci.reproducible-python-quality", "contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-14", "M-15"],
+      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
+    },
+    {
+      "id": "M1-E", "wave": "M1", "owner": "repository-retry",
+      "scope": ["taskplane/repository.py", "taskplane/tests/test_em_m1_repository.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_repository.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "reliability", "contracts": ["contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-19"],
+      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
+    },
+    {
+      "id": "M1-F", "wave": "M1", "owner": "scoped-test-runtime",
+      "scope": ["taskplane/tests/__init__.py", "taskplane/build_c.py", "taskplane/tests/test_em_m1_test_isolation.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_test_isolation.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "testability", "contracts": ["contract:runtime.scoped-dependency-binding", "contract:quality.review-remediation"], "new_modules": [],
+      "design_edges": ["taskplane->contract:runtime.scoped-dependency-binding:provides"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-24", "L-10"],
+      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
+    },
+    {
+      "id": "M1-I", "wave": "M1", "owner": "engineering-foundation-integration",
+      "scope": ["taskplane/tests/test_em_m1_integration.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_integration.py::test_ac6_engineering_foundations_close",
+      "req": "R-0002", "deps": ["M1-A", "MX-DOCS-ARCH", "M1-B", "M1-C", "M1-D", "M1-E", "M1-F"], "type": "integration",
+      "contracts": ["contract:quality.review-remediation", "contract:delivery.production-wiring", "contract:ci.reproducible-python-quality", "contract:runtime.scoped-dependency-binding", "contract:docs.generated-truth"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
+      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
+    },
+    {
+      "id": "M2-A", "wave": "M2", "owner": "dashboard-locale-and-state",
+      "scope": ["taskplane/dashboard.py", "taskplane/text_runtime.py", "taskplane/locales/**", "taskplane/tests/test_em_m2_dashboard.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_dashboard.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "accessibility", "contracts": ["contract:dashboard.accessible-truthful-actions", "contract:i18n.locale-and-grapheme"],
+      "new_modules": ["taskplane/text_runtime.py", "taskplane/locales"], "design_edges": ["taskplane/text_runtime.py->contract:i18n.locale-and-grapheme:provides", "taskplane->taskplane/text_runtime.py:uses"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-01", "M-05", "M-08", "M-09", "L-03"],
+      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
+    },
+    {
+      "id": "M2-B", "wave": "M2", "owner": "privacy-default-and-notice",
+      "scope": ["PRIVACY.md", "taskplane/taskplane_lite.py", "taskplane/tests/test_em_m2_privacy.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_privacy.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "security", "contracts": ["contract:privacy.retention-and-disclosure", "contract:docs.generated-truth"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-10", "M-11", "M-20"],
+      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
+    },
+    {
+      "id": "M2-C", "wave": "M2", "owner": "product-docs-and-help",
+      "scope": ["README.md", ".codex-plugin/plugin.json", "skills/tp-help/SKILL.md", "docs/onboarding.md", "docs/cli-reference.md", "taskplane/tests/test_em_m2_docs.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_docs.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "documentation", "contracts": ["contract:docs.generated-truth", "contract:ci.reproducible-python-quality"], "new_modules": [],
+      "design_edges": ["docs->contract:docs.generated-truth:provides", "skills/tp-help->contract:docs.generated-truth:provides", ".codex-plugin->contract:docs.generated-truth:provides"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-12", "M-13", "M-21", "M-23", "L-05", "L-07", "L-08", "L-09"],
+      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
+    },
+    {
+      "id": "M2-D", "wave": "M2", "owner": "deterministic-concurrency-proof",
+      "scope": ["taskplane/tests/test_review_routing.py", "taskplane/tests/test_em_m2_concurrency.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_concurrency.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "testability", "contracts": ["contract:quality.review-remediation"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-16"],
+      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
+    },
+    {
+      "id": "M2-E", "wave": "M2", "owner": "priced-debt-trace",
+      "scope": ["taskplane/remediation_trace.py", "taskplane/tests/test_em_m2_debt.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_debt.py",
+      "req": "R-0002", "deps": ["HG-EVAL"], "type": "quality", "contracts": ["contract:quality.review-remediation", "resource:review.finding-traceability"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-25"],
+      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
+    },
+    {
+      "id": "M2-I", "wave": "M2", "owner": "user-truth-integration",
+      "scope": ["taskplane/tests/test_em_m2_integration.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_integration.py::test_ac7_user_facing_truth_closes",
+      "req": "R-0002", "deps": ["M2-A", "M2-B", "M2-C", "M2-D", "M2-E", "MX-DOCS-ARCH"], "type": "integration",
+      "contracts": ["contract:dashboard.accessible-truthful-actions", "contract:i18n.locale-and-grapheme", "contract:privacy.retention-and-disclosure", "contract:docs.generated-truth", "contract:quality.review-remediation", "resource:review.finding-traceability"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
+      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
+    },
+    {
+      "id": "FINAL-I", "wave": "FINAL", "owner": "remediation-integration",
+      "scope": ["taskplane/remediation_trace.py", "taskplane/tests/test_em_remediation_integration.py", ".em-review/remediation/**", "specs/spec.md"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_remediation_integration.py::test_ac1_exact_72_row_design_plan_inventory taskplane/tests/test_em_remediation_integration.py::test_ac8_exact_candidate_final_evidence",
+      "req": "R-0002", "deps": ["M1-I", "M2-I"], "type": "integration",
+      "contracts": ["contract:quality.review-remediation", "contract:release.compatibility-and-authority", "contract:review.high-closure-gate", "resource:review.finding-traceability", "resource:review.exact-candidate-evidence"], "new_modules": [".em-review/remediation"],
+      "design_edges": ["taskplane/remediation_trace.py->resource:review.finding-traceability:consumes", "specs->resource:review.finding-traceability:provides", "resource:review.finding-traceability->resource:review.exact-candidate-evidence:requires"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
+      "criteria": ["AC1: Design and Plan machine-match exactly 72 obligations (34 high, 28 medium, 10 low) to .em-review/findings.json; every H, M, and L id has owner, boundary, dependency classification, task, and evidence, and every low id names its companion wave plus disjointness or shared owner; any mismatch blocks approval.", "AC8: At one clean exact candidate SHA, an independent evaluator proves all 72 trace rows closed, runs all focused and applicable quality checks, then runs python3 -m pytest taskplane/tests -q once with zero new failures, no unresolved finding, no silently deleted row, and no low-only tail."]
+    },
+    {
+      "id": "FINAL-EVAL", "wave": "FINAL", "owner": "independent-final-evaluator",
+      "scope": [".em-review/remediation/final/**"], "tests": "python3 -m pytest taskplane/tests -q",
+      "req": "R-0002", "deps": ["FINAL-I"], "type": "evaluation",
+      "contracts": ["contract:quality.review-remediation", "contract:runtime.durable-state-and-authority", "contract:delivery.production-wiring", "contract:dashboard.accessible-truthful-actions", "contract:privacy.retention-and-disclosure", "contract:release.compatibility-and-authority", "contract:ci.reproducible-python-quality", "contract:review.high-closure-gate", "contract:i18n.locale-and-grapheme", "contract:runtime.scoped-dependency-binding", "contract:docs.generated-truth", "resource:review.finding-traceability", "resource:review.exact-candidate-evidence"], "new_modules": [".em-review/remediation"],
+      "design_edges": ["taskplane/tests->resource:review.exact-candidate-evidence:produces"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
+      "evaluates": ["H-01", "H-02", "H-03", "H-04", "H-05", "H-06", "H-07", "H-08", "H-09", "H-10", "H-11", "H-12", "H-13", "H-14", "H-15", "H-16", "H-17", "H-18", "H-19", "H-20", "H-21", "H-22", "H-23", "H-24", "H-25", "H-26", "H-27", "H-28", "H-29", "H-30", "H-31", "H-32", "H-33", "H-34", "M-01", "M-02", "M-03", "M-04", "M-05", "M-06", "M-07", "M-08", "M-09", "M-10", "M-11", "M-12", "M-13", "M-14", "M-15", "M-16", "M-17", "M-18", "M-19", "M-20", "M-21", "M-22", "M-23", "M-24", "M-25", "M-26", "M-27", "M-28", "L-01", "L-02", "L-03", "L-04", "L-05", "L-06", "L-07", "L-08", "L-09", "L-10"],
+      "criteria": ["AC8: At one clean exact candidate SHA, an independent evaluator proves all 72 trace rows closed, runs all focused and applicable quality checks, then runs python3 -m pytest taskplane/tests -q once with zero new failures, no unresolved finding, no silently deleted row, and no low-only tail."]
     }
   ]
 }
