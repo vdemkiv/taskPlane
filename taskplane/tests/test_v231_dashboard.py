@@ -152,9 +152,14 @@ class TestGraphContextIsDiscoverable(unittest.TestCase):
 
     def test_graph_tab_opens_existing_detailed_panel(self):
         html = dashboard.widget(self.ws)
-        self.assertIn('if(w==="map")tpView("detail")', html)
-        self.assertIn('if(!on)tpTab("loop")', html)
-        self.assertIn('id="tp-panel-map"', html)
+        self.assertIn('aria-controls="tp-panel-map"', html)
+        self.assertIn('onclick="tpTab(\'map\',true)"', html)
+        self.assertIn(
+            'function tpTab(w,moveFocus){if(moveFocus)tpView("detail")',
+            html)
+        self.assertIn(
+            'id="tp-panel-map" role="tabpanel" '
+            'aria-labelledby="tp-tab-map"', html)
 
     def test_reference_style_graph_is_a_visible_change_path_svg(self):
         depgraph.save(self.ws, {
@@ -185,9 +190,11 @@ class TestGraphContextIsDiscoverable(unittest.TestCase):
         self.assertIn('id="tp-workflow-flow"', html)
         self.assertIn('id="tp-dependency-flow"', html)
         self.assertLess(html.index('id="tp-workflow-flow"'),
+                        html.index('id="tp-detail-tabs"'))
+        self.assertLess(html.index('id="tp-tab-map"'),
+                        html.index('id="tp-panel-map"'))
+        self.assertLess(html.index('id="tp-panel-map"'),
                         html.index('id="tp-dependency-flow"'))
-        self.assertLess(html.index('id="tp-dependency-flow"'),
-                        html.index('id="tp-tab-map"'))
 
     def test_durable_report_uses_reference_order_and_ends_at_the_gate(self):
         depgraph.save(self.ws, {"modules": {"taskplane": {}}, "edges": [],
