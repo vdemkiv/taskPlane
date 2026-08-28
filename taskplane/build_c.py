@@ -8,11 +8,15 @@ surfaces.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 import hashlib
 import json
 import math
 import os
 import re
+import threading
 
 import depgraph
 import checkpoint
@@ -65,10 +69,41 @@ _CHECKPOINT_RECEIPT_FIELDS = frozenset({
     "declared_scope", "predecessor_receipt_digests", "verdict",
     "receipt_digest",
 })
-_integration_state_loader: Callable[[str], object] | None = None
-_wait_policy_factory: Callable[[str, int], dict] | None = None
-_wait_invocation_factory: Callable[[Mapping[str, object],
-                                    list[str]], dict] | None = None
+
+@dataclass(frozen=True)
+class LoopRuntimeServices:
+    """Immutable BUILD-C dependencies for one execution context."""
+
+    state_loader: Callable[[str], object]
+    wait_policy_factory: Callable[[str, int], dict]
+    wait_invocation_factory: Callable[[Mapping[str, object], list[str]], dict]
+
+
+_default_loop_runtime_services: LoopRuntimeServices | None = None
+_scoped_loop_runtime_services: ContextVar[LoopRuntimeServices | None] = \
+    ContextVar("taskplane_build_c_loop_runtime", default=None)
+_loop_runtime_bind_lock = threading.Lock()
+
+
+def _validated_loop_runtime_services(
+        *, state_loader: Callable[[str], object],
+        wait_policy_factory: Callable[[str, int], dict],
+        wait_invocation_factory: Callable[[Mapping[str, object],
+                                           list[str]], dict]) \
+        -> LoopRuntimeServices:
+    if not all(callable(value) for value in (
+            state_loader, wait_policy_factory, wait_invocation_factory)):
+        raise TypeError("BUILD-C loop runtime services must be callable")
+    return LoopRuntimeServices(
+        state_loader=state_loader,
+        wait_policy_factory=wait_policy_factory,
+        wait_invocation_factory=wait_invocation_factory,
+    )
+
+
+def _loop_runtime_services() -> LoopRuntimeServices | None:
+    return (_scoped_loop_runtime_services.get()
+            or _default_loop_runtime_services)
 
 
 def authorize_delivery_dispatch(
@@ -91,16 +126,47 @@ def bind_loop_runtime(
         *, state_loader: Callable[[str], object],
         wait_policy_factory: Callable[[str, int], dict],
         wait_invocation_factory: Callable[[Mapping[str, object],
-                                           list[str]], dict]) -> None:
-    """Bind loop-owned services without creating a BUILD-C -> loop edge."""
-    if not all(callable(value) for value in (
-            state_loader, wait_policy_factory, wait_invocation_factory)):
-        raise TypeError("BUILD-C loop runtime services must be callable")
-    global _integration_state_loader, _wait_policy_factory
-    global _wait_invocation_factory
-    _integration_state_loader = state_loader
-    _wait_policy_factory = wait_policy_factory
-    _wait_invocation_factory = wait_invocation_factory
+                                           list[str]], dict]) \
+        -> LoopRuntimeServices:
+    """Install the immutable production default exactly once.
+
+    Embedded orchestrators and tests must use :func:`scoped_loop_runtime`;
+    silently replacing the process default would make concurrent behavior
+    depend on import and execution order.
+    """
+    services = _validated_loop_runtime_services(
+        state_loader=state_loader,
+        wait_policy_factory=wait_policy_factory,
+        wait_invocation_factory=wait_invocation_factory,
+    )
+    global _default_loop_runtime_services
+    with _loop_runtime_bind_lock:
+        current = _default_loop_runtime_services
+        if current is not None and current != services:
+            raise RuntimeError(
+                "BUILD-C loop runtime is already bound; use "
+                "scoped_loop_runtime for an isolated override")
+        _default_loop_runtime_services = services
+    return services
+
+
+@contextmanager
+def scoped_loop_runtime(
+        *, state_loader: Callable[[str], object],
+        wait_policy_factory: Callable[[str, int], dict],
+        wait_invocation_factory: Callable[[Mapping[str, object],
+                                           list[str]], dict]):
+    """Bind dependencies for the current thread/task and restore in LIFO."""
+    services = _validated_loop_runtime_services(
+        state_loader=state_loader,
+        wait_policy_factory=wait_policy_factory,
+        wait_invocation_factory=wait_invocation_factory,
+    )
+    token = _scoped_loop_runtime_services.set(services)
+    try:
+        yield services
+    finally:
+        _scoped_loop_runtime_services.reset(token)
 
 
 def _scope_overlap(left: Mapping[str, object],
@@ -168,9 +234,11 @@ def _assignment_wait(
         require_absolute_deadline: bool = False) \
         -> tuple[dict, dict]:
     if wait_policy_factory is None or wait_invocation_factory is None:
-        wait_policy_factory = wait_policy_factory or _wait_policy_factory
-        wait_invocation_factory = (wait_invocation_factory or
-                                   _wait_invocation_factory)
+        services = _loop_runtime_services()
+        wait_policy_factory = (wait_policy_factory or (
+            services.wait_policy_factory if services else None))
+        wait_invocation_factory = (wait_invocation_factory or (
+            services.wait_invocation_factory if services else None))
     if wait_policy_factory is None or wait_invocation_factory is None:
         raise ScopeAssignmentError(
             "direct assignment loop runtime services are unavailable")
@@ -394,10 +462,11 @@ def assign_scopes(
 
 
 def _integration_state(ws: str) -> Mapping[str, object]:
-    if _integration_state_loader is None:
+    services = _loop_runtime_services()
+    if services is None:
         raise IntegrationAuthorizationError(
             "live BUILD-C integration state loader is unavailable")
-    state = _integration_state_loader(ws)
+    state = services.state_loader(ws)
     if not isinstance(state, Mapping):
         raise IntegrationAuthorizationError(
             "live BUILD-C integration state is missing")
