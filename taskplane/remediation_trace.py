@@ -28,10 +28,22 @@ EVALUATE_RECEIPT_SCHEMA = "taskplane.remediation-evaluate-receipt/v1"
 IDENTITY_SCHEMA = "taskplane.remediation-agent-identity/v1"
 GIT_EVIDENCE_SCHEMA = "taskplane.trusted-git-evidence/v1"
 SELECTOR_EXECUTION_SCHEMA = "taskplane.selector-execution/v1"
+PRICED_DEBT_SCHEMA = "taskplane.remediation-priced-debt/v1"
+PRICED_DEBT_TRACE_SCHEMA = "taskplane.remediation-priced-debt-trace/v1"
 _SHA = re.compile(r"[0-9a-f]{40,64}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}\Z")
+_DEBT_ID = re.compile(r"D-[0-9]{4,}\Z")
 _MAX_RECEIPT_BYTES = 1024 * 1024
+_DEBT_COST_COMPONENTS = (
+    "backfill", "migration", "compatibility", "operator_reteaching", "other",
+)
+_PRICED_DEBT_IDS = ("D-1301", "D-1302", "D-1303")
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_PRICED_DEBT_SPEC = _REPOSITORY_ROOT / "specs" / "spec.md"
+_DEBT_AUTHORITY_START = "<!-- taskplane:priced-debt-authority:v1:start -->"
+_DEBT_AUTHORITY_END = "<!-- taskplane:priced-debt-authority:v1:end -->"
+_VAGUE_TRIGGERS = {"none", "n/a", "na", "tbd", "unknown", "someday", "later"}
 
 
 class RemediationTraceError(ValueError):
@@ -46,6 +58,266 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _debt_text(value: object, label: str, *, limit: int = 2048) -> str:
+    if (not isinstance(value, str) or value != value.strip() or not value or
+            len(value) > limit or any(ord(character) < 32 for character in value)):
+        raise RemediationTraceError(f"priced debt {label} is invalid")
+    return value
+
+
+def _reentry_trigger(value: object) -> dict:
+    """Require an observable signal, its threshold, and the resulting action."""
+    if not isinstance(value, Mapping) or set(value) != {
+            "signal", "threshold", "action"}:
+        raise RemediationTraceError(
+            "priced debt re-entry trigger must define signal, threshold, and action")
+    signal = _debt_text(value.get("signal"), "re-entry signal", limit=256)
+    threshold = _debt_text(value.get("threshold"), "re-entry threshold")
+    action = _debt_text(value.get("action"), "re-entry action")
+    if (not _IDENTIFIER.fullmatch(signal) or
+            signal.casefold() in _VAGUE_TRIGGERS or
+            threshold.casefold() in _VAGUE_TRIGGERS or
+            action.casefold() in _VAGUE_TRIGGERS):
+        raise RemediationTraceError("priced debt re-entry trigger is not actionable")
+    return {"signal": signal, "threshold": threshold, "action": action}
+
+
+def _repository_reference(value: object) -> str:
+    """Resolve one repository-relative path plus explicit retained anchor."""
+    reference = _debt_text(value, "reference", limit=512)
+    path_text, separator, anchor = reference.partition("#")
+    if (separator != "#" or not path_text or not anchor or
+            path_text.startswith("/") or ".." in Path(path_text).parts or
+            not _IDENTIFIER.fullmatch(anchor)):
+        raise RemediationTraceError("priced debt provenance reference is invalid")
+    try:
+        path = (_REPOSITORY_ROOT / path_text).resolve(strict=True)
+        path.relative_to(_REPOSITORY_ROOT)
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise RemediationTraceError(
+            "priced debt provenance path does not resolve in the repository") from exc
+    explicit_anchor = re.compile(
+        rf"<(?:a|span)\s+(?:id|name)=[\"']{re.escape(anchor)}[\"'][^>]*>",
+        re.IGNORECASE,
+    )
+    if explicit_anchor.search(source) is None:
+        raise RemediationTraceError(
+            "priced debt provenance anchor does not resolve in the repository")
+    return reference
+
+
+def _priced_cost(value: object, label: str) -> dict:
+    """Validate one comparable, explicit debt repayment estimate."""
+    if not isinstance(value, Mapping):
+        raise RemediationTraceError(f"priced debt {label} cost is missing")
+    fields = {"unit", *_DEBT_COST_COMPONENTS, "total", "basis"}
+    if set(value) != fields:
+        raise RemediationTraceError(f"priced debt {label} cost fields are invalid")
+    components: dict[str, int] = {}
+    for field in _DEBT_COST_COMPONENTS:
+        amount = value.get(field)
+        if (isinstance(amount, bool) or not isinstance(amount, int) or
+                amount < 0 or amount > 1_000_000):
+            raise RemediationTraceError(
+                f"priced debt {label} {field} cost is invalid")
+        components[field] = amount
+    total = value.get("total")
+    if (isinstance(total, bool) or not isinstance(total, int) or
+            total <= 0 or total != sum(components.values())):
+        raise RemediationTraceError(
+            f"priced debt {label} total does not match its components")
+    return {
+        "unit": _debt_text(value.get("unit"), f"{label} cost unit", limit=64),
+        **components,
+        "total": total,
+        "basis": _debt_text(value.get("basis"), f"{label} cost basis"),
+    }
+
+
+def priced_debt_record(*, debt_id: str, deferred_item: str, owner: str,
+                       reentry_trigger: Mapping, follow_up: str,
+                       now_cost: Mapping, later_cost: Mapping,
+                       references: Sequence[str]) -> dict:
+    """Mint one content-addressed debt record with comparable repayment cost.
+
+    The estimate unit is deliberately caller-owned: relative work units,
+    person-days, or another reviewed unit are valid, but the now/later records
+    must use the same unit and itemized cost shape.
+    """
+    if not isinstance(debt_id, str) or not _DEBT_ID.fullmatch(debt_id):
+        raise RemediationTraceError("priced debt id is invalid")
+    item = _debt_text(deferred_item, "deferred item", limit=256)
+    if not _IDENTIFIER.fullmatch(item):
+        raise RemediationTraceError("priced debt deferred item id is invalid")
+    owner_value = _debt_text(owner, "owner", limit=256)
+    trigger = _reentry_trigger(reentry_trigger)
+    follow_up_value = _debt_text(follow_up, "follow-up")
+    if (not isinstance(references, Sequence) or
+            isinstance(references, (str, bytes))):
+        raise RemediationTraceError("priced debt references are invalid")
+    reference_values = [_repository_reference(reference) for reference in references]
+    if not reference_values or len(reference_values) != len(set(reference_values)):
+        raise RemediationTraceError(
+            "priced debt references must be non-empty and unique")
+    current = _priced_cost(now_cost, "now")
+    deferred = _priced_cost(later_cost, "later")
+    if current["unit"] != deferred["unit"]:
+        raise RemediationTraceError(
+            "priced debt now and later estimates use different units")
+    material = {
+        "schema": PRICED_DEBT_SCHEMA,
+        "debt_id": debt_id,
+        "status": "open",
+        "deferred_item": item,
+        "owner": owner_value,
+        "reentry_trigger": trigger,
+        "follow_up": follow_up_value,
+        "now_cost": current,
+        "later_cost": deferred,
+        "references": reference_values,
+    }
+    return {**material, "content_fingerprint": _digest(material)}
+
+
+def _validate_priced_debt_record(value: object) -> dict:
+    if not isinstance(value, Mapping):
+        raise RemediationTraceError("priced debt record is missing")
+    fields = {
+        "schema", "debt_id", "status", "deferred_item", "owner",
+        "reentry_trigger", "follow_up", "now_cost", "later_cost",
+        "references", "content_fingerprint",
+    }
+    if set(value) != fields or value.get("schema") != PRICED_DEBT_SCHEMA or \
+            value.get("status") != "open":
+        raise RemediationTraceError("priced debt record fields are invalid")
+    rebuilt = priced_debt_record(
+        debt_id=str(value.get("debt_id") or ""),
+        deferred_item=str(value.get("deferred_item") or ""),
+        owner=str(value.get("owner") or ""),
+        reentry_trigger=value.get("reentry_trigger") if isinstance(
+            value.get("reentry_trigger"), Mapping) else {},
+        follow_up=str(value.get("follow_up") or ""),
+        now_cost=value.get("now_cost") if isinstance(
+            value.get("now_cost"), Mapping) else {},
+        later_cost=value.get("later_cost") if isinstance(
+            value.get("later_cost"), Mapping) else {},
+        references=value.get("references") if isinstance(
+            value.get("references"), list) else (),
+    )
+    if dict(value) != rebuilt:
+        raise RemediationTraceError("priced debt record was tampered")
+    return rebuilt
+
+
+def _parse_priced_debt_authority(source: str) -> list[dict]:
+    """Parse the one hidden machine block and its visible Out-of-scope links."""
+    if (source.count(_DEBT_AUTHORITY_START) != 1 or
+            source.count(_DEBT_AUTHORITY_END) != 1):
+        raise RemediationTraceError("priced debt specification authority is missing")
+    start = source.index(_DEBT_AUTHORITY_START) + len(_DEBT_AUTHORITY_START)
+    end = source.index(_DEBT_AUTHORITY_END, start)
+    try:
+        rows = json.loads(source[start:end].strip())
+    except ValueError as exc:
+        raise RemediationTraceError(
+            "priced debt specification authority is invalid JSON") from exc
+    if not isinstance(rows, list):
+        raise RemediationTraceError("priced debt specification inventory is invalid")
+    try:
+        records = [priced_debt_record(**row) for row in rows
+                   if isinstance(row, Mapping)]
+    except TypeError as exc:
+        raise RemediationTraceError(
+            "priced debt specification record fields are invalid") from exc
+    if len(records) != len(rows):
+        raise RemediationTraceError("priced debt specification record is invalid")
+    records.sort(key=lambda row: row["debt_id"])
+    if tuple(row["debt_id"] for row in records) != _PRICED_DEBT_IDS or \
+            len({row["deferred_item"] for row in records}) != len(records):
+        raise RemediationTraceError(
+            "priced debt specification omits or replays deferred work")
+    try:
+        out_of_scope = source.split("## Out of scope", 1)[1].split(
+            "## Functional requirements", 1)[0]
+    except IndexError as exc:
+        raise RemediationTraceError(
+            "priced debt Out-of-scope authority is missing") from exc
+    for record in records:
+        debt_anchor = f"debt-{record['debt_id'].lower()}"
+        item_anchor = f"deferred-{record['deferred_item'].lower()}"
+        if (f"[{record['debt_id']}](#{debt_anchor})" not in out_of_scope or
+                f'<a id="{item_anchor}"></a>' not in out_of_scope or
+                f"specs/spec.md#{item_anchor}" not in record["references"] or
+                f"specs/spec.md#{debt_anchor}" not in record["references"]):
+            raise RemediationTraceError(
+                "every deferred item must link its priced debt in Out of scope")
+    return records
+
+
+def priced_debt_authority() -> dict:
+    """Load priced debt only from the installed repository Product authority."""
+    try:
+        raw = _PRICED_DEBT_SPEC.read_bytes()
+        source = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RemediationTraceError(
+            "priced debt repository specification is unavailable") from exc
+    return {
+        "path": "specs/spec.md",
+        "content_sha256": hashlib.sha256(raw).hexdigest(),
+        "records": _parse_priced_debt_authority(source),
+    }
+
+
+def build_priced_debt_trace(*, records: Sequence[Mapping]) -> dict:
+    """Join records against fixed repository Product authority, never a caller map."""
+    authority = priced_debt_authority()
+    if (not isinstance(records, Sequence) or isinstance(records, (str, bytes))):
+        raise RemediationTraceError("priced debt records must be a sequence")
+    validated = [_validate_priced_debt_record(value) for value in records]
+    by_item = {record["deferred_item"]: record for record in validated}
+    if len(by_item) != len(validated):
+        raise RemediationTraceError("priced debt records replay a deferred item")
+    expected = authority["records"]
+    if set(by_item) != {row["deferred_item"] for row in expected}:
+        raise RemediationTraceError(
+            "every deferred item needs exactly one priced debt record")
+    ordered = [by_item[row["deferred_item"]] for row in expected]
+    for supplied, authoritative in zip(ordered, expected):
+        if supplied != authoritative:
+            raise RemediationTraceError(
+                "priced debt record differs from repository Product authority")
+    material = {
+        "schema": PRICED_DEBT_TRACE_SCHEMA,
+        "authority": {
+            "path": authority["path"],
+            "content_sha256": authority["content_sha256"],
+        },
+        "required_debt_ids": list(_PRICED_DEBT_IDS),
+        "record_count": len(ordered),
+        "records_fingerprint": _digest(ordered),
+        "records": ordered,
+    }
+    return {**material, "trace_fingerprint": _digest(material)}
+
+
+def verify_priced_debt_trace(trace: Mapping) -> dict:
+    """Rebuild using current repository Product authority, never caller input."""
+    if not isinstance(trace, Mapping) or set(trace) != {
+            "schema", "authority", "required_debt_ids",
+            "record_count", "records_fingerprint", "records",
+            "trace_fingerprint"} or trace.get("schema") != PRICED_DEBT_TRACE_SCHEMA:
+        raise RemediationTraceError("priced debt trace fields are invalid")
+    records = trace.get("records")
+    if not isinstance(records, list):
+        raise RemediationTraceError("priced debt trace records are missing")
+    rebuilt = build_priced_debt_trace(records=records)
+    if dict(trace) != rebuilt:
+        raise RemediationTraceError("priced debt trace was tampered or replayed")
+    return rebuilt
 
 
 def _file_sha256(path: Path) -> str:
