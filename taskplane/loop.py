@@ -33,8 +33,10 @@ import contextvars
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
+import secrets
 import shlex
 import stat
 import sys
@@ -86,12 +88,18 @@ else:  # pragma: no cover - direct CLI module loading
 LOOP_FILE = "loop.json"
 REVIEW_RAW_DIFF_RETENTION_SECONDS = 24 * 60 * 60
 REVIEW_RAW_DIFF_MAX_ARTIFACTS = 32
+REVIEW_RAW_DIFF_MAX_BYTES = 16 * 1024 * 1024
 
 
 def _retained_review_diff_payload(*, base: str, files: list[str],
                                   patch: str,
-                                  now: float | None = None) -> dict:
+                                  now: float | None = None,
+                                  run_id: str | None = None,
+                                  review_id: str | None = None) -> dict:
     created_at = float(time.time() if now is None else now)
+    review_identity = str(review_id or hashlib.sha256(json.dumps(
+        {"base": str(base), "files": list(files)}, sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest())
     return {
         "schema": "taskplane.retained-review-diff/v1",
         "base": str(base),
@@ -103,89 +111,200 @@ def _retained_review_diff_payload(*, base: str, files: list[str],
             "expires_at": created_at + REVIEW_RAW_DIFF_RETENTION_SECONDS,
             "raw_fields": ["patch"],
             "delete_on_expiry": True,
+            "run_id": str(run_id or "unattributed"),
+            "review_id": review_identity,
         },
     }
 
 
-def enforce_review_diff_retention(
-        workspace: str, *, store, now: float | None = None,
-        keep_fingerprint: str | None = None) -> dict:
-    """Delete expired/excess raw diff artifacts under one canonical store.
+def _review_diff_retention_time(store, observed_at: float) -> float:
+    """Advance a durable high-water mark so clock rollback cannot extend TTL."""
+    path = os.path.join(store.root, ".diff-retention-watermark.json")
+    prior = observed_at
+    try:
+        marker = tp.load_json(path, default=None,
+                              what="raw diff retention watermark")
+        if marker is not None:
+            if marker.get("schema") != "taskplane.raw-diff-watermark/v1":
+                raise ValueError("unsupported raw diff retention watermark")
+            prior = float(marker["observed_at"])
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        # Damage can conservatively expire artifacts, never prolong them.
+        prior = float("inf")
+    high_water = max(float(observed_at), prior)
+    if math.isfinite(high_water):
+        tp.atomic_write_json(path, {
+            "schema": "taskplane.raw-diff-watermark/v1",
+            "observed_at": high_water,
+        }, sort_keys=True)
+    return high_water
 
-    Review diffs remain available to active lens workers for one bounded day.
-    The next review (including the first review after restart) sweeps expired
-    and excess generations before routing.  Content-addressed references to a
-    deleted generation then fail integrity verification instead of silently
-    resolving to stale personal/source data.
-    """
-    del workspace  # store is already bound to its validated workspace/root.
-    observed_at = float(time.time() if now is None else now)
+
+def _raw_diff_entry(path: str, fingerprint: str, observed_at: float) -> dict:
+    """Verify immutable bytes and the closed, creation-bound TTL schema."""
+    with open(path, "rb") as source:
+        raw = source.read(REVIEW_RAW_DIFF_MAX_BYTES + 1)
+    if len(raw) > REVIEW_RAW_DIFF_MAX_BYTES or \
+            hashlib.sha256(raw).hexdigest() != fingerprint:
+        raise ValueError("content-addressed raw diff mismatch")
+    payload = json.loads(raw.decode("utf-8"))
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")
+    retention = payload.get("retention") if isinstance(payload, dict) else None
+    required = {"schema", "created_at", "expires_at", "raw_fields",
+                "delete_on_expiry", "run_id", "review_id"}
+    if canonical != raw or not isinstance(retention, dict) or \
+            set(retention) != required or retention.get("schema") != \
+            "taskplane.raw-diff-retention/v1" or \
+            retention.get("raw_fields") != ["patch"] or \
+            retention.get("delete_on_expiry") is not True:
+        raise ValueError("raw diff retention schema is invalid")
+    created_at = float(retention["created_at"])
+    expires_at = float(retention["expires_at"])
+    if not math.isfinite(created_at) or not math.isfinite(expires_at) or \
+            expires_at != created_at + REVIEW_RAW_DIFF_RETENTION_SECONDS or \
+            observed_at < created_at or \
+            not str(retention.get("run_id") or "").strip() or \
+            not str(retention.get("review_id") or "").strip():
+        raise ValueError("raw diff expiry or attribution is invalid")
+    return {"fingerprint": fingerprint, "path": path, "bytes": len(raw),
+            "created_at": created_at, "expires_at": expires_at,
+            "run_id": str(retention["run_id"]),
+            "review_id": str(retention["review_id"])}
+
+
+def _purge_raw_diff(path: str) -> None:
+    """Stage one validated private artifact before its irreversible purge."""
+    directory = os.path.dirname(path)
+    staging = os.path.join(directory, ".privacy-purge-" +
+                           secrets.token_hex(12))
+    os.replace(path, staging)
+    try:
+        os.unlink(staging)
+    finally:
+        if os.path.exists(staging):
+            os.replace(staging, path)
+
+
+def _purge_raw_diff_derivatives(store, fingerprint: str) -> None:
+    """Purge only fingerprint-bound copies in known private derivative roots."""
+    for dirname in ("diff-derived", "derived-diff", "diff-pre-upgrade"):
+        directory = os.path.join(store.root, dirname)
+        if not os.path.isdir(directory) or os.path.islink(directory):
+            continue
+        for name in sorted(os.listdir(directory)):
+            path = os.path.join(directory, name)
+            if fingerprint in name and os.path.isfile(path) and \
+                    not os.path.islink(path):
+                _purge_raw_diff(path)
+        tp._fsync_directory(directory)
+
+
+def _enforce_review_diff_retention_locked(
+        store, *, observed_at: float, keep_fingerprint: str | None = None,
+        purge_fingerprint: str | None = None) -> dict:
     directory = os.path.join(store.root, "diff")
     if not os.path.isdir(directory):
-        return {"removed": 0, "retained": 0,
-                "retention_seconds": REVIEW_RAW_DIFF_RETENTION_SECONDS,
-                "max_artifacts": REVIEW_RAW_DIFF_MAX_ARTIFACTS}
-    removed = 0
+        return {"removed": 0, "retained": 0, "purged": []}
+    observed_at = _review_diff_retention_time(store, observed_at)
     entries = []
-    lock_path = os.path.join(store.root, ".diff-retention")
-    with tp.file_lock(lock_path):
-        for name in sorted(os.listdir(directory)):
-            if not re.fullmatch(r"[0-9a-f]{64}\.json", name):
-                continue
-            fingerprint = name[:-5]
-            path = os.path.join(directory, name)
-            if os.path.islink(path):
-                os.unlink(path)
-                removed += 1
-                continue
-            try:
-                stat_result = os.stat(path)
-                with open(path, encoding="utf-8") as source:
-                    payload = json.load(source)
-                retention = payload.get("retention") \
-                    if isinstance(payload, dict) else None
-                expires_at = float((retention or {}).get("expires_at") or
-                                   (stat_result.st_mtime +
-                                    REVIEW_RAW_DIFF_RETENTION_SECONDS))
-                created_at = float((retention or {}).get("created_at") or
-                                   stat_result.st_mtime)
-            except (OSError, ValueError, TypeError, AttributeError):
-                # A malformed raw-diff artifact has no authority.  Its mtime
-                # is the conservative legacy retention origin; an unreadable
-                # artifact is removed immediately because it cannot serve a
-                # review and must not become an indefinite data sink.
-                try:
-                    created_at = os.path.getmtime(path)
-                    expires_at = created_at + REVIEW_RAW_DIFF_RETENTION_SECONDS
-                except OSError:
-                    created_at = 0.0
-                    expires_at = 0.0
-            entries.append((created_at, expires_at, fingerprint, path))
+    invalid = []
+    for name in sorted(os.listdir(directory)):
+        if not re.fullmatch(r"[0-9a-f]{64}\.json", name):
+            continue
+        fingerprint = name[:-5]
+        path = os.path.join(directory, name)
+        if os.path.islink(path):
+            invalid.append({"fingerprint": fingerprint, "path": path,
+                            "run_id": "unknown", "review_id": "unknown",
+                            "reason": "symlink"})
+            continue
+        try:
+            entries.append(_raw_diff_entry(path, fingerprint, observed_at))
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError,
+                AttributeError):
+            invalid.append({"fingerprint": fingerprint, "path": path,
+                            "run_id": "unknown", "review_id": "unknown",
+                            "reason": "invalid-or-tampered"})
 
-        newest = sorted(entries, reverse=True)
-        capacity = REVIEW_RAW_DIFF_MAX_ARTIFACTS - \
-            (1 if keep_fingerprint else 0)
-        retained_non_current = 0
-        retained = 0
-        for _created, expires_at, fingerprint, path in newest:
-            keep = fingerprint == keep_fingerprint
-            eligible = expires_at > observed_at and \
-                (keep or retained_non_current < max(0, capacity))
-            if eligible:
-                retained += 1
-                if not keep:
-                    retained_non_current += 1
-                continue
-            try:
-                os.unlink(path)
-                removed += 1
-            except FileNotFoundError:
-                pass
-        if removed:
-            tp._fsync_directory(directory)
-    return {"removed": removed, "retained": retained,
+    purged = []
+    retained = 0
+    retained_bytes = 0
+    ordered = sorted(entries, key=lambda item: (
+        item["fingerprint"] == keep_fingerprint,
+        item["created_at"], item["fingerprint"]), reverse=True)
+    for row in invalid + ordered:
+        reason = row.get("reason")
+        if row["fingerprint"] == purge_fingerprint:
+            reason = "review-complete"
+        elif not reason and row["expires_at"] <= observed_at:
+            reason = "expired"
+        elif not reason and retained >= REVIEW_RAW_DIFF_MAX_ARTIFACTS:
+            reason = "count-bound"
+        elif not reason and retained_bytes + row["bytes"] > \
+                REVIEW_RAW_DIFF_MAX_BYTES:
+            reason = "byte-bound"
+        if not reason:
+            retained += 1
+            retained_bytes += row["bytes"]
+            continue
+        _purge_raw_diff(row["path"])
+        _purge_raw_diff_derivatives(store, row["fingerprint"])
+        purged.append({key: row[key] for key in (
+            "fingerprint", "run_id", "review_id")} | {"reason": reason})
+    if purged:
+        tp._fsync_directory(directory)
+    return {"removed": len(purged), "retained": retained,
+            "purged": purged}
+
+
+def enforce_review_diff_retention(
+        workspace: str, *, store, now: float | None = None,
+        keep_fingerprint: str | None = None,
+        purge_fingerprint: str | None = None,
+        _lock_held: bool = False) -> dict:
+    """Purge expired/excess/tampered raw diffs under one store lock."""
+    del workspace
+    observed_at = float(time.time() if now is None else now)
+    action = lambda: _enforce_review_diff_retention_locked(
+        store, observed_at=observed_at,
+        keep_fingerprint=keep_fingerprint,
+        purge_fingerprint=purge_fingerprint)
+    if _lock_held:
+        result = action()
+    else:
+        with tp.file_lock(os.path.join(store.root, ".diff-retention")):
+            result = action()
+    return {**result,
             "retention_seconds": REVIEW_RAW_DIFF_RETENTION_SECONDS,
-            "max_artifacts": REVIEW_RAW_DIFF_MAX_ARTIFACTS}
+            "max_artifacts": REVIEW_RAW_DIFF_MAX_ARTIFACTS,
+            "max_bytes": REVIEW_RAW_DIFF_MAX_BYTES}
+
+
+def store_retained_review_diff(workspace: str, *, store, payload: dict,
+                               now: float | None = None) -> dict:
+    """Sweep and put under one lock shared by every concurrent reviewer."""
+    observed_at = float(time.time() if now is None else now)
+    with tp.file_lock(os.path.join(store.root, ".diff-retention")):
+        enforce_review_diff_retention(
+            workspace, store=store, now=observed_at, _lock_held=True)
+        reference = store.put("diff", payload)
+        enforce_review_diff_retention(
+            workspace, store=store, now=observed_at,
+            keep_fingerprint=reference["fingerprint"], _lock_held=True)
+    return reference
+
+
+def read_retained_review_diff(workspace: str, *, store, reference: dict,
+                              now: float | None = None) -> dict:
+    """Sweep and verify immediately before a governed raw-diff read."""
+    with tp.file_lock(os.path.join(store.root, ".diff-retention")):
+        enforce_review_diff_retention(
+            workspace, store=store, now=now,
+            keep_fingerprint=str(reference.get("fingerprint") or ""),
+            _lock_held=True)
+        return store.read(reference)
 
 
 def _brief_source_root(ws: str) -> str:
@@ -2789,7 +2908,10 @@ def _append_authority_trace(ws: str, event: str, data: dict) -> None:
                 existing.st_dev, existing.st_ino) != (
                     current.st_dev, current.st_ino):
             raise OSError("authority trace file changed while opening")
-        record = {"event": event, "ts": time.time(), **data}
+        # Authority outbox delivery uses the same closed privacy projection as
+        # every ordinary audit append; the no-follow descriptor handling here
+        # remains the stronger authority-specific filesystem boundary.
+        record = tp.audit_record(event, data, observed_at=time.time())
         raw = (json.dumps(record, default=str) + "\n").encode("utf-8")
         written = os.write(trace_fd, raw)
         if written != len(raw):
@@ -4247,14 +4369,13 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
         .encode("utf-8")).hexdigest()}
     store = review_evidence.ArtifactStore(diff_ws)
     # Raw source diffs are private working evidence, not permanent canonical
-    # history.  Sweep first so restart closes overdue retention, then bind the
-    # new generation to its explicit expiry and enforce the count bound while
-    # protecting the just-created active reference.
-    enforce_review_diff_retention(diff_ws, store=store)
-    diff_ref = store.put("diff", _retained_review_diff_payload(
-        base=base, files=files, patch=patch))
-    enforce_review_diff_retention(
-        diff_ws, store=store, keep_fingerprint=diff_ref["fingerprint"])
+    # history. The single store lock covers restart sweep + put + capacity.
+    locator = runtime_storage.load_workspace_locator(diff_ws) or {}
+    diff_ref = store_retained_review_diff(
+        diff_ws, store=store, payload=_retained_review_diff_payload(
+            base=base, files=files, patch=patch,
+            run_id=str(locator.get("run_id") or "legacy-loop"),
+            review_id=target["fingerprint"]))
     stage = "review" if step == "em" else EVALUATE_ROUTE_STAGE
     changed_symbols = review.changed_symbols_from_patch(patch)
     quality_ref = None
@@ -6896,9 +7017,15 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
     invalid outputs become named repair evidence, while stale producer
     contracts must not remain in the parent contract union.
     """
-    _, _, review_kernel = _review_runtime_modules()
+    _, review_evidence, review_kernel = _review_runtime_modules()
 
     state = review_kernel._load_state(review_ws, run_id)
+    store = review_evidence.ArtifactStore(review_ws)
+    envelope = store.read(state["envelope"])
+    retained_diff = (envelope.get("diff") or {}).get("artifact")
+    if isinstance(retained_diff, dict):
+        read_retained_review_diff(
+            review_ws, store=store, reference=retained_diff)
     empty_collection = None
     if state.get("delivery_mode_receipt") is not None:
         if state.get("expected_lenses") != [] or state.get("slots") != []:
@@ -6926,9 +7053,20 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
                 producer_observation_fingerprint,
         )
     try:
-        return review_kernel.collect_review(
+        result = review_kernel.collect_review(
             review_ws, publish=publish, run_id=run_id,
             empty_lens_collection=empty_collection)
+        if result.get("status") == "complete" and \
+                isinstance(retained_diff, dict):
+            purge = enforce_review_diff_retention(
+                review_ws, store=store,
+                purge_fingerprint=str(retained_diff.get("fingerprint") or ""))
+            tp.trace(review_ws, "review_diff_retention_purge",
+                     run_id=run_id,
+                     review_id=str((state.get("target") or {}).get(
+                         "fingerprint") or "unknown"),
+                     count=purge.get("removed", 0))
+        return result
     finally:
         review_kernel._release_slot_contracts(review_ws, state)
 
