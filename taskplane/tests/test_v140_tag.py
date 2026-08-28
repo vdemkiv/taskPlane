@@ -113,8 +113,8 @@ class TestApproveBy(_RepoStore):
         out = loop.approve(self.ws, by="Dana R. — 'approved' in #eng")
         self.assertNotIn("error", out)
         ev = [e for e in self._trace() if e.get("event") == "loop_approve"]
-        self.assertTrue(ev and ev[-1].get("by") ==
-                        "Dana R. — 'approved' in #eng")
+        self.assertTrue(ev and ev[-1].get("by") == tp._audit_pseudonym(
+            "Dana R. — 'approved' in #eng"))
         # the KB decision carries the approver too
         ds = kb.list_decisions(self.ws)
         body = open(os.path.join(kb.kb_dir(self.ws),
@@ -128,7 +128,8 @@ class TestApproveBy(_RepoStore):
         self.assertTrue(ev)
         # v2.2.1 (L5): an anonymous pass is RECORDED as unattributed —
         # still detectable as self-approval, now explicit in the trail.
-        self.assertEqual(ev[-1].get("by"), "(unattributed)")
+        self.assertEqual(ev[-1].get("by"),
+                         tp._audit_pseudonym("(unattributed)"))
 
     @unittest.skipUnless(
         "utf" in sys.getfilesystemencoding().lower(),
@@ -145,7 +146,8 @@ class TestApproveBy(_RepoStore):
                            env={**os.environ}, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
         ev = [e for e in self._trace() if e.get("event") == "loop_approve"]
-        self.assertEqual(ev[-1].get("by"), "Leo — 'ship it'")
+        self.assertEqual(ev[-1].get("by"),
+                         tp._audit_pseudonym("Leo — 'ship it'"))
 
 
 class TestTagSkill(unittest.TestCase):

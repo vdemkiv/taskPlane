@@ -33,6 +33,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lens  # noqa: E402
+import taskplane_lite as tp  # noqa: E402
 import tp as cli  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
@@ -343,7 +344,7 @@ class TestPathTracing:
         _, out = _dispatch(ws, "--emit", "task")
         evs = [e for e in _trace_events(ws)
                if e["event"] == "review_dispatch_path"]
-        assert evs and evs[-1]["path"] == "task"
+        assert evs and evs[-1]["path"] == tp._audit_minimized("task")
         assert evs[-1].get("reason")
         assert "dispatch_path" not in out          # stdout stays pre-change
 
@@ -352,7 +353,7 @@ class TestPathTracing:
         _dispatch(ws, "--emit", "workflow")
         evs = [e for e in _trace_events(ws)
                if e["event"] == "review_dispatch_path"]
-        assert evs and evs[-1]["path"] == "workflow"
+        assert evs and evs[-1]["path"] == tp._audit_minimized("workflow")
         assert evs[-1].get("reason")
 
 

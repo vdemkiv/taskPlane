@@ -7168,13 +7168,15 @@ _AUDIT_LITERAL_FIELDS = frozenset({
     "produced_by", "produced_in", "read_only", "receipt", "receipt_fingerprint",
     "receipt_id", "recorded_key", "registry_fingerprint", "registry_version", "replay",
     "requirement", "requirement_id", "resolution", "restored", "retro_id", "review_id",
-    "requested_breadth", "reviews", "reviews_completed", "role",
+    "requested_breadth", "returncode", "reviews", "reviews_completed", "role",
     "routing_complete", "routing_counts",
     "routing_mode", "run_id", "seconds", "seconds_saved", "selection", "sha256",
     "shared_with", "slot", "slots", "spent_usd", "stage", "stage_id", "status",
-    "lens_count", "step", "store", "stuck", "submitted", "suite_cited",
+    "dor_ready", "generation", "lens_count", "step", "store", "stuck",
+    "submitted", "suite_cited",
     "tags", "task", "task_id",
     "task_slot", "tier", "topology_fingerprint", "track", "triggered", "used", "via",
+    "workflow_id",
 })
 _AUDIT_CLOSED_LITERAL_VALUES = {
     "requested_breadth": frozenset({"all", "routed"}),
@@ -7184,7 +7186,11 @@ _AUDIT_CLOSED_LITERAL_VALUES = {
         "stage-not-requested", "mapper-unavailable", "engine-not-engaged",
     }),
 }
-_AUDIT_BOUNDED_INTEGER_VALUES = {"lens_count": (0, 26)}
+_AUDIT_BOUNDED_INTEGER_VALUES = {
+    "generation": (0, 99999),
+    "lens_count": (0, 26),
+    "returncode": (-2147483648, 4294967295),
+}
 _AUDIT_LITERAL_RE = re.compile(r"^[A-Za-z0-9_.:+-]{1,256}$")
 _AUDIT_RELATIVE_PATH_RE = re.compile(
     r"^(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]{1,256}$")
@@ -7254,6 +7260,12 @@ def _sanitize_audit_value(value, *, key: str = "", depth: int = 0):
                                       depth=depth + 1)
                 for item in list(value)[:_AUDIT_COLLECTION_MAX_ITEMS]]
     if isinstance(value, str):
+        # Routing dispositions are a closed structural vocabulary.  Keep the
+        # slash-shaped ``n/a`` readable to the Retro consumer without
+        # loosening the general literal grammar or exposing arbitrary text
+        # placed in a ``lenses`` collection.
+        if normalized_key == "lenses" and value in {"deep", "light", "n/a"}:
+            return value
         if normalized_key in _AUDIT_LITERAL_FIELDS and \
                 _AUDIT_LITERAL_RE.fullmatch(value):
             return value

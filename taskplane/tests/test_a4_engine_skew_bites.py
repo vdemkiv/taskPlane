@@ -138,7 +138,9 @@ class TestTheRefusalNowFires(_EngineWorkspaces):
             events = [json.loads(x) for x in f if x.strip()]
         blocked = [e for e in events if e.get("event") == "loop_gate_blocked"]
         self.assertTrue(blocked)
-        self.assertEqual(blocked[-1]["reason"], "engine_skew_workspace")
+        self.assertEqual(
+            blocked[-1]["reason"], tp._audit_minimized(
+                "engine_skew_workspace"))
 
 
 class TestSubmitStampsTheEvidenceEngine(unittest.TestCase):

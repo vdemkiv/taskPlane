@@ -2648,7 +2648,9 @@ class TestSerialClaimRefusal(unittest.TestCase):
         blocked = [e for e in self._trace(ws)
                    if e.get("event") == "loop_claim_blocked"]
         self.assertEqual([e.get("task") for e in blocked], ["t1", "t2"])
-        self.assertEqual({e.get("reason") for e in blocked}, {"serial_mode"})
+        expected = tp._audit_minimized("serial_mode")
+        self.assertEqual([e.get("reason") for e in blocked],
+                         [expected, expected])
         # fail closed BEFORE any claim side effect: statuses still pending,
         # no contract slot activated, no worktree created
         for t in loop.load(ws)["tasks"]:
@@ -2713,7 +2715,8 @@ class TestPlanOrderingGate(unittest.TestCase):
         self.assertEqual(loop.load(ws)["step"], "plan")  # held at plan
         blocked = self._trace_events(ws, "loop_gate_blocked")
         self.assertTrue(blocked)
-        self.assertEqual(blocked[-1].get("reason"), "ordering")
+        self.assertEqual(blocked[-1].get("reason"),
+                         tp._audit_minimized("ordering"))
 
     def test_no_plan_checkpoint_loop_cannot_bypass_the_rule(self):
         # the reproduced bypass: `loop init --checkpoints em` has no
@@ -2729,7 +2732,8 @@ class TestPlanOrderingGate(unittest.TestCase):
         st = loop.load(ws)
         self.assertEqual(st["step"], "plan")             # NOT execute
         blocked = self._trace_events(ws, "loop_gate_blocked")
-        self.assertEqual(blocked[-1].get("reason"), "ordering")
+        self.assertEqual(blocked[-1].get("reason"),
+                         tp._audit_minimized("ordering"))
 
     def test_violating_plan_is_refused_at_approve_too(self):
         # belt and suspenders: the plan_approval transition keeps its own
@@ -2747,7 +2751,8 @@ class TestPlanOrderingGate(unittest.TestCase):
         self.assertIn("g1", out["error"])
         self.assertEqual(loop.load(ws)["step"], "plan_approval")  # held
         blocked = self._trace_events(ws, "loop_approve_blocked")
-        self.assertEqual(blocked[-1].get("reason"), "ordering")
+        self.assertEqual(blocked[-1].get("reason"),
+                         tp._audit_minimized("ordering"))
 
     def test_declared_dependency_passes_the_gate(self):
         ws = self._plan_ws([self.SHAPE, dict(self.GOLD, deps=["s1"])])
@@ -3055,9 +3060,11 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertEqual(json.dumps(loop.load(ws), sort_keys=True), before)
         self.assertEqual(loop.load(ws)["step"], "evaluate")
         blocked = _trace_events(ws, "loop_gate_blocked")[-1]
-        self.assertEqual(blocked["reason"], "engine_skew")
+        self.assertEqual(blocked["reason"],
+                         tp._audit_minimized("engine_skew"))
         self.assertEqual(blocked["submitted"], "f" * 64)
-        self.assertEqual(blocked["validator"], tp.engine_fingerprint())
+        self.assertEqual(blocked["validator"],
+                         tp._audit_pseudonym(tp.engine_fingerprint()))
         # "merge tp/t1 into the primary": one engine now owns production and
         # validation. The evidence is IDENTICAL — a re-evaluation is never
         # stranded by the refusal.
@@ -3083,8 +3090,9 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertIn("git merge tp/t1", out["error"])
         self.assertIsNone(out["engine_skew"]["submitted"])
         self.assertEqual(loop.load(ws)["step"], "evaluate")
-        self.assertEqual(_trace_events(ws, "loop_gate_blocked")[-1]["reason"],
-                         "engine_skew")
+        self.assertEqual(
+            _trace_events(ws, "loop_gate_blocked")[-1]["reason"],
+            tp._audit_minimized("engine_skew"))
         again = loop.submit(ws, "pass")
         self.assertEqual(again["submission"]["engine_fingerprint"],
                          tp.engine_fingerprint())

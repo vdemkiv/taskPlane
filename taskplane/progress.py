@@ -246,10 +246,23 @@ def record_trace_event(workspace: str, event: str, data: Mapping[str, Any],
     prior = _existing_snapshot(path)
     prior_identity = prior.get("identity") if prior else {}
     prior_active = prior.get("active") if prior else {}
+    phase_value = data.get("step") or data.get("phase")
+    agent_value = data.get("agent_id") or data.get("agent") or data.get("task")
+    # A generic audit event is not evidence of a live workflow.  The former
+    # fallbacks manufactured an ``active-loop`` owned by ``taskplane`` for
+    # any trace append, including a denial or rotation marker.  Start the
+    # presentation snapshot only from a complete, durable run identity;
+    # once started, later events may inherit that established identity.
+    if prior is None and not all(
+            isinstance(value, str) and bool(value.strip()) for value in (
+                data.get("workflow_id"), data.get("run_id"), phase_value,
+                agent_value)):
+        return {"schema": SNAPSHOT_SCHEMA, "recorded": False,
+                "reason": "incomplete trace identity"}
     moment = float(observed_at if observed_at is not None else time.time())
     fallback = hashlib.sha256(os.path.realpath(workspace).encode("utf-8")) \
         .hexdigest()[:16]
-    phase = str(data.get("step") or data.get("phase") or event)
+    phase = str(phase_value or event)
     identity = {
         "workflow_id": str(data.get("workflow_id") or
                            prior_identity.get("workflow_id") or

@@ -303,8 +303,20 @@ def test_production_trace_writer_continuously_updates_progress_snapshot(tmp_path
     assert status["identity"]["workflow_id"] == "wf-runtime"
     assert status["identity"]["run_id"] == "run-runtime"
     assert status["active"] == {
-        "owner": "taskplane", "agent": "executor-6", "phase": "execute"}
+        "owner": "taskplane",
+        "agent": taskplane_lite._audit_pseudonym("executor-6"),
+        "phase": "execute"}
     assert status["state"] == "executing"
+
+
+def test_generic_trace_does_not_invent_live_progress_identity(tmp_path):
+    taskplane_lite.trace(
+        str(tmp_path), "hook_deny", reason="private operator detail")
+
+    status = progress.read_workspace_status(str(tmp_path), now=10**12)
+
+    assert status["status"] == "unavailable"
+    assert status["gating"] is False
 
 
 def test_production_status_reads_durable_progress_without_review_recompute(tmp_path):
