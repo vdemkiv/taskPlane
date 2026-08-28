@@ -613,16 +613,60 @@ class RunStore:
             handle.flush()
             os.fsync(handle.fileno())
 
-    def _journal_contains_stage_event(self, run_id: str,
-                                      event: dict) -> bool:
+    def _read_journal_rows_locked(self, run_id: str) -> list[dict]:
+        """Read complete JSONL rows and discard only a crash-torn tail."""
         path = self._journal_path(run_id)
         try:
-            with open(path, encoding="utf-8") as handle:
-                rows = [json.loads(line) for line in handle if line.strip()]
+            with open(path, "rb") as handle:
+                payload = handle.read()
         except FileNotFoundError:
-            return False
-        except (OSError, ValueError) as exc:
+            return []
+        except OSError as exc:
             raise RunStoreError("run journal is unavailable or corrupt") from exc
+
+        rows: list[dict] = []
+        offset = 0
+        lines = payload.splitlines(keepends=True)
+        for index, encoded in enumerate(lines):
+            final_unterminated = (
+                index == len(lines) - 1 and
+                not encoded.endswith((b"\n", b"\r"))
+            )
+            try:
+                row = json.loads(encoded.decode("utf-8"))
+                if not isinstance(row, dict):
+                    raise ValueError("journal row is not an object")
+            except (UnicodeDecodeError, ValueError) as exc:
+                if not final_unterminated:
+                    raise RunStoreError(
+                        "run journal is unavailable or corrupt") from exc
+                try:
+                    with open(path, "r+b") as handle:
+                        handle.truncate(offset)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                except OSError as repair_exc:
+                    raise RunStoreError(
+                        "run journal crash tail could not be repaired") \
+                        from repair_exc
+                break
+            rows.append(row)
+            offset += len(encoded)
+            if final_unterminated:
+                try:
+                    with open(path, "ab") as handle:
+                        handle.write(b"\n")
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                except OSError as repair_exc:
+                    raise RunStoreError(
+                        "run journal crash tail could not be completed") \
+                        from repair_exc
+        return rows
+
+    def _journal_contains_stage_event(self, run_id: str,
+                                      event: dict) -> bool:
+        rows = self._read_journal_rows_locked(run_id)
         identity = (event["operation_id"], event["request_fingerprint"])
         matches = [row for row in rows if (
             row.get("event") == "stage_operation_committed" and
@@ -649,6 +693,32 @@ class RunStore:
         _validate_stage_index(delivered)
         _atomic_write_json(self._manifest_path(run_id), delivered)
         return delivered
+
+    def _relay_all_stage_journal_outbox_locked(
+            self, run_id: str, manifest: dict) -> dict:
+        """Sweep every committed undelivered event under the run lock."""
+        if manifest.get("schema") != "taskplane.run/v4":
+            return manifest
+        _validate_stage_index(manifest)
+        relayed = manifest
+        for operation_id in sorted(
+                (manifest.get("stage_journal_outbox") or {}).keys()):
+            relayed = self._relay_stage_journal_outbox_locked(
+                run_id, relayed, operation_id)
+        return relayed
+
+    def _load_manifest(self, run_id: str) -> dict:
+        path = self._manifest_path(run_id)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                value = json.load(handle)
+        except (OSError, ValueError) as exc:
+            raise RunStoreError(f"run manifest is unavailable: {run_id}") \
+                from exc
+        if not isinstance(value, dict) or value.get("schema") not in \
+                _RUN_SCHEMAS:
+            raise RunStoreError(f"run manifest is invalid: {run_id}")
+        return value
 
     def create(self, identity: storage.RepositoryIdentity, *, run_id: str,
                checkout: str, host: dict, target: dict) -> dict:
@@ -692,17 +762,12 @@ class RunStore:
             return manifest
 
     def load(self, run_id: str) -> dict:
+        run_id = _run_id(run_id)
         path = self._manifest_path(run_id)
-        try:
-            with open(path, encoding="utf-8") as handle:
-                value = json.load(handle)
-        except (OSError, ValueError) as exc:
-            raise RunStoreError(f"run manifest is unavailable: {run_id}") \
-                from exc
-        if not isinstance(value, dict) or value.get("schema") not in \
-                _RUN_SCHEMAS:
-            raise RunStoreError(f"run manifest is invalid: {run_id}")
-        return value
+        with _lock(path):
+            value = self._load_manifest(run_id)
+            return self._relay_all_stage_journal_outbox_locked(
+                run_id, value)
 
     def commit(self, run_id: str, *, expected_revision: int,
                changes: dict) -> dict:
@@ -715,7 +780,9 @@ class RunStore:
                 ", ".join(sorted(forbidden)))
         path = self._manifest_path(run_id)
         with _lock(path):
-            current = self.load(run_id)
+            current = self._load_manifest(run_id)
+            current = self._relay_all_stage_journal_outbox_locked(
+                run_id, current)
             actual = int(current.get("revision") or 0)
             if actual != int(expected_revision):
                 raise RevisionConflict(
@@ -754,7 +821,9 @@ class RunStore:
             raise StageStateError("authority validator must be callable")
         path = self._manifest_path(run_id)
         with _lock(path):
-            current = self.load(run_id)
+            current = self._load_manifest(run_id)
+            current = self._relay_all_stage_journal_outbox_locked(
+                run_id, current)
             if current.get("run_id") != run_id:
                 raise StageStateError("run manifest identity mismatch")
             operations = current.get("stage_operations")
@@ -906,7 +975,9 @@ class RunStore:
         run_id = _run_id(run_id)
         path = self._manifest_path(run_id)
         with _lock(path):
-            current = self.load(run_id)
+            current = self._load_manifest(run_id)
+            current = self._relay_all_stage_journal_outbox_locked(
+                run_id, current)
             if current.get("run_id") != run_id:
                 raise StageStateError("run manifest identity mismatch")
             promoted = _promote_stage_index(current)

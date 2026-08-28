@@ -7,6 +7,7 @@ import base64
 import json
 import math
 import os
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,8 @@ from taskplane.delivery_ports import (
 PRODUCER_OBSERVATION_SCHEMA = "taskplane.producer-observation/v1"
 HOST_PRODUCER_EVENT_SCHEMA = "taskplane.host-producer-event/v1"
 PRODUCER_CONSUMPTION_SCHEMA = "taskplane.producer-observation-consumption/v1"
+PRODUCER_OBSERVATION_INTENT_SCHEMA = \
+    "taskplane.producer-observation-intent/v2"
 MAX_EVENT_AGE_SECONDS = 300.0
 
 _OBSERVATION_FIELDS = frozenset(
@@ -89,6 +92,11 @@ _EVIDENCE_RECEIPT_FIELDS = frozenset(
     {"domain", "operation_id", "predecessor_fingerprint", "payload",
      "payload_fingerprint", "prepare_token", "fingerprint"}
 )
+_OBSERVATION_INTENT_FIELDS = frozenset(
+    {"schema", "operation_id", "expected_head", "receipt", "phase",
+     "capability_receipt_fingerprint", "evidence_receipt_fingerprint",
+     "fingerprint"}
+)
 
 
 class ProducerObservationError(ValueError):
@@ -141,7 +149,199 @@ def _production_store(evidence_root: str, workspace: str,
     repository = hashlib.sha256(
         os.path.realpath(workspace).encode("utf-8")).hexdigest()
     namespace = hashlib.sha256(str(run_id).encode("utf-8")).hexdigest()
-    return LocatorEvidenceStore(root, repository, namespace)
+    store = LocatorEvidenceStore(root, repository, namespace)
+    reconcile_observation_intents(store)
+    return store
+
+
+def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _atomic_write_observation_intent(path: Path,
+                                     value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(
+        f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(_canonical_bytes(value))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _observation_intent_path(
+        evidence_store: EvidenceStore, operation_id: str,
+        receipt: Mapping[str, Any], expected_head: str | None) -> Path | None:
+    root = getattr(evidence_store, "path", None)
+    if not isinstance(root, Path):
+        return None
+    identity = {
+        "schema": PRODUCER_OBSERVATION_INTENT_SCHEMA,
+        "operation_id": operation_id,
+        "receipt_fingerprint": receipt["fingerprint"],
+        "expected_head": expected_head,
+    }
+    transaction_id = content_fingerprint(identity)
+    return (root / "producer_observation" / "authority-intents" /
+            f"{transaction_id}.json")
+
+
+def _validate_observation_intent(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != \
+            _OBSERVATION_INTENT_FIELDS:
+        raise ProducerObservationError(
+            "producer observation durable intent is not closed")
+    if value.get("schema") != PRODUCER_OBSERVATION_INTENT_SCHEMA:
+        raise ProducerObservationError(
+            "producer observation durable intent schema is invalid")
+    _text(value.get("operation_id"), "operation_id")
+    expected_head = value.get("expected_head")
+    if expected_head is not None:
+        _fingerprint(expected_head, "expected_head")
+    receipt = validate_producer_observation(value.get("receipt"))
+    phase = value.get("phase")
+    if phase not in {"prepared", "capability_consumed", "committed"}:
+        raise ProducerObservationError(
+            "producer observation durable intent phase is invalid")
+    capability_fingerprint = value.get("capability_receipt_fingerprint")
+    evidence_fingerprint = value.get("evidence_receipt_fingerprint")
+    if phase == "prepared":
+        if capability_fingerprint is not None or evidence_fingerprint is not None:
+            raise ProducerObservationError(
+                "unconsumed producer observation intent claims completion")
+    else:
+        _fingerprint(
+            capability_fingerprint, "capability_receipt_fingerprint")
+        if phase == "capability_consumed" and evidence_fingerprint is not None:
+            raise ProducerObservationError(
+                "uncommitted producer observation intent claims evidence")
+        if phase == "committed":
+            _fingerprint(
+                evidence_fingerprint, "evidence_receipt_fingerprint")
+    projection = {key: value[key]
+                  for key in _OBSERVATION_INTENT_FIELDS - {"fingerprint"}}
+    if value.get("fingerprint") != content_fingerprint(projection):
+        raise ProducerObservationError(
+            "producer observation durable intent fingerprint mismatch")
+    return {**dict(value), "receipt": receipt}
+
+
+def _observation_intent_value(
+        *, operation_id: str, expected_head: str | None,
+        receipt: Mapping[str, Any], phase: str,
+        capability_receipt_fingerprint: str | None = None,
+        evidence_receipt_fingerprint: str | None = None) -> dict[str, Any]:
+    projection = {
+        "schema": PRODUCER_OBSERVATION_INTENT_SCHEMA,
+        "operation_id": operation_id,
+        "expected_head": expected_head,
+        "receipt": dict(receipt),
+        "phase": phase,
+        "capability_receipt_fingerprint": capability_receipt_fingerprint,
+        "evidence_receipt_fingerprint": evidence_receipt_fingerprint,
+    }
+    value = {**projection, "fingerprint": content_fingerprint(projection)}
+    return _validate_observation_intent(value)
+
+
+def _load_observation_intent(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ProducerObservationError(
+            "producer observation durable intent is corrupt") from exc
+    return _validate_observation_intent(value)
+
+
+def _prepare_observation_intent(
+        evidence_store: EvidenceStore, *, operation_id: str,
+        receipt: Mapping[str, Any], expected_head: str | None,
+        checkpoint: bool = True) -> tuple[Path, dict[str, Any]] | None:
+    path = _observation_intent_path(
+        evidence_store, operation_id, receipt, expected_head)
+    if path is None:
+        return None
+    if path.exists():
+        value = _load_observation_intent(path)
+        expected = (operation_id, expected_head, receipt["fingerprint"])
+        actual = (value["operation_id"], value["expected_head"],
+                  value["receipt"]["fingerprint"])
+        if actual != expected:
+            raise ProducerObservationError(
+                "producer observation durable intent collision")
+        return path, value
+    value = _observation_intent_value(
+        operation_id=operation_id, expected_head=expected_head,
+        receipt=receipt, phase="prepared")
+    _atomic_write_observation_intent(path, value)
+    if checkpoint:
+        injector = getattr(evidence_store, "fault_injector", None)
+        if injector is not None:
+            injector.checkpoint("after-prepare-intent")
+    return path, value
+
+
+def _advance_observation_intent(
+        path: Path, value: Mapping[str, Any], *, phase: str,
+        capability_receipt_fingerprint: str,
+        evidence_receipt_fingerprint: str | None = None) -> dict[str, Any]:
+    advanced = _observation_intent_value(
+        operation_id=value["operation_id"],
+        expected_head=value["expected_head"], receipt=value["receipt"],
+        phase=phase,
+        capability_receipt_fingerprint=capability_receipt_fingerprint,
+        evidence_receipt_fingerprint=evidence_receipt_fingerprint)
+    _atomic_write_observation_intent(path, advanced)
+    return advanced
+
+
+def _evidence_receipt_fingerprint(raw: bytes) -> str:
+    try:
+        value = json.loads(raw.decode("utf-8"))
+        fingerprint = value.get("fingerprint")
+    except (UnicodeDecodeError, ValueError, AttributeError) as exc:
+        raise ProducerObservationError(
+            "producer observation evidence receipt is corrupt") from exc
+    return _fingerprint(fingerprint, "evidence_receipt_fingerprint")
+
+
+def reconcile_observation_intents(
+        evidence_store: EvidenceStore) -> tuple[bytes, ...]:
+    """Commit only intents with durable proof of capability consumption."""
+    root = getattr(evidence_store, "path", None)
+    if not isinstance(root, Path):
+        return ()
+    directory = root / "producer_observation" / "authority-intents"
+    recovered: list[bytes] = []
+    for path in sorted(directory.glob("*.json")) if directory.exists() else ():
+        value = _load_observation_intent(path)
+        if value["phase"] in {"prepared", "committed"}:
+            continue
+        prepared = evidence_store.prepare(
+            "producer_observation", value["operation_id"], value["receipt"],
+            expected_head=value["expected_head"])
+        raw = evidence_store.commit(prepared)
+        _advance_observation_intent(
+            path, value, phase="committed",
+            capability_receipt_fingerprint=
+                value["capability_receipt_fingerprint"],
+            evidence_receipt_fingerprint=
+                _evidence_receipt_fingerprint(raw))
+        recovered.append(raw)
+    return tuple(recovered)
 
 
 def exact_output_bundle(paths: list[tuple[str, bytes]]) -> bytes:
@@ -720,23 +920,51 @@ def observe_submission(
     }
     receipt = {**projection, "fingerprint": content_fingerprint(projection)}
     validate_producer_observation(receipt)
-    prepared = evidence_store.prepare(
-        "producer_observation",
-        f"{run_id}:{task_id}:{stage}:{event['event_id']}",
-        receipt,
-        expected_head=predecessor_fingerprint,
-    )
-    # The exact, claim-bound reconciliation input must be durable before the
-    # process-private capability is consumed.  A failed prepare therefore
-    # leaves authority reusable; a later commit failure leaves an immutable
-    # intent that EvidenceStore.reconcile can finish after restart.
+    operation_id = f"{run_id}:{task_id}:{stage}:{event['event_id']}"
+    durable_intent = _prepare_observation_intent(
+        evidence_store, operation_id=operation_id, receipt=receipt,
+        expected_head=predecessor_fingerprint)
+    if durable_intent is not None:
+        intent_path, intent_value = durable_intent
+        if intent_value["phase"] in {"capability_consumed", "committed"}:
+            reconcile_observation_intents(evidence_store)
+            return receipt
+        prepared = None
+    else:
+        # Compatibility fallback for injected stores which expose only the
+        # protocol. Production and sandbox stores use the phase-aware intent.
+        prepared = evidence_store.prepare(
+            "producer_observation", operation_id, receipt,
+            expected_head=predecessor_fingerprint)
+
+    # The exact reconciliation input is durable before authority is consumed,
+    # but it is not eligible for evidence commit until the consumption result
+    # itself has been durably acknowledged.
     try:
-        capability_source.consume(
+        capability_receipt = capability_source.consume(
             capability_handle,
             expected_bindings=expected_capability,
             now=now,
         )
     except DeliveryPortError as exc:
         raise ProducerObservationError(str(exc)) from exc
-    evidence_store.commit(prepared)
+    if not isinstance(capability_receipt, Mapping):
+        raise ProducerObservationError(
+            "host capability consumption receipt is invalid")
+    capability_receipt_fingerprint = content_fingerprint(
+        dict(capability_receipt))
+    if durable_intent is not None:
+        intent_value = _advance_observation_intent(
+            intent_path, intent_value, phase="capability_consumed",
+            capability_receipt_fingerprint=capability_receipt_fingerprint)
+        prepared = evidence_store.prepare(
+            "producer_observation", operation_id, receipt,
+            expected_head=predecessor_fingerprint)
+    committed = evidence_store.commit(prepared)
+    if durable_intent is not None:
+        _advance_observation_intent(
+            intent_path, intent_value, phase="committed",
+            capability_receipt_fingerprint=capability_receipt_fingerprint,
+            evidence_receipt_fingerprint=
+                _evidence_receipt_fingerprint(committed))
     return receipt
