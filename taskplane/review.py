@@ -27,11 +27,13 @@ import hmac
 import json
 import os
 import re
+import signal
 import shlex
 import shutil
 import subprocess
 import tempfile
 import sys
+import time
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
@@ -605,6 +607,18 @@ def _bounded_review_detail(value: object) -> dict:
         if isinstance(count, int) and not isinstance(count, bool) and \
                 0 <= count <= 1_000_000:
             projected[key] = count
+    reason_code = value.get("reason_code")
+    if reason_code in {
+            "sandbox_process_timeout", "sandbox_preparation_timeout",
+            "sandbox_process_reap_timeout"}:
+        projected["reason_code"] = reason_code
+    phase = value.get("phase")
+    if isinstance(phase, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,40}", phase):
+        projected["phase"] = phase
+    timeout_seconds = value.get("timeout_seconds")
+    if isinstance(timeout_seconds, (int, float)) and not isinstance(
+            timeout_seconds, bool) and 0 <= timeout_seconds <= 600:
+        projected["timeout_seconds"] = timeout_seconds
     return projected
 
 
@@ -1131,6 +1145,345 @@ def _validated_validation_sandbox(value: object, run_id: object) -> dict:
         "sandbox_id", "disposable", "push_disabled")}
 
 
+_VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS = 120.0
+_VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS = 600.0
+_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS = 1.0
+_WINDOWS_CREATE_SUSPENDED = 0x00000004
+_VALIDATION_SANDBOX_COPY_SCRIPT = (
+    "import shutil, sys; shutil.copy2(sys.argv[1], sys.argv[2])")
+
+
+class _ValidationSandboxTimeout(RuntimeError):
+    """Typed internal timeout retained until it is persisted for the operator."""
+
+    def __init__(self, *, phase: str, reason_code: str,
+                 timeout_seconds: float):
+        self.phase = phase
+        self.reason_code = reason_code
+        self.timeout_seconds = timeout_seconds
+        super().__init__(f"{reason_code} during {phase}")
+
+
+class _ValidationSandboxProcessCleanupTimeout(RuntimeError):
+    """The owned preparation process did not confirm exit after a hard kill."""
+
+    def __init__(self, message: str, *, timeout_seconds: float):
+        self.timeout_seconds = timeout_seconds
+        super().__init__(message)
+
+
+class _WindowsValidationSandboxJob:
+    """Own one Windows process tree through a kill-on-close Job Object."""
+
+    def __init__(self, handle, kernel32):
+        self._handle = handle
+        self._kernel32 = kernel32
+
+    def terminate(self) -> None:
+        if self._handle is not None and not self._kernel32.TerminateJobObject(
+                self._handle, 1):
+            import ctypes
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self) -> None:
+        if self._handle is None:
+            return
+        handle, self._handle = self._handle, None
+        if not self._kernel32.CloseHandle(handle):
+            import ctypes
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _create_windows_validation_sandbox_job(process):
+    """Assign a launched child to an owned kill-on-close Windows job."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _JobObjectBasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class _JobObjectExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _JobObjectBasicLimitInformation),
+            ("IoInfo", _IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [
+        wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateJobObjectW(None, None)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    job = _WindowsValidationSandboxJob(handle, kernel32)
+    try:
+        limits = _JobObjectExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000
+        if not kernel32.SetInformationJobObject(
+                handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel32.AssignProcessToJobObject(handle, process._handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return job
+    except BaseException:
+        job.close()
+        raise
+
+
+def _resume_windows_validation_sandbox_process(process) -> None:
+    """Resume only after the suspended child has process-tree ownership."""
+    import ctypes
+    from ctypes import wintypes
+
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+    ntdll.NtResumeProcess.restype = wintypes.LONG
+    status = ntdll.NtResumeProcess(process._handle)
+    if status != 0:
+        raise OSError(
+            f"NtResumeProcess failed with NTSTATUS 0x{status & 0xffffffff:08x}")
+
+
+def _validation_sandbox_cleanup_remaining(
+        *, shared_deadline: float, operation_deadline: float) -> float:
+    return max(
+        0.0, min(shared_deadline, operation_deadline) - time.monotonic())
+
+
+def _wait_for_validation_sandbox_process(
+        process, *, shared_deadline: float,
+        operation_deadline: float) -> bool:
+    remaining = _validation_sandbox_cleanup_remaining(
+        shared_deadline=shared_deadline,
+        operation_deadline=operation_deadline)
+    if remaining <= 0:
+        return False
+    try:
+        process.wait(timeout=min(
+            _VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS, remaining))
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def _terminate_validation_sandbox_process_tree(
+        process, *, shared_deadline: float,
+        operation_deadline: float) -> None:
+    """Terminate the preparation subprocess and all descendants it created."""
+    if process.poll() is not None:
+        return
+    cleanup_budget = min(
+        2 * _VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS,
+        _validation_sandbox_cleanup_remaining(
+            shared_deadline=shared_deadline,
+            operation_deadline=operation_deadline))
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        if _wait_for_validation_sandbox_process(
+                process, shared_deadline=shared_deadline,
+                operation_deadline=operation_deadline):
+            return
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if not _wait_for_validation_sandbox_process(
+                process, shared_deadline=shared_deadline,
+                operation_deadline=operation_deadline):
+            raise _ValidationSandboxProcessCleanupTimeout(
+                "validation sandbox process did not reap after SIGKILL",
+                timeout_seconds=cleanup_budget)
+        return
+    job = getattr(process, "_taskplane_validation_job", None)
+    if job is not None:
+        # TerminateJobObject applies to every associated descendant, including
+        # children that created their own console process group.  Closing the
+        # kill-on-close handle below is the final fail-closed backstop.
+        try:
+            job.terminate()  # pragma: no cover - Windows host
+        finally:
+            job.close()  # pragma: no cover - Windows host
+            process._taskplane_validation_job = None
+        if not _wait_for_validation_sandbox_process(
+                process, shared_deadline=shared_deadline,
+                operation_deadline=operation_deadline):
+            raise _ValidationSandboxProcessCleanupTimeout(
+                "validation sandbox Windows job did not reap after kill",
+                timeout_seconds=cleanup_budget)
+        return
+    # Fail closed if Job Object creation/assignment was unavailable.  This
+    # direct-child fallback is used only while aborting a launch that never
+    # became an accepted sandbox preparation process.
+    try:
+        process.terminate()  # pragma: no cover - Windows host
+    except ProcessLookupError:  # pragma: no cover - Windows host
+        pass
+    if _wait_for_validation_sandbox_process(
+            process, shared_deadline=shared_deadline,
+            operation_deadline=operation_deadline):
+        return
+    try:
+        process.kill()
+    except ProcessLookupError:  # pragma: no cover - Windows host
+        pass
+    if not _wait_for_validation_sandbox_process(
+            process, shared_deadline=shared_deadline,
+            operation_deadline=operation_deadline):
+        raise _ValidationSandboxProcessCleanupTimeout(
+            "validation sandbox process did not reap after kill",
+            timeout_seconds=cleanup_budget)
+
+
+def _terminate_validation_sandbox_process_for_phase(
+        process, phase: str, *, shared_deadline: float,
+        operation_deadline: float) -> None:
+    try:
+        _terminate_validation_sandbox_process_tree(
+            process, shared_deadline=shared_deadline,
+            operation_deadline=operation_deadline)
+    except _ValidationSandboxProcessCleanupTimeout as exc:
+        raise _ValidationSandboxTimeout(
+            phase=phase, reason_code="sandbox_process_reap_timeout",
+            timeout_seconds=exc.timeout_seconds) \
+            from exc
+
+
+def _run_validation_sandbox_git(
+        argv: list[str], *, cwd: str | None, deadline: float, phase: str,
+        input: bytes | None = None, text: bool = False
+) -> subprocess.CompletedProcess:
+    """Run one Git preparation step within both process and total deadlines."""
+    operation_started = time.monotonic()
+    remaining = deadline - operation_started
+    if remaining <= 0:
+        raise _ValidationSandboxTimeout(
+            phase=phase, reason_code="sandbox_preparation_timeout",
+            timeout_seconds=_VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS)
+    operation_deadline = min(
+        deadline,
+        operation_started + _VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS)
+    timeout = operation_deadline - operation_started
+    reason_code = (
+        "sandbox_process_timeout"
+        if remaining >= _VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS
+        else "sandbox_preparation_timeout")
+    launch = {
+        "cwd": cwd, "stdin": subprocess.PIPE if input is not None else None,
+        "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+        "text": text, "start_new_session": os.name == "posix",
+    }
+    if os.name == "nt":
+        launch["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | \
+            _WINDOWS_CREATE_SUSPENDED
+    if text:
+        launch.update({"encoding": "utf-8", "errors": "replace"})
+    process = subprocess.Popen(argv, **launch)
+    job = None
+    if os.name == "nt":
+        try:
+            job = _create_windows_validation_sandbox_job(process)
+            process._taskplane_validation_job = job
+            _resume_windows_validation_sandbox_process(process)
+        except BaseException:
+            _terminate_validation_sandbox_process_tree(
+                process, shared_deadline=deadline,
+                operation_deadline=operation_deadline)
+            raise
+    try:
+        stdout, stderr = process.communicate(input=input, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_validation_sandbox_process_for_phase(
+            process, phase, shared_deadline=deadline,
+            operation_deadline=operation_deadline)
+        raise _ValidationSandboxTimeout(
+            phase=phase, reason_code=reason_code,
+            timeout_seconds=timeout) from exc
+    except BaseException:
+        _terminate_validation_sandbox_process_for_phase(
+            process, phase, shared_deadline=deadline,
+            operation_deadline=operation_deadline)
+        raise
+    finally:
+        if job is not None and getattr(
+                process, "_taskplane_validation_job", None) is job:
+            # Normal parent exit is not proof that a descendant also exited.
+            # Kill-on-close makes a successful preparation unable to leak it.
+            job.close()
+            process._taskplane_validation_job = None
+    result = subprocess.CompletedProcess(
+        argv, process.returncode, stdout=stdout, stderr=stderr)
+    if result.returncode:
+        raise subprocess.CalledProcessError(
+            result.returncode, argv, output=stdout, stderr=stderr)
+    return result
+
+
+def _ensure_validation_sandbox_deadline(deadline: float, phase: str) -> None:
+    if time.monotonic() >= deadline:
+        raise _ValidationSandboxTimeout(
+            phase=phase, reason_code="sandbox_preparation_timeout",
+            timeout_seconds=_VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS)
+
+
+def _copy_validation_sandbox_file(source: str, destination: str, *,
+                                  deadline: float) -> None:
+    """Copy through an owned child so the preparation deadline can cancel it."""
+    _run_validation_sandbox_git(
+        [sys.executable, "-I", "-c", _VALIDATION_SANDBOX_COPY_SCRIPT,
+         source, destination],
+        cwd=None, deadline=deadline, phase="copy-untracked")
+
+
+def _persist_validation_sandbox_timeout(
+        ws: str, run_id: str | None,
+        timeout: _ValidationSandboxTimeout) -> None:
+    record_review_execution(
+        ws, kind="dynamic_validation", status="failed", run_id=run_id,
+        detail={
+            "summary": "Validation sandbox preparation timed out",
+            "reason_code": timeout.reason_code, "phase": timeout.phase,
+            "timeout_seconds": timeout.timeout_seconds,
+        })
+
+
 def prepare_review_validation_sandbox(ws: str, *,
                                       run_id: str | None = None) -> dict:
     """Create a writable, independently cloned copy for validation repairs."""
@@ -1142,11 +1495,17 @@ def prepare_review_validation_sandbox(ws: str, *,
         raise ReviewKernelError(
             "validation sandbox requires selected or failed dynamic validation")
     source = os.path.realpath(ws)
+    deadline = time.monotonic() + \
+        _VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS
     try:
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=source, check=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8").stdout.strip()
+        head = _run_validation_sandbox_git(
+            ["git", "rev-parse", "HEAD"], cwd=source, deadline=deadline,
+            phase="resolve-head", text=True).stdout.strip()
+    except _ValidationSandboxTimeout as exc:
+        _persist_validation_sandbox_timeout(source, run_id, exc)
+        raise ReviewKernelError(
+            f"validation sandbox preparation timed out during {exc.phase}") \
+            from exc
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ReviewKernelError(
             "validation sandbox requires a Git review checkout") from exc
@@ -1171,29 +1530,30 @@ def prepare_review_validation_sandbox(ws: str, *,
         temporary = tempfile.mkdtemp(prefix=".prepare-", dir=root)
         candidate = os.path.join(temporary, "checkout")
         try:
-            subprocess.run(
+            _run_validation_sandbox_git(
                 ["git", "clone", "--no-hardlinks", "--no-local", source,
-                 candidate], check=True, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, encoding="utf-8")
-            subprocess.run(
+                 candidate], cwd=None, deadline=deadline, phase="clone",
+                text=True)
+            _run_validation_sandbox_git(
                 ["git", "checkout", "--detach", head], cwd=candidate,
-                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8")
-            patch = subprocess.run(
+                deadline=deadline, phase="checkout", text=True)
+            patch = _run_validation_sandbox_git(
                 ["git", "diff", "--binary", "HEAD", "--"], cwd=source,
-                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                deadline=deadline, phase="diff")
             if patch.stdout:
-                subprocess.run(
+                _run_validation_sandbox_git(
                     ["git", "apply", "--whitespace=nowarn", "-"],
-                    cwd=candidate, check=True, input=patch.stdout,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            untracked = subprocess.run(
+                    cwd=candidate, deadline=deadline, phase="apply-diff",
+                    input=patch.stdout)
+            untracked = _run_validation_sandbox_git(
                 ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-                cwd=source, check=True, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE).stdout.split(b"\0")
+                cwd=source, deadline=deadline,
+                phase="list-untracked").stdout.split(b"\0")
             excluded = (".em-review/", ".eval/", ".taskplane/", ".tp-work/",
                         "node_modules/", "client/dist/", "server/dist/")
             for raw in untracked:
+                _ensure_validation_sandbox_deadline(
+                    deadline, "copy-untracked")
                 if not raw:
                     continue
                 relative = raw.decode("utf-8", errors="strict").replace("\\", "/")
@@ -1209,12 +1569,14 @@ def prepare_review_validation_sandbox(ws: str, *,
                         "unsafe untracked path in validation sandbox input")
                 if os.path.isfile(source_path):
                     os.makedirs(os.path.dirname(destination), exist_ok=True)
-                    shutil.copy2(source_path, destination)
-            subprocess.run(
+                    _copy_validation_sandbox_file(
+                        source_path, destination, deadline=deadline)
+                    _ensure_validation_sandbox_deadline(
+                        deadline, "copy-untracked")
+            _run_validation_sandbox_git(
                 ["git", "remote", "set-url", "--push", "origin",
                  "taskplane-disabled://validation-sandbox"], cwd=candidate,
-                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8")
+                deadline=deadline, phase="disable-push", text=True)
             hooks = os.path.join(candidate, ".taskplane-validation-hooks")
             os.makedirs(hooks, exist_ok=True)
             pre_push = os.path.join(hooks, "pre-push")
@@ -1222,12 +1584,17 @@ def prepare_review_validation_sandbox(ws: str, *,
                 stream.write("#!/bin/sh\necho 'taskplane: pushing from a "
                              "validation sandbox is disabled' >&2\nexit 1\n")
             os.chmod(pre_push, 0o700)
-            subprocess.run(
+            _run_validation_sandbox_git(
                 ["git", "config", "core.hooksPath",
                  ".taskplane-validation-hooks"], cwd=candidate,
-                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8")
+                deadline=deadline, phase="configure-hooks", text=True)
+            _ensure_validation_sandbox_deadline(deadline, "publish-checkout")
             os.replace(candidate, checkout)
+        except _ValidationSandboxTimeout as exc:
+            _persist_validation_sandbox_timeout(source, run_id, exc)
+            raise ReviewKernelError(
+                f"validation sandbox preparation timed out during {exc.phase}") \
+                from exc
         except (OSError, subprocess.CalledProcessError) as exc:
             raise ReviewKernelError(
                 "could not create isolated validation sandbox") from exc
