@@ -161,9 +161,7 @@
       "tag_prefix": "openai-publication/",
       "message_schema": "taskplane.openai-publication-approval/v1",
       "decision": "approve",
-      "allowed_tagger_emails": [
-        "vdemkiv@gmail.com"
-      ]
+      "allowed_signer_key_fingerprints": []
     }
   },
   "json_evolution": {

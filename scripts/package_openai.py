@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 from collections.abc import Mapping
 import hashlib
 import importlib.util
@@ -306,11 +307,171 @@ def _release_authority(policy: Mapping[str, object]) -> Mapping[str, object]:
             "taskplane.openai-publication-approval/v1" and
             decision.get("decision") == "approve",
             "publication decision trust policy is invalid")
-    emails = decision.get("allowed_tagger_emails")
-    require(isinstance(emails, list) and emails and
-            all(isinstance(email, str) and email for email in emails),
-            "publication decision has no trusted tagger identities")
+    fingerprints = decision.get("allowed_signer_key_fingerprints")
+    require(isinstance(fingerprints, list) and
+            all(isinstance(fingerprint, str) and (
+                re.fullmatch(r"[0-9A-F]{40}|[0-9A-F]{64}", fingerprint) is not None or
+                re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", fingerprint) is not None
+            ) for fingerprint in fingerprints),
+            "publication signing key fingerprint policy is invalid")
+    require(bool(fingerprints),
+            "publication signing key fingerprint allowlist is empty; "
+            "a separately authorized release must add a reviewed key fingerprint")
     return authority
+
+
+def _openpgp_length(data: bytes, offset: int) -> tuple[int, int]:
+    require(offset < len(data), "publication signature packet is truncated")
+    first = data[offset]
+    if first < 192:
+        return first, offset + 1
+    if first < 224:
+        require(offset + 1 < len(data),
+                "publication signature packet is truncated")
+        return ((first - 192) << 8) + data[offset + 1] + 192, offset + 2
+    if first == 255:
+        require(offset + 4 < len(data),
+                "publication signature packet is truncated")
+        return int.from_bytes(data[offset + 1:offset + 5], "big"), offset + 5
+    raise PackageError("publication signature uses an unsupported partial packet")
+
+
+def _ascii_armored_bytes(signature: str, begin: str, end: str) -> bytes:
+    lines = signature.strip().splitlines()
+    require(lines and lines[0] == begin and lines[-1] == end,
+            "publication signature armor is invalid")
+    body_started = False
+    encoded: list[str] = []
+    for line in lines[1:-1]:
+        if not body_started:
+            if not line:
+                body_started = True
+                continue
+            if ":" in line:
+                continue
+            body_started = True
+        if line.startswith("="):
+            break
+        if line:
+            encoded.append(line.strip())
+    require(bool(encoded), "publication signature armor has no body")
+    try:
+        return base64.b64decode("".join(encoded), validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise PackageError("publication signature armor is invalid") from exc
+
+
+def _hashed_openpgp_issuer_fingerprint(signature: str) -> str:
+    data = _ascii_armored_bytes(
+        signature, "-----BEGIN PGP SIGNATURE-----",
+        "-----END PGP SIGNATURE-----",
+    )
+    offset = 0
+    signature_bodies: list[bytes] = []
+    while offset < len(data):
+        header = data[offset]
+        offset += 1
+        require(bool(header & 0x80),
+                "publication signature packet header is invalid")
+        if header & 0x40:
+            packet_type = header & 0x3F
+            packet_length, offset = _openpgp_length(data, offset)
+        else:
+            packet_type = (header >> 2) & 0x0F
+            length_type = header & 0x03
+            require(length_type != 3,
+                    "publication signature packet has indeterminate length")
+            length_size = (1, 2, 4)[length_type]
+            require(offset + length_size <= len(data),
+                    "publication signature packet is truncated")
+            packet_length = int.from_bytes(
+                data[offset:offset + length_size], "big"
+            )
+            offset += length_size
+        packet_end = offset + packet_length
+        require(packet_end <= len(data),
+                "publication signature packet is truncated")
+        if packet_type == 2:
+            signature_bodies.append(data[offset:packet_end])
+        offset = packet_end
+    require(len(signature_bodies) == 1,
+            "publication signature must contain one OpenPGP signature packet")
+    body = signature_bodies[0]
+    require(len(body) >= 8 and body[0] == 4,
+            "publication signature must use OpenPGP v4")
+    hashed_length = int.from_bytes(body[4:6], "big")
+    hashed_end = 6 + hashed_length
+    require(hashed_end <= len(body),
+            "publication signature hashed area is truncated")
+    fingerprints: list[str] = []
+    offset = 6
+    while offset < hashed_end:
+        subpacket_length, content_offset = _openpgp_length(body, offset)
+        subpacket_end = content_offset + subpacket_length
+        require(subpacket_length >= 1 and subpacket_end <= hashed_end,
+                "publication signature hashed subpacket is truncated")
+        subpacket_type = body[content_offset] & 0x7F
+        value = body[content_offset + 1:subpacket_end]
+        if subpacket_type == 33:
+            require(len(value) in {21, 33} and value[0] in {4, 5},
+                    "publication signature issuer fingerprint is invalid")
+            fingerprints.append(value[1:].hex().upper())
+        offset = subpacket_end
+    require(len(fingerprints) == 1,
+            "publication signature has no unique hashed issuer fingerprint")
+    return fingerprints[0]
+
+
+def _ssh_signer_fingerprint(signature: str) -> str:
+    data = _ascii_armored_bytes(
+        signature, "-----BEGIN SSH SIGNATURE-----",
+        "-----END SSH SIGNATURE-----",
+    )
+    require(data.startswith(b"SSHSIG") and len(data) >= 10,
+            "publication SSH signature is invalid")
+    offset = 6
+    version = int.from_bytes(data[offset:offset + 4], "big")
+    offset += 4
+    require(version == 1 and offset + 4 <= len(data),
+            "publication SSH signature version is invalid")
+    key_length = int.from_bytes(data[offset:offset + 4], "big")
+    offset += 4
+    key_end = offset + key_length
+    require(key_length > 0 and key_end <= len(data),
+            "publication SSH signature key is invalid")
+    digest = hashlib.sha256(data[offset:key_end]).digest()
+    return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _signer_key_fingerprint(signature: object) -> str:
+    require(isinstance(signature, str) and signature,
+            "GitHub verification has no publication signature")
+    if signature.startswith("-----BEGIN PGP SIGNATURE-----"):
+        return _hashed_openpgp_issuer_fingerprint(signature)
+    if signature.startswith("-----BEGIN SSH SIGNATURE-----"):
+        return _ssh_signer_fingerprint(signature)
+    raise PackageError("publication signature format cannot bind a signing key fingerprint")
+
+
+def _validate_publication_verification_payload(
+    payload: object,
+    *,
+    tag_name: str,
+    expected_source_sha: str,
+    expected_message: str,
+) -> None:
+    require(isinstance(payload, str),
+            "GitHub publication verification payload is invalid")
+    header, separator, message = payload.partition("\n\n")
+    require(separator == "\n\n" and message.rstrip("\n") == expected_message,
+            "GitHub publication verification payload does not bind the decision")
+    lines = header.splitlines()
+    require(len(lines) == 4 and
+            lines[0] == f"object {expected_source_sha}" and
+            lines[1] == "type commit" and
+            lines[2] == f"tag {tag_name}" and
+            lines[3].startswith("tagger "),
+            "GitHub publication verification payload does not bind the tag object")
 
 
 def _github_ci_snapshot(
@@ -377,14 +538,18 @@ def _github_ci_snapshot(
         parsed_details = urllib.parse.urlsplit(
             details_url if isinstance(details_url, str) else ""
         )
-        expected_run_path = f"/actions/runs/{workflow_id}/job/"
+        expected_run_path = (
+            f"/{repository}/actions/runs/{workflow_id}/job/"
+        )
         require(row.get("head_sha") == expected_source_sha and
                 row.get("status") == "completed" and
                 row.get("conclusion") == "success" and
                 isinstance(app, Mapping) and app.get("slug") == "github-actions" and
                 parsed_details.scheme == "https" and
-                parsed_details.hostname == "github.com" and
-                expected_run_path in parsed_details.path,
+                parsed_details.netloc == "github.com" and
+                re.fullmatch(re.escape(expected_run_path) + r"[1-9][0-9]*",
+                             parsed_details.path) is not None and
+                not parsed_details.query and not parsed_details.fragment,
                 f"GitHub required check is not release-green: {name}")
         checks.append({
             "id": str(row.get("id")),
@@ -477,10 +642,6 @@ def _verify_signed_publication_decision(
             tag["object"].get("type") == "commit" and
             tag["object"].get("sha") == expected_source_sha,
             "signed publication decision does not bind release-green and candidate")
-    tagger = tag.get("tagger")
-    require(isinstance(tagger, Mapping) and
-            tagger.get("email") in decision["allowed_tagger_emails"],
-            "signed publication decision actor is not trusted")
     verification = tag.get("verification")
     require(isinstance(verification, Mapping) and
             verification.get("verified") is True and
@@ -488,6 +649,15 @@ def _verify_signed_publication_decision(
             bool(verification.get("signature")) and
             bool(verification.get("payload")),
             "GitHub did not cryptographically verify the publication decision")
+    _validate_publication_verification_payload(
+        verification["payload"],
+        tag_name=tag_name,
+        expected_source_sha=expected_source_sha,
+        expected_message=expected_message,
+    )
+    signer_fingerprint = _signer_key_fingerprint(verification["signature"])
+    require(signer_fingerprint in decision["allowed_signer_key_fingerprints"],
+            "signed publication decision signing key fingerprint is not allowlisted")
 
 
 def _materialize_git_revision(revision: str, destination: Path) -> None:
@@ -546,6 +716,8 @@ def produce_release_compatibility_receipt(
     producer = checked_policy.get("release_observation_producer")
     require(isinstance(producer, Mapping),
             "compatibility policy has no production observation producer")
+    require(git_is_clean(),
+            "compatibility producer requires a clean exact source checkout")
     require(git_head() == expected_source_sha,
             "compatibility producer does not bind the checked-out candidate SHA")
     last_tag = str(producer.get("last_released_tag") or "")

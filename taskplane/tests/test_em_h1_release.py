@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from copy import deepcopy
 import importlib.util
 import json
@@ -22,6 +23,27 @@ SHA = "a" * 40
 NOW = 110.0
 RUN_ID = "4242"
 TAG_OBJECT_SHA = "d" * 40
+SIGNER_KEY_FINGERPRINT = "0123456789ABCDEF0123456789ABCDEF01234567"
+
+
+def _openpgp_signature(fingerprint: str) -> str:
+    fingerprint_bytes = bytes.fromhex(fingerprint)
+    issuer_fingerprint = (
+        bytes((len(fingerprint_bytes) + 2, 33, 4)) + fingerprint_bytes
+    )
+    body = (
+        b"\x04\x00\x01\x08"
+        + len(issuer_fingerprint).to_bytes(2, "big")
+        + issuer_fingerprint
+        + b"\x00\x00\x00\x00"
+    )
+    packet = bytes((0xC2, len(body))) + body
+    encoded = base64.b64encode(packet).decode("ascii")
+    return (
+        "-----BEGIN PGP SIGNATURE-----\n\n"
+        f"{encoded}\n"
+        "-----END PGP SIGNATURE-----"
+    )
 
 
 def _packager():
@@ -34,9 +56,13 @@ def _packager():
 
 
 def _policy() -> dict:
-    return json.loads(
+    policy = json.loads(
         (ROOT / "design" / "compatibility.json").read_text(encoding="utf-8")
     )
+    policy["release_authority"]["publication_decision"][
+        "allowed_signer_key_fingerprints"
+    ] = [SIGNER_KEY_FINGERPRINT]
+    return policy
 
 
 def _seal(value: dict) -> dict:
@@ -226,8 +252,19 @@ class FakeGitHubApi:
                 "verification": {
                     "verified": True,
                     "reason": "valid",
-                    "signature": "signed-by-github-verified-key",
-                    "payload": "signed-publication-decision",
+                    "signature": _openpgp_signature(SIGNER_KEY_FINGERPRINT),
+                    "payload": (
+                        f"object {SHA}\n"
+                        "type commit\n"
+                        f"tag {tag_name}\n"
+                        "tagger Volodymyr Demkiv <vdemkiv@gmail.com> "
+                        "1787947200 -0400\n\n"
+                        "taskplane.openai-publication-approval/v1\n"
+                        "decision=approve\n"
+                        f"repository={repository}\n"
+                        f"source_sha={SHA}\n"
+                        f"release_green_fingerprint={release['fingerprint']}"
+                    ),
                 },
             },
         }
@@ -291,6 +328,71 @@ def test_h19_freshly_resealed_semantic_forgery_cannot_reuse_human_decision(
     with pytest.raises(packager.PackageError, match="signed publication decision"):
         packager.validate_release_package_authority(
             release_green=forged,
+            expected_source_sha=SHA,
+            now=NOW,
+            policy=policy,
+            github_api=github,
+        )
+
+
+def test_h19_verified_tag_from_non_allowlisted_signer_is_refused(monkeypatch):
+    packager = _packager()
+    policy = _policy()
+    compatibility = _compatibility_receipt(policy)
+    release = _release(policy, compatibility)
+    github = FakeGitHubApi(policy, release)
+    repository = policy["release_authority"]["repository"]
+    tag_path = f"/repos/{repository}/git/tags/{TAG_OBJECT_SHA}"
+    github.responses[tag_path]["verification"]["signature"] = _openpgp_signature(
+        "89ABCDEF0123456789ABCDEF0123456789ABCDEF"
+    )
+    monkeypatch.setattr(
+        packager, "produce_release_compatibility_receipt",
+        lambda **_kwargs: deepcopy(compatibility),
+    )
+    monkeypatch.setattr(packager, "git_is_clean", lambda: True)
+
+    with pytest.raises(packager.PackageError, match="signing key fingerprint"):
+        packager.validate_release_package_authority(
+            release_green=release,
+            expected_source_sha=SHA,
+            now=NOW,
+            policy=policy,
+            github_api=github,
+        )
+
+
+def test_h19_stored_policy_has_no_implicit_signer_authority():
+    packager = _packager()
+    stored_policy = json.loads(
+        (ROOT / "design" / "compatibility.json").read_text(encoding="utf-8")
+    )
+
+    with pytest.raises(packager.PackageError, match="separately authorized release"):
+        packager._release_authority(stored_policy)
+
+
+def test_h19_required_check_url_from_fork_repository_is_refused(monkeypatch):
+    packager = _packager()
+    policy = _policy()
+    compatibility = _compatibility_receipt(policy)
+    release = _release(policy, compatibility)
+    github = FakeGitHubApi(policy, release)
+    checks_path = (
+        f"/repos/{policy['release_authority']['repository']}/commits/{SHA}/check-runs"
+    )
+    github.responses[checks_path]["check_runs"][0]["details_url"] = (
+        f"https://github.com/attacker/taskPlane/actions/runs/{RUN_ID}/job/2000"
+    )
+    monkeypatch.setattr(
+        packager, "produce_release_compatibility_receipt",
+        lambda **_kwargs: deepcopy(compatibility),
+    )
+    monkeypatch.setattr(packager, "git_is_clean", lambda: True)
+
+    with pytest.raises(packager.PackageError, match="required check"):
+        packager.validate_release_package_authority(
+            release_green=release,
             expected_source_sha=SHA,
             now=NOW,
             policy=policy,
@@ -365,6 +467,16 @@ def test_h19_dirty_checkout_cannot_claim_exact_sha_release_authority(monkeypatch
             now=NOW,
             policy=policy,
             github_api=FakeGitHubApi(policy, release),
+        )
+
+
+def test_h19_compatibility_receipt_producer_refuses_dirty_checkout(monkeypatch):
+    packager = _packager()
+    monkeypatch.setattr(packager, "git_is_clean", lambda: False)
+
+    with pytest.raises(packager.PackageError, match="clean exact source"):
+        packager.produce_release_compatibility_receipt(
+            expected_source_sha=SHA, policy=_policy()
         )
 
 
