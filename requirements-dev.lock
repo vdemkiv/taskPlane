@@ -24,8 +24,15 @@
 # test-lock:     --hash=sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5
 #
 # Pillow is an asset-authoring dependency only.  It is intentionally excluded
-# from the runtime and ordinary test profile; CONTRIBUTING.md consumes this
-# separately when regenerating the README animation.
+# from the runtime and ordinary test profile.  The universal build-tool wheels
+# are installed first from ``asset-build-lock``; the Pillow source artifact is
+# then forced from ``asset-lock`` with build isolation disabled, so pip cannot
+# resolve an unreviewed build environment behind the hash check.
+# asset-build-lock: setuptools==80.9.0 \
+# asset-build-lock:     --hash=sha256:062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922 \
+# asset-build-lock:     --hash=sha256:f36b47402ecde768dbfafc46e8e4207b4360c654f1f3bb84475f0a28628fb19c
+# asset-build-lock: wheel==0.45.1 \
+# asset-build-lock:     --hash=sha256:708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248
 # asset-lock: Pillow==12.2.0 \
 # asset-lock:     --hash=sha256:a830b1a40919539d07806aa58e1b114df53ddd43213d9c8b75847eee6c0182b5
 #

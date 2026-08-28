@@ -118,17 +118,38 @@ def _violations(ci: str, lock: str, contributing: str) -> list[str]:
         problems.append("Pillow asset tool is not exactly pinned")
     if asset_invalid or not asset_hashes.get("pillow"):
         problems.append("Pillow asset tool has no reviewed SHA-256 artifact")
+    build_profile = _profile(lock, "asset-build-lock")
+    build_versions, build_hashes, build_invalid = _pins(build_profile)
+    if build_versions != {"setuptools": "80.9.0", "wheel": "0.45.1"}:
+        problems.append("Pillow build prerequisites are not exactly pinned")
+    if build_invalid or any(
+            not build_hashes.get(name) for name in build_versions):
+        problems.append("Pillow build prerequisites are not SHA-256 locked")
     if "Pillow" in test_profile:
         problems.append("Pillow leaked into the ordinary CI test profile")
     required_docs = (
+        "# asset-build-lock: ",
         "# asset-lock: ",
-        "--require-hashes --no-deps",
         "python3 scripts/render_readme_gif.py",
         "git diff --exit-code -- docs/assets/taskplane-cowork-flow.gif",
     )
     for fragment in required_docs:
         if fragment not in contributing:
             problems.append(f"asset regeneration docs miss {fragment}")
+    if ("--require-hashes --no-deps --only-binary=:all: "
+            "-r .requirements-asset-build.lock") not in contributing:
+        problems.append(
+            "Pillow build prerequisites do not select sealed binary artifacts")
+    if "--no-binary=Pillow" not in contributing:
+        problems.append(
+            "Pillow install can prefer an artifact outside the source hash")
+    if "--no-build-isolation" not in contributing:
+        problems.append(
+            "Pillow install can resolve unpinned isolated build dependencies")
+    if ("--require-hashes --no-deps --no-binary=Pillow "
+            "--no-build-isolation -r .requirements-asset.lock") \
+            not in contributing:
+        problems.append("Pillow source install is not one sealed command")
     runtime = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted((ROOT / "taskplane").glob("*.py"))
@@ -212,6 +233,12 @@ def test_l06_Pillow_is_pinned_dev_only_and_assets_regenerate_reproducibly() -> N
          "not-a-real-hash", "SHA-256"),
         ("lock", "# asset-lock: Pillow==12.2.0",
          "# test-lock: Pillow==12.2.0", "Pillow"),
+        ("docs", "--only-binary=:all:", "--prefer-binary",
+         "sealed binary artifacts"),
+        ("docs", "--no-binary=Pillow", "--prefer-binary",
+         "outside the source hash"),
+        ("docs", "--no-build-isolation", "--use-pep517",
+         "unpinned isolated build dependencies"),
         ("docs", "python3 scripts/render_readme_gif.py",
          "echo skip-render", "asset regeneration"),
     ),

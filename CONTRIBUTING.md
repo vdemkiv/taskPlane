@@ -42,12 +42,18 @@ python3 scripts/gen_lens_catalog.py        # docs/lens-catalog.md
 ```
 
 The README animation uses Pillow only in its development asset toolchain. It
-never enters `taskplane/*.py` or the ordinary test profile. Install the exact
-reviewed source artifact and verify deterministic regeneration with:
+never enters `taskplane/*.py` or the ordinary test profile. The commands below
+are intentionally a source build: they install hash-locked universal build
+tools, force the reviewed Pillow source artifact, and disable pip's isolated
+build resolver. Run them in `bash` (`Git Bash` on Windows); the source build
+also needs the native compiler/toolchain for your platform.
 
 ```bash
+awk 'sub(/^# asset-build-lock: /, "")' requirements-dev.lock > .requirements-asset-build.lock
+python -m pip install --require-hashes --no-deps --only-binary=:all: -r .requirements-asset-build.lock
+rm .requirements-asset-build.lock
 awk 'sub(/^# asset-lock: /, "")' requirements-dev.lock > .requirements-asset.lock
-python -m pip install --require-hashes --no-deps -r .requirements-asset.lock
+python -m pip install --require-hashes --no-deps --no-binary=Pillow --no-build-isolation -r .requirements-asset.lock
 rm .requirements-asset.lock
 python3 scripts/render_readme_gif.py
 git diff --exit-code -- docs/assets/taskplane-cowork-flow.gif
