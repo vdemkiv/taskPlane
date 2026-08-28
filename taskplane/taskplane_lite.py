@@ -6578,7 +6578,15 @@ def _persistent_mode(workspace: str) -> dict:
     """Mode resolution EXCLUDING the TASKPLANE_STORE env override — the
     durable truth that set_mode may materialize into a committed config.
     (v1.5.1: deciding the config.json write from the env-influenced mode let
-    a transient env var create a committable artifact for the whole team.)"""
+    a transient env var create a committable artifact for the whole team.)
+
+    A committed shared config expresses the repository owner's preference;
+    it is not consent from a newly arrived user.  Until that user records a
+    local choice, keep writes in the external store and make the one-command
+    shared opt-in explicit.  Managed hosts that deliberately force
+    ``TASKPLANE_STORE=repo`` still take the environment-override path in
+    :func:`get_mode`.
+    """
     personal, found = _read_personal_mode(workspace)
     plan = personal.get("plan")
     private = bool(personal.get("private"))
@@ -6591,20 +6599,25 @@ def _persistent_mode(workspace: str) -> dict:
             try:
                 with open(shared_cfg, encoding="utf-8") as f:
                     plan = json.load(f).get("plan")
-            except (OSError, ValueError):
+            except (AttributeError, OSError, ValueError):
                 pass
+        if not found:
+            return {
+                "plan": plan or "team",
+                "store": "external",
+                "private": True,
+                "source": "shared-config-unconfirmed",
+                "notice": (
+                    "this repo offers a SHARED in-repo store "
+                    "(.taskplane-kb/ — committed with the code), but this "
+                    "new local user remains PRIVATE in the external store "
+                    "until sharing is explicitly confirmed. Run `tp share "
+                    "set shared` to opt in; `tp share set private` keeps "
+                    "knowledge local."
+                ),
+            }
         out = {"plan": plan or "team", "store": "repo", "private": False,
                "source": "shared-config"}
-        if not found:
-            # The repo (not this user) chose the shared store. Honor it —
-            # zero-setup team inheritance is the feature — but SAY so:
-            # every surface that shows the mode surfaces this notice until
-            # the user records any setting of their own.
-            out["notice"] = ("this repo configures a SHARED in-repo store "
-                            "(.taskplane-kb/ — committed with the code). "
-                            "Your decisions here will be team-visible. "
-                            "`tp share set private` opts out; any `tp "
-                            "share` setting silences this notice.")
         return out
     if plan in ("team", "enterprise"):
         return {"plan": plan, "store": "repo", "private": False,
@@ -6620,9 +6633,10 @@ def get_mode(workspace: str) -> dict:
     Precedence:
       1. TASKPLANE_STORE env (explicit override — Tag skill, tests)
       2. the user's PRIVATE setting (mode.json; also remote-keyed fallback)
-      3. a committed shared config (<ws>/.taskplane-kb/config.json)
-      4. the recorded plan: team/enterprise -> repo, personal -> external
-      5. default: external (personal)."""
+      3. the user's recorded shared choice
+      4. an unconfirmed committed shared config remains external/private
+      5. the recorded plan: team/enterprise -> repo, personal -> external
+      6. default: external (personal)."""
     env = store_env()
     if env in ("repo", "external"):
         personal, _ = _read_personal_mode(workspace)
@@ -6643,6 +6657,10 @@ def set_mode(workspace: str, plan: str | None = None,
     cfg, _ = _read_personal_mode(workspace)
     if plan is not None:
         cfg["plan"] = plan
+        if plan == "personal":
+            # A personal-plan selection is an explicit private/local choice,
+            # not acknowledgement of a repository's shared-store proposal.
+            cfg["private"] = True
     if private is not None:
         cfg["private"] = bool(private)
     targets = [p for p in (_mode_file(workspace),
