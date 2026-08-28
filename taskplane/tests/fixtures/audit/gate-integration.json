@@ -14,7 +14,11 @@
       "count": 1,
       "event": "router_regression_filed",
       "lenses": [
-        "router+i18n"
+        {
+          "bytes": 13,
+          "schema": "taskplane.audit-minimized/v1",
+          "sha256": "41e9a85bb4eea4c1d37b03890931d1802c96103d7545ac55313fc94c891f3814"
+        }
       ]
     }
   ]
