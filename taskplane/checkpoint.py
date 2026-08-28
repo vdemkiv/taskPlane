@@ -70,6 +70,8 @@ _RESULT_SCHEMA = "taskplane.governed-command-result/v1"
 _EVENT_SCHEMA = "taskplane.command-event/v1"
 _STATE_SCHEMA = "taskplane.command-state/v1"
 _DELIVERY_SCHEMA = "taskplane.command-delivery-receipt/v1"
+_SEMANTIC_EXECUTION_RECEIPT_SCHEMA = \
+    "taskplane.semantic-checkpoint-execution-receipt/v1"
 _SAFE_ENVIRONMENT_KEYS = (
     "LANG", "LC_ALL", "LC_CTYPE", "PATH", "PYTHONHASHSEED", "TZ",
 )
@@ -535,8 +537,9 @@ def _validated_predecessors(spec: Mapping,
     return digests
 
 
-def _validated_runtime_result(worktree: str, spec: Mapping,
-                              result: object) -> dict:
+def _validated_runtime_result(
+        worktree: str, spec: Mapping, result: object, *,
+        semantic_authorization: str | None = None) -> dict:
     if not isinstance(result, Mapping):
         raise CheckpointReceiptError(
             "governed command result must be an engine mapping")
@@ -611,12 +614,20 @@ def _validated_runtime_result(worktree: str, spec: Mapping,
             len(artifact["sha256"]) != 64 or
             not isinstance(artifact.get("truncated"), bool)):
         raise CheckpointReceiptError("command output artifact is invalid")
+    exit_code = event.get("exit_code")
+    if (isinstance(exit_code, bool) or not isinstance(exit_code, int) or
+            snapshot.get("exit_code") != exit_code):
+        raise CheckpointReceiptError("command exit status is mixed")
+    if state != _GREEN_STATE or exit_code != 0:
+        raise CheckpointReceiptError(
+            f"focused_proof ended {state}; later phases stopped")
     output = event.get("output_delta")
-    if not isinstance(output, str) or snapshot.get("output_summary") != output \
-            or snapshot.get("output_digest") != artifact["sha256"]:
+    if not isinstance(output, str) or snapshot.get("output_summary") != output:
         raise CheckpointReceiptError("command output evidence is mixed")
     retained_bytes = output.encode("utf-8")
-    if artifact["truncated"]:
+    raw_output_retained = snapshot.get("output_digest") == artifact["sha256"]
+    boundary = None
+    if raw_output_retained and artifact["truncated"]:
         marker = _OUTPUT_TRUNCATION_MARKER.decode("ascii")
         if (artifact["bytes"] <= _PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES or
                 len(retained_bytes) > _PICKUP_OUTPUT_EVIDENCE_LIMIT_BYTES or
@@ -625,17 +636,53 @@ def _validated_runtime_result(worktree: str, spec: Mapping,
     elif (hashlib.sha256(retained_bytes).hexdigest() != artifact["sha256"] or
           len(retained_bytes) != artifact["bytes"]):
         raise CheckpointReceiptError("command output evidence is mixed")
-    attestation = _OBSERVED_REVISION_PREFIX + spec["worktree_revision"]
-    if output.count(attestation) != 1:
-        raise CheckpointReceiptError(
-            "focused_proof lacks the runtime-observed repository revision")
-
-    if state != _GREEN_STATE or event.get("exit_code") != 0 or \
-            snapshot.get("exit_code") != 0:
-        raise CheckpointReceiptError(
-            f"focused_proof ended {state}; later phases stopped")
+    if raw_output_retained:
+        attestation = _OBSERVED_REVISION_PREFIX + spec["worktree_revision"]
+        if output.count(attestation) != 1:
+            raise CheckpointReceiptError(
+                "focused_proof lacks the runtime-observed repository revision")
+    else:
+        if not isinstance(semantic_authorization, str) or \
+                not semantic_authorization.strip():
+            raise CheckpointReceiptError(
+                "privacy-minimized checkpoint output requires an exact "
+                "semantic post-proof receipt")
+        if not re.fullmatch(
+                r"\[REDACTED\]\n\[OUTPUT_MINIMIZED bytes=\d+ "
+                r"sha256=[0-9a-f]{64}\]", output):
+            raise CheckpointReceiptError(
+                "privacy-minimized checkpoint output is invalid")
+        try:
+            try:
+                from taskplane import governed_commands
+            except ImportError:  # direct executable/import compatibility
+                import governed_commands
+            boundary = governed_commands.semantic_checkpoint_execution_evidence(
+                str(Path(worktree).resolve()), semantic_authorization, handle)
+        except Exception as exc:
+            raise CheckpointReceiptError(
+                "semantic checkpoint post-proof receipt is invalid") from exc
+        if (not isinstance(boundary, Mapping) or
+                boundary.get("schema") !=
+                _SEMANTIC_EXECUTION_RECEIPT_SCHEMA or
+                boundary.get("workspace") != str(Path(worktree).resolve()) or
+                boundary.get("handle") != handle or
+                boundary.get("identity") != identity or
+                boundary.get("source_sha") != spec["worktree_revision"] or
+                boundary.get("target_sha") != spec["worktree_revision"] or
+                boundary.get("checkpoint_id") != spec["checkpoint_id"] or
+                boundary.get("post_authority_verified") is not True or
+                boundary.get("output_sha256") !=
+                snapshot.get("output_digest") or
+                boundary.get("state") != _GREEN_STATE or
+                boundary.get("exit_code") != 0 or
+                not isinstance(boundary.get("receipt_digest"), str) or
+                len(boundary["receipt_digest"]) != 64):
+            raise CheckpointReceiptError(
+                "semantic checkpoint post-proof receipt is mixed")
     return {"identity": identity, "snapshot": dict(snapshot),
-            "event": dict(event), "artifact": dict(artifact)}
+            "event": dict(event), "artifact": dict(artifact),
+            "semantic_boundary": dict(boundary) if boundary else None}
 
 
 def validate_and_mint(worktree: str, spec: Mapping,
@@ -643,7 +690,8 @@ def validate_and_mint(worktree: str, spec: Mapping,
                       predecessor_receipts: Sequence[Mapping] = (),
                       active_contract: Mapping | None = None,
                       runtime_environment: Mapping[str, str] | None = None,
-                      runtime_command: Sequence[str] | None = None
+                      runtime_command: Sequence[str] | None = None,
+                      semantic_authorization: str | None = None
                       ) -> dict:
     """Mint one green receipt exclusively from runtime and repository facts.
 
@@ -658,7 +706,9 @@ def validate_and_mint(worktree: str, spec: Mapping,
         raise CheckpointReceiptError(str(exc)) from exc
     predecessor_digests = _validated_predecessors(
         validated, predecessor_receipts)
-    observed = _validated_runtime_result(worktree, validated, command_result)
+    observed = _validated_runtime_result(
+        worktree, validated, command_result,
+        semantic_authorization=semantic_authorization)
     runtime_command_evidence = {}
     if runtime_command is not None:
         runtime_command = list(runtime_command)
@@ -680,6 +730,17 @@ def validate_and_mint(worktree: str, spec: Mapping,
     event = observed["event"]
     snapshot = observed["snapshot"]
     artifact = observed["artifact"]
+    boundary = observed.get("semantic_boundary")
+    if boundary is not None:
+        boundary_environment = boundary.get("runtime_environment")
+        if not isinstance(boundary_environment, Mapping):
+            raise CheckpointReceiptError(
+                "semantic checkpoint runtime environment is invalid")
+        if (runtime_environment is not None and
+                dict(runtime_environment) != dict(boundary_environment)):
+            raise CheckpointReceiptError(
+                "semantic checkpoint runtime environment is mixed")
+        runtime_environment = dict(boundary_environment)
     environment = (dict(runtime_environment)
                    if runtime_environment is not None else {
                        key: os.environ[key] for key in _SAFE_ENVIRONMENT_KEYS
@@ -731,6 +792,9 @@ def validate_and_mint(worktree: str, spec: Mapping,
         "predecessor_receipt_digests": predecessor_digests,
         "verdict": "green",
     }
+    if boundary is not None:
+        receipt["runtime_boundary_receipt_digest"] = \
+            boundary["receipt_digest"]
     receipt["receipt_digest"] = receipt_digest(receipt)
     return receipt
 

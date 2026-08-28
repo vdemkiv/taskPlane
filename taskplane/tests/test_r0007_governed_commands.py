@@ -25,6 +25,13 @@ def _json_stdout(capsys):
     return json.loads(capsys.readouterr().out)
 
 
+def _minimized(label, value):
+    raw = str(value)
+    digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+    return (f"[REDACTED]\n[{label}_MINIMIZED bytes="
+            f"{len(raw.encode('utf-8', 'replace'))} sha256={digest}]")
+
+
 def _direct_cli(cli, workspace, *arguments):
     environment = dict(os.environ)
     environment.pop("PYTHONPATH", None)
@@ -63,7 +70,8 @@ def test_direct_executable_launches_and_waits_without_pythonpath(tmp_path):
         str(workspace), "--authorization", "agent:direct", "--consumer",
         "executor:direct", "--timeout", "10", launched["handle"])
     assert completed["event"]["state"] == "succeeded"
-    assert completed["event"]["output_delta"] == "direct-ok\n"
+    assert completed["event"]["output_delta"] == \
+        _minimized("OUTPUT", "direct-ok\n")
 
 
 def test_direct_reconnect_emits_attention_when_detached_worker_is_lost(
@@ -92,8 +100,8 @@ def test_direct_reconnect_emits_attention_when_detached_worker_is_lost(
 
     assert reconnected is not None
     assert reconnected["event"]["state"] == "input_required"
-    assert reconnected["event"]["reason"] == \
-        "detached_worker_ownership_lost"
+    assert reconnected["event"]["reason"] == _minimized(
+        "REASON", "detached_worker_ownership_lost")
     assert reconnected["snapshot"]["state"] == "input_required"
     assert reconnected["lifecycle_states"] == [
         "created", "running", "input_required",
@@ -105,20 +113,22 @@ def test_direct_reconnect_emits_attention_when_detached_worker_is_lost(
     assert replayed["event"]["revision"] == reconnected["event"]["revision"]
     assert replayed["lifecycle_states"] == reconnected["lifecycle_states"]
 
-    cancelled = _direct_cli(
-        cli, workspace, "command", "cancel", "--workspace", str(workspace),
-        "--authorization", "agent:lost", launched["handle"])
-    assert cancelled["event"]["state"] == "cancelled"
-    assert cancelled["lifecycle_states"] == [
-        "created", "running", "input_required", "cancelled",
-    ]
-    replayed_cancel = _direct_cli(
-        cli, workspace, "command", "cancel", "--workspace", str(workspace),
-        "--authorization", "agent:lost", launched["handle"])
-    assert replayed_cancel["event"]["revision"] == \
-        cancelled["event"]["revision"]
-    assert replayed_cancel["lifecycle_states"] == \
-        cancelled["lifecycle_states"]
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+    cancelled = subprocess.run(
+        [str(cli), "command", "cancel", "--workspace", str(workspace),
+         "--authorization", "agent:lost", launched["handle"]],
+        cwd=workspace, env=environment, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=15, check=False)
+    assert cancelled.returncode != 0
+    assert "process ownership no longer matches" in cancelled.stderr
+    still_attended = _direct_cli(
+        cli, workspace, "command", "reconnect", "--workspace",
+        str(workspace), "--authorization", "agent:lost",
+        launched["handle"])
+    assert still_attended["event"]["state"] == "input_required"
+    assert still_attended["event"]["revision"] == \
+        reconnected["event"]["revision"]
 
 
 def test_supported_cli_and_loop_run_one_real_durable_command(tmp_path, capsys):
@@ -936,9 +946,8 @@ def test_checkpoint_post_proof_authority_rejects_mid_run_mutation(
     })
 
     assert observed["snapshot"]["state"] == "failed"
-    assert any(marker in observed["snapshot"]["reason"] for marker in (
-        "checkpoint_plan_changed", "checkpoint_boundary_changed",
-        "authority"))
+    assert observed["snapshot"]["reason"] == _minimized(
+        "REASON", "semantic checkpoint unavailable: checkpoint_plan_changed")
     with pytest.raises(governed_commands.GovernedCommandError):
         governed_commands.semantic_checkpoint_execution_evidence(
             str(workspace), lifecycle, launched["handle"])
@@ -1004,20 +1013,20 @@ def _run_governed_checkpoint_command(workspace, argv, task_id):
     })
 
 
-def test_checkpoint_receipt_mints_from_real_focused_proof_execution(tmp_path):
+def test_checkpoint_receipt_refuses_generic_runtime_without_post_proof_receipt(
+        tmp_path):
     workspace, spec, _ = _checkpoint_workspace(tmp_path)
     runtime_argv = _checkpoint_runtime_argv(workspace, spec)
     result = _run_governed_checkpoint_command(
         workspace, runtime_argv, "checkpoint-real-proof")
 
-    receipt = checkpoint.validate_and_mint(str(workspace), spec, result)
-
     assert result["event"]["state"] == "succeeded"
-    assert "1 passed" in result["event"]["output_delta"]
-    assert (checkpoint._OBSERVED_REVISION_PREFIX + spec["worktree_revision"]
-            in result["event"]["output_delta"])
-    assert receipt["command"]["argv"] == runtime_argv
-    assert receipt["worktree_revision"] == spec["worktree_revision"]
+    assert result["event"]["output_delta"].startswith(
+        "[REDACTED]\n[OUTPUT_MINIMIZED ")
+    with pytest.raises(
+            checkpoint.CheckpointReceiptError,
+            match="requires an exact semantic post-proof receipt"):
+        checkpoint.validate_and_mint(str(workspace), spec, result)
 
 
 def test_checkpoint_receipt_is_engine_minted_and_exact_revision_bound(tmp_path):
@@ -1139,14 +1148,14 @@ def test_checkpoint_receipt_rejects_predeclared_future_revision(tmp_path):
     result_from_a = _run_governed_checkpoint_command(
         workspace, argv_claiming_b, "checkpoint-future-revision-attack")
     assert result_from_a["event"]["state"] == "failed"
-    assert "runtime-observed repository revision" in \
-        result_from_a["event"]["output_delta"]
+    assert result_from_a["event"]["output_delta"].startswith(
+        "[REDACTED]\n[OUTPUT_MINIMIZED ")
 
     subprocess.run(["git", "checkout", "-q", revision_b], cwd=workspace,
                    check=True)
     spec["worktree_revision"] = revision_b
     with pytest.raises(checkpoint.CheckpointReceiptError,
-                       match="runtime-observed repository revision"):
+                       match="later phases stopped"):
         checkpoint.validate_and_mint(str(workspace), spec, result_from_a)
 
 
@@ -1209,13 +1218,16 @@ def test_semantic_sidecar_rejects_redigest_and_replay_against_current_state(
 def _semantic_descendant_workspace(tmp_path, *, escape_group):
     workspace, spec, _ = _checkpoint_workspace(tmp_path)
     proof = workspace / spec["focused_proof"]["path"]
+    marker = "tp-semantic-descendant-" + tmp_path.name
+    pid_path = tmp_path / "semantic-descendant.pid"
     proof.write_text(
         "import subprocess, sys, time\n\n"
         "def test_focused():\n"
         "    child = subprocess.Popen(\n"
-        "        [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+        "        [sys.executable, '-c', 'import time; time.sleep(60)',\n"
+        f"         {marker!r}],\n"
         f"        start_new_session={escape_group!r})\n"
-        "    print(f'TP_CHILD_PID={child.pid}', flush=True)\n"
+        f"    open({str(pid_path)!r}, 'w').write(str(child.pid))\n"
         "    time.sleep(0.35)\n"
         "    assert True\n", encoding="utf-8")
     subprocess.run(["git", "add", spec["focused_proof"]["path"]],
@@ -1225,17 +1237,12 @@ def _semantic_descendant_workspace(tmp_path, *, escape_group):
     task = _checkpoint_submit_task(spec)
     task["checkpoint"]["focused_proof"]["argv"].insert(4, "-s")
     _save_checkpoint_submit_loop(workspace, task)
-    return workspace, task
+    return workspace, task, pid_path
 
 
-def _child_pid_from_snapshot(snapshot):
-    matched = re.search(r"TP_CHILD_PID=(\d+)",
-                        str(snapshot.get("output_summary") or ""))
-    assert matched, snapshot
-    return int(matched.group(1))
-
-
-def _assert_process_absent(pid):
+def _assert_process_absent(pid_path):
+    assert pid_path.is_file()
+    pid = int(pid_path.read_text(encoding="utf-8"))
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         try:
@@ -1247,7 +1254,7 @@ def _assert_process_absent(pid):
 
 
 def test_semantic_checkpoint_reaps_success_descendants(tmp_path):
-    workspace, task = _semantic_descendant_workspace(
+    workspace, task, pid_path = _semantic_descendant_workspace(
         tmp_path, escape_group=False)
     receipt = loop._run_submit_checkpoint(
         str(workspace), loop.load(str(workspace)), task, str(workspace))
@@ -1259,11 +1266,11 @@ def test_semantic_checkpoint_reaps_success_descendants(tmp_path):
         authorization="loop-submit-checkpoint:checkpoint-task")
     snapshot = runtime.snapshot(handle)
     assert snapshot["state"] == "succeeded"
-    _assert_process_absent(_child_pid_from_snapshot(snapshot))
+    _assert_process_absent(pid_path)
 
 
 def test_semantic_checkpoint_kills_and_refuses_setsid_descendant(tmp_path):
-    workspace, _task = _semantic_descendant_workspace(
+    workspace, _task, pid_path = _semantic_descendant_workspace(
         tmp_path, escape_group=True)
     lifecycle, _capability, launched = \
         _launch_engine_authorized_checkpoint(workspace)
@@ -1273,5 +1280,7 @@ def test_semantic_checkpoint_kills_and_refuses_setsid_descendant(tmp_path):
     })
     snapshot = observed["snapshot"]
     assert snapshot["state"] == "failed"
-    assert "checkpoint_process_tree_escape" in snapshot["reason"]
-    _assert_process_absent(_child_pid_from_snapshot(snapshot))
+    assert snapshot["reason"] == _minimized(
+        "REASON",
+        "semantic checkpoint unavailable: checkpoint_process_tree_escape")
+    _assert_process_absent(pid_path)

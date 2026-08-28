@@ -7853,16 +7853,9 @@ def _run_submit_checkpoint(ws: str, state: Mapping[str, object],
         # a failed proof, but failure still needs the canonical checkpoint
         # diagnostic rather than a generic sidecar error.
         return checkpoint.validate_and_mint(act_ws, spec, observed)
-    boundary = governed_commands.semantic_checkpoint_execution_evidence(
-        act_ws, authorization, launched["handle"])
     receipt = checkpoint.validate_and_mint(
         act_ws, spec, observed,
-        runtime_environment=boundary["runtime_environment"])
-    # Link the checkpoint-engine receipt to the independently durable
-    # content-addressed host boundary receipt.  Both are engine-derived; no
-    # caller-authored receipt field crosses either input boundary.
-    receipt["runtime_boundary_receipt_digest"] = boundary["receipt_digest"]
-    receipt["receipt_digest"] = checkpoint.receipt_digest(receipt)
+        semantic_authorization=authorization)
     return receipt
 
 
