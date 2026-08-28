@@ -11,19 +11,19 @@ can enforce *mechanically* on the host agent:
 
 What a host plugin CANNOT do (the honest limitation): intercept the host
 agent's model calls, so the dollar/token budget is tracked cooperatively,
-not enforced before spend. The tool/scope/command screen IS enforced by the
-PreToolUse hook before the action runs — but it screens a *cooperative*
-shell, not an OS sandbox. It reads the command string, makes wrapper
-programs (env/nohup/sudo/xargs/…) and nested `sh -c`/`$()` transparent, and
-blocks resolvable out-of-scope writes plus the clearly-destructive
-unscopeable verbs (`find -delete/-exec`, `git checkout/reset/…`). A
-read-only review contract additionally blocks every un-screenable mutator,
-so the reviewed source is protected on a best-effort basis. It is NOT a
-boundary against a determined interpreter: `python -c "…"` under a *build*
-contract can still write anywhere, because a Turing-complete body can't be
-screened from argv. For a hard guarantee, run review/build contracts on a
-read-only bind-mount or in a container — the screen is defense-in-depth,
-not the wall.
+not enforced before spend. The PreToolUse hook screens a *cooperative* shell
+for build contracts: it makes wrappers (env/nohup/sudo/xargs/…) and nested
+`sh -c`/`$()` transparent, and blocks resolvable out-of-scope writes plus
+clearly destructive unscopeable verbs (`find -delete/-exec`,
+`git checkout/reset/…`). A read-only review never authorizes a shell command:
+an allow/deny hook cannot rewrite a host command into shell=False execution,
+scrub its process environment, or bind the bytes of the eventual executable.
+It admits only explicitly listed host-native Read/Grep/Glob calls and scoped
+host-native edits to review artifacts. A future host-owned direct-exec broker
+may add command access; caller-authored argv/receipt fields do not. Under a
+*build* contract, `python -c "…"` can still write anywhere because a
+Turing-complete body cannot be screened from argv. For a hard build boundary,
+use a container or OS sandbox.
 
 Behavior mirrors the audited taskplane hooks/DoD logic so a governed task
 behaves consistently across supported hosts.
@@ -53,6 +53,7 @@ import posixpath
 import re
 import secrets
 import shlex
+import stat
 import subprocess
 import sys
 import time as _time
@@ -83,28 +84,123 @@ class StateError(RuntimeError):
 
 def atomic_write_json(path: str, data, *, indent: int = 1,
                       sort_keys: bool = False) -> None:
-    """Write JSON durably: temp file in the same directory + os.replace.
+    """Write JSON durably: fsynced temp + replace + parent-directory fsync.
 
     A crash mid-write leaves the previous version intact instead of a torn
     file. Same-directory temp keeps the replace atomic across filesystems."""
     d = os.path.dirname(path) or "."
-    os.makedirs(d, exist_ok=True)
-    tmp = os.path.join(d, f".{os.path.basename(path)}.tmp.{os.getpid()}")
+    _durable_makedirs(d)
+    tmp = os.path.join(
+        d, f".{os.path.basename(path)}.tmp.{os.getpid()}."
+        f"{secrets.token_hex(8)}")
     try:
         # newline="" disables the host's newline translation. Windows
         # text mode turns every "\n" json.dump writes into "\r\n", so the
         # SAME state written on two hosts produced different BYTES — and
         # these artifacts are fingerprinted and byte-compared (the audit
         # differential caught it: b'{\r\n  "reviews": 6\r\n}').
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
+        with open(tmp, "x", encoding="utf-8", newline="") as f:
             json.dump(data, f, indent=indent, sort_keys=sort_keys)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
+        _fsync_directory(d)
     finally:
         try:
             if os.path.exists(tmp):
                 os.unlink(tmp)
         except OSError:
             pass
+
+
+def _durable_makedirs(path: str) -> None:
+    """Create a directory chain without acknowledging volatile ancestors.
+
+    ``os.makedirs`` makes the complete chain but provides no point at which a
+    caller can persist each newly linked directory.  Governance state may be
+    the first write beneath a fresh run/store hierarchy, so create each
+    missing component separately.  The child is flushed first, then the
+    parent that owns its name.  Any failure propagates before the state file
+    is opened; a partially created (but unacknowledged) empty chain is safe to
+    retry.
+    """
+    target = os.path.abspath(path)
+    missing = []
+    cursor = target
+    while not os.path.lexists(cursor):
+        missing.append(cursor)
+        parent = os.path.dirname(cursor)
+        if parent == cursor:
+            break
+        cursor = parent
+    _durable_directory_identity(cursor)
+
+    for directory in reversed(missing):
+        parent = os.path.dirname(directory) or "."
+        try:
+            os.mkdir(directory)
+        except FileExistsError:
+            # Treat a concurrent creator exactly like our own mkdir: verify
+            # its object type and establish durability ourselves before
+            # descending.  Never assume another process completed its fsync.
+            pass
+        identity = _durable_directory_identity(directory)
+        _fsync_directory(directory)
+        _fsync_directory(parent)
+        if _durable_directory_identity(directory) != identity:
+            raise StateError(directory,
+                             "durable directory identity changed during fsync")
+
+
+def _durable_directory_identity(path: str) -> tuple[int, int]:
+    """Return a stable non-symlink directory identity or fail closed."""
+    try:
+        value = os.lstat(path)
+    except OSError as exc:
+        raise StateError(path, f"durable directory is unavailable ({exc})") \
+            from None
+    if stat.S_ISLNK(value.st_mode):
+        raise StateError(path, "durable directory anchor is a symlink")
+    if not stat.S_ISDIR(value.st_mode):
+        raise StateError(path, "durable directory anchor is not a directory")
+    return int(value.st_dev), int(value.st_ino)
+
+
+def _fsync_directory(path: str) -> None:
+    """Persist a directory entry update before its caller acknowledges it."""
+    flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        if os.name != "nt":
+            raise
+        # Windows refuses opening directories through os.open. Use the
+        # documented backup-semantics handle and flush it instead of silently
+        # weakening durability on a supported host.
+        import ctypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.restype = ctypes.c_void_p
+        kernel.CreateFileW.argtypes = (
+            ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
+        kernel.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
+        kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+        handle = kernel.CreateFileW(
+            str(path), 0x80000000, 0x00000007, None, 3, 0x02000000, None)
+        invalid = ctypes.c_void_p(-1).value
+        if handle == invalid:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not kernel.FlushFileBuffers(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel.CloseHandle(handle)
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 _LOAD_RAISE = object()
@@ -210,6 +306,7 @@ WRITE_TOOL_PATH_FIELDS = {
 WRITE_TOOLS = set(WRITE_TOOL_PATH_FIELDS)
 COMMAND_TOOLS = {"Bash", "BashOutput", "exec_command",
                  "functions.exec_command"}
+READONLY_NATIVE_READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
 TOOL_ALIASES = {
     "apply_patch": ("apply_patch", "Edit", "Write"),
     "Agent": ("Agent", "Task"),
@@ -270,7 +367,10 @@ def _strip_keywords(toks) -> list:
                 continue
             toks = [stripped] + toks[1:]
             continue
-        if os.path.basename(first) in _SHELL_KEYWORDS:
+        # Shell keywords are exact grammar tokens.  Basenaming here let a
+        # repository executable such as ``./time`` or ``./if`` disappear as
+        # syntax before executable identity was checked.
+        if first in _SHELL_KEYWORDS:
             toks = toks[1:]
             continue
         break
@@ -310,10 +410,165 @@ def _shell_c_body(args) -> "str | None":
 _REDIRECT_OP_RE = re.compile(r"^(?:\d*>>?|>\||&>>?|\d*>&\d*)$")
 # a redirect written glued to its target: >file, 2>>log (no space)
 _REDIRECT_GLUED_RE = re.compile(r"^(?:\d*>>?|>\|)(?P<f>[^>&].*)$")
-# command substitutions whose bodies run their own commands
-_SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 # bash ANSI-C quoting: $'…' with backslash escapes decoded by the shell
 _ANSI_C_RE = re.compile(r"\$'((?:\\.|[^'\\])*)'")
+
+
+def _backtick_body(text: str, opening: int):
+    """Return an old-style command-substitution body and closing index.
+
+    Backticks are a delimiter grammar, not a regular expression: an escaped
+    backtick is data, while the next unescaped one closes the substitution.
+    Keeping this tiny parser separate also lets the balanced ``$(...)``
+    scanner skip a backtick body whose text contains otherwise-significant
+    parentheses.
+    """
+    i = opening + 1
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == "`":
+            return text[opening + 1:i], i, None
+        i += 1
+    return "", len(text), "unclosed backtick command substitution"
+
+
+def _balanced_shell_parens(text: str, opening: int):
+    """Return the body/end of one shell ``(...)`` construct.
+
+    This is intentionally a conservative structural scanner, not a shell
+    interpreter.  It balances grouping parentheses, ignores quoted/escaped
+    parentheses, and recursively skips nested command/process substitutions.
+    Anything it cannot close is reported as opaque instead of being treated
+    as an absence of executable content.
+    """
+    depth = 1
+    quote = None
+    i = opening + 1
+    while i < len(text):
+        ch = text[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+                i += 1
+                continue
+            if ch == "`":
+                _, end, error = _backtick_body(text, i)
+                if error:
+                    return "", len(text), error
+                i = end + 1
+                continue
+            if ch == "$" and i + 1 < len(text) and text[i + 1] == "(":
+                _, end, error = _balanced_shell_parens(text, i + 1)
+                if error:
+                    return "", len(text), error
+                i = end + 1
+                continue
+            i += 1
+            continue
+        if ch == "'":
+            quote = "'"
+            i += 1
+            continue
+        if ch == '"':
+            quote = '"'
+            i += 1
+            continue
+        if ch == "`":
+            _, end, error = _backtick_body(text, i)
+            if error:
+                return "", len(text), error
+            i = end + 1
+            continue
+        if ((ch == "$" and i + 1 < len(text) and text[i + 1] == "(")
+                or (ch in "<>" and i + 1 < len(text)
+                    and text[i + 1] == "(")):
+            _, end, error = _balanced_shell_parens(text, i + 1)
+            if error:
+                return "", len(text), error
+            i = end + 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[opening + 1:i], i, None
+        i += 1
+    return "", len(text), "unclosed parenthesized shell substitution"
+
+
+def _shell_substitution_bodies(command: str):
+    """Return executable substitution bodies plus a structural error.
+
+    Single quotes and escaped introducers are literal.  ``$(...)``, old-style
+    backticks, and bash/zsh process substitutions are executable and are
+    returned for recursive screening.  Arithmetic substitution is refused as
+    opaque: proving its expansion semantics safely would require a real shell
+    grammar, and nested expansions can execute commands.
+    """
+    text = str(command or "")
+    bodies = []
+    quote = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "'" and quote is None:
+            quote = "'"
+            i += 1
+            continue
+        if ch == '"':
+            quote = None if quote == '"' else '"'
+            i += 1
+            continue
+        if ch == "`":
+            body, end, error = _backtick_body(text, i)
+            if error:
+                return bodies, error
+            bodies.append(("command", body))
+            i = end + 1
+            continue
+        if ch == "$" and i + 1 < len(text) and text[i + 1] == "(":
+            arithmetic = i + 2 < len(text) and text[i + 2] == "("
+            body, end, error = _balanced_shell_parens(text, i + 1)
+            if error:
+                return bodies, error
+            if arithmetic:
+                return bodies, (
+                    "arithmetic shell substitution cannot be proven free "
+                    "of nested executable expansion")
+            bodies.append(("command", body))
+            i = end + 1
+            continue
+        if quote is None and ch in "<>" and i + 1 < len(text) \
+                and text[i + 1] == "(":
+            body, end, error = _balanced_shell_parens(text, i + 1)
+            if error:
+                return bodies, error
+            bodies.append(("process", body))
+            i = end + 1
+            continue
+        i += 1
+    if quote is not None:
+        return bodies, "unclosed shell quote prevents substitution screening"
+    return bodies, None
 
 
 def _ansi_c_unquote(s: str) -> str:
@@ -348,7 +603,8 @@ _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 # as python -c). TRADEOFF (named, per the tradeoffs lens): this screen is
 # defense-in-depth, NOT an OS boundary — console-script entry points
 # (pytest, make, tox, npm) run the same Turing-complete code and remain
-# allowed-opaque by design; a hard guarantee needs a read-only mount/container.
+# blocked by the read-only command allowlist below; a hard guarantee still
+# needs a read-only mount/container.
 _INTERPRETERS = {"python", "python2", "python3", "perl", "ruby", "node",
                  "php", "lua", "Rscript", "deno", "bun",
                  "awk", "gawk", "mawk", "nawk", "ed", "ex"}
@@ -364,6 +620,165 @@ _TP_CLI_PATH = os.path.realpath(
 # from argv — like `find -delete`. Extraction modes are destructive-opaque
 # (blocked under ANY governing contract); create/list/test modes are not.
 _ARCHIVE_EXTRACTORS = {"tar", "unzip"}
+
+# Direct programs whose argv has read-only semantics. Read-only contracts
+# fail closed for everything outside this intentionally small set (plus the
+# structured cases handled by _analyze: git reads, find reads, non-extracting
+# archives, screened writers, and Taskplane's own CLI). In particular, build
+# systems, test runners, package managers, and repository-defined executables
+# can run arbitrary project code and therefore never qualify by name alone.
+_READONLY_SAFE_PROGRAMS = frozenset({
+    "[", "basename", "cat", "cmp", "comm", "cut", "date", "diff",
+    "dirname", "du", "echo", "egrep", "expr", "false", "fgrep", "file",
+    "grep", "head", "jq", "ls", "md5", "md5sum", "od", "printf", "pwd",
+    "readlink", "realpath", "rg", "sha256sum", "shasum", "stat", "strings",
+    "tail", "test", "tr", "true", "uname", "uniq", "wc", "whereis",
+    "which", "xxd", "zipinfo", "tp",
+})
+_READONLY_SHELL_BUILTINS = frozenset({
+    "[", "builtin", "command", "echo", "exec", "false", "printf", "pwd",
+    "test", "true",
+})
+
+
+def _path_within(candidate: str, root: str) -> bool:
+    """Containment for executable identity checks, fail-closed on errors."""
+    try:
+        candidate = os.path.normcase(os.path.abspath(candidate))
+        root = os.path.normcase(os.path.abspath(root))
+        return os.path.commonpath((candidate, root)) == root
+    except (OSError, TypeError, ValueError):
+        return True
+
+
+_READONLY_BASELINE_PATH = tuple(os.environ.get("PATH", "").split(os.pathsep))
+_READONLY_BASELINE_PATHEXT = os.environ.get("PATHEXT", "")
+_READONLY_BASELINE_EXECUTABLES: dict[
+    tuple[str, str], tuple[str, str] | None] = {}
+_READONLY_IMMUTABLE_EXEC_ROOTS = tuple(dict.fromkeys(
+    candidate
+    for path in (
+        "/bin", "/usr/bin", "/usr/sbin", "/sbin",
+        "/System/Cryptexes/App/usr/bin",
+        "/Library/Apple/usr/bin",
+    ) if os.path.isdir(path)
+    for candidate in (os.path.abspath(path), os.path.realpath(path))))
+_READONLY_PINNED_TOOL_ROOTS = {
+    "git": tuple(os.path.realpath(path) for path in (
+        "/usr/local/Cellar", "/opt/homebrew/Cellar",
+    ) if os.path.isdir(path)),
+    "rg": tuple(os.path.realpath(path) for path in (
+        "/Applications/ChatGPT.app/Contents/Resources",
+    ) if os.path.isdir(path)),
+}
+
+
+def _executable_from_path(program: str, path_entries, workspace: str):
+    """The first executable selected by a concrete PATH snapshot."""
+    for raw_entry in path_entries:
+        entry = (os.path.abspath(raw_entry) if raw_entry
+                 and os.path.isabs(raw_entry)
+                 else os.path.abspath(os.path.join(workspace,
+                                                   raw_entry or ".")))
+        candidate = os.path.join(entry, program)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return os.path.abspath(candidate), os.path.realpath(candidate)
+    return None
+
+
+def _readonly_write_roots(workspace: str, write_allow) -> tuple[str, ...]:
+    """Canonical non-glob prefixes a read-only contract may write beneath."""
+    roots = []
+    for raw in write_allow or ():
+        value = str(raw or "").replace("\\", "/")
+        wildcard = min((value.find(ch) for ch in "*?[" if ch in value),
+                       default=len(value))
+        prefix = value[:wildcard].rstrip("/")
+        if not prefix:
+            continue
+        path = prefix if os.path.isabs(prefix) else os.path.join(workspace,
+                                                                  prefix)
+        roots.append(os.path.abspath(path))
+        roots.append(os.path.realpath(path))
+    return tuple(dict.fromkeys(roots))
+
+
+def _readonly_executable_identity_violation(raw_program: str,
+                                             workspace: str | None,
+                                             write_allow=()):
+    """Why an executable is not the trusted identity selected at hook load.
+
+    A read-only decision binds *every* external executable, including writers,
+    interpreters, wrappers, and readers.  Bare-name resolution must still pick
+    the same lexical and canonical executable selected by the host's startup
+    PATH, and neither path may pass through the reviewed checkout or a writable
+    artifact root.  A later PATH edit therefore cannot turn ``cat`` or
+    ``touch`` into repository code, even when the replacement is a symlink to
+    the genuine tool.  Build contracts do not call this fail-closed grammar.
+    """
+    token = str(raw_program or "")
+    if not token:
+        return "empty executable identity can't be screened"
+    normalized = token.replace("\\", "/")
+    if "/" in normalized:
+        return (
+            f"path-qualified executable `{token}` cannot be accepted by "
+            "basename as a trusted read-only program; use its bare name "
+            "under a non-repository-controlled PATH")
+    if token in _READONLY_SHELL_BUILTINS:
+        return None
+    function_markers = (f"BASH_FUNC_{token}%%", f"BASH_FUNC_{token}()")
+    if any(marker in os.environ for marker in function_markers):
+        return f"shell function precedence for `{token}` is not trusted"
+    if any(os.environ.get(name) for name in ("BASH_ENV", "ENV", "ZDOTDIR")):
+        return (
+            "shell startup environment can define aliases/functions before "
+            f"bare executable `{token}`")
+    if "expand_aliases" in os.environ.get("SHELLOPTS", "").split(":"):
+        return f"shell alias precedence for `{token}` is not trusted"
+    if os.name == "nt" and os.environ.get("PATHEXT", "") != \
+            _READONLY_BASELINE_PATHEXT:
+        return "PATHEXT changed after hook startup, so lookup can't be trusted"
+
+    root = os.path.abspath(workspace or os.getcwd())
+    selected = _executable_from_path(
+        token, os.environ.get("PATH", "").split(os.pathsep), root)
+    if selected is None:
+        return f"bare executable `{token}` has no trusted PATH identity"
+    candidate, resolved_candidate = selected
+    protected = (root, os.path.realpath(root),
+                 *_readonly_write_roots(root, write_allow))
+    if any(_path_within(candidate, boundary)
+           or _path_within(resolved_candidate, boundary)
+           for boundary in protected):
+        return (
+            f"PATH candidate `{candidate}` for bare executable `{token}` "
+            "resolves through repository-controlled or review-writable "
+            "content")
+
+    baseline_key = (token, root)
+    if baseline_key not in _READONLY_BASELINE_EXECUTABLES:
+        _READONLY_BASELINE_EXECUTABLES[baseline_key] = _executable_from_path(
+            token, _READONLY_BASELINE_PATH, root)
+    baseline = _READONLY_BASELINE_EXECUTABLES[baseline_key]
+    if baseline is None or selected != baseline:
+        expected = baseline[0] if baseline else "<none>"
+        return (
+            f"PATH candidate `{candidate}` for bare executable `{token}` "
+            f"does not match its trusted startup identity `{expected}`")
+    trusted_roots = (_READONLY_IMMUTABLE_EXEC_ROOTS
+                     + _READONLY_PINNED_TOOL_ROOTS.get(token, ()))
+    candidate_is_pinned_tool = bool(
+        _READONLY_PINNED_TOOL_ROOTS.get(token)) and selected == baseline
+    if not ((candidate_is_pinned_tool
+             or any(_path_within(candidate, boundary)
+                    for boundary in _READONLY_IMMUTABLE_EXEC_ROOTS))
+            and any(_path_within(resolved_candidate, boundary)
+                    for boundary in trusted_roots)):
+        return (
+            f"PATH candidate `{candidate}` for bare executable `{token}` "
+            "is not under a canonical immutable system/tool root")
+    return None
 
 
 def _shsplit(text: str) -> list:
@@ -385,20 +800,23 @@ def _shsplit(text: str) -> list:
         return str(text).split()
 
 
-def _is_tp_cli(arg: str) -> bool:
-    """True when a python script argument is THIS package's own tp.py — by
-    absolute realpath, or the `taskplane/tp.py` suffix used when invoked
-    relative to the repo root. A stray file merely named tp.py elsewhere
-    (no taskplane/ parent) is not exempt."""
-    a = arg.replace("\\", "/")
+def _is_tp_cli(arg: str, workspace: str | None = None) -> bool:
+    """True only when a script resolves to this package's canonical tp.py."""
+    a = str(arg or "").replace("\\", "/")
     if os.path.basename(a) != "tp.py":
         return False
-    if os.path.isabs(a):
-        try:
-            return os.path.realpath(a) == _TP_CLI_PATH
-        except OSError:
-            return False
-    return a.endswith("taskplane/tp.py")
+    try:
+        candidate = (a if os.path.isabs(a)
+                     else os.path.join(workspace or os.getcwd(), a))
+        # Do not grant the exemption through a repository-controlled symlink:
+        # its target can change between screening and execution.  Both the
+        # lexical absolute path and its canonical resolution must be the one
+        # package file loaded by this kernel.
+        return (os.path.abspath(candidate) == _TP_CLI_PATH
+                and os.path.realpath(candidate) == _TP_CLI_PATH
+                and not os.path.islink(candidate))
+    except OSError:
+        return False
 # The only interpreter argvs that provably run NO user code (v2.3.0): pure
 # version/help probes. Everything else — script file, -m module, stdin —
 # is as un-screenable as `-c` and is treated as interpreter-opaque.
@@ -481,11 +899,39 @@ _RO_OPEN_MODES = frozenset({"r", "rb", "rt", "tr", "br", "rU"})
 # git subcommands that rewrite tracked files in the working tree.
 _GIT_MUTATORS = {"checkout", "reset", "restore", "clean", "stash",
                  "apply", "am", "rebase", "cherry-pick", "revert"}
-# git GLOBAL options that consume a SEPARATE following token as their value —
-# `git -C <path> checkout` etc. Skipping the flag but not its value would let
-# the value be misread as the subcommand, dodging the mutator screen.
+# Git global options that consume a separate value. This complete parser set
+# is used to find mutators even when the invocation is not eligible for the
+# much narrower read-only allowlist below.
 _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
                    "--super-prefix", "--config-env", "--exec-path"}
+# A Git command name is an execution surface: unknown names resolve to
+# `git-<name>` programs on PATH and then to aliases, including shell aliases
+# from repository/global config. Even nominally read-only built-ins are not a
+# safe class: cat-file accepts abbreviated filter/textconv options, index
+# readers such as ls-files can start core.fsmonitor, and log/show can resolve
+# pretty.<name> config containing signature placeholders. Keep one useful,
+# command-and-option-shaped form instead of inheriting Git's extensible option
+# and configuration grammars.
+_GIT_READONLY_BUILTINS = frozenset({"diff"})
+# Diff can invoke configured external diff/textconv helpers and can consult an
+# executable core.fsmonitor while refreshing the index. A worktree diff also
+# passes file content through `.gitattributes` clean filters, for which Git has
+# no argv-level disable switch. These exact guards are therefore mandatory,
+# and the validator below additionally admits only index/object (`--cached` or
+# `--staged`) diffs. The sole accepted -c assignment cannot add an alias or any
+# other executable configuration surface.
+_GIT_READONLY_CONFIG = "core.fsmonitor=false"
+_GIT_READONLY_DIFF_OPTIONS = frozenset({
+    "--no-ext-diff", "--no-textconv",
+    "--stat", "--name-only", "--name-status", "--numstat", "--shortstat",
+    "--summary", "--raw", "--patch", "-p", "-u", "--cached", "--staged",
+    "--no-renames", "--minimal", "--patience", "--histogram", "--check",
+    "--quiet", "--exit-code", "--no-color", "--color=never",
+})
+_GIT_SAFE_GLOBAL_FLAGS = frozenset({
+    "-P", "--no-pager", "--no-optional-locks", "--no-advice",
+    "--no-lazy-fetch", "--no-replace-objects", "--literal-pathspecs",
+})
 
 
 # --------------------------------------------------------------- paths
@@ -1049,7 +1495,9 @@ def _redirect_targets(toks) -> list:
     return [t for t in out if t not in _NULL_SINKS]
 
 
-def _env_split_string(rest) -> list | None:
+def _env_split_string(rest,
+                      assignment_sink: "list[str] | None" = None
+                      ) -> list | None:
     """GNU `env -S/--split-string STRING` word-splits STRING into an argv —
     so `env -S 'rm -rf x'` EXECUTES `rm -rf x`, but naive unwrapping sees a
     single opaque token ("a program named 'rm -rf x'") and screens nothing.
@@ -1076,6 +1524,9 @@ def _env_split_string(rest) -> list | None:
             i += 2                       # value-taking flag: skip flag + value
             continue
         elif t.startswith("-") or "=" in t:
+            if "=" in t and not t.startswith("-") \
+                    and assignment_sink is not None:
+                assignment_sink.append(t)
             i += 1                       # other env flag / VAR=val
             continue
         else:
@@ -1104,10 +1555,18 @@ _WRAPPER_VALUE_FLAGS = {
 }
 
 
-def _unwrap(toks) -> list:
+def _unwrap(toks, assignment_sink: "list[str] | None" = None,
+            identity_sink: "list[str] | None" = None) -> list:
     """Strip leading transparent wrapper programs, returning the real argv.
     `env FOO=1 rm x` -> `rm x`; `timeout 5 rm x` -> `rm x`;
-    `env -u NAME rm x` -> `rm x` (the `-u` swallows `NAME`)."""
+    `env -u NAME rm x` -> `rm x` (the `-u` swallows `NAME`).
+
+    When ``assignment_sink`` is supplied, preserve every execution-prefix
+    assignment removed during unwrapping.  Read-only screening uses this to
+    fail closed instead of silently approving environment-controlled helpers
+    such as ``GIT_TRACE=/path git ...``.  Other callers retain the historical
+    unwrapped argv behavior.
+    """
     while toks:
         # D-0004: `FOO=1 git push` — a bare assignment prefix is ordinary
         # POSIX and needs no wrapper program, but _unwrap basenamed `FOO=1`
@@ -1115,14 +1574,18 @@ def _unwrap(toks) -> list:
         # defeated by one variable. An UNEXPANDED $VAR is left in place: it
         # is unscreenable, and dropping it would hide the command.
         while toks and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", toks[0]):
+            if assignment_sink is not None:
+                assignment_sink.append(toks[0])
             toks = toks[1:]
         if not toks:
             return toks
         prog = os.path.basename(toks[0])
         if prog not in _WRAPPERS:
             return toks
+        if identity_sink is not None:
+            identity_sink.append(toks[0])
         if prog == "env":
-            split = _env_split_string(toks[1:])
+            split = _env_split_string(toks[1:], assignment_sink)
             if split is not None:
                 toks = split             # re-enter: may be another wrapper
                 continue
@@ -1131,6 +1594,8 @@ def _unwrap(toks) -> list:
         while rest:
             tok = rest[0]
             if prog == "env" and "=" in tok and not tok.startswith("-"):
+                if assignment_sink is not None:
+                    assignment_sink.append(tok)
                 rest = rest[1:]                      # VAR=val assignment
                 continue
             if not tok.startswith("-"):
@@ -1150,7 +1615,472 @@ def _unwrap(toks) -> list:
     return toks
 
 
-def _analyze(command: str, _depth: int = 0):
+def _git_subcommand(args) -> "tuple[str | None, int]":
+    """Return Git's subcommand and its argv index through global options."""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if not arg.startswith("-"):
+            return arg, i
+        base = arg.split("=", 1)[0]
+        i += 1
+        if base in _GIT_VALUE_OPTS and "=" not in arg:
+            i += 1
+    return None, i
+
+
+def _git_readonly_violation(args) -> "str | None":
+    """Why this Git argv is not statically demonstrable as read-only.
+
+    The allowlist is deliberately command-and-option shaped, not a denylist.
+    Git has several executable extension mechanisms (aliases, git-* helpers,
+    pagers, external diff drivers and textconv filters), and configuration can
+    come from outside the reviewed repository. A form is admitted only when
+    argv selects a known read-only built-in and explicitly disables every
+    relevant configured executor and optional repository-metadata writes.
+    """
+    if args in (["--version"], ["-v"]):
+        return None
+
+    dangerous_env = []
+    for name in os.environ:
+        if (name.startswith("GIT_CONFIG") or name.startswith("GIT_TRACE")
+                or name in {
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR",
+                    "GIT_DIR", "GIT_EXEC_PATH", "GIT_EXTERNAL_DIFF",
+                    "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY",
+                    "GIT_OPTIONAL_LOCKS", "GIT_REPLACE_REF_BASE",
+                    "GIT_WORK_TREE",
+                }):
+            dangerous_env.append(name)
+    if dangerous_env:
+        return (
+            "Git environment is not sanitized: "
+            + ", ".join(f"`{name}`" for name in sorted(dangerous_env))
+            + " can redirect objects, config, helpers, tracing, or writes")
+
+    sub, sub_index = _git_subcommand(args)
+    global_args = args[:sub_index]
+    saw_no_pager = False
+    saw_no_optional_locks = False
+    saw_no_lazy_fetch = False
+    saw_no_replace_objects = False
+    saw_fsmonitor_neutralization = False
+    i = 0
+    while i < len(global_args):
+        arg = global_args[i]
+        if arg in ("-P", "--no-pager"):
+            saw_no_pager = True
+            i += 1
+            continue
+        if arg == "--no-optional-locks":
+            saw_no_optional_locks = True
+            i += 1
+            continue
+        if arg == "--no-lazy-fetch":
+            saw_no_lazy_fetch = True
+            i += 1
+            continue
+        if arg == "--no-replace-objects":
+            saw_no_replace_objects = True
+            i += 1
+            continue
+        if arg == "-C":
+            return "Git `-C` may redirect lookup to an untrusted repository"
+        if arg.startswith("-C") and len(arg) > 2:
+            return "Git `-C` may redirect lookup to an untrusted repository"
+        if arg == "-c":
+            if i + 1 >= len(global_args):
+                return "Git `-c` has no assignment, so it can't be screened"
+            assignment = global_args[i + 1]
+            if assignment != _GIT_READONLY_CONFIG:
+                return (
+                    f"Git config assignment `{assignment}` may add an "
+                    "executable extension that can't be screened from argv")
+            saw_fsmonitor_neutralization = True
+            i += 2
+            continue
+        if arg in _GIT_SAFE_GLOBAL_FLAGS:
+            i += 1
+            continue
+        return (
+            f"Git global option `{arg}` may select configuration or an "
+            "executable extension that can't be screened from argv")
+
+    if sub not in _GIT_READONLY_BUILTINS:
+        label = sub or "<missing>"
+        return (
+            f"Git command `{label}` is not on the statically read-only "
+            "built-in allowlist; aliases and git-* executables can't be "
+            "screened from argv")
+    if not saw_no_pager:
+        return (
+            "Git output may launch a configured pager that can't be screened; "
+            "use `git --no-pager …`")
+    if not saw_no_optional_locks:
+        return (
+            "Git may perform optional repository-metadata writes that can't "
+            "be screened; use `git --no-optional-locks …`")
+    if not saw_no_lazy_fetch:
+        return (
+            "Git may invoke a configured lazy-fetch/promisor helper that "
+            "can't be screened; use `git --no-lazy-fetch …`")
+    if not saw_no_replace_objects:
+        return (
+            "Git may consult replacement-object indirection; use "
+            "`git --no-replace-objects …`")
+    if not saw_fsmonitor_neutralization:
+        return (
+            "Git may launch configured core.fsmonitor that can't be screened "
+            "while reading the working tree; use "
+            "`-c core.fsmonitor=false`")
+
+    sub_args = args[sub_index + 1:]
+    options = []
+    for arg in sub_args:
+        if arg == "--":
+            break
+        if arg.startswith("-"):
+            options.append(arg)
+            if arg not in _GIT_READONLY_DIFF_OPTIONS:
+                return (
+                    f"Git diff option `{arg}` is not on the exact read-only "
+                    "allowlist; abbreviations and prefix equivalents can't "
+                    "be screened from argv")
+    if "--no-ext-diff" not in options or "--no-textconv" not in options:
+        return (
+            "Git diff output may invoke globally or locally configured "
+            "external-diff/textconv helpers that can't be screened; use both "
+            "`--no-ext-diff` and `--no-textconv`")
+    if "--cached" not in options and "--staged" not in options:
+        return (
+            "Git diff may pass working-tree content through executable "
+            "`.gitattributes` clean filters that can't be disabled from "
+            "argv; use an index/object diff with `--cached` or `--staged`")
+    return None
+
+
+def _readonly_lex_segments(command: str):
+    """Lex the deliberately small shell subset admitted for read-only work.
+
+    Each word retains whether its spelling used quotes or escapes.  ``shlex``
+    intentionally erases that fact, but it changes shell grammar: bare ``if``
+    is syntax while ``'if'`` and ``\\if`` are executable names.  Returning a
+    structural error is safer than trying to emulate the full shell parser.
+    """
+    segments: list[list[tuple[str, bool]]] = []
+    segment: list[tuple[str, bool]] = []
+    word: list[str] = []
+    word_started = False
+    decorated = False
+    quote = None
+    i = 0
+
+    def finish_word():
+        nonlocal word, word_started, decorated
+        if word_started:
+            segment.append(("".join(word), decorated))
+        word = []
+        word_started = False
+        decorated = False
+
+    def finish_segment():
+        finish_word()
+        if segment:
+            segments.append(list(segment))
+            segment.clear()
+
+    text = str(command or "")
+    while i < len(text):
+        ch = text[i]
+        if quote == "'":
+            word_started = True
+            decorated = True
+            if ch == "'":
+                quote = None
+            else:
+                word.append(ch)
+            i += 1
+            continue
+        if quote == '"':
+            word_started = True
+            decorated = True
+            if ch == '"':
+                quote = None
+                i += 1
+                continue
+            if ch == "`":
+                return [], ("legacy backtick command substitution is outside "
+                            "the admitted read-only grammar")
+            if ch == "$":
+                label = ("command/arithmetic substitution"
+                         if i + 1 < len(text) and text[i + 1] == "("
+                         else "shell variable expansion")
+                return [], f"{label} is outside the admitted read-only grammar"
+            if ch == "\\":
+                decorated = True
+                if i + 1 >= len(text):
+                    return [], "trailing shell escape cannot be screened"
+                word.append(text[i + 1])
+                i += 2
+                continue
+            word.append(ch)
+            i += 1
+            continue
+
+        if ch in "'\"":
+            quote = ch
+            word_started = True
+            decorated = True
+            i += 1
+            continue
+        if ch == "\\":
+            decorated = True
+            word_started = True
+            if i + 1 >= len(text):
+                return [], "trailing shell escape cannot be screened"
+            word.append(text[i + 1])
+            i += 2
+            continue
+        if ch == "`":
+            return [], ("legacy backtick command substitution is outside the "
+                        "admitted read-only grammar")
+        if ch == "$":
+            label = ("command/arithmetic substitution" if i + 1 < len(text)
+                     and text[i + 1] == "(" else "shell variable expansion")
+            return [], f"{label} is outside the admitted read-only grammar"
+        if ch in "<>":
+            label = ("process substitution" if i + 1 < len(text)
+                     and text[i + 1] == "(" else "shell redirection/heredoc")
+            return [], f"{label} is outside the admitted read-only grammar"
+        if ch in "*?[]~":
+            return [], ("unquoted glob/tilde expansion is outside the "
+                        "admitted read-only grammar")
+        if ch in "(){}":
+            return [], ("shell grouping/compound syntax is outside the "
+                        "admitted read-only grammar")
+        if ch in " \t\r":
+            finish_word()
+            i += 1
+            continue
+        if ch == "\n":
+            finish_segment()
+            i += 1
+            continue
+        if ch in ";|&":
+            finish_segment()
+            if ch == "&" and not (i + 1 < len(text)
+                                  and text[i + 1] == "&"):
+                return [], ("background execution is outside the admitted "
+                            "read-only grammar")
+            if i + 1 < len(text) and text[i + 1] == ch:
+                i += 2
+            else:
+                i += 1
+            continue
+        word_started = True
+        word.append(ch)
+        i += 1
+
+    if quote is not None:
+        return [], "unclosed shell quote cannot be screened"
+    finish_segment()
+    return segments, None
+
+
+_TP_READONLY_TOP_LEVEL = frozenset({
+    "--help", "--version", "help", "version", "status", "contracts",
+    "summary", "dashboard", "findings",
+})
+_TP_READONLY_NESTED = frozenset({
+    ("decision", "list"), ("decision", "show"),
+    ("graph", "impact"),
+    ("kb", "list"), ("kb", "lint"), ("kb", "retrieve"),
+    ("kb", "where"),
+    ("lens", "list"), ("lens", "show"),
+    ("loop", "status"),
+    ("req", "list"),
+    ("repository", "status"),
+    ("share", "status"),
+    ("target", "show"), ("target", "tools"),
+})
+
+
+def _tp_readonly_argv_violation(args) -> "str | None":
+    """Refuse trusted Taskplane CLI verbs that can mutate governance state."""
+    dangerous_flags = {
+        "--all", "--approved-by", "--by", "--grant", "--install",
+        "--install-codex-hooks", "--out", "--response", "--write",
+        "--workspace",
+    }
+    if any(arg in dangerous_flags
+           or any(arg.startswith(flag + "=") for flag in dangerous_flags)
+           for arg in args):
+        return "canonical Taskplane CLI argv includes a mutating/output flag"
+    positional = [arg for arg in args if not arg.startswith("-")]
+    if not positional:
+        if args and args[0] in {"--help", "--version"}:
+            return None
+        return "canonical Taskplane CLI is missing a read-only verb"
+    if positional[0] in _TP_READONLY_TOP_LEVEL:
+        return None
+    if len(positional) > 1 and tuple(positional[:2]) in _TP_READONLY_NESTED:
+        return None
+    return (
+        f"canonical Taskplane CLI verb `{' '.join(positional[:2])}` is not "
+        "on the read-only verb allowlist")
+
+
+def _readonly_argv_violation(program: str, args) -> "str | None":
+    """Reject write/exec-capable argv forms of otherwise familiar tools."""
+    if program == "git":
+        return _git_readonly_violation(args)
+    if (program in _WRITE_PROGRAMS or program in _INTERPRETERS
+            or _python_program(program) or program in _SHELLS
+            or program in _WRAPPERS or program in _ARCHIVE_EXTRACTORS
+            or program in {"eval", "find", "patch", "xargs"}):
+        return f"`{program}` is not admitted by the direct read-only argv grammar"
+    if program not in _READONLY_SAFE_PROGRAMS - {"tp"}:
+        return f"`{program}` has no admitted read-only argv schema"
+
+    # These tools have useful, unambiguous positional read forms.  Options are
+    # refused rather than inheriting each utility's much larger grammar (for
+    # example xxd -r, diff --output, file --compile, or a future extension).
+    positional_only = frozenset({
+        "basename", "cat", "cmp", "comm", "cut", "diff", "dirname", "du",
+        "file", "head", "jq", "ls", "md5", "md5sum", "od", "readlink",
+        "realpath", "sha256sum", "shasum", "stat", "strings", "tail", "tr",
+        "uniq", "wc", "whereis", "which", "xxd", "zipinfo",
+    })
+    if program in positional_only:
+        option_mode = True
+        for arg in args:
+            if option_mode and arg == "--":
+                option_mode = False
+                continue
+            if option_mode and arg.startswith("-") and arg != "-":
+                return (
+                    f"`{program}` option `{arg}` is outside its exact "
+                    "positional-only read-only argv schema")
+        return None
+
+    if program == "rg":
+        safe_flags = frozenset({
+            "-a", "--text", "-F", "--fixed-strings", "-i", "--ignore-case",
+            "-l", "--files-with-matches", "--files-without-match", "-n",
+            "--line-number", "--no-line-number", "--no-heading", "--heading",
+            "-o", "--only-matching", "-q", "--quiet", "-s",
+            "--case-sensitive", "-S", "--smart-case", "-U", "--multiline",
+            "--multiline-dotall", "-v", "--invert-match", "-w",
+            "--word-regexp", "-x", "--line-regexp", "--count",
+            "--count-matches", "--crlf", "--files", "--hidden", "--json",
+            "--no-ignore", "--no-ignore-vcs", "--no-messages", "--pcre2",
+            "--stats",
+        })
+        value_flags = frozenset({
+            "-A", "--after-context", "-B", "--before-context", "-C",
+            "--context", "--color", "--colors", "-e", "--regexp",
+            "--encoding", "-f", "--file", "-g", "--glob", "-m",
+            "--max-count", "--max-depth", "--path-separator", "-r",
+            "--replace", "--sort", "--sortr", "-t", "--type", "-T",
+            "--type-not",
+        })
+        glued_short = re.compile(r"^-(?:[ABCfgemrtT]).+$")
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg == "--":
+                return None
+            if not arg.startswith("-") or arg == "-":
+                i += 1
+                continue
+            if arg in safe_flags or glued_short.match(arg):
+                i += 1
+                continue
+            if arg in value_flags:
+                if i + 1 >= len(args):
+                    return f"`rg` option `{arg}` is missing its value"
+                i += 2
+                continue
+            if any(arg.startswith(flag + "=")
+                   for flag in value_flags if flag.startswith("--")):
+                i += 1
+                continue
+            return f"`rg` option `{arg}` is outside its exact read-only argv schema"
+        return None
+
+    # Shell-built read primitives have no external helper or filesystem-write
+    # mode once expansion and redirection have already been excluded.
+    if program in _READONLY_SHELL_BUILTINS | {"expr", "printf"}:
+        return None
+    # Date can set the system clock on supported hosts; omit it rather than
+    # attempting to reconcile GNU/BSD flag grammars.
+    if program == "date":
+        return "`date` is omitted because some host argv forms set system time"
+    return f"`{program}` has no exact admitted read-only argv schema"
+
+
+def _readonly_command_grammar_violation(command: str,
+                                        workspace: str | None,
+                                        write_allow) -> "str | None":
+    """Validate the complete executable grammar before semantic screening.
+
+    Read-only shell access admits direct simple commands separated by ``;``,
+    newlines, ``&&``, ``||``, or pipelines.  It deliberately refuses shell
+    keywords/groups, wrappers, shells, eval, xargs, and substitutions.  Every
+    admitted command token is bare, unquoted/unescaped, and bound to the same
+    executable identity observed on the hook's startup PATH.  The sole
+    path-qualified exception is this package's exact canonical ``tp.py``.
+    """
+    segments, error = _readonly_lex_segments(command)
+    if error:
+        return error
+    if not segments and str(command or "").strip():
+        return "shell command contains no directly screenable executable"
+
+    complex_launchers = (_WRAPPERS | _SHELLS | {"eval", "xargs"})
+    for words in segments:
+        raw_program, decorated = words[0]
+        args = [value for value, _ in words[1:]]
+        if decorated:
+            return (
+                f"executable token `{raw_program}` is quoted or escaped; "
+                "read-only executables must be bare lexical tokens")
+        if (raw_program in _SHELL_KEYWORDS
+                or raw_program in {"{", "}", "[[", "]]"}):
+            return (
+                f"shell keyword `{raw_program}` is outside the admitted "
+                "read-only grammar")
+        if re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", raw_program):
+            return (
+                "execution environment assignment is outside the admitted "
+                "read-only grammar")
+
+        normalized = raw_program.replace("\\", "/")
+        if "/" in normalized:
+            if _is_tp_cli(raw_program, workspace):
+                return _tp_readonly_argv_violation(args)
+            return (
+                f"path-qualified executable `{raw_program}` cannot be "
+                "accepted as a trusted read-only program")
+
+        program = os.path.basename(raw_program)
+        if program in complex_launchers:
+            return (
+                f"`{program}` is outside the admitted direct-command "
+                "read-only grammar")
+        identity_violation = _readonly_executable_identity_violation(
+            raw_program, workspace, write_allow)
+        if identity_violation:
+            return identity_violation
+        argv_violation = _readonly_argv_violation(program, args)
+        if argv_violation:
+            return argv_violation
+    return None
+
+
+def _analyze(command: str, _depth: int = 0,
+             workspace: "str | None" = None):
     """Screen a shell command string.
 
     Returns (targets, opaque) where `targets` is the list of concrete write
@@ -1163,6 +2093,9 @@ def _analyze(command: str, _depth: int = 0):
       kind='interpreter' — `python -c`/`perl -e`/…: a Turing-complete body
         that can write anywhere; blocked under read-only contracts, allowed
         (documented gap) under build contracts.
+      kind='launcher' — an executable outside the narrow read-only argv
+        allowlist; blocked under read-only contracts because it may execute
+        repository-defined code, allowed under build contracts.
     """
     targets: list = []
     opaque = None
@@ -1192,10 +2125,15 @@ def _analyze(command: str, _depth: int = 0):
     # that hides the real command.
     command = _ansi_c_unquote(command.replace(">|", ">"))
 
-    for m in _SUBST_RE.finditer(command):
-        body = m.group(1) or m.group(2) or ""
+    substitutions, substitution_error = _shell_substitution_bodies(command)
+    if substitution_error:
+        opaque = opaque or (
+            "launcher",
+            f"shell substitution structure can't be screened: "
+            f"{substitution_error}")
+    for _, body in substitutions:
         if body.strip():
-            t, o = _analyze(body, _depth + 1)
+            t, o = _analyze(body, _depth + 1, workspace)
             targets += t
             opaque = opaque or o
 
@@ -1204,11 +2142,41 @@ def _analyze(command: str, _depth: int = 0):
         if not toks:
             continue
         targets += _redirect_targets(toks)
-        toks = _unwrap(_strip_keywords(toks))
+        assignments: list[str] = []
+        wrapper_programs: list[str] = []
+        toks = _unwrap(_strip_keywords(toks), assignments, wrapper_programs)
+        if assignments:
+            names = [item.split("=", 1)[0] for item in assignments]
+            opaque = opaque or (
+                "launcher",
+                "execution environment assignment(s) "
+                f"{', '.join(f'`{name}`' for name in names)} can select "
+                "Git/process tracing, loaders, interpreters, pagers, "
+                "editors, or "
+                "external helpers that can't be screened from argv")
+        for wrapper_program in wrapper_programs:
+            identity_violation = _readonly_executable_identity_violation(
+                wrapper_program, workspace)
+            if identity_violation:
+                opaque = opaque or ("launcher", identity_violation)
         if not toks:
             continue
-        prog = os.path.basename(toks[0])
+        raw_prog = toks[0]
+        prog = os.path.basename(raw_prog)
         args = toks[1:]
+
+        identity_sensitive = (
+            prog in _READONLY_SAFE_PROGRAMS
+            or prog in _SHELLS
+            or prog in _INTERPRETERS
+            or prog in _ARCHIVE_EXTRACTORS
+            or prog in {"find", "git"}
+            or _python_program(prog))
+        if identity_sensitive:
+            identity_violation = _readonly_executable_identity_violation(
+                raw_prog, workspace)
+            if identity_violation:
+                opaque = opaque or ("launcher", identity_violation)
 
         if prog in _SHELLS:
             # -c may hide in a short-option cluster (`bash -lc '…'`) — the
@@ -1221,7 +2189,7 @@ def _analyze(command: str, _depth: int = 0):
                         for a in args)
             body = _shell_c_body(args) if saw_c else None
             if body is not None:
-                t, o = _analyze(body, _depth + 1)
+                t, o = _analyze(body, _depth + 1, workspace)
                 targets += t
                 opaque = opaque or o
             else:
@@ -1241,7 +2209,7 @@ def _analyze(command: str, _depth: int = 0):
             # (e.g. `eval "$CMD"`) still isn't provably safe — but eval of
             # a variable is rare in agent traffic and the screen stays a
             # cooperative best-effort layer, not an OS boundary.
-            t, o = _analyze(" ".join(args), _depth + 1)
+            t, o = _analyze(" ".join(args), _depth + 1, workspace)
             targets += t
             opaque = opaque or o
             continue
@@ -1257,6 +2225,11 @@ def _analyze(command: str, _depth: int = 0):
                     "destructive",
                     f"`xargs {subprog} …` runs a mutator on stdin-supplied "
                     "paths that can't be screened")
+            else:
+                opaque = opaque or (
+                    "launcher",
+                    "`xargs` launches stdin-selected commands whose file "
+                    "writes can't be screened from argv")
             continue
         fn = _WRITE_PROGRAMS.get(prog)
         if fn:
@@ -1298,7 +2271,7 @@ def _analyze(command: str, _depth: int = 0):
             # body — exempt it so a read-only review can still run tp.py.
             first_arg = next((a for a in args if not a.startswith("-")), None)
             if _python_program(prog) and first_arg \
-                    and _is_tp_cli(first_arg):
+                    and _is_tp_cli(first_arg, workspace):
                 continue
             if any(a in ("-c", "-e", "-E") or a.startswith("-e")
                    for a in args):
@@ -1328,26 +2301,26 @@ def _analyze(command: str, _depth: int = 0):
                     "writes can't be screened from argv")
             continue
         if prog == "git":
-            # The subcommand is the first non-option arg — but git's GLOBAL
-            # options can take a SEPARATE value that would otherwise be read
-            # as the subcommand: `git -C /path checkout` must screen
-            # `checkout`, not `/path`. Skip each value-taking global option
-            # AND its argument before picking the subcommand.
-            i, sub = 0, None
-            while i < len(args):
-                a = args[i]
-                if not a.startswith("-"):
-                    sub = a
-                    break
-                base = a.split("=", 1)[0]
-                i += 1
-                if base in _GIT_VALUE_OPTS and "=" not in a:
-                    i += 1                 # swallow the option's value
+            # Preserve the governed-build mutator denial, then apply the
+            # stricter read-only allowlist. A launcher opaque is ignored by
+            # build contracts but refused by the read-only branch above.
+            sub, _ = _git_subcommand(args)
             if sub in _GIT_MUTATORS:
                 opaque = opaque or (
                     "destructive",
                     f"`git {sub}` rewrites tracked files in the working tree")
+            else:
+                violation = _git_readonly_violation(args)
+                if violation:
+                    opaque = opaque or ("launcher", violation)
             continue
+        if _is_tp_cli(raw_prog, workspace):
+            continue
+        if prog not in _READONLY_SAFE_PROGRAMS:
+            opaque = opaque or (
+                "launcher",
+                f"`{prog}` may launch repository-defined code whose file "
+                "writes can't be screened from argv")
 
     return [t for t in targets if t], opaque
 
@@ -1410,8 +2383,9 @@ def _deny_segments(command: str, _depth: int = 0):
     if _depth > 6:
         return segs, True          # runaway nesting: treat as unscreenable
     command = _ansi_c_unquote(command.replace(">|", ">"))
-    for m in _SUBST_RE.finditer(command):
-        body = m.group(1) or m.group(2) or ""
+    substitutions, substitution_error = _shell_substitution_bodies(command)
+    unscreen = bool(substitution_error)
+    for _, body in substitutions:
         if body.strip():
             s, u = _deny_segments(body, _depth + 1)
             segs += s
@@ -1472,7 +2446,7 @@ def screen_command(cmd: str, coding: dict, workspace: str | None) -> str | None:
                                    or {}).get("deny") or [])
     if pattern:
         return f"command matches deny pattern '{pattern}'"
-    targets, opaque = _analyze(cmd)
+    targets, opaque = _analyze(cmd, workspace=workspace)
     for target in targets:
         p = norm(target, workspace)
         if p:
@@ -1497,7 +2471,8 @@ _HOST_HOOK_COMMANDS = frozenset({
 })
 
 
-def host_hook_cli_invocation(command: str) -> "str | None":
+def host_hook_cli_invocation(command: str,
+                             workspace: str | None = None) -> "str | None":
     """Return a hook-only tp.py subcommand invoked through an agent shell.
 
     Host hooks execute these entry points directly. Letting a governed agent
@@ -1507,7 +2482,7 @@ def host_hook_cli_invocation(command: str) -> "str | None":
     segments, _ = _deny_segments(command)
     for tokens in segments:
         for index, token in enumerate(tokens):
-            if not _is_tp_cli(token):
+            if not _is_tp_cli(token, workspace):
                 continue
             command_args = [item for item in tokens[index + 1:]
                             if not item.startswith("-")]
@@ -1575,17 +2550,33 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                                "active contracts; set TASKPLANE_TASK to work "
                                "under a single task's contract)")
         return True, f"within every active contract ({len(members)}-way union)"
+    if contract.get("read_only"):
+        if tool_name in COMMAND_TOOLS:
+            return False, (
+                "read-only review contract: every shell command tool is "
+                "blocked because this host hook cannot prove shell=False, a "
+                "sanitized process environment, or executable bytes; use "
+                "explicitly allowed host-native Read/Grep/Glob and scoped "
+                "Write/Edit tools")
+        native_tools = READONLY_NATIVE_READ_TOOLS | WRITE_TOOLS
+        if tool_name not in native_tools:
+            return False, (
+                f"read-only review contract: '{tool_name}' is not an exact "
+                "host-native Read/Grep/Glob or scoped Write/Edit tool")
+        if not contract.get("allowed_tools"):
+            return False, (
+                "read-only review contract has no explicit allowed_tools; "
+                "implicit tool admission is forbidden")
     allowed = contract.get("allowed_tools") or []
     if allowed and not any(name in allowed for name in tool_aliases(tool_name)):
         return False, f"tool '{tool_name}' not in allowed_tools"
 
     if tool_name in COMMAND_TOOLS:
         hook_command = host_hook_cli_invocation(
-            command_text(tool_name, tool_input))
+            command_text(tool_name, tool_input), workspace)
         if hook_command:
             return False, ("host hook entry point cannot be invoked through "
                            f"an agent shell: {hook_command}")
-
     coding = contract.get("coding") or {}
 
     # Read-only contract: no filesystem writes EXCEPT an optional allowlist
@@ -1607,33 +2598,6 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                                f"only write under {allow or '(nothing)'} — "
                                f"'{bad}' is outside it; the reviewed source "
                                "is protected")
-        if tool_name in COMMAND_TOOLS:
-            targets, opaque = _analyze(command_text(tool_name, tool_input))
-            leased_paths = [path for path in allow
-                            if any(marker in
-                                   "/" + str(path).replace("\\", "/")
-                                   for marker in (
-                                       "/kernel-v2/results/",
-                                       "/lenses/results/"))]
-            for t in targets:
-                if leased_paths and writable_target(
-                        t, leased_paths, workspace):
-                    return False, ("leased review result must use the host "
-                                   "Write tool; Bash cannot establish result "
-                                   "provenance")
-                if not writable_target(t, allow, workspace):
-                    return False, ("read-only review contract: command writes "
-                                   f"'{t}' outside {allow or '(nothing)'} — "
-                                   "the reviewed source is protected")
-            # A review needs no mutator at all — block every un-screenable
-            # one (interpreters AND destructive verbs), not just concrete
-            # writes. This is what makes the read-only source protection hold
-            # against `python -c`, `find -delete`, and `git checkout`.
-            if opaque:
-                return False, ("read-only review contract: " + opaque[1]
-                               + f" — writes must stay under "
-                               f"{allow or '(nothing)'}; the reviewed source "
-                               "is protected (best-effort screen)")
         # deny patterns still apply below
 
     if tool_name in WRITE_TOOLS and (coding.get("scope_paths")
@@ -3524,6 +4488,14 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
         raise ValueError(
             "max_actions must be >= 0 — 0 means a ZERO-action ceiling "
             "(every governed action blocks); omit it for the default")
+    if read_only and tools is None:
+        # Persist an explicit closed host-native tool list.  An empty list has
+        # historically meant "all tools", which is not a safe default for a
+        # read-only authority.  Artifact writers are added only when their
+        # target allowlist is also present.
+        tools = sorted(READONLY_NATIVE_READ_TOOLS)
+        if write_allow:
+            tools += sorted(WRITE_TOOLS)
     c = {
         "task_id": "task_" + uuid.uuid4().hex[:8],
         "task": task,
@@ -5730,9 +6702,14 @@ def kb_root(workspace: str) -> str:
     Reads and writes share this root, so a reader never sees an empty store
     while the real data still sits in the repo."""
     ext = os.path.join(store_root(workspace), "knowledge")
-    if os.path.isdir(ext):
-        return ext
     legacy = os.path.join(workspace, "knowledge")
+    # If both roots exist, only a tree published by the verified migration
+    # protocol may supersede the complete legacy source. An unmarked external
+    # directory can be the residue of shutil.move's cross-filesystem copy
+    # fallback and must not hide source-only knowledge.
+    if os.path.isdir(ext) and (
+            not os.path.isdir(legacy) or _kb_migration_complete(ext)):
+        return ext
     if os.path.isdir(legacy):
         return legacy
     return ext
@@ -5762,18 +6739,136 @@ def write_store_meta(workspace: str) -> dict:
     return meta
 
 
+_KB_MIGRATION_MARKER = ".taskplane-migration.json"
+
+
+def _kb_tree_manifest(root: str) -> list[dict]:
+    """Content manifest for a KB tree, excluding our publication marker."""
+    manifest: list[dict] = []
+    for current, dirs, files in os.walk(root, topdown=True,
+                                        followlinks=False):
+        dirs.sort()
+        files.sort()
+        rel_current = os.path.relpath(current, root)
+        prefix = "" if rel_current == "." else rel_current.replace("\\", "/")
+        descend = []
+        for name in dirs:
+            full = os.path.join(current, name)
+            rel = "/".join(filter(None, (prefix, name)))
+            if os.path.islink(full):
+                manifest.append({"path": rel, "type": "link",
+                                 "target": os.readlink(full)})
+            else:
+                manifest.append({"path": rel + "/", "type": "dir"})
+                descend.append(name)
+        dirs[:] = descend
+        for name in files:
+            rel = "/".join(filter(None, (prefix, name)))
+            if rel == _KB_MIGRATION_MARKER:
+                continue
+            full = os.path.join(current, name)
+            if os.path.islink(full):
+                manifest.append({"path": rel, "type": "link",
+                                 "target": os.readlink(full)})
+                continue
+            if not os.path.isfile(full):
+                raise StateError(full, "unsupported knowledge entry",
+                                 "replace it with a regular file or symlink")
+            digest = hashlib.sha256()
+            with open(full, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            manifest.append({"path": rel, "type": "file",
+                             "size": os.path.getsize(full),
+                             "sha256": digest.hexdigest()})
+    return manifest
+
+
+def _kb_manifest_digest(manifest: list[dict]) -> str:
+    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _kb_migration_complete(root: str) -> bool:
+    marker = os.path.join(root, _KB_MIGRATION_MARKER)
+    try:
+        record = load_json(marker, what="knowledge migration marker")
+        return record.get("schema") == 1 and record.get("manifest_sha256") == \
+            _kb_manifest_digest(_kb_tree_manifest(root))
+    except (StateError, OSError, AttributeError):
+        return False
+
+
+def _fsync_kb_tree(root: str) -> None:
+    """Flush copied KB bytes and directory entries before publication."""
+    directories = []
+    for current, dirs, files in os.walk(root, topdown=True,
+                                        followlinks=False):
+        directories.append(current)
+        dirs[:] = [name for name in dirs
+                   if not os.path.islink(os.path.join(current, name))]
+        for name in files:
+            path = os.path.join(current, name)
+            if os.path.islink(path) or not os.path.isfile(path):
+                continue
+            with open(path, "rb") as handle:
+                os.fsync(handle.fileno())
+    for directory in reversed(directories):
+        _fsync_directory(directory)
+
+
 def migrate_store(workspace: str) -> dict:
-    """Relocate a legacy in-repo knowledge/ into the external store (data
-    move only — no git ops; the CLI does the untrack + gitignore). Idempotent:
-    a no-op once the external store exists. Returns what happened."""
+    """Publish a verified legacy KB tree, then remove its source.
+
+    Copying occurs in a unique sibling staging directory. The destination is
+    authoritative only after byte-manifest verification, fsync, an atomic
+    rename, and a parent-directory fsync. Interrupted or old partial final
+    directories are quarantined instead of hiding the legacy source.
+    """
     import shutil
     legacy = os.path.join(workspace, "knowledge")
     ext = os.path.join(store_root(workspace), "knowledge")
     moved = False
-    if os.path.isdir(legacy) and not os.path.isdir(ext):
-        os.makedirs(os.path.dirname(ext), exist_ok=True)
-        shutil.move(legacy, ext)
-        moved = True
+    parent = os.path.dirname(ext)
+    os.makedirs(parent, exist_ok=True)
+    lock_path = os.path.join(parent, ".knowledge-migration")
+    with file_lock(lock_path):
+        if os.path.isdir(legacy):
+            if os.path.isdir(ext) and _kb_migration_complete(ext):
+                shutil.rmtree(legacy)
+                moved = True
+            else:
+                if os.path.isdir(ext):
+                    quarantine = os.path.join(
+                        parent, f"knowledge.partial.{os.getpid()}."
+                        f"{secrets.token_hex(8)}")
+                    os.rename(ext, quarantine)
+                    _fsync_directory(parent)
+                stage = os.path.join(
+                    parent, f".knowledge.migrate.{os.getpid()}."
+                    f"{secrets.token_hex(8)}")
+                try:
+                    before = _kb_tree_manifest(legacy)
+                    shutil.copytree(legacy, stage, symlinks=True)
+                    after = _kb_tree_manifest(legacy)
+                    copied = _kb_tree_manifest(stage)
+                    if before != after or after != copied:
+                        raise StateError(
+                            legacy, "knowledge changed during migration",
+                            "retry when no writer is changing the knowledge tree")
+                    _fsync_kb_tree(stage)
+                    atomic_write_json(
+                        os.path.join(stage, _KB_MIGRATION_MARKER),
+                        {"schema": 1,
+                         "manifest_sha256": _kb_manifest_digest(copied)},
+                        sort_keys=True)
+                    os.rename(stage, ext)
+                    _fsync_directory(parent)
+                    shutil.rmtree(legacy)
+                    moved = True
+                finally:
+                    if os.path.isdir(stage):
+                        shutil.rmtree(stage, ignore_errors=True)
     write_store_meta(workspace)
     return {"moved": moved, "store": ext, "legacy": legacy}
 
