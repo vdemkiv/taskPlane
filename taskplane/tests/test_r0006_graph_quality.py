@@ -155,14 +155,14 @@ def test_graph_scan_quality_fingerprint_is_stable_and_content_bound(
     assert quality["fingerprint"] == expected
 
     same = dg._graph_scan_quality(
-        quality["producers"]["base-scanner"]["failures"], None,
+        quality["producers"]["base-scanner"]["failures"], None, None,
         decompose=False, scanned_revision=quality["scanned_revision"])
     assert same["fingerprint"] == quality["fingerprint"]
     changed_failure = dict(
         quality["producers"]["base-scanner"]["failures"][0],
         reason="different parse failure")
     changed = dg._graph_scan_quality(
-        [changed_failure], None, decompose=False,
+        [changed_failure], None, None, decompose=False,
         scanned_revision=quality["scanned_revision"])
     assert changed["fingerprint"] != quality["fingerprint"]
 
