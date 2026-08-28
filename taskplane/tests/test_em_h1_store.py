@@ -162,7 +162,6 @@ def test_h30_readonly_contract_rejects_git_alias_extension_surfaces(
             contract, "Bash", {"command": command}, str(tmp_path))
         assert allowed is False, command
         assert "read-only review contract" in reason
-        assert "Git" in reason
         assert "can't be screened" in reason
 
 
@@ -197,11 +196,64 @@ def test_h30_readonly_git_diff_disables_external_and_textconv_helpers(
         assert "can't be screened" in reason
 
     safe = (
-        prefix + "git --no-pager --no-optional-locks "
+        "git --no-pager --no-optional-locks "
         "-c core.fsmonitor=false diff "
         "--no-ext-diff --no-textconv --cached --stat")
     allowed, reason = tp.screen_tool(
         contract, "Bash", {"command": safe}, str(tmp_path))
+    assert allowed is True, reason
+
+
+def test_h30_readonly_contract_rejects_environment_assignment_prefixes(
+        tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    commands = (
+        # Git's trace families accept filesystem targets and may write even
+        # when the selected Git operation is otherwise a guarded index diff.
+        "GIT_TRACE=/tmp/git.trace git --no-pager --no-optional-locks "
+        "-c core.fsmonitor=false diff --no-ext-diff --no-textconv "
+        "--cached --stat",
+        "GIT_TRACE2_EVENT=/tmp/git-trace2.json git --no-pager "
+        "--no-optional-locks -c core.fsmonitor=false diff "
+        "--no-ext-diff --no-textconv --cached --stat",
+        "GIT_TRACE_PERFORMANCE=/tmp/git-performance.trace env "
+        "GIT_PAGER=cat git --no-pager --no-optional-locks "
+        "-c core.fsmonitor=false diff --no-ext-diff --no-textconv "
+        "--cached --stat",
+        "env GIT_EXTERNAL_DIFF=/tmp/helper git --no-pager "
+        "--no-optional-locks -c core.fsmonitor=false diff "
+        "--no-ext-diff --no-textconv --cached --stat",
+        "GIT_EDITOR=/tmp/editor git --no-pager --no-optional-locks "
+        "-c core.fsmonitor=false diff --no-ext-diff --no-textconv "
+        "--cached --stat",
+        "env GIT_TRACE2=/tmp/trace -S 'git --no-pager "
+        "--no-optional-locks -c core.fsmonitor=false diff "
+        "--no-ext-diff --no-textconv --cached --stat'",
+        # Non-Git execution surfaces must fail by the same generic boundary;
+        # a dynamic-loader prefix can execute code before a nominally safe
+        # reader starts.
+        "LD_PRELOAD=/tmp/injected.so cat README.md",
+        "PYTHONPATH=/tmp/injected python3 --version",
+    )
+
+    for command in commands:
+        allowed, reason = tp.screen_tool(
+            contract, "Bash", {"command": command}, str(tmp_path))
+        assert allowed is False, command
+        assert "read-only review contract" in reason
+        assert "environment assignment" in reason
+        assert "can't be screened" in reason
+
+
+def test_h30_build_contract_keeps_environment_assignment_compatibility(
+        tmp_path: Path):
+    contract = tp.build_contract("builder")
+
+    allowed, reason = tp.screen_tool(
+        contract, "Bash", {"command": "FEATURE_FLAG=1 cat README.md"},
+        str(tmp_path))
+
     assert allowed is True, reason
 
 

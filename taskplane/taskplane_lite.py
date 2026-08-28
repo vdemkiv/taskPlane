@@ -1134,7 +1134,9 @@ def _redirect_targets(toks) -> list:
     return [t for t in out if t not in _NULL_SINKS]
 
 
-def _env_split_string(rest) -> list | None:
+def _env_split_string(rest,
+                      assignment_sink: "list[str] | None" = None
+                      ) -> list | None:
     """GNU `env -S/--split-string STRING` word-splits STRING into an argv —
     so `env -S 'rm -rf x'` EXECUTES `rm -rf x`, but naive unwrapping sees a
     single opaque token ("a program named 'rm -rf x'") and screens nothing.
@@ -1161,6 +1163,9 @@ def _env_split_string(rest) -> list | None:
             i += 2                       # value-taking flag: skip flag + value
             continue
         elif t.startswith("-") or "=" in t:
+            if "=" in t and not t.startswith("-") \
+                    and assignment_sink is not None:
+                assignment_sink.append(t)
             i += 1                       # other env flag / VAR=val
             continue
         else:
@@ -1189,10 +1194,17 @@ _WRAPPER_VALUE_FLAGS = {
 }
 
 
-def _unwrap(toks) -> list:
+def _unwrap(toks, assignment_sink: "list[str] | None" = None) -> list:
     """Strip leading transparent wrapper programs, returning the real argv.
     `env FOO=1 rm x` -> `rm x`; `timeout 5 rm x` -> `rm x`;
-    `env -u NAME rm x` -> `rm x` (the `-u` swallows `NAME`)."""
+    `env -u NAME rm x` -> `rm x` (the `-u` swallows `NAME`).
+
+    When ``assignment_sink`` is supplied, preserve every execution-prefix
+    assignment removed during unwrapping.  Read-only screening uses this to
+    fail closed instead of silently approving environment-controlled helpers
+    such as ``GIT_TRACE=/path git ...``.  Other callers retain the historical
+    unwrapped argv behavior.
+    """
     while toks:
         # D-0004: `FOO=1 git push` — a bare assignment prefix is ordinary
         # POSIX and needs no wrapper program, but _unwrap basenamed `FOO=1`
@@ -1200,6 +1212,8 @@ def _unwrap(toks) -> list:
         # defeated by one variable. An UNEXPANDED $VAR is left in place: it
         # is unscreenable, and dropping it would hide the command.
         while toks and re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", toks[0]):
+            if assignment_sink is not None:
+                assignment_sink.append(toks[0])
             toks = toks[1:]
         if not toks:
             return toks
@@ -1207,7 +1221,7 @@ def _unwrap(toks) -> list:
         if prog not in _WRAPPERS:
             return toks
         if prog == "env":
-            split = _env_split_string(toks[1:])
+            split = _env_split_string(toks[1:], assignment_sink)
             if split is not None:
                 toks = split             # re-enter: may be another wrapper
                 continue
@@ -1216,6 +1230,8 @@ def _unwrap(toks) -> list:
         while rest:
             tok = rest[0]
             if prog == "env" and "=" in tok and not tok.startswith("-"):
+                if assignment_sink is not None:
+                    assignment_sink.append(tok)
                 rest = rest[1:]                      # VAR=val assignment
                 continue
             if not tok.startswith("-"):
@@ -1406,7 +1422,17 @@ def _analyze(command: str, _depth: int = 0):
         if not toks:
             continue
         targets += _redirect_targets(toks)
-        toks = _unwrap(_strip_keywords(toks))
+        assignments: list[str] = []
+        toks = _unwrap(_strip_keywords(toks), assignments)
+        if assignments:
+            names = [item.split("=", 1)[0] for item in assignments]
+            opaque = opaque or (
+                "launcher",
+                "execution environment assignment(s) "
+                f"{', '.join(f'`{name}`' for name in names)} can select "
+                "Git/process tracing, loaders, interpreters, pagers, "
+                "editors, or "
+                "external helpers that can't be screened from argv")
         if not toks:
             continue
         prog = os.path.basename(toks[0])
