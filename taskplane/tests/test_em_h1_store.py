@@ -132,7 +132,7 @@ def test_h30_readonly_contract_refuses_opaque_mutating_launchers(tmp_path: Path)
             "rg -n TODO src",
             "git --no-pager --no-optional-locks "
             "-c core.fsmonitor=false diff "
-            "--no-ext-diff --no-textconv --stat",
+            "--no-ext-diff --no-textconv --cached --stat",
             "cat README.md"):
         allowed, reason = tp.screen_tool(
             contract, "Bash", {"command": command}, str(tmp_path))
@@ -199,10 +199,27 @@ def test_h30_readonly_git_diff_disables_external_and_textconv_helpers(
     safe = (
         prefix + "git --no-pager --no-optional-locks "
         "-c core.fsmonitor=false diff "
-        "--no-ext-diff --no-textconv --stat")
+        "--no-ext-diff --no-textconv --cached --stat")
     allowed, reason = tp.screen_tool(
         contract, "Bash", {"command": safe}, str(tmp_path))
     assert allowed is True, reason
+
+
+def test_h30_readonly_git_diff_rejects_worktree_clean_filter_surface(
+        tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    command = (
+        "git --no-pager --no-optional-locks -c core.fsmonitor=false "
+        "diff --no-ext-diff --no-textconv --stat -- payload.bin")
+
+    allowed, reason = tp.screen_tool(
+        contract, "Bash", {"command": command}, str(tmp_path))
+
+    assert allowed is False
+    assert "read-only review contract" in reason
+    assert ".gitattributes" in reason
+    assert "clean filters" in reason
 
 
 def test_h30_readonly_git_rejects_abbreviated_filter_options(tmp_path: Path):
@@ -275,7 +292,7 @@ def test_h30_readonly_git_keeps_one_explicitly_guarded_diff_form(
         "review", read_only=True, write_allow=[".em-review/**"])
     command = (
         "git --no-pager --no-optional-locks -c core.fsmonitor=false "
-        "diff --no-ext-diff --no-textconv --stat -- src")
+        "diff --no-ext-diff --no-textconv --cached --stat -- src")
 
     allowed, reason = tp.screen_tool(
         contract, "Bash", {"command": command}, str(tmp_path))

@@ -553,9 +553,12 @@ _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
 # and configuration grammars.
 _GIT_READONLY_BUILTINS = frozenset({"diff"})
 # Diff can invoke configured external diff/textconv helpers and can consult an
-# executable core.fsmonitor while refreshing the index. These exact guards are
-# therefore mandatory. The sole accepted -c assignment cannot add an alias or
-# any other executable configuration surface.
+# executable core.fsmonitor while refreshing the index. A worktree diff also
+# passes file content through `.gitattributes` clean filters, for which Git has
+# no argv-level disable switch. These exact guards are therefore mandatory,
+# and the validator below additionally admits only index/object (`--cached` or
+# `--staged`) diffs. The sole accepted -c assignment cannot add an alias or any
+# other executable configuration surface.
 _GIT_READONLY_CONFIG = "core.fsmonitor=false"
 _GIT_READONLY_DIFF_OPTIONS = frozenset({
     "--no-ext-diff", "--no-textconv",
@@ -1338,6 +1341,11 @@ def _git_readonly_violation(args) -> "str | None":
             "Git diff output may invoke globally or locally configured "
             "external-diff/textconv helpers that can't be screened; use both "
             "`--no-ext-diff` and `--no-textconv`")
+    if "--cached" not in options and "--staged" not in options:
+        return (
+            "Git diff may pass working-tree content through executable "
+            "`.gitattributes` clean filters that can't be disabled from "
+            "argv; use an index/object diff with `--cached` or `--staged`")
     return None
 
 
