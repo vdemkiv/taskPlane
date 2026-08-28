@@ -9,3 +9,19 @@ exclude:
   # routing works. They currently mint api/auth/components/src as product
   # modules and route lenses at code nobody wrote.
   - taskplane/tests/fixtures
+
+# M-26: this is a runtime architecture decision, not an incidental code
+# comment. The graph scanner reads and verifies the complete record against
+# terminal_truth.py so a later custody change cannot silently leave Design's
+# authority/recoverability trade-off behind.
+terminal_capability_custody:
+  - schema: taskplane.terminal-capability-custody-decision/v1
+  - decision_record: D-R0013-terminal-capability-custody
+  - selected: durably-protected-issuer
+  - gain: root-bound authority isolation with restart recoverability
+  - cost: protected secret at rest and filesystem permission operability
+  - alternative: process-only-custody | gain: maximum non-serializable authority isolation | cost: restart recoverability after finalizer process replacement
+  - alternative: host-authenticated-reissuance | gain: restart recoverability without a local secret | cost: external host trust and availability
+  - alternative: durably-protected-issuer | gain: local restart recoverability with root-bound authority | cost: protected secret at rest and permission operations
+  - revisit_when: first finalizer process replacement or failed restart canary
+  - evidence: taskplane/terminal_truth.py

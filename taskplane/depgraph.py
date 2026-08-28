@@ -120,6 +120,10 @@ ARCHITECTURE_MAX_BYTES = 1024 * 1024
 ARCHITECTURE_MAX_NODES = 512
 ARCHITECTURE_MAX_EDGES = 2048
 DESIGN_ARCHITECTURE_SCHEMA = "taskplane.design-architecture-map/v1"
+TERMINAL_CAPABILITY_CUSTODY_SCHEMA = \
+    "taskplane.terminal-capability-custody-decision/v1"
+TERMINAL_CAPABILITY_CUSTODY_SECTION = "terminal_capability_custody"
+TERMINAL_CAPABILITY_CUSTODY_MAX_BYTES = 128 * 1024
 ARCHITECTURE_AUTHORITY_FLOOR_SCHEMA = \
     "taskplane.architecture-authority-floor/v1"
 CURRENT_GRAPH_AUTHORITY_FLOOR_SCHEMA = \
@@ -486,6 +490,8 @@ def _stamp_meta(ws: str, g: dict, *, scanned: bool = False) -> dict:
                         for e in (g.get("edges") or [])),
         "architecture_map": str((((g.get("meta") or {}).get(
             "architecture_map") or {}).get("fingerprint") or "")),
+        "terminal_capability_custody": str((((g.get("meta") or {}).get(
+            "terminal_capability_custody") or {}).get("fingerprint") or "")),
     }
     meta = dict(g.get("meta") or {})
     meta.update({
@@ -899,6 +905,220 @@ def _components_file_fingerprint(ws: str) -> str:
         return ""
 
 
+def terminal_capability_custody_proof(ws: str) -> dict:
+    """Verify the declared authority/recoverability custody trade-off.
+
+    ``components.yaml`` already is the repository shape input consumed by the
+    graph scanner. A deliberately flat list keeps it compatible with the
+    dependency-free shared parser while this routine gives the decision a
+    strict schema. The selected durable option is also checked against the
+    production recovery markers in ``terminal_truth.py``: prose alone cannot
+    claim an operable restart path.
+    """
+    source = os.path.join(ws, "components.yaml")
+    try:
+        with open(source, "rb") as stream:
+            raw = stream.read(TERMINAL_CAPABILITY_CUSTODY_MAX_BYTES + 1)
+    except FileNotFoundError:
+        raw = b""
+    except OSError as exc:
+        return {
+            "schema": TERMINAL_CAPABILITY_CUSTODY_SCHEMA,
+            "configured": True,
+            "complete": False,
+            "status": "incomplete",
+            "selected": "",
+            "alternatives": [],
+            "errors": [f"components.yaml cannot be read: {exc}"],
+            "source": "components.yaml#/terminal_capability_custody",
+            "source_fingerprint": _components_file_fingerprint(ws),
+        }
+    if len(raw) > TERMINAL_CAPABILITY_CUSTODY_MAX_BYTES:
+        return {
+            "schema": TERMINAL_CAPABILITY_CUSTODY_SCHEMA,
+            "configured": True,
+            "complete": False,
+            "status": "incomplete",
+            "selected": "",
+            "alternatives": [],
+            "errors": ["components.yaml exceeds terminal custody decision "
+                       f"bound {TERMINAL_CAPABILITY_CUSTODY_MAX_BYTES} bytes"],
+            "source": "components.yaml#/terminal_capability_custody",
+            "source_fingerprint": _components_file_fingerprint(ws),
+        }
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = ""
+        decode_errors = ["components.yaml is not valid UTF-8"]
+    else:
+        decode_errors = []
+
+    section = ""
+    configured = False
+    entries: list[tuple[str, str]] = []
+    errors = list(decode_errors)
+    top_re = re.compile(r"^([A-Za-z_][\w-]*):\s*$")
+    item_re = re.compile(r"^\s+-\s*([A-Za-z_][\w-]*):\s*(.*?)\s*$")
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        top = top_re.match(line)
+        if top:
+            section = top.group(1)
+            configured = configured or section == \
+                TERMINAL_CAPABILITY_CUSTODY_SECTION
+            continue
+        if section != TERMINAL_CAPABILITY_CUSTODY_SECTION:
+            continue
+        item = item_re.match(line)
+        if not item or not item.group(2).strip():
+            errors.append("terminal_capability_custody has unsupported or "
+                          f"empty entry: {raw_line.strip()}")
+            continue
+        entries.append((item.group(1), item.group(2).strip()))
+
+    if not configured:
+        proof = {
+            "schema": TERMINAL_CAPABILITY_CUSTODY_SCHEMA,
+            "configured": False,
+            "complete": False,
+            "status": "not-requested",
+            "selected": "",
+            "alternatives": [],
+            "errors": errors,
+            "source": "components.yaml#/terminal_capability_custody",
+            "source_fingerprint": _components_file_fingerprint(ws),
+        }
+        material = dict(proof)
+        proof["fingerprint"] = _canonical_json_fingerprint(material)
+        return proof
+
+    allowed = {"schema", "decision_record", "selected", "gain", "cost",
+               "alternative", "revisit_when", "evidence"}
+    unknown = sorted({key for key, _value in entries} - allowed)
+    if unknown:
+        errors.append("terminal_capability_custody has unknown fields: "
+                      + ", ".join(unknown))
+    singular = {}
+    for key, value in entries:
+        if key == "alternative" or key not in allowed:
+            continue
+        if key in singular:
+            errors.append("terminal_capability_custody repeats field: " + key)
+        else:
+            singular[key] = value
+    required = {"schema", "decision_record", "selected", "gain", "cost",
+                "revisit_when", "evidence"}
+    missing = sorted(required - set(singular))
+    if missing:
+        errors.append("terminal_capability_custody is missing fields: "
+                      + ", ".join(missing))
+    if singular.get("schema") != TERMINAL_CAPABILITY_CUSTODY_SCHEMA:
+        errors.append("terminal_capability_custody has unknown schema")
+    if singular.get("decision_record") != \
+            "D-R0013-terminal-capability-custody":
+        errors.append("terminal_capability_custody decision_record is not "
+                      "the accepted R-0013 authority")
+    if singular.get("selected") != "durably-protected-issuer":
+        errors.append("terminal_capability_custody selection does not match "
+                      "the durable production issuer")
+    if singular.get("evidence") != "taskplane/terminal_truth.py":
+        errors.append("terminal_capability_custody evidence must name "
+                      "taskplane/terminal_truth.py")
+
+    alternatives = []
+    for value in [value for key, value in entries if key == "alternative"]:
+        parts = [part.strip() for part in value.split("|")]
+        option = {"id": parts[0] if parts else ""}
+        for part in parts[1:]:
+            if ":" not in part:
+                errors.append("terminal capability alternative has malformed "
+                              f"trade-off: {value}")
+                continue
+            key, detail = (piece.strip() for piece in part.split(":", 1))
+            if key not in {"gain", "cost"} or not detail or key in option:
+                errors.append("terminal capability alternative has invalid "
+                              f"{key or 'field'}: {value}")
+                continue
+            option[key] = detail
+        if not option.get("id") or not option.get("gain") or not \
+                option.get("cost"):
+            errors.append("terminal capability alternative must define id, "
+                          "gain, and cost: " + value)
+        alternatives.append(option)
+    alternative_ids = [row.get("id") for row in alternatives]
+    expected_alternatives = {
+        "process-only-custody", "host-authenticated-reissuance",
+        "durably-protected-issuer",
+    }
+    if len(alternatives) != 3 or set(alternative_ids) != expected_alternatives:
+        errors.append("terminal_capability_custody must compare exactly "
+                      "process-only custody, host-authenticated reissuance, "
+                      "and a durably protected issuer")
+    if len(alternative_ids) != len(set(alternative_ids)):
+        errors.append("terminal capability alternatives must be unique")
+    process_only = next((row for row in alternatives
+                         if row.get("id") == "process-only-custody"), {})
+    if "authority isolation" not in str(process_only.get("gain") or "") or \
+            "restart recoverability" not in str(
+                process_only.get("cost") or ""):
+        errors.append("process-only custody must state authority isolation "
+                      "gained and restart recoverability spent")
+    revisit = singular.get("revisit_when", "").lower()
+    if "first finalizer process replacement" not in revisit or \
+            "failed restart canary" not in revisit:
+        errors.append("terminal capability custody needs the observable first "
+                      "finalizer replacement and failed restart canary trigger")
+
+    runtime_path = os.path.join(ws, "taskplane", "terminal_truth.py")
+    runtime_markers = {
+        "root_private_key": "def _issuer_key_path",
+        "durable_write": "_write_immutable(self._issuer_key_path",
+        "recovery_read": "self._issuer_key_path.read_bytes()",
+        "explicit_recovery": "recover_authority",
+    }
+    try:
+        with open(runtime_path, encoding="utf-8", errors="replace") as stream:
+            runtime_source = stream.read(2 * 1024 * 1024)
+    except OSError as exc:
+        runtime_source = ""
+        errors.append(
+            f"terminal capability runtime evidence cannot be read: {exc}")
+    observed_runtime = {
+        marker: token in runtime_source
+        for marker, token in runtime_markers.items()
+    }
+    missing_runtime = sorted(marker for marker, present
+                             in observed_runtime.items() if not present)
+    if missing_runtime:
+        errors.append("durably protected issuer is not wired in production: "
+                      + ", ".join(missing_runtime))
+
+    complete = not errors
+    proof = {
+        "schema": TERMINAL_CAPABILITY_CUSTODY_SCHEMA,
+        "configured": True,
+        "complete": complete,
+        "status": "complete" if complete else "incomplete",
+        "decision_record": singular.get("decision_record", ""),
+        "selected": singular.get("selected", ""),
+        "gain": singular.get("gain", ""),
+        "cost": singular.get("cost", ""),
+        "alternatives": alternatives,
+        "revisit_when": singular.get("revisit_when", ""),
+        "evidence": singular.get("evidence", ""),
+        "observed_runtime": observed_runtime,
+        "errors": errors,
+        "source": "components.yaml#/terminal_capability_custody",
+        "source_fingerprint": _components_file_fingerprint(ws),
+    }
+    material = dict(proof)
+    proof["fingerprint"] = _canonical_json_fingerprint(material)
+    return proof
+
+
 def _design_file_fingerprint(ws: str) -> str:
     """Content identity for the Design authority consumed by graph scans."""
     path = os.path.join(ws, "design", "contract.json")
@@ -1232,6 +1452,11 @@ def architecture_map_proof(ws: str, *, known_files=None,
     architecture_edge_rows = list(parsed["semantic_edges"])
     design_edge_rows = list(parsed["design_edges"])
     errors = list(parsed["errors"])
+    custody = terminal_capability_custody_proof(ws)
+    if custody.get("configured") and not custody.get("complete"):
+        errors.extend("terminal capability custody: " + str(reason)
+                      for reason in custody.get("errors") or [
+                          "decision proof is incomplete"])
     if _canonical_json_fingerprint(sorted(_SEMANTIC_ENDPOINT_REGISTRY)) != \
             _SEMANTIC_ENDPOINT_REGISTRY_FINGERPRINT:
         errors.append("semantic endpoint registry fingerprint is invalid")
@@ -1480,6 +1705,7 @@ def architecture_map_proof(ws: str, *, known_files=None,
             "count": len(_SEMANTIC_ENDPOINT_REGISTRY),
             "fingerprint": _SEMANTIC_ENDPOINT_REGISTRY_FINGERPRINT,
         },
+        "terminal_capability_custody": custody,
     }
     material = dict(proof)
     proof["fingerprint"] = hashlib.sha256(json.dumps(
@@ -2037,6 +2263,9 @@ def _scan_locked(ws: str, into: dict | None = None,
         meta["module_ids"] = dict(sorted(manifests.items()))
     if architecture.get("status") != "not-requested":
         meta["architecture_map"] = architecture
+    custody = architecture.get("terminal_capability_custody") or {}
+    if custody.get("configured"):
+        meta["terminal_capability_custody"] = custody
     g = {
         "modules": modules,
         "edges": sorted([{"from": a, "to": b, "kind": k}
