@@ -8,10 +8,12 @@ the next dispatch when a delivery budget is reached.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import stat as stat_runtime
 from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any
@@ -35,6 +37,14 @@ DISPATCH_SCREEN_SCHEMA = "taskplane.native-dispatch-budget-screen/v1"
 CYCLE_DECISION_SCHEMA = "taskplane.fix-evaluate-cycle-decision/v1"
 TRANSCRIPT_PROJECTION_SCHEMA = "taskplane.transcript-usage-checkpoint/v1"
 USAGE_CAPABILITY_SCHEMA = "taskplane.host-usage-capability/v1"
+
+# Incremental totals are useful only inside the engine instance that observed
+# them.  A persisted checkpoint from another process is deliberately treated
+# as an untrusted cache miss and recomputed from the bounded transcript.  This
+# process-private key prevents a caller from editing totals (or another bound
+# field), recomputing a public digest, and turning the edit into host-observed
+# usage truth.
+_TRANSCRIPT_CHECKPOINT_AUTHORITY = secrets.token_bytes(32)
 
 MAX_TRANSCRIPT_PROJECTION_BYTES = 64 * 1024 * 1024
 MAX_TRANSCRIPT_USAGE_IDENTITIES = 100_000
@@ -115,9 +125,57 @@ def _unavailable_transcript_projection(
     }
 
 
+def _checkpoint_authority(value: bytes | None) -> bytes:
+    authority = (_TRANSCRIPT_CHECKPOINT_AUTHORITY if value is None else value)
+    if not isinstance(authority, bytes) or len(authority) < 32:
+        raise DispatchTelemetryError(
+            "transcript checkpoint authority is invalid")
+    return authority
+
+
+def _seal_transcript_checkpoint(
+        checkpoint: Mapping[str, Any], authority: bytes) -> dict:
+    """Content-address and authenticate every checkpoint field as one unit."""
+    sealed = dict(checkpoint)
+    sealed["authority_id"] = hashlib.sha256(authority).hexdigest()
+    content_sha256 = content_fingerprint(sealed)
+    sealed["content_sha256"] = content_sha256
+    sealed["authenticator"] = hmac.new(
+        authority,
+        (TRANSCRIPT_PROJECTION_SCHEMA + "\0" + content_sha256).encode(
+            "utf-8"), hashlib.sha256).hexdigest()
+    return sealed
+
+
+def _authorized_transcript_checkpoint(
+        checkpoint: Mapping[str, Any], authority: bytes) -> bool:
+    """Accept only an intact checkpoint minted by this engine instance."""
+    try:
+        candidate = dict(checkpoint)
+        authenticator = candidate.pop("authenticator")
+        content_sha256 = candidate.pop("content_sha256")
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not isinstance(content_sha256, str) or re.fullmatch(
+            r"[0-9a-f]{64}", content_sha256) is None or \
+            not isinstance(authenticator, str) or re.fullmatch(
+                r"[0-9a-f]{64}", authenticator) is None:
+        return False
+    if candidate.get("authority_id") != hashlib.sha256(
+            authority).hexdigest() or not hmac.compare_digest(
+                content_fingerprint(candidate), content_sha256):
+        return False
+    expected = hmac.new(
+        authority,
+        (TRANSCRIPT_PROJECTION_SCHEMA + "\0" + content_sha256).encode(
+            "utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(authenticator, expected)
+
+
 def project_transcript_usage(
         path: str, *, provider: str,
         checkpoint: Mapping[str, Any] | None = None,
+        checkpoint_authority: bytes | None = None,
         byte_limit: int = MAX_TRANSCRIPT_PROJECTION_BYTES
         ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Project one selected transcript with a content-bound checkpoint.
@@ -131,6 +189,7 @@ def project_transcript_usage(
             byte_limit <= 0 or byte_limit > MAX_TRANSCRIPT_PROJECTION_BYTES:
         raise DispatchTelemetryError(
             "transcript projection byte limit is invalid")
+    authority = _checkpoint_authority(checkpoint_authority)
     selected = os.path.realpath(str(path or ""))
     try:
         with open(selected, "rb") as stream:
@@ -159,7 +218,8 @@ def project_transcript_usage(
 
     path_fingerprint = hashlib.sha256(selected.encode("utf-8")).hexdigest()
     prior = dict(checkpoint) if isinstance(checkpoint, Mapping) else {}
-    reusable_shape = prior.get("schema") == TRANSCRIPT_PROJECTION_SCHEMA and \
+    reusable_shape = _authorized_transcript_checkpoint(prior, authority) and \
+        prior.get("schema") == TRANSCRIPT_PROJECTION_SCHEMA and \
         prior.get("path_fingerprint") == path_fingerprint and \
         prior.get("provider") == str(provider) and \
         prior.get("device") == int(before.st_dev) and \
@@ -275,7 +335,7 @@ def project_transcript_usage(
     next_offset = offset + complete_end
     consumed_prefix_sha256 = hashlib.sha256(
         payload[:next_offset]).hexdigest()
-    checkpoint_row = {
+    checkpoint_row = _seal_transcript_checkpoint({
         "schema": TRANSCRIPT_PROJECTION_SCHEMA,
         "path_fingerprint": path_fingerprint, "provider": str(provider),
         "device": int(before.st_dev), "inode": int(before.st_ino),
@@ -285,7 +345,7 @@ def project_transcript_usage(
         "offset": int(next_offset),
         "consumed_prefix_sha256": consumed_prefix_sha256,
         "totals": totals, "seen_identity_hashes": sorted(seen),
-    }
+    }, authority)
     usage = {
         "input_tokens": totals["cached_input_tokens"] +
         totals["uncached_input_tokens"],

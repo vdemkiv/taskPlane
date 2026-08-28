@@ -31,6 +31,7 @@ import re
 import signal
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import sys
@@ -662,25 +663,77 @@ def _review_receipt_reference(
     return None, None, value
 
 
-def _host_session_index(path: str) -> list[dict]:
-    """Read one host-owned index only after enforcing its byte ceiling."""
-    if not os.path.isfile(path):
-        raise HostTranscriptUnavailable("host session index is missing")
+def _session_index_binding(info: os.stat_result) -> tuple[int, ...]:
+    return (int(info.st_dev), int(info.st_ino), int(info.st_mode),
+            int(info.st_nlink), int(info.st_size), int(info.st_mtime_ns),
+            int(info.st_ctime_ns))
+
+
+def _host_session_index(path: str, *, root: str) -> list[dict]:
+    """Read one canonical in-root index through a stable no-follow fd."""
+    canonical_root = os.path.realpath(root)
+    selected = os.path.abspath(path)
     try:
-        size = os.path.getsize(path)
+        if os.path.commonpath((canonical_root, selected)) != canonical_root or \
+                os.path.realpath(selected) != selected:
+            raise HostTranscriptUnavailable(
+                "host session index is not a canonical in-root file")
+    except ValueError as exc:
+        raise HostTranscriptUnavailable(
+            "host session index path is invalid") from exc
+    try:
+        before_path = os.lstat(selected)
+    except FileNotFoundError as exc:
+        raise HostTranscriptUnavailable(
+            "host session index is missing") from exc
     except OSError as exc:
         raise HostTranscriptUnavailable(
             "host session index is unavailable") from exc
-    if size > MAX_HOST_SESSION_INDEX_BYTES:
+    if not stat.S_ISREG(before_path.st_mode) or before_path.st_nlink != 1:
+        raise HostTranscriptUnavailable(
+            "host session index is not a unique regular file")
+    if before_path.st_size > MAX_HOST_SESSION_INDEX_BYTES:
         raise HostTranscriptUnavailable(
             "host session index exceeds its byte cap")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
     try:
-        with open(path, "rb") as stream:
-            payload = stream.read(MAX_HOST_SESSION_INDEX_BYTES + 1)
+        descriptor = os.open(selected, flags)
+        before_fd = os.fstat(descriptor)
+        if _session_index_binding(before_fd) != \
+                _session_index_binding(before_path) or \
+                not stat.S_ISREG(before_fd.st_mode) or before_fd.st_nlink != 1:
+            raise HostTranscriptUnavailable(
+                "host session index changed before resolution")
+        if before_fd.st_size > MAX_HOST_SESSION_INDEX_BYTES:
+            raise HostTranscriptUnavailable(
+                "host session index exceeds its byte cap")
+        remaining = int(before_fd.st_size) + 1
+        chunks = []
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        after_fd = os.fstat(descriptor)
+        after_path = os.lstat(selected)
+    except HostTranscriptUnavailable:
+        raise
     except OSError as exc:
         raise HostTranscriptUnavailable(
             "host session index is unavailable") from exc
-    if len(payload) != size:
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    expected = _session_index_binding(before_fd)
+    if len(payload) != before_fd.st_size or \
+            _session_index_binding(after_fd) != expected or \
+            _session_index_binding(after_path) != expected:
         raise HostTranscriptUnavailable(
             "host session index changed during resolution")
     records = []
@@ -705,7 +758,8 @@ def _host_session_index(path: str) -> list[dict]:
 def _codex_session_paths(root: str, session_id: str) -> list[str]:
     """Derive exact Codex rollout paths from one indexed UUIDv7 identity."""
     rows = [row for row in _host_session_index(os.path.join(
-        root, "session_index.jsonl")) if row.get("id") == session_id]
+        root, "session_index.jsonl"), root=root)
+        if row.get("id") == session_id]
     if len(rows) != 1:
         raise HostTranscriptUnavailable(
             "host session identity is missing or ambiguous in its index")
@@ -741,7 +795,8 @@ def _codex_session_paths(root: str, session_id: str) -> list[str]:
 def _claude_session_paths(root: str, session_id: str) -> list[str]:
     """Derive one exact Claude transcript from its bounded history index."""
     rows = [row for row in _host_session_index(os.path.join(
-        root, "history.jsonl")) if row.get("sessionId") == session_id]
+        root, "history.jsonl"), root=root)
+        if row.get("sessionId") == session_id]
     projects = {str(row.get("project") or "") for row in rows
                 if str(row.get("project") or "")}
     if len(projects) != 1:

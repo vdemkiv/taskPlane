@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
+import hashlib
 import inspect
+import json
 import os
 import time
 
@@ -200,6 +201,33 @@ def test_h27_empty_checkpoint_recomputes_same_inode_regrowth(
     assert current["usage"]["total_tokens"] == 32
 
 
+def test_h27_caller_cannot_lower_checkpoint_totals_and_redigest(
+        tmp_path) -> None:
+    transcript = tmp_path / "tampered.jsonl"
+    payload = (json.dumps(_codex_usage_row(
+        "m1", input_tokens=40, cached_tokens=5, output_tokens=3)) + "\n")
+    transcript.write_text(payload, encoding="utf-8")
+    first, checkpoint = dispatch_telemetry.project_transcript_usage(
+        str(transcript), provider="codex")
+    assert first["usage"]["total_tokens"] == 43
+    assert checkpoint is not None
+
+    tampered = json.loads(json.dumps(checkpoint))
+    tampered["totals"]["raw_total_tokens"] = 0
+    tampered["totals"]["effective_tokens"] = 0
+    material = {key: value for key, value in tampered.items()
+                if key not in {"content_sha256", "authenticator"}}
+    tampered["content_sha256"] = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode() + b"\n").hexdigest()
+
+    current, _ = dispatch_telemetry.project_transcript_usage(
+        str(transcript), provider="codex", checkpoint=tampered)
+    assert current["status"] == "available"
+    assert current["usage"]["total_tokens"] == 43
+    assert current["effective_tokens"] > 0
+
+
 def test_h28_review_scans_only_selected_session_with_byte_cap(
         tmp_path, monkeypatch) -> None:
     codex_root = tmp_path / "codex"
@@ -300,6 +328,67 @@ def test_h28_missing_or_oversized_session_index_is_structured_unavailable(
         review._host_review_transcripts(
             f"codex:{session_id}:receipt")
     assert "byte cap" in oversized.value.detail["reason"]
+
+
+def test_h28_session_index_rejects_symlink_hardlink_and_path_replacement(
+        tmp_path, monkeypatch) -> None:
+    root = tmp_path / "codex"
+    root.mkdir()
+    source = tmp_path / "external.jsonl"
+    source.write_text("{}\n", encoding="utf-8")
+    symlink = root / "session_index.jsonl"
+    symlink.symlink_to(source)
+    with pytest.raises(review.HostTranscriptUnavailable, match="canonical"):
+        review._host_session_index(str(symlink), root=str(root))
+
+    symlink.unlink()
+    os.link(source, symlink)
+    with pytest.raises(review.HostTranscriptUnavailable, match="unique"):
+        review._host_session_index(str(symlink), root=str(root))
+
+    symlink.unlink()
+    symlink.write_text("{}\n", encoding="utf-8")
+    replacement = root / "replacement.jsonl"
+    replacement.write_text("{}\n", encoding="utf-8")
+    original_read = review.os.read
+    replaced = False
+
+    def replace_during_read(descriptor: int, amount: int) -> bytes:
+        nonlocal replaced
+        chunk = original_read(descriptor, amount)
+        if not replaced:
+            replaced = True
+            os.replace(replacement, symlink)
+        return chunk
+
+    monkeypatch.setattr(review.os, "read", replace_during_read)
+    with pytest.raises(review.HostTranscriptUnavailable, match="changed"):
+        review._host_session_index(str(symlink), root=str(root))
+
+
+def test_h28_session_index_rejects_same_length_concurrent_mutation(
+        tmp_path, monkeypatch) -> None:
+    root = tmp_path / "codex"
+    root.mkdir()
+    index = root / "session_index.jsonl"
+    index.write_bytes(b"{\"a\":1}\n")
+    original_read = review.os.read
+    mutated = False
+
+    def mutate_during_read(descriptor: int, amount: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, amount)
+        if not mutated:
+            mutated = True
+            with index.open("r+b") as stream:
+                stream.write(b"{\"b\":2}\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        return chunk
+
+    monkeypatch.setattr(review.os, "read", mutate_during_read)
+    with pytest.raises(review.HostTranscriptUnavailable, match="changed"):
+        review._host_session_index(str(index), root=str(root))
 
 
 def test_h33_missing_host_usage_is_explicit_and_never_claims_enforcement(

@@ -2123,6 +2123,43 @@ def _transcript_projection_checkpoint_path(
         tp.tp_dir(ws), "transcript-usage", identity + ".json")
 
 
+def _transcript_projection_authority(ws: str) -> bytes:
+    """Load the private engine authority used across CLI invocations."""
+    path = os.path.join(
+        tp.tp_dir(ws), "transcript-usage", "authority-v1.json")
+    with tp.file_lock(path):
+        authority = tp.load_json(
+            path, default=None, what="transcript checkpoint authority")
+        if authority is None:
+            secret = os.urandom(32)
+            authority = {
+                "schema": "taskplane.transcript-checkpoint-authority/v1",
+                "key_id": hashlib.sha256(secret).hexdigest(),
+                "secret": base64.b64encode(secret).decode("ascii"),
+            }
+            tp.atomic_write_json(path, authority, sort_keys=True)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        if not isinstance(authority, dict) or set(authority) != {
+                "schema", "key_id", "secret"} or authority.get("schema") != \
+                "taskplane.transcript-checkpoint-authority/v1":
+            raise tp.StateError(
+                path, "transcript checkpoint authority is invalid")
+        try:
+            secret = base64.b64decode(
+                str(authority.get("secret") or ""), validate=True)
+        except (TypeError, ValueError) as exc:
+            raise tp.StateError(
+                path, "transcript checkpoint authority is invalid") from exc
+        if len(secret) != 32 or authority.get("key_id") != hashlib.sha256(
+                secret).hexdigest():
+            raise tp.StateError(
+                path, "transcript checkpoint authority is invalid")
+        return secret
+
+
 def _bounded_transcript_projection(
         ws: str, transcript_path: str, provider: str) -> dict:
     """Read and persist one shared incremental usage projection."""
@@ -2130,12 +2167,20 @@ def _bounded_transcript_projection(
 
     checkpoint_path = _transcript_projection_checkpoint_path(
         ws, transcript_path, provider)
+    checkpoint_authority = _transcript_projection_authority(ws)
     with tp.file_lock(checkpoint_path):
-        checkpoint = tp.load_json(
-            checkpoint_path, default=None,
-            what="transcript usage checkpoint")
+        try:
+            checkpoint = tp.load_json(
+                checkpoint_path, default=None,
+                what="transcript usage checkpoint")
+        except tp.StateError:
+            # The checkpoint is only a cache.  Its authority is verified by
+            # the projector, so corrupt or caller-edited bytes must trigger a
+            # bounded transcript recomputation rather than become truth.
+            checkpoint = None
         projection, updated = dispatch_telemetry.project_transcript_usage(
-            transcript_path, provider=provider, checkpoint=checkpoint)
+            transcript_path, provider=provider, checkpoint=checkpoint,
+            checkpoint_authority=checkpoint_authority)
         if updated is not None:
             tp.atomic_write_json(checkpoint_path, updated, sort_keys=True)
     return projection
