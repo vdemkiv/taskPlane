@@ -8,11 +8,13 @@ invoking a host transport.
 """
 from __future__ import annotations
 
+import argparse
 import ast
 from collections import deque
 from collections.abc import Mapping, Sequence
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -725,14 +727,237 @@ def validate_delivery_roots(
     }
 
 
+PRODUCTION_DESIGN_GATE_SCHEMA = "taskplane.production-design-gate/v1"
+RETAINED_R0013_AUTHORITY_REVISION = \
+    "00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085"
+RETAINED_R0013_SOURCE_THREAD = \
+    "01a03619-63a9-7743-90f9-1b6b1945b6ac"
+RETAINED_R0013_DESIGN_TURN = \
+    "01a0409b-8903-78f3-a096-3fbd794d6ab3"
+RETAINED_R0013_AUDIT_SHA256 = \
+    "467edb61e99beac0432fbda6fc0e5028c6703304ab72b86029ff58f843d60ef7"
+_RETAINED_R0013_AUDIT_DEFAULT = (
+    "/Users/vdemkiv/.codex/sessions/2026/08/24/"
+    "rollout-2026-08-24T19-27-08-"
+    "01a03619-63a9-7743-90f9-1b6b1945b6ac.jsonl"
+)
+
+
+def _repository_json(source_root: str | Path, relative: str) -> dict:
+    root = Path(source_root).resolve()
+    path = root / relative
+    try:
+        if path.is_symlink() or not path.is_file() or \
+                root not in path.resolve().parents or \
+                path.stat().st_size > 8_000_000:
+            raise NativeAuthorityError(
+                f"production Design artifact is not a confined regular file: "
+                f"{relative}")
+        raw = path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
+    except NativeAuthorityError:
+        raise
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise NativeAuthorityError(
+            f"production Design artifact is unavailable: {relative}") from exc
+    if not isinstance(value, dict):
+        raise NativeAuthorityError(
+            f"production Design artifact must contain an object: {relative}")
+    return value
+
+
+def retained_r0013_design_and_plan(
+        source_root: str | Path) -> tuple[dict, dict]:
+    """Resolve the exact approved R-0013 authority artifacts from Git.
+
+    The active Design and Plan legitimately move on to later requirements.
+    R-0013-specific validation and mutation proofs must therefore request this
+    retained pair instead of accidentally treating today's artifacts as the
+    historical authority.  The revision is engine-owned and lineage-checked;
+    callers cannot select replacement bytes.
+    """
+    try:
+        if __package__:
+            from .design_sweep import retained_repository_bytes
+        else:  # pragma: no cover - legacy direct execution
+            from design_sweep import retained_repository_bytes
+        values = []
+        for relative in ("design/contract.json", "plan/tasks.json"):
+            raw = retained_repository_bytes(
+                source_root, relative, maximum=8_000_000,
+                revision=RETAINED_R0013_AUTHORITY_REVISION)
+            value = json.loads(raw.decode("utf-8"))
+            if not isinstance(value, dict):
+                raise NativeAuthorityError(
+                    "retained R-0013 authority must contain objects")
+            values.append(value)
+    except NativeAuthorityError:
+        raise
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise NativeAuthorityError(
+            "retained R-0013 Design authority is invalid") from exc
+    return values[0], values[1]
+
+
+def validate_production_design_gate(
+        source_root: str | Path, *,
+        sweep_evidence: Mapping[str, object] | None = None,
+        authority_revision: str | None = None) -> dict:
+    """Execute the authoritative R-0013 Design/Plan gate from repository bytes.
+
+    This executable composition root is intentionally fail closed.  It binds
+    the closed native responsibility map, scans the actual delivery roots and,
+    when the approved Design declares its one broad sweep, requires the live
+    retained-audit validator before returning a Build-ready receipt.
+    """
+    root = Path(source_root).resolve()
+    if authority_revision is None:
+        design = _repository_json(root, "design/contract.json")
+        plan = _repository_json(root, "plan/tasks.json")
+    elif authority_revision == RETAINED_R0013_AUTHORITY_REVISION:
+        design, plan = retained_r0013_design_and_plan(root)
+    else:
+        try:
+            if __package__:
+                from .design_sweep import retained_repository_bytes
+            else:  # pragma: no cover - legacy direct execution
+                from design_sweep import retained_repository_bytes
+            design = json.loads(retained_repository_bytes(
+                root, "design/contract.json", maximum=8_000_000,
+                revision=authority_revision).decode("utf-8"))
+            plan = json.loads(retained_repository_bytes(
+                root, "plan/tasks.json", maximum=8_000_000,
+                revision=authority_revision).decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise NativeAuthorityError(
+                "retained production Design authority is invalid") from exc
+        if not isinstance(design, dict) or not isinstance(plan, dict):
+            raise NativeAuthorityError(
+                "retained production Design authority must contain objects")
+    authority = validate_design_and_plan(design, plan)
+    roots = validate_delivery_roots(root)
+    sweep = None
+    sweep_declared = isinstance(design.get("design_sweep"), Mapping)
+    if _text(design.get("requirement")) == "R-0013" and not sweep_declared:
+        raise NativeAuthorityError(
+            "production R-0013 Design gate requires the approved sweep")
+    if sweep_declared:
+        if not isinstance(sweep_evidence, Mapping):
+            raise NativeAuthorityError(
+                "production Design gate requires retained sweep evidence")
+        try:
+            if __package__:
+                from .design_sweep import (
+                    DesignSweepError, validate_retained_design_sweep,
+                )
+            else:  # pragma: no cover - legacy direct execution
+                from design_sweep import (  # type: ignore[import-not-found]
+                    DesignSweepError, validate_retained_design_sweep,
+                )
+            sweep_kwargs = {"evidence": sweep_evidence}
+            if authority_revision is not None:
+                sweep_kwargs["revision"] = authority_revision
+            sweep = validate_retained_design_sweep(root, **sweep_kwargs)
+        except DesignSweepError as exc:
+            raise NativeAuthorityError(
+                f"production Design sweep is invalid: {exc}") from exc
+    material = {"authority": authority, "delivery_roots": roots,
+                "design_sweep": sweep,
+                "authority_revision": authority_revision}
+    return {
+        "schema": PRODUCTION_DESIGN_GATE_SCHEMA,
+        "status": "ready",
+        **material,
+        "fingerprint": _fingerprint(material),
+    }
+
+
+def retained_r0013_sweep_evidence(
+        audit_path: str | Path | None = None) -> dict[str, str]:
+    """Return the closed locator/identity for the already-approved sweep."""
+    configured = audit_path or os.environ.get("TASKPLANE_R0013_CODEX_AUDIT") \
+        or _RETAINED_R0013_AUDIT_DEFAULT
+    return {
+        "codex_audit_path": str(configured),
+        "source_thread_id": RETAINED_R0013_SOURCE_THREAD,
+        "design_turn_id": RETAINED_R0013_DESIGN_TURN,
+        "expected_source_log_sha256": RETAINED_R0013_AUDIT_SHA256,
+    }
+
+
+def validate_retained_r0013_authority(
+        source_root: str | Path, *, audit_path: str | Path | None = None) -> dict:
+    """Validate immutable R-0013 Design authority against current live roots.
+
+    R-0002 replaced the working Design/Plan files after R-0013 completed.  A
+    current-file conditional would therefore make the earlier production
+    authority disappear.  This composition instead resolves the exact
+    approved ancestor blobs and the exact retained native audit, while still
+    scanning the current checkout's delivery roots for forbidden authority.
+    """
+    return validate_production_design_gate(
+        source_root,
+        sweep_evidence=retained_r0013_sweep_evidence(audit_path),
+        authority_revision=RETAINED_R0013_AUTHORITY_REVISION)
+
+
+def retained_r0013_authority_applies(source_root: str | Path) -> bool:
+    """Detect the immutable R-0013 lineage without consulting current JSON."""
+    try:
+        if __package__:
+            from .design_sweep import repository_contains_revision
+        else:  # pragma: no cover - legacy direct execution
+            from design_sweep import repository_contains_revision
+        return repository_contains_revision(
+            source_root, RETAINED_R0013_AUTHORITY_REVISION)
+    except Exception as exc:
+        raise NativeAuthorityError(
+            "retained R-0013 provenance could not be inspected") from exc
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the installed production Design gate and emit its sealed receipt."""
+    parser = argparse.ArgumentParser(
+        prog="python -m taskplane.native_authority")
+    parser.add_argument("--source-root", required=True)
+    parser.add_argument("--sweep-evidence")
+    parser.add_argument("--retained-r0013", action="store_true")
+    parser.add_argument("--audit-path")
+    args = parser.parse_args(argv)
+    if args.retained_r0013:
+        receipt = validate_retained_r0013_authority(
+            args.source_root, audit_path=args.audit_path)
+        print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+        return 0
+    sweep_evidence = None
+    if args.sweep_evidence:
+        sweep_evidence = _repository_json(
+            Path(args.sweep_evidence).resolve().parent,
+            Path(args.sweep_evidence).name)
+    receipt = validate_production_design_gate(
+        args.source_root, sweep_evidence=sweep_evidence)
+    print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
 __all__ = [
     "CAPABILITY_INVENTORY_SCHEMA",
     "DELIVERY_ROOTS",
     "LEAF_READINESS_SCHEMA",
     "NATIVE_AUTHORITY_SCHEMA",
     "NATIVE_CAPABILITY_CONTRACT",
+    "PRODUCTION_DESIGN_GATE_SCHEMA",
+    "RETAINED_R0013_AUTHORITY_REVISION",
     "NativeAuthorityError",
     "REQUIRED_CAPABILITIES",
     "validate_delivery_roots",
     "validate_design_and_plan",
+    "validate_production_design_gate",
+    "retained_r0013_design_and_plan",
+    "retained_r0013_authority_applies",
+    "validate_retained_r0013_authority",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised as an installed CLI
+    raise SystemExit(main())

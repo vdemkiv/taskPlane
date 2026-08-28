@@ -9,10 +9,12 @@ from pathlib import Path
 
 import pytest
 
+from taskplane import native_authority
 from taskplane.delivery_ports import content_fingerprint
 from taskplane.design_sweep import (
     DESIGN_SWEEP_SCHEMA,
     DesignSweepError,
+    retained_repository_bytes,
     validate_design_sweep,
 )
 
@@ -35,14 +37,21 @@ CANONICAL_AUDIT_SHA256 = \
 
 
 def _sources():
-    catalog = json.loads((ROOT / "lenses/catalog.json").read_text(encoding="utf-8"))
-    design_raw = (ROOT / "design/contract.json").read_bytes()
+    revision = native_authority.RETAINED_R0013_AUTHORITY_REVISION
+    catalog = json.loads(retained_repository_bytes(
+        ROOT, "lenses/catalog.json", maximum=2_000_000,
+        revision=revision))
+    design_raw = retained_repository_bytes(
+        ROOT, "design/contract.json", maximum=8_000_000,
+        revision=revision)
     contract = json.loads(design_raw)
     source_fingerprint = contract["design_sweep"]["completed_state"][
         "source_content_fingerprint"
     ]
     results = {
-        row["id"]: (ROOT / f"design/lens-evidence/{row['id']}.json").read_bytes()
+        row["id"]: retained_repository_bytes(
+            ROOT, f"design/lens-evidence/{row['id']}.json", maximum=2_000_000,
+            revision=revision)
         for row in catalog["lenses"]
     }
     return catalog, design_raw, contract, results, source_fingerprint
