@@ -1619,7 +1619,11 @@ def architecture_map_proof(ws: str, *, known_files=None,
          "taskplane/terminal_truth.py", "coordinated-by"),
     }
     missing_required_edges = sorted(required_edge_keys - accepted_edge_keys)
-    if missing_required_edges:
+    # M-02's accepted edge floor is mandatory only when this repository has
+    # opted into the Design architecture authority.  Applying it to an
+    # ordinary repository with no design/contract.json turns "not requested"
+    # into a fabricated degraded scan and blocks Plan before impact can run.
+    if parsed["configured"] and missing_required_edges:
         errors.append("architecture_decomposition semantic authority omits "
                       "required edges: " + ", ".join(
                           f"{source} -> {target}:{kind}"
