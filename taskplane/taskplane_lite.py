@@ -595,16 +595,70 @@ def _path_within(candidate: str, root: str) -> bool:
         return True
 
 
-def _readonly_executable_identity_violation(raw_program: str,
-                                             workspace: str | None):
-    """Why a nominal reader's executable identity is repository-controlled.
+_READONLY_BASELINE_PATH = tuple(os.environ.get("PATH", "").split(os.pathsep))
+_READONLY_BASELINE_PATHEXT = os.environ.get("PATHEXT", "")
+_READONLY_BASELINE_EXECUTABLES: dict[
+    tuple[str, str], tuple[str, str] | None] = {}
+_READONLY_IMMUTABLE_EXEC_ROOTS = tuple(dict.fromkeys(
+    candidate
+    for path in (
+        "/bin", "/usr/bin", "/usr/sbin", "/sbin",
+        "/System/Cryptexes/App/usr/bin",
+        "/Library/Apple/usr/bin",
+    ) if os.path.isdir(path)
+    for candidate in (os.path.abspath(path), os.path.realpath(path))))
+_READONLY_PINNED_TOOL_ROOTS = {
+    "git": tuple(os.path.realpath(path) for path in (
+        "/usr/local/Cellar", "/opt/homebrew/Cellar",
+    ) if os.path.isdir(path)),
+    "rg": tuple(os.path.realpath(path) for path in (
+        "/Applications/ChatGPT.app/Contents/Resources",
+    ) if os.path.isdir(path)),
+}
 
-    The hook screens text and the host shell executes it later, so basename
-    matching alone cannot bind ``./cat`` to the system reader named ``cat``.
-    Read-only commands therefore use bare names only, and the executable PATH
-    would actually select must not be inside (or resolve through) the governed
-    workspace.  Build contracts preserve compatibility because callers
-    surface this as launcher opacity, which only read-only contracts refuse.
+
+def _executable_from_path(program: str, path_entries, workspace: str):
+    """The first executable selected by a concrete PATH snapshot."""
+    for raw_entry in path_entries:
+        entry = (os.path.abspath(raw_entry) if raw_entry
+                 and os.path.isabs(raw_entry)
+                 else os.path.abspath(os.path.join(workspace,
+                                                   raw_entry or ".")))
+        candidate = os.path.join(entry, program)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return os.path.abspath(candidate), os.path.realpath(candidate)
+    return None
+
+
+def _readonly_write_roots(workspace: str, write_allow) -> tuple[str, ...]:
+    """Canonical non-glob prefixes a read-only contract may write beneath."""
+    roots = []
+    for raw in write_allow or ():
+        value = str(raw or "").replace("\\", "/")
+        wildcard = min((value.find(ch) for ch in "*?[" if ch in value),
+                       default=len(value))
+        prefix = value[:wildcard].rstrip("/")
+        if not prefix:
+            continue
+        path = prefix if os.path.isabs(prefix) else os.path.join(workspace,
+                                                                  prefix)
+        roots.append(os.path.abspath(path))
+        roots.append(os.path.realpath(path))
+    return tuple(dict.fromkeys(roots))
+
+
+def _readonly_executable_identity_violation(raw_program: str,
+                                             workspace: str | None,
+                                             write_allow=()):
+    """Why an executable is not the trusted identity selected at hook load.
+
+    A read-only decision binds *every* external executable, including writers,
+    interpreters, wrappers, and readers.  Bare-name resolution must still pick
+    the same lexical and canonical executable selected by the host's startup
+    PATH, and neither path may pass through the reviewed checkout or a writable
+    artifact root.  A later PATH edit therefore cannot turn ``cat`` or
+    ``touch`` into repository code, even when the replacement is a symlink to
+    the genuine tool.  Build contracts do not call this fail-closed grammar.
     """
     token = str(raw_program or "")
     if not token:
@@ -617,33 +671,57 @@ def _readonly_executable_identity_violation(raw_program: str,
             "under a non-repository-controlled PATH")
     if token in _READONLY_SHELL_BUILTINS:
         return None
+    function_markers = (f"BASH_FUNC_{token}%%", f"BASH_FUNC_{token}()")
+    if any(marker in os.environ for marker in function_markers):
+        return f"shell function precedence for `{token}` is not trusted"
+    if any(os.environ.get(name) for name in ("BASH_ENV", "ENV", "ZDOTDIR")):
+        return (
+            "shell startup environment can define aliases/functions before "
+            f"bare executable `{token}`")
+    if "expand_aliases" in os.environ.get("SHELLOPTS", "").split(":"):
+        return f"shell alias precedence for `{token}` is not trusted"
+    if os.name == "nt" and os.environ.get("PATHEXT", "") != \
+            _READONLY_BASELINE_PATHEXT:
+        return "PATHEXT changed after hook startup, so lookup can't be trusted"
 
     root = os.path.abspath(workspace or os.getcwd())
-    for raw_entry in os.environ.get("PATH", "").split(os.pathsep):
-        # execvp resolves an empty/relative PATH component from the shell's
-        # working directory.  Reproduce that lookup against the governed
-        # workspace instead of accidentally using the hook process's cwd.
-        entry = (os.path.abspath(raw_entry) if raw_entry
-                 and os.path.isabs(raw_entry)
-                 else os.path.abspath(os.path.join(root, raw_entry or ".")))
-        resolved_entry = os.path.realpath(entry)
-        candidate = os.path.join(entry, token)
-        # Non-executable/missing candidates cannot be selected by the shell;
-        # permitting the later trusted hit keeps the check deterministic on
-        # hosts whose PATH contains dormant relative entries.
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            resolved_candidate = os.path.realpath(candidate)
-            if (_path_within(entry, root)
-                    or _path_within(resolved_entry, root)
-                    or _path_within(candidate, root)
-                    or _path_within(resolved_candidate, root)):
-                return (
-                    f"PATH candidate `{candidate}` for bare executable "
-                    f"`{token}` resolves through repository-controlled "
-                    "content")
-            # This is the executable the shell will select.  Later PATH
-            # entries cannot shadow an earlier executable hit.
-            break
+    selected = _executable_from_path(
+        token, os.environ.get("PATH", "").split(os.pathsep), root)
+    if selected is None:
+        return f"bare executable `{token}` has no trusted PATH identity"
+    candidate, resolved_candidate = selected
+    protected = (root, os.path.realpath(root),
+                 *_readonly_write_roots(root, write_allow))
+    if any(_path_within(candidate, boundary)
+           or _path_within(resolved_candidate, boundary)
+           for boundary in protected):
+        return (
+            f"PATH candidate `{candidate}` for bare executable `{token}` "
+            "resolves through repository-controlled or review-writable "
+            "content")
+
+    baseline_key = (token, root)
+    if baseline_key not in _READONLY_BASELINE_EXECUTABLES:
+        _READONLY_BASELINE_EXECUTABLES[baseline_key] = _executable_from_path(
+            token, _READONLY_BASELINE_PATH, root)
+    baseline = _READONLY_BASELINE_EXECUTABLES[baseline_key]
+    if baseline is None or selected != baseline:
+        expected = baseline[0] if baseline else "<none>"
+        return (
+            f"PATH candidate `{candidate}` for bare executable `{token}` "
+            f"does not match its trusted startup identity `{expected}`")
+    trusted_roots = (_READONLY_IMMUTABLE_EXEC_ROOTS
+                     + _READONLY_PINNED_TOOL_ROOTS.get(token, ()))
+    candidate_is_pinned_tool = bool(
+        _READONLY_PINNED_TOOL_ROOTS.get(token)) and selected == baseline
+    if not ((candidate_is_pinned_tool
+             or any(_path_within(candidate, boundary)
+                    for boundary in _READONLY_IMMUTABLE_EXEC_ROOTS))
+            and any(_path_within(resolved_candidate, boundary)
+                    for boundary in trusted_roots)):
+        return (
+            f"PATH candidate `{candidate}` for bare executable `{token}` "
+            "is not under a canonical immutable system/tool root")
     return None
 
 
@@ -666,20 +744,23 @@ def _shsplit(text: str) -> list:
         return str(text).split()
 
 
-def _is_tp_cli(arg: str) -> bool:
-    """True when a python script argument is THIS package's own tp.py — by
-    absolute realpath, or the `taskplane/tp.py` suffix used when invoked
-    relative to the repo root. A stray file merely named tp.py elsewhere
-    (no taskplane/ parent) is not exempt."""
-    a = arg.replace("\\", "/")
+def _is_tp_cli(arg: str, workspace: str | None = None) -> bool:
+    """True only when a script resolves to this package's canonical tp.py."""
+    a = str(arg or "").replace("\\", "/")
     if os.path.basename(a) != "tp.py":
         return False
-    if os.path.isabs(a):
-        try:
-            return os.path.realpath(a) == _TP_CLI_PATH
-        except OSError:
-            return False
-    return a.endswith("taskplane/tp.py")
+    try:
+        candidate = (a if os.path.isabs(a)
+                     else os.path.join(workspace or os.getcwd(), a))
+        # Do not grant the exemption through a repository-controlled symlink:
+        # its target can change between screening and execution.  Both the
+        # lexical absolute path and its canonical resolution must be the one
+        # package file loaded by this kernel.
+        return (os.path.abspath(candidate) == _TP_CLI_PATH
+                and os.path.realpath(candidate) == _TP_CLI_PATH
+                and not os.path.islink(candidate))
+    except OSError:
+        return False
 # The only interpreter argvs that provably run NO user code (v2.3.0): pure
 # version/help probes. Everything else — script file, -m module, stdin —
 # is as un-screenable as `-c` and is treated as interpreter-opaque.
@@ -1505,10 +1586,29 @@ def _git_readonly_violation(args) -> "str | None":
     if args in (["--version"], ["-v"]):
         return None
 
+    dangerous_env = []
+    for name in os.environ:
+        if (name.startswith("GIT_CONFIG") or name.startswith("GIT_TRACE")
+                or name in {
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR",
+                    "GIT_DIR", "GIT_EXEC_PATH", "GIT_EXTERNAL_DIFF",
+                    "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY",
+                    "GIT_OPTIONAL_LOCKS", "GIT_REPLACE_REF_BASE",
+                    "GIT_WORK_TREE",
+                }):
+            dangerous_env.append(name)
+    if dangerous_env:
+        return (
+            "Git environment is not sanitized: "
+            + ", ".join(f"`{name}`" for name in sorted(dangerous_env))
+            + " can redirect objects, config, helpers, tracing, or writes")
+
     sub, sub_index = _git_subcommand(args)
     global_args = args[:sub_index]
     saw_no_pager = False
     saw_no_optional_locks = False
+    saw_no_lazy_fetch = False
+    saw_no_replace_objects = False
     saw_fsmonitor_neutralization = False
     i = 0
     while i < len(global_args):
@@ -1521,14 +1621,18 @@ def _git_readonly_violation(args) -> "str | None":
             saw_no_optional_locks = True
             i += 1
             continue
-        if arg == "-C":
-            if i + 1 >= len(global_args):
-                return "Git `-C` has no path, so its effects can't be screened"
-            i += 2
-            continue
-        if arg.startswith("-C") and len(arg) > 2:
+        if arg == "--no-lazy-fetch":
+            saw_no_lazy_fetch = True
             i += 1
             continue
+        if arg == "--no-replace-objects":
+            saw_no_replace_objects = True
+            i += 1
+            continue
+        if arg == "-C":
+            return "Git `-C` may redirect lookup to an untrusted repository"
+        if arg.startswith("-C") and len(arg) > 2:
+            return "Git `-C` may redirect lookup to an untrusted repository"
         if arg == "-c":
             if i + 1 >= len(global_args):
                 return "Git `-c` has no assignment, so it can't be screened"
@@ -1561,6 +1665,14 @@ def _git_readonly_violation(args) -> "str | None":
         return (
             "Git may perform optional repository-metadata writes that can't "
             "be screened; use `git --no-optional-locks …`")
+    if not saw_no_lazy_fetch:
+        return (
+            "Git may invoke a configured lazy-fetch/promisor helper that "
+            "can't be screened; use `git --no-lazy-fetch …`")
+    if not saw_no_replace_objects:
+        return (
+            "Git may consult replacement-object indirection; use "
+            "`git --no-replace-objects …`")
     if not saw_fsmonitor_neutralization:
         return (
             "Git may launch configured core.fsmonitor that can't be screened "
@@ -1589,6 +1701,325 @@ def _git_readonly_violation(args) -> "str | None":
             "Git diff may pass working-tree content through executable "
             "`.gitattributes` clean filters that can't be disabled from "
             "argv; use an index/object diff with `--cached` or `--staged`")
+    return None
+
+
+def _readonly_lex_segments(command: str):
+    """Lex the deliberately small shell subset admitted for read-only work.
+
+    Each word retains whether its spelling used quotes or escapes.  ``shlex``
+    intentionally erases that fact, but it changes shell grammar: bare ``if``
+    is syntax while ``'if'`` and ``\\if`` are executable names.  Returning a
+    structural error is safer than trying to emulate the full shell parser.
+    """
+    segments: list[list[tuple[str, bool]]] = []
+    segment: list[tuple[str, bool]] = []
+    word: list[str] = []
+    word_started = False
+    decorated = False
+    quote = None
+    i = 0
+
+    def finish_word():
+        nonlocal word, word_started, decorated
+        if word_started:
+            segment.append(("".join(word), decorated))
+        word = []
+        word_started = False
+        decorated = False
+
+    def finish_segment():
+        finish_word()
+        if segment:
+            segments.append(list(segment))
+            segment.clear()
+
+    text = str(command or "")
+    while i < len(text):
+        ch = text[i]
+        if quote == "'":
+            word_started = True
+            decorated = True
+            if ch == "'":
+                quote = None
+            else:
+                word.append(ch)
+            i += 1
+            continue
+        if quote == '"':
+            word_started = True
+            decorated = True
+            if ch == '"':
+                quote = None
+                i += 1
+                continue
+            if ch == "`":
+                return [], ("legacy backtick command substitution is outside "
+                            "the admitted read-only grammar")
+            if ch == "$":
+                label = ("command/arithmetic substitution"
+                         if i + 1 < len(text) and text[i + 1] == "("
+                         else "shell variable expansion")
+                return [], f"{label} is outside the admitted read-only grammar"
+            if ch == "\\":
+                decorated = True
+                if i + 1 >= len(text):
+                    return [], "trailing shell escape cannot be screened"
+                word.append(text[i + 1])
+                i += 2
+                continue
+            word.append(ch)
+            i += 1
+            continue
+
+        if ch in "'\"":
+            quote = ch
+            word_started = True
+            decorated = True
+            i += 1
+            continue
+        if ch == "\\":
+            decorated = True
+            word_started = True
+            if i + 1 >= len(text):
+                return [], "trailing shell escape cannot be screened"
+            word.append(text[i + 1])
+            i += 2
+            continue
+        if ch == "`":
+            return [], ("legacy backtick command substitution is outside the "
+                        "admitted read-only grammar")
+        if ch == "$":
+            label = ("command/arithmetic substitution" if i + 1 < len(text)
+                     and text[i + 1] == "(" else "shell variable expansion")
+            return [], f"{label} is outside the admitted read-only grammar"
+        if ch in "<>":
+            label = ("process substitution" if i + 1 < len(text)
+                     and text[i + 1] == "(" else "shell redirection/heredoc")
+            return [], f"{label} is outside the admitted read-only grammar"
+        if ch in "*?[]~":
+            return [], ("unquoted glob/tilde expansion is outside the "
+                        "admitted read-only grammar")
+        if ch in "(){}":
+            return [], ("shell grouping/compound syntax is outside the "
+                        "admitted read-only grammar")
+        if ch in " \t\r":
+            finish_word()
+            i += 1
+            continue
+        if ch == "\n":
+            finish_segment()
+            i += 1
+            continue
+        if ch in ";|&":
+            finish_segment()
+            if ch == "&" and not (i + 1 < len(text)
+                                  and text[i + 1] == "&"):
+                return [], ("background execution is outside the admitted "
+                            "read-only grammar")
+            if i + 1 < len(text) and text[i + 1] == ch:
+                i += 2
+            else:
+                i += 1
+            continue
+        word_started = True
+        word.append(ch)
+        i += 1
+
+    if quote is not None:
+        return [], "unclosed shell quote cannot be screened"
+    finish_segment()
+    return segments, None
+
+
+_TP_READONLY_TOP_LEVEL = frozenset({
+    "--help", "--version", "help", "version", "status", "contracts",
+    "summary", "dashboard", "findings",
+})
+_TP_READONLY_NESTED = frozenset({
+    ("decision", "list"), ("decision", "show"),
+    ("graph", "impact"),
+    ("kb", "list"), ("kb", "lint"), ("kb", "retrieve"),
+    ("kb", "where"),
+    ("lens", "list"), ("lens", "show"),
+    ("loop", "status"), ("loop", "retro"),
+    ("req", "list"),
+    ("repository", "status"),
+    ("share", "status"),
+    ("target", "show"), ("target", "tools"),
+})
+
+
+def _tp_readonly_argv_violation(args) -> "str | None":
+    """Refuse trusted Taskplane CLI verbs that can mutate governance state."""
+    dangerous_flags = {
+        "--all", "--approved-by", "--by", "--grant", "--install",
+        "--install-codex-hooks", "--out", "--response", "--write",
+        "--workspace",
+    }
+    if any(arg in dangerous_flags
+           or any(arg.startswith(flag + "=") for flag in dangerous_flags)
+           for arg in args):
+        return "canonical Taskplane CLI argv includes a mutating/output flag"
+    positional = [arg for arg in args if not arg.startswith("-")]
+    if not positional:
+        if args and args[0] in {"--help", "--version"}:
+            return None
+        return "canonical Taskplane CLI is missing a read-only verb"
+    if positional[0] in _TP_READONLY_TOP_LEVEL:
+        return None
+    if len(positional) > 1 and tuple(positional[:2]) in _TP_READONLY_NESTED:
+        return None
+    return (
+        f"canonical Taskplane CLI verb `{' '.join(positional[:2])}` is not "
+        "on the read-only verb allowlist")
+
+
+def _readonly_argv_violation(program: str, args) -> "str | None":
+    """Reject write/exec-capable argv forms of otherwise familiar tools."""
+    if program == "git":
+        return _git_readonly_violation(args)
+    if (program in _WRITE_PROGRAMS or program in _INTERPRETERS
+            or _python_program(program) or program in _SHELLS
+            or program in _WRAPPERS or program in _ARCHIVE_EXTRACTORS
+            or program in {"eval", "find", "patch", "xargs"}):
+        return f"`{program}` is not admitted by the direct read-only argv grammar"
+    if program not in _READONLY_SAFE_PROGRAMS - {"tp"}:
+        return f"`{program}` has no admitted read-only argv schema"
+
+    # These tools have useful, unambiguous positional read forms.  Options are
+    # refused rather than inheriting each utility's much larger grammar (for
+    # example xxd -r, diff --output, file --compile, or a future extension).
+    positional_only = frozenset({
+        "basename", "cat", "cmp", "comm", "cut", "diff", "dirname", "du",
+        "file", "head", "jq", "ls", "md5", "md5sum", "od", "readlink",
+        "realpath", "sha256sum", "shasum", "stat", "strings", "tail", "tr",
+        "uniq", "wc", "whereis", "which", "xxd", "zipinfo",
+    })
+    if program in positional_only:
+        option_mode = True
+        for arg in args:
+            if option_mode and arg == "--":
+                option_mode = False
+                continue
+            if option_mode and arg.startswith("-") and arg != "-":
+                return (
+                    f"`{program}` option `{arg}` is outside its exact "
+                    "positional-only read-only argv schema")
+        return None
+
+    if program == "rg":
+        safe_flags = frozenset({
+            "-a", "--text", "-F", "--fixed-strings", "-i", "--ignore-case",
+            "-l", "--files-with-matches", "--files-without-match", "-n",
+            "--line-number", "--no-line-number", "--no-heading", "--heading",
+            "-o", "--only-matching", "-q", "--quiet", "-s",
+            "--case-sensitive", "-S", "--smart-case", "-U", "--multiline",
+            "--multiline-dotall", "-v", "--invert-match", "-w",
+            "--word-regexp", "-x", "--line-regexp", "--count",
+            "--count-matches", "--crlf", "--files", "--hidden", "--json",
+            "--no-ignore", "--no-ignore-vcs", "--no-messages", "--pcre2",
+            "--stats",
+        })
+        value_flags = frozenset({
+            "-A", "--after-context", "-B", "--before-context", "-C",
+            "--context", "--color", "--colors", "-e", "--regexp",
+            "--encoding", "-f", "--file", "-g", "--glob", "-m",
+            "--max-count", "--max-depth", "--path-separator", "-r",
+            "--replace", "--sort", "--sortr", "-t", "--type", "-T",
+            "--type-not",
+        })
+        glued_short = re.compile(r"^-(?:[ABCfgemrtT]).+$")
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg == "--":
+                return None
+            if not arg.startswith("-") or arg == "-":
+                i += 1
+                continue
+            if arg in safe_flags or glued_short.match(arg):
+                i += 1
+                continue
+            if arg in value_flags:
+                if i + 1 >= len(args):
+                    return f"`rg` option `{arg}` is missing its value"
+                i += 2
+                continue
+            if any(arg.startswith(flag + "=")
+                   for flag in value_flags if flag.startswith("--")):
+                i += 1
+                continue
+            return f"`rg` option `{arg}` is outside its exact read-only argv schema"
+        return None
+
+    # Shell-built read primitives have no external helper or filesystem-write
+    # mode once expansion and redirection have already been excluded.
+    if program in _READONLY_SHELL_BUILTINS | {"expr", "printf"}:
+        return None
+    # Date can set the system clock on supported hosts; omit it rather than
+    # attempting to reconcile GNU/BSD flag grammars.
+    if program == "date":
+        return "`date` is omitted because some host argv forms set system time"
+    return f"`{program}` has no exact admitted read-only argv schema"
+
+
+def _readonly_command_grammar_violation(command: str,
+                                        workspace: str | None,
+                                        write_allow) -> "str | None":
+    """Validate the complete executable grammar before semantic screening.
+
+    Read-only shell access admits direct simple commands separated by ``;``,
+    newlines, ``&&``, ``||``, or pipelines.  It deliberately refuses shell
+    keywords/groups, wrappers, shells, eval, xargs, and substitutions.  Every
+    admitted command token is bare, unquoted/unescaped, and bound to the same
+    executable identity observed on the hook's startup PATH.  The sole
+    path-qualified exception is this package's exact canonical ``tp.py``.
+    """
+    segments, error = _readonly_lex_segments(command)
+    if error:
+        return error
+    if not segments and str(command or "").strip():
+        return "shell command contains no directly screenable executable"
+
+    complex_launchers = (_WRAPPERS | _SHELLS | {"eval", "xargs"})
+    for words in segments:
+        raw_program, decorated = words[0]
+        args = [value for value, _ in words[1:]]
+        if decorated:
+            return (
+                f"executable token `{raw_program}` is quoted or escaped; "
+                "read-only executables must be bare lexical tokens")
+        if (raw_program in _SHELL_KEYWORDS
+                or raw_program in {"{", "}", "[[", "]]"}):
+            return (
+                f"shell keyword `{raw_program}` is outside the admitted "
+                "read-only grammar")
+        if re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", raw_program):
+            return (
+                "execution environment assignment is outside the admitted "
+                "read-only grammar")
+
+        normalized = raw_program.replace("\\", "/")
+        if "/" in normalized:
+            if _is_tp_cli(raw_program, workspace):
+                return _tp_readonly_argv_violation(args)
+            return (
+                f"path-qualified executable `{raw_program}` cannot be "
+                "accepted as a trusted read-only program")
+
+        program = os.path.basename(raw_program)
+        if program in complex_launchers:
+            return (
+                f"`{program}` is outside the admitted direct-command "
+                "read-only grammar")
+        identity_violation = _readonly_executable_identity_violation(
+            raw_program, workspace, write_allow)
+        if identity_violation:
+            return identity_violation
+        argv_violation = _readonly_argv_violation(program, args)
+        if argv_violation:
+            return argv_violation
     return None
 
 
@@ -1784,7 +2215,7 @@ def _analyze(command: str, _depth: int = 0,
             # body — exempt it so a read-only review can still run tp.py.
             first_arg = next((a for a in args if not a.startswith("-")), None)
             if _python_program(prog) and first_arg \
-                    and _is_tp_cli(first_arg):
+                    and _is_tp_cli(first_arg, workspace):
                 continue
             if any(a in ("-c", "-e", "-E") or a.startswith("-e")
                    for a in args):
@@ -1826,6 +2257,8 @@ def _analyze(command: str, _depth: int = 0,
                 violation = _git_readonly_violation(args)
                 if violation:
                     opaque = opaque or ("launcher", violation)
+            continue
+        if _is_tp_cli(raw_prog, workspace):
             continue
         if prog not in _READONLY_SAFE_PROGRAMS:
             opaque = opaque or (
@@ -1982,7 +2415,8 @@ _HOST_HOOK_COMMANDS = frozenset({
 })
 
 
-def host_hook_cli_invocation(command: str) -> "str | None":
+def host_hook_cli_invocation(command: str,
+                             workspace: str | None = None) -> "str | None":
     """Return a hook-only tp.py subcommand invoked through an agent shell.
 
     Host hooks execute these entry points directly. Letting a governed agent
@@ -1992,7 +2426,7 @@ def host_hook_cli_invocation(command: str) -> "str | None":
     segments, _ = _deny_segments(command)
     for tokens in segments:
         for index, token in enumerate(tokens):
-            if not _is_tp_cli(token):
+            if not _is_tp_cli(token, workspace):
                 continue
             command_args = [item for item in tokens[index + 1:]
                             if not item.startswith("-")]
@@ -2066,7 +2500,7 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
 
     if tool_name in COMMAND_TOOLS:
         hook_command = host_hook_cli_invocation(
-            command_text(tool_name, tool_input))
+            command_text(tool_name, tool_input), workspace)
         if hook_command:
             return False, ("host hook entry point cannot be invoked through "
                            f"an agent shell: {hook_command}")
@@ -2093,8 +2527,16 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                                f"'{bad}' is outside it; the reviewed source "
                                "is protected")
         if tool_name in COMMAND_TOOLS:
-            targets, opaque = _analyze(
-                command_text(tool_name, tool_input), workspace=workspace)
+            command = command_text(tool_name, tool_input)
+            grammar_violation = _readonly_command_grammar_violation(
+                command, workspace, allow)
+            if grammar_violation:
+                return False, (
+                    "read-only review contract: " + grammar_violation
+                    + "; this shell form can't be screened by the admitted "
+                    f"grammar — writes must stay under {allow or '(nothing)'}; "
+                    "the reviewed source is protected (fail-closed grammar)")
+            targets, opaque = _analyze(command, workspace=workspace)
             leased_paths = [path for path in allow
                             if any(marker in
                                    "/" + str(path).replace("\\", "/")
