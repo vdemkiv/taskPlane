@@ -10,6 +10,7 @@ import sys
 
 from taskplane import terminal_truth
 from taskplane import delivery_ports
+from taskplane import loop
 from taskplane.delivery_ports import DeliveryPortError, SandboxEvidenceStore
 
 
@@ -73,6 +74,58 @@ def test_h03_supported_terminal_composition_root(tmp_path, monkeypatch):
     )["status"] == "complete"
     assert (tmp_path / "authority" / "head.json").is_file()
     assert (tmp_path / "exports" / f"{SOURCE_SHA}.json").is_file()
+
+
+def test_h03_retro_finalizes_and_propagates_live_terminal_authority(monkeypatch):
+    terminal_delivery = {
+        "authority_root": "/authority",
+        "exports_root": "/exports",
+        "run_id": RUN_ID,
+        "operation_id": OPERATION_ID,
+        "identity": {},
+        "surfaces": {},
+        "candidate_wiring_receipt": {},
+        "observed_head_sha": SOURCE_SHA,
+        "checkout_clean": True,
+    }
+    final = {"step": "done", "terminal_delivery": terminal_delivery}
+    live_receipt = object()
+    events = []
+    monkeypatch.setattr(
+        loop.retro_engine, "run", lambda *_args, **_kwargs: {"goal": "done"}
+    )
+    monkeypatch.setattr(loop, "load", lambda _ws: final)
+    monkeypatch.setattr(
+        loop,
+        "_stage_loop_transition",
+        lambda *_args, **_kwargs: events.append("transition") or {"status": "done"},
+    )
+
+    def finalize(**kwargs):
+        events.append("finalize")
+        assert kwargs == terminal_delivery
+        return live_receipt
+
+    monkeypatch.setattr(terminal_truth, "finalize_terminal_delivery", finalize)
+
+    completed = loop.retro("/repo")
+
+    assert events == ["transition", "finalize"]
+    assert completed["terminal_authority"] is live_receipt
+
+    monkeypatch.setattr(
+        terminal_truth,
+        "finalize_terminal_delivery",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            terminal_truth.TerminalTruthError("partial", "terminal evidence missing")
+        ),
+    )
+
+    refused = loop.retro("/repo")
+
+    assert refused["step"] == "retro"
+    assert "terminal delivery failed closed" in refused["error"]
+    assert "terminal_authority" not in refused
 
 
 def test_h04_restart_reacquires_exact_terminal_authority(tmp_path):

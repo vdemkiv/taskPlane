@@ -72,6 +72,7 @@ if __package__:
     from . import evaluation_output as evaluation_output
     from . import plan_topology
     from . import producer_observation as producer_observation_policy
+    from . import terminal_truth
     from .delivery_ports import SystemClock
 else:  # pragma: no cover - direct CLI module loading
     import brief_projection
@@ -79,6 +80,7 @@ else:  # pragma: no cover - direct CLI module loading
     import dispatch_telemetry
     import plan_topology
     import producer_observation as producer_observation_policy
+    import terminal_truth
     from delivery_ports import SystemClock
 
 LOOP_FILE = "loop.json"
@@ -9545,6 +9547,21 @@ def retro(ws: str) -> dict:
         return {"error": "stage-native Retro terminalization failed closed: "
                 f"{exc.__class__.__name__}: {exc}", "step": "retro",
                 "retro": result}
+    terminal_authority = None
+    terminal_delivery = final.get("terminal_delivery")
+    if terminal_delivery is not None:
+        try:
+            if not isinstance(terminal_delivery, Mapping):
+                raise TypeError("terminal delivery composition must be a mapping")
+            terminal_authority = terminal_truth.finalize_terminal_delivery(
+                **dict(terminal_delivery))
+        except Exception as exc:
+            # The stage transition is replay-safe and the legacy loop marker
+            # remains at Retro until the durable terminal bundle reconciles.
+            # Never return a terminal outcome without its live CAS authority.
+            return {"error": "terminal delivery failed closed: "
+                    f"{exc.__class__.__name__}: {exc}", "step": "retro",
+                    "retro": result}
     if final.get("_retro_terminal_step"):
         with mutate(ws) as locked:
             if locked is None or locked.get("step") != "retro":
@@ -9558,6 +9575,8 @@ def retro(ws: str) -> dict:
             locked.pop("_retro_terminal_step", None)
     if transition is not None:
         result = {**result, "stage_transition": transition}
+    if terminal_authority is not None:
+        result = {**result, "terminal_authority": terminal_authority}
     return result
 _load_tasks = loop_status.load_tasks
 status = loop_status.status
