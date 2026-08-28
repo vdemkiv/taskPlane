@@ -345,6 +345,31 @@ def _trace_events(ws, event):
                 if l.strip() and json.loads(l).get("event") == event]
 
 
+def _audit_value(value):
+    """Exact privacy-preserving value written by the durable trace sink."""
+    return tp_lite._audit_minimized(value)
+
+
+def _assert_audit_value(event, key, value):
+    assert event[key] == _audit_value(value), (key, event[key], value)
+
+
+def _stage_problem(payload):
+    mapped = cli._stage_wave_run(payload)
+    assert mapped is not None and mapped[2] is not None, payload
+    return mapped[2]
+
+
+def _task_path_problem_reason(payload):
+    return (_stage_problem(payload)["reason"]
+            + " — Task path unaffected (no shell line is composed there); "
+              "fix the id in plan/tasks.json before the next plan gate")
+
+
+def _stderr_reason(err):
+    return err.strip().removeprefix("taskplane: ")
+
+
 @pytest.fixture(scope="module")
 def rails():
     """ONE frozen journey (stage_fixture.py), every rail captured per
@@ -372,7 +397,10 @@ def rails():
         caps = {}
 
         def grab(stage):
+            expected_trace = []
+            available = cli.workflow_available(ws)
             bare = stage_fixture.capture_stage(ws, stage)
+            expected_trace.append(("task", available["reason"]))
             frozen = json.loads(bare)
             producer_name = "wave" if stage == "execute" else "next_action"
             producer = getattr(loop, producer_name)
@@ -384,19 +412,25 @@ def rails():
             try:
                 task = stage_fixture.capture_stage(
                     ws, stage, "--emit", "task")
+                expected_trace.append(("task", "explicit --emit task"))
                 os.environ["CODEX_HOME"] = "/x"
                 os.environ["TASKPLANE_WORKFLOWS"] = "1"
+                codex_available = cli.workflow_available(ws)
                 codex = stage_fixture.capture_stage(ws, stage)
+                expected_trace.append(("task", codex_available["reason"]))
                 os.environ.pop("CODEX_HOME")
+                workflow_available = cli.workflow_available(ws)
                 wf = stage_fixture.capture_stage(
                     ws, stage)   # opt-in, no codex
+                expected_trace.append(
+                    ("workflow", workflow_available["reason"]))
                 os.environ.pop("TASKPLANE_WORKFLOWS")
             finally:
                 setattr(loop, producer_name, producer)
                 os.environ.pop("CODEX_HOME", None)
                 os.environ.pop("TASKPLANE_WORKFLOWS", None)
             caps[stage] = {"bare": bare, "task": task, "codex": codex,
-                           "wf": wf}
+                           "wf": wf, "trace": expected_trace}
 
         stage_fixture.start_loop(ws)
         grab("execute")
@@ -507,15 +541,18 @@ class TestStageTaskPathByteIdentity:
         assert evs, "stage_dispatch_path must be traced"
         for e in evs:
             assert e["stage"] in stage_fixture.STAGES
-            assert e["path"] in ("task", "workflow")
+            assert e["path"] in (_audit_value("task"),
+                                  _audit_value("workflow"))
             assert e.get("reason")
         by_stage = {s: [e for e in evs if e["stage"] == s]
                     for s in stage_fixture.STAGES}
         for stage, sevs in by_stage.items():
             # bare, --emit task, codex → task; the opt-in capture → workflow
-            assert [e["path"] for e in sevs] == \
-                ["task", "task", "task", "workflow"], stage
-            assert "codex" in sevs[2]["reason"].lower(), stage
+            expected = rails["caps"][stage]["trace"]
+            assert len(sevs) == len(expected), stage
+            for event, (path, reason) in zip(sevs, expected):
+                _assert_audit_value(event, "path", path)
+                _assert_audit_value(event, "reason", reason)
 
     def test_goldens_are_deterministic_artifacts(self):
         for stage in stage_fixture.STAGES:
@@ -1238,9 +1275,10 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
     # forced by the kill-switch
     evs = _trace_events(ws, "stage_dispatch_path")
     assert evs, "the stage dispatches must be traced"
+    disabled_reason = cli.workflow_available(ws)["reason"]
     for e in evs:
-        assert e["path"] == "task"
-        assert "TASKPLANE_WORKFLOWS=0" in e["reason"]
+        _assert_audit_value(e, "path", "task")
+        _assert_audit_value(e, "reason", disabled_reason)
 
 
 # --------------------------- workflow-agnostic modules (extended pin)
@@ -1314,9 +1352,10 @@ class TestMalformedWaveEntryFailOpen:
         for key in ("dispatch_path", "workflow"):
             assert key not in json.loads(out)
         evs = _trace_events(ws, "stage_dispatch_path")
-        assert evs and evs[-1]["path"] == "task"
-        assert "malformed wave entry" in evs[-1]["reason"]
-        assert "fail-open" in evs[-1]["reason"]
+        assert evs
+        _assert_audit_value(evs[-1], "path", "task")
+        _assert_audit_value(
+            evs[-1], "reason", _stage_problem(payload)["reason"])
 
     def test_degrade_wins_even_under_explicit_emit_workflow(self, ws,
                                                             monkeypatch):
@@ -1330,8 +1369,9 @@ class TestMalformedWaveEntryFailOpen:
         assert rc == 0
         assert out == json.dumps(payload, indent=2) + "\n"
         evs = _trace_events(ws, "stage_dispatch_path")
-        assert evs[-1]["path"] == "task"
-        assert "malformed wave entry" in evs[-1]["reason"]
+        _assert_audit_value(evs[-1], "path", "task")
+        _assert_audit_value(
+            evs[-1], "reason", _stage_problem(payload)["reason"])
 
     def test_entry_not_a_dict_and_task_not_a_dict_both_degrade(self, ws,
                                                                monkeypatch):
@@ -1342,8 +1382,10 @@ class TestMalformedWaveEntryFailOpen:
             rc, out, _ = self._run_with_payload(ws, payload, monkeypatch)
             assert rc == 0, bad
             assert json.loads(out) == payload, bad
-        evs = _trace_events(ws, "stage_dispatch_path")
-        assert all("malformed wave entry" in e["reason"] for e in evs[-3:])
+            event = _trace_events(ws, "stage_dispatch_path")[-1]
+            _assert_audit_value(event, "path", "task")
+            _assert_audit_value(
+                event, "reason", _stage_problem(payload)["reason"])
 
     def test_malformed_single_task_step_degrades_traced(self, ws,
                                                         monkeypatch):
@@ -1359,9 +1401,11 @@ class TestMalformedWaveEntryFailOpen:
         assert rc == 0
         assert json.loads(out) == payload
         evs = _trace_events(ws, "stage_dispatch_path")
-        assert evs and evs[-1]["path"] == "task"
+        assert evs
+        _assert_audit_value(evs[-1], "path", "task")
         assert evs[-1]["stage"] == "evaluate"
-        assert "malformed wave entry" in evs[-1]["reason"]
+        _assert_audit_value(
+            evs[-1], "reason", _stage_problem(payload)["reason"])
 
     def test_well_formed_wave_unchanged_on_the_workflow_rail(self, rails):
         """The A6 guard adds validation only: the frozen journey's
@@ -1407,8 +1451,9 @@ class TestSlotCharsetRefusalAtEmission:
         assert "t1;rm" in err                  # reason names the id...
         assert tp_lite._TASK_SLOT_RE.pattern in err   # ...and the charset
         evs = _trace_events(ws, "stage_dispatch_path")
-        assert evs and evs[-1]["path"] == "refused"
-        assert "t1;rm" in evs[-1]["reason"]
+        assert evs
+        _assert_audit_value(evs[-1], "path", "refused")
+        _assert_audit_value(evs[-1], "reason", _stderr_reason(err))
 
     def test_invalid_id_refuses_on_explicit_emit_workflow_too(self, ws,
                                                               monkeypatch):
@@ -1420,7 +1465,8 @@ class TestSlotCharsetRefusalAtEmission:
         assert out == ""
         assert "$(evil)" in err
         evs = _trace_events(ws, "stage_dispatch_path")
-        assert evs[-1]["path"] == "refused"
+        _assert_audit_value(evs[-1], "path", "refused")
+        _assert_audit_value(evs[-1], "reason", _stderr_reason(err))
 
     def test_single_task_step_ids_are_validated_too(self, ws, monkeypatch):
         monkeypatch.setenv("TASKPLANE_WORKFLOWS", "1")
@@ -1432,7 +1478,9 @@ class TestSlotCharsetRefusalAtEmission:
         assert rc != 0 and out == ""
         assert "t 1" in err
         evs = _trace_events(ws, "stage_dispatch_path")
-        assert evs[-1]["path"] == "refused" and evs[-1]["stage"] == "fix"
+        _assert_audit_value(evs[-1], "path", "refused")
+        _assert_audit_value(evs[-1], "reason", _stderr_reason(err))
+        assert evs[-1]["stage"] == "fix"
 
     def test_valid_ids_emit_byte_identically(self, rails):
         """All-valid payloads are untouched by the E5 guard — the frozen
@@ -1493,8 +1541,10 @@ class TestSlotCharsetNeverDeniesTheTaskPath:
         assert json.loads(out)["task"]["id"] == self.BAD
         assert "dispatch_path" not in json.loads(out)
         evs = _trace_events(ws, "stage_dispatch_path")
-        assert evs[-1]["path"] == "task"      # degraded, NOT refused
-        assert self.BAD in evs[-1]["reason"]  # still named in the trace
+        _assert_audit_value(evs[-1], "path", "task")  # NOT refused
+        _assert_audit_value(
+            evs[-1], "reason",
+            _task_path_problem_reason(self._payload(self.BAD)))
 
     def test_task_path_bytes_differ_only_by_the_id(self, ws, monkeypatch):
         """The mandatory-fallback invariant: a bad id changes the id and
@@ -1512,7 +1562,11 @@ class TestSlotCharsetNeverDeniesTheTaskPath:
                                       "--emit", "task")
         assert rc == 0, err
         assert json.loads(out)["task"]["id"] == self.BAD
-        assert _trace_events(ws, "stage_dispatch_path")[-1]["path"] == "task"
+        event = _trace_events(ws, "stage_dispatch_path")[-1]
+        _assert_audit_value(event, "path", "task")
+        _assert_audit_value(
+            event, "reason",
+            _task_path_problem_reason(self._payload(self.BAD)))
 
     def test_workflow_rail_still_refuses_the_same_id(self, ws, monkeypatch):
         """The guard itself is intact where it belongs: the workflow rail
@@ -1522,8 +1576,9 @@ class TestSlotCharsetNeverDeniesTheTaskPath:
                                       "--emit", "workflow")
         assert rc != 0 and out == ""
         assert self.BAD in err
-        assert _trace_events(ws,
-                             "stage_dispatch_path")[-1]["path"] == "refused"
+        event = _trace_events(ws, "stage_dispatch_path")[-1]
+        _assert_audit_value(event, "path", "refused")
+        _assert_audit_value(event, "reason", _stderr_reason(err))
 
 
 class TestPlanGateRefusesUnslottableTaskIds:
@@ -1557,7 +1612,7 @@ class TestPlanGateRefusesUnslottableTaskIds:
         assert "feat/login" in refusal["error"]
         assert refusal["task_ids"] and refusal["ordering"] == []
         evs = _trace_events(ws, "loop_gate_blocked")
-        assert evs[-1]["reason"] == "task_id"
+        _assert_audit_value(evs[-1], "reason", "task_id")
 
     def test_approve_refuses_the_same_plan(self, tmp_path):
         ws = str(tmp_path / "ws")
@@ -1567,7 +1622,8 @@ class TestPlanGateRefusesUnslottableTaskIds:
         assert refusal is not None and refusal["step"] == "plan_approval"
         assert "feat/login" in refusal["error"]
         evs = _trace_events(ws, "loop_approve_blocked")
-        assert evs[-1]["reason"] == "task_id" and evs[-1]["by"] == "human"
+        _assert_audit_value(evs[-1], "reason", "task_id")
+        assert evs[-1]["by"] == tp_lite._audit_pseudonym("human")
 
     def test_good_ids_still_approve(self, tmp_path):
         ws = str(tmp_path / "ws")

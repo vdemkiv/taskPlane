@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import copy
+import json
 import os
 
 import pytest
@@ -337,14 +338,18 @@ def test_projection_repair_rejects_stale_run_revision_without_mutation(
     manifest = _seed_v4(store, manifest, heads)
     manifest = _rewrite_projection_fixture(
         store, manifest, None, missing=True)
+    manifest_path = store._manifest_path("run-projection")
+    with open(manifest_path, "rb") as stream:
+        before = stream.read()
 
     with pytest.raises(run_store.RevisionConflict):
         store.rebuild_active_stage_projection(
             "run-projection", expected_revision=manifest["revision"] - 1)
 
-    unchanged = store.load("run-projection")
-    assert unchanged["revision"] == manifest["revision"]
-    assert "active_stage_projection" not in unchanged
+    # Strict load correctly rejects the deliberately broken projection, so
+    # non-mutation is proved at the persisted-byte boundary instead.
+    with open(manifest_path, "rb") as stream:
+        assert stream.read() == before
 
 
 def test_projection_repair_receipt_replays_before_stale_revision_check(
@@ -388,3 +393,45 @@ def test_projection_repair_receipt_replays_before_stale_revision_check(
     assert store.load("run-projection") == repaired
     with open(store._journal_path("run-projection"), "rb") as stream:
         assert stream.read() == journal_after_repair
+
+
+def test_projection_repair_reconnects_its_receipt_bound_journal_outbox(
+        tmp_path, monkeypatch) -> None:
+    checkout = tmp_path / "checkout"
+    os.makedirs(checkout)
+    identity = storage.identity_from_remote(
+        "https://github.com/vdemkiv/taskplane.git", workspace=str(checkout))
+    store = run_store.RunStore(home=str(tmp_path / "home"))
+    manifest = store.create(
+        identity, run_id="run-projection", checkout=str(checkout),
+        host={"kind": "test"}, target={"branch": "main"})
+    heads = _heads(store=store)
+    manifest = _seed_v4(store, manifest, heads)
+    manifest = _rewrite_projection_fixture(store, manifest, None, missing=True)
+    original_append = store._append_journal
+
+    def fail_after_manifest(_run_id, event):
+        if event.get("operation_id") == "repair-after-crash":
+            raise OSError("injected projection journal crash")
+        original_append(_run_id, event)
+
+    monkeypatch.setattr(store, "_append_journal", fail_after_manifest)
+    with pytest.raises(OSError, match="projection journal crash"):
+        store.rebuild_active_stage_projection(
+            "run-projection", expected_revision=manifest["revision"],
+            operation_id="repair-after-crash")
+
+    monkeypatch.setattr(store, "_append_journal", original_append)
+    replay = store.rebuild_active_stage_projection(
+        "run-projection", expected_revision=manifest["revision"],
+        operation_id="repair-after-crash")
+
+    assert replay["active_stage_projection"] == \
+        stage_entities.active_stage_projection(heads)
+    assert replay["stage_journal_outbox"]["repair-after-crash"][
+        "delivered"] is True
+    with open(store._journal_path("run-projection"), encoding="utf-8") as stream:
+        rows = [json.loads(line) for line in stream if line.strip()]
+    matching = [row for row in rows
+                if row.get("operation_id") == "repair-after-crash"]
+    assert len(matching) == 1

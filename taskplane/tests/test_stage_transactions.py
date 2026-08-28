@@ -246,11 +246,15 @@ def test_post_commit_journal_crash_reconnects_through_stored_receipt(
             validate_authority=lambda _current: None,
         )
 
+    # A reconnect means the failed journal transport is available again.
+    # load() now durably relays every pending receipt-bound outbox entry, so
+    # leaving the injected failure installed would model an ongoing outage,
+    # not recovery after the post-manifest crash.
+    monkeypatch.setattr(store, "_append_journal", original_append)
     persisted = store.load(RUN_ID)
     stored_receipt = persisted["stage_operations"]["handoff-a"]
     assert persisted["schema"] == "taskplane.run/v4"
 
-    monkeypatch.setattr(store, "_append_journal", original_append)
     replay = store.commit_stage_operation(
         RUN_ID,
         expected_revision=initial["revision"],

@@ -173,6 +173,10 @@
         "fingerprint": "<SHA>",
         "mode": "modules",
         "producers": {
+          "architecture-map": {
+            "failures": [],
+            "status": "not-requested"
+          },
           "base-scanner": {
             "failures": [],
             "status": "complete"
