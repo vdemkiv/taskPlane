@@ -604,12 +604,15 @@ class TestSubmitCheckpointWiring(unittest.TestCase):
         end = source.index("\ndef submit(", start)
         body = source[start:end]
         preflight = body.index("checkpoint.validate_checkpoint_spec(")
-        launch = body.index('governed_commands.execute(act_ws, "launch"')
+        launch = body.index('governed_commands.execute(act_ws, "checkpoint"')
         wait = body.index('governed_commands.execute(act_ws, "wait"')
         receipt = body.index("checkpoint.validate_and_mint(")
         self.assertLess(preflight, launch)
         self.assertLess(launch, wait)
         self.assertLess(wait, receipt)
+        launch_body = body[launch:wait]
+        self.assertNotIn('"argv"', launch_body)
+        self.assertNotIn('"cwd"', launch_body)
 
         submit_start = source.index("def submit(")
         submit_end = source.index("\ndef _submission_staleness(", submit_start)

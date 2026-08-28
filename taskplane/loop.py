@@ -7550,9 +7550,11 @@ def _run_submit_checkpoint(ws: str, state: Mapping[str, object],
     authorization = "loop-submit-checkpoint:" + str(task.get("id") or "task")
     run_id = str(state.get("run_id") or state.get("requirement_id") or
                  "loop")
-    launched = governed_commands.execute(act_ws, "launch", {
+    # This semantic action accepts no argv/cwd/env/executable from the worker.
+    # The governed-command engine reloads the current Plan task, derives the
+    # exact validated checkpoint, and executes it outside the reviewed source.
+    launched = governed_commands.execute(act_ws, "checkpoint", {
         "authorization": authorization,
-        "argv": validated["focused_proof"]["argv"],
         "run_id": run_id,
         "task_id": str(task.get("id") or "task"),
     })
@@ -7569,7 +7571,23 @@ def _run_submit_checkpoint(ws: str, state: Mapping[str, object],
         raise checkpoint.CheckpointReceiptError(
             f"checkpoint {checkpoint_id} runtime wait failed: " +
             str(observed["error"]))
-    return checkpoint.validate_and_mint(act_ws, spec, observed)
+    if (observed.get("snapshot") or {}).get("state") != "succeeded":
+        # Preserve the checkpoint engine's typed red/timed-out/cancelled
+        # verdict.  A green boundary receipt is intentionally unavailable for
+        # a failed proof, but failure still needs the canonical checkpoint
+        # diagnostic rather than a generic sidecar error.
+        return checkpoint.validate_and_mint(act_ws, spec, observed)
+    boundary = governed_commands.semantic_checkpoint_execution_evidence(
+        act_ws, authorization, launched["handle"])
+    receipt = checkpoint.validate_and_mint(
+        act_ws, spec, observed,
+        runtime_environment=boundary["runtime_environment"])
+    # Link the checkpoint-engine receipt to the independently durable
+    # content-addressed host boundary receipt.  Both are engine-derived; no
+    # caller-authored receipt field crosses either input boundary.
+    receipt["runtime_boundary_receipt_digest"] = boundary["receipt_digest"]
+    receipt["receipt_digest"] = checkpoint.receipt_digest(receipt)
+    return receipt
 
 
 def submit(ws: str, outcome: str, note: str = "",

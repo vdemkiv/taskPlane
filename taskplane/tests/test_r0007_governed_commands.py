@@ -354,10 +354,11 @@ def test_version_qualified_python_keeps_analyzer_policy_parity():
     program = f"python{sys.version_info.major}.{sys.version_info.minor}"
     read_only = contract_engine.build_contract("review", read_only=True)
 
-    allowed, _ = contract_engine.screen_tool(
+    allowed, reason = contract_engine.screen_tool(
         read_only, "exec_command",
         {"cmd": f'{program} -c "print(1)"'}, None)
-    assert allowed is True
+    assert allowed is False
+    assert "every shell command tool is blocked" in reason
     allowed, reason = contract_engine.screen_tool(
         read_only, "exec_command", {
             "cmd": (f'{program} -c "open(\'escaped.txt\', '
@@ -373,7 +374,7 @@ def test_version_qualified_python_keeps_analyzer_policy_parity():
     assert contract_engine.deny_violation(
         f'{program} -c "print(\'git push\')"', ["git push"]) == "git push"
     assert contract_engine._analyze(
-        f"{program} taskplane/tp.py findings")[1] is None
+        f"{program} taskplane/tp.py findings")[1][0] == "launcher"
 
 
 def test_launch_authority_roots_subdirectory_targets_at_workspace(tmp_path):
@@ -597,7 +598,7 @@ def test_normal_flow_wiring_is_mutation_sensitive():
     execute_start = governed_source.index("def execute(")
     dispatch_body = governed_source[
         governed_source.index('if action == "dispatch":', execute_start):
-        governed_source.index('if action == "launch":', execute_start)]
+        governed_source.index('if action == "checkpoint":', execute_start)]
     assert "subprocess.Popen(" not in dispatch_body
     assert "CommandRuntime(" not in dispatch_body
     assert ".pending(" not in dispatch_body
