@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
 import json
+import marshal
 import math
 import os
 import re
@@ -106,6 +107,65 @@ def _loop_runtime_services() -> LoopRuntimeServices | None:
             or _default_loop_runtime_services)
 
 
+def _normalized_loop_alias_pair(left: Callable, right: Callable) -> bool:
+    """Accept only the supported ``loop``/``taskplane.loop`` module pair."""
+
+    left_module = str(getattr(left, "__module__", ""))
+    right_module = str(getattr(right, "__module__", ""))
+    return {left_module, right_module} == {"loop", "taskplane.loop"}
+
+
+def _alias_equivalent_loop_callable(left: Callable,
+                                    right: Callable) -> bool:
+    """Prove two separately imported loop functions are the same source.
+
+    Python can execute ``loop.py`` once as the supported top-level CLI module
+    and once as ``taskplane.loop``.  The resulting function objects are not
+    identical even though their production source is.  Equivalence remains
+    fail-closed: both names must be the exact supported alias pair, their
+    resolved source location and callable metadata must match, and their code
+    objects must have the same content fingerprint.  Same-module replacements
+    and lookalike functions from any other module are therefore rejected.
+    """
+
+    if not _normalized_loop_alias_pair(left, right):
+        return False
+    left_code = getattr(left, "__code__", None)
+    right_code = getattr(right, "__code__", None)
+    if left_code is None or right_code is None:
+        return False
+    try:
+        left_source = os.path.realpath(left_code.co_filename)
+        right_source = os.path.realpath(right_code.co_filename)
+        left_digest = hashlib.sha256(marshal.dumps(left_code)).digest()
+        right_digest = hashlib.sha256(marshal.dumps(right_code)).digest()
+    except (OSError, TypeError, ValueError):
+        return False
+    return (
+        left_source == right_source
+        and left_code.co_firstlineno == right_code.co_firstlineno
+        and left_code.co_name == right_code.co_name
+        and getattr(left, "__qualname__", None)
+        == getattr(right, "__qualname__", None)
+        and left_digest == right_digest
+        and getattr(left, "__defaults__", None)
+        == getattr(right, "__defaults__", None)
+        and getattr(left, "__kwdefaults__", None)
+        == getattr(right, "__kwdefaults__", None)
+        and getattr(left, "__annotations__", None)
+        == getattr(right, "__annotations__", None)
+    )
+
+
+def _alias_equivalent_loop_runtime(left: LoopRuntimeServices,
+                                   right: LoopRuntimeServices) -> bool:
+    return all(_alias_equivalent_loop_callable(a, b) for a, b in (
+        (left.state_loader, right.state_loader),
+        (left.wait_policy_factory, right.wait_policy_factory),
+        (left.wait_invocation_factory, right.wait_invocation_factory),
+    ))
+
+
 def authorize_delivery_dispatch(
         delivery_mode_receipt: Mapping[str, object], *,
         lens_worker_factory: Callable[[str], object]) -> dict:
@@ -132,7 +192,9 @@ def bind_loop_runtime(
 
     Embedded orchestrators and tests must use :func:`scoped_loop_runtime`;
     silently replacing the process default would make concurrent behavior
-    depend on import and execution order.
+    depend on import and execution order.  The sole idempotent exception is
+    the same production ``loop.py`` loaded under its two supported module
+    names; the first binding remains authoritative.
     """
     services = _validated_loop_runtime_services(
         state_loader=state_loader,
@@ -142,7 +204,10 @@ def bind_loop_runtime(
     global _default_loop_runtime_services
     with _loop_runtime_bind_lock:
         current = _default_loop_runtime_services
-        if current is not None and current != services:
+        if current is not None:
+            if current == services or _alias_equivalent_loop_runtime(
+                    current, services):
+                return current
             raise RuntimeError(
                 "BUILD-C loop runtime is already bound; use "
                 "scoped_loop_runtime for an isolated override")
