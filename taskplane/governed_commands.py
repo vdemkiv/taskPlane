@@ -57,8 +57,11 @@ CHECKPOINT_BOUNDARY_SCHEMA = \
     "taskplane.semantic-checkpoint-boundary/v1"
 CHECKPOINT_EXECUTION_RECEIPT_SCHEMA = \
     "taskplane.semantic-checkpoint-execution-receipt/v1"
+CHECKPOINT_AUTHORIZATION_SCHEMA = \
+    "taskplane.semantic-checkpoint-authorization/v1"
 _CAPTURE_LIMIT = MAX_EVENT_OUTPUT + 1
 _CHECKPOINT_TIMEOUT_SECONDS = 600.0
+_CHECKPOINT_REAP_SECONDS = 2.0
 _HANDLE_FIELDS = frozenset({"authorization", "handle"})
 _ACTION_FIELDS = {
     "dispatch": frozenset({
@@ -71,7 +74,9 @@ _ACTION_FIELDS = {
     }),
     # Deliberately semantic: no caller-authored argv, cwd, environment,
     # executable, receipt, or sandbox path crosses this boundary.
-    "checkpoint": frozenset({"authorization", "run_id", "task_id"}),
+    "checkpoint": frozenset({
+        "authorization", "checkpoint_authority", "run_id", "task_id",
+    }),
     "wait": _HANDLE_FIELDS | {"consumer", "timeout"},
     "reconnect": _HANDLE_FIELDS,
     "show": _HANDLE_FIELDS,
@@ -181,11 +186,23 @@ def _read_control(root: Path, handle: str) -> dict:
             ("semantic" in value and (
                 not isinstance(value["semantic"], Mapping) or
                 set(value["semantic"]) != {
-                    "schema", "authority_fingerprint"} or
+                    "schema", "authority_fingerprint",
+                    "checkpoint_authorization_fingerprint",
+                    "plan_fingerprint", "task_fingerprint",
+                    "selection_fingerprint", "contract_fingerprint",
+                    "step", "target_sha"} or
                 value["semantic"].get("schema") !=
                 CHECKPOINT_BOUNDARY_SCHEMA or
-                not re.fullmatch(r"[0-9a-f]{64}", str(
-                    value["semantic"].get("authority_fingerprint") or ""))))):
+                any(not re.fullmatch(r"[0-9a-f]{64}", str(
+                    value["semantic"].get(field) or ""))
+                    for field in (
+                        "authority_fingerprint",
+                        "checkpoint_authorization_fingerprint",
+                        "plan_fingerprint", "task_fingerprint",
+                        "selection_fingerprint", "contract_fingerprint")) or
+                not re.fullmatch(r"[0-9a-f]{40,64}", str(
+                    value["semantic"].get("target_sha") or "")) or
+                value["semantic"].get("step") not in {"execute", "fix"}))):
         raise GovernedCommandError("durable command control binding is invalid")
     return value
 
@@ -277,6 +294,87 @@ def _git_output(workspace: str, *args: str,
     return result.stdout.strip()
 
 
+def _checkpoint_selected_task(
+        state: Mapping[str, object], task_id: str) -> dict:
+    """Return only the Plan-selected task that may submit a checkpoint now."""
+    from taskplane import loop as loop_engine
+
+    step = str(state.get("step") or "")
+    if step not in {"execute", "fix"}:
+        raise GovernedCommandError(
+            "semantic checkpoint authorization is valid only for the "
+            "current execute/fix submission step")
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise GovernedCommandError(
+            "semantic checkpoint requires a non-empty current Plan")
+    matches = [row for row in tasks
+               if isinstance(row, Mapping) and row.get("id") == task_id]
+    if len(matches) != 1:
+        raise GovernedCommandError(
+            "semantic checkpoint task is not unique in current Plan")
+    current_index = state.get("current_task", 0)
+    current = (tasks[current_index]
+               if isinstance(current_index, int) and
+               0 <= current_index < len(tasks) else None)
+    selected = matches[0]
+    parallel_running = (
+        step == "execute" and state.get("parallel") is True and
+        selected.get("status") == "running")
+    if selected is not current and not parallel_running:
+        raise GovernedCommandError(
+            "semantic checkpoint task is not the current Plan-selected task")
+    allowed_statuses = ({"pending", "running"} if step == "execute" else
+                        {"pending", "running", "built"})
+    if str(selected.get("status") or "pending") not in allowed_statuses:
+        raise GovernedCommandError(
+            "semantic checkpoint current task is not ready for submission")
+    by_id = {str(row.get("id")): row for row in tasks
+             if isinstance(row, Mapping) and row.get("id")}
+    unsatisfied = [str(dependency)
+                   for dependency in selected.get("deps") or []
+                   if str((by_id.get(str(dependency)) or {}).get("status") or
+                          "") not in loop_engine.DEP_SATISFIED]
+    if unsatisfied:
+        raise GovernedCommandError(
+            "semantic checkpoint current task is not ready; unmet "
+            "dependencies: " + ", ".join(sorted(unsatisfied)))
+    return dict(selected)
+
+
+_CHECKPOINT_TASK_RUNTIME_FIELDS = frozenset({
+    "_build_failed", "_submission", "convergence_boundaries",
+    "convergence_history", "convergence_revision", "evaluation",
+    "fix_cycles", "reanchor_authority", "status", "target_commit",
+    "workspace",
+})
+
+
+def _checkpoint_task_projection(task: Mapping) -> dict:
+    return {str(key): value for key, value in task.items()
+            if key not in _CHECKPOINT_TASK_RUNTIME_FIELDS}
+
+
+def _checkpoint_selection_fingerprint(
+        state: Mapping[str, object], task: Mapping) -> str:
+    tasks = state.get("tasks") or []
+    by_id = {str(row.get("id")): row for row in tasks
+             if isinstance(row, Mapping) and row.get("id")}
+    material = {
+        "step": str(state.get("step") or ""),
+        "parallel": state.get("parallel") is True,
+        "current_task": state.get("current_task", 0),
+        "selected_task": str(task.get("id") or ""),
+        "selected_status": str(task.get("status") or "pending"),
+        "dependency_statuses": {
+            str(dependency): str(
+                (by_id.get(str(dependency)) or {}).get("status") or "")
+            for dependency in task.get("deps") or []
+        },
+    }
+    return _canonical_digest(material)
+
+
 def _checkpoint_plan_authority(
         workspace: str, run_id: str, task_id: str, *,
         state_path: str | None = None) -> tuple[dict, dict]:
@@ -307,13 +405,7 @@ def _checkpoint_plan_authority(
         raise GovernedCommandError(
             "semantic checkpoint run identity does not match current Plan")
     tasks = state.get("tasks")
-    matches = ([row for row in tasks
-                if isinstance(row, Mapping) and row.get("id") == task_id]
-               if isinstance(tasks, list) else [])
-    if len(matches) != 1:
-        raise GovernedCommandError(
-            "semantic checkpoint task is not unique in current Plan")
-    task = dict(matches[0])
+    task = _checkpoint_selected_task(state, task_id)
     declaration = task.get("checkpoint")
     if not isinstance(declaration, Mapping):
         raise GovernedCommandError(
@@ -341,6 +433,12 @@ def _checkpoint_plan_authority(
             "checkpoint_boundary_unavailable",
             "semantic checkpoint Git executable is unavailable")
     git_executable = str(Path(git_executable).resolve(strict=True))
+    ps_executable = shutil.which("ps", path=os.defpath)
+    if not ps_executable:
+        raise GovernedCommandUnavailable(
+            "checkpoint_process_tree_unavailable",
+            "semantic checkpoint process-tree inspection is unavailable")
+    ps_executable = str(Path(ps_executable).resolve(strict=True))
     # ``-P`` keeps the sandbox checkout from shadowing the engine-owned
     # checkpoint plugin during interpreter startup.  Pytest still collects
     # the exact sandbox selector, while the plugin bytes come from the bound
@@ -353,6 +451,11 @@ def _checkpoint_plan_authority(
         raise GovernedCommandError(
             "semantic checkpoint requires an exact active contract")
     proof_path = Path(workspace) / spec["focused_proof"]["path"]
+    state_file_binding = _regular_file_binding(
+        selected_state_path, label="current Plan state")
+    plan_projection = [_checkpoint_task_projection(row)
+                       for row in tasks if isinstance(row, Mapping)]
+    task_projection = _checkpoint_task_projection(task)
     material = {
         "schema": CHECKPOINT_BOUNDARY_SCHEMA,
         "workspace": str(Path(workspace).resolve()),
@@ -360,11 +463,14 @@ def _checkpoint_plan_authority(
         "run_id": run_id,
         "task_id": task_id,
         "step": str(state.get("step") or ""),
-        "plan_fingerprint": str(state.get("plan_fingerprint") or
-                                _canonical_digest(tasks)),
-        "task_fingerprint": _canonical_digest(task),
-        "state_binding": _regular_file_binding(
-            selected_state_path, label="current Plan state"),
+        "current_task_index": int(state.get("current_task", 0)),
+        "approved_plan_fingerprint": str(
+            state.get("plan_fingerprint") or ""),
+        "plan_fingerprint": _canonical_digest(plan_projection),
+        "task_fingerprint": _canonical_digest(task_projection),
+        "selection_fingerprint": _checkpoint_selection_fingerprint(
+            state, task),
+        "state_binding": {"path": state_file_binding["path"]},
         "active_contract_fingerprint": _canonical_digest(active_contract),
         "checkpoint_id": spec["checkpoint_id"],
         "authorized_argv": authorized_argv,
@@ -375,6 +481,8 @@ def _checkpoint_plan_authority(
             executable, label="runtime executable"),
         "git_binding": _regular_file_binding(
             git_executable, label="Git executable"),
+        "process_inspector_binding": _regular_file_binding(
+            ps_executable, label="process inspector"),
         "engine_bindings": {
             "governed_commands": _regular_file_binding(
                 __file__, label="governed command engine"),
@@ -391,12 +499,13 @@ def _checkpoint_plan_authority(
 
 
 def _assert_checkpoint_authority_current(
-        workspace: str, authority: Mapping) -> dict:
+        workspace: str, authority: Mapping, *,
+        use_bound_state_path: bool = False) -> dict:
     _spec, current = _checkpoint_plan_authority(
         workspace, str(authority.get("run_id") or ""),
         str(authority.get("task_id") or ""),
-        state_path=str((authority.get("state_binding") or {}).get("path") or
-                       ""))
+        state_path=(str((authority.get("state_binding") or {}).get("path") or
+                        "") if use_bound_state_path else None))
     if current != dict(authority):
         raise GovernedCommandUnavailable(
             "checkpoint_plan_changed",
@@ -405,11 +514,137 @@ def _assert_checkpoint_authority_current(
         authority["executable_binding"], label="runtime executable")
     _recheck_regular_file_binding(
         authority["git_binding"], label="Git executable")
+    _recheck_regular_file_binding(
+        authority["process_inspector_binding"], label="process inspector")
     for name, binding in authority["engine_bindings"].items():
         _recheck_regular_file_binding(binding, label=f"{name} engine")
     _recheck_regular_file_binding(
         authority["proof_binding"], label="focused proof")
     return current
+
+
+def _checkpoint_authorization_root(workspace: str) -> Path:
+    return _runtime_root(workspace) / "semantic-checkpoint-authorizations-v1"
+
+
+def _checkpoint_authorization_path(
+        workspace: str, token: str, *, consumed: bool = False) -> Path:
+    token_digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    state = "consumed" if consumed else "issued"
+    return _checkpoint_authorization_root(workspace) / state / \
+        f"{token_digest}.json"
+
+
+def mint_semantic_checkpoint_authorization(
+        workspace: str, *, lifecycle_authorization: str,
+        run_id: str, task_id: str) -> str:
+    """Mint one opaque, single-use checkpoint launch authorization.
+
+    The public lifecycle authorization remains stable so durable wait and
+    reconnect keep their compatibility contract.  This private capability is
+    narrower: one current Plan task, one source SHA, and one execute/fix step.
+    """
+    workspace = str(Path(workspace).resolve())
+    if not str(lifecycle_authorization or "").strip():
+        raise GovernedCommandError(
+            "semantic checkpoint lifecycle authorization is required")
+    _spec, authority = _checkpoint_plan_authority(
+        workspace, str(run_id), str(task_id))
+    token = "tp-checkpoint-v1." + secrets.token_hex(32)
+    token_digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    material = {
+        "schema": CHECKPOINT_AUTHORIZATION_SCHEMA,
+        "workspace": workspace,
+        "run_id": str(run_id),
+        "task_id": str(task_id),
+        "step": authority["step"],
+        "target_sha": authority["source_sha"],
+        "plan_fingerprint": authority["plan_fingerprint"],
+        "task_fingerprint": authority["task_fingerprint"],
+        "selection_fingerprint": authority["selection_fingerprint"],
+        "contract_fingerprint": authority["active_contract_fingerprint"],
+        "authority_fingerprint": authority["fingerprint"],
+        "lifecycle_authorization_fingerprint": hashlib.sha256(
+            lifecycle_authorization.encode("utf-8")).hexdigest(),
+        "token_fingerprint": token_digest,
+        "issued_at_ns": time.time_ns(),
+    }
+    record = {**material, "record_digest": _canonical_digest(material)}
+    root = _checkpoint_authorization_root(workspace)
+    for directory in (root, root / "issued", root / "consumed"):
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            directory.chmod(0o700)
+        except OSError as exc:
+            raise GovernedCommandUnavailable(
+                "checkpoint_authorization_unavailable",
+                "semantic checkpoint authorization store is unavailable") \
+                from exc
+    path = _checkpoint_authorization_path(workspace, token)
+    _atomic_json(path, record)
+    path.chmod(0o600)
+    return token
+
+
+def _consume_semantic_checkpoint_authorization(
+        workspace: str, *, lifecycle_authorization: str,
+        run_id: str, task_id: str, token: object) -> tuple[dict, dict]:
+    """Consume and revalidate one engine-minted checkpoint capability."""
+    if not isinstance(token, str) or not re.fullmatch(
+            r"tp-checkpoint-v1\.[0-9a-f]{64}", token):
+        raise GovernedCommandError(
+            "semantic checkpoint requires an engine-minted authorization")
+    issued = _checkpoint_authorization_path(workspace, token)
+    consumed = _checkpoint_authorization_path(
+        workspace, token, consumed=True)
+    try:
+        path_stat = issued.lstat()
+        record = json.loads(issued.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        reason = ("was already consumed" if consumed.is_file() else
+                  "was not engine-minted")
+        raise GovernedCommandError(
+            f"semantic checkpoint authorization {reason}") from exc
+    except (OSError, ValueError) as exc:
+        raise GovernedCommandError(
+            "semantic checkpoint authorization is unavailable") from exc
+    material = ({key: value for key, value in record.items()
+                 if key != "record_digest"}
+                if isinstance(record, Mapping) else {})
+    current_token_fingerprint = hashlib.sha256(
+        token.encode("utf-8")).hexdigest()
+    if (not isinstance(record, Mapping) or
+            not stat.S_ISREG(path_stat.st_mode) or stat.S_ISLNK(path_stat.st_mode) or
+            stat.S_IMODE(path_stat.st_mode) & 0o077 or
+            record.get("schema") != CHECKPOINT_AUTHORIZATION_SCHEMA or
+            record.get("record_digest") != _canonical_digest(material) or
+            record.get("workspace") != str(Path(workspace).resolve()) or
+            record.get("run_id") != run_id or
+            record.get("task_id") != task_id or
+            record.get("token_fingerprint") != current_token_fingerprint or
+            record.get("lifecycle_authorization_fingerprint") !=
+            hashlib.sha256(lifecycle_authorization.encode("utf-8")).hexdigest()):
+        raise GovernedCommandError(
+            "semantic checkpoint authorization is invalid")
+    spec, authority = _checkpoint_plan_authority(workspace, run_id, task_id)
+    expected = {
+        "step": authority["step"],
+        "target_sha": authority["source_sha"],
+        "plan_fingerprint": authority["plan_fingerprint"],
+        "task_fingerprint": authority["task_fingerprint"],
+        "selection_fingerprint": authority["selection_fingerprint"],
+        "contract_fingerprint": authority["active_contract_fingerprint"],
+        "authority_fingerprint": authority["fingerprint"],
+    }
+    if any(record.get(key) != value for key, value in expected.items()):
+        raise GovernedCommandError(
+            "semantic checkpoint authorization is stale")
+    try:
+        os.replace(issued, consumed)
+    except FileNotFoundError as exc:
+        raise GovernedCommandError(
+            "semantic checkpoint authorization was already consumed") from exc
+    return spec, authority
 
 
 def _prepare_checkpoint_sandbox(workspace: str, authority: Mapping) -> str:
@@ -491,23 +726,78 @@ def _checkpoint_receipt_path(root: Path, handle: str) -> Path:
 def semantic_checkpoint_execution_evidence(
         workspace: str, authorization: str, handle: str) -> dict:
     """Return one sealed, post-completion semantic execution receipt."""
-    root = _runtime_root(str(Path(workspace).resolve()))
-    _read_control(root, handle)
+    workspace = str(Path(workspace).resolve())
+    root = _runtime_root(workspace)
     try:
+        control = _read_control(root, handle)
         receipt = json.loads(
             _checkpoint_receipt_path(root, handle).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        if not isinstance(receipt, Mapping):
+            raise ValueError("receipt is not an object")
+        identity = receipt.get("identity") or {}
+        _spec, authority = _checkpoint_plan_authority(
+            workspace, str(identity.get("run_id") or ""),
+            str(identity.get("task_id") or ""))
+        runtime = CommandRuntime(
+            str(root), workspace=workspace, authorization=authorization)
+        snapshot = runtime.snapshot(handle)
+    except (OSError, ValueError, GovernedCommandError, KeyError) as exc:
         raise GovernedCommandError(
             "semantic checkpoint execution receipt is unavailable") from exc
-    digest = receipt.get("receipt_digest") if isinstance(receipt, dict) else None
+    digest = receipt.get("receipt_digest")
     material = {key: value for key, value in receipt.items()
-                if key != "receipt_digest"} if isinstance(receipt, dict) else {}
+                if key != "receipt_digest"}
+    semantic = control.get("semantic") or {}
+    expected_semantic = {
+        "schema": CHECKPOINT_BOUNDARY_SCHEMA,
+        "authority_fingerprint": authority["fingerprint"],
+        "checkpoint_authorization_fingerprint": receipt.get(
+            "checkpoint_authorization_fingerprint"),
+        "plan_fingerprint": authority["plan_fingerprint"],
+        "task_fingerprint": authority["task_fingerprint"],
+        "selection_fingerprint": authority["selection_fingerprint"],
+        "contract_fingerprint": authority["active_contract_fingerprint"],
+        "step": authority["step"],
+        "target_sha": authority["source_sha"],
+    }
     if (receipt.get("schema") != CHECKPOINT_EXECUTION_RECEIPT_SCHEMA or
             digest != _canonical_digest(material) or
             receipt.get("handle") != handle or
-            receipt.get("workspace") != str(Path(workspace).resolve()) or
+            receipt.get("workspace") != workspace or
             receipt.get("authorization_fingerprint") != hashlib.sha256(
                 authorization.encode("utf-8")).hexdigest() or
+            semantic != expected_semantic or
+            receipt.get("control_fingerprint") != _canonical_digest(control) or
+            receipt.get("authority_fingerprint") != authority["fingerprint"] or
+            receipt.get("plan_fingerprint") != authority["plan_fingerprint"] or
+            receipt.get("task_fingerprint") != authority["task_fingerprint"] or
+            receipt.get("selection_fingerprint") !=
+            authority["selection_fingerprint"] or
+            receipt.get("contract_fingerprint") !=
+            authority["active_contract_fingerprint"] or
+            receipt.get("target_sha") != authority["source_sha"] or
+            receipt.get("source_sha") != authority["source_sha"] or
+            receipt.get("step") != authority["step"] or
+            receipt.get("checkpoint_id") != authority["checkpoint_id"] or
+            receipt.get("post_authority_verified") is not True or
+            receipt.get("runtime_argv") != authority["runtime_argv"] or
+            receipt.get("runtime_environment") !=
+            authority["runtime_environment"] or
+            receipt.get("runtime_environment_fingerprint") !=
+            authority["runtime_environment_fingerprint"] or
+            receipt.get("executable_binding_fingerprint") !=
+            authority["executable_binding"]["fingerprint"] or
+            receipt.get("git_binding_fingerprint") !=
+            authority["git_binding"]["fingerprint"] or
+            receipt.get("process_inspector_binding_fingerprint") !=
+            authority["process_inspector_binding"]["fingerprint"] or
+            receipt.get("engine_bindings_fingerprint") !=
+            _canonical_digest(authority["engine_bindings"]) or
+            receipt.get("proof_sha256") != authority["proof_binding"]["sha256"] or
+            snapshot.get("identity") != receipt.get("identity") or
+            snapshot.get("output_digest") != receipt.get("output_sha256") or
+            snapshot.get("state") != receipt.get("state") or
+            snapshot.get("exit_code") != receipt.get("exit_code") or
             receipt.get("state") != "succeeded" or
             receipt.get("exit_code") != 0):
         raise GovernedCommandError(
@@ -715,8 +1005,12 @@ def execute(workspace: str, action: str, request: object) -> dict:
                           "ownership; no process was started"),
             }
         try:
-            spec, authority = _checkpoint_plan_authority(
-                workspace, str(value["run_id"]), str(value["task_id"]))
+            spec, authority = _consume_semantic_checkpoint_authorization(
+                workspace,
+                lifecycle_authorization=str(value["authorization"]),
+                run_id=str(value["run_id"]),
+                task_id=str(value["task_id"]),
+                token=value.get("checkpoint_authority"))
             sandbox = _prepare_checkpoint_sandbox(workspace, authority)
         except GovernedCommandUnavailable as exc:
             return {
@@ -732,6 +1026,8 @@ def execute(workspace: str, action: str, request: object) -> dict:
             "task_id": value["task_id"],
         }
         authorization = str(value["authorization"])
+        checkpoint_authorization_fingerprint = hashlib.sha256(
+            str(value["checkpoint_authority"]).encode("utf-8")).hexdigest()
         root = _runtime_root(workspace)
         token = secrets.token_hex(16)
         handoff = root / "handoffs" / f"{token}.json"
@@ -772,6 +1068,16 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 "semantic": {
                     "schema": CHECKPOINT_BOUNDARY_SCHEMA,
                     "authority_fingerprint": authority["fingerprint"],
+                    "checkpoint_authorization_fingerprint":
+                        checkpoint_authorization_fingerprint,
+                    "plan_fingerprint": authority["plan_fingerprint"],
+                    "task_fingerprint": authority["task_fingerprint"],
+                    "selection_fingerprint":
+                        authority["selection_fingerprint"],
+                    "contract_fingerprint":
+                        authority["active_contract_fingerprint"],
+                    "step": authority["step"],
+                    "target_sha": authority["source_sha"],
                 },
             }
             _atomic_json(_control_path(root, handle), control)
@@ -784,6 +1090,8 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 "argv": list(spec["focused_proof"]["argv"]),
                 "cwd": sandbox, "deadline": deadline,
                 "identity": identity, "authority": authority,
+                "checkpoint_authorization_fingerprint":
+                    checkpoint_authorization_fingerprint,
             })
             return _snapshot_result(
                 "checkpoint", adapter, handle,
@@ -917,35 +1225,194 @@ def _read_handoff(path: Path) -> dict:
     raise GovernedCommandError("detached command handoff timed out")
 
 
-def _terminate_semantic_process_tree(
-        process: subprocess.Popen, *, deadline: float) -> None:
-    """Terminate and reap a proof's complete POSIX process group in-budget."""
-    if process.poll() is not None:
-        return
+def _semantic_process_rows(authority: Mapping) -> list[dict]:
+    """Read one bounded POSIX process table through the bound inspector."""
+    binding = authority.get("process_inspector_binding") or {}
+    _recheck_regular_file_binding(binding, label="process inspector")
+    if sys.platform == "darwin":
+        import ctypes
+        import ctypes.util
+
+        library = ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"
+        libproc = ctypes.CDLL(library, use_errno=True)
+        libproc.proc_listpids.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int]
+        libproc.proc_listpids.restype = ctypes.c_int
+        libproc.proc_pidinfo.argtypes = [
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+            ctypes.c_void_p, ctypes.c_int]
+        libproc.proc_pidinfo.restype = ctypes.c_int
+        pids = (ctypes.c_int * 65536)()
+        size = int(libproc.proc_listpids(
+            1, 0, ctypes.byref(pids), ctypes.sizeof(pids)))
+        if size <= 0 or size >= ctypes.sizeof(pids):
+            raise GovernedCommandUnavailable(
+                "checkpoint_process_tree_unavailable",
+                "semantic checkpoint process-tree inspection failed")
+        rows = []
+        for pid in pids[:size // ctypes.sizeof(ctypes.c_int)]:
+            if pid <= 0:
+                continue
+            buffer = ctypes.create_string_buffer(256)
+            observed = int(libproc.proc_pidinfo(
+                int(pid), 3, 0, ctypes.byref(buffer), ctypes.sizeof(buffer)))
+            if observed < 136:
+                continue
+            rows.append({
+                "pid": int.from_bytes(buffer.raw[12:16], sys.byteorder),
+                "ppid": int.from_bytes(buffer.raw[16:20], sys.byteorder),
+                "pgid": int.from_bytes(buffer.raw[100:104], sys.byteorder),
+                "started": buffer.raw[120:136].hex(),
+            })
+        if rows:
+            return rows
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        rows = []
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                raw = (entry / "stat").read_text(encoding="utf-8")
+                suffix = raw[raw.rindex(")") + 2:].split()
+                rows.append({
+                    "pid": int(entry.name), "ppid": int(suffix[1]),
+                    "pgid": int(suffix[2]), "started": suffix[19],
+                })
+            except (OSError, ValueError, IndexError):
+                continue
+        if rows:
+            return rows
     try:
-        pgid = os.getpgid(process.pid)
-    except OSError:
-        pgid = None
-    if pgid is None:
+        result = subprocess.run(
+            [str(binding["path"]), "-axo", "pid=,ppid=,pgid=,lstart="],
+            env=_checkpoint_environment(), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            text=True, encoding="utf-8", errors="replace", timeout=2)
+    except (OSError, subprocess.TimeoutExpired) as exc:
         raise GovernedCommandUnavailable(
             "checkpoint_process_tree_unavailable",
-            "semantic checkpoint proof process ownership was lost")
-    os.killpg(pgid, signal.SIGTERM)
-    remaining = max(0.0, min(1.0, deadline - time.time()))
-    try:
-        process.wait(timeout=remaining)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    os.killpg(pgid, signal.SIGKILL)
-    remaining = max(0.0, deadline - time.time())
-    try:
-        process.wait(timeout=remaining)
-    except subprocess.TimeoutExpired as exc:
+            "semantic checkpoint process-tree inspection failed") from exc
+    if result.returncode != 0 or len(result.stdout) > 4 * 1024 * 1024:
         raise GovernedCommandUnavailable(
-            "checkpoint_process_reap_timeout",
-            "semantic checkpoint proof process tree did not reap in-budget") \
+            "checkpoint_process_tree_unavailable",
+            "semantic checkpoint process-tree inspection failed")
+    rows = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 8:
+            continue
+        try:
+            pid, ppid, pgid = map(int, fields[:3])
+        except ValueError:
+            continue
+        rows.append({
+            "pid": pid, "ppid": ppid, "pgid": pgid,
+            "started": " ".join(fields[3:8]),
+        })
+    if not rows:
+        raise GovernedCommandUnavailable(
+            "checkpoint_process_tree_unavailable",
+            "semantic checkpoint process-tree inspection returned no state")
+    return rows
+
+
+def _semantic_descendant_ownership(
+        process: subprocess.Popen, *, pgid: int,
+        authority: Mapping) -> tuple[dict[int, dict], bool]:
+    rows = _semantic_process_rows(authority)
+    by_parent: dict[int, list[dict]] = {}
+    for row in rows:
+        by_parent.setdefault(row["ppid"], []).append(row)
+    descendants: dict[int, dict] = {}
+    frontier = [int(process.pid)]
+    while frontier:
+        parent = frontier.pop()
+        for row in by_parent.get(parent, []):
+            if row["pid"] not in descendants:
+                descendants[row["pid"]] = row
+                frontier.append(row["pid"])
+    escaped = any(row["pgid"] != pgid for row in descendants.values())
+    return descendants, escaped
+
+
+def _owned_semantic_pid_live(identity: Mapping, authority: Mapping) -> bool:
+    return any(row["pid"] == identity.get("pid") and
+               row["started"] == identity.get("started")
+               for row in _semantic_process_rows(authority))
+
+
+def _semantic_group_live(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError as exc:
+        raise GovernedCommandUnavailable(
+            "checkpoint_process_tree_unavailable",
+            "semantic checkpoint process-group ownership is unverifiable") \
             from exc
+
+
+def _signal_semantic_group(pgid: int, selected_signal: signal.Signals) -> None:
+    try:
+        os.killpg(pgid, selected_signal)
+    except ProcessLookupError:
+        pass
+
+
+def _signal_owned_semantic_pids(
+        owned: Mapping[int, Mapping], selected_signal: signal.Signals,
+        authority: Mapping) -> None:
+    for pid, identity in sorted(owned.items(), reverse=True):
+        if _owned_semantic_pid_live(identity, authority):
+            try:
+                os.kill(int(pid), selected_signal)
+            except ProcessLookupError:
+                pass
+
+
+def _terminate_semantic_process_tree(
+        process: subprocess.Popen, *, deadline: float,
+        pgid: int | None = None, owned: Mapping[int, Mapping] | None = None,
+        authority: Mapping | None = None) -> None:
+    """Terminate and verify the complete observed proof tree in-budget.
+
+    Process-group cleanup handles ordinary descendants.  The continuously
+    captured identity ledger additionally owns a descendant that attempted a
+    new group/session, so such an escape is killed and the proof fails closed.
+    """
+    selected_pgid = int(pgid if pgid is not None else process.pid)
+    identities = dict(owned or {})
+    if authority is not None:
+        _signal_owned_semantic_pids(identities, signal.SIGTERM, authority)
+    _signal_semantic_group(selected_pgid, signal.SIGTERM)
+    cleanup_deadline = min(deadline, time.time() + _CHECKPOINT_REAP_SECONDS)
+    while time.time() < cleanup_deadline:
+        root_live = process.poll() is None
+        group_live = _semantic_group_live(selected_pgid)
+        owned_live = (authority is not None and any(
+            _owned_semantic_pid_live(identity, authority)
+            for identity in identities.values()))
+        if not root_live and not group_live and not owned_live:
+            return
+        time.sleep(0.01)
+    if authority is not None:
+        _signal_owned_semantic_pids(identities, signal.SIGKILL, authority)
+    _signal_semantic_group(selected_pgid, signal.SIGKILL)
+    while time.time() < deadline:
+        root_live = process.poll() is None
+        group_live = _semantic_group_live(selected_pgid)
+        owned_live = (authority is not None and any(
+            _owned_semantic_pid_live(identity, authority)
+            for identity in identities.values()))
+        if not root_live and not group_live and not owned_live:
+            return
+        time.sleep(0.01)
+    raise GovernedCommandUnavailable(
+        "checkpoint_process_reap_timeout",
+        "semantic checkpoint proof process tree did not reap in-budget")
 
 
 def _semantic_checkpoint_worker(handoff: Mapping, runtime: CommandRuntime,
@@ -957,8 +1424,25 @@ def _semantic_checkpoint_worker(handoff: Mapping, runtime: CommandRuntime,
     state = "failed"
     returncode = 1
     reason = "semantic checkpoint failed"
+    process = None
+    reader = None
+    proof_pgid = None
+    owned: dict[int, dict] = {}
+    proof_completed = False
+    post_authority_verified = False
+    control_fingerprint = None
+    cancellation_requested = threading.Event()
+    previous_handlers = {}
+
+    def request_cancellation(_signum, _frame):
+        cancellation_requested.set()
+
     try:
-        _assert_checkpoint_authority_current(workspace, authority)
+        for selected_signal in (signal.SIGTERM, signal.SIGINT):
+            previous_handlers[selected_signal] = signal.getsignal(selected_signal)
+            signal.signal(selected_signal, request_cancellation)
+        _assert_checkpoint_authority_current(
+            workspace, authority, use_bound_state_path=True)
         source_root = Path(workspace).resolve()
         sandbox_root = Path(sandbox).resolve()
         if source_root == sandbox_root or source_root in sandbox_root.parents:
@@ -989,6 +1473,11 @@ def _semantic_checkpoint_worker(handoff: Mapping, runtime: CommandRuntime,
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
             env=dict(authority["runtime_environment"]))
+        proof_pgid = int(os.getpgid(process.pid))
+        if proof_pgid != int(process.pid):
+            raise GovernedCommandUnavailable(
+                "checkpoint_process_tree_unavailable",
+                "semantic checkpoint proof has no owned process group")
 
         def drain() -> None:
             assert process.stdout is not None
@@ -999,29 +1488,103 @@ def _semantic_checkpoint_worker(handoff: Mapping, runtime: CommandRuntime,
 
         reader = threading.Thread(target=drain, daemon=True)
         reader.start()
-        execution_deadline = max(time.time(), deadline - 2.0)
+        execution_deadline = max(
+            time.time(), deadline - _CHECKPOINT_REAP_SECONDS)
         timed_out = False
-        while process.poll() is None:
+        escaped = False
+        while True:
+            descendants, observed_escape = _semantic_descendant_ownership(
+                process, pgid=proof_pgid, authority=authority)
+            if len(descendants) > 512:
+                raise GovernedCommandUnavailable(
+                    "checkpoint_process_tree_unavailable",
+                    "semantic checkpoint descendant limit was exceeded")
+            owned.update(descendants)
+            escaped = escaped or observed_escape
+            if escaped:
+                raise GovernedCommandUnavailable(
+                    "checkpoint_process_tree_escape",
+                    "semantic checkpoint descendant attempted to escape its "
+                    "owned process group")
+            if cancellation_requested.is_set():
+                state = "cancelled"
+                reason = "semantic checkpoint was cancelled"
+                break
+            observed_returncode = process.poll()
+            if observed_returncode is not None:
+                returncode = int(observed_returncode)
+                proof_completed = True
+                break
             if time.time() >= execution_deadline:
                 timed_out = True
-                _terminate_semantic_process_tree(process, deadline=deadline)
+                state = "timed_out"
+                reason = "semantic checkpoint deadline elapsed"
                 break
-            time.sleep(0.02)
-        returncode = process.wait(timeout=max(0.0, deadline - time.time()))
-        reader.join(timeout=max(0.0, deadline - time.time()))
-        if reader.is_alive():
-            raise GovernedCommandUnavailable(
-                "checkpoint_output_reap_timeout",
-                "semantic checkpoint output reader did not finish in-budget")
-        state = ("timed_out" if timed_out else
-                 "succeeded" if returncode == 0 else "failed")
-        reason = ("semantic checkpoint deadline elapsed" if timed_out else
-                  state)
+            time.sleep(0.005)
+        if not timed_out and state != "cancelled":
+            state = "succeeded" if returncode == 0 else "failed"
+            reason = state
     except BaseException as exc:
+        state = "failed"
         reason = (f"semantic checkpoint unavailable: {exc.reason_code}"
                   if isinstance(exc, GovernedCommandUnavailable) else
                   f"semantic checkpoint failed: {type(exc).__name__}: {exc}")
     finally:
+        if process is not None:
+            try:
+                if process.poll() is not None:
+                    returncode = int(process.returncode)
+                    proof_completed = True
+                _terminate_semantic_process_tree(
+                    process, deadline=deadline, pgid=proof_pgid,
+                    owned=owned, authority=authority)
+            except BaseException as exc:
+                state = "failed"
+                reason = (f"semantic checkpoint unavailable: {exc.reason_code}"
+                          if isinstance(exc, GovernedCommandUnavailable) else
+                          "semantic checkpoint process cleanup failed: "
+                          f"{type(exc).__name__}: {exc}")
+            if reader is not None:
+                reader.join(timeout=max(0.0, deadline - time.time()))
+                if reader.is_alive():
+                    state = "failed"
+                    reason = ("semantic checkpoint unavailable: "
+                              "checkpoint_output_reap_timeout")
+        if proof_completed:
+            try:
+                _assert_checkpoint_authority_current(
+                    workspace, authority, use_bound_state_path=True)
+                control = _read_control(Path(handoff["root"]), handle)
+                semantic = control.get("semantic") or {}
+                expected_semantic = {
+                    "schema": CHECKPOINT_BOUNDARY_SCHEMA,
+                    "authority_fingerprint": authority["fingerprint"],
+                    "checkpoint_authorization_fingerprint": str(
+                        handoff["checkpoint_authorization_fingerprint"]),
+                    "plan_fingerprint": authority["plan_fingerprint"],
+                    "task_fingerprint": authority["task_fingerprint"],
+                    "selection_fingerprint":
+                        authority["selection_fingerprint"],
+                    "contract_fingerprint":
+                        authority["active_contract_fingerprint"],
+                    "step": authority["step"],
+                    "target_sha": authority["source_sha"],
+                }
+                if semantic != expected_semantic:
+                    raise GovernedCommandUnavailable(
+                        "checkpoint_control_changed",
+                        "semantic checkpoint control binding changed before "
+                        "receipt")
+                control_fingerprint = _canonical_digest(control)
+                post_authority_verified = True
+            except BaseException as exc:
+                state = "failed"
+                reason = (f"semantic checkpoint unavailable: {exc.reason_code}"
+                          if isinstance(exc, GovernedCommandUnavailable) else
+                          "semantic checkpoint post-proof authority failed: "
+                          f"{type(exc).__name__}: {exc}")
+        for selected_signal, previous in previous_handlers.items():
+            signal.signal(selected_signal, previous)
         if captured:
             runtime.append_output(
                 handle, captured.decode("utf-8", errors="replace"))
@@ -1039,6 +1602,18 @@ def _semantic_checkpoint_worker(handoff: Mapping, runtime: CommandRuntime,
             "source_sha": authority.get("source_sha"),
             "checkpoint_id": authority.get("checkpoint_id"),
             "authority_fingerprint": authority.get("fingerprint"),
+            "checkpoint_authorization_fingerprint": handoff.get(
+                "checkpoint_authorization_fingerprint"),
+            "plan_fingerprint": authority.get("plan_fingerprint"),
+            "task_fingerprint": authority.get("task_fingerprint"),
+            "selection_fingerprint": authority.get(
+                "selection_fingerprint"),
+            "contract_fingerprint": authority.get(
+                "active_contract_fingerprint"),
+            "control_fingerprint": control_fingerprint,
+            "target_sha": authority.get("source_sha"),
+            "step": authority.get("step"),
+            "post_authority_verified": post_authority_verified,
             "sandbox_fingerprint": hashlib.sha256(
                 sandbox.encode("utf-8")).hexdigest(),
             "authorized_command_fingerprint": _canonical_digest(
@@ -1054,6 +1629,9 @@ def _semantic_checkpoint_worker(handoff: Mapping, runtime: CommandRuntime,
                 authority.get("executable_binding") or {}).get("fingerprint"),
             "git_binding_fingerprint": (
                 authority.get("git_binding") or {}).get("fingerprint"),
+            "process_inspector_binding_fingerprint": (
+                authority.get("process_inspector_binding") or {}).get(
+                    "fingerprint"),
             "engine_bindings_fingerprint": _canonical_digest(
                 authority.get("engine_bindings")),
             "proof_sha256": (
