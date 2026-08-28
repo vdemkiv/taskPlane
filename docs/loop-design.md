@@ -255,12 +255,102 @@ Each was settled as the **Recommendation** noted below and is what shipped.
 
 | Decision ID | Status | Accepted authority / decision | Implementation authority |
 | --- | --- | --- | --- |
-| `D-LOOP-ENGINE-OWNERSHIP` | ACCEPTED | taskplane owns the loop state machine, transitions, DoR/DoD gates, and single audit trace; the orchestrator only drives workers and invokes engine commands | `taskplane/loop.py` and the `taskplane/tp.py loop` command family |
+| `D-LOOP-ENGINE-OWNERSHIP/v1` | ACTIVE | taskplane owns governed state and gates; the host orchestrator owns native worker lifecycle within emitted authority | Complete versioned record below |
 | `D-LOOP-HUMAN-CHECKPOINTS` | SUPERSEDED by R-0001 | one consolidated pre-implementation authorization plus EM sign-off | loop gate policy |
 | `D-LOOP-FAIL-POLICY` | ACCEPTED | auto-fix at most two cycles by default, then escalate | loop cycle policy |
 | `D-LOOP-INPUT-FORMAT` | ACCEPTED | accept free text through PM or an existing specification | loop initialization |
 | `D-LOOP-TASK-GRANULARITY` | ACCEPTED | the planner proposes task boundaries and the human may edit the plan before authorization | Plan gate |
 | `D-LOOP-STAGE-MIGRATION` | ACCEPTED | byte-retaining, receipt-verified, one-way authority conversion | stage manifest migration transaction above |
+
+### Decision record: `D-LOOP-ENGINE-OWNERSHIP/v1`
+
+The fenced record is the retrievable authority for this decision; the table
+above is only its human index.
+
+```json
+{
+  "schema": "taskplane.decision/v1",
+  "id": "D-LOOP-ENGINE-OWNERSHIP",
+  "version": 1,
+  "status": "ACTIVE",
+  "owner": "taskplane-loop-engine",
+  "affected_module_globs": [
+    "taskplane/loop*.py",
+    "taskplane/tp.py",
+    "taskplane/native_authority.py"
+  ],
+  "provenance": {
+    "requirement_ids": ["R-0002"],
+    "finding_ids": ["M-28"],
+    "sources": [
+      "docs/loop-design.md",
+      "design/contract.json#/finding_map/M-28"
+    ]
+  },
+  "selected_alternative": "A-host-orchestrator-lifecycle",
+  "authority_owners": {
+    "governed_state_transitions_gates_and_audit": "taskplane-loop-engine",
+    "native_worker_dispatch_start_stop_and_wait": "host-orchestrator"
+  },
+  "alternatives": [
+    {
+      "id": "A-host-orchestrator-lifecycle",
+      "disposition": "SELECTED",
+      "decision": "Taskplane owns governed state, transitions, DoR/DoD gates, and the audit trace; the host orchestrator owns native worker dispatch, SubagentStart/SubagentStop lifecycle, and event-driven waits within Taskplane-emitted authority.",
+      "qualities_gained": [
+        "one fail-closed governance authority",
+        "host-native identity and parallel lifecycle",
+        "no duplicate embedded scheduler"
+      ],
+      "qualities_spent": [
+        "availability depends on versioned host lifecycle receipts",
+        "the engine cannot itself create, cancel, or wait for native workers"
+      ]
+    },
+    {
+      "id": "B-engine-owned-worker-scheduler",
+      "disposition": "REJECTED",
+      "decision": "Taskplane owns both governed state and an embedded cross-host worker scheduler.",
+      "qualities_gained": [
+        "one component controls governance and worker lifecycle",
+        "engine-local cancellation and retry"
+      ],
+      "qualities_spent": [
+        "duplicates host-native scheduling and identity",
+        "adds cross-host process and credential authority to the engine"
+      ]
+    },
+    {
+      "id": "C-prose-orchestrator-owns-loop",
+      "disposition": "REJECTED",
+      "decision": "The host orchestrator keeps loop state in prose and calls isolated ready, DoD, and clear primitives.",
+      "qualities_gained": [
+        "fewest engine commands",
+        "maximum host-specific flexibility"
+      ],
+      "qualities_spent": [
+        "no single mechanical transition authority",
+        "self-approval and audit divergence become possible"
+      ]
+    }
+  ],
+  "revisit_trigger": {
+    "subject": "stable host-native lifecycle contract",
+    "minimum_consecutive_minor_releases": 2,
+    "minimum_governed_dispatches": 100,
+    "required_start_stop_receipt_pairing_percent": 100,
+    "required_exact_checkout_run_binding_percent": 100,
+    "maximum_orphaned_worker_identities": 0,
+    "maximum_poll_based_waits": 0,
+    "action": "A superseding decision may reconsider the ownership split only after every supported host meets every threshold."
+  },
+  "lineage": {
+    "supersedes": ["D-LOOP-ENGINE-OWNERSHIP/prose-2026-07-11"],
+    "superseded_by": null,
+    "narrows": "engine authority excludes host-native worker lifecycle"
+  }
+}
+```
 
 The ownership record is operational, not honorary: changing state, deciding a
 transition, evaluating a DoR/DoD gate, or appending the authoritative audit
@@ -270,10 +360,11 @@ of those responsibilities out of `taskplane/loop.py` requires a superseding
 accepted decision; a wrapper or new host adapter alone is not a revisit
 trigger.
 
-1. **Loop engine location.** taskplane owns the state machine (`tp.py loop`
-   engine, strongest "runs through taskplane") *or* the orchestrator agent
-   drives via prose calling `tp.py new/ready/dod`. **Recommendation: taskplane
-   owns it.**
+1. **Loop engine location.** `D-LOOP-ENGINE-OWNERSHIP/v1` selects taskplane for
+   governed state and gate authority while the host orchestrator owns native
+   worker lifecycle within emitted authority. The rejected prose-orchestrator
+   and embedded-scheduler alternatives, costs, and revisit trigger are in the
+   ACTIVE record above.
 2. **Human checkpoints.** Where does the loop pause for you? (a) only EM at the
    end; (b) also approve the plan before EXECUTE; (c) after every task; (d)
    configurable per run. **Superseded by R-0001: one consolidated

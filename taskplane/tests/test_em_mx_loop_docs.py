@@ -7,6 +7,7 @@ authority contract.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -88,7 +89,7 @@ def test_m27_stage_migration_records_alternatives_and_revisit_trigger() -> None:
 
 
 def test_m28_loop_engine_ownership_is_in_decision_registry() -> None:
-    """M-28: production loop ownership is an accepted registry entry."""
+    """M-28: loop ownership is a complete retrievable ACTIVE decision."""
 
     registry = _section(
         _document(),
@@ -96,17 +97,82 @@ def test_m28_loop_engine_ownership_is_in_decision_registry() -> None:
         level=2,
     )
     ownership_row = re.search(
-        r"^\| `D-LOOP-ENGINE-OWNERSHIP` \| ACCEPTED \|(?P<decision>.*?)"
-        r"\|(?P<implementation>.*?)\|$",
+        r"^\| `D-LOOP-ENGINE-OWNERSHIP/v1` \| ACTIVE \|(?P<summary>.*?)"
+        r"\| Complete versioned record below \|$",
         registry,
         re.MULTILINE,
     )
     assert ownership_row is not None
-    decision = ownership_row.group("decision")
-    assert "taskplane owns the loop state machine" in decision
-    assert "transitions, DoR/DoD gates, and single audit trace" in decision
-    assert "`taskplane/loop.py`" in ownership_row.group("implementation")
-    assert "`taskplane/tp.py loop`" in ownership_row.group("implementation")
+    assert "host orchestrator owns native worker lifecycle" in \
+        ownership_row.group("summary")
+
+    decision_section = _section(
+        registry,
+        "Decision record: `D-LOOP-ENGINE-OWNERSHIP/v1`",
+        level=3,
+    )
+    match = re.search(r"```json\n(?P<record>.*?)\n```", decision_section,
+                      re.DOTALL)
+    assert match is not None, "a summary row is not a decision record"
+    record = json.loads(match.group("record"))
+
+    assert record["schema"] == "taskplane.decision/v1"
+    assert record["id"] == "D-LOOP-ENGINE-OWNERSHIP"
+    assert record["version"] == 1
+    assert record["status"] == "ACTIVE"
+    assert record["owner"] == "taskplane-loop-engine"
+    assert record["affected_module_globs"] == [
+        "taskplane/loop*.py",
+        "taskplane/tp.py",
+        "taskplane/native_authority.py",
+    ]
+    assert record["provenance"] == {
+        "requirement_ids": ["R-0002"],
+        "finding_ids": ["M-28"],
+        "sources": [
+            "docs/loop-design.md",
+            "design/contract.json#/finding_map/M-28",
+        ],
+    }
+
+    selected_id = record["selected_alternative"]
+    alternatives = {row["id"]: row for row in record["alternatives"]}
+    assert len(alternatives) >= 3
+    selected = alternatives[selected_id]
+    assert selected["disposition"] == "SELECTED"
+    assert "host orchestrator owns native worker dispatch" in \
+        selected["decision"]
+    assert "SubagentStart/SubagentStop lifecycle" in selected["decision"]
+    assert len(selected["qualities_gained"]) >= 2
+    assert len(selected["qualities_spent"]) >= 2
+    rejected = [row for row in alternatives.values()
+                if row["disposition"] == "REJECTED"]
+    assert len(rejected) >= 2
+    assert all(len(row["qualities_gained"]) >= 2 for row in rejected)
+    assert all(len(row["qualities_spent"]) >= 2 for row in rejected)
+
+    assert record["authority_owners"] == {
+        "governed_state_transitions_gates_and_audit":
+            "taskplane-loop-engine",
+        "native_worker_dispatch_start_stop_and_wait": "host-orchestrator",
+    }
+    trigger = record["revisit_trigger"]
+    assert trigger["subject"] == "stable host-native lifecycle contract"
+    assert trigger["minimum_consecutive_minor_releases"] >= 2
+    assert trigger["minimum_governed_dispatches"] >= 100
+    assert trigger["required_start_stop_receipt_pairing_percent"] == 100
+    assert trigger["required_exact_checkout_run_binding_percent"] == 100
+    assert trigger["maximum_orphaned_worker_identities"] == 0
+    assert trigger["maximum_poll_based_waits"] == 0
+    assert "every supported host meets every threshold" in trigger["action"]
+
+    lineage = record["lineage"]
+    assert lineage["supersedes"] == [
+        "D-LOOP-ENGINE-OWNERSHIP/prose-2026-07-11"
+    ]
+    assert lineage["superseded_by"] is None
+    assert lineage["narrows"] == \
+        "engine authority excludes host-native worker lifecycle"
 
     prose = _prose(registry)
     authority_rules = (
