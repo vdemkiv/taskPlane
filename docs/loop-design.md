@@ -121,10 +121,19 @@ tp.py loop init [--design] [--design-only] <spec-or-handoff>
 tp.py loop next                       # advance ONE step: activate the right
                                       # contract, return which role to run +
                                       # its DoR; the agent does the work; then
-tp.py loop submit [pass|fail]          # worker requests validation; no transition
+tp.py loop submit [pass|fail|unavailable]
+                                      # worker requests validation; no transition;
+                                      # `unavailable` is EVALUATE-only (see below)
 tp.py loop gate  [pass|fail]           # orchestrator recomputes evidence and transitions
 tp.py loop status                     # where are we, per-task status, cycles
 ```
+
+`unavailable` is not a third product verdict and does not mean that evidence
+passed. Only an EVALUATE worker may submit it, and only for a bounded host/model
+outage that prevents that evaluator from running. The orchestrator records one
+visible warning and advances without consuming a product FIX cycle. A product,
+contract, test, or lens failure must be submitted as `fail` and follows the
+normal FIX path; `unavailable` cannot turn such a failure into progress.
 
 The **orchestrator agent** becomes a thin driver: call `loop next` → run the
 named role → receive its fingerprinted `loop submit` → call `loop gate` →
@@ -156,6 +165,29 @@ work; continuation creates a successor stage.
 
 Migration of an existing `loop.json`/track collection is deliberately
 one-way, non-destructive, and idempotent:
+
+#### Accepted decision `D-LOOP-STAGE-MIGRATION`
+
+- **Status / owner:** ACCEPTED; the taskplane loop engine owns the authority
+  conversion and its receipt.
+- **Selected authority model:** retain the byte-exact legacy source, then make
+  one atomic, receipt-verified, one-way switch to the stage manifest. Before
+  that commit the legacy singleton is authoritative; after it the verified
+  stage-manifest revision is authoritative. There is no dual-authority window.
+
+| Alternative | What it buys | What it spends / disposition |
+| --- | --- | --- |
+| **A. Retained-source, receipt-verified one-way conversion (selected)** | One authority at every instant, deterministic replay, and complete audit/rollback evidence | Gives up automatic reverse migration; recovery restores retained evidence or creates a successor revision rather than rewriting history |
+| **B. Bidirectional dual-write with reverse migration** | Older and newer clients can both mutate their native representations | Rejected: partial writes create split-brain authority and a reverse projection cannot faithfully classify ambiguous legacy state |
+| **C. In-place singleton schema upgrade** | Smallest apparent storage change | Rejected: destroys byte-exact source evidence and makes crash recovery depend on heuristically completing a partial conversion |
+
+**Revisit trigger:** reconsider reverse export or dual-write only when at least
+two supported production consumers require reverse export *and* a conformance
+suite proves a lossless round trip for every stable stage/manifest revision,
+including every `taskplane.legacy-unknown/v1` sentinel, under an authority-epoch
+protocol that prevents split brain. Both conditions are required. Until then,
+the one-way receipt boundary remains authoritative; convenience or a single
+legacy client is not a revisit trigger.
 
 - First retain the exact bytes of the live singleton, registry, archived track
   records, and their governed requirement/task/decision/evidence/commit/review
@@ -217,9 +249,26 @@ directly.
 - **Later (v0.2+):** parallel task dispatch,
   per-role budget rollups, board escalation on repeated FAIL.
 
-## Design decisions (resolved & locked 2026-07-11)
+## Decision registry (resolved & locked 2026-07-11)
 
 Each was settled as the **Recommendation** noted below and is what shipped.
+
+| Decision ID | Status | Accepted authority / decision | Implementation authority |
+| --- | --- | --- | --- |
+| `D-LOOP-ENGINE-OWNERSHIP` | ACCEPTED | taskplane owns the loop state machine, transitions, DoR/DoD gates, and single audit trace; the orchestrator only drives workers and invokes engine commands | `taskplane/loop.py` and the `taskplane/tp.py loop` command family |
+| `D-LOOP-HUMAN-CHECKPOINTS` | SUPERSEDED by R-0001 | one consolidated pre-implementation authorization plus EM sign-off | loop gate policy |
+| `D-LOOP-FAIL-POLICY` | ACCEPTED | auto-fix at most two cycles by default, then escalate | loop cycle policy |
+| `D-LOOP-INPUT-FORMAT` | ACCEPTED | accept free text through PM or an existing specification | loop initialization |
+| `D-LOOP-TASK-GRANULARITY` | ACCEPTED | the planner proposes task boundaries and the human may edit the plan before authorization | Plan gate |
+| `D-LOOP-STAGE-MIGRATION` | ACCEPTED | byte-retaining, receipt-verified, one-way authority conversion | stage manifest migration transaction above |
+
+The ownership record is operational, not honorary: changing state, deciding a
+transition, evaluating a DoR/DoD gate, or appending the authoritative audit
+event belongs to the engine. An orchestrator may request those operations but
+cannot replace them with prose state or self-approve their result. Moving any
+of those responsibilities out of `taskplane/loop.py` requires a superseding
+accepted decision; a wrapper or new host adapter alone is not a revisit
+trigger.
 
 1. **Loop engine location.** taskplane owns the state machine (`tp.py loop`
    engine, strongest "runs through taskplane") *or* the orchestrator agent
