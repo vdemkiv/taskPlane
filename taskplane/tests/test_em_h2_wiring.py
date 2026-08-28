@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from taskplane import design_sweep, native_authority, preview_runtime
+from taskplane import (
+    command_adapters, design_sweep, loop, native_authority, preview_runtime, tp,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -69,6 +74,113 @@ def test_h10_native_authority_validator_is_reachable_from_supported_flow(
                 root, sweep_evidence={"host": "retained"})
         monkeypatch.setattr(native_authority, "validate_design_and_plan", authority)
         monkeypatch.setattr(native_authority, "validate_delivery_roots", roots)
+
+
+def _retained_audit(tmp_path: Path, monkeypatch) -> Path:
+    revision = native_authority.RETAINED_R0013_AUTHORITY_REVISION
+    catalog = json.loads(design_sweep.retained_repository_bytes(
+        ROOT, "lenses/catalog.json", maximum=2_000_000,
+        revision=revision))
+    thread = "01a00000-0000-7000-8000-000000000011"
+    turn = "01a00000-0000-7000-8000-000000000012"
+    rows = [{"timestamp": "1970-01-01T00:00:01Z", "ordinal": 0,
+             "type": "session_meta",
+             "payload": {"id": thread, "session_id": thread}}]
+    for index, lens in enumerate(catalog["lenses"]):
+        lens_id = lens["id"]
+        agent = f"/root/r0013_design_lens_{lens_id.replace('-', '_')}"
+        result = design_sweep.retained_repository_bytes(
+            ROOT, f"design/lens-evidence/{lens_id}.json", maximum=2_000_000,
+            revision=revision)
+        rows.extend([
+            {"timestamp": f"1970-01-01T00:01:{index:02d}Z",
+             "ordinal": index * 2 + 1, "type": "event_msg",
+             "payload": {"type": "item_completed", "thread_id": thread,
+                         "turn_id": turn,
+                         "item": {"type": "SubAgentActivity",
+                                  "id": f"start-{index:02d}",
+                                  "kind": "started",
+                                  "agent_thread_id":
+                                      f"agent-{index:02d}",
+                                  "agent_path": agent},
+                         "started_at_ms": 100_000 + index,
+                         "completed_at_ms": 100_000 + index}},
+            {"timestamp": f"1970-01-01T00:03:{index:02d}Z",
+             "ordinal": index * 2 + 2, "type": "response_item",
+             "payload": {"type": "agent_message",
+                         "id": f"final-{index:02d}", "author": agent,
+                         "recipient": "/root",
+                         "content": [{"type": "input_text", "text":
+                             "Message Type: FINAL_ANSWER\n"
+                             "Task name: /root\n"
+                             f"Sender: {agent}\nPayload:\n"
+                             "taskplane-result-path:"
+                             f"design/lens-evidence/{lens_id}.json\n"
+                             "taskplane-result-sha256:"
+                             f"{hashlib.sha256(result).hexdigest()}"}],
+                         "internal_chat_message_metadata_passthrough": {
+                             "turn_id": turn,
+                             "create_time": 200.0 + index}}},
+        ])
+    raw = b"".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        for row in rows)
+    audit = tmp_path / "retained-r0013-audit.jsonl"
+    audit.write_bytes(raw)
+    monkeypatch.setattr(
+        native_authority, "RETAINED_R0013_SOURCE_THREAD", thread)
+    monkeypatch.setattr(native_authority, "RETAINED_R0013_DESIGN_TURN", turn)
+    monkeypatch.setattr(
+        native_authority, "RETAINED_R0013_AUDIT_SHA256",
+        hashlib.sha256(raw).hexdigest())
+    return audit
+
+
+def test_h10_h11_installed_cli_consumes_retained_r0013_not_current_design(
+        tmp_path, monkeypatch, capsys):
+    assert json.loads((ROOT / "design/contract.json").read_text())["requirement"] \
+        == "R-0002"
+    audit = _retained_audit(tmp_path, monkeypatch)
+
+    assert tp.main([
+        "production-gate", "--workspace", str(ROOT),
+        "--audit-path", str(audit),
+    ]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["status"] == "ready"
+    assert receipt["authority_revision"] == \
+        native_authority.RETAINED_R0013_AUTHORITY_REVISION
+    assert receipt["authority"]["status"] == "ready"
+    assert receipt["design_sweep"]["status"] == "ready"
+
+    assert tp.main([
+        "production-gate", "--workspace", str(ROOT),
+        "--audit-path", str(tmp_path / "missing.jsonl"),
+    ]) == 1
+    unavailable = json.loads(capsys.readouterr().out)
+    assert unavailable["status"] == "unavailable"
+
+
+def test_h10_h11_loop_plan_gate_calls_retained_production_authority(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        native_authority, "retained_r0013_authority_applies",
+        lambda workspace: calls.append(("applies", workspace)) or True)
+    monkeypatch.setattr(
+        native_authority, "validate_retained_r0013_authority",
+        lambda workspace: calls.append(("validate", workspace)) or {
+            "schema": native_authority.PRODUCTION_DESIGN_GATE_SCHEMA,
+            "status": "ready"})
+    assert loop._retained_production_authority_errors("/repository") == []
+    assert calls == [("applies", "/repository"),
+                     ("validate", "/repository")]
+
+    monkeypatch.setattr(
+        native_authority, "validate_retained_r0013_authority",
+        lambda _workspace: (_ for _ in ()).throw(
+            native_authority.NativeAuthorityError("severed")))
+    assert "severed" in loop._retained_production_authority_errors(
+        "/repository")[0]
 
 
 def _sweep_root(tmp_path: Path) -> tuple[Path, dict]:
@@ -141,35 +253,82 @@ def test_h11_design_sweep_validator_is_reachable_or_removed(
 
 
 @pytest.mark.parametrize(
-    ("flow", "entry_name"),
-    [("design", "launch_design_preview"),
-     ("build", "launch_build_preview"),
-     ("dynamic_review", "launch_dynamic_review_preview")],
+    "flow", ["design", "build", "dynamic_review"],
 )
 def test_h12_preview_entrypoints_execute_from_supported_flow(
-        monkeypatch, flow, entry_name):
-    calls = []
+        tmp_path, monkeypatch, capsys, flow):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.py").write_text("print('preview')\n", encoding="utf-8")
+    state = tmp_path / "state"
+    isolation_calls = []
+    surface_calls = []
 
-    def launch(**kwargs):
-        calls.append(kwargs)
-        return {"schema": "live-preview", "flow": flow}
+    def isolate(command, cwd, policy):
+        isolation_calls.append((list(command), Path(cwd), dict(policy)))
+        fingerprint = hashlib.sha256(json.dumps(
+            dict(policy), sort_keys=True, separators=(",", ":"))
+            .encode()).hexdigest()
+        return command_adapters.HostLaunch(
+            binding={"native": "preview-fixture"},
+            isolation={
+                "schema": "taskplane.preview-isolation-receipt/v1",
+                "network": "denied", "scope": "complete-process-tree",
+                "push": "denied", "filesystem": "sandbox-only",
+                "source": "immutable", "remotes": "disabled",
+                "cpu": "rlimit-enforced", "memory": "rlimit-enforced",
+                "mechanism": "focused-host-fixture",
+                "policy_fingerprint": fingerprint,
+                "process_ownership": {
+                    "schema": "taskplane.preview-process-ownership/v1",
+                    "pid": 101, "pgid": 101, "started": "fixture",
+                    "role": "preview-command", "generation": 1,
+                },
+            })
 
-    monkeypatch.setattr(preview_runtime, entry_name, launch)
+    def surface(surface_name, sandbox, preview):
+        surface_calls.append((surface_name, Path(sandbox), preview["flow"]))
+        return {
+            "schema": "taskplane.host-preview-surface/v1",
+            "surface": surface_name, "binding": "focused-surface",
+            "process_ownership": {
+                "schema": "taskplane.preview-process-ownership/v1",
+                "pid": 102, "pgid": 102, "started": "fixture-surface",
+                "role": "host-surface", "generation": 1,
+            },
+        }
+
+    monkeypatch.setattr(
+        command_adapters, "os_preview_isolation_launcher", isolate)
+    monkeypatch.setattr(command_adapters, "native_surface_transport", surface)
     request = {
-        "flow": flow, "host": "codex", "state_root": "state",
-        "source_root": "source", "authorization": "authority",
+        "flow": flow, "host": "codex", "state_root": str(state),
+        "source_root": str(source), "authorization": "authority",
         "target": "candidate", "revision": 7,
-        "capabilities": {}, "command": ["python3", "app.py"],
-        "limits": {},
+        "capabilities": _capabilities(),
+        "command": ["python3", "app.py"],
+        "limits": {"lifetime_seconds": 60, "cpu_seconds": 10,
+                   "memory_bytes": 1_000_000},
     }
-    result = preview_runtime.launch_preview_request(request)
-    assert result == {"schema": "live-preview", "flow": flow}
-    assert calls == [{name: value for name, value in request.items()
-                      if name != "flow"}]
+    request_path = tmp_path / f"{flow}.json"
+    _write_json(request_path, request)
+    assert tp.main(["preview", "--request", str(request_path)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["schema"] == "taskplane.working-preview-launch/v1"
+    assert result["flow"] == flow
+    assert result["preview"]["state"] == "open"
+    assert isolation_calls[0][0] == ["python3", "app.py"]
+    assert isolation_calls[0][1].is_dir()
+    assert isolation_calls[0][2]["scope"] == "complete-process-tree"
+    assert surface_calls == [
+        ("browser", isolation_calls[0][1], flow)]
 
     with pytest.raises(preview_runtime.PreviewDenied,
                        match="request fields"):
         preview_runtime.launch_preview_request({**request, "fake_pass": True})
+    with pytest.raises(preview_runtime.PreviewDenied, match="shell wrapper"):
+        preview_runtime.launch_preview_request(
+            {**request, "command": ["sh", "-c", "python3 app.py"]})
 
 
 def _capabilities() -> dict:
@@ -273,6 +432,64 @@ def test_h29_preview_rejects_symlink_and_post_inventory_source_drift(tmp_path):
     closed = runtime.close(preview["preview_id"])
     assert closed["state"] == "failed"
     assert closed["outcome"] == "escaped_path"
+
+
+def test_h29_preview_descriptor_refuses_same_content_symlink_swap(
+        tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    app = source / "app.py"
+    app.write_bytes(b"same-content\n")
+    outside = tmp_path / "outside.py"
+    outside.write_bytes(b"same-content\n")
+    original = preview_runtime._materialize_manifest
+
+    def swap_then_materialize(*args, **kwargs):
+        app.unlink()
+        app.symlink_to(outside)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preview_runtime, "_materialize_manifest", swap_then_materialize)
+    runtime = preview_runtime.PreviewRuntime(
+        tmp_path / "state", workspace=source, authorization="authority")
+    with pytest.raises(preview_runtime.PreviewDenied,
+                       match="materialization|unavailable") as error:
+        runtime.register(
+            flow="build", target="candidate", revision=1,
+            source_root=source, authorization="authority",
+            capabilities=_capabilities(),
+            limits={"lifetime_seconds": 60, "cpu_seconds": 10,
+                    "memory_bytes": 1_000_000}, network_allowlist=[])
+    assert error.value.outcome == "unavailable"
+    assert runtime.audit()[-1]["outcome"] == "unavailable"
+    assert not list((tmp_path / "state" / "previews").glob("*"))
+
+
+def test_h29_preview_preparation_exception_is_structured_and_cleans_scope(
+        tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.py").write_text("bounded", encoding="utf-8")
+
+    def fail_preparation(*_args, **_kwargs):
+        raise RuntimeError("injected preparation fault")
+
+    monkeypatch.setattr(
+        preview_runtime, "_materialize_manifest", fail_preparation)
+    runtime = preview_runtime.PreviewRuntime(
+        tmp_path / "state", workspace=source, authorization="authority")
+    with pytest.raises(preview_runtime.PreviewDenied,
+                       match="injected preparation fault") as error:
+        runtime.register(
+            flow="build", target="candidate", revision=1,
+            source_root=source, authorization="authority",
+            capabilities=_capabilities(),
+            limits={"lifetime_seconds": 60, "cpu_seconds": 10,
+                    "memory_bytes": 1_000_000}, network_allowlist=[])
+    assert error.value.outcome == "unavailable"
+    assert runtime.audit()[-1]["outcome"] == "unavailable"
+    assert not list((tmp_path / "state" / "previews").glob("*"))
 
 
 def test_h29_preview_registration_has_one_aggregate_startup_deadline(

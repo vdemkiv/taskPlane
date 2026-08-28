@@ -6043,6 +6043,25 @@ _design_plan_errors = _dc.design_plan_errors
 _design_review_errors = _dc.design_review_errors
 
 
+def _retained_production_authority_errors(ws: str) -> list[str]:
+    """Enforce immutable R-0013 authority on descendant Taskplane checkouts."""
+    try:
+        if __package__:
+            from . import native_authority
+        else:  # pragma: no cover - direct installed CLI
+            import native_authority
+        if not native_authority.retained_r0013_authority_applies(ws):
+            return []
+        receipt = native_authority.validate_retained_r0013_authority(ws)
+        if receipt.get("schema") != \
+                native_authority.PRODUCTION_DESIGN_GATE_SCHEMA or \
+                receipt.get("status") != "ready":
+            return ["retained R-0013 production authority is unavailable"]
+        return []
+    except Exception as exc:
+        return [f"retained R-0013 production authority: {exc}"]
+
+
 def _design_context(ws: str, state: dict) -> dict | None:
     if not state.get("design_required"):
         return None
@@ -8164,7 +8183,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                              "no tasks — the plan exists only as words. "
                              "Write plan/tasks.json (+ plan/plan.md for the "
                              "human), then gate again."}
-        dor_errors = _plan_dor_errors(ws, state, apply=True)
+        dor_errors = _retained_production_authority_errors(ws)
+        dor_errors.extend(_plan_dor_errors(ws, state, apply=True))
         if dor_errors:
             tp.trace(ws, "loop_gate_blocked", step=step, reason="dor",
                      errors=dor_errors)

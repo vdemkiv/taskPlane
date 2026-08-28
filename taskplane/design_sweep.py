@@ -14,9 +14,11 @@ from datetime import datetime
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 from typing import Any, BinaryIO
 
 if __package__:
@@ -643,9 +645,138 @@ _PRODUCTION_EVIDENCE_FIELDS = frozenset({
     "codex_audit_path", "source_thread_id", "design_turn_id",
     "expected_source_log_sha256",
 })
+_GIT_REVISION = re.compile(r"[0-9a-f]{40,64}\Z")
 
 
-def _retained_bytes(root: Path, relative: str, *, maximum: int) -> bytes:
+def _trusted_git_path() -> Path:
+    candidates = ([Path(os.environ.get("SystemRoot", r"C:\\Windows")) /
+                   "System32" / "git.exe"] if os.name == "nt" else [
+                       Path("/usr/bin/git"), Path("/bin/git")])
+    for candidate in candidates:
+        try:
+            link_metadata = candidate.lstat()
+            resolved = candidate.resolve(strict=True)
+            metadata = resolved.stat()
+        except OSError:
+            continue
+        if (not stat.S_ISLNK(link_metadata.st_mode) and
+                stat.S_ISREG(metadata.st_mode) and os.access(resolved, os.X_OK)
+                and not metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                and (os.name == "nt" or metadata.st_uid == 0)):
+            return resolved
+    raise DesignSweepError(
+        "a trusted system Git executable is unavailable")
+
+
+def _git_environment(executable: Path) -> dict[str, str]:
+    path_parts = [str(executable.parent)]
+    if os.name != "nt":
+        path_parts.extend(["/usr/bin", "/bin"])
+    return {
+        "PATH": os.pathsep.join(dict.fromkeys(path_parts)),
+        "HOME": os.devnull, "USERPROFILE": os.devnull,
+        "XDG_CONFIG_HOME": os.devnull,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C", "LANG": "C",
+    }
+
+
+def _git_output(root: Path, *args: str, binary: bool = False,
+                allow_failure: bool = False):
+    executable = _trusted_git_path()
+    command = [
+        str(executable), "-c", f"core.worktree={root}",
+        "-c", "core.fsmonitor=false",
+        "-c", f"core.attributesFile={os.devnull}",
+        "-c", f"core.excludesFile={os.devnull}", *args,
+    ]
+    try:
+        result = subprocess.run(
+            command, cwd=str(root), env=_git_environment(executable),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False, timeout=10,
+            **({} if binary else {
+                "text": True, "encoding": "utf-8", "errors": "replace",
+            }))
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DesignSweepError(
+            "retained Design Git provenance is unavailable") from exc
+    if result.returncode != 0 and not allow_failure:
+        raise DesignSweepError(
+            "retained Design Git provenance could not be resolved")
+    return result
+
+
+def retained_repository_bytes(
+        source_root: str | Path, relative: str, *, maximum: int,
+        revision: str) -> bytes:
+    """Read an exact historical Git blob from a trusted, ancestor commit."""
+    if not _GIT_REVISION.fullmatch(str(revision)) or \
+            not re.fullmatch(r"[A-Za-z0-9_.\-/]+", relative) or \
+            relative.startswith("/") or ".." in Path(relative).parts:
+        raise DesignSweepError("retained Design provenance is invalid")
+    root = Path(source_root).resolve(strict=True)
+    if not root.is_dir():
+        raise DesignSweepError("retained Design repository is invalid")
+    top = _git_output(root, "rev-parse", "--show-toplevel").stdout.strip()
+    if Path(top).resolve() != root:
+        raise DesignSweepError(
+            "retained Design provenance belongs to another checkout")
+    resolved = _git_output(
+        root, "rev-parse", "--verify", f"{revision}^{{commit}}"
+    ).stdout.strip()
+    if resolved != revision:
+        raise DesignSweepError(
+            "retained Design revision does not resolve exactly")
+    lineage = _git_output(
+        root, "merge-base", "--is-ancestor", revision, "HEAD",
+        allow_failure=True)
+    if lineage.returncode != 0:
+        raise DesignSweepError(
+            "retained Design revision is not current checkout history")
+    object_name = f"{revision}:{relative}"
+    try:
+        size = int(_git_output(
+            root, "cat-file", "-s", object_name).stdout.strip())
+    except (TypeError, ValueError) as exc:
+        raise DesignSweepError(
+            "retained Design blob size is invalid") from exc
+    if size < 0 or size > maximum:
+        raise DesignSweepError(
+            f"retained Design artifact exceeds bound: {relative}")
+    result = _git_output(root, "cat-file", "blob", object_name, binary=True)
+    value = bytes(result.stdout)
+    if len(value) != size:
+        raise DesignSweepError(
+            f"retained Design artifact changed during read: {relative}")
+    return value
+
+
+def repository_contains_revision(
+        source_root: str | Path, revision: str) -> bool:
+    """Return whether an exact retained commit is an ancestor of this HEAD."""
+    if not _GIT_REVISION.fullmatch(str(revision)):
+        raise DesignSweepError("retained Design revision is invalid")
+    root = Path(source_root).resolve(strict=True)
+    probe = _git_output(
+        root, "cat-file", "-e", f"{revision}^{{commit}}",
+        allow_failure=True)
+    if probe.returncode != 0:
+        return False
+    lineage = _git_output(
+        root, "merge-base", "--is-ancestor", revision, "HEAD",
+        allow_failure=True)
+    return lineage.returncode == 0
+
+
+def _retained_bytes(root: Path, relative: str, *, maximum: int,
+                    revision: str | None = None) -> bytes:
+    if revision is not None:
+        return retained_repository_bytes(
+            root, relative, maximum=maximum, revision=revision)
     path = root / relative
     try:
         resolved = path.resolve(strict=True)
@@ -662,7 +793,8 @@ def _retained_bytes(root: Path, relative: str, *, maximum: int) -> bytes:
 
 
 def validate_retained_design_sweep(
-        source_root: str | Path, *, evidence: Mapping[str, object]) -> dict:
+        source_root: str | Path, *, evidence: Mapping[str, object],
+        revision: str | None = None) -> dict:
     """Compose the canonical repository artifacts into the live Design gate.
 
     Artifact identities come from the installed repository and catalog, never
@@ -674,8 +806,10 @@ def validate_retained_design_sweep(
         raise DesignSweepError(
             "production Design sweep evidence fields are invalid")
     root = Path(source_root).resolve()
-    catalog_raw = _retained_bytes(root, "lenses/catalog.json", maximum=2_000_000)
-    design_raw = _retained_bytes(root, "design/contract.json", maximum=8_000_000)
+    catalog_raw = _retained_bytes(
+        root, "lenses/catalog.json", maximum=2_000_000, revision=revision)
+    design_raw = _retained_bytes(
+        root, "design/contract.json", maximum=8_000_000, revision=revision)
     try:
         catalog = json.loads(catalog_raw.decode("utf-8"))
         design = json.loads(design_raw.decode("utf-8"))
@@ -690,7 +824,8 @@ def validate_retained_design_sweep(
         raise DesignSweepError("production lens catalog id is unsafe")
     results = {
         lens_id: _retained_bytes(
-            root, f"design/lens-evidence/{lens_id}.json", maximum=2_000_000)
+            root, f"design/lens-evidence/{lens_id}.json", maximum=2_000_000,
+            revision=revision)
         for lens_id in catalog_ids
     }
     sweep = design.get("design_sweep")
@@ -731,6 +866,7 @@ def validate_retained_design_sweep(
         "source_thread_id": sweep_receipt["source_thread_id"],
         "design_turn_id": sweep_receipt["design_turn_id"],
         "sweep_fingerprint": sweep_receipt["fingerprint"],
+        "authority_revision": revision,
     }
     return {
         "schema": PRODUCTION_SWEEP_GATE_SCHEMA,
@@ -766,9 +902,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="python -m taskplane.design_sweep")
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--evidence", required=True)
+    parser.add_argument("--revision")
     args = parser.parse_args(argv)
     receipt = validate_retained_design_sweep(
-        args.source_root, evidence=_evidence_file(args.evidence))
+        args.source_root, evidence=_evidence_file(args.evidence),
+        revision=args.revision)
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
     return 0
 
@@ -776,6 +914,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "DESIGN_RESULT_SCHEMA", "DESIGN_SWEEP_SCHEMA", "DesignSweepError",
     "PRODUCTION_SWEEP_GATE_SCHEMA", "main", "validate_design_sweep",
+    "repository_contains_revision", "retained_repository_bytes",
     "validate_retained_design_sweep",
 ]
 

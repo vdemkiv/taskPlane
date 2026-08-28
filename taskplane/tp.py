@@ -3043,6 +3043,42 @@ def cmd_command(a) -> int:
     return 1 if isinstance(out, dict) and out.get("error") else 0
 
 
+def cmd_production_gate(a) -> int:
+    """Validate retained R-0013 authority against the current live roots."""
+    if __package__:
+        from . import native_authority
+    else:  # pragma: no cover - direct installed CLI
+        import native_authority
+    try:
+        out = native_authority.validate_retained_r0013_authority(
+            _workspace(a.workspace), audit_path=getattr(a, "audit_path", None))
+    except native_authority.NativeAuthorityError as exc:
+        out = {"schema": "taskplane.production-design-gate/v1",
+               "status": "unavailable", "error": str(exc)}
+    print(json.dumps(out, sort_keys=True, separators=(",", ":")))
+    return 0 if out.get("status") == "ready" else 1
+
+
+def cmd_preview(a) -> int:
+    """Launch one closed request through the installed preview composition."""
+    if __package__:
+        from . import preview_runtime
+    else:  # pragma: no cover - direct installed CLI
+        import preview_runtime
+    try:
+        request = preview_runtime.load_preview_request(a.request)
+        out = preview_runtime.launch_preview_request(request)
+    except preview_runtime.PreviewError as exc:
+        out = {"schema": "taskplane.working-preview-launch/v1",
+               "status": "unavailable",
+               "outcome": getattr(exc, "outcome", "unavailable"),
+               "error": str(exc)}
+    print(json.dumps(out, sort_keys=True, separators=(",", ":")))
+    return 0 if out.get("schema") == \
+        "taskplane.working-preview-launch/v1" and \
+        out.get("status") != "unavailable" else 1
+
+
 def _add_governed_command_actions(parser, *, fn=None) -> None:
     actions = parser.add_subparsers(dest="command_action", required=True)
     launch = actions.add_parser(
@@ -7934,6 +7970,24 @@ def main(argv=None) -> int:
         "without moving or deleting anything")
     rpm.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rpm.set_defaults(fn=cmd_repository)
+
+    pg = sub.add_parser(
+        "production-gate", help="validate retained Design authority against "
+        "the current live Taskplane delivery roots")
+    pg.add_argument(
+        "--audit-path", help="exact retained R-0013 Codex audit JSONL "
+        "(defaults to TASKPLANE_R0013_CODEX_AUDIT or its original locator)")
+    pg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    pg.set_defaults(fn=cmd_production_gate)
+
+    pv = sub.add_parser(
+        "preview", help="launch a private governed working preview from a "
+        "closed JSON request")
+    pv.add_argument("--request", required=True,
+                    help="bounded JSON request matching the documented "
+                    "taskplane preview request contract")
+    pv.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    pv.set_defaults(fn=cmd_preview)
 
     ak = sub.add_parser("ack", help="discharge an obligation the engine "
                         "issued (WS-F evals); --status lists what is open")
