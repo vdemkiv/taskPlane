@@ -557,7 +557,7 @@ padding:9px 16px;text-align:center;min-width:96px}
 .legend{color:#94948a;font-size:11px;margin-top:12px}
 </style></head><body>
 <h1><span class="live"></span> taskplane — mission control
-<span style="color:#77776c;font-weight:400;font-size:12px">· step
+<span style="color:#94948a;font-weight:400;font-size:12px">· step
 <b style="color:#eda100">__STEP__</b> · __MODE__</span></h1>
 <div class="goal">goal: <b>__GOAL__</b></div>
 __NOTICE__
@@ -1071,11 +1071,12 @@ _SEND_JS = (
     'function tpHasBridge(){return !!(window.openai&&'
     'typeof window.openai.sendFollowUpMessage==="function")||'
     'typeof window.sendPrompt==="function";}'
-    'function tpSend(b,m){if(window.openai&&'
+    'function tpSend(b,m){var sent;try{if(window.openai&&'
     'typeof window.openai.sendFollowUpMessage==="function")'
-    '{window.openai.sendFollowUpMessage({prompt:m});}'
-    'else if(typeof window.sendPrompt==="function"){window.sendPrompt(m);}'
-    'else{tpHint(b,m);}}'
+    '{sent=window.openai.sendFollowUpMessage({prompt:m});}'
+    'else if(typeof window.sendPrompt==="function"){sent=window.sendPrompt(m);}'
+    'else{tpHint(b,m);return Promise.resolve(false);}'
+    '}catch(e){return Promise.reject(e);}return Promise.resolve(sent);}'
     '(function(){var r=document.getElementById("tp-inline-review-root")||document;'
     'if(r.dataset&&r.dataset.tpBound)return;if(r.dataset)r.dataset.tpBound="1";'
     'r.addEventListener("click",function(e){var b=e.target.closest("button");'
@@ -4616,33 +4617,54 @@ def _widget_dor(full_trace, step):
 # "✓ approved" for a message that never went anywhere.
 _WIDGET_JS = (
     '<script>' + _SEND_JS +
+    'function tpGateStatus(b,t,kind){var p=b.parentNode;'
+    'var d=p.querySelector("[data-tp-delivery-status]");if(!d)'
+    '{d=document.createElement("div");d.dataset.tpDeliveryStatus="1";'
+    'd.setAttribute("role",kind==="error"?"alert":"status");'
+    'd.setAttribute("aria-live","polite");d.style.cssText="margin-top:8px;'
+    'font-family:var(--font-mono);font-size:11.5px;flex-basis:100%";'
+    'p.appendChild(d);}d.setAttribute("role",kind==="error"?"alert":"status");'
+    'd.textContent=t;}'
     'function tpFire(b,m,l){'
     'if(!tpHasBridge()){tpHint(b,m);return;}'
-    'b.disabled=true;'
-    'b.style.background="var(--surface-0)";'
-    'b.style.color="var(--text-muted)";b.style.border="none";'
-    'b.style.cursor="default";'
-    'if(l)b.innerHTML="<i class=\'ti ti-check\'></i> "+l;'
-    'Array.from(b.parentNode.querySelectorAll("button")).forEach('
-    'function(x){if(x!==b){x.disabled=true;x.style.opacity="0.45";'
-    'x.style.cursor="default";}});tpSend(b,m);}'
-    'function tpTab(w){if(w==="map")tpView("detail");'
+    'var choices=Array.from(b.parentNode.querySelectorAll("button"));'
+    'choices.forEach(function(x){if(!x.dataset.tpLabel)x.dataset.tpLabel=x.innerHTML;'
+    'x.disabled=true;x.setAttribute("aria-disabled","true");x.style.opacity="0.45";});'
+    'b.setAttribute("aria-busy","true");b.innerHTML="sending…";'
+    'tpGateStatus(b,"sending to chat…","pending");'
+    'tpSend(b,m).then(function(){b.removeAttribute("aria-busy");'
+    'b.innerHTML="<i class=\'ti ti-check\' aria-hidden=\'true\'></i> "+(l||"sent");'
+    'tpGateStatus(b,"delivered to chat","success");},function(e){'
+    'choices.forEach(function(x){x.disabled=false;x.removeAttribute("aria-disabled");'
+    'x.style.opacity="";x.style.cursor="pointer";if(x.dataset.tpLabel)'
+    'x.innerHTML=x.dataset.tpLabel;});b.removeAttribute("aria-busy");'
+    'tpGateStatus(b,"delivery failed — retry or reply in chat: "+m,"error");});}'
+    'function tpTab(w,moveFocus){if(moveFocus)tpView("detail");'
     '["loop","map"].forEach('
     'function(k){var p=document.getElementById("tp-panel-"+k),'
     'b=document.getElementById("tp-tab-"+k);if(!p||!b)return;'
-    'var on=k===w;p.style.display=on?"block":"none";'
+    'var on=k===w;p.hidden=!on;p.style.display=on?"block":"none";'
     'b.style.background=on?"var(--text-primary)":"none";'
     'b.style.color=on?"var(--surface-2)":"var(--text-secondary)";'
     # non-color active cues: aria-selected for SRs, weight+underline for
     # low vision — parity with the findings filter chips (v2.2.1).
     'b.setAttribute("aria-selected",on?"true":"false");'
-    'b.style.textDecoration=on?"underline":"none";});}'
+    'b.setAttribute("tabindex",on?"0":"-1");'
+    'b.style.textDecoration=on?"underline":"none";'
+    'if(on&&moveFocus)b.focus();});}'
+    'function tpTabKey(e,w){var keys=["ArrowLeft","ArrowRight","Home","End"];'
+    'if(keys.indexOf(e.key)<0)return;var tabs=["loop","map"],i=tabs.indexOf(w);'
+    'if(e.key==="Home")i=0;else if(e.key==="End")i=tabs.length-1;'
+    'else i=(i+(e.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length;'
+    'e.preventDefault();tpTab(tabs[i],true);}'
     'function tpView(v){var s=document.getElementById("tp-simple"),'
     'd=document.getElementById("tp-detail"),'
     'bs=document.getElementById("tp-vb-simple"),'
-    'bd=document.getElementById("tp-vb-detail");'
+    'bd=document.getElementById("tp-vb-detail"),'
+    'ts=document.getElementById("tp-detail-tabs");'
     'if(!s||!d||!bs||!bd)return;var on=v==="detail";'
     's.style.display=on?"none":"block";d.style.display=on?"block":"none";'
+    'if(ts)ts.hidden=!on;'
     'function st(b,a){b.style.background=a?"var(--text-primary)":"none";'
     'b.style.color=a?"var(--surface-2)":"var(--text-secondary)";'
     'b.setAttribute("aria-pressed",a?"true":"false");'
@@ -4689,6 +4711,36 @@ _WIDGET_CSS = (
     'line-height:1.65;margin:2px 0 0}'
     '@media (max-width:640px){.tp-grid2,.tp-jgrid{'
     'grid-template-columns:1fr!important}}</style>')
+
+
+def _widget_tabs(tabbtn: str) -> str:
+    """Render the complete two-tab ARIA interaction contract."""
+    tabs = "".join(
+        f'<button id="tp-tab-{key}" role="tab" '
+        f'aria-controls="tp-panel-{key}" tabindex="{0 if key == "loop" else -1}" '
+        f'aria-selected="{"true" if key == "loop" else "false"}" '
+        f'style="{tabbtn}'
+        + (';background:var(--text-primary);color:var(--surface-2);'
+           'text-decoration:underline' if key == "loop" else "")
+        + f'" onclick="tpTab(\'{key}\',true)" '
+          f'onkeydown="tpTabKey(event,\'{key}\')">{label}</button>'
+        for key, label in (("loop", "execution detail"),
+                           ("map", "context detail")))
+    return (f'<div id="tp-detail-tabs" role="tablist" '
+            f'aria-label="Dashboard detail views" '
+            f'style="display:flex;gap:6px">{tabs}</div>')
+
+
+def _widget_detail_panels(parts: dict) -> str:
+    """Bind the tab controls to their labelled panel output."""
+    return (
+        '<div id="tp-detail">'
+        '<div id="tp-panel-loop" role="tabpanel" '
+        f'aria-labelledby="tp-tab-loop">{parts["pipe_d"]}'
+        f'{parts["journey_d"]}{parts["loop_panel"]}</div>'
+        '<div id="tp-panel-map" role="tabpanel" '
+        f'aria-labelledby="tp-tab-map" hidden>{parts["map_panel"]}</div>'
+        '</div>')
 
 
 def _widget_parts(ws: str) -> dict:
@@ -4842,16 +4894,7 @@ def _widget_parts(ws: str) -> dict:
               'font-size:12px;letter-spacing:.8px;font-weight:500;'
               'padding:6px 14px;cursor:pointer;border-radius:20px;'
               'color:var(--text-secondary)')
-    tabs = "".join(
-        f'<button id="tp-tab-{k}" role="tab" '
-        f'aria-selected="{"true" if k == "loop" else "false"}" '
-        f'style="{tabbtn}'
-        + (';background:var(--text-primary);color:var(--surface-2);'
-           'text-decoration:underline' if k == "loop" else "")
-        + f'" onclick="tpTab(\'{k}\')">{lbl}</button>'
-        for k, lbl in (("loop", "execution detail"),
-                       ("map", "context detail")))
-    tabs = f'<div role="tablist" style="display:flex;gap:6px">{tabs}</div>'
+    tabs = _widget_tabs(tabbtn)
     vbtn = ('border:none;background:none;font-family:var(--font-mono);'
             'font-size:11.5px;letter-spacing:.8px;font-weight:500;'
             'padding:4px 11px;cursor:pointer;border-radius:20px;'
@@ -4957,10 +5000,7 @@ def widget(ws: str) -> str:
           f'1px solid var(--border);padding-bottom:10px">{p["tabs"]}</div>'
         + f'<div id="tp-simple">{p["pipe_s"]}{p["journey_s"]}'
           f'{p["harness_panel"]}</div>'
-        + f'<div id="tp-detail">'
-          f'<div id="tp-panel-loop">{p["pipe_d"]}{p["journey_d"]}'
-          f'{p["loop_panel"]}</div>'
-          f'<div id="tp-panel-map">{p["map_panel"]}</div></div></div>'
+        + _widget_detail_panels(p) + '</div>'
         + _WIDGET_JS)
 
 
@@ -5155,6 +5195,58 @@ _HOST_SURFACE_TOKENS = {
 }
 
 
+def _dashboard_value_markup(value, *, omit=()):
+    """Render canonical dashboard evidence as semantic, escaped HTML."""
+    if isinstance(value, dict):
+        rows = []
+        for key, item in value.items():
+            if key in omit:
+                continue
+            rows.append(
+                f'<div><dt>{html.escape(str(key))}</dt><dd>'
+                f'{_dashboard_value_markup(item)}</dd></div>')
+        return '<dl class="tp-value">' + "".join(rows) + '</dl>'
+    if isinstance(value, list):
+        return ('<ul class="tp-value-list">' + "".join(
+            f'<li>{_dashboard_value_markup(item)}</li>' for item in value)
+            + '</ul>')
+    if value is None:
+        return '<span class="tp-muted">not recorded</span>'
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return html.escape(str(value))
+
+
+def _dashboard_collection_markup(collection):
+    """Render every carousel page while exposing exactly one active page."""
+    active = collection["current"]
+    total = collection["total_pages"]
+    pages = []
+    for page in collection["pages"]:
+        items = "".join(
+            '<li data-item-id="' + html.escape(str(item["id"]), quote=True)
+            + '">' + _dashboard_value_markup(item) + '</li>'
+            for item in page["items"])
+        pages.append(
+            f'<ol data-carousel-page="{page["position"]}"'
+            + ('' if page["position"] == active else ' hidden')
+            + f'>{items}</ol>')
+    filters = html.escape(json.dumps(collection["filters"], sort_keys=True),
+                          quote=True)
+    return (
+        f'<div class="tp-carousel" data-carousel-current="{active}" '
+        f'data-carousel-total="{total}" data-carousel-filters="{filters}">'
+        f'<p class="tp-muted" data-carousel-position aria-live="polite">'
+        f'{collection["total_items"]} items; page {active} of {max(total, 1)}</p>'
+        + "".join(pages)
+        + '<div class="tp-carousel-controls">'
+          '<button type="button" data-carousel-direction="previous"'
+        + (' disabled' if active <= 1 else '') + '>Previous</button>'
+          '<button type="button" data-carousel-direction="next"'
+        + (' disabled' if not total or active >= total else '') + '>Next</button>'
+          '</div></div>')
+
+
 def render_native_dashboard_surface(projection, *, viewport_px=1024,
                                     theme="light", text_scale_percent=100,
                                     reduced_motion=False):
@@ -5193,7 +5285,11 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         ".tp-card:focus-within,.tp-action:focus-visible,.tp-detail:focus-visible{"
         "outline:3px solid var(--tp-focus);outline-offset:2px}"
         ".tp-status{color:var(--tp-status);font-weight:650}"
-        ".tp-muted{color:var(--tp-muted)}.tp-actions{display:flex;flex-wrap:wrap;gap:8px}"
+        ".tp-muted{color:var(--tp-muted)}.tp-value{margin:8px 0}.tp-value div{"
+        "display:grid;grid-template-columns:minmax(7rem,auto) 1fr;gap:8px}"
+        ".tp-value dt{font-weight:650}.tp-value dd{margin:0;overflow-wrap:anywhere}"
+        ".tp-carousel-controls,.tp-actions{display:flex;flex-wrap:wrap;gap:8px}"
+        ".tp-actions{margin-top:12px}.tp-delivery-status{min-height:1.5em}"
         ".tp-detail{position:fixed;inset:0;width:100vw;height:100vh;max-width:none;"
         "max-height:none;margin:0;background:var(--tp-background);color:var(--tp-text);"
         "border:0;padding:24px}.tp-composer{display:flex;margin-top:12px}"
@@ -5209,21 +5305,25 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         value = component.get("value", {})
         status = value.get("status", "available") if isinstance(value, dict) \
             else "available"
+        status_text = str(status)
+        lowered_status = status_text.casefold()
+        status_symbol = ("&#10003;" if any(word in lowered_status for word in
+                         ("ready", "passed", "complete", "available"))
+                         else "&#33;" if any(word in lowered_status for word in
+                         ("failed", "error", "blocked")) else "&#8226;")
         provenance = value.get("provenance", "not recorded") \
             if isinstance(value, dict) else "not recorded"
         collection = component.get("collection")
-        collection_text = ""
-        if collection:
-            collection_text = (
-                f'<p class="tp-muted" aria-label="Carousel position">'
-                f'{collection["total_items"]} items; page '
-                f'{collection["current"]} of {max(collection["total_pages"], 1)}'
-                f'</p>')
+        collection_text = _dashboard_collection_markup(collection) \
+            if collection else ""
+        semantic_value = _dashboard_value_markup(
+            value, omit={"status", "provenance", "items"}) \
+            if isinstance(value, dict) else _dashboard_value_markup(value)
         cards.append(
             f'<section class="tp-card" data-purpose="{component_id}" '
             f'aria-labelledby="{label_id}"><h2 id="{label_id}">{component_id}</h2>'
-            f'<p class="tp-status"><span aria-hidden="true">&#10003;</span> '
-            f'<span>{html.escape(str(status))}</span></p>{collection_text}'
+            f'<p class="tp-status"><span aria-hidden="true">{status_symbol}</span> '
+            f'<span>{html.escape(status_text)}</span></p>{semantic_value}{collection_text}'
             f'<p class="tp-muted">Provenance: {html.escape(str(provenance))}</p>'
             f'</section>')
 
@@ -5236,10 +5336,11 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         inline_actions = inline_actions[:1]
     action_buttons = "".join(
         f'<button class="tp-action" type="button" aria-label="{html.escape(str(action))}" '
-        f'data-action="{html.escape(str(action), quote=True)}">'
+        f'data-dashboard-action="true" data-prompt="{html.escape(str(action), quote=True)}">'
         f'{html.escape(str(action))}</button>' for action in inline_actions)
     detail_buttons = "".join(
-        f'<button type="button" aria-label="{html.escape(str(action))}">'
+        f'<button type="button" aria-label="{html.escape(str(action))}" '
+        f'data-dashboard-action="true" data-prompt="{html.escape(str(action), quote=True)}">'
         f'{html.escape(str(action))}</button>' for action in detail_actions)
     if detail_actions:
         action_buttons += (
@@ -5250,10 +5351,50 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         '<script>(function(){'
         'var root=document.currentScript.closest(".tp-host");'
         'if(!root){return;}'
+        'function all(s){return root.querySelectorAll?Array.from(root.querySelectorAll(s)):[];}'
+        'var status=root.querySelector("[data-delivery-status]");'
+        'function report(message,error){if(!status)return;status.textContent=message;'
+        'status.setAttribute("role",error?"alert":"status");}'
+        'function hasBridge(){return !!(window.openai&&'
+        'typeof window.openai.sendFollowUpMessage==="function")||'
+        'typeof window.sendPrompt==="function";}'
+        'function bridge(message){var result;try{if(window.openai&&'
+        'typeof window.openai.sendFollowUpMessage==="function")'
+        '{result=window.openai.sendFollowUpMessage({prompt:message});}'
+        'else if(typeof window.sendPrompt==="function"){result=window.sendPrompt(message);}'
+        'else{return null;}}catch(error){return Promise.reject(error);}'
+        'return Promise.resolve(result);}'
+        'function deliver(control,message){if(!hasBridge()){'
+        'report("No chat bridge in this static view — reply in chat: "+message,false);'
+        'return;}var original=control.textContent;control.disabled=true;'
+        'control.setAttribute("aria-busy","true");control.textContent="Sending…";'
+        'report("Sending to chat…",false);bridge(message).then(function(){'
+        'control.removeAttribute("aria-busy");control.textContent="Sent";'
+        'report("Delivered to chat: "+message,false);},function(){'
+        'control.disabled=false;control.removeAttribute("aria-busy");'
+        'control.textContent=original;report("Delivery failed — retry or reply in chat: "+message,true);});}'
+        'all("[data-dashboard-action]").forEach(function(button){'
+        'button.addEventListener("click",function(){deliver(button,button.dataset.prompt);});});'
+        'var form=root.querySelector(".tp-composer");'
+        'if(form){form.addEventListener("submit",function(event){event.preventDefault();'
+        'var input=form.querySelector("textarea");var submit=form.querySelector("button[type=submit]");'
+        'var message=input?input.value.trim():"";if(!message){report("Enter a message first.",true);'
+        'return;}deliver(submit,message);});}'
+        'all("[data-carousel-direction]").forEach(function(button){'
+        'button.addEventListener("click",function(){var carousel=button.closest(".tp-carousel");'
+        'var current=Number(carousel.dataset.carouselCurrent),total=Number(carousel.dataset.carouselTotal);'
+        'var next=Math.max(1,Math.min(total,current+(button.dataset.carouselDirection==="next"?1:-1)));'
+        'carousel.dataset.carouselCurrent=String(next);'
+        'Array.from(carousel.querySelectorAll("[data-carousel-page]")).forEach(function(page){'
+        'page.hidden=Number(page.dataset.carouselPage)!==next;});'
+        'var position=carousel.querySelector("[data-carousel-position]");'
+        'if(position)position.textContent=position.textContent.replace(/page \\d+ of/,"page "+next+" of");'
+        'var previous=carousel.querySelector("[data-carousel-direction=previous]");'
+        'var following=carousel.querySelector("[data-carousel-direction=next]");'
+        'if(previous)previous.disabled=next<=1;if(following)following.disabled=next>=total;});});'
         'var trigger=root.querySelector("[data-detail-trigger]");'
         'var dialog=root.querySelector("#tp-fullscreen-detail");'
         'var closer=root.querySelector("[data-detail-close]");'
-        'if(!trigger||!dialog||!closer){return;}'
         'var opener=null;'
         'function openDetail(){opener=document.activeElement||trigger;'
         'if(typeof dialog.showModal==="function"){dialog.showModal();}'
@@ -5263,11 +5404,23 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         'if(dialog.open&&typeof dialog.close==="function"){dialog.close();}'
         'else{dialog.removeAttribute("open");}'
         'if(opener&&typeof opener.focus==="function"){opener.focus();}}'
-        'trigger.addEventListener("click",openDetail);'
+        'if(trigger&&dialog&&closer){trigger.addEventListener("click",openDetail);'
         'closer.addEventListener("click",closeDetail);'
         'dialog.addEventListener("cancel",function(event){'
-        'event.preventDefault();closeDetail();});'
+        'event.preventDefault();closeDetail();});}'
         '})();</script>')
+
+    identity = projection.get("identity", {})
+    evidence = projection.get("evidence", [])
+    detail_evidence = (
+        '<section aria-labelledby="tp-evidence-title"><h3 id="tp-evidence-title">'
+        'Workflow evidence</h3>'
+        + _dashboard_value_markup({
+            "identity": identity,
+            "stage": projection.get("stage"),
+            "state": projection.get("state"),
+            "evidence": evidence,
+        }) + '</section>')
 
     return (
         '<div class="tp-host" data-host="'
@@ -5281,13 +5434,14 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
           f'<nav class="tp-actions" aria-label="Dashboard actions">{action_buttons}</nav>'
           f'<dialog id="tp-fullscreen-detail" class="tp-detail" '
           f'aria-labelledby="tp-detail-title"><h2 id="tp-detail-title">Dashboard details</h2>'
-          f'<img alt="Workflow evidence overview" width="1" height="1" '
-          f'src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" />{detail_buttons}'
+          f'{detail_evidence}{detail_buttons}'
           f'<button type="button" aria-label="Close details" '
           f'data-detail-close="true">Close</button></dialog>'
           f'<form class="tp-composer" aria-label="Conversation composer">'
           f'<label for="tp-message">Message</label><textarea id="tp-message" '
           f'name="message"></textarea><button type="submit">Send</button></form>'
+          f'<p class="tp-delivery-status" data-delivery-status="true" '
+          f'role="status" aria-live="polite"></p>'
           f'{interaction}</div>')
 
 
