@@ -62,6 +62,13 @@ CHECKPOINT_AUTHORIZATION_SCHEMA = \
 _CAPTURE_LIMIT = MAX_EVENT_OUTPUT + 1
 _CHECKPOINT_TIMEOUT_SECONDS = 600.0
 _CHECKPOINT_REAP_SECONDS = 2.0
+# A checkpoint may consume only a dependency whose work exists. Keep this
+# closed projection local to the durable command boundary: importing the loop
+# merely to read its identical constant creates governed_commands <-> loop,
+# growing the measured orchestration SCC and weakening the command boundary.
+_CHECKPOINT_DEPENDENCY_SATISFIED = frozenset({
+    "passed", "done", "external",
+})
 _HANDLE_FIELDS = frozenset({"authorization", "handle"})
 _ACTION_FIELDS = {
     "dispatch": frozenset({
@@ -297,8 +304,6 @@ def _git_output(workspace: str, *args: str,
 def _checkpoint_selected_task(
         state: Mapping[str, object], task_id: str) -> dict:
     """Return only the Plan-selected task that may submit a checkpoint now."""
-    from taskplane import loop as loop_engine
-
     step = str(state.get("step") or "")
     if step not in {"execute", "fix"}:
         raise GovernedCommandError(
@@ -334,7 +339,7 @@ def _checkpoint_selected_task(
     unsatisfied = [str(dependency)
                    for dependency in selected.get("deps") or []
                    if str((by_id.get(str(dependency)) or {}).get("status") or
-                          "") not in loop_engine.DEP_SATISFIED]
+                          "") not in _CHECKPOINT_DEPENDENCY_SATISFIED]
     if unsatisfied:
         raise GovernedCommandError(
             "semantic checkpoint current task is not ready; unmet "
@@ -375,27 +380,49 @@ def _checkpoint_selection_fingerprint(
     return _canonical_digest(material)
 
 
+def _checkpoint_plan_state_paths(workspace: str) -> tuple[Path, Path]:
+    """Return the canonical and pre-migration loop-state paths without
+    importing the loop composition root.
+
+    The location rule mirrors loop.state_dir: repo-store mode is the explicit
+    single-writer exception, otherwise per-user external state wins once it
+    exists and the unmigrated in-repository knowledge path remains readable.
+    """
+    filename = "loop.json"
+    if contract_engine.store_env() == "repo":
+        state_root = Path(contract_engine.kb_root(workspace)) / "state"
+    else:
+        external = Path(contract_engine.external_store_root(workspace)) / \
+            "knowledge" / "state"
+        unmigrated = Path(workspace) / "knowledge" / "state"
+        state_root = (external if (external / filename).exists() or
+                      not (unmigrated / filename).exists() else unmigrated)
+    return (state_root / filename,
+            Path(contract_engine.tp_dir(workspace)) / filename)
+
+
 def _checkpoint_plan_authority(
         workspace: str, run_id: str, task_id: str, *,
         state_path: str | None = None) -> tuple[dict, dict]:
     """Derive a checkpoint solely from the current persisted Plan task."""
-    # Lazy imports avoid widening the module-level loop dependency cycle.
+    # The checkpoint validator is intentionally lazy; unlike the loop
+    # composition root it has no reverse dependency on governed commands.
     from taskplane import checkpoint as checkpoint_engine
-    from taskplane import loop as loop_engine
     import pytest
 
     if state_path is None:
-        state = loop_engine.load(workspace)
-        selected_state_path = Path(loop_engine._loop_path(workspace))
+        current_state_path, legacy_state_path = \
+            _checkpoint_plan_state_paths(workspace)
+        selected_state_path = current_state_path
         if not selected_state_path.is_file():
-            selected_state_path = Path(loop_engine._legacy_loop_path(workspace))
+            selected_state_path = legacy_state_path
     else:
         selected_state_path = Path(state_path)
-        try:
-            state = json.loads(selected_state_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise GovernedCommandError(
-                "semantic checkpoint current Plan state is unavailable") from exc
+    try:
+        state = json.loads(selected_state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GovernedCommandError(
+            "semantic checkpoint current Plan state is unavailable") from exc
     if not isinstance(state, Mapping):
         raise GovernedCommandError(
             "semantic checkpoint requires current governed loop state")
