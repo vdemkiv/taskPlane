@@ -7550,11 +7550,21 @@ def _run_submit_checkpoint(ws: str, state: Mapping[str, object],
     authorization = "loop-submit-checkpoint:" + str(task.get("id") or "task")
     run_id = str(state.get("run_id") or state.get("requirement_id") or
                  "loop")
+    try:
+        checkpoint_authority = \
+            governed_commands.mint_semantic_checkpoint_authorization(
+                act_ws, lifecycle_authorization=authorization,
+                run_id=run_id, task_id=str(task.get("id") or "task"))
+    except governed_commands.GovernedCommandError as exc:
+        raise checkpoint.CheckpointReceiptError(
+            f"checkpoint {checkpoint_id} authorization refused: {exc}") \
+            from exc
     # This semantic action accepts no argv/cwd/env/executable from the worker.
     # The governed-command engine reloads the current Plan task, derives the
     # exact validated checkpoint, and executes it outside the reviewed source.
     launched = governed_commands.execute(act_ws, "checkpoint", {
         "authorization": authorization,
+        "checkpoint_authority": checkpoint_authority,
         "run_id": run_id,
         "task_id": str(task.get("id") or "task"),
     })

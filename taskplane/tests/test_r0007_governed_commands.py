@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -736,6 +737,21 @@ def _save_checkpoint_submit_loop(workspace, task):
     })
 
 
+def _launch_engine_authorized_checkpoint(workspace, *, run_id="loop",
+                                         task_id="checkpoint-task"):
+    lifecycle = "loop-submit-checkpoint:" + task_id
+    capability = governed_commands.mint_semantic_checkpoint_authorization(
+        str(workspace), lifecycle_authorization=lifecycle,
+        run_id=run_id, task_id=task_id)
+    launched = governed_commands.execute(str(workspace), "checkpoint", {
+        "authorization": lifecycle,
+        "checkpoint_authority": capability,
+        "run_id": run_id,
+        "task_id": task_id,
+    })
+    return lifecycle, capability, launched
+
+
 def test_submit_checkpoint_runs_live_runtime_and_mints_receipt(
         tmp_path, monkeypatch):
     workspace, spec, _ = _checkpoint_workspace(tmp_path)
@@ -779,6 +795,153 @@ def test_submit_checkpoint_missing_proof_refuses_by_name_before_runtime(
     assert refused["submitted"] is False
     assert missing in refused["error"]
     assert loop.load(str(workspace)).get("_submission") is None
+
+
+def test_checkpoint_action_rejects_forged_authority_arbitrary_task_and_step(
+        tmp_path, monkeypatch):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    current = _checkpoint_submit_task(spec)
+    later = _checkpoint_submit_task(spec)
+    later["id"] = "later-checkpoint"
+    _save_checkpoint_submit_loop(workspace, current)
+    state = loop.load(str(workspace))
+    state["tasks"].append(later)
+    loop.save(str(workspace), state)
+    monkeypatch.setattr(
+        governed_commands, "_prepare_checkpoint_sandbox",
+        lambda *_a, **_k: pytest.fail("forged authority reached launch"))
+
+    with pytest.raises(governed_commands.GovernedCommandError,
+                       match="engine-minted authorization"):
+        governed_commands.execute(str(workspace), "checkpoint", {
+            "authorization": "loop-submit-checkpoint:checkpoint-task",
+            "checkpoint_authority": "forged",
+            "run_id": "loop", "task_id": "checkpoint-task",
+        })
+    with pytest.raises(governed_commands.GovernedCommandError,
+                       match="current Plan-selected task"):
+        governed_commands.mint_semantic_checkpoint_authorization(
+            str(workspace),
+            lifecycle_authorization="loop-submit-checkpoint:later-checkpoint",
+            run_id="loop", task_id="later-checkpoint")
+
+    state = loop.load(str(workspace))
+    state["step"] = "evaluate"
+    loop.save(str(workspace), state)
+    with pytest.raises(governed_commands.GovernedCommandError,
+                       match="current execute/fix submission step"):
+        governed_commands.mint_semantic_checkpoint_authorization(
+            str(workspace),
+            lifecycle_authorization="loop-submit-checkpoint:checkpoint-task",
+            run_id="loop", task_id="checkpoint-task")
+
+
+def test_checkpoint_authorization_is_single_use_and_dependency_ready(
+        tmp_path, monkeypatch):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    predecessor = _checkpoint_submit_task(spec)
+    predecessor["id"] = "predecessor"
+    current = _checkpoint_submit_task(spec)
+    current["deps"] = ["predecessor"]
+    _save_checkpoint_submit_loop(workspace, current)
+    state = loop.load(str(workspace))
+    state["tasks"] = [predecessor, current]
+    state["current_task"] = 1
+    loop.save(str(workspace), state)
+    with pytest.raises(governed_commands.GovernedCommandError,
+                       match="unmet dependencies"):
+        governed_commands.mint_semantic_checkpoint_authorization(
+            str(workspace),
+            lifecycle_authorization="loop-submit-checkpoint:checkpoint-task",
+            run_id="loop", task_id="checkpoint-task")
+
+    state["tasks"][0]["status"] = "passed"
+    loop.save(str(workspace), state)
+    lifecycle = "loop-submit-checkpoint:checkpoint-task"
+    capability = governed_commands.mint_semantic_checkpoint_authorization(
+        str(workspace), lifecycle_authorization=lifecycle,
+        run_id="loop", task_id="checkpoint-task")
+    monkeypatch.setattr(
+        governed_commands, "_prepare_checkpoint_sandbox",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            governed_commands.GovernedCommandUnavailable(
+                "test_stop", "stop after capability consumption")))
+    first = governed_commands.execute(str(workspace), "checkpoint", {
+        "authorization": lifecycle, "checkpoint_authority": capability,
+        "run_id": "loop", "task_id": "checkpoint-task",
+    })
+    assert first["reason_code"] == "test_stop"
+    with pytest.raises(governed_commands.GovernedCommandError,
+                       match="already consumed"):
+        governed_commands.execute(str(workspace), "checkpoint", {
+            "authorization": lifecycle, "checkpoint_authority": capability,
+            "run_id": "loop", "task_id": "checkpoint-task",
+        })
+
+
+def test_checkpoint_authority_ignores_unrelated_parallel_runtime_progress(
+        tmp_path):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    selected = _checkpoint_submit_task(spec)
+    selected["status"] = "running"
+    unrelated = _checkpoint_submit_task(spec)
+    unrelated["id"] = "unrelated-task"
+    unrelated["status"] = "running"
+    _save_checkpoint_submit_loop(workspace, selected)
+    state = loop.load(str(workspace))
+    state["parallel"] = True
+    state["tasks"].append(unrelated)
+    loop.save(str(workspace), state)
+    _spec, authority = governed_commands._checkpoint_plan_authority(
+        str(workspace), "loop", "checkpoint-task")
+
+    state = loop.load(str(workspace))
+    state["tasks"][1]["status"] = "built"
+    state["tasks"][1]["target_commit"] = "a" * 40
+    loop.save(str(workspace), state)
+
+    assert governed_commands._assert_checkpoint_authority_current(
+        str(workspace), authority) == authority
+
+
+@pytest.mark.parametrize("mutation", ["plan", "contract"])
+def test_checkpoint_post_proof_authority_rejects_mid_run_mutation(
+        tmp_path, mutation):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    proof = workspace / spec["focused_proof"]["path"]
+    proof.write_text(
+        "import time\n\ndef test_focused():\n"
+        "    time.sleep(0.5)\n    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "add", spec["focused_proof"]["path"]],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "slow checkpoint proof"],
+                   cwd=workspace, check=True)
+    task = _checkpoint_submit_task(spec)
+    _save_checkpoint_submit_loop(workspace, task)
+    lifecycle, _capability, launched = \
+        _launch_engine_authorized_checkpoint(workspace)
+
+    if mutation == "plan":
+        state = loop.load(str(workspace))
+        state["tasks"][0]["criteria"].append("mutated-mid-proof")
+        loop.save(str(workspace), state)
+    else:
+        active = contract_engine.load_active(str(workspace))
+        active["budget"]["note"] = "mutated-mid-proof"
+        Path(contract_engine.active_contract_path(str(workspace))).write_text(
+            json.dumps(active), encoding="utf-8")
+    observed = governed_commands.execute(str(workspace), "wait", {
+        "authorization": lifecycle, "handle": launched["handle"],
+        "consumer": "checkpoint:cp-r0010-ac-1", "timeout": 10,
+    })
+
+    assert observed["snapshot"]["state"] == "failed"
+    assert any(marker in observed["snapshot"]["reason"] for marker in (
+        "checkpoint_plan_changed", "checkpoint_boundary_changed",
+        "authority"))
+    with pytest.raises(governed_commands.GovernedCommandError):
+        governed_commands.semantic_checkpoint_execution_evidence(
+            str(workspace), lifecycle, launched["handle"])
 
 
 def test_submit_checkpoint_rejects_caller_authored_receipt(
@@ -1007,3 +1170,108 @@ def test_checkpoint_receipt_rejects_dirty_declared_scope(tmp_path, change):
     with pytest.raises(checkpoint.CheckpointReceiptError,
                        match="declared scope"):
         checkpoint.validate_and_mint(str(workspace), spec, dirty_result)
+
+
+def test_semantic_sidecar_rejects_redigest_and_replay_against_current_state(
+        tmp_path):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    task = _checkpoint_submit_task(spec)
+    _save_checkpoint_submit_loop(workspace, task)
+    receipt = loop._run_submit_checkpoint(
+        str(workspace), loop.load(str(workspace)), task, str(workspace))
+    lifecycle = "loop-submit-checkpoint:checkpoint-task"
+    handle = receipt["command"]["handle"]
+    path = (Path(governed_commands._runtime_root(str(workspace))) / handle /
+            "semantic-checkpoint-receipt.json")
+    original = json.loads(path.read_text(encoding="utf-8"))
+
+    redigested = dict(original)
+    redigested["plan_fingerprint"] = "0" * 64
+    material = {key: value for key, value in redigested.items()
+                if key != "receipt_digest"}
+    redigested["receipt_digest"] = \
+        governed_commands._canonical_digest(material)
+    path.write_text(json.dumps(redigested), encoding="utf-8")
+    with pytest.raises(governed_commands.GovernedCommandError,
+                       match="execution receipt is invalid"):
+        governed_commands.semantic_checkpoint_execution_evidence(
+            str(workspace), lifecycle, handle)
+
+    path.write_text(json.dumps(original), encoding="utf-8")
+    state = loop.load(str(workspace))
+    state["tasks"][0]["criteria"].append("advanced-after-receipt")
+    loop.save(str(workspace), state)
+    with pytest.raises(governed_commands.GovernedCommandError):
+        governed_commands.semantic_checkpoint_execution_evidence(
+            str(workspace), lifecycle, handle)
+
+
+def _semantic_descendant_workspace(tmp_path, *, escape_group):
+    workspace, spec, _ = _checkpoint_workspace(tmp_path)
+    proof = workspace / spec["focused_proof"]["path"]
+    proof.write_text(
+        "import subprocess, sys, time\n\n"
+        "def test_focused():\n"
+        "    child = subprocess.Popen(\n"
+        "        [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+        f"        start_new_session={escape_group!r})\n"
+        "    print(f'TP_CHILD_PID={child.pid}', flush=True)\n"
+        "    time.sleep(0.35)\n"
+        "    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "add", spec["focused_proof"]["path"]],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "descendant checkpoint proof"],
+                   cwd=workspace, check=True)
+    task = _checkpoint_submit_task(spec)
+    task["checkpoint"]["focused_proof"]["argv"].insert(4, "-s")
+    _save_checkpoint_submit_loop(workspace, task)
+    return workspace, task
+
+
+def _child_pid_from_snapshot(snapshot):
+    matched = re.search(r"TP_CHILD_PID=(\d+)",
+                        str(snapshot.get("output_summary") or ""))
+    assert matched, snapshot
+    return int(matched.group(1))
+
+
+def _assert_process_absent(pid):
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.02)
+    pytest.fail(f"semantic checkpoint descendant {pid} leaked")
+
+
+def test_semantic_checkpoint_reaps_success_descendants(tmp_path):
+    workspace, task = _semantic_descendant_workspace(
+        tmp_path, escape_group=False)
+    receipt = loop._run_submit_checkpoint(
+        str(workspace), loop.load(str(workspace)), task, str(workspace))
+    assert receipt["verdict"] == "green"
+    handle = receipt["command"]["handle"]
+    runtime = CommandRuntime(
+        governed_commands._runtime_root(str(workspace)),
+        workspace=str(workspace),
+        authorization="loop-submit-checkpoint:checkpoint-task")
+    snapshot = runtime.snapshot(handle)
+    assert snapshot["state"] == "succeeded"
+    _assert_process_absent(_child_pid_from_snapshot(snapshot))
+
+
+def test_semantic_checkpoint_kills_and_refuses_setsid_descendant(tmp_path):
+    workspace, _task = _semantic_descendant_workspace(
+        tmp_path, escape_group=True)
+    lifecycle, _capability, launched = \
+        _launch_engine_authorized_checkpoint(workspace)
+    observed = governed_commands.execute(str(workspace), "wait", {
+        "authorization": lifecycle, "handle": launched["handle"],
+        "consumer": "checkpoint:cp-r0010-ac-1", "timeout": 10,
+    })
+    snapshot = observed["snapshot"]
+    assert snapshot["state"] == "failed"
+    assert "checkpoint_process_tree_escape" in snapshot["reason"]
+    _assert_process_absent(_child_pid_from_snapshot(snapshot))
