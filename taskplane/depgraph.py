@@ -114,6 +114,12 @@ _STRICT_GRAPH_QUALITY = contextvars.ContextVar(
 GRAPH_SCAN_QUALITY_SCHEMA = "taskplane.graph-scan-quality/v1"
 GRAPH_SCAN_RECOVERY = (
     "repair the named source/producer and rerun `tp graph scan --strict`")
+ARCHITECTURE_MAP_SCHEMA = "taskplane.architecture-map-proof/v1"
+ARCHITECTURE_MAX_BYTES = 1024 * 1024
+ARCHITECTURE_MAX_NODES = 512
+ARCHITECTURE_MAX_EDGES = 2048
+_ARCHITECTURE_SECTION = re.compile(r"^([A-Za-z_][\w-]*):\s*$")
+_ARCHITECTURE_ITEM = re.compile(r"^\s+-\s*(\S.*?)\s*$")
 
 
 class GraphQualityDegraded(RuntimeError):
@@ -148,6 +154,7 @@ def scan_quality(graph: dict) -> dict:
         "producers": {
             "base-scanner": {"status": "complete", "failures": []},
             "decomposition": {"status": "not-requested", "failures": []},
+            "architecture-map": {"status": "not-requested", "failures": []},
         },
         "recovery": GRAPH_SCAN_RECOVERY,
     })
@@ -240,7 +247,9 @@ def _restore_managed_cache(ws: str, *, decompose: bool) -> dict | None:
             "taskplane.graph-cache/v1" or value.get("head") != head or \
             value.get("scanner_version") != scanner_cache_version(
                 decompose=decompose) or not isinstance(value.get("graph"),
-                                                       dict):
+                                                       dict) or \
+            value.get("components_fingerprint") != \
+            _components_file_fingerprint(ws):
         return None
     graph = value["graph"]
     save(ws, graph)
@@ -255,6 +264,7 @@ def _write_managed_cache(ws: str, graph: dict, *, decompose: bool) -> None:
     tp.atomic_write_json(path, {
         "schema": "taskplane.graph-cache/v1", "head": head,
         "scanner_version": scanner_cache_version(decompose=decompose),
+        "components_fingerprint": _components_file_fingerprint(ws),
         "graph": graph,
     }, indent=1, sort_keys=True)
 
@@ -360,6 +370,8 @@ def _stamp_meta(ws: str, g: dict, *, scanned: bool = False) -> dict:
         "edges": sorted((e["from"], e["to"], e["kind"],
                          e.get("source"), e.get("confidence"))
                         for e in (g.get("edges") or [])),
+        "architecture_map": str((((g.get("meta") or {}).get(
+            "architecture_map") or {}).get("fingerprint") or "")),
     }
     meta = dict(g.get("meta") or {})
     meta.update({
@@ -758,6 +770,278 @@ def load_excludes(ws: str) -> tuple[list, str | None]:
         return [], f"components.yaml ignored (no exclusions applied): {exc}"
 
 
+def _components_file_fingerprint(ws: str) -> str:
+    """Content identity for every cache consumer of ``components.yaml``."""
+    path = os.path.join(ws, "components.yaml")
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as stream:
+            while True:
+                block = stream.read(64 * 1024)
+                if not block:
+                    return digest.hexdigest()
+                digest.update(block)
+    except OSError:
+        return ""
+
+
+def _parse_architecture_config(text: str) -> dict:
+    """Read the strict owner-node/edge subset of ``components.yaml``.
+
+    The incumbent parser continues to own exclusions and decomposition
+    floors.  These two forward-compatible top-level sections are the accepted
+    architecture overlay: ``owners`` lists repository files and
+    ``owner_edges`` lists exact ``source -> target`` import relationships.
+    """
+    nodes, edges, errors = [], [], []
+    section = None
+    configured = False
+    for line_number, raw in enumerate((text or "").splitlines(), 1):
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        top = _ARCHITECTURE_SECTION.match(line)
+        if top:
+            section = top.group(1)
+            if section in {"owners", "owner_edges"}:
+                configured = True
+            continue
+        if section not in {"owners", "owner_edges"}:
+            continue
+        item = _ARCHITECTURE_ITEM.match(line)
+        if not item:
+            errors.append(
+                f"line {line_number}: {section} requires an indented list item")
+            continue
+        value = item.group(1).strip().strip("'\"")
+        if section == "owners":
+            value = value.replace("\\", "/")
+            if value.startswith("./"):
+                value = value[2:]
+            nodes.append(value)
+            continue
+        parts = []
+        for part in value.split("->"):
+            normalized = part.strip().replace("\\", "/")
+            if normalized.startswith("./"):
+                normalized = normalized[2:]
+            parts.append(normalized)
+        if len(parts) != 2 or not all(parts):
+            errors.append(
+                f"line {line_number}: owner edge must be 'source -> target'")
+            continue
+        edges.append((parts[0], parts[1]))
+    if len(nodes) != len(set(nodes)):
+        errors.append("owner nodes must be unique")
+    if len(edges) != len(set(edges)):
+        errors.append("owner edges must be unique")
+    return {"configured": configured, "nodes": nodes, "edges": edges,
+            "errors": errors}
+
+
+def _owner_import_edges(ws: str, nodes: list[str]) -> tuple[set, list[str]]:
+    """Observe exact Python imports between declared owner files."""
+    aliases: dict[str, set[str]] = {}
+    module_for: dict[str, str] = {}
+    for path in nodes:
+        if not path.endswith(".py"):
+            continue
+        module = path[:-3].replace("/", ".")
+        if module.endswith(".__init__"):
+            module = module[:-9]
+        module_for[path] = module
+        for alias in {module, module.rsplit(".", 1)[-1]}:
+            aliases.setdefault(alias, set()).add(path)
+
+    observed: set[tuple[str, str]] = set()
+    errors = []
+    for source in nodes:
+        module = module_for.get(source)
+        if not module:
+            continue
+        full = os.path.join(ws, *source.split("/"))
+        try:
+            if os.path.getsize(full) > 2 * 1024 * 1024:
+                errors.append(f"owner source exceeds 2097152 bytes: {source}")
+                continue
+            with open(full, encoding="utf-8", errors="replace") as stream:
+                tree = ast.parse(stream.read(), filename=source)
+        except (OSError, SyntaxError) as exc:
+            errors.append(
+                f"owner source cannot be inspected: {source}: "
+                f"{type(exc).__name__}")
+            continue
+        candidates = set()
+        package = module.rsplit(".", 1)[0] if "." in module else ""
+        for item in ast.walk(tree):
+            if isinstance(item, ast.Import):
+                candidates.update(alias.name for alias in item.names)
+            elif isinstance(item, ast.ImportFrom):
+                base = item.module or ""
+                if item.level:
+                    parts = package.split(".") if package else []
+                    keep = max(0, len(parts) - (item.level - 1))
+                    prefix = ".".join(parts[:keep])
+                    base = ".".join(part for part in (prefix, base) if part)
+                if base:
+                    candidates.add(base)
+                for alias in item.names:
+                    if alias.name != "*":
+                        candidates.add(".".join(
+                            part for part in (base, alias.name) if part))
+        for candidate in sorted(candidates):
+            targets = aliases.get(candidate) or set()
+            if len(targets) > 1:
+                errors.append(
+                    f"ambiguous owner import {candidate!r} from {source}")
+                continue
+            if targets:
+                target = next(iter(targets))
+                if target != source:
+                    observed.add((source, target))
+    return observed, errors
+
+
+def architecture_map_proof(ws: str, *, known_files=None,
+                           max_nodes: int = ARCHITECTURE_MAX_NODES,
+                           max_edges: int = ARCHITECTURE_MAX_EDGES) -> dict:
+    """Validate the accepted architecture overlay without partial success.
+
+    Node existence, the exact inter-owner Python import edge set, and the full
+    SCC decomposition must all be proved. Inputs above either declared bound
+    are reported as truncated and incomplete; no bounded prefix can pass.
+    """
+    path = os.path.join(ws, "components.yaml")
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read(ARCHITECTURE_MAX_BYTES + 1)
+        if len(raw) > ARCHITECTURE_MAX_BYTES:
+            parsed = {"configured": False, "nodes": [], "edges": [],
+                      "errors": [
+                          "components.yaml exceeds architecture proof bound "
+                          f"{ARCHITECTURE_MAX_BYTES} bytes"]}
+        else:
+            parsed = _parse_architecture_config(
+                raw.decode("utf-8", errors="replace"))
+    except FileNotFoundError:
+        parsed = {"configured": False, "nodes": [], "edges": [],
+                  "errors": []}
+    except OSError as exc:
+        parsed = {"configured": False, "nodes": [], "edges": [],
+                  "errors": [f"components.yaml cannot be read: {exc}"]}
+    nodes = list(parsed["nodes"])
+    edges = list(parsed["edges"])
+    errors = list(parsed["errors"])
+    try:
+        node_limit = max(0, int(max_nodes))
+        edge_limit = max(0, int(max_edges))
+    except (TypeError, ValueError):
+        node_limit, edge_limit = 0, 0
+        errors.append("architecture bounds must be non-negative integers")
+    truncated = len(nodes) > node_limit or len(edges) > edge_limit
+    if len(nodes) > node_limit:
+        errors.append(
+            f"owner node count {len(nodes)} exceeds bound {node_limit}")
+    if len(edges) > edge_limit:
+        errors.append(
+            f"owner edge count {len(edges)} exceeds bound {edge_limit}")
+
+    safe_nodes = []
+    root = os.path.realpath(ws)
+    for node in nodes[:node_limit]:
+        parts = [part for part in node.split("/") if part]
+        real = os.path.realpath(os.path.join(ws, *parts)) if parts else root
+        if (not node or os.path.isabs(node) or ".." in parts
+                or node.startswith(("contract:", "resource:", "svc:",
+                                    "ext:"))
+                or (real != root and not real.startswith(root + os.sep))):
+            errors.append(f"owner node is not a safe repository file: {node}")
+        elif not node.endswith(".py"):
+            errors.append(
+                f"owner node has no strict import producer (expected .py): {node}")
+        else:
+            safe_nodes.append(node)
+    available = set(known_files) if known_files is not None else {
+        node for node in safe_nodes
+        if os.path.isfile(os.path.join(ws, *node.split("/")))
+    }
+    unknown_nodes = sorted(set(safe_nodes) - available)
+    if unknown_nodes:
+        errors.append("unknown owner nodes: " + ", ".join(unknown_nodes))
+
+    bounded_edges = edges[:edge_limit]
+    declared = set(bounded_edges)
+    node_set = set(safe_nodes)
+    unknown_edges = sorted((source, target) for source, target in bounded_edges
+                           if source not in node_set or target not in node_set)
+    if unknown_edges:
+        errors.append("owner edges name undeclared nodes: " + ", ".join(
+            f"{source} -> {target}" for source, target in unknown_edges))
+
+    observed: set = set()
+    if not truncated and not unknown_nodes and not unknown_edges:
+        observed, observation_errors = _owner_import_edges(ws, safe_nodes)
+        errors.extend(observation_errors)
+    missing_edges = sorted(declared - observed) if not truncated else []
+    undeclared_edges = sorted(observed - declared) if not truncated else []
+    if missing_edges:
+        errors.append("declared owner edges are not observed: " + ", ".join(
+            f"{source} -> {target}" for source, target in missing_edges))
+    if undeclared_edges:
+        errors.append("observed owner edges are undeclared: " + ", ".join(
+            f"{source} -> {target}" for source, target in undeclared_edges))
+
+    sccs, cyclic = [], []
+    if not truncated and not unknown_edges:
+        try:
+            sccs = graph_primitives.strongly_connected_components(
+                safe_nodes, bounded_edges)
+            self_edges = {source for source, target in bounded_edges
+                          if source == target}
+            cyclic = [component for component in sccs
+                      if len(component) > 1 or component[0] in self_edges]
+            if cyclic:
+                errors.append("owner graph contains dependency cycles: "
+                              + "; ".join(", ".join(c) for c in cyclic))
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    configured = bool(parsed["configured"])
+    if configured and not nodes:
+        errors.append("owners section declares no architecture nodes")
+    complete = bool(configured and not errors and not truncated)
+    edge_rows = lambda values: [
+        {"from": source, "to": target, "kind": "imports"}
+        for source, target in sorted(values)]
+    proof = {
+        "schema": ARCHITECTURE_MAP_SCHEMA,
+        "configured": configured,
+        "status": ("complete" if complete else
+                   "incomplete" if configured or errors else "not-requested"),
+        "complete": complete,
+        "truncated": truncated,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "node_bound": node_limit,
+        "edge_bound": edge_limit,
+        "declared_nodes": sorted(safe_nodes),
+        "declared_edges": edge_rows(declared),
+        "observed_edges": edge_rows(observed),
+        "unknown_nodes": unknown_nodes,
+        "missing_edges": edge_rows(missing_edges),
+        "undeclared_edges": edge_rows(undeclared_edges),
+        "sccs": sccs,
+        "cyclic_sccs": cyclic,
+        "errors": errors,
+        "source_fingerprint": _components_file_fingerprint(ws),
+    }
+    material = dict(proof)
+    proof["fingerprint"] = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+    return proof
+
+
 # ------------------------------------------------------- reference resolution
 #
 # D-0015. The graph modelled IMPORTS and nothing else, so on a repo whose
@@ -842,7 +1126,8 @@ def _is_artifact(relpath: str) -> bool:
 
 
 def _graph_scan_quality(base_failures: list[dict], dstats: dict | None,
-                        *, decompose: bool, scanned_revision: str) -> dict:
+                        architecture: dict | None, *, decompose: bool,
+                        scanned_revision: str) -> dict:
     """Combine producer reports without letting decomposition mask base AST."""
     base = [copy.deepcopy(row) for row in base_failures]
     for row in base:
@@ -861,13 +1146,27 @@ def _graph_scan_quality(base_failures: list[dict], dstats: dict | None,
             "reason": " ".join(str(dstats["error"]).split())[:240],
             "file_fingerprint": "",
         })
+    architecture_failures = []
+    if architecture and architecture.get("status") == "incomplete":
+        architecture_failures = [{
+            "producer": "architecture-map",
+            "file": "components.yaml",
+            "module": "(architecture-map)",
+            "parser": "owner-graph",
+            "error_class": "ArchitectureMapIncomplete",
+            "reason": str(reason)[:480],
+            "file_fingerprint": str(
+                architecture.get("source_fingerprint") or ""),
+        } for reason in (architecture.get("errors") or [
+            "architecture map proof is incomplete"])]
     key = lambda row: (str(row.get("producer") or ""),
                        str(row.get("module") or ""),
                        str(row.get("file") or ""),
                        str(row.get("reason") or ""))
     base.sort(key=key)
     decomposition.sort(key=key)
-    failures = sorted(base + decomposition, key=key)
+    architecture_failures.sort(key=key)
+    failures = sorted(base + decomposition + architecture_failures, key=key)
     return _fingerprinted_scan_quality({
         "schema": GRAPH_SCAN_QUALITY_SCHEMA,
         "degraded": bool(failures),
@@ -886,6 +1185,11 @@ def _graph_scan_quality(base_failures: list[dict], dstats: dict | None,
                 "status": ("degraded" if decomposition else "complete")
                 if decompose else "not-requested",
                 "failures": decomposition,
+            },
+            "architecture-map": {
+                "status": ((architecture or {}).get("status")
+                           or "not-requested"),
+                "failures": architecture_failures,
             },
         },
         "recovery": GRAPH_SCAN_RECOVERY,
@@ -1223,6 +1527,13 @@ def _scan_locked(ws: str, into: dict | None = None,
     edges = {(a, b, k) for (a, b, k) in edges
              if b.startswith(("ext:", "svc:")) or b in resolvable}
 
+    # H-31: components.yaml's accepted owner map is an input to the graph,
+    # not inert documentation. The proof is exact and fail-closed: no bounded
+    # prefix, unknown owner, missing/extra edge, or cyclic SCC can be treated
+    # as a complete architecture map.
+    architecture = architecture_map_proof(
+        ws, known_files=set(file_entries))
+
     modules = {}
     for rel in code_files + artifact_files:
         m = _mod(rel)
@@ -1279,6 +1590,8 @@ def _scan_locked(ws: str, into: dict | None = None,
     # a graph that only knows `@acme/ui` and reports an empty blast radius.
     if manifests:
         meta["module_ids"] = dict(sorted(manifests.items()))
+    if architecture.get("status") != "not-requested":
+        meta["architecture_map"] = architecture
     g = {
         "modules": modules,
         "edges": sorted([{"from": a, "to": b, "kind": k}
@@ -1288,6 +1601,18 @@ def _scan_locked(ws: str, into: dict | None = None,
         "recorded": prev.get("recorded", []),
         "meta": meta,
     }
+    if architecture.get("complete"):
+        for node in architecture["declared_nodes"]:
+            g["modules"].setdefault(node, {
+                "kind": "component", "files": 1,
+                "declared_by": "components.yaml:owners",
+            })
+        g["edges"].extend({
+            "from": edge["from"], "to": edge["to"],
+            "kind": edge["kind"],
+            "source": "components.yaml:owner_edges",
+            "confidence": "high", "declared": True,
+        } for edge in architecture["declared_edges"])
     # merge agent-recorded edges (never dropped by rescans)
     g["edges"] += [e for e in g["recorded"]
                    if not any(x["from"] == e["from"] and x["to"] == e["to"]
@@ -1352,7 +1677,7 @@ def _scan_locked(ws: str, into: dict | None = None,
         if pd is not None:
             g["meta"]["decompose"] = copy.deepcopy(pd)
     g["meta"]["graph_scan_quality"] = _graph_scan_quality(
-        base_failures, dstats, decompose=decompose,
+        base_failures, dstats, architecture, decompose=decompose,
         scanned_revision=tp.git_head(ws) or "")
     if into is not None:
         # Active batch: replace the batched graph's contents in place so the
@@ -2090,7 +2415,11 @@ for(const n of nodes){
  c.addEventListener('focus',()=>showTip(n,n.x,n.y));
  c.addEventListener('blur',()=>tip.style.display='none');
  c.addEventListener('click',()=>showTip(n,n.x,n.y));
- c.addEventListener('keydown',ev=>{if(ev.key==='Escape')tip.style.display='none';});
+ c.addEventListener('keydown',ev=>{
+  if(ev.key==='Enter'||ev.key===' '||ev.key==='Spacebar'){
+   ev.preventDefault();showTip(n,n.x,n.y);
+  }else if(ev.key==='Escape')tip.style.display='none';
+ });
  svg.appendChild(c);
  const t=el('text',{class:'lbl',x:n.x+r(n)+4,y:n.y+4});
  t.textContent=n.id;svg.appendChild(t);}
@@ -2135,7 +2464,11 @@ for(const c of comps){if(!byComp[c.id])continue;
  cc.addEventListener('click',()=>show(c.x,c.y));
  // E3 a11y: same keyboard escape hatch module nodes have — a keyboard user
  // who opened this tooltip can dismiss it without a pointer.
- cc.addEventListener('keydown',ev=>{if(ev.key==='Escape')tip.style.display='none';});
+ cc.addEventListener('keydown',ev=>{
+  if(ev.key==='Enter'||ev.key===' '||ev.key==='Spacebar'){
+   ev.preventDefault();show(c.x,c.y);
+  }else if(ev.key==='Escape')tip.style.display='none';
+ });
  svg.appendChild(cc);
  const tl=el('text',{class:'lbl comp',x:c.x+7,y:c.y+3});
  tl.textContent=c.id.split('::')[1]||c.id;svg.appendChild(tl);}
