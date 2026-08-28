@@ -617,7 +617,7 @@ def _bounded_review_detail(value: object) -> dict:
         projected["phase"] = phase
     timeout_seconds = value.get("timeout_seconds")
     if isinstance(timeout_seconds, (int, float)) and not isinstance(
-            timeout_seconds, bool) and 0 < timeout_seconds <= 600:
+            timeout_seconds, bool) and 0 <= timeout_seconds <= 600:
         projected["timeout_seconds"] = timeout_seconds
     return projected
 
@@ -1166,31 +1166,63 @@ class _ValidationSandboxTimeout(RuntimeError):
 class _ValidationSandboxProcessCleanupTimeout(RuntimeError):
     """The owned preparation process did not confirm exit after a hard kill."""
 
+    def __init__(self, message: str, *, timeout_seconds: float):
+        self.timeout_seconds = timeout_seconds
+        super().__init__(message)
 
-def _terminate_validation_sandbox_process_tree(process) -> None:
+
+def _validation_sandbox_cleanup_remaining(
+        *, shared_deadline: float, operation_deadline: float) -> float:
+    return max(
+        0.0, min(shared_deadline, operation_deadline) - time.monotonic())
+
+
+def _wait_for_validation_sandbox_process(
+        process, *, shared_deadline: float,
+        operation_deadline: float) -> bool:
+    remaining = _validation_sandbox_cleanup_remaining(
+        shared_deadline=shared_deadline,
+        operation_deadline=operation_deadline)
+    if remaining <= 0:
+        return False
+    try:
+        process.wait(timeout=min(
+            _VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS, remaining))
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def _terminate_validation_sandbox_process_tree(
+        process, *, shared_deadline: float,
+        operation_deadline: float) -> None:
     """Terminate the preparation subprocess and all descendants it created."""
     if process.poll() is not None:
         return
+    cleanup_budget = min(
+        2 * _VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS,
+        _validation_sandbox_cleanup_remaining(
+            shared_deadline=shared_deadline,
+            operation_deadline=operation_deadline))
     if os.name == "posix":
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-        try:
-            process.wait(timeout=_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS)
+        if _wait_for_validation_sandbox_process(
+                process, shared_deadline=shared_deadline,
+                operation_deadline=operation_deadline):
             return
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(
-                    timeout=_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired as exc:
-                raise _ValidationSandboxProcessCleanupTimeout(
-                    "validation sandbox process did not reap after SIGKILL") \
-                    from exc
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if not _wait_for_validation_sandbox_process(
+                process, shared_deadline=shared_deadline,
+                operation_deadline=operation_deadline):
+            raise _ValidationSandboxProcessCleanupTimeout(
+                "validation sandbox process did not reap after SIGKILL",
+                timeout_seconds=cleanup_budget)
         return
     # Windows does not expose killpg.  Popen.kill is the strongest stdlib
     # fallback for the new process group created below.
@@ -1198,28 +1230,33 @@ def _terminate_validation_sandbox_process_tree(process) -> None:
         process.terminate()  # pragma: no cover - Windows host
     except ProcessLookupError:  # pragma: no cover - Windows host
         pass
+    if _wait_for_validation_sandbox_process(
+            process, shared_deadline=shared_deadline,
+            operation_deadline=operation_deadline):
+        return
     try:
-        process.wait(timeout=_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-        except ProcessLookupError:  # pragma: no cover - Windows host
-            pass
-        try:
-            process.wait(
-                timeout=_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired as exc:
-            raise _ValidationSandboxProcessCleanupTimeout(
-                "validation sandbox process did not reap after kill") from exc
+        process.kill()
+    except ProcessLookupError:  # pragma: no cover - Windows host
+        pass
+    if not _wait_for_validation_sandbox_process(
+            process, shared_deadline=shared_deadline,
+            operation_deadline=operation_deadline):
+        raise _ValidationSandboxProcessCleanupTimeout(
+            "validation sandbox process did not reap after kill",
+            timeout_seconds=cleanup_budget)
 
 
-def _terminate_validation_sandbox_process_for_phase(process, phase: str) -> None:
+def _terminate_validation_sandbox_process_for_phase(
+        process, phase: str, *, shared_deadline: float,
+        operation_deadline: float) -> None:
     try:
-        _terminate_validation_sandbox_process_tree(process)
+        _terminate_validation_sandbox_process_tree(
+            process, shared_deadline=shared_deadline,
+            operation_deadline=operation_deadline)
     except _ValidationSandboxProcessCleanupTimeout as exc:
         raise _ValidationSandboxTimeout(
             phase=phase, reason_code="sandbox_process_reap_timeout",
-            timeout_seconds=_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS) \
+            timeout_seconds=exc.timeout_seconds) \
             from exc
 
 
@@ -1228,12 +1265,16 @@ def _run_validation_sandbox_git(
         input: bytes | None = None, text: bool = False
 ) -> subprocess.CompletedProcess:
     """Run one Git preparation step within both process and total deadlines."""
-    remaining = deadline - time.monotonic()
+    operation_started = time.monotonic()
+    remaining = deadline - operation_started
     if remaining <= 0:
         raise _ValidationSandboxTimeout(
             phase=phase, reason_code="sandbox_preparation_timeout",
             timeout_seconds=_VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS)
-    timeout = min(_VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS, remaining)
+    operation_deadline = min(
+        deadline,
+        operation_started + _VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS)
+    timeout = operation_deadline - operation_started
     reason_code = (
         "sandbox_process_timeout"
         if remaining >= _VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS
@@ -1249,12 +1290,16 @@ def _run_validation_sandbox_git(
     try:
         stdout, stderr = process.communicate(input=input, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        _terminate_validation_sandbox_process_for_phase(process, phase)
+        _terminate_validation_sandbox_process_for_phase(
+            process, phase, shared_deadline=deadline,
+            operation_deadline=operation_deadline)
         raise _ValidationSandboxTimeout(
             phase=phase, reason_code=reason_code,
             timeout_seconds=timeout) from exc
     except BaseException:
-        _terminate_validation_sandbox_process_for_phase(process, phase)
+        _terminate_validation_sandbox_process_for_phase(
+            process, phase, shared_deadline=deadline,
+            operation_deadline=operation_deadline)
         raise
     result = subprocess.CompletedProcess(
         argv, process.returncode, stdout=stdout, stderr=stderr)

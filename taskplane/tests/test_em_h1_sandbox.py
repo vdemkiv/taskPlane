@@ -44,7 +44,7 @@ def test_h34_git_process_uses_process_and_total_deadlines(
         launched.append((args, kwargs)) or process))
     monkeypatch.setattr(
         review, "_terminate_validation_sandbox_process_tree",
-        lambda selected: terminated.append(selected))
+        lambda selected, **_deadlines: terminated.append(selected))
     monkeypatch.setattr(review.time, "monotonic", lambda: 100.0)
 
     with pytest.raises(review._ValidationSandboxTimeout) as raised:
@@ -71,7 +71,7 @@ def test_h34_cancellation_terminates_the_complete_process_tree(monkeypatch):
         review.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(
         review, "_terminate_validation_sandbox_process_tree",
-        lambda selected: terminated.append(selected))
+        lambda selected, **_deadlines: terminated.append(selected))
     monkeypatch.setattr(review.time, "monotonic", lambda: 20.0)
 
     with pytest.raises(KeyboardInterrupt):
@@ -83,20 +83,41 @@ def test_h34_cancellation_terminates_the_complete_process_tree(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("platform_name", "expected_actions"),
-    [("posix", ["SIGTERM", "SIGKILL"]),
-     ("nt", ["terminate", "kill"])],
+    ("platform_name", "shared_budget", "operation_budget", "expected_actions"),
+    [("posix", 10.0, 4.0, ["SIGTERM", "SIGKILL"]),
+     ("nt", 3.0, 4.0, ["terminate", "kill"])],
 )
-def test_h34_kill_recovery_wait_is_bounded_and_fails_closed(
-        monkeypatch, platform_name, expected_actions):
+def test_h34_cleanup_shares_the_aggregate_deadline_and_fails_closed(
+        monkeypatch, platform_name, shared_budget, operation_budget,
+        expected_actions):
+    class Clock:
+        def __init__(self):
+            self.now = 100.0
+
+        def __call__(self):
+            return self.now
+
+        def advance(self, seconds):
+            self.now += seconds
+
+    clock = Clock()
+
     class UnreapableProcess(_StuckProcess):
         def __init__(self):
             self.returncode = None
+            self.communicate_timeout = None
             self.wait_timeouts = []
             self.actions = []
 
+        def communicate(self, input=None, timeout=None):
+            del input
+            self.communicate_timeout = timeout
+            clock.advance(timeout - 1.5)
+            raise subprocess.TimeoutExpired(["git"], timeout)
+
         def wait(self, timeout=None):
             self.wait_timeouts.append(timeout)
+            clock.advance(timeout)
             raise subprocess.TimeoutExpired(["git"], timeout)
 
         def terminate(self):
@@ -109,22 +130,75 @@ def test_h34_kill_recovery_wait_is_bounded_and_fails_closed(
     monkeypatch.setattr(review.os, "name", platform_name)
     monkeypatch.setattr(
         review.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        review, "_VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS",
+        operation_budget)
     if platform_name == "posix":
         monkeypatch.setattr(
             review.os, "killpg",
             lambda _pid, sig: process.actions.append(signal.Signals(sig).name))
-    monkeypatch.setattr(review.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(review.time, "monotonic", clock)
 
     with pytest.raises(review._ValidationSandboxTimeout) as raised:
         review._run_validation_sandbox_git(
             ["git", "clone", "source", "target"], cwd=None,
-            deadline=700.0, phase="clone")
+            deadline=100.0 + shared_budget, phase="clone")
 
     assert raised.value.reason_code == "sandbox_process_reap_timeout"
     assert raised.value.phase == "clone"
-    assert process.wait_timeouts == [1.0, 1.0]
-    assert all(timeout is not None for timeout in process.wait_timeouts)
+    assert raised.value.timeout_seconds == pytest.approx(1.5)
+    assert process.communicate_timeout == min(shared_budget, operation_budget)
+    assert process.wait_timeouts == pytest.approx([1.0, 0.5])
     assert process.actions == expected_actions
+    assert clock.now - 100.0 == pytest.approx(
+        min(shared_budget, operation_budget))
+
+
+def test_h34_cleanup_without_reap_time_fails_closed_without_overrun(
+        monkeypatch):
+    class Clock:
+        def __init__(self):
+            self.now = 20.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+
+    class ExhaustedProcess(_StuckProcess):
+        def __init__(self):
+            self.returncode = None
+            self.actions = []
+            self.wait_timeouts = []
+
+        def communicate(self, input=None, timeout=None):
+            del input
+            clock.now += timeout
+            raise subprocess.TimeoutExpired(["git"], timeout)
+
+        def wait(self, timeout=None):
+            self.wait_timeouts.append(timeout)
+            raise AssertionError("cleanup waited after its deadline")
+
+    process = ExhaustedProcess()
+    monkeypatch.setattr(review.os, "name", "posix")
+    monkeypatch.setattr(
+        review.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        review.os, "killpg",
+        lambda _pid, sig: process.actions.append(signal.Signals(sig).name))
+    monkeypatch.setattr(review.time, "monotonic", clock)
+
+    with pytest.raises(review._ValidationSandboxTimeout) as raised:
+        review._run_validation_sandbox_git(
+            ["git", "clone", "source", "target"], cwd=None,
+            deadline=22.0, phase="clone")
+
+    assert raised.value.reason_code == "sandbox_process_reap_timeout"
+    assert raised.value.timeout_seconds == 0.0
+    assert process.wait_timeouts == []
+    assert process.actions == ["SIGTERM", "SIGKILL"]
+    assert clock.now == 22.0
 
 
 def test_h34_process_tree_termination_escalates_to_group_kill(monkeypatch):
@@ -145,7 +219,9 @@ def test_h34_process_tree_termination_escalates_to_group_kill(monkeypatch):
     sent = []
     monkeypatch.setattr(review.os, "killpg", lambda pid, sig: sent.append((pid, sig)))
 
-    review._terminate_validation_sandbox_process_tree(Process())
+    deadline = review.time.monotonic() + 10.0
+    review._terminate_validation_sandbox_process_tree(
+        Process(), shared_deadline=deadline, operation_deadline=deadline)
 
     assert sent == [(991, signal.SIGTERM), (991, signal.SIGKILL)]
 
@@ -178,7 +254,8 @@ def _git_review_state(ws: Path) -> tuple[dict, str]:
 @pytest.mark.parametrize(
     ("reason_code", "timeout_seconds"),
     [("sandbox_process_timeout", 120.0),
-     ("sandbox_process_reap_timeout", 1.0)],
+     ("sandbox_process_reap_timeout", 1.0),
+     ("sandbox_process_reap_timeout", 0.0)],
 )
 def test_h34_prepare_timeout_is_cleaned_persisted_and_retryable(
         tmp_path, monkeypatch, reason_code, timeout_seconds):
@@ -207,6 +284,7 @@ def test_h34_prepare_timeout_is_cleaned_persisted_and_retryable(
     assert persisted["review_execution"]["dynamic_validation"]["status"] == "failed"
     assert detail["reason_code"] == reason_code
     assert detail["phase"] == "clone"
+    assert detail["timeout_seconds"] == timeout_seconds
     root = Path(review._kernel_root(str(ws))) / "validation-sandbox"
     assert not list(root.glob(".prepare-*"))
     assert calls == ["resolve-head", "clone"]
