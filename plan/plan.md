@@ -20,16 +20,18 @@ this Plan.
 
 ## Graph and boundary evidence
 
-The required single bounded replan impact query covered the corrected
-high-gate seam: `.em-review/remediation`, `taskplane`, and `taskplane/tests`.
+The required single bounded replan impact query covered the corrected H1-A
+production-composition seam: `taskplane/loop.py`,
+`taskplane/terminal_truth.py`, `taskplane/delivery_ports.py`, and
+`taskplane/tests/test_em_h1_terminal.py`.
 It reported 30 impacted modules and no unknown modules. The graph content
 fingerprint is
-`fd4b8a94bce056bb408ad4ec92c810a966f57220056b1eaa075d9f8cea81c029`
+`f5e97aa40e7a3566039da309b849050fb96446ea142412bf1c32f140164e8fca`
 at the reviewed SHA. Its result ceiling was reached, but depth was not
-truncated and scan quality was complete. The result confirms that the
-evaluator-owned result surface and the H2/H3 integration selectors are already
-declared; no Design module, edge, scope, owner, or task inventory change is
-needed.
+truncated and scan quality was complete. The result confirms that the shipped
+`taskplane.loop.retro` terminal transition caller and its terminal
+implementation/test boundary are known graph surfaces; no new module or Design
+edge is needed.
 
 Every task uses the approved typed impact policy: local depth 3,
 contract-only boundaries, contract depth 1, and requirement depth 1. The three
@@ -48,8 +50,9 @@ their canonical owners.
 Dispatch `H1-A` through `H1-E` together. Their code, test, and interface scopes
 are pairwise disjoint:
 
-- `H1-A`: terminal composition, restart authority, immutable publication, and
-  exclusive CAS successor.
+- `H1-A`: terminal composition through the shipped `taskplane.loop.retro`
+  caller, restart
+  authority, immutable publication, and exclusive CAS successor.
 - `H1-B`: stage/journal atomicity and durable observation intent.
 - `H1-C`: fsync-before-acknowledgement, migration authority, and read-only
   screening.
@@ -125,6 +128,9 @@ while parallel edits are in flight.
 ## Shared owners and serialization barriers
 
 - `H1-I` owns the new remediation-trace foundation after all five H1 leaves.
+- `H1-A` owns `taskplane/loop.py` for the shipped terminal-truth composition
+  correction; later H3 privacy/retention edits to that same caller remain
+  serialized through the existing `H1-A` → `H1-I` → `H3-C` dependency path.
 - `HX-GRAPH` owns every H2/H3 graph, architecture-map, graph-keyboard, routing,
   and glob-matcher edit.
 - `H2-I` and `H3-I` own only their disjoint integration tests.
