@@ -122,7 +122,7 @@ class B1_TheClosingSequenceCanAlwaysRun(_WS):
                     self.assertEqual(decision, "abstain",
                                      f"{cmd} was metered at {used} actions")
 
-    def test_the_last_actions_are_reserved_for_closing(self):
+    def test_closing_reserve_does_not_create_a_read_only_shell_exception(self):
         self.contract(40)
         self.spend(35)
         work, _ = self.screen("grep -r foo .")
@@ -131,7 +131,9 @@ class B1_TheClosingSequenceCanAlwaysRun(_WS):
             with self.subTest(cmd):
                 self.spend(35)
                 decision, why = self.screen(cmd)
-                self.assertNotEqual(decision, "block", f"{cmd}: {why}")
+                self.assertEqual(decision, "block", cmd)
+                self.assertIn("every shell command tool is blocked", why)
+                self.assertNotIn("ACTION BUDGET exhausted", why)
 
     def test_the_reserve_does_not_raise_the_ceiling(self):
         """A carve-out, not an increase — at the ceiling itself nothing
@@ -403,10 +405,11 @@ class I1_TheContractCanCreateItsOwnDirectory(unittest.TestCase):
     RO = {"read_only": True, "write_allow": [".em-review/**"],
           "task_id": "t", "scope": ["**"]}
 
-    def test_mkdir_of_the_allowed_root_is_allowed(self):
+    def test_mkdir_of_the_allowed_root_is_not_a_shell_exception(self):
         ok, why = tp.screen_tool(self.RO, "Bash",
                                  {"command": "mkdir -p .em-review"}, None)
-        self.assertTrue(ok, why)
+        self.assertFalse(ok)
+        self.assertIn("every shell command tool is blocked", why)
 
     def test_the_widening_is_exactly_one_path(self):
         for cmd in ("mkdir -p .em-review-scratch", "mkdir -p .em-reviewX",

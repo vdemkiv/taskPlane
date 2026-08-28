@@ -49,20 +49,19 @@ def test_unzip_extract_blocked_under_readonly():
     assert _stool(_ro(), "unzip payload.zip") is False
 
 
-def test_tar_list_is_not_blocked():
-    # -t is read-only listing, must remain allowed
-    assert _stool(_ro(), "tar -tf archive.tar") is True
+def test_tar_list_does_not_bypass_readonly_shell_denial():
+    assert _stool(_ro(), "tar -tf archive.tar") is False
 
 
-# ---- #14 tp.py's own CLI is exempt under read-only (was self-DoS'd) ----
+# ---- H1: tp.py has no agent-shell exemption under read-only ----
 
-def test_tp_cli_allowed_under_readonly_relative():
-    assert _stool(_ro(), "python3 taskplane/tp.py findings --paged") is True
+def test_tp_cli_blocked_under_readonly_relative():
+    assert _stool(_ro(), "python3 taskplane/tp.py findings --paged") is False
 
 
-def test_tp_cli_allowed_under_readonly_absolute():
+def test_tp_cli_blocked_under_readonly_absolute():
     cmd = f"python3 {os.path.join(ROOT, 'taskplane', 'tp.py')} summary"
-    assert _stool(_ro(), cmd) is True
+    assert _stool(_ro(), cmd) is False
 
 
 def test_arbitrary_python_script_still_blocked_under_readonly():

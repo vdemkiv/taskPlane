@@ -191,6 +191,7 @@ class TestTheCompletionGate(_Repo):
 
     def _contract(self, *extra):
         _run("new", "--read-only", "--write-allow", ".em-review/**",
+             "--tools", "Read,Grep,Glob,Write,Edit",
              "--workspace", self.ws, *extra, "review: probe")
 
     def _screen(self, command):
@@ -219,22 +220,35 @@ class TestTheCompletionGate(_Repo):
                 self.assertEqual(decision, "block", cmd)
                 self.assertIn("not bound to a reviewed tree", why)
 
-    def test_it_never_blocks_DOING_the_review(self):
-        """The whole point of the conversion — it may refuse the conclusion
-        and nothing else."""
+    def test_readonly_review_uses_native_tools_not_shell(self):
+        """Target binding stays narrow; H1 independently denies all shell."""
         self._contract()
         for cmd in ("grep -rn foo .", "cat a.txt", "git diff HEAD~1",
                     "tp findings", "tp graph scan", "tp target pin",
                     "tp lens dispatch", "echo hi > .em-review/x"):
             with self.subTest(cmd):
                 decision, why = self._screen(cmd)
-                self.assertNotEqual(decision, "block", f"{cmd}: {why}")
+                self.assertEqual(decision, "block", cmd)
+                self.assertIn("every shell command tool is blocked", why)
+        contract = tp.load_active(self.ws)
+        for tool, tool_input in (
+                ("Read", {"file_path": os.path.join(self.ws, "a.txt")}),
+                ("Grep", {"pattern": "x", "path": self.ws}),
+                ("Glob", {"pattern": "*.txt", "path": self.ws})):
+            with self.subTest(tool=tool):
+                allowed, why = tp.screen_tool(
+                    contract, tool, tool_input, self.ws)
+                self.assertTrue(allowed, why)
 
     def test_pinning_the_target_unblocks_the_gate(self):
         self._contract()
+        self.assertIsNotNone(tgt.binding_problem(self.ws))
         self.assertEqual(self._screen("tp dod")[0], "block")
         _run("target", "--workspace", self.ws, "pin", "--base", self.base)
-        self.assertNotEqual(self._screen("tp dod")[0], "block")
+        self.assertIsNone(tgt.binding_problem(self.ws))
+        decision, why = self._screen("tp dod")
+        self.assertEqual(decision, "block")
+        self.assertIn("every shell command tool is blocked", why)
 
     def test_a_build_contract_is_not_subject_to_this(self):
         """A build contract already carries its snapshot; the hole was
@@ -251,7 +265,10 @@ class TestTheCompletionGate(_Repo):
         self.assertEqual(rec["target"]["number"], 9464)
         contract = tp.load_active(self.ws)
         self.assertEqual(contract["target"]["fingerprint"], rec["fingerprint"])
-        self.assertNotEqual(self._screen("tp dod")[0], "block")
+        self.assertIsNone(tgt.binding_problem(self.ws))
+        decision, why = self._screen("tp dod")
+        self.assertEqual(decision, "block")
+        self.assertIn("every shell command tool is blocked", why)
 
 
 class TestFindingsMustCiteTheTree(_Repo):

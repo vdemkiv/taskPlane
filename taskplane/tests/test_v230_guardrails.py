@@ -211,16 +211,10 @@ class TestNoLoosening(unittest.TestCase):
             self.assertIsNotNone(
                 v, f"LOOSENED: scoped build contract now approves {cmd!r}")
 
-    # SANCTIONED NARROWING (v2.11.0), recorded here rather than quietly
-    # rewritten. Until now ANY `python -c` was refused under a read-only
-    # contract, including `print('x')`. A field review showed the cost: it
-    # blocked a read-only directory walk, and blocked a lens agent from
-    # validating its own findings JSON before writing it — a screen that
-    # forbids READING teaches agents to route around the screen. A Python
-    # body is a grammar, not an opaque blob, so it is now screened: an
-    # allowlist of stdlib reads passes, everything else keeps the denial and
-    # unparseable code fails closed. The battery below is what makes the
-    # narrowing checkable — every write shape must still be refused.
+    # The historical v2.11 grammar allowlist remains defense in depth, but H1
+    # now denies every command tool for read-only roles before this analyzer
+    # can grant execution. The write battery remains load-bearing for scoped
+    # Build and any future direct-argv host integration.
     PY_WRITE_BATTERY = [
         'python3 -c "open(\'README.md\',\'w\').write(\'x\')"',
         'python3 -c "import os;os.remove(\'README.md\')"',
@@ -263,12 +257,11 @@ class TestNoLoosening(unittest.TestCase):
 
 
 # =====================================================================
-# Deny precision (the ONLY sanctioned loosening: provably-safe forms)
+# Deny precision and read-only shell denial
 # =====================================================================
 
-class TestReadOnlyInlineCodeIsAllowed(unittest.TestCase):
-    """The other half of the v2.11.0 narrowing: code that provably only
-    reads must actually be allowed, or the screen still forbids reading."""
+class TestReadOnlyInlineCodeIsRecognizedButShellIsDenied(unittest.TestCase):
+    """Grammar recognition cannot bypass the H1 shell-command boundary."""
 
     RO = {"read_only": True, "write_allow": [".em-review/**"],
           "task_id": "t", "scope": ["**"]}
@@ -306,12 +299,12 @@ class TestReadOnlyInlineCodeIsAllowed(unittest.TestCase):
         for name in tpl._RO_ATTRS | tpl._RO_OS_ATTRS | tpl._RO_BUILTINS:
             self.assertFalse(name.startswith("_"), name)
 
-    def test_provably_read_only_bodies_pass(self):
+    def test_provably_read_only_bodies_do_not_bypass_shell_denial(self):
         for cmd in self.ALLOWED:
             ok, reason = tpl.screen_tool(self.RO, "Bash", {"command": cmd},
                                          None)
-            self.assertTrue(ok, f"still refused a pure read: {cmd!r} — "
-                                f"{reason}")
+            self.assertFalse(ok, f"LOOSENED: read-only shell allowed {cmd!r}")
+            self.assertIn("every shell command tool is blocked", reason)
 
 
 class TestDenyPrecision(unittest.TestCase):
@@ -365,18 +358,22 @@ class TestDenyPrecision(unittest.TestCase):
 # =====================================================================
 
 class TestInterpreterTightening(unittest.TestCase):
-    def test_script_file_is_interpreter_opaque(self):
+    def test_script_file_is_launcher_opaque(self):
         for cmd in ("python3 evil.py", "python evil.py", "node evil.js",
                     "ruby evil.rb", "perl evil.pl", "python3 -m evil",
                     "python3"):
             _, opaque = tpl._analyze(cmd)
             self.assertIsNotNone(opaque, cmd)
-            self.assertEqual(opaque[0], "interpreter", cmd)
+            self.assertIn(opaque[0], {"launcher", "interpreter"}, cmd)
 
-    def test_version_probes_stay_transparent(self):
+    def test_version_probes_do_not_bypass_read_only_shell_policy(self):
+        ro = tpl.build_contract("review", read_only=True,
+                                write_allow=[".em-review/**"])
         for cmd in ("python3 --version", "node --version", "python3 -V"):
-            _, opaque = tpl._analyze(cmd)
-            self.assertIsNone(opaque, cmd)
+            ok, reason = tpl.screen_tool(
+                ro, "Bash", {"command": cmd}, None)
+            self.assertFalse(ok, cmd)
+            self.assertIn("every shell command tool is blocked", reason)
 
     def test_read_only_blocks_script_after_staging_it(self):
         # The live bypass: write evil.py into write_allow, then run it.
@@ -467,9 +464,12 @@ class TestPerTaskContractSlots(_StoreIsolated):
             u, "Bash", {"command": "echo x > .em-review/notes.md"},
             self._tmp)
         self.assertFalse(ok)
-        # harmless command passes every member
-        ok, _ = tpl.screen_tool(u, "Bash", {"command": "echo hi"}, self._tmp)
-        self.assertTrue(ok)
+        # No shell command is harmless under a read-only union member.
+        ok, reason = tpl.screen_tool(
+            u, "Bash", {"command": "echo hi"}, self._tmp)
+        self.assertFalse(ok)
+        self.assertIn("most-restrictive union", reason)
+        self.assertIn("every shell command tool is blocked", reason)
 
     def test_single_slot_no_env_governs_by_that_contract(self):
         ca = self._activate("tA", scope=["src/**"])

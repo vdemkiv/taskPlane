@@ -260,14 +260,17 @@ class TheRunDeclaresWhatItOwesUpFront(unittest.TestCase):
         self.assertIn("cannot be declared finished", out["reason"])
         self.assertIn("tp ack", out["reason"])
 
-    def test_the_screener_still_allows_the_work_end_to_end(self):
+    def test_obligation_scope_does_not_create_a_read_only_shell_exception(self):
         self.new("--owes", "review")
         ev = {"tool_name": "Bash", "cwd": self.ws,
               "tool_input": {"command": "tp graph impact --files a.py"}}
         r = subprocess.run([sys.executable, TP, "screen"],
                            input=json.dumps(ev), capture_output=True,
                            text=True, encoding="utf-8", env=dict(os.environ))
-        self.assertNotEqual(json.loads(r.stdout).get("decision"), "block")
+        out = json.loads(r.stdout)
+        self.assertEqual(out.get("decision"), "block")
+        self.assertIn(
+            "every shell command tool is blocked", out.get("reason", ""))
 
 
 class TheStopHookReportsWhatWasNeverShown(_Ws):
