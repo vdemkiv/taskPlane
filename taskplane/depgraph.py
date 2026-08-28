@@ -1181,17 +1181,8 @@ def _read_design_architecture(ws: str) -> dict:
         return {"configured": True, "nodes": [], "semantic_edges": [],
                 "design_edges": [], "singleton_sccs": [],
                 "errors": ["design/contract.json root must be an object"]}
-    requirement = str(contract.get("requirement") or "").strip()
     architecture = contract.get("architecture_decomposition")
     errors = []
-    if "architecture_decomposition" not in contract and requirement not in \
-            _CURRENT_GRAPH_AUTHORITY_FLOORS:
-        # The accepted R-0013/R-0002 architecture map is an opt-in,
-        # repository-specific authority. A normal Taskplane consumer's
-        # accepted Design Contract must not inherit that fixed 14-node/24-edge
-        # map merely because it also has a design/contract.json.
-        return {"configured": False, "nodes": [], "semantic_edges": [],
-                "design_edges": [], "singleton_sccs": [], "errors": []}
     if not isinstance(architecture, dict):
         return {"configured": True, "nodes": [], "semantic_edges": [],
                 "design_edges": [], "singleton_sccs": [], "errors": [
@@ -1280,6 +1271,7 @@ def _read_design_architecture(ws: str) -> dict:
     if not isinstance(design_edges, list):
         errors.append("current design graph.proposed_edges must be a list")
         design_edges = []
+    requirement = str(contract.get("requirement") or "").strip()
     graph_floor = _CURRENT_GRAPH_AUTHORITY_FLOORS.get(requirement)
     if graph_floor is None:
         errors.append("current design requirement has no approved graph "
