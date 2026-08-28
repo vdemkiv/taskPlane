@@ -303,8 +303,45 @@ def test_production_trace_writer_continuously_updates_progress_snapshot(tmp_path
     assert status["identity"]["workflow_id"] == "wf-runtime"
     assert status["identity"]["run_id"] == "run-runtime"
     assert status["active"] == {
-        "owner": "taskplane", "agent": "executor-6", "phase": "execute"}
+        "owner": "taskplane",
+        "agent": taskplane_lite._audit_pseudonym("executor-6"),
+        "phase": "execute"}
     assert status["state"] == "executing"
+
+
+def test_generic_trace_does_not_invent_live_progress_identity(tmp_path):
+    taskplane_lite.trace(
+        str(tmp_path), "hook_deny", reason="private operator detail")
+
+    status = progress.read_workspace_status(str(tmp_path), now=10**12)
+
+    assert status["status"] == "unavailable"
+    assert status["gating"] is False
+
+
+@pytest.mark.parametrize("prior", [
+    {"schema": progress.SNAPSHOT_SCHEMA},
+    {"schema": progress.SNAPSHOT_SCHEMA,
+     "identity": {"workflow_id": "wf", "run_id": "run", "sequence": 1}},
+    {"schema": progress.SNAPSHOT_SCHEMA,
+     "identity": {"workflow_id": "wf", "run_id": "run", "sequence": 1},
+     "active": {"owner": "taskplane", "agent": "", "phase": "execute"},
+     "state": "executing"},
+])
+def test_incomplete_prior_cannot_seed_fallback_progress_identity(
+        tmp_path, prior):
+    root = tmp_path / ".taskplane"
+    root.mkdir()
+    path = root / "progress.json"
+    path.write_text(json.dumps(prior), encoding="utf-8")
+
+    outcome = progress.record_trace_event(
+        str(tmp_path), "hook_deny", {"step": "execute"}, observed_at=100.0)
+
+    assert outcome["recorded"] is False
+    assert json.loads(path.read_text(encoding="utf-8")) == prior
+    status = progress.read_workspace_status(str(tmp_path), now=101.0)
+    assert status["status"] == "unavailable"
 
 
 def test_production_status_reads_durable_progress_without_review_recompute(tmp_path):

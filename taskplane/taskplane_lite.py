@@ -7152,6 +7152,8 @@ _AUDIT_FREE_TEXT_FIELDS = frozenset({
     "title", "touched", "transcript", "transcripts", "warnings",
     "write_allow",
 })
+_AUDIT_BOOLEAN_FIELDS = frozenset({"dor_ready"})
+_AUDIT_COLLECTION_FIELDS = frozenset({"lenses"})
 _AUDIT_LITERAL_FIELDS = frozenset({
     "action", "action_id", "age_s", "approval_enabled", "archived_tasks",
     "archived_to",
@@ -7162,19 +7164,21 @@ _AUDIT_LITERAL_FIELDS = frozenset({
     "engine_ran", "evidence_id", "exact_route_verified",
     "failure_code", "fingerprint", "first_step", "flow", "from_step", "gate",
     "graph_fingerprint", "graph_modules", "graph_quality_status", "held", "human_required",
-    "id", "impacted", "kernel_status", "key", "kind", "lenses", "max", "max_age_s",
+    "id", "impacted", "kernel_status", "key", "kind", "max", "max_age_s",
     "max_fix_cycles", "migrated", "mode", "model", "modules", "old", "open",
     "operation", "operation_id", "outcome", "passed", "pending", "permission_mode",
     "produced_by", "produced_in", "read_only", "receipt", "receipt_fingerprint",
     "receipt_id", "recorded_key", "registry_fingerprint", "registry_version", "replay",
     "requirement", "requirement_id", "resolution", "restored", "retro_id", "review_id",
-    "requested_breadth", "reviews", "reviews_completed", "role",
+    "requested_breadth", "returncode", "reviews", "reviews_completed", "role",
     "routing_complete", "routing_counts",
     "routing_mode", "run_id", "seconds", "seconds_saved", "selection", "sha256",
     "shared_with", "slot", "slots", "spent_usd", "stage", "stage_id", "status",
-    "lens_count", "step", "store", "stuck", "submitted", "suite_cited",
+    "generation", "lens_count", "step", "store", "stuck",
+    "submitted", "suite_cited",
     "tags", "task", "task_id",
     "task_slot", "tier", "topology_fingerprint", "track", "triggered", "used", "via",
+    "workflow_id",
 })
 _AUDIT_CLOSED_LITERAL_VALUES = {
     "requested_breadth": frozenset({"all", "routed"}),
@@ -7184,7 +7188,11 @@ _AUDIT_CLOSED_LITERAL_VALUES = {
         "stage-not-requested", "mapper-unavailable", "engine-not-engaged",
     }),
 }
-_AUDIT_BOUNDED_INTEGER_VALUES = {"lens_count": (0, 26)}
+_AUDIT_BOUNDED_INTEGER_VALUES = {
+    "generation": (0, 99999),
+    "lens_count": (0, 26),
+    "returncode": (-2147483648, 4294967295),
+}
 _AUDIT_LITERAL_RE = re.compile(r"^[A-Za-z0-9_.:+-]{1,256}$")
 _AUDIT_RELATIVE_PATH_RE = re.compile(
     r"^(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]{1,256}$")
@@ -7206,6 +7214,7 @@ def _sanitize_audit_key(value: object) -> str:
     raw = str(value)
     normalized = raw.strip().lower()
     allowed = _AUDIT_IDENTITY_FIELDS | _AUDIT_FREE_TEXT_FIELDS | \
+        _AUDIT_BOOLEAN_FIELDS | _AUDIT_COLLECTION_FIELDS | \
         _AUDIT_LITERAL_FIELDS | {"event", "ts", "schema"}
     if normalized in allowed:
         return normalized
@@ -7229,6 +7238,18 @@ def _sanitize_audit_value(value, *, key: str = "", depth: int = 0):
     if normalized_key in _AUDIT_IDENTITY_FIELDS and value is not None:
         return _audit_pseudonym(value)
     if normalized_key in _AUDIT_FREE_TEXT_FIELDS and value is not None:
+        return _audit_minimized(value)
+    if normalized_key in _AUDIT_BOOLEAN_FIELDS:
+        return value if isinstance(value, bool) else _audit_minimized(value)
+    if normalized_key in _AUDIT_COLLECTION_FIELDS:
+        if depth >= 6:
+            return _audit_minimized(value)
+        if isinstance(value, (list, tuple, set)):
+            return [_sanitize_audit_value(
+                        item, key=normalized_key, depth=depth + 1)
+                    for item in list(value)[:_AUDIT_COLLECTION_MAX_ITEMS]]
+        if isinstance(value, str) and value in {"deep", "light", "n/a"}:
+            return value
         return _audit_minimized(value)
     closed_values = _AUDIT_CLOSED_LITERAL_VALUES.get(normalized_key)
     if closed_values is not None:
