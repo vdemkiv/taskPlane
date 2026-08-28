@@ -538,11 +538,32 @@ _RO_OPEN_MODES = frozenset({"r", "rb", "rt", "tr", "br", "rU"})
 # git subcommands that rewrite tracked files in the working tree.
 _GIT_MUTATORS = {"checkout", "reset", "restore", "clean", "stash",
                  "apply", "am", "rebase", "cherry-pick", "revert"}
-# git GLOBAL options that consume a SEPARATE following token as their value —
-# `git -C <path> checkout` etc. Skipping the flag but not its value would let
-# the value be misread as the subcommand, dodging the mutator screen.
+# Git global options that consume a separate value. This complete parser set
+# is used to find mutators even when the invocation is not eligible for the
+# much narrower read-only allowlist below.
 _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
                    "--super-prefix", "--config-env", "--exec-path"}
+# A Git command name is an execution surface: unknown names resolve to
+# `git-<name>` programs on PATH and then to aliases, including shell aliases
+# from repository/global config. Read-only contracts therefore admit only
+# built-ins whose argv can be classified conservatively. Dual-use porcelain
+# such as status/branch/config is intentionally absent (status can also start
+# a configured fsmonitor process).
+_GIT_READONLY_BUILTINS = frozenset({
+    "cat-file", "describe", "diff", "diff-files", "diff-index",
+    "diff-tree", "for-each-ref", "log", "ls-files", "ls-tree",
+    "merge-base", "name-rev", "rev-list", "rev-parse", "show",
+    "show-ref",
+})
+# These porcelain commands can invoke configured external diff or textconv
+# helpers. Both negative flags are mandatory even if the local repository is
+# currently clean: global/repository config and .gitattributes are untrusted
+# inputs to the read-only command boundary.
+_GIT_DIFF_PORCELAIN = frozenset({"diff", "log", "show"})
+_GIT_SAFE_GLOBAL_FLAGS = frozenset({
+    "-P", "--no-pager", "--no-optional-locks", "--no-advice",
+    "--no-lazy-fetch", "--no-replace-objects", "--literal-pathspecs",
+})
 
 
 # --------------------------------------------------------------- paths
@@ -1207,6 +1228,113 @@ def _unwrap(toks) -> list:
     return toks
 
 
+def _git_subcommand(args) -> "tuple[str | None, int]":
+    """Return Git's subcommand and its argv index through global options."""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if not arg.startswith("-"):
+            return arg, i
+        base = arg.split("=", 1)[0]
+        i += 1
+        if base in _GIT_VALUE_OPTS and "=" not in arg:
+            i += 1
+    return None, i
+
+
+def _git_readonly_violation(args) -> "str | None":
+    """Why this Git argv is not statically demonstrable as read-only.
+
+    The allowlist is deliberately command-and-option shaped, not a denylist.
+    Git has several executable extension mechanisms (aliases, git-* helpers,
+    pagers, external diff drivers and textconv filters), and configuration can
+    come from outside the reviewed repository. A form is admitted only when
+    argv selects a known read-only built-in and explicitly disables every
+    relevant configured executor and optional repository-metadata writes.
+    """
+    if args in (["--version"], ["-v"]):
+        return None
+
+    sub, sub_index = _git_subcommand(args)
+    global_args = args[:sub_index]
+    saw_no_pager = False
+    saw_no_optional_locks = False
+    i = 0
+    while i < len(global_args):
+        arg = global_args[i]
+        if arg in ("-P", "--no-pager"):
+            saw_no_pager = True
+            i += 1
+            continue
+        if arg == "--no-optional-locks":
+            saw_no_optional_locks = True
+            i += 1
+            continue
+        if arg == "-C":
+            if i + 1 >= len(global_args):
+                return "Git `-C` has no path, so its effects can't be screened"
+            i += 2
+            continue
+        if arg.startswith("-C") and len(arg) > 2:
+            i += 1
+            continue
+        if arg in _GIT_SAFE_GLOBAL_FLAGS:
+            i += 1
+            continue
+        return (
+            f"Git global option `{arg}` may select configuration or an "
+            "executable extension that can't be screened from argv")
+
+    if sub not in _GIT_READONLY_BUILTINS:
+        label = sub or "<missing>"
+        return (
+            f"Git command `{label}` is not on the statically read-only "
+            "built-in allowlist; aliases and git-* executables can't be "
+            "screened from argv")
+    if not saw_no_pager:
+        return (
+            "Git output may launch a configured pager that can't be screened; "
+            "use `git --no-pager …`")
+    if not saw_no_optional_locks:
+        return (
+            "Git may perform optional repository-metadata writes that can't "
+            "be screened; use `git --no-optional-locks …`")
+
+    sub_args = args[sub_index + 1:]
+    options = []
+    for arg in sub_args:
+        if arg == "--":
+            break
+        options.append(arg)
+    if "--ext-diff" in options or "--textconv" in options:
+        return (
+            "Git external-diff/textconv execution can't be screened from "
+            "argv; use both `--no-ext-diff` and `--no-textconv`")
+    if sub in _GIT_DIFF_PORCELAIN and (
+            "--no-ext-diff" not in options or "--no-textconv" not in options):
+        return (
+            "Git diff output may invoke globally or locally configured "
+            "external-diff/textconv helpers that can't be screened; use both "
+            "`--no-ext-diff` and `--no-textconv`")
+    if sub == "cat-file" and any(
+            arg in ("--filters", "--textconv")
+            or arg.startswith("--filters=")
+            or arg.startswith("--textconv=")
+            for arg in options):
+        return (
+            "Git cat-file filters/textconv may execute configured helpers "
+            "that can't be screened from argv")
+    if sub in ("log", "show") and any(
+            arg == "--show-signature"
+            or ((arg.startswith("--format=") or arg.startswith("--pretty="))
+                and "%G" in arg)
+            for arg in options):
+        return (
+            "Git signature display may execute a configured verifier that "
+            "can't be screened from argv")
+    return None
+
+
 def _analyze(command: str, _depth: int = 0):
     """Screen a shell command string.
 
@@ -1393,25 +1521,18 @@ def _analyze(command: str, _depth: int = 0):
                     "writes can't be screened from argv")
             continue
         if prog == "git":
-            # The subcommand is the first non-option arg — but git's GLOBAL
-            # options can take a SEPARATE value that would otherwise be read
-            # as the subcommand: `git -C /path checkout` must screen
-            # `checkout`, not `/path`. Skip each value-taking global option
-            # AND its argument before picking the subcommand.
-            i, sub = 0, None
-            while i < len(args):
-                a = args[i]
-                if not a.startswith("-"):
-                    sub = a
-                    break
-                base = a.split("=", 1)[0]
-                i += 1
-                if base in _GIT_VALUE_OPTS and "=" not in a:
-                    i += 1                 # swallow the option's value
+            # Preserve the governed-build mutator denial, then apply the
+            # stricter read-only allowlist. A launcher opaque is ignored by
+            # build contracts but refused by the read-only branch above.
+            sub, _ = _git_subcommand(args)
             if sub in _GIT_MUTATORS:
                 opaque = opaque or (
                     "destructive",
                     f"`git {sub}` rewrites tracked files in the working tree")
+            else:
+                violation = _git_readonly_violation(args)
+                if violation:
+                    opaque = opaque or ("launcher", violation)
             continue
         if prog not in _READONLY_SAFE_PROGRAMS:
             opaque = opaque or (

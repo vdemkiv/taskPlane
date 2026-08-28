@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 from pathlib import Path
 from unittest import mock
@@ -127,7 +128,74 @@ def test_h30_readonly_contract_refuses_opaque_mutating_launchers(tmp_path: Path)
         assert "read-only review contract" in reason
         assert "can't be screened" in reason
 
-    for command in ("rg -n TODO src", "git diff --stat", "cat README.md"):
+    for command in (
+            "rg -n TODO src",
+            "git --no-pager --no-optional-locks diff "
+            "--no-ext-diff --no-textconv --stat",
+            "cat README.md"):
         allowed, reason = tp.screen_tool(
             contract, "Bash", {"command": command}, str(tmp_path))
         assert allowed is True, (command, reason)
+
+
+def test_h30_readonly_contract_rejects_git_alias_extension_surfaces(
+        tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text(
+        "[alias]\n\tpwn = !touch reviewed-source\n", encoding="utf-8")
+    configured_alias = (
+        f"GIT_CONFIG_GLOBAL={shlex.quote(str(global_config))} "
+        "git --no-pager --no-optional-locks pwn")
+
+    commands = (
+        "git --no-pager --no-optional-locks "
+        "-c alias.pwn='!touch reviewed-source' pwn",
+        "ALIAS_VALUE='!touch reviewed-source' git --no-pager "
+        "--no-optional-locks --config-env=alias.pwn=ALIAS_VALUE pwn",
+        configured_alias,
+    )
+    for command in commands:
+        allowed, reason = tp.screen_tool(
+            contract, "Bash", {"command": command}, str(tmp_path))
+        assert allowed is False, command
+        assert "read-only review contract" in reason
+        assert "Git" in reason
+        assert "can't be screened" in reason
+
+
+def test_h30_readonly_git_diff_disables_external_and_textconv_helpers(
+        tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text(
+        "[diff]\n\texternal = touch reviewed-source\n"
+        "[diff \"danger\"]\n\ttextconv = touch reviewed-source\n",
+        encoding="utf-8")
+    prefix = f"GIT_CONFIG_GLOBAL={shlex.quote(str(global_config))} "
+
+    unsafe = (
+        prefix + "git --no-pager --no-optional-locks diff --stat",
+        "git --no-pager --no-optional-locks diff --ext-diff --stat",
+        "git --no-pager --no-optional-locks diff --textconv --stat",
+        "git --no-pager --no-optional-locks "
+        "-c diff.external='touch reviewed-source' diff --stat",
+        "git --no-pager --no-optional-locks "
+        "-c diff.danger.textconv='touch reviewed-source' diff --stat",
+    )
+    for command in unsafe:
+        allowed, reason = tp.screen_tool(
+            contract, "Bash", {"command": command}, str(tmp_path))
+        assert allowed is False, command
+        assert "read-only review contract" in reason
+        assert "Git" in reason
+        assert "can't be screened" in reason
+
+    safe = (
+        prefix + "git --no-pager --no-optional-locks diff "
+        "--no-ext-diff --no-textconv --stat")
+    allowed, reason = tp.screen_tool(
+        contract, "Bash", {"command": safe}, str(tmp_path))
+    assert allowed is True, reason
