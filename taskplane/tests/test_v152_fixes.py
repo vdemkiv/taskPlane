@@ -194,11 +194,20 @@ class TestShareGuards(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("team/enterprise", r.stdout)
 
-    def test_plan_personal_notice_when_shared_config_present(self):
+    def test_plan_personal_stays_private_when_shared_config_present(self):
         tp.set_mode(self.ws, plan="team")           # creates shared config
         r = self._run("share", "plan", "personal")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(r.stdout)
-        self.assertIn("notice", out)
+        # A repository may offer a shared store, but explicitly selecting a
+        # personal plan is a durable local/private choice.  The old notice
+        # asserted the pre-M2 behavior where the committed config silently
+        # kept this user in the repository store.
+        self.assertEqual(
+            (out["plan"], out["store"], out["private"], out["source"]),
+            ("personal", "external", True, "private-setting"))
+        self.assertNotEqual(os.path.realpath(out["store_path"]),
+                            os.path.realpath(tp.repo_store_root(self.ws)))
 
     def test_decision_accept_unknown_id_exits_1(self):
         r = self._run("decision", "accept", "9999")
@@ -216,8 +225,12 @@ class TestSetModePersistFailure(unittest.TestCase):
         open(clash, "w", encoding="utf-8").write("x")
         os.environ["TASKPLANE_HOME"] = os.path.join(clash, "store")
         try:
-            with self.assertRaises(OSError):
+            # Durable state now fails closed with the kernel's typed state
+            # error before attempting a write below a non-directory anchor.
+            with self.assertRaises(tp.StateError) as raised:
                 tp.set_mode(ws, private=True)
+            self.assertEqual(raised.exception.path, clash)
+            self.assertIn("not a directory", str(raised.exception))
         finally:
             if prev is None:
                 os.environ.pop("TASKPLANE_HOME", None)

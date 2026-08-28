@@ -169,14 +169,22 @@ class TestTheSuiteDoesNotLeakTempDirs(unittest.TestCase):
             pkg._TMP_ROOT.startswith(os.path.realpath(tf.gettempdir()))
             or pkg._TMP_ROOT.startswith("/tmp"))
 
-    def test_the_guard_runs_under_both_runners(self):
-        """It lives in the package __init__, which pytest AND
-        `python -m unittest discover` both import — conftest would cover
-        only one of them, and the discover leg is a pinned CI leg."""
+    def test_both_runners_opt_into_the_scoped_guard(self):
+        """Both runners request isolation without making package import
+        mutate process-global state.  Unittest enters through ``load_tests``;
+        pytest requests the lazy compatibility bootstrap from conftest."""
         import taskplane.tests as pkg
         src = open(pkg.__file__, encoding="utf-8").read()
-        self.assertIn("tempfile.tempdir = _TMP_ROOT", src)
+        conftest = open(os.path.join(os.path.dirname(pkg.__file__),
+                                    "conftest.py"), encoding="utf-8").read()
+        self.assertIn("def isolated_test_runtime", src)
+        self.assertIn("class _RunnerScopedSuite", src)
+        self.assertIn("def load_tests", src)
+        self.assertIn("tempfile.tempdir = tmp_root", src)
+        self.assertIn("tempfile.tempdir = saved_tempdir", src)
         self.assertIn("atexit.register", src)
+        self.assertIn("from taskplane.tests import _SESSION_HOME", conftest)
+        self.assertNotIn("tempfile.tempdir = _TMP_ROOT", src)
 
 
 if __name__ == "__main__":
