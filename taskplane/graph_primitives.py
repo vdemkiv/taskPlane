@@ -6,11 +6,12 @@ component lens engine so direct graph APIs need no higher-layer activation.
 """
 from __future__ import annotations
 
-import fnmatch
 import json
 import os
 import posixpath
 import re
+
+import glob_match
 
 
 # Directory names that mark source layout rather than component identity.
@@ -170,6 +171,10 @@ def module_of(relpath: str, manifests: dict | None = None) -> str:
 
 def node_kind(node: str) -> str:
     """Return the public graph-node family for an identifier."""
+    if node.startswith("component:"):
+        return "component"
+    if node.startswith("surface:"):
+        return "surface"
     if node.startswith("req:"):
         return "requirement"
     if node.startswith("contract:"):
@@ -193,6 +198,60 @@ def is_dependency_edge(edge: dict) -> bool:
         return edge.get("kind") in DEPENDENCY_EDGE_KINDS
     except AttributeError:
         return False
+
+
+def strongly_connected_components(nodes, edges) -> list[list[str]]:
+    """Return a deterministic, complete Tarjan decomposition.
+
+    ``edges`` contains ``(source, target)`` pairs. Unknown endpoints are not
+    silently admitted: the caller must validate them before asking for SCC
+    evidence.  This helper never truncates; bounded callers must refuse input
+    over their declared ceiling before calling it.
+    """
+    ordered = sorted({str(node) for node in nodes or ()})
+    known = set(ordered)
+    adjacency = {node: set() for node in ordered}
+    for source, target in edges or ():
+        source, target = str(source), str(target)
+        if source not in known or target not in known:
+            raise ValueError(
+                f"SCC edge names an unknown node: {source} -> {target}")
+        adjacency[source].add(target)
+
+    index = 0
+    indexes: dict[str, int] = {}
+    lowlinks: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    components: list[list[str]] = []
+
+    def visit(node: str) -> None:
+        nonlocal index
+        indexes[node] = lowlinks[node] = index
+        index += 1
+        stack.append(node)
+        on_stack.add(node)
+        for target in sorted(adjacency[node]):
+            if target not in indexes:
+                visit(target)
+                lowlinks[node] = min(lowlinks[node], lowlinks[target])
+            elif target in on_stack:
+                lowlinks[node] = min(lowlinks[node], indexes[target])
+        if lowlinks[node] != indexes[node]:
+            return
+        component = []
+        while stack:
+            member = stack.pop()
+            on_stack.remove(member)
+            component.append(member)
+            if member == node:
+                break
+        components.append(sorted(component))
+
+    for node in ordered:
+        if node not in indexes:
+            visit(node)
+    return sorted(components, key=lambda component: tuple(component))
 
 
 def graph_payload(graph: dict, modules,
@@ -465,30 +524,14 @@ def load_catalog(root: str | None = None) -> dict:
 # -------------------------------------------------------------- glob matcher
 
 def _match(path: str, glob: str) -> bool:
-    """Path/glob match supporting '**' as 'any directories' (same semantics
-    as lens._match; duplicated to avoid the lens<->lens_signals cycle)."""
-    if fnmatch.fnmatch(path, glob):
-        return True
-    if glob.startswith("**/"):
-        tail = glob[3:]
-        if fnmatch.fnmatch(path, tail) or fnmatch.fnmatch(
-                os.path.basename(path), tail):
-            return True
-        parts = path.split("/")
-        for i in range(len(parts)):
-            if fnmatch.fnmatch("/".join(parts[i:]), tail):
-                return True
-    return False
+    """Compatibility facade over the shared dependency-neutral matcher."""
+    return glob_match.path_matches(path, glob)
 
 
 def _glob_hit(files, globs):
     """First (file, glob) pair that matches, or None. files/globs iterated
     in the given (already sorted) order -> deterministic."""
-    for g in globs:
-        for f in files:
-            if _match(f, g):
-                return (f, g)
-    return None
+    return glob_match.first_match(files, globs)
 
 
 def _is_code(path: str, code_ext) -> bool:

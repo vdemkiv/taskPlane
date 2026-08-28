@@ -14,11 +14,11 @@ are touched or the change is large. Pure stdlib.
 from __future__ import annotations
 
 import copy
-import fnmatch
 import hashlib
 import json
 import os
 
+import glob_match
 import taskplane_lite as tp
 from path_roles import change_adds_no_test as _adds_no_test
 
@@ -246,30 +246,12 @@ def load_catalog(root: str | None = None) -> dict:
 
 
 def _match(path: str, glob: str) -> bool:
-    """Path/glob match supporting '**' as 'any directories'."""
-    if fnmatch.fnmatch(path, glob):
-        return True
-    if glob.startswith("**/"):
-        tail = glob[3:]
-        if fnmatch.fnmatch(path, tail) or fnmatch.fnmatch(
-                os.path.basename(path), tail):
-            return True
-        # match the tail against any suffix segment of the path
-        parts = path.split("/")
-        for i in range(len(parts)):
-            if fnmatch.fnmatch("/".join(parts[i:]), tail):
-                return True
-    return False
+    """Compatibility facade over the shared dependency-neutral matcher."""
+    return glob_match.path_matches(path, glob)
 
 
 def _any_match(files, globs) -> list:
-    hits = []
-    for g in globs or []:
-        for fpath in files:
-            if _match(fpath, g):
-                hits.append((fpath, g))
-                break
-    return hits
+    return glob_match.matches_by_pattern(files, globs)
 
 
 def _is_code(path: str, code_ext) -> bool:
