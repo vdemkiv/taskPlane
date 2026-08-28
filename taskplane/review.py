@@ -1148,6 +1148,7 @@ def _validated_validation_sandbox(value: object, run_id: object) -> dict:
 _VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS = 120.0
 _VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS = 600.0
 _VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS = 1.0
+_WINDOWS_CREATE_SUSPENDED = 0x00000004
 _VALIDATION_SANDBOX_COPY_SCRIPT = (
     "import shutil, sys; shutil.copy2(sys.argv[1], sys.argv[2])")
 
@@ -1169,6 +1170,112 @@ class _ValidationSandboxProcessCleanupTimeout(RuntimeError):
     def __init__(self, message: str, *, timeout_seconds: float):
         self.timeout_seconds = timeout_seconds
         super().__init__(message)
+
+
+class _WindowsValidationSandboxJob:
+    """Own one Windows process tree through a kill-on-close Job Object."""
+
+    def __init__(self, handle, kernel32):
+        self._handle = handle
+        self._kernel32 = kernel32
+
+    def terminate(self) -> None:
+        if self._handle is not None and not self._kernel32.TerminateJobObject(
+                self._handle, 1):
+            import ctypes
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self) -> None:
+        if self._handle is None:
+            return
+        handle, self._handle = self._handle, None
+        if not self._kernel32.CloseHandle(handle):
+            import ctypes
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _create_windows_validation_sandbox_job(process):
+    """Assign a launched child to an owned kill-on-close Windows job."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _JobObjectBasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class _JobObjectExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _JobObjectBasicLimitInformation),
+            ("IoInfo", _IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [
+        wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateJobObjectW(None, None)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    job = _WindowsValidationSandboxJob(handle, kernel32)
+    try:
+        limits = _JobObjectExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000
+        if not kernel32.SetInformationJobObject(
+                handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel32.AssignProcessToJobObject(handle, process._handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return job
+    except BaseException:
+        job.close()
+        raise
+
+
+def _resume_windows_validation_sandbox_process(process) -> None:
+    """Resume only after the suspended child has process-tree ownership."""
+    import ctypes
+    from ctypes import wintypes
+
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+    ntdll.NtResumeProcess.restype = wintypes.LONG
+    status = ntdll.NtResumeProcess(process._handle)
+    if status != 0:
+        raise OSError(
+            f"NtResumeProcess failed with NTSTATUS 0x{status & 0xffffffff:08x}")
 
 
 def _validation_sandbox_cleanup_remaining(
@@ -1224,8 +1331,26 @@ def _terminate_validation_sandbox_process_tree(
                 "validation sandbox process did not reap after SIGKILL",
                 timeout_seconds=cleanup_budget)
         return
-    # Windows does not expose killpg.  Popen.kill is the strongest stdlib
-    # fallback for the new process group created below.
+    job = getattr(process, "_taskplane_validation_job", None)
+    if job is not None:
+        # TerminateJobObject applies to every associated descendant, including
+        # children that created their own console process group.  Closing the
+        # kill-on-close handle below is the final fail-closed backstop.
+        try:
+            job.terminate()  # pragma: no cover - Windows host
+        finally:
+            job.close()  # pragma: no cover - Windows host
+            process._taskplane_validation_job = None
+        if not _wait_for_validation_sandbox_process(
+                process, shared_deadline=shared_deadline,
+                operation_deadline=operation_deadline):
+            raise _ValidationSandboxProcessCleanupTimeout(
+                "validation sandbox Windows job did not reap after kill",
+                timeout_seconds=cleanup_budget)
+        return
+    # Fail closed if Job Object creation/assignment was unavailable.  This
+    # direct-child fallback is used only while aborting a launch that never
+    # became an accepted sandbox preparation process.
     try:
         process.terminate()  # pragma: no cover - Windows host
     except ProcessLookupError:  # pragma: no cover - Windows host
@@ -1282,11 +1407,26 @@ def _run_validation_sandbox_git(
     launch = {
         "cwd": cwd, "stdin": subprocess.PIPE if input is not None else None,
         "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
-        "text": text, "start_new_session": True,
+        "text": text, "start_new_session": os.name == "posix",
     }
+    if os.name == "nt":
+        launch["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | \
+            _WINDOWS_CREATE_SUSPENDED
     if text:
         launch.update({"encoding": "utf-8", "errors": "replace"})
     process = subprocess.Popen(argv, **launch)
+    job = None
+    if os.name == "nt":
+        try:
+            job = _create_windows_validation_sandbox_job(process)
+            process._taskplane_validation_job = job
+            _resume_windows_validation_sandbox_process(process)
+        except BaseException:
+            _terminate_validation_sandbox_process_tree(
+                process, shared_deadline=deadline,
+                operation_deadline=operation_deadline)
+            raise
     try:
         stdout, stderr = process.communicate(input=input, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -1301,6 +1441,13 @@ def _run_validation_sandbox_git(
             process, phase, shared_deadline=deadline,
             operation_deadline=operation_deadline)
         raise
+    finally:
+        if job is not None and getattr(
+                process, "_taskplane_validation_job", None) is job:
+            # Normal parent exit is not proof that a descendant also exited.
+            # Kill-on-close makes a successful preparation unable to leak it.
+            job.close()
+            process._taskplane_validation_job = None
     result = subprocess.CompletedProcess(
         argv, process.returncode, stdout=stdout, stderr=stderr)
     if result.returncode:

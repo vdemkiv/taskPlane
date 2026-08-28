@@ -83,13 +83,14 @@ def test_h34_cancellation_terminates_the_complete_process_tree(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("platform_name", "shared_budget", "operation_budget", "expected_actions"),
-    [("posix", 10.0, 4.0, ["SIGTERM", "SIGKILL"]),
-     ("nt", 3.0, 4.0, ["terminate", "kill"])],
+    ("platform_name", "shared_budget", "operation_budget", "expected_actions",
+     "expected_waits"),
+    [("posix", 10.0, 4.0, ["SIGTERM", "SIGKILL"], [1.0, 0.5]),
+     ("nt", 3.0, 4.0, ["job-terminate", "job-close"], [1.0])],
 )
 def test_h34_cleanup_shares_the_aggregate_deadline_and_fails_closed(
         monkeypatch, platform_name, shared_budget, operation_budget,
-        expected_actions):
+        expected_actions, expected_waits):
     class Clock:
         def __init__(self):
             self.now = 100.0
@@ -127,6 +128,14 @@ def test_h34_cleanup_shares_the_aggregate_deadline_and_fails_closed(
             self.actions.append("kill")
 
     process = UnreapableProcess()
+
+    class Job:
+        def terminate(self):
+            process.actions.append("job-terminate")
+
+        def close(self):
+            process.actions.append("job-close")
+
     monkeypatch.setattr(review.os, "name", platform_name)
     monkeypatch.setattr(
         review.subprocess, "Popen", lambda *args, **kwargs: process)
@@ -137,6 +146,18 @@ def test_h34_cleanup_shares_the_aggregate_deadline_and_fails_closed(
         monkeypatch.setattr(
             review.os, "killpg",
             lambda _pid, sig: process.actions.append(signal.Signals(sig).name))
+    else:
+        def create_job(selected):
+            assert selected is process
+            process.actions.append("assign-job")
+            return Job()
+
+        monkeypatch.setattr(
+            review, "_create_windows_validation_sandbox_job",
+            create_job)
+        monkeypatch.setattr(
+            review, "_resume_windows_validation_sandbox_process",
+            lambda selected: process.actions.append("resume"))
     monkeypatch.setattr(review.time, "monotonic", clock)
 
     with pytest.raises(review._ValidationSandboxTimeout) as raised:
@@ -148,10 +169,109 @@ def test_h34_cleanup_shares_the_aggregate_deadline_and_fails_closed(
     assert raised.value.phase == "clone"
     assert raised.value.timeout_seconds == pytest.approx(1.5)
     assert process.communicate_timeout == min(shared_budget, operation_budget)
-    assert process.wait_timeouts == pytest.approx([1.0, 0.5])
-    assert process.actions == expected_actions
-    assert clock.now - 100.0 == pytest.approx(
-        min(shared_budget, operation_budget))
+    assert process.wait_timeouts == pytest.approx(expected_waits)
+    assert process.actions == (
+        (["assign-job", "resume"] if platform_name == "nt" else []) +
+        expected_actions)
+    assert clock.now - 100.0 <= min(shared_budget, operation_budget)
+
+
+def test_h34_windows_launch_owns_and_closes_a_kill_on_close_job(monkeypatch):
+    class Process:
+        pid = 8841
+        returncode = None
+
+        def communicate(self, input=None, timeout=None):
+            del input, timeout
+            self.returncode = 0
+            return b"ready", b""
+
+        def poll(self):
+            return self.returncode
+
+    process = Process()
+    launched = []
+    actions = []
+
+    class Job:
+        def terminate(self):
+            actions.append("terminate")
+
+        def close(self):
+            actions.append("close")
+
+    monkeypatch.setattr(review.os, "name", "nt")
+    monkeypatch.setattr(
+        review.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200,
+        raising=False)
+    monkeypatch.setattr(
+        review.subprocess, "Popen", lambda *args, **kwargs: (
+            launched.append((args, kwargs)) or process))
+    def create_job(selected):
+        assert selected is process
+        actions.append("assign-job")
+        return Job()
+
+    monkeypatch.setattr(
+        review, "_create_windows_validation_sandbox_job", create_job)
+    monkeypatch.setattr(
+        review, "_resume_windows_validation_sandbox_process",
+        lambda selected: actions.append("resume"))
+
+    result = review._run_validation_sandbox_git(
+        ["git", "status"], cwd=None,
+        deadline=review.time.monotonic() + 10.0, phase="status")
+
+    assert result.returncode == 0
+    assert launched[0][1]["start_new_session"] is False
+    assert launched[0][1]["creationflags"] == (
+        0x200 | review._WINDOWS_CREATE_SUSPENDED)
+    assert actions == ["assign-job", "resume", "close"]
+    assert process._taskplane_validation_job is None
+
+
+def test_h34_windows_job_assignment_failure_aborts_suspended_child(
+        monkeypatch):
+    class Process:
+        pid = 8842
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 1
+
+        def wait(self, timeout=None):
+            del timeout
+            return self.returncode
+
+    process = Process()
+    launched = []
+    resumed = []
+    monkeypatch.setattr(review.os, "name", "nt")
+    monkeypatch.setattr(
+        review.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200,
+        raising=False)
+    monkeypatch.setattr(
+        review.subprocess, "Popen", lambda *args, **kwargs: (
+            launched.append((args, kwargs)) or process))
+    monkeypatch.setattr(
+        review, "_create_windows_validation_sandbox_job",
+        lambda selected: (_ for _ in ()).throw(OSError("job refused")))
+    monkeypatch.setattr(
+        review, "_resume_windows_validation_sandbox_process",
+        lambda selected: resumed.append(selected))
+
+    with pytest.raises(OSError, match="job refused"):
+        review._run_validation_sandbox_git(
+            ["git", "status"], cwd=None,
+            deadline=review.time.monotonic() + 10.0, phase="status")
+
+    assert launched[0][1]["creationflags"] & \
+        review._WINDOWS_CREATE_SUSPENDED
+    assert process.returncode == 1
+    assert resumed == []
 
 
 def test_h34_cleanup_without_reap_time_fails_closed_without_overrun(
@@ -376,3 +496,54 @@ def test_h34_sandbox_prepare_has_process_and_total_deadlines(
         "disable-push", "configure-hooks",
     ]
     assert all(0 < remaining <= 600 for _phase, remaining in phases)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows jobs")
+def test_h34_windows_timeout_kills_child_and_grandchild(tmp_path, monkeypatch):
+    import ctypes
+    from ctypes import wintypes
+
+    pid_file = tmp_path / "tree.pids"
+    parent_script = (
+        "import os, pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(30)'], "
+        "creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text("
+        "f'{os.getpid()} {child.pid}', encoding='ascii')\n"
+        "time.sleep(30)\n"
+    )
+    monkeypatch.setattr(
+        review, "_VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS", 1.5)
+
+    with pytest.raises(review._ValidationSandboxTimeout):
+        review._run_validation_sandbox_git(
+            [sys.executable, "-c", parent_script], cwd=None,
+            deadline=review.time.monotonic() + 10.0, phase="windows-tree")
+
+    parent_pid, child_pid = (
+        int(value) for value in pid_file.read_text(encoding="ascii").split())
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [
+        wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def is_running(pid):
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x00000102
+        finally:
+            kernel32.CloseHandle(handle)
+
+    stop = review.time.monotonic() + 5.0
+    while any(is_running(pid) for pid in (parent_pid, child_pid)) and \
+            review.time.monotonic() < stop:
+        review.time.sleep(0.05)
+    assert not is_running(parent_pid)
+    assert not is_running(child_pid)
