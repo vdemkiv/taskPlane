@@ -9,7 +9,9 @@ generated artifacts must be regenerated, and no change may weaken a guardrail.
 git clone https://github.com/vdemkiv/taskPlane
 cd taskPlane
 git config user.email you@example.com && git config user.name you   # gates need commit identity
-pip install "pytest==8.*"          # the only dev dependency; the plugin itself is stdlib-only
+awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > .requirements-test.lock
+python -m pip install --require-hashes --no-deps -r .requirements-test.lock
+rm .requirements-test.lock
 python -m pytest taskplane/tests -q                    # run from the repo ROOT (conftest imports the taskplane package)
 python -m unittest taskplane.tests.test_runner_isolation.TestUnittestRunnerIsolation -v
 ```
@@ -37,6 +39,24 @@ Some shipped files are generated; CI fails if they drift from their sources:
 python3 lenses/_generate_catalog.py        # lenses/catalog.json summary check
 python3 lenses/_generate_lens_prompts.py   # lenses/<id>.md evaluator prompts
 python3 scripts/gen_lens_catalog.py        # docs/lens-catalog.md
+```
+
+The README animation uses Pillow only in its development asset toolchain. It
+never enters `taskplane/*.py` or the ordinary test profile. The commands below
+are intentionally a source build: they install hash-locked universal build
+tools, force the reviewed Pillow source artifact, and disable pip's isolated
+build resolver. Run them in `bash` (`Git Bash` on Windows); the source build
+also needs the native compiler/toolchain for your platform.
+
+```bash
+awk 'sub(/^# asset-build-lock: /, "")' requirements-dev.lock > .requirements-asset-build.lock
+python -m pip install --require-hashes --no-deps --only-binary=:all: -r .requirements-asset-build.lock
+rm .requirements-asset-build.lock
+awk 'sub(/^# asset-lock: /, "")' requirements-dev.lock > .requirements-asset.lock
+python -m pip install --require-hashes --no-deps --no-binary=Pillow --no-build-isolation -r .requirements-asset.lock
+rm .requirements-asset.lock
+python3 scripts/render_readme_gif.py
+git diff --exit-code -- docs/assets/taskplane-cowork-flow.gif
 ```
 
 ## Reporting problems

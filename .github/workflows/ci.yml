@@ -86,8 +86,11 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
-        run: pip install "pytest==8.*"
+      - name: Install hash-locked sealed test dependency tree
+        shell: bash
+        run: |
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
+          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
 
       - name: Configure git (the gates and tests need commit identity)
         run: |
@@ -371,8 +374,11 @@ jobs:
           --policy taskplane/tests/fixtures/import-cycles.json
           --check
           --verify-history
-      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
-        run: pip install "pytest==8.*"
+      - name: Install hash-locked sealed test dependency tree
+        shell: bash
+        run: |
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
+          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
       - name: Cycle, graph quality, and public CLI recovery contracts
         run: >-
           python3 -m pytest -q
@@ -458,11 +464,16 @@ jobs:
               taskplane/tests/test_loop_context_traces.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
-        run: pip install "pytest==8.*"
+      - name: Install hash-locked sealed test dependency tree
+        shell: bash
+        run: |
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
+          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
       - name: Configure git (the gates and tests need commit identity)
         run: |
           git config --global user.email "ci@taskplane"
@@ -475,6 +486,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: JSON manifests parse and versions agree
         run: |
           python - <<'PY'
@@ -615,6 +628,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -663,11 +678,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
-        run: pip install "pytest==8.*"
+      - name: Install hash-locked sealed test dependency tree
+        shell: bash
+        run: |
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
+          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
       - name: Configure git (the parity tests build throwaway fixture repos)
         run: |
           git config --global user.email "ci@taskplane"
@@ -698,11 +718,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
-        run: pip install "pytest==8.*"
+      - name: Install hash-locked sealed test dependency tree
+        shell: bash
+        run: |
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
+          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
       - name: Configure git (native-wave tests build throwaway repos)
         run: |
           git config --global user.email "ci@taskplane"
@@ -739,8 +764,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install test runner (pinned major; the plugin itself is stdlib-only)
-        run: pip install "pytest==8.*"
+      - name: Install hash-locked sealed test dependency tree
+        shell: bash
+        run: |
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
+          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
       - name: Configure git (the gate's fixtures build throwaway repos)
         run: |
           git config --global user.email "ci@taskplane"
