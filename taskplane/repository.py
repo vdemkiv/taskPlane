@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 import copy
+import contextvars
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
+import math
 import os
+import random
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Callable, Mapping, Sequence
 
 from delivery_ports import GitResult, GitRunner, SubprocessGitRunner
@@ -79,15 +84,27 @@ _PREPARATION_BOUNDARIES = {
     "default_ref_unfetched": "fetched_default_ref",
     "identity_mismatch": "repository_identity",
 }
+_DEFAULT_ACQUISITION_DEADLINE_SECONDS = 600.0
+_DEFAULT_RETRY_BASE_SECONDS = 1.0
+_DEFAULT_RETRY_MAX_SECONDS = 30.0
+_ACQUISITION_DEADLINE: contextvars.ContextVar[
+    tuple[float, Callable[[], float]] | None
+] = contextvars.ContextVar("taskplane_repository_deadline", default=None)
+_ACQUISITION_RETRY_OWNER: contextvars.ContextVar[bool] = \
+    contextvars.ContextVar("taskplane_repository_retry_owner", default=False)
+_ACQUISITION_HTTP11: contextvars.ContextVar[bool] = \
+    contextvars.ContextVar("taskplane_repository_http11", default=False)
 
 
 class RepositoryAcquisitionError(RuntimeError):
     def __init__(self, kind: str, detail: str, *,
-                 preparation_result: dict | None = None):
+                 preparation_result: dict | None = None,
+                 retry_after: str | float | int | None = None):
         super().__init__(detail)
         self.kind = str(kind)
         self.detail = str(detail)
         self.preparation_result = copy.deepcopy(preparation_result)
+        self.retry_after = retry_after
 
 
 def guard_terminal_delivery(
@@ -710,61 +727,255 @@ class AcquisitionResult:
     metadata: dict
 
 
+def _positive_finite(value: object, label: str, *, allow_zero: bool = False) \
+        -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+            not math.isfinite(float(value)) or \
+            (float(value) < 0 if allow_zero else float(value) <= 0):
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise ValueError(f"{label} must be a {qualifier} finite number")
+    return float(value)
+
+
+def _retry_after_seconds(exc: RepositoryAcquisitionError, *, now: float) \
+        -> float | None:
+    """Return a provider delay from a typed value or HTTP header excerpt."""
+    value: object = exc.retry_after
+    if value is None:
+        match = re.search(
+            r"(?im)^\s*retry-after\s*:\s*([^\r\n]+)", exc.detail)
+        if match is None:
+            return None
+        value = match.group(1).strip()
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) or \
+            (isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+)?", value)):
+        seconds = float(value)
+        return seconds if math.isfinite(seconds) and seconds >= 0 else None
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return max(0.0, parsed.timestamp() - now)
+
+
+def _acquisition_timeout(maximum: float) -> float:
+    """Cap one blocking operation by the active end-to-end deadline."""
+    bounded = _positive_finite(maximum, "operation timeout")
+    active = _ACQUISITION_DEADLINE.get()
+    if active is None:
+        return bounded
+    deadline, monotonic = active
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise RepositoryAcquisitionError(
+            "network", "repository acquisition deadline elapsed")
+    return min(bounded, remaining)
+
+
+def _attempt_record(*, attempt: int, started: float, finished: float,
+                    status: str, failure_class: str | None = None,
+                    detail: str | None = None) -> dict:
+    record = {
+        "attempt": attempt,
+        "started_after_seconds": round(started, 6),
+        "duration_seconds": round(max(0.0, finished - started), 6),
+        "status": status,
+    }
+    if failure_class is not None:
+        record["failure_class"] = failure_class
+    if detail is not None:
+        record["detail_fingerprint"] = hashlib.sha256(
+            detail.encode("utf-8")).hexdigest()
+    return record
+
+
+def _waiting_recovery(*, reason: str, detail: str, attempts: int,
+                      telemetry: list[dict],
+                      recovery_record: dict | None = None) -> dict:
+    result = {
+        "schema": "taskplane.repository-preparation/v1",
+        "status": "waiting", "reason": reason, "detail": detail,
+        "attempts": attempts, "attempt_telemetry": copy.deepcopy(telemetry),
+    }
+    if recovery_record is not None:
+        result["recovery"] = recovery_record
+    return result
+
+
 def acquire_with_recovery(acquire: Callable[[], object], *,
-                          max_attempts: int = 3) -> dict:
+                          max_attempts: int = 3,
+                          deadline_seconds: float =
+                          _DEFAULT_ACQUISITION_DEADLINE_SECONDS,
+                          base_backoff_seconds: float =
+                          _DEFAULT_RETRY_BASE_SECONDS,
+                          max_backoff_seconds: float =
+                          _DEFAULT_RETRY_MAX_SECONDS,
+                          monotonic: Callable[[], float] = time.monotonic,
+                          wall_time: Callable[[], float] = time.time,
+                          sleep: Callable[[float], None] = time.sleep,
+                          random_value: Callable[[], float] = random.random) \
+        -> dict:
     """Run repository preparation under bounded consolidated authority.
 
     Authentication is a genuine authority boundary.  Host policy and an
     unavailable external system wait for their state to change.  Routine
-    transfer/checkout failures retry locally and never manufacture approval.
+    transfer/checkout failures have exactly one retry owner here.  Every wait
+    uses capped exponential full jitter, honors Retry-After, and remains
+    inside one absolute deadline shared with the underlying subprocesses.
     """
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or \
+            max_attempts < 1:
+        raise ValueError("max_attempts must be a positive integer")
+    deadline_span = _positive_finite(deadline_seconds, "deadline_seconds")
+    base_backoff = _positive_finite(
+        base_backoff_seconds, "base_backoff_seconds", allow_zero=True)
+    max_backoff = _positive_finite(
+        max_backoff_seconds, "max_backoff_seconds", allow_zero=True)
+    if base_backoff > max_backoff:
+        raise ValueError("base_backoff_seconds cannot exceed max_backoff_seconds")
+    started_at = monotonic()
+    deadline = started_at + deadline_span
+    telemetry: list[dict] = []
     fingerprints: list[str] = []
     attempt = 0
-    while True:
-        attempt += 1
-        try:
-            value = acquire()
-        except RepositoryAcquisitionError as exc:
-            preparation_result = exc.preparation_result
-            kind = str(exc.kind or "checkout").lower()
-            if kind in {"authentication", "auth", "permission"}:
-                if preparation_result is not None:
+    deadline_token = _ACQUISITION_DEADLINE.set((deadline, monotonic))
+    owner_token = _ACQUISITION_RETRY_OWNER.set(True)
+    http_token = _ACQUISITION_HTTP11.set(False)
+    try:
+        while True:
+            if monotonic() >= deadline:
+                return _waiting_recovery(
+                    reason="acquisition_deadline",
+                    detail="repository acquisition deadline elapsed",
+                    attempts=attempt, telemetry=telemetry)
+            attempt += 1
+            attempt_started = monotonic()
+            try:
+                value = acquire()
+            except RepositoryAcquisitionError as exc:
+                finished = monotonic()
+                preparation_result = exc.preparation_result
+                kind = str(exc.kind or "checkout").lower()
+                record = _attempt_record(
+                    attempt=attempt, started=attempt_started - started_at,
+                    finished=finished - started_at, status="failed",
+                    failure_class=kind, detail=exc.detail)
+                telemetry.append(record)
+                if kind in {"authentication", "auth", "permission"}:
+                    if preparation_result is not None:
+                        return preparation_result
+                    return {"schema": "taskplane.repository-preparation/v1",
+                            "status": "needs_user",
+                            "reason": "authority_required",
+                            "detail": exc.detail, "attempts": attempt,
+                            "attempt_telemetry": copy.deepcopy(telemetry)}
+                if kind in {"host-policy", "policy"}:
+                    if preparation_result is not None:
+                        return preparation_result
+                    return _waiting_recovery(
+                        reason="host_policy", detail=exc.detail,
+                        attempts=attempt, telemetry=telemetry)
+                if kind in {"external-unavailable", "external"}:
+                    if preparation_result is not None:
+                        return preparation_result
+                    return _waiting_recovery(
+                        reason="external_unavailable", detail=exc.detail,
+                        attempts=attempt, telemetry=telemetry)
+                if preparation_result is not None and \
+                        preparation_result.get("status") == "refused":
                     return preparation_result
-                return {"schema": "taskplane.repository-preparation/v1",
-                        "status": "needs_user", "reason": "authority_required",
-                        "detail": exc.detail, "attempts": attempt}
-            if kind in {"host-policy", "policy"}:
-                if preparation_result is not None:
-                    return preparation_result
-                return {"schema": "taskplane.repository-preparation/v1",
-                        "status": "waiting", "reason": "host_policy",
-                        "detail": exc.detail, "attempts": attempt}
-            if kind in {"external-unavailable", "external"}:
-                if preparation_result is not None:
-                    return preparation_result
-                return {"schema": "taskplane.repository-preparation/v1",
-                        "status": "waiting", "reason": "external_unavailable",
-                        "detail": exc.detail, "attempts": attempt}
-            if preparation_result is not None and \
-                    preparation_result.get("status") == "refused":
-                return preparation_result
-            fingerprint = hashlib.sha256(
-                f"{kind}\0{exc.detail}".encode("utf-8")).hexdigest()
-            fingerprints.append(fingerprint)
-            decision = recovery.decide_recovery(
-                failure_class="network" if kind == "network" else "checkout",
-                attempt=attempt, fingerprints=fingerprints,
-                max_routine_attempts=max_attempts)
-            if decision["status"] == "recover":
+                if finished >= deadline:
+                    return _waiting_recovery(
+                        reason="acquisition_deadline", detail=exc.detail,
+                        attempts=attempt, telemetry=telemetry)
+                fingerprint = hashlib.sha256(
+                    f"{kind}\0{exc.detail}".encode("utf-8")).hexdigest()
+                fingerprints.append(fingerprint)
+                failure_class = "network" if kind == "network" else "checkout"
+                decision = recovery.decide_recovery(
+                    failure_class=failure_class, attempt=attempt,
+                    fingerprints=fingerprints,
+                    max_routine_attempts=max_attempts)
+                if attempt >= max_attempts and decision["status"] == "recover":
+                    decision = {
+                        "schema": "taskplane.recovery-decision/v1",
+                        "status": "escalate", "reason": "retry_budget_exhausted",
+                        "attempt": attempt, "failure_class": failure_class,
+                    }
+                if decision["status"] != "recover":
+                    if preparation_result is not None:
+                        return preparation_result
+                    return _waiting_recovery(
+                        reason=decision["reason"], detail=exc.detail,
+                        attempts=attempt, telemetry=telemetry,
+                        recovery_record=decision)
+
+                exponential_cap = min(
+                    max_backoff, base_backoff * (2 ** (attempt - 1)))
+                fraction = float(random_value())
+                if not math.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+                    raise ValueError("random_value must return a number in [0, 1]")
+                jittered = exponential_cap * fraction
+                provider_delay = _retry_after_seconds(exc, now=wall_time())
+                wait_seconds = max(jittered, provider_delay or 0.0)
+                remaining = deadline - monotonic()
+                record.update({
+                    "backoff_seconds": round(wait_seconds, 6),
+                    "backoff_source": (
+                        "retry_after" if provider_delay is not None and
+                        provider_delay >= jittered else "exponential_jitter"),
+                    "retry_after_seconds": (round(provider_delay, 6)
+                                             if provider_delay is not None
+                                             else None),
+                })
+                if wait_seconds >= remaining:
+                    return _waiting_recovery(
+                        reason="acquisition_deadline",
+                        detail=("retry delay cannot complete within the "
+                                "repository acquisition deadline"),
+                        attempts=attempt, telemetry=telemetry)
+                if kind == "network" and any(token in exc.detail.lower()
+                        for token in ("rpc failed", "http 400", "http/2 stream",
+                                      "early eof", "remote end hung up")):
+                    _ACQUISITION_HTTP11.set(True)
+                if wait_seconds:
+                    sleep(wait_seconds)
                 continue
-            if preparation_result is not None:
-                return preparation_result
+
+            finished = monotonic()
+            telemetry.append(_attempt_record(
+                attempt=attempt, started=attempt_started - started_at,
+                finished=finished - started_at, status="ready"))
+            if finished >= deadline:
+                return _waiting_recovery(
+                    reason="acquisition_deadline",
+                    detail="repository acquisition completed after its deadline",
+                    attempts=attempt, telemetry=telemetry)
+            if isinstance(value, AcquisitionResult):
+                metadata = dict(value.metadata)
+                metadata["repository_retry"] = {
+                    "schema": "taskplane.repository-retry-telemetry/v1",
+                    "deadline_seconds": deadline_span,
+                    "attempts": copy.deepcopy(telemetry),
+                }
+                value = AcquisitionResult(
+                    checkout=value.checkout, base_ref=value.base_ref,
+                    base=value.base, head=value.head,
+                    merge_base=value.merge_base,
+                    changed_files=value.changed_files, metadata=metadata)
             return {"schema": "taskplane.repository-preparation/v1",
-                    "status": "waiting", "reason": decision["reason"],
-                    "detail": exc.detail, "attempts": attempt,
-                    "recovery": decision}
-        return {"schema": "taskplane.repository-preparation/v1",
-                "status": "ready", "value": value, "attempts": attempt}
+                    "status": "ready", "value": value, "attempts": attempt,
+                    "attempt_telemetry": copy.deepcopy(telemetry)}
+    finally:
+        _ACQUISITION_HTTP11.reset(http_token)
+        _ACQUISITION_RETRY_OWNER.reset(owner_token)
+        _ACQUISITION_DEADLINE.reset(deadline_token)
 
 
 _VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
@@ -901,14 +1112,16 @@ class RepositoryManager:
 
     def _run(self, argv: list[str], *, cwd: str | None = None,
              timeout: int = 600) -> str:
+        effective_timeout = _acquisition_timeout(float(timeout))
         try:
             result = subprocess.run(
                 argv, cwd=cwd, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                errors="replace", timeout=timeout, check=False)
+                errors="replace", timeout=effective_timeout, check=False)
         except subprocess.TimeoutExpired as exc:
             raise RepositoryAcquisitionError(
-                "network", f"command timed out after {timeout}s") from exc
+                "network", "command exceeded the repository acquisition "
+                f"deadline after {effective_timeout:g}s") from exc
         except OSError as exc:
             raise RepositoryAcquisitionError(
                 "checkout", f"could not execute {argv[0]}: {exc}") from exc
@@ -932,14 +1145,16 @@ class RepositoryManager:
         """
         argv = ["git", "diff", "--no-ext-diff", "--no-textconv",
                 "--binary", merge_base, head, "--"]
+        effective_timeout = _acquisition_timeout(600.0)
         try:
             result = subprocess.run(
                 argv, cwd=checkout, stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                errors="replace", timeout=600, check=False)
+                errors="replace", timeout=effective_timeout, check=False)
         except subprocess.TimeoutExpired as exc:
             raise RepositoryAcquisitionError(
-                "network", "review diff hydration timed out after 600s") \
+                "network", "review diff hydration exceeded the repository "
+                f"acquisition deadline after {effective_timeout:g}s") \
                 from exc
         except OSError as exc:
             raise RepositoryAcquisitionError(
@@ -951,7 +1166,17 @@ class RepositoryManager:
                 f"git diff hydration exited {result.returncode}")
 
     def _fetch(self, argv: list[str]) -> str:
-        """Run one targeted fetch with a bounded HTTP/1.1 transport fallback."""
+        """Run one fetch attempt selected by the active retry owner.
+
+        A direct legacy call retains its single HTTP/1.1 compatibility retry.
+        Under ``acquire_with_recovery`` this method never retries: the outer
+        owner budgets, delays, and selects HTTP/1.1 for the next attempt.
+        """
+        if _ACQUISITION_RETRY_OWNER.get():
+            selected = argv
+            if _ACQUISITION_HTTP11.get():
+                selected = [argv[0], "-c", "http.version=HTTP/1.1", *argv[1:]]
+            return self._run(selected)
         try:
             return self._run(argv)
         except RepositoryAcquisitionError as exc:
@@ -1028,7 +1253,7 @@ class RepositoryManager:
 
     def _acquisition_lock(self, layout: storage.StorageLayout):
         return tp.file_lock(os.path.join(layout.checkout_root, "acquisition"),
-                            timeout=30.0)
+                            timeout=_acquisition_timeout(30.0))
 
     def merge_registered_task(self, primary_checkout: str, *, task_id: str,
                               run_id: str | None = None) -> dict:
