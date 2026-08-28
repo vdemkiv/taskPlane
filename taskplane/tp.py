@@ -970,6 +970,21 @@ def _onboard_report(ws: str) -> dict:
 # Not a harness invariant (Cowork can't intercept spend) — a stop signal for
 # `tp budget`. The kernel's action budget is the enforced ceiling.
 DEFAULT_MAX_COST_USD = 3.0
+DEFAULT_STANDALONE_REVIEW_MAX_TOKENS = 25_000_000
+
+
+def _standalone_review_budget(max_tokens: int | None) -> dict:
+    """The finite, host-observed budget attached to every review start."""
+    ceiling = (DEFAULT_STANDALONE_REVIEW_MAX_TOKENS
+               if max_tokens is None else int(max_tokens))
+    if ceiling < 0:
+        raise ValueError("standalone review token ceiling must be non-negative")
+    return {
+        "max_cost_usd": DEFAULT_MAX_COST_USD,
+        "max_cost_usd_mode": "advisory",
+        "max_tokens": ceiling,
+        "token_usage_required": True,
+    }
 
 
 def cmd_new(a) -> int:
@@ -2083,6 +2098,49 @@ class MeterCorrupt(Exception):
     trusted, so the caller must fail CLOSED rather than reset it to zero."""
 
 
+def _dispatch_usage_observation_required(ws: str, task_id: str) -> bool:
+    """Whether the active loop has one unfinalized usage consumer."""
+    try:
+        import loop as loop_runtime
+        state = loop_runtime.load(ws) or {}
+        ledger = state.get("dispatch_telemetry") or {}
+        return any(
+            str(row.get("task_id") or "") == str(task_id) and
+            not row.get("finalized_receipt_fingerprint")
+            for row in ledger.get("bindings") or []
+            if isinstance(row, dict)
+        )
+    except Exception:
+        return False
+
+
+def _transcript_projection_checkpoint_path(
+        ws: str, transcript_path: str, provider: str) -> str:
+    identity = hashlib.sha256(
+        (str(provider) + "\0" + os.path.realpath(transcript_path))
+        .encode("utf-8")).hexdigest()
+    return os.path.join(
+        tp.tp_dir(ws), "transcript-usage", identity + ".json")
+
+
+def _bounded_transcript_projection(
+        ws: str, transcript_path: str, provider: str) -> dict:
+    """Read and persist one shared incremental usage projection."""
+    import dispatch_telemetry
+
+    checkpoint_path = _transcript_projection_checkpoint_path(
+        ws, transcript_path, provider)
+    with tp.file_lock(checkpoint_path):
+        checkpoint = tp.load_json(
+            checkpoint_path, default=None,
+            what="transcript usage checkpoint")
+        projection, updated = dispatch_telemetry.project_transcript_usage(
+            transcript_path, provider=provider, checkpoint=checkpoint)
+        if updated is not None:
+            tp.atomic_write_json(checkpoint_path, updated, sort_keys=True)
+    return projection
+
+
 def _meter_load(ws, strict=False) -> dict:
     """Load the action meter. Default (strict=False) tolerates a missing OR
     corrupt file by returning {} — fine for display/estimates. strict=True
@@ -2348,39 +2406,70 @@ def _screen(a) -> int:
             pass
         return 0                      # abstain: not metered, not denied
 
-    # TOKEN CEILING (v2.13.0) — the budget that tracks what is scarce.
-    # An action cost ~11k effective tokens on the measured review and ranged
-    # over two orders of magnitude, so the action ceiling could never be
-    # "tuned": raising it bought tokens sight unseen. This reads what the
-    # host RECORDED and fails open in every direction, with the action
-    # ceiling still standing underneath.
+    # TOKEN CEILING — one selected, incremental transcript projection feeds
+    # both contract enforcement and native telemetry.  It is never parsed
+    # twice and never reads more than the 64 MiB design bound per action.
     if not _is_release_command(command):
         _tpath = None
         _token_denial = None
-        try:
-            import spend as _spend
-            _tpath = _spend.event_transcript(event)
-            _rep = _spend.read_transcript(_tpath) if _tpath else None
-            if _rep and _rep.get("available"):
-                _tok_ok, _tok_why = _spend.status(contract, _rep["effective"])
-                if not _tok_ok:
-                    _token_denial = (_tok_why, _rep["effective"])
-        except Exception:
-            pass
-        # Dispatch telemetry is additive observation, not ceiling authority.
-        # Keep it best-effort and outside the enforcement exception boundary
-        # so a missing ledger or a newer provider shape cannot lift a token
-        # denial that the legacy transcript already proves.
-        if _tpath:
+        _projection = None
+        _budget = contract.get("budget") or {}
+        _token_ceiling = _budget.get("max_tokens") is not None
+        _telemetry_consumer = _dispatch_usage_observation_required(ws, tid)
+        if _token_ceiling or _telemetry_consumer:
             try:
+                import spend as _spend
+                _tpath = _spend.event_transcript(event)
                 _provider = "codex" if "turn_id" in event else "claude"
-                _observed = _spend.read_provider_transcript(
-                    _tpath, provider=_provider)
-                if _observed.get("available"):
-                    import loop as _loop_runtime
-                    _loop_runtime.record_observed_dispatch_usage(
-                        ws, task_id=str(tid),
-                        normalized_usage=_observed, source=_tpath)
+                _projection = (_bounded_transcript_projection(
+                    ws, _tpath, _provider) if _tpath else {
+                        "status": "unavailable",
+                        "reason": "host transcript path is unavailable",
+                    })
+                if _projection.get("status") == "available":
+                    _tok_ok, _tok_why = _spend.status(
+                        contract, int(_projection["effective_tokens"]))
+                    if not _tok_ok:
+                        _token_denial = (
+                            _tok_why, int(_projection["effective_tokens"]))
+                elif bool(_budget.get("token_usage_required")):
+                    _token_denial = (
+                        "TOKEN BUDGET telemetry unavailable — " +
+                        str(_projection.get("reason") or
+                            "host token totals are unavailable"), None)
+            except Exception as exc:
+                if bool(_budget.get("token_usage_required")):
+                    _token_denial = (
+                        "TOKEN BUDGET telemetry unavailable — " +
+                        f"{type(exc).__name__}: {exc}", None)
+        # Dispatch telemetry consumes the exact same normalized projection.
+        # Its absence never creates a positive budget claim.
+        if _telemetry_consumer and _tpath and isinstance(_projection, dict) \
+                and _projection.get("status") == "available":
+            try:
+                _observed = dict(_projection["usage"])
+                _observed.update({
+                    "schema": "taskplane.token-usage/v2",
+                    "available": True, "provider": _projection["provider"],
+                    "reason": None,
+                    "cache_creation_tokens": 0,
+                    "raw_total_tokens": _observed["total_tokens"],
+                    "effective_tokens": _projection["effective_tokens"],
+                })
+                # dispatch_usage expects provider-shaped normalized fields,
+                # where total input is split into cached and uncached.
+                _observed["cached_input_tokens"] = \
+                    _projection["usage"]["cached_input_tokens"]
+                _observed["uncached_input_tokens"] = \
+                    _projection["usage"]["uncached_input_tokens"]
+                _observed["output_tokens"] = \
+                    _projection["usage"]["output_tokens"]
+                _observed["reasoning_tokens"] = \
+                    _projection["usage"]["reasoning_tokens"]
+                import loop as _loop_runtime
+                _loop_runtime.record_observed_dispatch_usage(
+                    ws, task_id=str(tid),
+                    normalized_usage=_observed, source=_tpath)
             except Exception:
                 pass
         if _token_denial is not None:
@@ -4963,8 +5052,30 @@ def _activate_visible_review_bootstrap(
     prior = os.environ.get("TASKPLANE_TASK", sentinel)
     os.environ["TASKPLANE_TASK"] = task_slot
     try:
-        return tp.activate_review_contract_action(
+        parent = tp.load_json(
+            os.path.join(tp.tp_dir(workspace), "active_contract.json"),
+            default=None, what="standalone review parent contract")
+        parent_budget = ((parent or {}).get("budget")
+                         if isinstance(parent, dict) else {}) or {}
+        inherited = parent_budget.get("max_tokens")
+        producer_budget = _standalone_review_budget(
+            int(inherited) if isinstance(inherited, int) and
+            not isinstance(inherited, bool) else None)
+        contract = tp.activate_review_contract_action(
             workspace, action, **expected)
+        active_path = tp.active_contract_path(workspace, task_slot)
+        try:
+            contract["budget"].update(producer_budget)
+            tp.atomic_write_json(active_path, contract, sort_keys=True)
+        except Exception:
+            # Never leave the just-created producer active without the token
+            # ceiling if the bounded projection cannot be persisted.
+            with contextlib.suppress(Exception):
+                tp.safe_remove(active_path)
+            with contextlib.suppress(Exception):
+                tp.safe_remove(tp._snapshot_path(workspace, task_slot))
+            raise
+        return contract
     finally:
         if prior is sentinel:
             os.environ.pop("TASKPLANE_TASK", None)
@@ -5444,9 +5555,8 @@ def cmd_review(a) -> int:
                      if getattr(a, "max_actions", None) is not None else None))
     if enforcement:
         c["enforcement"] = enforcement
-    c["budget"]["max_cost_usd"] = DEFAULT_MAX_COST_USD
-    if getattr(a, "max_tokens", None) is not None:
-        c["budget"]["max_tokens"] = int(a.max_tokens)
+    c["budget"].update(_standalone_review_budget(
+        getattr(a, "max_tokens", None)))
     c["target"] = {k: rec.get(k) for k in
                    ("origin", "head", "base", "base_ref", "branch",
                     "merge_base", "shallow", "fingerprint", "target",

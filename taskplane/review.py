@@ -61,6 +61,8 @@ BRIEF_NAME = "blast-radius.md"
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_ROUTING_FILES = 200
 MAX_ROUTING_FILE_BYTES = 64 * 1024
+MAX_HOST_TRANSCRIPT_BYTES = 64 * 1024 * 1024
+MAX_HOST_TRANSCRIPT_CANDIDATES = 4096
 CANONICAL_DIFF_TOO_LARGE = 75
 KERNEL_STATE = os.path.join(".em-review", "kernel-v2", "active.json")
 KERNEL_RUNS = os.path.join(".em-review", "kernel-v2", "runs")
@@ -634,31 +636,83 @@ def _canonical_host_root(host: str) -> str:
         home, ".codex" if host == "codex" else ".claude"))
 
 
-def _host_review_transcripts() -> list[tuple[str, str]]:
-    """Enumerate host-owned transcripts without ambient session selection."""
-    candidates = []
-    for host, rel in (("codex", ("sessions", "**", "*.jsonl")),
-                      ("claude", ("projects", "**", "*.jsonl"))):
-        root = _canonical_host_root(host)
-        for path in glob.glob(os.path.join(root, *rel), recursive=True):
-            candidates.append((host, os.path.realpath(path)))
-    return sorted(set(candidates))
+def _review_receipt_reference(
+        receipt_ref: str | None) -> tuple[str | None, str | None, str]:
+    """Parse ``host:session:receipt`` while retaining plain-id support."""
+    value = str(receipt_ref or "").strip()
+    parts = value.split(":", 2)
+    if len(parts) == 3 and parts[0] in {"codex", "claude"} and \
+            re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", parts[1]) and parts[2]:
+        return parts[0], parts[1], parts[2]
+    return None, None, value
+
+
+def _host_review_transcripts(
+        receipt_ref: str | None = None) -> list[tuple[str, str]]:
+    """Resolve at most one current host transcript without reading history.
+
+    A composite receipt selects an exact host/session.  A legacy plain
+    receipt uses only the newest canonical host transcript.  Candidate
+    discovery is metadata-only and bounded; record bytes are read later from
+    the one selected session.
+    """
+    host_hint, session_hint, _ = _review_receipt_reference(receipt_ref)
+    if session_hint is None and host_hint is None:
+        ambient = (("codex", os.environ.get("CODEX_THREAD_ID")),
+                   ("claude", os.environ.get("CLAUDE_SESSION_ID")))
+        for ambient_host, ambient_session in ambient:
+            value = str(ambient_session or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", value):
+                continue
+            selected = _host_review_transcripts(
+                f"{ambient_host}:{value}:ambient-selection")
+            if selected:
+                return selected
+    candidates: list[tuple[int, str, str]] = []
+    hosts = (host_hint,) if host_hint else ("codex", "claude")
+    for host in hosts:
+        rel = (("sessions", "**", "*.jsonl") if host == "codex" else
+               ("projects", "**", "*.jsonl"))
+        root = os.path.realpath(_canonical_host_root(host))
+        pattern = os.path.join(root, *rel)
+        for path in glob.iglob(pattern, recursive=True):
+            canonical = os.path.realpath(path)
+            try:
+                if os.path.commonpath((root, canonical)) != root or \
+                        not os.path.isfile(canonical):
+                    continue
+                if session_hint and session_hint not in \
+                        os.path.basename(canonical):
+                    continue
+                modified = os.stat(canonical).st_mtime_ns
+            except (OSError, ValueError):
+                continue
+            candidates.append((int(modified), host, canonical))
+            if len(candidates) > MAX_HOST_TRANSCRIPT_CANDIDATES:
+                raise ReviewKernelError(
+                    "review transcript candidate index exceeds its bound")
+    if not candidates:
+        return []
+    _, host, path = max(candidates, key=lambda row: (row[0], row[2]))
+    return [(host, path)]
 
 
 def _host_review_records(path: str) -> list[dict]:
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as stream:
-            start = max(0, size - 8 * 1024 * 1024)
+            start = max(0, size - MAX_HOST_TRANSCRIPT_BYTES)
             stream.seek(start)
+            payload = stream.read(MAX_HOST_TRANSCRIPT_BYTES)
             if start:
-                stream.readline()
-            lines = stream.readlines()
+                first_complete = payload.find(b"\n")
+                payload = (payload[first_complete + 1:]
+                           if first_complete >= 0 else b"")
     except OSError as exc:
         raise ReviewKernelError(
             "review action host transcript is unavailable") from exc
     records = []
-    for raw in lines:
+    for raw in payload.splitlines():
         if len(raw) > 2 * 1024 * 1024:
             continue
         try:
@@ -708,14 +762,15 @@ def _host_review_action_receipt(*, run_id: str, action_id: str,
     wanted_ref = str(receipt_ref or "").strip()
     if wanted_ref in {"", "latest"}:
         wanted_ref = ""
+    _, _, wanted_receipt = _review_receipt_reference(wanted_ref)
     matches = []
-    for host, path in _host_review_transcripts():
+    for host, path in _host_review_transcripts(wanted_ref):
         for record in reversed(_host_review_records(path)):
             observed = _host_user_message(host, record)
             if not observed:
                 continue
             message_id, turn_id, texts = observed
-            if expected not in texts or (wanted_ref and wanted_ref not in {
+            if expected not in texts or (wanted_receipt and wanted_receipt not in {
                     message_id, turn_id}):
                 continue
             receipt_id = message_id or turn_id
@@ -835,11 +890,12 @@ def _host_review_execution_receipt(
     wanted_ref = str(receipt_ref or "").strip()
     if wanted_ref in {"", "latest"}:
         wanted_ref = ""
+    _, _, wanted_receipt = _review_receipt_reference(wanted_ref)
     allowed = ({"exec", "exec_command", "bash", "shell"}
                if kind == "dynamic_validation" else
                {"visualize", "browser", "screenshot", "imagegen"})
     matches = []
-    for host, path in _host_review_transcripts():
+    for host, path in _host_review_transcripts(wanted_ref):
         records = _host_review_records(path)
         after_index = max((index for index, record in enumerate(records)
                            if (lambda observed: observed and
@@ -855,7 +911,8 @@ def _host_review_execution_receipt(
                     not _tool_action_binding(
                         result.get("input"), run_id=run_id,
                         action_id=action_id, kind=kind) or \
-                    (wanted_ref and wanted_ref != result["receipt_id"]):
+                    (wanted_receipt and
+                     wanted_receipt != result["receipt_id"]):
                 continue
             raw = _tool_result_bytes(result["result"])
             exit_code = result.get("exit_code")
