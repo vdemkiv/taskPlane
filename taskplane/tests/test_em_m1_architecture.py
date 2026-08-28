@@ -94,6 +94,39 @@ def test_m02_decomposition_is_scanner_input(tmp_path: Path) -> None:
                in error for error in drift_proof["errors"])
 
 
+def test_m02_authority_floor_is_opt_in_and_configured_drift_fails(
+        tmp_path: Path) -> None:
+    unconfigured = tmp_path / "unconfigured"
+    _write(unconfigured, "src/app.py", "x = 1\n")
+
+    graph = _scan(unconfigured, tmp_path / "unconfigured-graph.json")
+    proof = depgraph.architecture_map_proof(str(unconfigured))
+
+    assert proof["configured"] is False
+    assert proof["status"] == "not-requested"
+    assert proof["errors"] == []
+    assert "architecture_map" not in graph["meta"]
+    assert graph["meta"]["graph_scan_quality"]["producers"] \
+        ["architecture-map"] == {"status": "not-requested", "failures": []}
+
+    configured = tmp_path / "configured"
+    _architecture_fixture(configured)
+    contract_path = configured / "design" / "contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["architecture_decomposition"]["semantic_edges"] = [
+        row for row in contract["architecture_decomposition"]["semantic_edges"]
+        if not (row["from"] == "taskplane" and
+                row["to"] == "contract:delivery.codex-native-dispatch")
+    ]
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    drifted = depgraph.architecture_map_proof(str(configured))
+    assert drifted["configured"] is True
+    assert drifted["status"] == "incomplete"
+    assert any("semantic authority omits required edges" in error
+               for error in drifted["errors"])
+
+
 def test_m26_terminal_capability_records_recoverability_tradeoff(
         tmp_path: Path) -> None:
     proof = depgraph.terminal_capability_custody_proof(str(ROOT))
