@@ -1,0 +1,587 @@
+{
+  "schema": "taskplane.r0013-approved-wave-authority/v1",
+  "source_revision": "00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085",
+  "source_blobs": {
+    "design/contract.json": "4e51dcef6ec6b1208875c765df9c4ab61adcd112",
+    "plan/tasks.json": "8dd6510f9ca234f79eb034f5183d922d2ec1fa8d"
+  },
+  "outcome_ownership": {
+    "acceptance_outcomes": [
+      "AC1",
+      "AC2",
+      "AC3",
+      "AC4",
+      "AC5",
+      "AC6",
+      "AC7"
+    ],
+    "maximum_outcomes": 8,
+    "leaf_lanes": [
+      {
+        "outcome": "AC1",
+        "owner": "native-authority-owner",
+        "exclusive_files": [
+          "taskplane/native_authority.py",
+          "taskplane/tests/test_r0013_native_authority.py"
+        ]
+      },
+      {
+        "outcome": "AC2",
+        "owner": "design-sweep-owner",
+        "exclusive_files": [
+          "taskplane/design_sweep.py",
+          "taskplane/tests/test_r0013_design_sweep.py"
+        ]
+      },
+      {
+        "outcome": "AC3",
+        "owner": "zero-lens-owner",
+        "exclusive_files": [
+          "taskplane/delivery_policy.py",
+          "taskplane/review.py",
+          "taskplane/evaluation_output.py",
+          "taskplane/tests/test_r0013_zero_lens.py"
+        ]
+      },
+      {
+        "outcome": "AC4",
+        "owner": "native-dispatch-owner",
+        "exclusive_files": [
+          "taskplane/plan_topology.py",
+          "taskplane/build_c.py",
+          "taskplane/command_runtime.py",
+          "taskplane/tests/test_r0013_native_dispatch.py"
+        ]
+      },
+      {
+        "outcome": "AC5",
+        "owner": "plan-boundary-owner",
+        "exclusive_files": [
+          "taskplane/design_contract.py",
+          "taskplane/tests/test_r0013_wave_ceiling.py"
+        ]
+      },
+      {
+        "outcome": "AC6",
+        "owner": "native-budget-owner",
+        "exclusive_files": [
+          "taskplane/brief_projection.py",
+          "taskplane/dispatch_telemetry.py",
+          "taskplane/progress.py",
+          "taskplane/spend.py",
+          "taskplane/tests/test_r0013_native_budget.py"
+        ]
+      },
+      {
+        "outcome": "AC7",
+        "owner": "terminal-truth-owner",
+        "exclusive_files": [
+          "taskplane/wiring_closure.py",
+          "taskplane/terminal_truth.py",
+          "taskplane/repository.py",
+          "taskplane/views.py",
+          "taskplane/release_evidence.py",
+          "taskplane/checkpoint.py",
+          "taskplane/tests/test_r0013_terminal_finalization.py",
+          "taskplane/tests/test_r0013_real_checkout_wiring.py"
+        ]
+      }
+    ],
+    "integration_lane": {
+      "owner": "native-delivery-integration-owner",
+      "exclusive_files": [
+        "taskplane/loop.py",
+        "taskplane/tp.py"
+      ],
+      "depends_on": [
+        "leaf-ready:AC1",
+        "leaf-ready:AC2",
+        "leaf-ready:AC3",
+        "leaf-ready:AC4",
+        "leaf-ready:AC5",
+        "leaf-ready:AC6",
+        "leaf-ready:AC7"
+      ],
+      "produces": "integration-ready:r0013",
+      "rule": "Narrow adapter task only; it introduces no eighth acceptance outcome and may begin only after all seven typed leaf-readiness receipts and focused selectors are green."
+    },
+    "validation_lane": {
+      "owner": "terminal-truth-owner",
+      "depends_on": [
+        "integration-ready:r0013"
+      ],
+      "produces": "acceptance-complete:AC7",
+      "rule": "AC7 end-to-end real-checkout and terminal-finalization acceptance runs only after the integration receipt. The AC7 leaf readiness receipt covers its pure API and focused selectors, not completed end-to-end acceptance."
+    },
+    "readiness_receipt_schema": "taskplane.acceptance-leaf-readiness/v1"
+  },
+  "pair_classification": {
+    "schema": "taskplane.acceptance-pair-map/v1",
+    "expected_pair_count": 21,
+    "pairs": [
+      {
+        "left": "AC1",
+        "right": "AC2",
+        "disposition": "parallel",
+        "reason": "disjoint native-authority and Design-sweep owners",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC1",
+        "right": "AC3",
+        "disposition": "parallel",
+        "reason": "disjoint native-authority and zero-lens owners",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC1",
+        "right": "AC4",
+        "disposition": "serialized",
+        "reason": "AC4 adapter integration consumes the AC1 authority map and removed stage edge",
+        "available_wave": null
+      },
+      {
+        "left": "AC1",
+        "right": "AC5",
+        "disposition": "parallel",
+        "reason": "disjoint native-authority and Plan-boundary owners",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC1",
+        "right": "AC6",
+        "disposition": "parallel",
+        "reason": "disjoint native-authority and budget owners",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC1",
+        "right": "AC7",
+        "disposition": "serialized",
+        "reason": "AC7 finalization consumes the AC1 native-authority receipt",
+        "available_wave": null
+      },
+      {
+        "left": "AC2",
+        "right": "AC3",
+        "disposition": "parallel",
+        "reason": "disjoint Design-sweep and zero-lens owners",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC2",
+        "right": "AC4",
+        "disposition": "parallel",
+        "reason": "Design-only sweep validation is independent of native dispatch leaf code",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC2",
+        "right": "AC5",
+        "disposition": "parallel",
+        "reason": "disjoint Design-sweep and Plan-boundary owners",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC2",
+        "right": "AC6",
+        "disposition": "parallel",
+        "reason": "disjoint Design-sweep and budget owners",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC2",
+        "right": "AC7",
+        "disposition": "serialized",
+        "reason": "terminal acceptance closes only after the Design-sweep receipt is dispositioned",
+        "available_wave": null
+      },
+      {
+        "left": "AC3",
+        "right": "AC4",
+        "disposition": "serialized",
+        "reason": "AC4 native briefs consume AC3 zero-lens execution authorization at the shared loop adapter",
+        "available_wave": null
+      },
+      {
+        "left": "AC3",
+        "right": "AC5",
+        "disposition": "parallel",
+        "reason": "disjoint zero-lens and Plan-boundary owners",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC3",
+        "right": "AC6",
+        "disposition": "parallel",
+        "reason": "disjoint zero-lens and budget owners",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC3",
+        "right": "AC7",
+        "disposition": "serialized",
+        "reason": "AC7 finalization consumes execution zero-lens receipt and trace",
+        "available_wave": null
+      },
+      {
+        "left": "AC4",
+        "right": "AC5",
+        "disposition": "serialized",
+        "reason": "AC4 ready-set emission consumes AC5 exhaustive Plan pair map",
+        "available_wave": null
+      },
+      {
+        "left": "AC4",
+        "right": "AC6",
+        "disposition": "serialized",
+        "reason": "AC4 native start screen consumes AC6 non-null usage and budget decision",
+        "available_wave": null
+      },
+      {
+        "left": "AC4",
+        "right": "AC7",
+        "disposition": "serialized",
+        "reason": "AC7 finalization consumes native dispatch and wait receipts",
+        "available_wave": null
+      },
+      {
+        "left": "AC5",
+        "right": "AC6",
+        "disposition": "parallel",
+        "reason": "disjoint Plan-boundary and budget owners",
+        "available_wave": "leaf-wave-1"
+      },
+      {
+        "left": "AC5",
+        "right": "AC7",
+        "disposition": "serialized",
+        "reason": "AC7 finalization consumes exact seven-outcome Plan receipt",
+        "available_wave": null
+      },
+      {
+        "left": "AC6",
+        "right": "AC7",
+        "disposition": "serialized",
+        "reason": "AC7 finalization consumes complete native usage and bounded-handoff receipts",
+        "available_wave": null
+      }
+    ],
+    "rule": "Every parallel pair has the same available_wave. Serialized pairs name an evidence dependency or shared adapter owner; a null reason, missing pair, ninth outcome or overlapping parallel file set refuses Plan and dispatch."
+  },
+  "tasks": [
+    {
+      "id": "t01-ac1-native-authority-readiness",
+      "scope": [
+        "taskplane/native_authority.py",
+        "taskplane/tests/test_r0013_native_authority.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_authority.py::test_complete_native_capability_map_is_required_by_design_and_plan",
+      "req": "R-0013",
+      "deps": [],
+      "type": "architecture",
+      "contracts": [
+        "contract:design.codex-native-capability-inventory"
+      ],
+      "new_modules": [
+        "taskplane/native_authority.py"
+      ],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC1: Before Plan authorization, Design contains the complete evidenced Codex-native capability inventory and responsibility map; the Design and architecture gate refuse Taskplane-owned scheduling, capacity, reservation, admission, replay, lease-concurrency, worker-lifecycle, or execution-DAG authority, and removing a native mapping or introducing duplicate authority makes both static and behavioral seam proofs fail and blocks Design or Plan before Build."
+      ]
+    },
+    {
+      "id": "t02-ac2-design-sweep-readiness",
+      "scope": [
+        "taskplane/design_sweep.py",
+        "taskplane/tests/test_r0013_design_sweep.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_design_sweep.py",
+      "req": "R-0013",
+      "deps": [],
+      "type": "reliability",
+      "contracts": [
+        "contract:design.quick-concurrent-all-lens-sweep"
+      ],
+      "new_modules": [
+        "taskplane/design_sweep.py"
+      ],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC2: Design trace contains exactly one quick result for each of all 26 registered lenses, independent lens work is concurrent, and every result is dispositioned; a missing result, serial or repeated all-26 pass, automatic full/deep sweep, or any all-lens worker outside Design blocks completion."
+      ]
+    },
+    {
+      "id": "t03-ac3-zero-lens-readiness",
+      "scope": [
+        "taskplane/delivery_policy.py",
+        "taskplane/review.py",
+        "taskplane/evaluation_output.py",
+        "taskplane/tests/test_r0013_zero_lens.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_zero_lens.py::test_empty_expected_collection_is_valid_success taskplane/tests/test_r0013_zero_lens.py::test_nonempty_malformed_or_outage_fallback_refuses_before_dispatch_or_gate taskplane/tests/test_r0001_delivery_mode.py::test_empty_expected_lenses_emits_successful_collection_receipt",
+      "req": "R-0013",
+      "deps": [],
+      "type": "security",
+      "contracts": [
+        "contract:delivery.execution-zero-lens"
+      ],
+      "new_modules": [],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC3: Real traces and the native session ledger show zero Taskplane lens-worker starts in Build, Fix, Evaluate, and execution-time EM, and a valid empty expected-lens collection succeeds without outage handling; any attempted start, non-empty expectation, malformed empty result, or outage fallback fails before dispatch or gate success."
+      ]
+    },
+    {
+      "id": "t04-ac4-native-dispatch-readiness",
+      "scope": [
+        "taskplane/plan_topology.py",
+        "taskplane/build_c.py",
+        "taskplane/command_runtime.py",
+        "taskplane/tests/test_r0013_native_dispatch.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_dispatch.py::test_every_ready_disjoint_unit_is_emitted_once_in_one_native_set taskplane/tests/test_r0013_native_dispatch.py::test_build_c_consumes_one_sealed_ready_set_without_reclassification taskplane/tests/test_r0013_native_dispatch.py::test_one_native_wait_wakes_on_completion_or_attention taskplane/tests/test_r0013_native_dispatch.py::test_silent_transport_deadline_returns_one_attention_before_wave_ceiling taskplane/tests/test_command_adapters.py::test_no_event_host_uses_one_runtime_blocking_wait_and_zero_model_polls",
+      "req": "R-0013",
+      "deps": [],
+      "type": "integration",
+      "contracts": [
+        "contract:delivery.codex-native-dispatch",
+        "contract:delivery.event-driven-wait"
+      ],
+      "new_modules": [],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC4: At every governed stage, each ready pairwise-disjoint task or criterion appears exactly once in one deterministic native Codex dispatch set, overlaps are held only for recorded dependency or ownership, and one event-driven wait wakes on completion or attention; severed readiness, dispatch, completion, or wait wiring fails closed without replacement Taskplane scheduling state."
+      ]
+    },
+    {
+      "id": "t05-ac5-plan-boundary-readiness",
+      "scope": [
+        "taskplane/design_contract.py",
+        "taskplane/tests/test_r0013_wave_ceiling.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_wave_ceiling.py",
+      "req": "R-0013",
+      "deps": [],
+      "type": "architecture",
+      "contracts": [
+        "contract:delivery.acceptance-wave-ceiling"
+      ],
+      "new_modules": [],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC5: The approved Plan contains exactly these seven acceptance outcomes and never more than eight, classifies every pair as parallel or serialized with a named dependency or shared owner, and places every independent pair in the same available native wave; a ninth outcome, missing classification, unexplained serial edge, or false-disjoint overlap blocks Plan or dispatch."
+      ]
+    },
+    {
+      "id": "t06-ac6-native-budget-readiness",
+      "scope": [
+        "taskplane/brief_projection.py",
+        "taskplane/dispatch_telemetry.py",
+        "taskplane/progress.py",
+        "taskplane/spend.py",
+        "taskplane/tests/test_r0013_native_budget.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_budget.py::test_missing_or_malformed_host_usage_fails_closed_before_next_dispatch taskplane/tests/test_r0013_native_budget.py::test_breach_stops_before_any_next_spawn taskplane/tests/test_r0013_native_budget.py::test_active_usage_contributes_to_all_four_budget_totals taskplane/tests/test_r0013_native_budget.py::test_delta_handoff_is_below_4000_tokens_and_contains_only_required_fields taskplane/tests/test_r0013_native_budget.py::test_second_fix_evaluate_failure_requires_human_decision",
+      "req": "R-0013",
+      "deps": [],
+      "type": "performance",
+      "contracts": [
+        "contract:delivery.bounded-stage-handoff"
+      ],
+      "new_modules": [],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC6: Each stage receives a delta handoff strictly below 4000 tokens with all required identities and observed usage and no inherited full transcript; throughout an active production wave native wall-time and unique-session telemetry and observed_tokens are present, finite, and never null, and before every dispatch the wave is below 8 hours, 60 unique sessions, 150M total tokens, and 25M uncached input, with equality, a breach, or missing data stopping for human scope review and unable to continue silently; a second failed fix/evaluate cycle requires a human architecture or scope decision."
+      ]
+    },
+    {
+      "id": "t07-ac7-terminal-truth-readiness",
+      "scope": [
+        "taskplane/wiring_closure.py",
+        "taskplane/terminal_truth.py",
+        "taskplane/repository.py",
+        "taskplane/views.py",
+        "taskplane/release_evidence.py",
+        "taskplane/checkpoint.py",
+        "taskplane/tests/test_r0013_terminal_finalization.py",
+        "taskplane/tests/test_r0013_real_checkout_wiring.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_terminal_finalization.py::test_finalization_refuses_each_missing_nonterminal_or_mixed_sha_surface taskplane/tests/test_r0013_terminal_finalization.py::test_finalize_replay_is_idempotent_on_one_sha taskplane/tests/test_r0013_terminal_finalization.py::test_crash_before_terminal_cas_publishes_no_terminal_authority taskplane/tests/test_r0013_terminal_finalization.py::test_post_cas_missing_projection_blocks_then_reconciles_byte_identically taskplane/tests/test_r0013_terminal_finalization.py::test_terminal_fault_matrix_covers_prepare_fsync_cas_and_reconcile_boundaries taskplane/tests/test_r0013_terminal_finalization.py::test_unauthorized_task_cannot_advance_terminal_head taskplane/tests/test_r0013_terminal_finalization.py::test_cleanup_waits_for_successful_reconciliation_receipt taskplane/tests/test_r0013_terminal_finalization.py::test_sha_changing_merge_invalidates_finalization taskplane/tests/test_r0013_real_checkout_wiring.py::test_candidate_receipt_refuses_non_git_temp_or_head_mismatch taskplane/tests/test_r0013_real_checkout_wiring.py::test_release_refuses_opaque_or_foreign_checkout_wiring_fingerprint",
+      "req": "R-0013",
+      "deps": [],
+      "type": "reliability",
+      "contracts": [
+        "contract:delivery.exact-sha-terminal-truth",
+        "resource:exports.exact-sha-terminal-truth"
+      ],
+      "new_modules": [
+        "taskplane/terminal_truth.py",
+        "exports/terminal"
+      ],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC7: On the final clean candidate, atomic reconciliation proves Git HEAD, governed progress, run journal, tasks and gates, public report, repository verification report, release evidence, and exports terminal evidence all name the identical full SHA, terminal status, requirement, and evidence fingerprints; every named selector, receipt, and producer edge is validated and executed in the actual pinned and final candidate checkout, generated temporary substitutes are prohibited, opaque or foreign wiring fingerprints cannot authorize terminal or release truth, and severing any named edge makes the exact production test fail; finalization publishes all terminal projections for the exact SHA or none, and stale, executing, missing, mixed, contradictory, severed-edge, or partial truth blocks Done, merge, push, and release claims, while retry converges without overwriting immutable evidence and no retained run remains executing after delivery reaches main."
+      ]
+    },
+    {
+      "id": "t08-native-delivery-integration",
+      "scope": [
+        "taskplane/loop.py",
+        "taskplane/tp.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_native_authority.py::test_static_delivery_roots_reject_forbidden_taskplane_authority taskplane/tests/test_r0013_native_authority.py::test_loop_wave_never_calls_stage_split_resume_or_execution_root_claim taskplane/tests/test_r0013_native_authority.py::test_cut_ready_to_native_intent_fails_before_worktree_or_state taskplane/tests/test_r0013_zero_lens.py::test_build_fix_evaluate_and_em_start_zero_taskplane_lens_workers taskplane/tests/test_r0013_native_dispatch.py::test_severed_readiness_dispatch_completion_and_wait_fail_without_fallback taskplane/tests/test_r0013_native_dispatch.py::test_stage_journal_has_no_agent_dispatch_or_execution_root_projection taskplane/tests/test_r0013_native_budget.py::test_live_hook_dispatch_populates_active_observed_tokens taskplane/tests/test_r0013_native_budget.py::test_cut_screen_dispatch_to_telemetry_binding_refuses_dispatch taskplane/tests/test_r0013_real_checkout_wiring.py::test_cut_design_wiring_validator_from_checkpoint_fails_closed",
+      "req": "R-0013",
+      "deps": [
+        "t01-ac1-native-authority-readiness",
+        "t02-ac2-design-sweep-readiness",
+        "t03-ac3-zero-lens-readiness",
+        "t04-ac4-native-dispatch-readiness",
+        "t05-ac5-plan-boundary-readiness",
+        "t06-ac6-native-budget-readiness",
+        "t07-ac7-terminal-truth-readiness"
+      ],
+      "type": "integration",
+      "contracts": [
+        "contract:design.codex-native-capability-inventory",
+        "contract:design.quick-concurrent-all-lens-sweep",
+        "contract:delivery.execution-zero-lens",
+        "contract:delivery.codex-native-dispatch",
+        "contract:delivery.event-driven-wait",
+        "contract:delivery.acceptance-wave-ceiling",
+        "contract:delivery.bounded-stage-handoff",
+        "contract:delivery.exact-sha-terminal-truth"
+      ],
+      "new_modules": [],
+      "design_edges": [],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC1: Before Plan authorization, Design contains the complete evidenced Codex-native capability inventory and responsibility map; the Design and architecture gate refuse Taskplane-owned scheduling, capacity, reservation, admission, replay, lease-concurrency, worker-lifecycle, or execution-DAG authority, and removing a native mapping or introducing duplicate authority makes both static and behavioral seam proofs fail and blocks Design or Plan before Build.",
+        "AC3: Real traces and the native session ledger show zero Taskplane lens-worker starts in Build, Fix, Evaluate, and execution-time EM, and a valid empty expected-lens collection succeeds without outage handling; any attempted start, non-empty expectation, malformed empty result, or outage fallback fails before dispatch or gate success.",
+        "AC4: At every governed stage, each ready pairwise-disjoint task or criterion appears exactly once in one deterministic native Codex dispatch set, overlaps are held only for recorded dependency or ownership, and one event-driven wait wakes on completion or attention; severed readiness, dispatch, completion, or wait wiring fails closed without replacement Taskplane scheduling state.",
+        "AC6: Each stage receives a delta handoff strictly below 4000 tokens with all required identities and observed usage and no inherited full transcript; throughout an active production wave native wall-time and unique-session telemetry and observed_tokens are present, finite, and never null, and before every dispatch the wave is below 8 hours, 60 unique sessions, 150M total tokens, and 25M uncached input, with equality, a breach, or missing data stopping for human scope review and unable to continue silently; a second failed fix/evaluate cycle requires a human architecture or scope decision.",
+        "AC7: On the final clean candidate, atomic reconciliation proves Git HEAD, governed progress, run journal, tasks and gates, public report, repository verification report, release evidence, and exports terminal evidence all name the identical full SHA, terminal status, requirement, and evidence fingerprints; every named selector, receipt, and producer edge is validated and executed in the actual pinned and final candidate checkout, generated temporary substitutes are prohibited, opaque or foreign wiring fingerprints cannot authorize terminal or release truth, and severing any named edge makes the exact production test fail; finalization publishes all terminal projections for the exact SHA or none, and stale, executing, missing, mixed, contradictory, severed-edge, or partial truth blocks Done, merge, push, and release claims, while retry converges without overwriting immutable evidence and no retained run remains executing after delivery reaches main."
+      ]
+    },
+    {
+      "id": "t09-ac7-exact-sha-e2e-and-closure",
+      "scope": [
+        "exports/terminal/r0013/**"
+      ],
+      "tests": "python3 -m pytest taskplane/tests -q",
+      "req": "R-0013",
+      "deps": [
+        "t08-native-delivery-integration"
+      ],
+      "type": "reliability",
+      "contracts": [
+        "contract:design.codex-native-capability-inventory",
+        "contract:design.quick-concurrent-all-lens-sweep",
+        "contract:delivery.execution-zero-lens",
+        "contract:delivery.codex-native-dispatch",
+        "contract:delivery.event-driven-wait",
+        "contract:delivery.acceptance-wave-ceiling",
+        "contract:delivery.bounded-stage-handoff",
+        "contract:delivery.exact-sha-terminal-truth",
+        "resource:exports.exact-sha-terminal-truth"
+      ],
+      "new_modules": [
+        ".codex",
+        "design",
+        "exports",
+        "lenses",
+        "plan",
+        "skills/tp-go",
+        "taskplane",
+        "taskplane/tests",
+        "taskplane/native_authority.py",
+        "taskplane/design_sweep.py",
+        "taskplane/terminal_truth.py",
+        "exports/terminal"
+      ],
+      "design_edges": [
+        "design->contract:design.codex-native-capability-inventory:provides",
+        "contract:design.codex-native-capability-inventory->taskplane/native_authority.py:validated-by",
+        "taskplane/native_authority.py->plan:blocks",
+        "lenses->contract:design.quick-concurrent-all-lens-sweep:catalog-input",
+        "contract:design.quick-concurrent-all-lens-sweep->taskplane/design_sweep.py:validated-by",
+        "taskplane/design_sweep.py->design:evidence",
+        "taskplane->contract:delivery.execution-zero-lens:changes",
+        "contract:delivery.execution-zero-lens->taskplane/tests:verified-by",
+        "plan->contract:delivery.acceptance-wave-ceiling:changes",
+        "contract:delivery.acceptance-wave-ceiling->taskplane:consumed-by",
+        "taskplane->contract:delivery.codex-native-dispatch:intent",
+        "contract:delivery.codex-native-dispatch->ext:codex-native-orchestration:transported-by",
+        "ext:codex-native-orchestration->contract:delivery.event-driven-wait:completion-attention",
+        "contract:delivery.event-driven-wait->taskplane:observed-by",
+        "taskplane->contract:delivery.bounded-stage-handoff:changes",
+        "contract:delivery.bounded-stage-handoff->ext:codex-native-orchestration:handoff",
+        "taskplane->contract:delivery.exact-sha-terminal-truth:changes",
+        "contract:delivery.exact-sha-terminal-truth->taskplane/terminal_truth.py:coordinated-by",
+        "taskplane/terminal_truth.py->exports:projects",
+        "exports->resource:exports.exact-sha-terminal-truth:provides",
+        "resource:exports.exact-sha-terminal-truth->contract:delivery.exact-sha-terminal-truth:bound-by",
+        "taskplane/native_authority.py->taskplane:consumed-by",
+        "taskplane/design_sweep.py->taskplane:consumed-by",
+        "taskplane/terminal_truth.py->taskplane:consumed-by"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      },
+      "criteria": [
+        "AC7: On the final clean candidate, atomic reconciliation proves Git HEAD, governed progress, run journal, tasks and gates, public report, repository verification report, release evidence, and exports terminal evidence all name the identical full SHA, terminal status, requirement, and evidence fingerprints; every named selector, receipt, and producer edge is validated and executed in the actual pinned and final candidate checkout, generated temporary substitutes are prohibited, opaque or foreign wiring fingerprints cannot authorize terminal or release truth, and severing any named edge makes the exact production test fail; finalization publishes all terminal projections for the exact SHA or none, and stale, executing, missing, mixed, contradictory, severed-edge, or partial truth blocks Done, merge, push, and release claims, while retry converges without overwriting immutable evidence and no retained run remains executing after delivery reaches main."
+      ]
+    }
+  ]
+}

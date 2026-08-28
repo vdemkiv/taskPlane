@@ -11,12 +11,27 @@ from taskplane.design_contract import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+APPROVED_AUTHORITY = (
+    ROOT / "taskplane" / "tests" / "fixtures" /
+    "r0013-approved-wave-authority.json"
+)
+APPROVED_SOURCE_REVISION = "00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085"
+APPROVED_SOURCE_BLOBS = {
+    "design/contract.json": "4e51dcef6ec6b1208875c765df9c4ab61adcd112",
+    "plan/tasks.json": "8dd6510f9ca234f79eb034f5183d922d2ec1fa8d",
+}
 
 
 def _approved_inputs():
-    contract = json.loads((ROOT / "design" / "contract.json").read_text())
-    tasks = json.loads((ROOT / "plan" / "tasks.json").read_text())["tasks"]
-    return contract, tasks
+    retained = json.loads(APPROVED_AUTHORITY.read_text(encoding="utf-8"))
+    assert retained["schema"] == \
+        "taskplane.r0013-approved-wave-authority/v1"
+    assert retained["source_revision"] == APPROVED_SOURCE_REVISION
+    assert retained["source_blobs"] == APPROVED_SOURCE_BLOBS
+    return ({
+        "outcome_ownership": retained["outcome_ownership"],
+        "pair_classification": retained["pair_classification"],
+    }, retained["tasks"])
 
 
 def test_exactly_seven_acceptance_outcomes_and_complete_21_pair_map():

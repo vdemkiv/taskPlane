@@ -504,6 +504,18 @@ def _ts(row):
     return (0, float(value))
 
 
+def _audit_field_key(name: str) -> str:
+    """The closed trace key used for a machine field not on its allowlist."""
+    return "field:" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:20]
+
+
+def _restore_closed_bool(row: dict, name: str) -> None:
+    """Restore one known boolean without recovering arbitrary trace text."""
+    value = row.get(_audit_field_key(name))
+    if isinstance(value, bool):
+        row[name] = value
+
+
 def catalog_ids(root: str | None = None) -> set:
     try:
         cat = lens_router.load_catalog(root)
@@ -627,16 +639,44 @@ def first_write(ws: str, contract, since, initial_files=None) -> "dict | None":
 
 
 def synthesize_trace(rows, *, known_lenses=(), contract=None,
-                     write=None, started_at=None, loop_state=None) -> list:
+                     write=None, started_at=None, loop_state=None,
+                     review_states=()) -> list:
     """The engine's trace plus what it does not emit, ordered.
 
     Both additions are conditional on ABSENCE. `contract_activated` is traced
     by `taskplane_lite.activate` today; synthesizing a second copy would
     double-count the event the rubric's own reference row selects on.
     """
+    states_by_run = {
+        state.get("run_id"): state for state in review_states
+        if isinstance(state, dict) and state.get("run_id")
+    }
     out = []
     for row in rows:
         row = dict(row)
+        restored = []
+        if row.get("event") == "dor" and "ready" not in row:
+            _restore_closed_bool(row, "ready")
+            if "ready" in row:
+                restored.append("ready")
+        if row.get("event") == "review_kernel_started":
+            state = states_by_run.get(row.get("run_id")) or {}
+            target = state.get("target") or {}
+            envelope = state.get("envelope") or {}
+            if isinstance(target.get("head"), str):
+                row["target_head"] = target["head"]
+                restored.append("target_head")
+            if isinstance(envelope.get("fingerprint"), str):
+                row["context_fingerprint"] = envelope["fingerprint"]
+                restored.append("context_fingerprint")
+            if "dispositions_complete" not in row:
+                _restore_closed_bool(row, "dispositions_complete")
+                if "dispositions_complete" in row:
+                    restored.append("dispositions_complete")
+        if restored:
+            row["recorder_restored_fields"] = restored
+            row["recorder_restore_source"] = (
+                "review kernel state and closed audit booleans")
         if row.get("event") == "lens_route" and not row.get("breadth"):
             breadth = breadth_of(row, known_lenses)
             if breadth:
@@ -723,13 +763,24 @@ def synthesize_context(ws: str, *, trace_rows, fallback_ts) -> list:
             "ts": _mtime(target_mod.record_path(ws), fallback_ts),
             "synthesized": True,
         })
+    emitted_context_paths = set()
     for row in trace_rows:
         if row.get("event") != "review_context_written":
             continue
         digests = row.get("sha256") if isinstance(row.get("sha256"), dict) \
             else {}
         when = row.get(eval_scenario.ORDER_KEY)
-        for rel in row.get("paths") or ():
+        declared = row.get("paths")
+        paths = ([rel for rel in declared if isinstance(rel, str) and rel]
+                 if isinstance(declared, list) else [])
+        if not paths:
+            paths = [_rel(ws, path) for path in sorted(glob.glob(
+                os.path.join(ws, ".em-review", "context", "**", "*"),
+                recursive=True)) if os.path.isfile(path)]
+        for rel in paths:
+            if rel in emitted_context_paths:
+                continue
+            emitted_context_paths.add(rel)
             out.append({
                 "kind": "context_file",
                 "path": rel,
@@ -830,7 +881,9 @@ def primary_context_path(trace_rows) -> "str | None":
     for row in reversed(list(trace_rows)):
         if row.get("event") == "review_context_written" \
                 and row.get("status") == "written":
-            paths = [p for p in (row.get("paths") or ()) if p]
+            declared = row.get("paths")
+            paths = ([p for p in declared if isinstance(p, str) and p]
+                     if isinstance(declared, list) else [])
             if paths:
                 return paths[0]
     return None
@@ -904,6 +957,11 @@ def synthesize_briefs(ws: str, *, trace_rows, context_path) -> list:
         if row.get("task_name") in planned_task_names:
             continue
         lens = lens_name(row.get("agent_type") or "")
+        # Audit identities are pseudonymized.  They remain visible in the
+        # trace and dispatch counts, but an opaque pseudonym is not a lens
+        # identity and must not be promoted into a scorer brief row.
+        if lens.startswith("anon:"):
+            continue
         if not lens or lens in rows:
             continue
         when = row.get(eval_scenario.ORDER_KEY)
@@ -1264,16 +1322,20 @@ def freeze(*, out_dir: str, ws: str, root: str, skill: str, run_id: str,
         trace_rows.append(row)
     contract = tp.load_active(ws)
     loop_state = loop_mod.load(ws)
+    review_states = _review_kernel_states(ws, trace_rows=trace_rows)
     trace_rows = synthesize_trace(
         trace_rows, known_lenses=catalog_ids(root), contract=contract,
         write=first_write(ws, contract, started_at, initial_files),
         started_at=started_at,
-        loop_state=loop_state)
+        loop_state=loop_state, review_states=review_states)
     context_rows = synthesize_context(ws, trace_rows=trace_rows,
                                       fallback_ts=started_at)
     brief_rows = synthesize_briefs(
         ws, trace_rows=trace_rows,
-        context_path=primary_context_path(trace_rows))
+        context_path=(primary_context_path(trace_rows) or
+                      (".em-review/context/diff.patch" if os.path.isfile(
+                          os.path.join(ws, ".em-review", "context",
+                                       "diff.patch")) else None)))
     planned_dispatches = expected + [
         row for row in brief_rows if row.get("kind") == "review-kernel-slot"]
     report = tp.dispatch_report(ws)
