@@ -22,6 +22,7 @@ import loop as _loop        # engine owns the state machine; the view derives
 import kb as _kb            # from its public read models (display_pipeline,
 import depgraph as _dg      # STEP_ROLE, kb.counts, depgraph.summary) instead
                             # of re-encoding schemas that then drift.
+import text_runtime as _text
 
 # trace event → (icon, label, css class)
 EVENT_STYLE = {
@@ -186,95 +187,29 @@ def _read_trace(ws: str, limit: int = 24) -> list:
 
 
 # ------------------------------------------------------- message catalog
-# One assembly point for every counted / composed phrase (i18n readiness):
-# each entry is a FULL template with named placeholders and ICU-shaped
-# plural selection, so extraction hands a translator whole sentences whose
-# segment order lives in the template — never in code flow. English-only
-# for now; the call sites survive extraction unchanged.
-
-import re as _re
-
-_PLURAL_RE = _re.compile(
-    r"\{(\w+),\s*plural,\s*one\s*\{(.*?)\}\s*other\s*\{(.*?)\}\}")
-
-_MESSAGES = {
-    "n_lenses": "{n} {n, plural, one {lens} other {lenses}}",
-    "n_findings": "{n} {n, plural, one {finding} other {findings}}",
-    "n_agents": "{verb} {n} {n, plural, one {agent} other {agents}}",
-    "n_tasks_planned": "{n} {n, plural, one {task} other {tasks}} planned",
-    "n_warnings": " · {n} {n, plural, one {warning} other {warnings}}",
-    "no_ceiling": "{n} {n, plural, one {action} other {actions}} · "
-                  "no ceiling set",
-    "dependent_modules": "{n} dependent {n, plural, one {module} other "
-                         "{modules}} within 3 hops",
-    "plan_all_tasks": "execution plan — all {n} {n, plural, one {task} "
-                      "other {tasks}}, for review",
-    "tasks_progress": "{done}/{total} {total, plural, one {task} other "
-                      "{tasks}} passed · {actions} actions metered · "
-                      "{blocked} blocked",
-    "design_dod_fail": "Design DoD ❌ {n} {n, plural, one {issue} other "
-                       "{issues}}: {details}",
-    "signoff_dod_fail": "all tasks reviewed · DoD ❌ {n} {n, plural, "
-                        "one {issue} other {issues}}: {details}",
-    # never-skippable headlines — one full template each; optional segments
-    # are named placeholders rendered from their own catalog entries (or "")
-    "headline_findings": "{title}: {high} high · {med} med · {low} low "
-                         "({total} {total, plural, one {finding} other "
-                         "{findings}}){blocking}{unrated}{notes}{tests}"
-                         "{coverage}{impact}{rec}",
-    # THE BLOCKING SET. The engine has always computed this
-    # (loop.classify_findings / finding_blocks) and the headline never said
-    # it, so a review whose findings file carried `class: regression` could
-    # print "0 high" and be summarised as "nothing blocks" — which is
-    # exactly what happened on aws/karpenter-provider-aws#9464: one
-    # regression in the file, "0 confirmed regressions" in the summary, and
-    # an approve recommendation. The skill has mandated this split since
-    # v2.3.1. A headline that can disagree with its own blocking rule is
-    # worse than no headline.
-    "headline_findings_blocking": " · {n} BLOCK{split}",
-    "headline_findings_split": " ({r}R·{h}H·{p}P·{o}O)",
-    "headline_findings_noblock": " · 0 block ({t} to triage)",
-    "headline_findings_unrated": " · {n} unrated → counted high",
-    "headline_findings_notes": " · {n} {n, plural, one {note} other "
-                               "{notes}} (question/praise/machinery, "
-                               "not defects)",
-    "headline_findings_tests": " · {tests}",
-    "headline_findings_coverage": " · lenses {deep} deep/{sweep} sweep "
-                                  "of {total}",
-    # v2 coverage honesty (route v2): every catalog lens has an evidenced
-    # disposition — deep, light, or n/a-with-negative-evidence. Format
-    # PINNED by test_dashboard_coverage_v2.
-    "headline_findings_coverage_v2": " · lenses {deep} deep · {light} "
-                                     "light · {na} n/a (evidenced) "
-                                     "of {total}",
-    "headline_findings_impact": " · touches {n} {n, plural, one {module} "
-                                "other {modules}}",
-    "headline_findings_rec": " · {rec}",
-    "headline_loop": "taskplane loop: step={step} · tasks {done}/{total} · "
-                     "\"{goal}\"{gate}{budget}",
-    "headline_loop_gate": " — YOUR GATE: approve/sign-off",
-    "headline_loop_budget": " — ACTION BUDGET EXHAUSTED ({used}/{max}): "
-                            "the agent is blocked; grant more actions",
-    "dor_warnings": "{n} {n, plural, one {warning} other {warnings}}: "
-                    "{details}",
-    # trace-view disclosure (the trace is the audit record — a partial view
-    # must SAY it is partial, and why)
-    "trace_unparseable": "{n} unparseable trace {n, plural, one {line} "
-                         "other {lines}} skipped",
-    "trace_degraded": "{n} malformed trace {n, plural, one {record} other "
-                      "{records}} shown degraded",
-    "trace_tail": "showing recent events only — {mb} MB of older trace "
-                  "not shown (full history preserved in trace.jsonl)",
-}
+# Complete message templates live in locale resources.  Locale resolution is
+# intentionally per render/call (not mutable import-time state), making
+# concurrent host projections deterministic and enabling BCP 47 fallback.
 
 
-def _msg(key: str, **kw) -> str:
-    t = _MESSAGES[key]
+def _msg(key: str, *, locale: str | None = None, **kw) -> str:
+    return _text.message(key, locale=locale, **kw)
 
-    def _pl(m):
-        return m.group(2) if kw.get(m.group(1)) == 1 else m.group(3)
 
-    return _PLURAL_RE.sub(_pl, t).format(**kw)
+def _visible_text(value: object, limit: int) -> str:
+    """Grapheme-safe visible text with the complete accessible value."""
+
+    bounded = _text.truncate_graphemes(value, limit)
+    if not bounded.truncated:
+        return _esc(bounded.full)
+    return (f'<span aria-hidden="true">{_esc(bounded.visible)}</span>'
+            f'<span class="sr">{_esc(bounded.full)}</span>')
+
+
+def _visible_plain(value: object, limit: int) -> str:
+    """Grapheme-safe bounded text for non-HTML contexts such as SVG."""
+
+    return _text.truncate_graphemes(value, limit).visible
 
 
 # Directional glyphs go through ONE helper so an RTL locale can flip flow
@@ -341,7 +276,8 @@ def _render_pipeline(state, step) -> str:
     return "".join(pipe_html)
 
 
-def render(ws: str, out: str | None = None) -> str:
+def render(ws: str, out: str | None = None, *,
+           locale: str | None = None) -> str:
     tstats = {}
     all_ev = _read_trace_all(ws, stats=tstats)   # trace parsed ONCE/render
     state = _load_loop(ws)
@@ -454,9 +390,16 @@ def render(ws: str, out: str | None = None) -> str:
                     "hook blocks"))
     stage_lineage = render_stage_lineage(_bounded_stage_view(ws))
 
-    html = _TEMPLATE.replace("__GOAL__", _esc(goal[:80])) \
+    locale = _text.normalize_locale(locale)
+    html = _TEMPLATE.replace("__GOAL__", _visible_text(goal, 80)) \
         .replace("__STEP__", _esc(step)) \
         .replace("__MODE__", "parallel waves" if parallel else "serial") \
+        .replace("__LANG__", _attr(locale)) \
+        .replace("__PAGE_TITLE__", _esc(_msg("mission_title", locale=locale))) \
+        .replace("__MISSION_TITLE__", _esc(_msg("mission_title", locale=locale))) \
+        .replace("__MOTION_PAUSE__", _esc(_msg("motion_pause", locale=locale))) \
+        .replace("__MOTION_RESUME__", _esc(_msg("motion_resume", locale=locale))) \
+        .replace("__MOTION_LABEL__", _attr(_msg("motion_control_label", locale=locale))) \
         .replace("__NOTICE__", _trace_notice(tstats)) \
         .replace("__STAGE_LINEAGE__", stage_lineage) \
         .replace("__PIPE__", pipe) \
@@ -473,10 +416,10 @@ def render(ws: str, out: str | None = None) -> str:
     return out
 
 
-_TEMPLATE = """<!DOCTYPE html><html lang="en" dir="auto"><head>
+_TEMPLATE = """<!DOCTYPE html><html lang="__LANG__" dir="auto"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>taskplane — mission control</title><style>
+<title>__PAGE_TITLE__</title><style>
 *{box-sizing:border-box;margin:0}
 body{font:13.5px/1.5 -apple-system,'Segoe UI',Inter,sans-serif;
 background:#14140f;color:#e8e8e2;padding:18px 22px}
@@ -487,6 +430,15 @@ align-items:center;gap:10px}
 h1 .live{width:8px;height:8px;border-radius:50%;background:#1baf7a;
 animation:pulse 1.4s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.tp-motion-paused .live,.tp-motion-paused .node.cur .dot{
+animation-play-state:paused!important}
+.motion-control{margin-inline-start:auto;border:1px solid #69695f;
+background:#1c1c15;color:#e8e8e2;border-radius:6px;padding:4px 9px;
+font:inherit;cursor:pointer}
+.motion-control:focus-visible{outline:3px solid #7fd0ff;outline-offset:2px}
+@media (prefers-reduced-motion: reduce){
+  .live,.node.cur .dot{animation:none!important}
+}
 .goal{color:#a9a9a2;font-size:13px;margin:3px 0 14px}
 .goal b{color:#eda100}
 /* pipeline */
@@ -556,9 +508,13 @@ padding:9px 16px;text-align:center;min-width:96px}
 .stat .hot{color:#ff7a78}
 .legend{color:#94948a;font-size:11px;margin-top:12px}
 </style></head><body>
-<h1><span class="live"></span> taskplane — mission control
+<h1><span class="live" aria-hidden="true"></span> __MISSION_TITLE__
 <span style="color:#94948a;font-weight:400;font-size:12px">· step
-<b style="color:#eda100">__STEP__</b> · __MODE__</span></h1>
+<b style="color:#eda100">__STEP__</b> · __MODE__</span>
+<button id="tp-motion-control" class="motion-control" type="button"
+ aria-label="__MOTION_LABEL__" aria-pressed="false"
+ data-pause-label="__MOTION_PAUSE__" data-resume-label="__MOTION_RESUME__">
+__MOTION_PAUSE__</button></h1>
 <div class="goal">goal: <b>__GOAL__</b></div>
 __NOTICE__
 __STAGE_LINEAGE__
@@ -572,6 +528,12 @@ __STAGE_LINEAGE__
 <div class="legend">green = passed/running · amber = current step / built ·
 red square = human gate waiting · ⛔ = the hook blocked an out-of-contract
 action (the product working). Regenerated at every loop transition.</div>
+<script>(function(){var button=document.getElementById('tp-motion-control');
+if(!button)return;button.addEventListener('click',function(){
+var paused=document.body.classList.toggle('tp-motion-paused');
+button.setAttribute('aria-pressed',paused?'true':'false');
+button.textContent=paused?button.dataset.resumeLabel:button.dataset.pauseLabel;});
+})();</script>
 </body></html>"""
 
 
@@ -1558,11 +1520,11 @@ def _compact_card(f, open_=True):
         if f.get("scenario"):
             parts.append(f'<b style="color:var(--text-primary);'
                          f'font-weight:500">fail</b> '
-                         f'{_esc(str(f["scenario"])[:260])}')
+                         f'{_visible_text(f["scenario"], 260)}')
         if f.get("fix"):
             parts.append(f'<b style="color:var(--text-primary);'
                          f'font-weight:500">fix</b> '
-                         f'{_esc(str(f["fix"])[:220])}')
+                         f'{_visible_text(f["fix"], 220)}')
         det = (f'<div style="padding:3px 0 2px;padding-inline-start:88px;'
                f'font-size:11.5px;'
                f'color:var(--text-secondary);line-height:1.5">'
@@ -3804,7 +3766,7 @@ def _context_panel(ws, state, trace_all):
             f'<div style="display:flex;justify-content:space-between;gap:10px'
             f';font-size:13px;padding:4px 0;border-bottom:1px solid '
             f'var(--border)"><span>{_esc(d.get("id", ""))} '
-            f'{_esc(d.get("title", ""))[:44]}</span><span style="color:'
+            f'{_visible_text(d.get("title", ""), 44)}</span><span style="color:'
             f'var(--text-muted);font-size:12px">'
             f'{_esc(", ".join((d.get("tags") or [])[:2]))}</span></div>'
             for d in decs)
@@ -4237,7 +4199,7 @@ def headline_loop(ws: str) -> str:
     done = sum(1 for t in tasks if t.get("status") in
                ("passed", "done", "external", "skipped", "not_selected",
                 "reference"))
-    goal = (state.get("goal") or "")[:60]
+    goal = _visible_plain(state.get("goal") or "", 60)
     gate = _msg("headline_loop_gate") if step in (
         "design_approval", "plan_approval", "signoff", "selection") else ""
     exhausted, used, mx = _budget_state(ws, tp.load_active(ws))
@@ -4755,7 +4717,7 @@ def _widget_parts(ws: str) -> dict:
     stage_lineage = render_stage_lineage(_bounded_stage_view(ws))
     contract = tp.load_active(ws)
     step = (state or {}).get("step", "—")
-    goal = _esc((state or {}).get("goal", "no active loop"))[:80]
+    goal = _visible_text((state or {}).get("goal", "no active loop"), 80)
     tasks = (state or {}).get("tasks") or []
     parallel = bool((state or {}).get("parallel"))
     tstats = {}
@@ -5189,16 +5151,20 @@ _HOST_SURFACE_TOKENS = {
         "background": "#ffffff", "surface": "#f8fafc",
         "text": "#111827", "muted": "#4b5563", "border": "#64748b",
         "focus": "#1d4ed8", "status": "#166534",
+        "success": "#166534", "pending": "#854d0e",
+        "warning": "#92400e", "failure": "#b91c1c",
     },
     "dark": {
         "background": "#111827", "surface": "#1f2937",
         "text": "#f9fafb", "muted": "#d1d5db", "border": "#94a3b8",
         "focus": "#93c5fd", "status": "#86efac",
+        "success": "#86efac", "pending": "#fde047",
+        "warning": "#fdba74", "failure": "#fca5a5",
     },
 }
 
 
-def _dashboard_value_markup(value, *, omit=()):
+def _dashboard_value_markup(value, *, omit=(), locale: str | None = None):
     """Render canonical dashboard evidence as semantic, escaped HTML."""
     if isinstance(value, dict):
         rows = []
@@ -5207,20 +5173,22 @@ def _dashboard_value_markup(value, *, omit=()):
                 continue
             rows.append(
                 f'<div><dt>{html.escape(str(key))}</dt><dd>'
-                f'{_dashboard_value_markup(item)}</dd></div>')
+                f'{_dashboard_value_markup(item, locale=locale)}</dd></div>')
         return '<dl class="tp-value">' + "".join(rows) + '</dl>'
     if isinstance(value, list):
         return ('<ul class="tp-value-list">' + "".join(
-            f'<li>{_dashboard_value_markup(item)}</li>' for item in value)
+            f'<li>{_dashboard_value_markup(item, locale=locale)}</li>'
+            for item in value)
             + '</ul>')
     if value is None:
-        return '<span class="tp-muted">not recorded</span>'
+        return (f'<span class="tp-muted">'
+                f'{html.escape(_msg("not_recorded", locale=locale))}</span>')
     if isinstance(value, bool):
-        return "yes" if value else "no"
+        return _msg("boolean_yes" if value else "boolean_no", locale=locale)
     return html.escape(str(value))
 
 
-def _dashboard_collection_markup(collection):
+def _dashboard_collection_markup(collection, *, locale: str | None = None):
     """Render every carousel page while exposing exactly one active page."""
     active = collection["current"]
     total = collection["total_pages"]
@@ -5228,7 +5196,7 @@ def _dashboard_collection_markup(collection):
     for page in collection["pages"]:
         items = "".join(
             '<li data-item-id="' + html.escape(str(item["id"]), quote=True)
-            + '">' + _dashboard_value_markup(item) + '</li>'
+            + '">' + _dashboard_value_markup(item, locale=locale) + '</li>'
             for item in page["items"])
         pages.append(
             f'<ol data-carousel-page="{page["position"]}"'
@@ -5236,18 +5204,63 @@ def _dashboard_collection_markup(collection):
             + f'>{items}</ol>')
     filters = html.escape(json.dumps(collection["filters"], sort_keys=True),
                           quote=True)
+    labels = [_msg("carousel_position", locale=locale,
+                   items=collection["total_items"], page=page,
+                   pages=max(total, 1))
+              for page in range(1, max(total, 1) + 1)]
+    labels_attr = html.escape(json.dumps(labels, ensure_ascii=False), quote=True)
     return (
         f'<div class="tp-carousel" data-carousel-current="{active}" '
-        f'data-carousel-total="{total}" data-carousel-filters="{filters}">'
+        f'data-carousel-total="{total}" data-carousel-filters="{filters}" '
+        f'data-carousel-labels="{labels_attr}">'
         f'<p class="tp-muted" data-carousel-position aria-live="polite">'
-        f'{collection["total_items"]} items; page {active} of {max(total, 1)}</p>'
+        + html.escape(_msg("carousel_position", locale=locale,
+                           items=collection["total_items"], page=active,
+                           pages=max(total, 1))) + '</p>'
         + "".join(pages)
         + '<div class="tp-carousel-controls">'
           '<button type="button" data-carousel-direction="previous"'
-        + (' disabled' if active <= 1 else '') + '>Previous</button>'
+        + (' disabled' if active <= 1 else '') + '>'
+        + html.escape(_msg("previous", locale=locale)) + '</button>'
           '<button type="button" data-carousel-direction="next"'
-        + (' disabled' if not total or active >= total else '') + '>Next</button>'
+        + (' disabled' if not total or active >= total else '') + '>'
+        + html.escape(_msg("next", locale=locale)) + '</button>'
           '</div></div>')
+
+
+def _dashboard_component_state(status: object) -> tuple[str, str]:
+    """Return a finite semantic state and a non-color-only symbol."""
+
+    normalized = " ".join(str(status or "").casefold().replace("_", " ").split())
+    if any(word in normalized for word in
+           ("failed", "failure", "error", "blocked", "rejected", "denied")):
+        return "failure", "&#10007;"
+    if any(word in normalized for word in
+           ("pending", "queued", "running", "waiting", "in progress", "started")):
+        return "pending", "&#8230;"
+    if any(word in normalized for word in
+           ("warning", "degraded", "partial", "stale", "unavailable")):
+        return "warning", "&#9888;"
+    if any(word in normalized for word in
+           ("ready", "passed", "complete", "available", "success", "done")):
+        return "success", "&#10003;"
+    return "neutral", "&#8226;"
+
+
+def _dashboard_recovery_action(actions, state: str) -> str | None:
+    if state != "failure":
+        return None
+    available = [str(action) for action in actions if str(action).strip()]
+    preferred = ("retry", "resume", "request changes", "send back", "open")
+    return next((action for word in preferred for action in available
+                 if word in action.casefold()), available[0] if available else None)
+
+
+def _dashboard_status_text(catalog: _text.MessageCatalog,
+                           status: object) -> str:
+    normalized = "_".join(
+        str(status or "").casefold().replace("-", " ").split())
+    return catalog.messages.get(f"status_{normalized}", str(status))
 
 
 def _dashboard_action_classification(action):
@@ -5277,7 +5290,8 @@ def _dashboard_action_classification(action):
 
 def render_native_dashboard_surface(projection, *, viewport_px=1024,
                                     theme="light", text_scale_percent=100,
-                                    reduced_motion=False):
+                                    reduced_motion=False,
+                                    locale: str | None = None):
     """Render the host projection as a bounded, testable inline surface.
 
     This is the shared fallback/reference projector used when a host does not
@@ -5298,6 +5312,8 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
     if text_scale_percent not in {100, 200}:
         raise ValueError("text_scale_percent must be 100 or 200")
 
+    catalog = _text.load_catalog(locale)
+    locale = catalog.requested_locale
     tokens = _HOST_SURFACE_TOKENS[theme]
     token_css = ";".join(
         f"--tp-{name}:{value}" for name, value in tokens.items())
@@ -5312,7 +5328,12 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         "var(--tp-border);padding:12px;min-width:0;overflow:visible}"
         ".tp-card:focus-within,.tp-action:focus-visible,.tp-detail:focus-visible{"
         "outline:3px solid var(--tp-focus);outline-offset:2px}"
-        ".tp-status{color:var(--tp-status);font-weight:650}"
+        ".tp-status{font-weight:650}.tp-status[data-state=success]{"
+        "color:var(--tp-success)}.tp-status[data-state=pending]{"
+        "color:var(--tp-pending)}.tp-status[data-state=warning]{"
+        "color:var(--tp-warning)}.tp-status[data-state=failure]{"
+        "color:var(--tp-failure)}.tp-status[data-state=neutral]{"
+        "color:var(--tp-muted)}.tp-recovery{font-weight:650}"
         ".tp-muted{color:var(--tp-muted)}.tp-value{margin:8px 0}.tp-value div{"
         "display:grid;grid-template-columns:minmax(7rem,auto) 1fr;gap:8px}"
         ".tp-value dt{font-weight:650}.tp-value dd{margin:0;overflow-wrap:anywhere}"
@@ -5328,6 +5349,7 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         "animation-duration:.01ms!important;transition-duration:.01ms!important}}"
     )
 
+    actions = list(projection.get("safe_actions", []))
     cards = []
     for component in projection.get("components", []):
         component_id = html.escape(str(component["id"]), quote=True)
@@ -5335,26 +5357,36 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         value = component.get("value", {})
         status = value.get("status", "available") if isinstance(value, dict) \
             else "available"
-        status_text = str(status)
-        lowered_status = status_text.casefold()
-        status_symbol = ("&#10003;" if any(word in lowered_status for word in
-                         ("ready", "passed", "complete", "available"))
-                         else "&#33;" if any(word in lowered_status for word in
-                         ("failed", "error", "blocked")) else "&#8226;")
-        provenance = value.get("provenance", "not recorded") \
+        status_text = _dashboard_status_text(catalog, status)
+        state_kind, status_symbol = _dashboard_component_state(status)
+        status_label = _msg("component_state", locale=locale,
+                            status=status_text)
+        recovery_action = _dashboard_recovery_action(actions, state_kind)
+        recovery = (
+            f'<p class="tp-recovery">'
+            f'{html.escape(_msg("component_recovery", locale=locale, action=recovery_action))}'
+            f'</p>' if recovery_action else "")
+        provenance = value.get(
+            "provenance", _msg("not_recorded", locale=locale)) \
             if isinstance(value, dict) else "not recorded"
         collection = component.get("collection")
-        collection_text = _dashboard_collection_markup(collection) \
+        collection_text = _dashboard_collection_markup(
+            collection, locale=locale) \
             if collection else ""
         semantic_value = _dashboard_value_markup(
-            value, omit={"status", "provenance", "items"}) \
-            if isinstance(value, dict) else _dashboard_value_markup(value)
+            value, omit={"status", "provenance", "items"}, locale=locale) \
+            if isinstance(value, dict) else _dashboard_value_markup(
+                value, locale=locale)
         cards.append(
             f'<section class="tp-card" data-purpose="{component_id}" '
             f'aria-labelledby="{label_id}"><h2 id="{label_id}">{component_id}</h2>'
-            f'<p class="tp-status"><span aria-hidden="true">{status_symbol}</span> '
-            f'<span>{html.escape(status_text)}</span></p>{semantic_value}{collection_text}'
-            f'<p class="tp-muted">Provenance: {html.escape(str(provenance))}</p>'
+            f'<p class="tp-status" data-state="{state_kind}" '
+            f'role="{"alert" if state_kind == "failure" else "status"}">'
+            f'<span aria-hidden="true">{status_symbol}</span> '
+            f'<span>{html.escape(status_label)}</span></p>{recovery}'
+            f'{semantic_value}{collection_text}'
+            f'<p class="tp-muted">'
+            f'{html.escape(_msg("provenance", locale=locale, value=provenance))}</p>'
             f'</section>')
 
     inline_actions = projection.get("presentation", {}).get("primary_actions", [])[:2]
@@ -5378,8 +5410,27 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         f'data-prompt="{html.escape(str(action), quote=True)}">'
         f'{html.escape(str(action))}</button>' for action in detail_actions)
     action_buttons += (
-        '<button class="tp-action" type="button" aria-label="Open full details" '
-        'aria-controls="tp-fullscreen-detail" data-detail-trigger="true">Details</button>')
+        f'<button class="tp-action" type="button" aria-label="'
+        f'{html.escape(_msg("open_details", locale=locale), quote=True)}" '
+        f'aria-controls="tp-fullscreen-detail" data-detail-trigger="true">'
+        f'{html.escape(_msg("dashboard_details", locale=locale))}</button>')
+
+    js_text = {key: json.dumps(_msg(key, locale=locale), ensure_ascii=False)
+               .replace("<", "\\u003c") for key in (
+                   "delivery_sending_button", "delivery_sending",
+                   "delivery_sent", "delivery_empty")}
+    js_template = {key: json.dumps(_msg(key, locale=locale, message="__MESSAGE__"),
+                                   ensure_ascii=False).replace("<", "\\u003c")
+                   for key in ("delivery_no_bridge", "delivery_delivered",
+                               "delivery_failed")}
+    if locale.split("-", 1)[0] == "en":
+        js_no_bridge = '"No chat bridge in this static view — reply in chat: "+message'
+        js_delivered = '"Delivered to chat: "+message'
+        js_failed = '"Delivery failed — retry or reply in chat: "+message'
+    else:
+        js_no_bridge = f'{js_template["delivery_no_bridge"]}.replace("__MESSAGE__",message)'
+        js_delivered = f'{js_template["delivery_delivered"]}.replace("__MESSAGE__",message)'
+        js_failed = f'{js_template["delivery_failed"]}.replace("__MESSAGE__",message)'
 
     interaction = (
         '<script>(function(){'
@@ -5411,33 +5462,33 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         'else{return null;}}catch(error){return Promise.reject(error);}'
         'return Promise.resolve(result);}'
         'function deliver(control,message){if(!hasBridge()){'
-        'report(control,"No chat bridge in this static view — reply in chat: "+message,false);'
+        f'report(control,{js_no_bridge},false);'
         'return;}var controls=actionGroup(control);controls.forEach(function(item){'
         'if(!item.dataset.deliveryLabel)item.dataset.deliveryLabel=item.textContent;'
         'item.disabled=true;});'
-        'control.setAttribute("aria-busy","true");control.textContent="Sending…";'
-        'report(control,"Sending to chat…",false);bridge(message).then(function(result){'
+        f'control.setAttribute("aria-busy","true");control.textContent={js_text["delivery_sending_button"]};'
+        f'report(control,{js_text["delivery_sending"]},false);bridge(message).then(function(result){{'
         'if(result===false||(result&&typeof result==="object"&&'
         '(result.ok===false||result.delivered===false)))'
         '{throw new Error("bridge did not confirm delivery");}'
         'return result;}).then(function(){'
-        'control.removeAttribute("aria-busy");control.textContent="Sent";'
+        f'control.removeAttribute("aria-busy");control.textContent={js_text["delivery_sent"]};'
         'if((control.dataset.actionClassification||"independent")==="independent")'
         '{controls.forEach(function(item){if(item!==control&&'
         '(item.dataset.actionClassification||"independent")==="independent")'
         '{item.disabled=false;if(item.dataset.deliveryLabel)'
         'item.textContent=item.dataset.deliveryLabel;}});}'
-        'report(control,"Delivered to chat: "+message,false);},function(){'
+        f'report(control,{js_delivered},false);}},function(){{'
         'controls.forEach(function(item){item.disabled=false;'
         'if(item.dataset.deliveryLabel)item.textContent=item.dataset.deliveryLabel;});'
         'control.removeAttribute("aria-busy");'
-        'report(control,"Delivery failed — retry or reply in chat: "+message,true);});}'
+        f'report(control,{js_failed},true);}});}}'
         'all("[data-dashboard-action]").forEach(function(button){'
         'button.addEventListener("click",function(){deliver(button,button.dataset.prompt);});});'
         'var form=root.querySelector(".tp-composer");'
         'if(form){form.addEventListener("submit",function(event){event.preventDefault();'
         'var input=form.querySelector("textarea");var submit=form.querySelector("button[type=submit]");'
-        'var message=input?input.value.trim():"";if(!message){report(submit,"Enter a message first.",true);'
+        f'var message=input?input.value.trim():"";if(!message){{report(submit,{js_text["delivery_empty"]},true);'
         'return;}deliver(submit,message);});}'
         'all("[data-carousel-direction]").forEach(function(button){'
         'button.addEventListener("click",function(){var carousel=button.closest(".tp-carousel");'
@@ -5447,7 +5498,8 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         'Array.from(carousel.querySelectorAll("[data-carousel-page]")).forEach(function(page){'
         'page.hidden=Number(page.dataset.carouselPage)!==next;});'
         'var position=carousel.querySelector("[data-carousel-position]");'
-        'if(position)position.textContent=position.textContent.replace(/page \\d+ of/,"page "+next+" of");'
+        'var labels=JSON.parse(carousel.dataset.carouselLabels||"[]");'
+        'if(position&&labels[next-1])position.textContent=labels[next-1];'
         'var previous=carousel.querySelector("[data-carousel-direction=previous]");'
         'var following=carousel.querySelector("[data-carousel-direction=next]");'
         'if(previous)previous.disabled=next<=1;if(following)following.disabled=next>=total;});});'
@@ -5473,38 +5525,51 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
     evidence = projection.get("evidence", [])
     detail_evidence = (
         '<section aria-labelledby="tp-evidence-title"><h3 id="tp-evidence-title">'
-        'Workflow evidence</h3>'
+        + html.escape(_msg("workflow_evidence", locale=locale)) + '</h3>'
         + _dashboard_value_markup({
             "identity": identity,
             "stage": projection.get("stage"),
             "state": projection.get("state"),
             "evidence": evidence,
-        }) + '</section>')
+        }, locale=locale) + '</section>')
+
+    locale_notice = (
+        f'<p class="tp-muted" role="status" data-locale-fallback="true">'
+        f'{html.escape(_msg("locale_fallback", locale=locale, details="; ".join(catalog.errors)))}'
+        f'</p>' if catalog.errors else "")
 
     return (
         '<div class="tp-host" data-host="'
         + html.escape(str(projection["presentation"]["host"]), quote=True)
-        + f'" data-theme="{theme}" data-layout="{layout}" '
+        + f'" lang="{html.escape(locale, quote=True)}" dir="auto" '
+          f'data-theme="{theme}" data-layout="{layout}" '
           f'data-viewport-width="{viewport_px}" data-reduced-motion="'
         + ("true" if reduced_motion else "false")
         + f'" style="{token_css};font-size:{text_scale_percent}%;transition:{motion}">'
-          f'<style>{styles}</style><main class="tp-dashboard" '
-          f'aria-label="Taskplane workflow dashboard">{"".join(cards)}</main>'
-          f'<nav class="tp-actions" aria-label="Dashboard actions" '
+          f'<style>{styles}</style>{locale_notice}<main class="tp-dashboard" '
+          f'aria-label="{html.escape(_msg("dashboard_aria", locale=locale), quote=True)}">'
+          f'{"".join(cards)}</main>'
+          f'<nav class="tp-actions" aria-label="'
+          f'{html.escape(_msg("dashboard_actions", locale=locale), quote=True)}" '
           f'data-delivery-actions="true">{action_buttons}</nav>'
           f'<dialog id="tp-fullscreen-detail" class="tp-detail" '
-          f'aria-labelledby="tp-detail-title"><h2 id="tp-detail-title">Dashboard details</h2>'
+          f'aria-labelledby="tp-detail-title"><h2 id="tp-detail-title">'
+          f'{html.escape(_msg("dashboard_details", locale=locale))}</h2>'
           f'{detail_evidence}<div class="tp-detail-actions" '
           f'data-delivery-actions="true">{detail_buttons}</div>'
           f'<p id="tp-detail-delivery-status" class="tp-delivery-status" '
           f'data-delivery-status="true" '
           f'data-delivery-scope="detail" role="status" aria-live="polite" '
           f'aria-atomic="true"></p>'
-          f'<button type="button" aria-label="Close details" '
-          f'data-detail-close="true">Close</button></dialog>'
-          f'<form class="tp-composer" aria-label="Conversation composer">'
-          f'<label for="tp-message">Message</label><textarea id="tp-message" '
-          f'name="message"></textarea><button type="submit">Send</button></form>'
+          f'<button type="button" aria-label="'
+          f'{html.escape(_msg("close_details", locale=locale), quote=True)}" '
+          f'data-detail-close="true">{html.escape(_msg("close", locale=locale))}'
+          f'</button></dialog><form class="tp-composer" aria-label="'
+          f'{html.escape(_msg("conversation_composer", locale=locale), quote=True)}">'
+          f'<label for="tp-message">{html.escape(_msg("message_label", locale=locale))}'
+          f'</label><textarea id="tp-message" name="message"></textarea>'
+          f'<button type="submit">{html.escape(_msg("send", locale=locale))}'
+          f'</button></form>'
           f'<p class="tp-delivery-status" data-delivery-status="true" '
           f'data-delivery-scope="shared" role="status" aria-live="polite" '
           f'aria-atomic="true"></p>'
