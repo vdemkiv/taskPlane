@@ -2,19 +2,30 @@
 target-version = "py310"
 line-length = 100
 extend-exclude = ["taskplane/tests"]
+# ``lens_signals`` intentionally re-exports the lower routing engine at runtime;
+# list only those dynamically installed names.  ``review.evidence`` is retained
+# as a compatibility alias until its owning remediation task can change source.
+# Unlike a per-file F821 suppression, every other undefined name in either file
+# (and every future production file) remains an error.
+builtins = [
+  "Ctx",
+  "DEEP_CAP",
+  "DEEP_TARGET",
+  "_graph_payload",
+  "apply_budget",
+  "evidence",
+  "load_catalog",
+  "verdicts",
+]
 
 [tool.ruff.lint]
 # Start with correctness rules over every shipped production entry point.  The
 # broader style backlog must not weaken this zero-warning floor.
 select = ["E9", "F63", "F7", "F82"]
 
-[tool.ruff.lint.per-file-ignores]
-# These two modules deliberately bind names during their late composition
-# phase.  Keep the exceptions exact instead of suppressing F821 globally.
-"taskplane/lens_signals.py" = ["F821"]
-"taskplane/review.py" = ["F821"]
-
 [tool.mypy]
+# Type-check the documented runtime floor while executing the gate on the
+# separately approved Python 3.14 validation interpreter.
 python_version = "3.10"
 strict = true
 warn_unused_configs = true
@@ -22,12 +33,104 @@ warn_unused_ignores = true
 show_error_codes = true
 pretty = false
 incremental = false
-follow_imports = "skip"
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "."
+ignore_missing_imports = true
 
-# These are the current fully typed production boundaries.  Strict checking is
-# a zero-warning gate for them; expanding the list requires fixing the added
-# boundary rather than adding a blanket suppression.
-files = [
-  "taskplane/enforcement.py",
-  "taskplane/review_convergence.py",
+# Check the complete shipped top-level package on every run.  Taskplane retains
+# a flat-module runtime compatibility mode, so sibling imports intentionally do
+# not form a conventional typed package; every production file is nevertheless
+# a direct mypy target and imports are no longer skipped.
+files = ["taskplane/*.py"]
+
+# Staged strict baseline measured at H2-A.  Each legacy-debt module is exact:
+# no package wildcard, no error-code disable, and no future module is admitted
+# to this list automatically.  The four modules outside this inventory are the
+# current strict ratchet; adding a public untyped API or bad return to any one of
+# them fails CI.  Promotion means deleting an exact entry below.
+[[tool.mypy.overrides]]
+module = [
+  "taskplane.audit",
+  "taskplane.authority",
+  "taskplane.brief_projection",
+  "taskplane.build_c",
+  "taskplane.checkpoint",
+  "taskplane.collision",
+  "taskplane.command_adapters",
+  "taskplane.command_runtime",
+  "taskplane.command_wave",
+  "taskplane.dashboard",
+  "taskplane.decompose",
+  "taskplane.defect_claim",
+  "taskplane.delivery_policy",
+  "taskplane.delivery_ports",
+  "taskplane.depgraph",
+  "taskplane.derivation",
+  "taskplane.design_contract",
+  "taskplane.design_sweep",
+  "taskplane.eval_drivers",
+  "taskplane.eval_rubric",
+  "taskplane.eval_scenario",
+  "taskplane.evaluation_output",
+  "taskplane.evaluator_health",
+  "taskplane.evidence",
+  "taskplane.governed_commands",
+  "taskplane.graph_decomposition",
+  "taskplane.graph_primitives",
+  "taskplane.graph_quality",
+  "taskplane.host_capabilities",
+  "taskplane.import_cycles",
+  "taskplane.kb",
+  "taskplane.lens",
+  "taskplane.lens_signals",
+  "taskplane.lens_telemetry",
+  "taskplane.loop",
+  "taskplane.loop_recovery",
+  "taskplane.loop_status",
+  "taskplane.native_authority",
+  "taskplane.obligations",
+  "taskplane.path_roles",
+  "taskplane.pickup",
+  "taskplane.plan_topology",
+  "taskplane.preflight",
+  "taskplane.preview_runtime",
+  "taskplane.producer_observation",
+  "taskplane.progress",
+  "taskplane.recovery",
+  "taskplane.regression",
+  "taskplane.release_evidence",
+  "taskplane.remediation_trace",
+  "taskplane.repository",
+  "taskplane.requirements",
+  "taskplane.retro",
+  "taskplane.review",
+  "taskplane.review_artifacts",
+  "taskplane.review_authority",
+  "taskplane.review_dor",
+  "taskplane.review_evidence",
+  "taskplane.review_progression",
+  "taskplane.review_recovery",
+  "taskplane.review_repair",
+  "taskplane.review_retry",
+  "taskplane.review_session",
+  "taskplane.run_store",
+  "taskplane.runnability",
+  "taskplane.runtime_eval",
+  "taskplane.spend",
+  "taskplane.stage_entities",
+  "taskplane.stage_handoff",
+  "taskplane.stage_migration",
+  "taskplane.storage",
+  "taskplane.storage_migration",
+  "taskplane.target",
+  "taskplane.taskplane_lite",
+  "taskplane.terminal_truth",
+  "taskplane.tp",
+  "taskplane.track",
+  "taskplane.views",
+  "taskplane.wiring_closure",
+  "taskplane.worktree_cleanup",
+  "taskplane.yield_meter",
 ]
+ignore_errors = true

@@ -21,8 +21,20 @@ EXPECTED_LOCK = {
     "typing-extensions": "4.16.0",
 }
 STRICT_BOUNDARIES = {
-    "taskplane/enforcement.py",
-    "taskplane/review_convergence.py",
+    "taskplane.dispatch_telemetry",
+    "taskplane.enforcement",
+    "taskplane.host_native",
+    "taskplane.review_convergence",
+}
+DYNAMIC_RUFF_NAMES = {
+    "Ctx",
+    "DEEP_CAP",
+    "DEEP_TARGET",
+    "_graph_payload",
+    "apply_budget",
+    "evidence",
+    "load_catalog",
+    "verdicts",
 }
 
 
@@ -58,13 +70,59 @@ def _locked_requirements(source: str) -> tuple[dict[str, str], set[str], list[st
     return versions, hashed, invalid
 
 
+def _array_values(source: str, key: str) -> list[str]:
+    match = re.search(
+        rf'(?ms)^\s*{re.escape(key)}\s*=\s*\[(.*?)^\s*\]', source
+    )
+    return re.findall(r'"([^"\n]+)"', match.group(1)) if match else []
+
+
+def _production_modules() -> set[str]:
+    return {
+        f"taskplane.{path.stem}"
+        for path in (ROOT / "taskplane").glob("*.py")
+    }
+
+
+def _strict_policy_violations(policy: str) -> list[str]:
+    problems: list[str] = []
+    production = _production_modules()
+    debt = set(_array_values(policy, "module"))
+    admitted = production - debt
+    global_policy = policy.split("[[tool.mypy.overrides]]", 1)[0]
+
+    if 'files = ["taskplane/*.py"]' not in global_policy:
+        problems.append("mypy must directly target every top-level production module")
+    if 'follow_imports = "skip"' in policy:
+        problems.append("mypy cannot skip imported types")
+    if "ignore_errors = true" in global_policy or "disable_error_code" in policy:
+        problems.append("strict typing cannot be disabled by a blanket escape")
+    if "[[tool.mypy.overrides]]" not in policy or "ignore_errors = true" not in policy:
+        problems.append("the staged debt baseline is missing")
+    if not debt or any("*" in module for module in debt):
+        problems.append("legacy typing debt must use exact module names")
+    if debt - production:
+        problems.append("legacy typing debt names a non-production module")
+    if debt != production - STRICT_BOUNDARIES:
+        problems.append("the measured strict-module ratchet changed")
+    if admitted != STRICT_BOUNDARIES or len(admitted) <= 2:
+        problems.append("strict production coverage was narrowed")
+
+    builtins = set(_array_values(policy, "builtins"))
+    if builtins != DYNAMIC_RUFF_NAMES:
+        problems.append("dynamic Ruff names differ from the reviewed exact set")
+    if "per-file-ignores" in policy or "extend-per-file-ignores" in policy:
+        problems.append("undefined-name lint cannot be suppressed for a whole file")
+    return problems
+
+
 def _quality_violations(ci: str, policy: str, lock: str) -> list[str]:
     problems: list[str] = []
     job = _job(ci, "python-quality")
     required_job_fragments = (
         "name: Python quality (ruff + strict mypy)",
         "runs-on: ubuntu-latest",
-        'python-version: "3.12"',
+        'python-version: "3.14"',
         "python -m pip install --disable-pip-version-check",
         "--require-hashes -r requirements-dev.lock",
         "python -m ruff check --output-format=github taskplane hooks scripts",
@@ -90,14 +148,7 @@ def _quality_violations(ci: str, policy: str, lock: str) -> list[str]:
     for fragment in required_policy_fragments:
         if fragment not in policy:
             problems.append(f"quality policy misses {fragment}")
-    if "ignore_errors = true" in policy or "disable_error_code" in policy:
-        problems.append("strict typing cannot be disabled by a blanket escape")
-    configured_boundaries = set(re.findall(r'"(taskplane/[^"\n]+\.py)"', policy))
-    if not STRICT_BOUNDARIES <= configured_boundaries:
-        problems.append("strict typed boundaries were narrowed")
-    for boundary in STRICT_BOUNDARIES:
-        if not (ROOT / boundary).is_file():
-            problems.append(f"strict boundary does not exist: {boundary}")
+    problems.extend(_strict_policy_violations(policy))
 
     versions, hashed, invalid = _locked_requirements(lock)
     if versions != EXPECTED_LOCK:
@@ -135,6 +186,17 @@ def test_h09_ci_enforces_lint_and_strict_types() -> None:
     ) == []
 
 
+def test_h09_staged_strict_baseline_covers_all_top_level_modules() -> None:
+    """Every production module is either strict now or exact measured debt."""
+    policy = POLICY.read_text(encoding="utf-8")
+    debt = set(_array_values(policy, "module"))
+    production = _production_modules()
+
+    assert len(production) == 85
+    assert production - debt == STRICT_BOUNDARIES
+    assert _strict_policy_violations(policy) == []
+
+
 @pytest.mark.parametrize(
     ("target", "old", "new"),
     (
@@ -149,6 +211,31 @@ def test_h09_ci_enforces_lint_and_strict_types() -> None:
         ),
         ("policy", "strict = true", "strict = false"),
         ("policy", "warn_unused_ignores = true", "warn_unused_ignores = false"),
+        (
+            "policy",
+            'files = ["taskplane/*.py"]',
+            'files = ["taskplane/enforcement.py"]',
+        ),
+        (
+            "policy",
+            "incremental = false",
+            'incremental = false\nfollow_imports = "skip"',
+        ),
+        (
+            "policy",
+            '  "taskplane.audit",',
+            '  "taskplane.*",',
+        ),
+        (
+            "policy",
+            'module = [',
+            'module = [\n  "taskplane.enforcement",',
+        ),
+        (
+            "policy",
+            '  "verdicts",',
+            '  "verdicts",\n  "future_typo",',
+        ),
         ("lock", "ruff==0.12.9", "ruff>=0.12.9"),
     ),
 )
