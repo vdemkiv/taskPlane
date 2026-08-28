@@ -2933,9 +2933,9 @@ class TestEngineSkewRefusal(unittest.TestCase):
     engine fingerprint into .eval/verdict.json itself.
     """
 
-    SURFACE = {"loop", "loop_status", "taskplane_lite", "audit", "lens", "lens_signals",
-               "design_contract", "depgraph", "decompose", "requirements",
-               "runtime_eval"}
+    SURFACE = {"loop", "loop_status", "taskplane_lite", "audit",
+               "audit_projection", "lens", "lens_signals", "design_contract",
+               "depgraph", "decompose", "requirements", "runtime_eval"}
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

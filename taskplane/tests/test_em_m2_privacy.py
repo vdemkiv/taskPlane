@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "taskplane"))
 
 import taskplane_lite as tp  # noqa: E402
+import audit_projection  # noqa: E402
 
 
 def _repository(path: Path) -> Path:
@@ -48,8 +49,12 @@ def test_m10_privacy_notice_matches_actual_collection_and_network_paths() \
 
     runtime_source = (ROOT / "taskplane" / "taskplane_lite.py").read_text(
         encoding="utf-8")
-    assert "_AUDIT_IDENTITY_FIELDS" in runtime_source
+    projection_source = (
+        ROOT / "taskplane" / "audit_projection.py"
+    ).read_text(encoding="utf-8")
+    assert "_AUDIT_IDENTITY_FIELDS" in projection_source
     assert "_TRACE_ARCHIVE_RETENTION_SECONDS" in runtime_source
+    assert tp.audit_record is audit_projection.audit_record
 
 
 def test_m11_new_user_storage_defaults_private_despite_repository_setting(
