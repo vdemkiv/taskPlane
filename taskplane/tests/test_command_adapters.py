@@ -60,8 +60,11 @@ def test_host_states_are_normalized_once(adapter, host_status, state):
 
     event = command_adapter.wait_next(handle, consumer="model")
     assert event["state"] == state
-    assert event["reason"] == "host detail"
-    assert event["output_delta"] == "bounded result"
+    assert "host detail" not in event["reason"]
+    assert "REASON_MINIMIZED" in event["reason"]
+    assert event["reason_code"] is None
+    assert "bounded result" not in event["output_delta"]
+    assert "OUTPUT_MINIMIZED" in event["output_delta"]
     assert command_adapter.wait_next(
         handle, consumer="model", timeout=0) is None
 
@@ -132,7 +135,9 @@ def test_native_wait_is_consumed_once_before_canonical_delivery(tmp_path):
 
     event = command_adapter.wait_next(handle, consumer="model", timeout=3)
     assert event["state"] == "approval_required"
-    assert event["reason"] == "approve"
+    assert "approve" not in event["reason"]
+    assert "REASON_MINIMIZED" in event["reason"]
+    assert event["reason_code"] is None
     assert len(native_waits) == 1
 
 

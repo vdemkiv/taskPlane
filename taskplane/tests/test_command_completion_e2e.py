@@ -137,4 +137,5 @@ def test_silent_command_end_to_end_completion_resume_attention_and_efficiency(
     audit_handle = restarted.launch("audit", cwd="/repo")
     audit_failure = restarted_runtime.reconnect(audit_handle, binding=None)
     assert audit_failure["state"] == "failed"
-    assert audit_failure["reason"] == "binding_lost"
+    assert audit_failure["reason_code"] == "binding_lost"
+    assert "binding_lost" not in audit_failure["reason"]

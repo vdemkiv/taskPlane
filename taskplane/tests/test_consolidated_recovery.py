@@ -355,7 +355,8 @@ def test_command_adapter_uses_recovery_policy_before_requesting_input(
     assert adapter.wait_next(handle, consumer="agent") is None
     event = adapter.wait_next(handle, consumer="agent")
     assert event["state"] == "input_required"
-    assert event["reason"].endswith("repeated_fingerprint")
+    assert event["reason_code"] == "repeated_fingerprint"
+    assert "repeated_fingerprint" not in event["reason"]
 
 
 @pytest.mark.parametrize(
