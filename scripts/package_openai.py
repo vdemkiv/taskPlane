@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import argparse
 import ast
+from collections.abc import Mapping
 import hashlib
 import json
 import math
 import os
 import re
 import stat
+import subprocess
 import sys
+import time
 import unicodedata
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -109,6 +112,18 @@ RELEASE_SURFACE_FILES = (
     "CHANGELOG.md",
 )
 
+PROTECTED_RELEASE_AUTHORIZATION_FIELDS = frozenset({
+    "schema", "action", "source_sha", "release_green_fingerprint",
+    "independently_requeried_platform_ci_proof",
+    "outside_model_human_recheck", "authorized",
+    "cryptographic_authenticity_claimed", "fingerprint",
+})
+
+RELEASE_COMPATIBILITY_RECEIPT_FIELDS = frozenset({
+    "schema", "source_sha", "compatibility_policy_fingerprint", "cells",
+    "status", "cryptographic_authenticity_claimed", "fingerprint",
+})
+
 SUPPORTED_HOOK_ROOT_FIELDS = frozenset({"description", "hooks"})
 
 
@@ -119,6 +134,209 @@ class PackageError(RuntimeError):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise PackageError(message)
+
+
+def load_json_object(path: Path, label: str) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PackageError(f"cannot read {label}: {exc}") from exc
+    require(isinstance(value, dict), f"{label} must be a JSON object")
+    return value
+
+
+def _validate_sealed_receipt(
+    receipt: Mapping[str, object], fields: frozenset[str], label: str
+) -> None:
+    from taskplane.delivery_ports import content_fingerprint
+
+    require(set(receipt) == fields, f"{label} fields are not closed")
+    projection = {key: value for key, value in receipt.items()
+                  if key != "fingerprint"}
+    require(receipt.get("fingerprint") == content_fingerprint(projection),
+            f"{label} fingerprint is invalid")
+
+
+def _validate_release_compatibility_receipt(
+    receipt: Mapping[str, object],
+    *,
+    policy: Mapping[str, object],
+    expected_source_sha: str,
+) -> dict:
+    from taskplane.delivery_ports import content_fingerprint
+
+    _validate_sealed_receipt(
+        receipt, RELEASE_COMPATIBILITY_RECEIPT_FIELDS,
+        "release compatibility receipt",
+    )
+    require(receipt.get("schema") ==
+            "taskplane.release-compatibility-matrix/v1",
+            "release compatibility receipt schema is invalid")
+    require(receipt.get("source_sha") == expected_source_sha,
+            "release compatibility receipt does not bind the source SHA")
+    require(receipt.get("compatibility_policy_fingerprint") ==
+            content_fingerprint(policy),
+            "release compatibility receipt does not bind the policy")
+    require(receipt.get("status") == "release-compatible",
+            "release compatibility receipt is not release-compatible")
+    require(receipt.get("cryptographic_authenticity_claimed") is False,
+            "release compatibility receipt must not claim authenticity")
+
+    release_matrix = policy.get("release_matrix")
+    require(isinstance(release_matrix, list),
+            "compatibility policy must declare a release_matrix")
+    expected_pairs = {
+        (row.get("plugin"), row.get("host"))
+        for row in release_matrix if isinstance(row, Mapping)
+    }
+    window = policy.get("window")
+    require(isinstance(window, Mapping),
+            "compatibility policy window is invalid")
+    current = window.get("current")
+    last_released = window.get("last_released")
+    required_pairs = {
+        (current, current),
+        (current, last_released),
+        (last_released, current),
+        (last_released, last_released),
+    }
+    require(expected_pairs == required_pairs,
+            "release matrix must cover current and the last released generation")
+
+    cells = receipt.get("cells")
+    require(isinstance(cells, list) and len(cells) == 4,
+            "release compatibility receipt must contain four observed cells")
+    observed_pairs: set[tuple[object, object]] = set()
+    for cell in cells:
+        require(isinstance(cell, Mapping) and set(cell) == {
+            "plugin", "host", "source_sha", "observed"
+        }, "release compatibility cell fields are not closed")
+        require(cell.get("source_sha") == expected_source_sha,
+                "release compatibility cell does not bind the source SHA")
+        require(cell.get("observed") is True,
+                "release compatibility cell is not observed")
+        observed_pairs.add((cell.get("plugin"), cell.get("host")))
+    require(observed_pairs == required_pairs,
+            "release compatibility evidence must cover the last released generation")
+    return dict(receipt)
+
+
+def _validate_publication_authorization(
+    receipt: Mapping[str, object],
+    *,
+    release_green: Mapping[str, object],
+    expected_source_sha: str,
+    now: float,
+) -> dict:
+    from taskplane.release_evidence import (
+        ReleaseEvidenceError,
+        validate_platform_ci_proof,
+    )
+
+    _validate_sealed_receipt(
+        receipt, PROTECTED_RELEASE_AUTHORIZATION_FIELDS,
+        "publication authorization",
+    )
+    require(receipt.get("schema") ==
+            "taskplane.protected-release-authorization/v1",
+            "publication authorization schema is invalid")
+    require(receipt.get("action") in {"publication", "publish"},
+            "publication authorization action is invalid")
+    require(receipt.get("source_sha") == expected_source_sha,
+            "publication authorization does not bind the source SHA")
+    require(receipt.get("release_green_fingerprint") ==
+            release_green.get("fingerprint"),
+            "publication authorization does not bind release-green")
+    require(receipt.get("authorized") is True,
+            "publication authorization is not authorized")
+    require(receipt.get("cryptographic_authenticity_claimed") is False,
+            "publication authorization must not claim authenticity")
+    proof = receipt.get("independently_requeried_platform_ci_proof")
+    require(isinstance(proof, Mapping),
+            "publication authorization needs fresh platform CI proof")
+    try:
+        checked_proof = validate_platform_ci_proof(proof, now=now)
+    except ReleaseEvidenceError as exc:
+        raise PackageError(
+            f"publication authorization platform proof is invalid: {exc}"
+        ) from exc
+    require(checked_proof["pushed_sha"] == expected_source_sha,
+            "publication authorization platform proof does not bind the source SHA")
+    human = receipt.get("outside_model_human_recheck")
+    require(isinstance(human, Mapping),
+            "publication authorization needs an outside-model human recheck")
+    require(human.get("channel") == "outside-model" and
+            human.get("action") == receipt.get("action") and
+            human.get("source_sha") == expected_source_sha and
+            human.get("confirmed") is True and
+            human.get("cryptographic_authenticity_claimed") is False,
+            "publication authorization human recheck is invalid")
+    return dict(receipt)
+
+
+def validate_release_package_authority(
+    *,
+    release_green: Mapping[str, object] | None,
+    publication_authorization: Mapping[str, object] | None,
+    compatibility_receipt: Mapping[str, object] | None,
+    expected_source_sha: str,
+    now: float,
+    policy: Mapping[str, object] | None = None,
+) -> dict:
+    """Fail closed unless packaging is bound to current release authority."""
+    from taskplane.delivery_ports import content_fingerprint
+    from taskplane.release_evidence import (
+        ReleaseEvidenceError,
+        validate_compatibility_policy,
+        validate_release_green,
+    )
+
+    require(isinstance(release_green, Mapping),
+            "a release-green receipt is required for marketplace packaging")
+    require(isinstance(publication_authorization, Mapping),
+            "a publication authorization receipt is required for marketplace packaging")
+    require(isinstance(compatibility_receipt, Mapping),
+            "a release compatibility receipt is required for marketplace packaging")
+    try:
+        checked_policy = validate_compatibility_policy(
+            policy or load_json_object(
+                ROOT / "design" / "compatibility.json", "compatibility policy"
+            )
+        )
+        checked_release = validate_release_green(release_green, now=now)
+    except ReleaseEvidenceError as exc:
+        raise PackageError(f"release-green authority is invalid: {exc}") from exc
+    require(checked_release["source_sha"] == expected_source_sha,
+            "release-green authority does not bind the source SHA")
+    require(checked_release["compatibility_policy_fingerprint"] ==
+            content_fingerprint(checked_policy),
+            "release-green authority does not bind the compatibility policy")
+    checked_compatibility = _validate_release_compatibility_receipt(
+        compatibility_receipt,
+        policy=checked_policy,
+        expected_source_sha=expected_source_sha,
+    )
+    require(checked_release["mixed_version_matrix_receipt"] ==
+            checked_compatibility["fingerprint"],
+            "release-green authority does not bind last-released compatibility evidence")
+    _validate_publication_authorization(
+        publication_authorization,
+        release_green=checked_release,
+        expected_source_sha=expected_source_sha,
+        now=now,
+    )
+    return checked_release
+
+
+def git_head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT,
+        capture_output=True, text=True, check=False,
+    )
+    require(result.returncode == 0 and
+            re.fullmatch(r"[0-9a-f]{40}", result.stdout.strip()) is not None,
+            "cannot resolve the exact source SHA")
+    return result.stdout.strip()
 
 
 def release_runtime_constants() -> dict[str, str]:
@@ -545,6 +763,14 @@ def validate_archive(path: Path) -> tuple[int, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
+    parser.add_argument("--release-green-receipt", type=Path, required=True,
+                        help="validated release-green receipt for this exact source SHA")
+    parser.add_argument("--publication-authorization-receipt", type=Path,
+                        required=True,
+                        help="fresh outside-model publication authorization")
+    parser.add_argument("--release-compatibility-receipt", type=Path,
+                        required=True,
+                        help="observed current/last-released compatibility matrix")
     # D-0010 — same rule as the Claude archive; see scripts/release_provenance.py
     parser.add_argument("--allow-dirty", action="store_true",
                         help="package over uncommitted edits; the provenance "
@@ -553,6 +779,20 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        validate_release_package_authority(
+            release_green=load_json_object(args.release_green_receipt,
+                                           "release-green receipt"),
+            publication_authorization=load_json_object(
+                args.publication_authorization_receipt,
+                "publication authorization receipt",
+            ),
+            compatibility_receipt=load_json_object(
+                args.release_compatibility_receipt,
+                "release compatibility receipt",
+            ),
+            expected_source_sha=git_head(),
+            now=time.time(),
+        )
         manifest = load_manifest()
         validate_manifest(manifest)
         validate_skills(manifest)

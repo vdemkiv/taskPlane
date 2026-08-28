@@ -47,9 +47,14 @@
   "window": {
     "current": "2.17.25",
     "previous": "2.17.24",
+    "last_released": "2.17.20",
+    "candidate_previous": "2.17.24",
     "accepted_generations": [
       "N",
-      "N-1"
+      "last-released"
+    ],
+    "additional_candidate_generations": [
+      "2.17.24"
     ],
     "unknown_generation": "refuse"
   },
@@ -100,6 +105,32 @@
       "host": "2.17.24",
       "feature": "historical-N-1",
       "release": "refuse-legacy-release-authority"
+    }
+  ],
+  "release_matrix": [
+    {
+      "plugin": "2.17.25",
+      "host": "2.17.25",
+      "feature": "new",
+      "release": "eligible-with-all-proofs"
+    },
+    {
+      "plugin": "2.17.25",
+      "host": "2.17.20",
+      "feature": "last-released-compatible",
+      "release": "eligible-with-observed-production-predecessor"
+    },
+    {
+      "plugin": "2.17.20",
+      "host": "2.17.25",
+      "feature": "last-released-compatible",
+      "release": "eligible-with-observed-production-predecessor"
+    },
+    {
+      "plugin": "2.17.20",
+      "host": "2.17.20",
+      "feature": "historical-last-released",
+      "release": "historical-only"
     }
   ],
   "json_evolution": {
@@ -160,7 +191,7 @@
     "schema_bundle_fingerprint",
     "compatibility_policy_fingerprint",
     "compatibility_diff_receipt",
-    "mixed_n_n_minus_1_matrix_receipt",
+    "mixed_current_last_released_matrix_receipt",
     "live_codex_canary_receipt",
     "recorded_event_replay_receipt",
     "host_action_capability_refusal_receipt",
