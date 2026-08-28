@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import stat as stat_runtime
 from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any
 
@@ -119,49 +120,63 @@ def project_transcript_usage(
         checkpoint: Mapping[str, Any] | None = None,
         byte_limit: int = MAX_TRANSCRIPT_PROJECTION_BYTES
         ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Incrementally project one selected transcript in one bounded parse.
+    """Project one selected transcript with a content-bound checkpoint.
 
-    The checkpoint binds the canonical path, device, inode, prefix, provider,
-    size and last complete-record offset.  Appends parse only new complete
-    records.  Replacement, truncation, or prefix drift resets safely.  A
-    first read or append larger than the fixed cap is unavailable rather than
-    silently under-counted.
+    Every call reads at most ``byte_limit`` bytes and authenticates the entire
+    previously consumed prefix before reusing totals.  Stable path/device/
+    inode/size/timestamps alone are never treated as proof that an earlier
+    prefix survived a same-inode rewrite.
     """
     if isinstance(byte_limit, bool) or not isinstance(byte_limit, int) or \
             byte_limit <= 0 or byte_limit > MAX_TRANSCRIPT_PROJECTION_BYTES:
         raise DispatchTelemetryError(
             "transcript projection byte limit is invalid")
     selected = os.path.realpath(str(path or ""))
-    if not selected or not os.path.isfile(selected):
-        return _unavailable_transcript_projection(
-            provider, "selected transcript is unavailable",
-            byte_limit=byte_limit), None
-    prior = dict(checkpoint) if isinstance(checkpoint, Mapping) else {}
     try:
-        stat = os.stat(selected)
-        prior_prefix_length = prior.get("prefix_length")
-        prefix_length = (int(prior_prefix_length)
-                         if isinstance(prior_prefix_length, int) and
-                         not isinstance(prior_prefix_length, bool) and
-                         0 <= prior_prefix_length <= min(4096, stat.st_size)
-                         else min(4096, stat.st_size))
         with open(selected, "rb") as stream:
-            prefix = stream.read(prefix_length)
+            before = os.fstat(stream.fileno())
+            if not stat_runtime.S_ISREG(before.st_mode):
+                return _unavailable_transcript_projection(
+                    provider, "selected transcript is not a regular file",
+                    byte_limit=byte_limit), None
+            if before.st_size > byte_limit:
+                return _unavailable_transcript_projection(
+                    provider, "selected transcript exceeds the byte cap",
+                    byte_limit=byte_limit), None
+            payload = stream.read(before.st_size + 1)
+            after = os.fstat(stream.fileno())
     except OSError as exc:
         return _unavailable_transcript_projection(
             provider, exc.__class__.__name__, byte_limit=byte_limit), None
+    stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns",
+                     "st_ctime_ns")
+    if len(payload) != before.st_size or any(
+            getattr(before, field) != getattr(after, field)
+            for field in stable_fields):
+        return _unavailable_transcript_projection(
+            provider, "selected transcript changed during projection",
+            byte_limit=byte_limit, bytes_read=len(payload)), None
 
     path_fingerprint = hashlib.sha256(selected.encode("utf-8")).hexdigest()
-    prefix_fingerprint = hashlib.sha256(prefix).hexdigest()
-    reusable = prior.get("schema") == TRANSCRIPT_PROJECTION_SCHEMA and \
+    prior = dict(checkpoint) if isinstance(checkpoint, Mapping) else {}
+    reusable_shape = prior.get("schema") == TRANSCRIPT_PROJECTION_SCHEMA and \
         prior.get("path_fingerprint") == path_fingerprint and \
         prior.get("provider") == str(provider) and \
-        prior.get("device") == int(stat.st_dev) and \
-        prior.get("inode") == int(stat.st_ino) and \
-        prior.get("prefix_fingerprint") == prefix_fingerprint and \
+        prior.get("device") == int(before.st_dev) and \
+        prior.get("inode") == int(before.st_ino) and \
         isinstance(prior.get("offset"), int) and \
         not isinstance(prior.get("offset"), bool) and \
-        0 <= int(prior["offset"]) <= stat.st_size and \
+        0 <= int(prior["offset"]) <= before.st_size and \
+        isinstance(prior.get("size"), int) and \
+        not isinstance(prior.get("size"), bool) and \
+        0 <= int(prior["size"]) <= before.st_size and \
+        isinstance(prior.get("mtime_ns"), int) and \
+        not isinstance(prior.get("mtime_ns"), bool) and \
+        isinstance(prior.get("ctime_ns"), int) and \
+        not isinstance(prior.get("ctime_ns"), bool) and \
+        isinstance(prior.get("consumed_prefix_sha256"), str) and \
+        re.fullmatch(r"[0-9a-f]{64}",
+                     str(prior.get("consumed_prefix_sha256"))) is not None and \
         isinstance(prior.get("totals"), Mapping) and \
         isinstance(prior.get("seen_identity_hashes"), list) and \
         len(prior["seen_identity_hashes"]) <= \
@@ -169,6 +184,25 @@ def project_transcript_usage(
             isinstance(value, str) and
             re.fullmatch(r"[0-9a-f]{64}", value)
             for value in prior["seen_identity_hashes"])
+    reusable = False
+    if reusable_shape:
+        candidate_offset = int(prior["offset"])
+        prefix_digest = hashlib.sha256(
+            payload[:candidate_offset]).hexdigest()
+        size_progress = int(prior["size"]) <= before.st_size
+        timestamp_progress = (
+            int(before.st_mtime_ns) >= int(prior["mtime_ns"]) and
+            int(before.st_ctime_ns) >= int(prior["ctime_ns"]))
+        unchanged_metadata = (
+            int(prior["size"]) != before.st_size or
+            (int(before.st_mtime_ns) == int(prior["mtime_ns"]) and
+             int(before.st_ctime_ns) == int(prior["ctime_ns"])))
+        empty_regrowth = candidate_offset == 0 and int(
+            prior["size"]) != before.st_size
+        reusable = bool(
+            size_progress and timestamp_progress and unchanged_metadata and
+            not empty_regrowth and
+            prefix_digest == prior["consumed_prefix_sha256"])
     if reusable:
         offset = int(prior["offset"])
         try:
@@ -193,22 +227,7 @@ def project_transcript_usage(
             "duplicates_removed")}
         seen: set[str] = set()
 
-    delta = int(stat.st_size) - offset
-    if delta > byte_limit:
-        return _unavailable_transcript_projection(
-            provider, "selected transcript exceeds the incremental byte cap",
-            byte_limit=byte_limit), None
-    try:
-        with open(selected, "rb") as stream:
-            stream.seek(offset)
-            appended = stream.read(delta)
-    except OSError as exc:
-        return _unavailable_transcript_projection(
-            provider, exc.__class__.__name__, byte_limit=byte_limit), None
-    if len(appended) != delta:
-        return _unavailable_transcript_projection(
-            provider, "selected transcript changed during projection",
-            byte_limit=byte_limit, bytes_read=len(appended)), None
+    appended = payload[offset:]
 
     complete_end = appended.rfind(b"\n") + 1
     complete = appended[:complete_end]
@@ -216,13 +235,13 @@ def project_transcript_usage(
         if len(raw) > 2 * 1024 * 1024:
             return _unavailable_transcript_projection(
                 provider, "selected transcript record exceeds the byte cap",
-                byte_limit=byte_limit, bytes_read=len(appended)), None
+                byte_limit=byte_limit, bytes_read=len(payload)), None
         try:
             row = json.loads(raw.decode("utf-8", errors="strict"))
         except (UnicodeDecodeError, ValueError):
             return _unavailable_transcript_projection(
                 provider, "selected transcript has a malformed complete record",
-                byte_limit=byte_limit, bytes_read=len(appended)), None
+                byte_limit=byte_limit, bytes_read=len(payload)), None
         if not isinstance(row, Mapping):
             continue
         usage, identity = _transcript_usage_row(row)
@@ -239,12 +258,12 @@ def project_transcript_usage(
             return _unavailable_transcript_projection(
                 provider, str(normalized.get("reason") or
                               "provider usage is unavailable"),
-                byte_limit=byte_limit, bytes_read=len(appended)), None
+                byte_limit=byte_limit, bytes_read=len(payload)), None
         if identity_fingerprint:
             if len(seen) >= MAX_TRANSCRIPT_USAGE_IDENTITIES:
                 return _unavailable_transcript_projection(
                     provider, "selected transcript identity cap exceeded",
-                    byte_limit=byte_limit, bytes_read=len(appended)), None
+                    byte_limit=byte_limit, bytes_read=len(payload)), None
             seen.add(identity_fingerprint)
         for key in ("uncached_input_tokens", "cached_input_tokens",
                     "cache_creation_tokens", "output_tokens",
@@ -254,13 +273,17 @@ def project_transcript_usage(
         totals["messages"] += 1
 
     next_offset = offset + complete_end
+    consumed_prefix_sha256 = hashlib.sha256(
+        payload[:next_offset]).hexdigest()
     checkpoint_row = {
         "schema": TRANSCRIPT_PROJECTION_SCHEMA,
         "path_fingerprint": path_fingerprint, "provider": str(provider),
-        "device": int(stat.st_dev), "inode": int(stat.st_ino),
-        "prefix_length": prefix_length,
-        "prefix_fingerprint": prefix_fingerprint,
-        "size": int(stat.st_size), "offset": int(next_offset),
+        "device": int(before.st_dev), "inode": int(before.st_ino),
+        "mode": int(before.st_mode), "size": int(before.st_size),
+        "mtime_ns": int(before.st_mtime_ns),
+        "ctime_ns": int(before.st_ctime_ns),
+        "offset": int(next_offset),
+        "consumed_prefix_sha256": consumed_prefix_sha256,
         "totals": totals, "seen_identity_hashes": sorted(seen),
     }
     usage = {
@@ -275,20 +298,22 @@ def project_transcript_usage(
     if totals["messages"] == 0:
         return _unavailable_transcript_projection(
             provider, "selected transcript has no provider usage totals",
-            byte_limit=byte_limit, bytes_read=len(appended)), checkpoint_row
+            byte_limit=byte_limit, bytes_read=len(payload)), checkpoint_row
     source_fingerprint = content_fingerprint({
         "schema": TRANSCRIPT_PROJECTION_SCHEMA,
         "path_fingerprint": path_fingerprint,
-        "device": int(stat.st_dev), "inode": int(stat.st_ino),
-        "offset": int(next_offset), "usage": usage,
+        "device": int(before.st_dev), "inode": int(before.st_ino),
+        "offset": int(next_offset),
+        "consumed_prefix_sha256": consumed_prefix_sha256,
+        "usage": usage,
     })
     return {
         "schema": TRANSCRIPT_PROJECTION_SCHEMA, "status": "available",
         "provider": str(provider), "reason": None,
         "path_fingerprint": path_fingerprint,
-        "device": int(stat.st_dev), "inode": int(stat.st_ino),
-        "offset": int(next_offset), "size": int(stat.st_size),
-        "bytes_read": len(appended), "byte_limit": int(byte_limit),
+        "device": int(before.st_dev), "inode": int(before.st_ino),
+        "offset": int(next_offset), "size": int(before.st_size),
+        "bytes_read": len(payload), "byte_limit": int(byte_limit),
         "messages": totals["messages"],
         "duplicates_removed": totals["duplicates_removed"],
         "effective_tokens": totals["effective_tokens"],

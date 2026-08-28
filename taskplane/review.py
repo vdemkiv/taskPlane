@@ -21,6 +21,7 @@ the same lens, the same read-only harness; they just stop restating a
 document that is already on disk next to them.
 """
 import copy
+import datetime
 import glob
 import hashlib
 import hmac
@@ -62,7 +63,8 @@ MAX_MANIFEST_BYTES = 128 * 1024
 MAX_ROUTING_FILES = 200
 MAX_ROUTING_FILE_BYTES = 64 * 1024
 MAX_HOST_TRANSCRIPT_BYTES = 64 * 1024 * 1024
-MAX_HOST_TRANSCRIPT_CANDIDATES = 4096
+MAX_HOST_SESSION_INDEX_BYTES = 4 * 1024 * 1024
+MAX_HOST_SESSION_INDEX_RECORDS = 4096
 CANONICAL_DIFF_TOO_LARGE = 75
 KERNEL_STATE = os.path.join(".em-review", "kernel-v2", "active.json")
 KERNEL_RUNS = os.path.join(".em-review", "kernel-v2", "runs")
@@ -115,6 +117,19 @@ def _native_approval_fingerprint(decision: dict) -> str:
 
 class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
+
+
+class HostTranscriptUnavailable(ReviewKernelError):
+    """An exact host session cannot be resolved without an unbounded walk."""
+
+    def __init__(self, reason: str):
+        self.detail = {
+            "schema": "taskplane.host-transcript-resolution/v1",
+            "status": "unavailable",
+            "reason": str(reason),
+        }
+        super().__init__(json.dumps(
+            self.detail, sort_keys=True, separators=(",", ":")))
 
 
 def _evaluate_delivery_mode_authority(
@@ -647,54 +662,140 @@ def _review_receipt_reference(
     return None, None, value
 
 
+def _host_session_index(path: str) -> list[dict]:
+    """Read one host-owned index only after enforcing its byte ceiling."""
+    if not os.path.isfile(path):
+        raise HostTranscriptUnavailable("host session index is missing")
+    try:
+        size = os.path.getsize(path)
+    except OSError as exc:
+        raise HostTranscriptUnavailable(
+            "host session index is unavailable") from exc
+    if size > MAX_HOST_SESSION_INDEX_BYTES:
+        raise HostTranscriptUnavailable(
+            "host session index exceeds its byte cap")
+    try:
+        with open(path, "rb") as stream:
+            payload = stream.read(MAX_HOST_SESSION_INDEX_BYTES + 1)
+    except OSError as exc:
+        raise HostTranscriptUnavailable(
+            "host session index is unavailable") from exc
+    if len(payload) != size:
+        raise HostTranscriptUnavailable(
+            "host session index changed during resolution")
+    records = []
+    for raw in payload.splitlines():
+        if not raw:
+            continue
+        if len(records) >= MAX_HOST_SESSION_INDEX_RECORDS:
+            raise HostTranscriptUnavailable(
+                "host session index exceeds its record cap")
+        try:
+            row = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise HostTranscriptUnavailable(
+                "host session index is malformed") from exc
+        if not isinstance(row, dict):
+            raise HostTranscriptUnavailable(
+                "host session index is malformed")
+        records.append(row)
+    return records
+
+
+def _codex_session_paths(root: str, session_id: str) -> list[str]:
+    """Derive exact Codex rollout paths from one indexed UUIDv7 identity."""
+    rows = [row for row in _host_session_index(os.path.join(
+        root, "session_index.jsonl")) if row.get("id") == session_id]
+    if len(rows) != 1:
+        raise HostTranscriptUnavailable(
+            "host session identity is missing or ambiguous in its index")
+    match = re.fullmatch(
+        r"([0-9a-fA-F]{8})-([0-9a-fA-F]{4})-7[0-9a-fA-F]{3}-"
+        r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}", session_id)
+    if not match:
+        raise HostTranscriptUnavailable(
+            "indexed Codex session identity is not a UUIDv7")
+    milliseconds = int(match.group(1) + match.group(2), 16)
+    instants = {
+        datetime.datetime.fromtimestamp(milliseconds / 1000),
+        datetime.datetime.fromtimestamp(
+            milliseconds / 1000, tz=datetime.timezone.utc).replace(
+                tzinfo=None),
+    }
+    paths = []
+    for instant in instants:
+        stamp = instant.strftime("%Y-%m-%dT%H-%M-%S")
+        candidate = os.path.realpath(os.path.join(
+            root, "sessions", instant.strftime("%Y"),
+            instant.strftime("%m"), instant.strftime("%d"),
+            f"rollout-{stamp}-{session_id}.jsonl"))
+        try:
+            if os.path.commonpath((root, candidate)) == root and \
+                    os.path.isfile(candidate):
+                paths.append(candidate)
+        except ValueError:
+            continue
+    return sorted(set(paths))
+
+
+def _claude_session_paths(root: str, session_id: str) -> list[str]:
+    """Derive one exact Claude transcript from its bounded history index."""
+    rows = [row for row in _host_session_index(os.path.join(
+        root, "history.jsonl")) if row.get("sessionId") == session_id]
+    projects = {str(row.get("project") or "") for row in rows
+                if str(row.get("project") or "")}
+    if len(projects) != 1:
+        raise HostTranscriptUnavailable(
+            "host session identity is missing or ambiguous in its index")
+    project = next(iter(projects))
+    project_key = re.sub(r"[/\\\\]", "-", project)
+    candidate = os.path.realpath(os.path.join(
+        root, "projects", project_key, session_id + ".jsonl"))
+    try:
+        if os.path.commonpath((root, candidate)) != root:
+            raise HostTranscriptUnavailable(
+                "indexed host session path escapes its canonical root")
+    except ValueError as exc:
+        raise HostTranscriptUnavailable(
+            "indexed host session path is invalid") from exc
+    return [candidate] if os.path.isfile(candidate) else []
+
+
 def _host_review_transcripts(
         receipt_ref: str | None = None) -> list[tuple[str, str]]:
-    """Resolve at most one current host transcript without reading history.
-
-    A composite receipt selects an exact host/session.  A legacy plain
-    receipt uses only the newest canonical host transcript.  Candidate
-    discovery is metadata-only and bounded; record bytes are read later from
-    the one selected session.
-    """
+    """Resolve exactly one indexed host transcript without walking history."""
     host_hint, session_hint, _ = _review_receipt_reference(receipt_ref)
     if session_hint is None and host_hint is None:
         ambient = (("codex", os.environ.get("CODEX_THREAD_ID")),
                    ("claude", os.environ.get("CLAUDE_SESSION_ID")))
+        resolved = []
         for ambient_host, ambient_session in ambient:
             value = str(ambient_session or "").strip()
             if not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", value):
                 continue
-            selected = _host_review_transcripts(
-                f"{ambient_host}:{value}:ambient-selection")
-            if selected:
-                return selected
-    candidates: list[tuple[int, str, str]] = []
-    hosts = (host_hint,) if host_hint else ("codex", "claude")
-    for host in hosts:
-        rel = (("sessions", "**", "*.jsonl") if host == "codex" else
-               ("projects", "**", "*.jsonl"))
-        root = os.path.realpath(_canonical_host_root(host))
-        pattern = os.path.join(root, *rel)
-        for path in glob.iglob(pattern, recursive=True):
-            canonical = os.path.realpath(path)
             try:
-                if os.path.commonpath((root, canonical)) != root or \
-                        not os.path.isfile(canonical):
-                    continue
-                if session_hint and session_hint not in \
-                        os.path.basename(canonical):
-                    continue
-                modified = os.stat(canonical).st_mtime_ns
-            except (OSError, ValueError):
+                resolved.extend(_host_review_transcripts(
+                    f"{ambient_host}:{value}:ambient-selection"))
+            except HostTranscriptUnavailable:
                 continue
-            candidates.append((int(modified), host, canonical))
-            if len(candidates) > MAX_HOST_TRANSCRIPT_CANDIDATES:
-                raise ReviewKernelError(
-                    "review transcript candidate index exceeds its bound")
-    if not candidates:
-        return []
-    _, host, path = max(candidates, key=lambda row: (row[0], row[2]))
-    return [(host, path)]
+        if len(resolved) == 1:
+            return resolved
+        if len(resolved) > 1:
+            raise HostTranscriptUnavailable(
+                "ambient host session identity is ambiguous")
+        raise HostTranscriptUnavailable(
+            "an exact host session identity is unavailable")
+    if host_hint is None or session_hint is None:
+        raise HostTranscriptUnavailable(
+            "an exact host session identity is required")
+    root = os.path.realpath(_canonical_host_root(host_hint))
+    paths = (_codex_session_paths(root, session_hint)
+             if host_hint == "codex" else
+             _claude_session_paths(root, session_hint))
+    if len(paths) != 1:
+        raise HostTranscriptUnavailable(
+            "indexed host transcript path is missing or ambiguous")
+    return [(host_hint, paths[0])]
 
 
 def _host_review_records(path: str) -> list[dict]:

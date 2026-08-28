@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import time
+
+import pytest
 
 from taskplane import dispatch_telemetry, review, tp
 from taskplane.delivery_ports import FakeClock
@@ -64,6 +67,8 @@ def test_h13_standalone_review_has_finite_default_token_ceiling(
         "token_usage_required": True,
     }
     assert tp._standalone_review_budget(123)["max_tokens"] == 123
+    with pytest.raises(ValueError, match="must be positive"):
+        tp._standalone_review_budget(0)
 
     written = {}
     monkeypatch.setattr(tp.tp, "tp_dir", lambda _ws: str(tmp_path))
@@ -107,7 +112,7 @@ def test_h27_screening_reuses_one_bounded_transcript_projection(
     appended, next_checkpoint = dispatch_telemetry.project_transcript_usage(
         str(transcript), provider="codex", checkpoint=checkpoint)
     assert appended["status"] == "available"
-    assert appended["bytes_read"] == len(second.encode())
+    assert appended["bytes_read"] == len((first + second).encode())
     assert appended["messages"] == 2
     assert appended["usage"]["total_tokens"] == 24
     assert next_checkpoint and next_checkpoint["offset"] == \
@@ -145,6 +150,56 @@ def test_h27_projection_resets_on_replacement_without_reusing_old_totals(
     assert current["usage"]["total_tokens"] == 22
 
 
+def test_h27_checkpoint_binds_complete_consumed_prefix_on_inode_rewrite(
+        tmp_path) -> None:
+    transcript = tmp_path / "same-inode.jsonl"
+    prefix = json.dumps({"padding": "x" * 5000}) + "\n"
+    old = json.dumps(_codex_usage_row(
+        "old", input_tokens=10, cached_tokens=1, output_tokens=2)) + "\n"
+    transcript.write_text(prefix + old, encoding="utf-8")
+    inode = transcript.stat().st_ino
+    first, checkpoint = dispatch_telemetry.project_transcript_usage(
+        str(transcript), provider="codex")
+    assert first["usage"]["total_tokens"] == 12
+
+    new = json.dumps(_codex_usage_row(
+        "new", input_tokens=40, cached_tokens=5, output_tokens=3)) + "\n"
+    with transcript.open("r+b") as stream:
+        stream.truncate(0)
+        stream.write((prefix + new).encode("utf-8"))
+        stream.flush()
+        os.fsync(stream.fileno())
+    assert transcript.stat().st_ino == inode
+
+    current, _ = dispatch_telemetry.project_transcript_usage(
+        str(transcript), provider="codex", checkpoint=checkpoint)
+    assert current["status"] == "available"
+    assert current["messages"] == 1
+    assert current["usage"]["total_tokens"] == 43
+
+
+def test_h27_empty_checkpoint_recomputes_same_inode_regrowth(
+        tmp_path) -> None:
+    transcript = tmp_path / "empty.jsonl"
+    transcript.write_bytes(b"")
+    inode = transcript.stat().st_ino
+    empty, checkpoint = dispatch_telemetry.project_transcript_usage(
+        str(transcript), provider="codex")
+    assert empty["status"] == "unavailable"
+    assert checkpoint and checkpoint["offset"] == 0
+
+    transcript.write_text(
+        json.dumps(_codex_usage_row("new", input_tokens=30,
+                                    cached_tokens=4)) + "\n",
+        encoding="utf-8")
+    assert transcript.stat().st_ino == inode
+    current, _ = dispatch_telemetry.project_transcript_usage(
+        str(transcript), provider="codex", checkpoint=checkpoint)
+    assert current["status"] == "available"
+    assert current["messages"] == 1
+    assert current["usage"]["total_tokens"] == 32
+
+
 def test_h28_review_scans_only_selected_session_with_byte_cap(
         tmp_path, monkeypatch) -> None:
     codex_root = tmp_path / "codex"
@@ -153,8 +208,13 @@ def test_h28_review_scans_only_selected_session_with_byte_cap(
     action_id = "action-1"
     run_id = "run-1"
     receipt_id = "approval-1"
+    session_id = "01a0483d-ba00-7000-8000-000000000001"
+    (codex_root / "session_index.jsonl").write_text(json.dumps({
+        "id": session_id, "updated_at": "2026-08-28T12:00:00Z",
+    }) + "\n", encoding="utf-8")
     prompt = review._review_action_prompt(run_id, action_id, "dynamic")
-    selected = sessions / "rollout-selected-session.jsonl"
+    selected = sessions / (
+        "rollout-2026-08-28T08-00-00-" + session_id + ".jsonl")
     selected.write_text(json.dumps({
         "type": "response_item", "payload": {
             "type": "message", "id": receipt_id, "role": "user",
@@ -181,7 +241,7 @@ def test_h28_review_scans_only_selected_session_with_byte_cap(
     monkeypatch.setattr(review, "_host_review_records", counted)
     receipt = review._host_review_action_receipt(
         run_id=run_id, action_id=action_id, response="dynamic",
-        receipt_ref=f"codex:selected-session:{receipt_id}")
+        receipt_ref=f"codex:{session_id}:{receipt_id}")
     assert receipt.receipt_id == receipt_id
     assert reads == [str(selected)]
 
@@ -190,6 +250,56 @@ def test_h28_review_scans_only_selected_session_with_byte_cap(
     row = json.dumps({"tail": True}).encode() + b"\n"
     bounded.write_bytes((b"old\n" * 300) + row)
     assert review._host_review_records(str(bounded))[-1] == {"tail": True}
+
+
+def test_h28_exact_session_lookup_never_walks_unmatched_history(
+        tmp_path, monkeypatch) -> None:
+    codex_root = tmp_path / "codex"
+    session_id = "01a0483d-ba00-7000-8000-000000000001"
+    selected = (codex_root / "sessions" / "2026" / "08" / "28" /
+                ("rollout-2026-08-28T08-00-00-" + session_id + ".jsonl"))
+    selected.parent.mkdir(parents=True)
+    selected.write_text("{}\n", encoding="utf-8")
+    for index in range(100):
+        unrelated = codex_root / "sessions" / "2020" / f"{index:02d}"
+        unrelated.mkdir(parents=True)
+        (unrelated / f"rollout-unrelated-{index}.jsonl").write_text(
+            "{}\n", encoding="utf-8")
+    (codex_root / "session_index.jsonl").write_text(json.dumps({
+        "id": session_id, "updated_at": "2026-08-28T12:00:00Z",
+    }) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        review, "_canonical_host_root",
+        lambda host: str(codex_root if host == "codex" else
+                         tmp_path / "absent"))
+    monkeypatch.setattr(
+        review.glob, "iglob",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("historical transcript walk is forbidden")))
+
+    assert review._host_review_transcripts(
+        f"codex:{session_id}:receipt") == [("codex", str(selected))]
+
+
+def test_h28_missing_or_oversized_session_index_is_structured_unavailable(
+        tmp_path, monkeypatch) -> None:
+    codex_root = tmp_path / "codex"
+    codex_root.mkdir()
+    session_id = "01a0483d-ba00-7000-8000-000000000001"
+    monkeypatch.setattr(review, "_canonical_host_root", lambda _host: str(
+        codex_root))
+    with pytest.raises(review.HostTranscriptUnavailable) as missing:
+        review._host_review_transcripts(
+            f"codex:{session_id}:receipt")
+    assert missing.value.detail["status"] == "unavailable"
+    assert missing.value.detail["reason"] == "host session index is missing"
+
+    (codex_root / "session_index.jsonl").write_bytes(
+        b"x" * (review.MAX_HOST_SESSION_INDEX_BYTES + 1))
+    with pytest.raises(review.HostTranscriptUnavailable) as oversized:
+        review._host_review_transcripts(
+            f"codex:{session_id}:receipt")
+    assert "byte cap" in oversized.value.detail["reason"]
 
 
 def test_h33_missing_host_usage_is_explicit_and_never_claims_enforcement(
@@ -221,3 +331,10 @@ def test_h33_missing_host_usage_is_explicit_and_never_claims_enforcement(
     assert observed["usage_capability"]["budget_claim"] is True
     assert observed["usage_capability"]["enforcement"] == "host-observed"
     assert observed["usage_capability"]["observed_tokens"] == 10
+
+
+def test_h1e_process_tree_cleanup_keeps_both_absolute_deadlines() -> None:
+    parameters = inspect.signature(
+        review._terminate_validation_sandbox_process_tree).parameters
+    assert "shared_deadline" in parameters
+    assert "operation_deadline" in parameters

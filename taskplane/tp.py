@@ -977,8 +977,8 @@ def _standalone_review_budget(max_tokens: int | None) -> dict:
     """The finite, host-observed budget attached to every review start."""
     ceiling = (DEFAULT_STANDALONE_REVIEW_MAX_TOKENS
                if max_tokens is None else int(max_tokens))
-    if ceiling < 0:
-        raise ValueError("standalone review token ceiling must be non-negative")
+    if ceiling <= 0:
+        raise ValueError("standalone review token ceiling must be positive")
     return {
         "max_cost_usd": DEFAULT_MAX_COST_USD,
         "max_cost_usd_mode": "advisory",
