@@ -47,9 +47,14 @@
   "window": {
     "current": "2.17.25",
     "previous": "2.17.24",
+    "last_released": "2.17.20",
+    "candidate_previous": "2.17.24",
     "accepted_generations": [
       "N",
-      "N-1"
+      "last-released"
+    ],
+    "additional_candidate_generations": [
+      "2.17.24"
     ],
     "unknown_generation": "refuse"
   },
@@ -102,6 +107,63 @@
       "release": "refuse-legacy-release-authority"
     }
   ],
+  "release_matrix": [
+    {
+      "plugin": "2.17.25",
+      "host": "2.17.25",
+      "feature": "new",
+      "release": "eligible-with-all-proofs"
+    },
+    {
+      "plugin": "2.17.25",
+      "host": "2.17.20",
+      "feature": "last-released-compatible",
+      "release": "eligible-with-observed-production-predecessor"
+    },
+    {
+      "plugin": "2.17.20",
+      "host": "2.17.25",
+      "feature": "last-released-compatible",
+      "release": "eligible-with-observed-production-predecessor"
+    },
+    {
+      "plugin": "2.17.20",
+      "host": "2.17.20",
+      "feature": "historical-last-released",
+      "release": "historical-only"
+    }
+  ],
+  "release_observation_producer": {
+    "entrypoint": "scripts/package_openai.py --write-compatibility-receipt <path>",
+    "platform": "openai-marketplace-zip",
+    "check_identity_prefix": "package-openai/release-matrix/",
+    "test_name": "openai-package-archive-roundtrip",
+    "last_released_tag": "v2.17.20",
+    "last_released_commit": "4a0378e7f080136d27f01d4ab7ecdf9bac8a1ad6"
+  },
+  "release_authority": {
+    "provider": "github",
+    "repository": "vdemkiv/taskPlane",
+    "protected_ref": "refs/heads/main",
+    "workflow": {
+      "name": "CI",
+      "path": ".github/workflows/ci.yml",
+      "event": "push"
+    },
+    "required_checks": [
+      "tests (python 3.12)",
+      "zero-token corpus (credential-empty, no-egress)",
+      "R-0006 graph + CLI contracts",
+      "pushed SHA delivery proof"
+    ],
+    "publication_decision": {
+      "kind": "github-verified-annotated-tag/v1",
+      "tag_prefix": "openai-publication/",
+      "message_schema": "taskplane.openai-publication-approval/v1",
+      "decision": "approve",
+      "allowed_signer_key_fingerprints": []
+    }
+  },
   "json_evolution": {
     "authority_objects": "closed",
     "additionalProperties": false,
@@ -160,7 +222,7 @@
     "schema_bundle_fingerprint",
     "compatibility_policy_fingerprint",
     "compatibility_diff_receipt",
-    "mixed_n_n_minus_1_matrix_receipt",
+    "mixed_current_last_released_matrix_receipt",
     "live_codex_canary_receipt",
     "recorded_event_replay_receipt",
     "host_action_capability_refusal_receipt",
@@ -171,10 +233,10 @@
   ],
   "authority_limitations": {
     "cryptographic_authenticity_claimed": false,
-    "actor_strings": "attributed but unauthenticated inherited limitation",
+    "actor_strings": "Local receipt actor strings remain attributed but unauthenticated; OpenAI publication separately requires a live GitHub-verified signed annotated-tag actor and exact decision.",
     "host_action_capability": "single-use exact-bound host-channel continuity only",
     "local_receipts": "not actor or platform authenticity proof",
-    "asymmetric_authority": "shelved; no signer/verifier/key/MAC/signature workflow in R-0001"
+    "asymmetric_authority": "OpenAI publication uses GitHub's signature verification for the pinned repository approval tag; local receipt fingerprints alone never grant authority."
   },
   "dispatch_capability": {
     "schema": "taskplane.task-dispatch-capability/v1",
