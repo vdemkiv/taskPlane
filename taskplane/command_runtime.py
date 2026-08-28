@@ -56,6 +56,12 @@ MEANINGFUL_STATES = TERMINAL_STATES | ATTENTION_STATES
 VALID_STATES = MEANINGFUL_STATES | {"created", "running"}
 NATIVE_ADAPTER_SCHEMA = "taskplane.codex-native-adapter/v1"
 NATIVE_WAIT_OBSERVATION_SCHEMA = "taskplane.native-wait-observation/v1"
+_COMMAND_REASON_CODES = frozenset({
+    "authority_change", "binding_lost", "detached_worker_ownership_lost",
+    "measurable_convergence", "no_progress", "non_routine_failure",
+    "oscillation", "repeated_fingerprint", "replan_required",
+    "retry_budget_exhausted", "routine_retry", "unsafe_recovery", "worsening",
+})
 
 _SECRET_PATTERNS = (
     re.compile(r"\b(?:sk|pk)-[A-Za-z0-9_-]{20,}\b"),
@@ -428,6 +434,34 @@ def _minimized_text(value: object, *, label: str) -> tuple[str, int]:
             f"{len(raw.encode('utf-8', 'replace'))} sha256={digest}]", hits)
 
 
+def _closed_reason_code(value: object | None) -> str | None:
+    """Validate one bounded machine reason without admitting free-form text."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in _COMMAND_REASON_CODES:
+        raise ValueError("command reason_code is not a closed runtime reason")
+    return value
+
+
+def _legacy_reason_code(value: object | None) -> str | None:
+    """Recover only known codes from pre-field minimized representations."""
+    if not isinstance(value, str):
+        return None
+    representations = {
+        "binding_lost": "binding_lost",
+        "detached_worker_ownership_lost":
+            "detached_worker_ownership_lost",
+    }
+    representations.update({
+        f"automatic command recovery stopped: {code}": code
+        for code in _COMMAND_REASON_CODES
+    })
+    for text, code in representations.items():
+        if value in {text, _minimized_text(text, label="REASON")[0]}:
+            return code
+    return None
+
+
 def _journal_projection(snapshot: dict) -> dict:
     """Return a recovery-complete snapshot without repeated output text."""
     projected = json.loads(json.dumps(snapshot))
@@ -466,6 +500,9 @@ def _minimize_legacy_snapshot(snapshot: dict) -> dict:
     migrated["reason"] = (_minimized_text(
         migrated["reason"], label="REASON")[0]
         if migrated.get("reason") is not None else None)
+    migrated["reason_code"] = (_closed_reason_code(migrated["reason_code"])
+                               if migrated.get("reason_code") is not None else
+                               _legacy_reason_code(migrated.get("reason")))
     migrated["output_summary"] = ""
     migrated["artifact"] = None
     for field in ("events", "lifecycle"):
@@ -476,6 +513,9 @@ def _minimize_legacy_snapshot(snapshot: dict) -> dict:
             if row.get("reason") is not None:
                 row["reason"] = _minimized_text(
                     row["reason"], label="REASON")[0]
+            row["reason_code"] = (_closed_reason_code(row["reason_code"])
+                                  if row.get("reason_code") is not None else
+                                  _legacy_reason_code(row.get("reason")))
             row["artifact"] = None
             rows.append(row)
         migrated[field] = rows
@@ -695,6 +735,14 @@ class CommandRuntime:
                 self._authorization):
             raise BindingMismatch(
                 "command handle is not bound to this workspace and actor")
+        if "reason_code" not in snapshot:
+            snapshot["reason_code"] = _legacy_reason_code(
+                snapshot.get("reason"))
+        for field in ("events", "lifecycle"):
+            for row in snapshot.get(field) or []:
+                if "reason_code" not in row:
+                    row["reason_code"] = _legacy_reason_code(
+                        row.get("reason"))
         return snapshot
 
     def _save(self, handle: str, snapshot: dict, event: dict | None = None) -> None:
@@ -806,6 +854,7 @@ class CommandRuntime:
             **({"preview": preview} if preview is not None else {}),
             "exit_code": None,
             "reason": None,
+            "reason_code": None,
             "events": [],
             "lifecycle": [],
             "recovery": [],
@@ -871,6 +920,7 @@ class CommandRuntime:
 
     def transition(self, handle: str, state: str, *, exit_code: int | None = None,
                    reason: str | None = None,
+                   reason_code: str | None = None,
                    expected_revision: int | None = None) -> dict:
         if state not in VALID_STATES:
             raise InvalidTransition(f"unknown command state: {state}")
@@ -878,12 +928,15 @@ class CommandRuntime:
             snapshot = self._load(handle)
             return self._transition_locked(
                 handle, snapshot, state, exit_code=exit_code, reason=reason,
+                reason_code=reason_code,
                 expected_revision=expected_revision)
 
     def _transition_locked(self, handle: str, snapshot: dict, state: str, *,
                            exit_code: int | None = None,
                            reason: str | None = None,
+                           reason_code: str | None = None,
                            expected_revision: int | None = None) -> dict:
+        safe_reason_code = _closed_reason_code(reason_code)
         if expected_revision is not None and snapshot["revision"] != expected_revision:
             raise RevisionConflict(
                 f"command revision is {snapshot['revision']}, expected "
@@ -910,7 +963,8 @@ class CommandRuntime:
                 snapshot["updated_at"] = now
                 snapshot["metrics"]["output_redactions"] += reason_redactions
                 event = self._build_event(
-                    snapshot, state=state, reason=safe_reason or state)
+                    snapshot, state=state, reason=safe_reason or state,
+                    reason_code=safe_reason_code)
                 snapshot["events"].append(event)
                 snapshot.setdefault("lifecycle", []).append(event)
                 self._save(handle, snapshot, event)
@@ -928,6 +982,7 @@ class CommandRuntime:
         snapshot.update({
             "state": state, "revision": revision, "updated_at": now,
             "exit_code": exit_code, "reason": safe_reason,
+            "reason_code": safe_reason_code,
         })
         snapshot["metrics"]["output_redactions"] += reason_redactions
         event = self._build_event(snapshot)
@@ -944,7 +999,8 @@ class CommandRuntime:
         return self._build_event(snapshot)
 
     def _build_event(self, snapshot: dict, *, state: str | None = None,
-                     reason: str | None = None) -> dict:
+                     reason: str | None = None,
+                     reason_code: str | None = None) -> dict:
         revision = int(snapshot["revision"])
         event_state = state or snapshot["state"]
         artifact = snapshot.get("artifact")
@@ -954,6 +1010,8 @@ class CommandRuntime:
             "revision": revision,
             "state": event_state,
             "reason": reason or snapshot.get("reason") or event_state,
+            "reason_code": (reason_code if reason_code is not None else
+                            snapshot.get("reason_code")),
             "exit_code": snapshot.get("exit_code"),
             "elapsed_ms": max(0, int((float(snapshot["updated_at"]) -
                                       float(snapshot["created_at"])) * 1000)),
@@ -1134,11 +1192,13 @@ class CommandRuntime:
             supplied = _canonical_digest(binding) if binding else None
             if not supplied or supplied != snapshot.get("binding_digest"):
                 return self._transition_locked(
-                    handle, snapshot, "failed", reason="binding_lost")
+                    handle, snapshot, "failed", reason="binding_lost",
+                    reason_code="binding_lost")
             if ownership_check is not None and not ownership_check(binding):
                 return self._transition_locked(
                     handle, snapshot, "input_required",
-                    reason="detached_worker_ownership_lost")
+                    reason="detached_worker_ownership_lost",
+                    reason_code="detached_worker_ownership_lost")
             snapshot["metrics"]["reconnect_count"] += 1
             snapshot["updated_at"] = float(self._clock())
             self._save(handle, snapshot, {

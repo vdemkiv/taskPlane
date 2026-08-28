@@ -223,9 +223,47 @@ def test_handle_is_bound_and_lost_binding_fails_safe(runtime):
 
     event = runtime.reconnect(handle, binding=None)
     assert event["state"] == "failed"
-    assert event["reason"] == "binding_lost"
+    assert event["reason_code"] == "binding_lost"
+    assert "binding_lost" not in event["reason"]
+    assert "REASON_MINIMIZED" in event["reason"]
     assert runtime.reconnect(handle, binding=None) == event
     assert runtime.snapshot(handle)["metrics"]["launch_count"] == 1
+
+
+def test_reason_codes_are_closed_machine_data_while_reasons_are_minimized(
+        runtime):
+    handle = runtime.create(command_fingerprint="reason-code",
+                            binding={"pid": 17})
+    event = runtime.transition(
+        handle, "input_required", reason="private operator detail",
+        reason_code="repeated_fingerprint")
+    assert event["reason_code"] == "repeated_fingerprint"
+    assert "private operator detail" not in event["reason"]
+    assert runtime.snapshot(handle)["reason_code"] == "repeated_fingerprint"
+    with pytest.raises(ValueError, match="closed runtime reason"):
+        runtime.transition(handle, "failed", reason_code="private_detail")
+
+
+def test_known_pre_field_reason_code_is_recovered_without_restoring_text(
+        runtime):
+    handle = runtime.create(command_fingerprint="legacy-reason",
+                            binding={"pid": 18})
+    runtime.reconnect(handle, binding=None)
+    path = runtime.root / handle / "snapshot.json"
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    snapshot.pop("reason_code")
+    for field in ("events", "lifecycle"):
+        for row in snapshot[field]:
+            row.pop("reason_code", None)
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    restarted = CommandRuntime(
+        str(runtime.root), workspace="repo-a", authorization="actor-a",
+        clock=lambda: 1001.0)
+    recovered = restarted.snapshot(handle)
+    assert recovered["reason_code"] == "binding_lost"
+    assert recovered["events"][-1]["reason_code"] == "binding_lost"
+    assert "binding_lost" not in recovered["reason"]
 
 
 def test_corrupt_snapshot_recovers_from_fsynced_transition(runtime):

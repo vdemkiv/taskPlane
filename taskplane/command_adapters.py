@@ -582,8 +582,8 @@ class CommandAdapter:
         if event is None:
             return None
         canonical = {key: event.get(key) for key in (
-            "schema", "revision", "state", "reason", "exit_code",
-            "output_delta", "artifact", "review_session")}
+            "schema", "revision", "state", "reason", "reason_code",
+            "exit_code", "output_delta", "artifact", "review_session")}
         return {
             "schema": "taskplane.review-host-event/v1",
             "transport": {"host": self.host},
@@ -640,7 +640,8 @@ class CommandAdapter:
                     self.runtime.transition(
                         handle, "input_required",
                         reason=("automatic command recovery stopped: "
-                                f"{decision['reason']}"))
+                                f"{decision['reason']}"),
+                        reason_code=str(decision["reason"]))
                     return self._receive(
                         handle, consumer,
                         self.runtime.pending(handle, consumer=consumer))
@@ -660,7 +661,8 @@ class CommandAdapter:
             binding = self._bindings.get(handle)
             ownership_already_lost = (
                 snapshot["state"] == "input_required" and
-                snapshot.get("reason") == "detached_worker_ownership_lost")
+                snapshot.get("reason_code") ==
+                "detached_worker_ownership_lost")
             if binding is not None and not ownership_already_lost:
                 binding_digest = hashlib.sha256(json.dumps(
                     binding, sort_keys=True, separators=(",", ":"),
