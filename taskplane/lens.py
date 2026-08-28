@@ -487,7 +487,7 @@ def route(changed_files, task_type: str | None = None,
                 "changed_files": len(files)}}
             _record_breadth(workspace, requested=breadth, effective="routed",
                             engine_ran=False, stage=stage, routing=refused,
-                            reason=f"mapper_unavailable: {exc}")
+                            reason="mapper-unavailable")
             return refused
         _record_breadth(workspace, requested=breadth, effective="routed",
                         engine_ran=True, stage=stage, routing=routed)
@@ -513,7 +513,7 @@ def route(changed_files, task_type: str | None = None,
             "changed_files": len(files)}}
         _record_breadth(workspace, requested=breadth, effective=breadth,
                         engine_ran=False, stage=stage, routing=refused,
-                        reason=f"mapper_unavailable: {exc}")
+                        reason="mapper-unavailable")
         return refused
     _record_breadth(workspace, requested=breadth, effective=breadth,
                     engine_ran=False, stage=stage, routing=legacy,
@@ -548,24 +548,16 @@ LENS_BREADTH_EVENT = "lens_breadth"
 
 
 def _engine_off_reason(cat, breadth, stage, use_signals) -> str:
-    """Every reason the applicability engine did not run, in one line.
-
-    All applicable causes, not the first: `--all` on a catalog that also has
-    no stage_profiles is two different repairs, and a reader who is told only
-    one of them fixes the wrong thing. `breadth="all"` leads because it is
-    the operator-chosen cause and the one being scored.
-    """
-    why = []
+    """Return one closed, privacy-safe primary engine-off reason code."""
     if breadth == "all":
-        why.append("breadth='all' — the full-catalog sweep disables the "
-                   "applicability engine")
+        return "forced-all"
     if use_signals is False:
-        why.append("use_signals=False")
+        return "signals-disabled"
     if not isinstance(cat.get("stage_profiles"), dict):
-        why.append("catalog carries no stage_profiles")
+        return "catalog-stage-profiles-missing"
     if stage is None and use_signals is not True:
-        why.append("no stage requested")
-    return "; ".join(why) or "engine not engaged"
+        return "stage-not-requested"
+    return "engine-not-engaged"
 
 
 def _record_breadth(workspace, *, requested, effective, engine_ran, stage,
@@ -606,7 +598,7 @@ def _record_breadth(workspace, *, requested, effective, engine_ran, stage,
             "lens_count": len(routing.get("lenses") or []),
         }
         if not engine_ran:
-            row["engine_off_reason"] = reason or "engine not engaged"
+            row["engine_off_reason"] = reason or "engine-not-engaged"
         tp.trace(workspace, LENS_BREADTH_EVENT, **row)
     except Exception:
         pass

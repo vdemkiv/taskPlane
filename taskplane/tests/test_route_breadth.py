@@ -301,15 +301,14 @@ class TestRecordedBreadthDistinguishesForcedAllFromFullRoute(_WsCleanup):
         row = only_row(ws)
         self.assertFalse(row["engine_ran"])
         self.assertEqual(row["requested_breadth"], "routed")
-        self.assertTrue(row["engine_off_reason"])
-        self.assertIn("stage", row["engine_off_reason"])
+        self.assertEqual(row["engine_off_reason"], "stage-not-requested")
 
     def test_forced_all_names_breadth_all_as_the_engine_off_cause(self):
         """`--all` is the cause the rubric scores; it must be named, not just
         implied by the requested breadth."""
         ws = self.ws()
         case_forced_all(lens, ws)
-        self.assertIn("all", only_row(ws)["engine_off_reason"])
+        self.assertEqual(only_row(ws)["engine_off_reason"], "forced-all")
 
     def test_engine_failure_records_zero_dispatch_without_widening(self):
         """Mapper failure is named and remains selective with zero lenses."""
@@ -319,7 +318,7 @@ class TestRecordedBreadthDistinguishesForcedAllFromFullRoute(_WsCleanup):
         self.assertEqual(row["requested_breadth"], "routed")
         self.assertEqual(row["effective_breadth"], "routed")
         self.assertFalse(row["engine_ran"])
-        self.assertIn("mapper_unavailable", row["engine_off_reason"])
+        self.assertEqual(row["engine_off_reason"], "mapper-unavailable")
 
     def test_engine_on_records_routed_as_the_effective_breadth(self):
         """The engine-on case must not report a widened breadth — otherwise
@@ -340,6 +339,37 @@ class TestRecordedBreadthDistinguishesForcedAllFromFullRoute(_WsCleanup):
         row = only_row(ws)
         self.assertEqual(row["stage"], "review")
         self.assertEqual(row["lens_count"], len(routing["lenses"]))
+
+    def test_route_literals_do_not_reopen_free_text_or_identity_leaks(self):
+        """Only the closed routing schema survives the privacy sink."""
+        row = tp.audit_record("lens_breadth", {
+            "requested_breadth": "all",
+            "effective_breadth": "all",
+            "engine_ran": False,
+            "engine_off_reason": "private-operator-identity",
+            "lens_count": 26,
+            "actor": "Alice Example <alice.private@example.com>",
+            "prompt": "read /Users/alice/Secret/customer.py",
+        })
+        self.assertEqual(row["requested_breadth"], "all")
+        self.assertEqual(row["effective_breadth"], "all")
+        self.assertEqual(row["lens_count"], 26)
+        self.assertEqual(
+            row["engine_off_reason"]["schema"],
+            "taskplane.audit-minimized/v1")
+        self.assertTrue(row["actor"].startswith("anon:"))
+        self.assertEqual(
+            row["prompt"]["schema"], "taskplane.audit-minimized/v1")
+        invalid = tp.audit_record("lens_breadth", {
+            "requested_breadth": "alice-private-identity",
+            "effective_breadth": "/Users/alice/Secret",
+            "engine_off_reason": "private-operator-identity",
+            "lens_count": "alice@example.com",
+        })
+        for key in ("requested_breadth", "effective_breadth",
+                    "engine_off_reason", "lens_count"):
+            self.assertEqual(
+                invalid[key]["schema"], "taskplane.audit-minimized/v1")
 
     def test_git_diff_full_catalog_review_is_recorded_as_forced_all(self):
         """The em step routes through route_git_diff with breadth='all' — the
