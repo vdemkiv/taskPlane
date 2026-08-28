@@ -2,7 +2,7 @@
   "package": "taskplane",
   "sccs": [
     {
-      "edge_count": 48,
+      "edge_count": 50,
       "internal_edges": [
         [
           "taskplane.audit",
@@ -53,6 +53,10 @@
           "taskplane.runtime_eval"
         ],
         [
+          "taskplane.governed_commands",
+          "taskplane.loop"
+        ],
+        [
           "taskplane.lens",
           "taskplane.lens_signals"
         ],
@@ -83,6 +87,10 @@
         [
           "taskplane.loop",
           "taskplane.evidence"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.governed_commands"
         ],
         [
           "taskplane.loop",
@@ -197,13 +205,14 @@
           "taskplane.loop"
         ]
       ],
-      "member_count": 17,
+      "member_count": 18,
       "members": [
         "taskplane.audit",
         "taskplane.dashboard",
         "taskplane.defect_claim",
         "taskplane.design_contract",
         "taskplane.evidence",
+        "taskplane.governed_commands",
         "taskplane.lens",
         "taskplane.lens_signals",
         "taskplane.loop",
@@ -217,7 +226,7 @@
         "taskplane.runtime_eval",
         "taskplane.views"
       ],
-      "physical_loc": 28478
+      "physical_loc": 31368
     },
     {
       "edge_count": 13,
@@ -285,9 +294,9 @@
         "taskplane.stage_handoff",
         "taskplane.taskplane_lite"
       ],
-      "physical_loc": 13406
+      "physical_loc": 15822
     }
   ],
   "schema": "taskplane.import-cycle-ratchet/v1",
-  "source_revision": "a63232cf46bf1ff19b1d5996891fd8dfce35b922"
+  "source_revision": "bdfd522bbcce19ca71d107569c441a183ac74025"
 }

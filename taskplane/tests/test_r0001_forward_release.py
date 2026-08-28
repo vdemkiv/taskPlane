@@ -7,6 +7,7 @@ from taskplane.release_evidence import (
     COMPATIBILITY_PREVIOUS_VERSION,
     CURRENT_VERSION,
     HISTORICAL_GRAPH_REVISION,
+    HISTORICAL_GRAPH_VERIFIER_BLOBS,
     PREVIOUS_RELEASE_COMMIT,
     PREVIOUS_VERSION,
     SUPERSEDED_CANDIDATE_VERSION,
@@ -79,3 +80,13 @@ def test_verifier_strength_and_release_history_are_unchanged():
 
     assert validate_forward_history(history) == history
     assert history["released_generation"]["commit"] == PREVIOUS_RELEASE_COMMIT
+    assert HISTORICAL_GRAPH_VERIFIER_BLOBS == {
+        "scripts/ci_graph_accuracy.py": {
+            "historical": "c34136b3ea6275665e9a95f9fbc87850c161034d",
+            "current": "c34136b3ea6275665e9a95f9fbc87850c161034d",
+        },
+        "taskplane/depgraph.py": {
+            "historical": "3a98d31a9dfeea8456a123cef4636cf004e56bee",
+            "current": "285fdba9a1207cdf729079aa6d111283572ff8d8",
+        },
+    }

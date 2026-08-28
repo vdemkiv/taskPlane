@@ -158,6 +158,8 @@ print(receipt['status'])
             str(exports), "before_cas",
         ],
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )
@@ -167,6 +169,8 @@ print(receipt['status'])
     recovered = subprocess.run(
         [sys.executable, "-c", script, str(payload_path), str(authority), str(exports), "-"],
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )
@@ -177,6 +181,8 @@ print(receipt['status'])
     reconciled = subprocess.run(
         [sys.executable, "-c", script, str(payload_path), str(authority), str(exports), "-"],
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )

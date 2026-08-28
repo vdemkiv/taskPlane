@@ -192,7 +192,7 @@ def test_h09_staged_strict_baseline_covers_all_top_level_modules() -> None:
     debt = set(_array_values(policy, "module"))
     production = _production_modules()
 
-    assert len(production) == 85
+    assert len(production) == 87
     assert production - debt == STRICT_BOUNDARIES
     assert _strict_policy_violations(policy) == []
 
@@ -200,7 +200,17 @@ def test_h09_staged_strict_baseline_covers_all_top_level_modules() -> None:
 @pytest.mark.parametrize(
     ("target", "old", "new"),
     (
-        ("ci", "--require-hashes", "--no-deps"),
+        (
+            "ci",
+            "Install hash-locked Python quality tools\n"
+            "        run: >-\n"
+            "          python -m pip install --disable-pip-version-check\n"
+            "          --require-hashes -r requirements-dev.lock",
+            "Install hash-locked Python quality tools\n"
+            "        run: >-\n"
+            "          python -m pip install --disable-pip-version-check\n"
+            "          --no-deps -r requirements-dev.lock",
+        ),
         ("ci", "python -m ruff check", "echo ruff check"),
         ("ci", "python -m mypy --strict", "python -m mypy"),
         (

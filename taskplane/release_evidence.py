@@ -51,6 +51,21 @@ HISTORICAL_GRAPH_VERIFIER_PATHS = (
     "scripts/ci_graph_accuracy.py",
     "taskplane/depgraph.py",
 )
+# R-0002 legitimately extended depgraph's architecture evidence after the
+# attributed R-0001 revision.  Pin both ends of that reviewed lineage instead
+# of requiring the verifier bytes to remain frozen forever.  These are Git
+# blob object ids resolved by ``<revision>:<path>``; any unreviewed historical
+# rewrite or future verifier edit still fails closed.
+HISTORICAL_GRAPH_VERIFIER_BLOBS = {
+    "scripts/ci_graph_accuracy.py": {
+        "historical": "c34136b3ea6275665e9a95f9fbc87850c161034d",
+        "current": "c34136b3ea6275665e9a95f9fbc87850c161034d",
+    },
+    "taskplane/depgraph.py": {
+        "historical": "3a98d31a9dfeea8456a123cef4636cf004e56bee",
+        "current": "285fdba9a1207cdf729079aa6d111283572ff8d8",
+    },
+}
 IRREVERSIBLE_RELEASE_ACTIONS = frozenset(
     {"tag", "install", "publication", "publish"}
 )
@@ -876,11 +891,20 @@ def validate_forward_history(
             raise ReleaseEvidenceError("v2.17.20 tag history was rewritten or re-released")
         if resolve(HISTORICAL_GRAPH_REVISION) != HISTORICAL_GRAPH_REVISION:
             raise ReleaseEvidenceError("historical graph revision attribution changed")
+        if tuple(HISTORICAL_GRAPH_VERIFIER_BLOBS) != \
+                HISTORICAL_GRAPH_VERIFIER_PATHS:
+            raise ReleaseEvidenceError(
+                "historical graph verifier lineage is not closed")
         for path in HISTORICAL_GRAPH_VERIFIER_PATHS:
             historical_blob = resolve(f"{HISTORICAL_GRAPH_REVISION}:{path}")
             current_blob = resolve(f"HEAD:{path}")
-            if historical_blob != current_blob:
-                raise ReleaseEvidenceError(f"historical graph verifier changed: {path}")
+            expected_blobs = HISTORICAL_GRAPH_VERIFIER_BLOBS[path]
+            if historical_blob != expected_blobs["historical"]:
+                raise ReleaseEvidenceError(
+                    f"historical graph verifier history changed: {path}")
+            if current_blob != expected_blobs["current"]:
+                raise ReleaseEvidenceError(
+                    f"historical graph verifier changed outside reviewed lineage: {path}")
     return expected
 
 

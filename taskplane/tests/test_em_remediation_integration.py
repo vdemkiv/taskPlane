@@ -35,14 +35,16 @@ EXCEPTION_IDS = {
 def _head() -> str:
     return subprocess.run(
         ["/usr/bin/git", "rev-parse", "HEAD"], cwd=ROOT,
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=True,
     ).stdout.strip()
 
 
 def _status() -> str:
     return subprocess.run(
         ["/usr/bin/git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=ROOT, capture_output=True, text=True, check=True,
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", check=True,
     ).stdout.strip()
 
 
@@ -108,7 +110,8 @@ def test_ac8_exact_candidate_final_evidence() -> None:
     assert evidence["candidate_sha"] == candidate
     assert evidence["candidate_tree"] == subprocess.run(
         ["/usr/bin/git", "rev-parse", "HEAD^{tree}"], cwd=ROOT,
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=True,
     ).stdout.strip()
     assert evidence["disposition"] == \
         "ready-for-independent-final-evaluation"
