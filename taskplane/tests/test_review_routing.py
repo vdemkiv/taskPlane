@@ -1371,22 +1371,36 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         second = self._start(
             target={"fingerprint": "target-2", "head": "abc123"})
         self._write_slot_results(run_id=second["run_id"])
-        entered = threading.Event()
-        release = threading.Event()
-        loser_lock_waiting = threading.Event()
-        loser_reservation_resolved = threading.Event()
+        winner_transaction_lock_acquired = threading.Event()
+        winner_publish_entered = threading.Event()
+        winner_publish_release = threading.Event()
+        loser_lock_attempted = threading.Event()
+        loser_lock_acquired = threading.Event()
+        loser_reservation_rejected = threading.Event()
+        loser_lock_released = threading.Event()
+        winner_reservation_released = threading.Event()
         winner_collection_entries = {"count": 0}
+        event_order = []
+        event_order_lock = threading.Lock()
         calls = []
         outcomes = {}
         real_file_lock = review.tp.file_lock
+        real_acquire_reservation = review._acquire_collection_reservation
+        real_release_reservation = review._release_collection_reservation
         collection_lock_path = review._collection_lock_path(self.ws)
+
+        def record_event(label, event):
+            with event_order_lock:
+                event_order.append(label)
+            event.set()
 
         def publish(_ws):
             name = threading.current_thread().name
             calls.append(name)
             if name == "winner":
-                entered.set()
-                release.wait(5)
+                self.assertTrue(winner_transaction_lock_acquired.is_set())
+                record_event("winner-publish-entered", winner_publish_entered)
+                self.assertTrue(winner_publish_release.wait(5))
             return {"root": ".em-review", "withheld": []}
 
         def collect(name, run_id):
@@ -1403,24 +1417,57 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                     yield
                 return
             name = threading.current_thread().name
+            entry_number = None
             if name == "winner":
                 winner_collection_entries["count"] += 1
+                entry_number = winner_collection_entries["count"]
                 # The third entry releases the winner's reservation. Hold it
-                # until the already-waiting loser has inspected that lease.
-                if winner_collection_entries["count"] == 3:
-                    self.assertTrue(loser_reservation_resolved.wait(timeout))
+                # until the loser has acquired the real lock and had its
+                # conflicting publication reservation rejected.
+                if entry_number == 3:
+                    self.assertTrue(
+                        loser_reservation_rejected.wait(timeout))
             elif name == "loser":
-                loser_lock_waiting.set()
+                record_event("loser-lock-attempted", loser_lock_attempted)
             try:
                 with real_file_lock(path, timeout=timeout):
+                    if name == "winner" and entry_number == 2:
+                        record_event(
+                            "winner-transaction-lock-acquired",
+                            winner_transaction_lock_acquired)
+                    elif name == "loser":
+                        record_event("loser-lock-acquired",
+                                     loser_lock_acquired)
                     yield
             finally:
-                if name == "loser":
-                    loser_reservation_resolved.set()
+                if name == "loser" and loser_lock_acquired.is_set():
+                    record_event("loser-lock-released", loser_lock_released)
+
+        def observed_acquire_reservation(ws, run_id):
+            try:
+                return real_acquire_reservation(ws, run_id)
+            except review_evidence.RevisionError:
+                if threading.current_thread().name == "loser":
+                    record_event("loser-reservation-rejected",
+                                 loser_reservation_rejected)
+                raise
+
+        def observed_release_reservation(ws, lease):
+            result = real_release_reservation(ws, lease)
+            if threading.current_thread().name == "winner":
+                record_event("winner-reservation-released",
+                             winner_reservation_released)
+            return result
 
         with mock.patch("views.publish_report", side_effect=publish), \
                 mock.patch.object(
-                    review.tp, "file_lock", side_effect=ordered_file_lock):
+                    review.tp, "file_lock", side_effect=ordered_file_lock), \
+                mock.patch.object(
+                    review, "_acquire_collection_reservation",
+                    side_effect=observed_acquire_reservation), \
+                mock.patch.object(
+                    review, "_release_collection_reservation",
+                    side_effect=observed_release_reservation):
             winner = threading.Thread(
                 target=collect, args=("winner", first["run_id"]),
                 name="winner")
@@ -1428,16 +1475,30 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 target=collect, args=("loser", second["run_id"]),
                 name="loser")
             winner.start()
-            self.assertTrue(entered.wait(5))
+            self.assertTrue(winner_publish_entered.wait(5))
             loser.start()
-            self.assertTrue(loser_lock_waiting.wait(5))
-            release.set()
+            self.assertTrue(loser_lock_attempted.wait(5))
+            self.assertFalse(loser_lock_acquired.is_set())
+            record_event("winner-publish-release", winner_publish_release)
             winner.join(5)
             loser.join(5)
         self.assertFalse(winner.is_alive())
         self.assertFalse(loser.is_alive())
-        self.assertTrue(loser_reservation_resolved.is_set())
+        self.assertTrue(loser_lock_acquired.is_set())
+        self.assertTrue(loser_reservation_rejected.is_set())
+        self.assertTrue(loser_lock_released.is_set())
+        self.assertTrue(winner_reservation_released.is_set())
         self.assertEqual(winner_collection_entries["count"], 3)
+        self.assertEqual(event_order, [
+            "winner-transaction-lock-acquired",
+            "winner-publish-entered",
+            "loser-lock-attempted",
+            "winner-publish-release",
+            "loser-lock-acquired",
+            "loser-reservation-rejected",
+            "loser-lock-released",
+            "winner-reservation-released",
+        ])
         self.assertEqual(calls, ["winner"])
         self.assertEqual(outcomes["winner"]["status"], "complete")
         self.assertIsInstance(outcomes["loser"], review_evidence.RevisionError)
