@@ -311,7 +311,10 @@ def _strip_keywords(toks) -> list:
                 continue
             toks = [stripped] + toks[1:]
             continue
-        if os.path.basename(first) in _SHELL_KEYWORDS:
+        # Shell keywords are exact grammar tokens.  Basenaming here let a
+        # repository executable such as ``./time`` or ``./if`` disappear as
+        # syntax before executable identity was checked.
+        if first in _SHELL_KEYWORDS:
             toks = toks[1:]
             continue
         break
@@ -351,10 +354,165 @@ def _shell_c_body(args) -> "str | None":
 _REDIRECT_OP_RE = re.compile(r"^(?:\d*>>?|>\||&>>?|\d*>&\d*)$")
 # a redirect written glued to its target: >file, 2>>log (no space)
 _REDIRECT_GLUED_RE = re.compile(r"^(?:\d*>>?|>\|)(?P<f>[^>&].*)$")
-# command substitutions whose bodies run their own commands
-_SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 # bash ANSI-C quoting: $'…' with backslash escapes decoded by the shell
 _ANSI_C_RE = re.compile(r"\$'((?:\\.|[^'\\])*)'")
+
+
+def _backtick_body(text: str, opening: int):
+    """Return an old-style command-substitution body and closing index.
+
+    Backticks are a delimiter grammar, not a regular expression: an escaped
+    backtick is data, while the next unescaped one closes the substitution.
+    Keeping this tiny parser separate also lets the balanced ``$(...)``
+    scanner skip a backtick body whose text contains otherwise-significant
+    parentheses.
+    """
+    i = opening + 1
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == "`":
+            return text[opening + 1:i], i, None
+        i += 1
+    return "", len(text), "unclosed backtick command substitution"
+
+
+def _balanced_shell_parens(text: str, opening: int):
+    """Return the body/end of one shell ``(...)`` construct.
+
+    This is intentionally a conservative structural scanner, not a shell
+    interpreter.  It balances grouping parentheses, ignores quoted/escaped
+    parentheses, and recursively skips nested command/process substitutions.
+    Anything it cannot close is reported as opaque instead of being treated
+    as an absence of executable content.
+    """
+    depth = 1
+    quote = None
+    i = opening + 1
+    while i < len(text):
+        ch = text[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+                i += 1
+                continue
+            if ch == "`":
+                _, end, error = _backtick_body(text, i)
+                if error:
+                    return "", len(text), error
+                i = end + 1
+                continue
+            if ch == "$" and i + 1 < len(text) and text[i + 1] == "(":
+                _, end, error = _balanced_shell_parens(text, i + 1)
+                if error:
+                    return "", len(text), error
+                i = end + 1
+                continue
+            i += 1
+            continue
+        if ch == "'":
+            quote = "'"
+            i += 1
+            continue
+        if ch == '"':
+            quote = '"'
+            i += 1
+            continue
+        if ch == "`":
+            _, end, error = _backtick_body(text, i)
+            if error:
+                return "", len(text), error
+            i = end + 1
+            continue
+        if ((ch == "$" and i + 1 < len(text) and text[i + 1] == "(")
+                or (ch in "<>" and i + 1 < len(text)
+                    and text[i + 1] == "(")):
+            _, end, error = _balanced_shell_parens(text, i + 1)
+            if error:
+                return "", len(text), error
+            i = end + 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[opening + 1:i], i, None
+        i += 1
+    return "", len(text), "unclosed parenthesized shell substitution"
+
+
+def _shell_substitution_bodies(command: str):
+    """Return executable substitution bodies plus a structural error.
+
+    Single quotes and escaped introducers are literal.  ``$(...)``, old-style
+    backticks, and bash/zsh process substitutions are executable and are
+    returned for recursive screening.  Arithmetic substitution is refused as
+    opaque: proving its expansion semantics safely would require a real shell
+    grammar, and nested expansions can execute commands.
+    """
+    text = str(command or "")
+    bodies = []
+    quote = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "'" and quote is None:
+            quote = "'"
+            i += 1
+            continue
+        if ch == '"':
+            quote = None if quote == '"' else '"'
+            i += 1
+            continue
+        if ch == "`":
+            body, end, error = _backtick_body(text, i)
+            if error:
+                return bodies, error
+            bodies.append(("command", body))
+            i = end + 1
+            continue
+        if ch == "$" and i + 1 < len(text) and text[i + 1] == "(":
+            arithmetic = i + 2 < len(text) and text[i + 2] == "("
+            body, end, error = _balanced_shell_parens(text, i + 1)
+            if error:
+                return bodies, error
+            if arithmetic:
+                return bodies, (
+                    "arithmetic shell substitution cannot be proven free "
+                    "of nested executable expansion")
+            bodies.append(("command", body))
+            i = end + 1
+            continue
+        if quote is None and ch in "<>" and i + 1 < len(text) \
+                and text[i + 1] == "(":
+            body, end, error = _balanced_shell_parens(text, i + 1)
+            if error:
+                return bodies, error
+            bodies.append(("process", body))
+            i = end + 1
+            continue
+        i += 1
+    if quote is not None:
+        return bodies, "unclosed shell quote prevents substitution screening"
+    return bodies, None
 
 
 def _ansi_c_unquote(s: str) -> str:
@@ -421,6 +579,72 @@ _READONLY_SAFE_PROGRAMS = frozenset({
     "tail", "test", "tr", "true", "uname", "uniq", "wc", "whereis",
     "which", "xxd", "zipinfo", "tp",
 })
+_READONLY_SHELL_BUILTINS = frozenset({
+    "[", "builtin", "command", "echo", "exec", "false", "printf", "pwd",
+    "test", "true",
+})
+
+
+def _path_within(candidate: str, root: str) -> bool:
+    """Containment for executable identity checks, fail-closed on errors."""
+    try:
+        candidate = os.path.normcase(os.path.abspath(candidate))
+        root = os.path.normcase(os.path.abspath(root))
+        return os.path.commonpath((candidate, root)) == root
+    except (OSError, TypeError, ValueError):
+        return True
+
+
+def _readonly_executable_identity_violation(raw_program: str,
+                                             workspace: str | None):
+    """Why a nominal reader's executable identity is repository-controlled.
+
+    The hook screens text and the host shell executes it later, so basename
+    matching alone cannot bind ``./cat`` to the system reader named ``cat``.
+    Read-only commands therefore use bare names only, and the executable PATH
+    would actually select must not be inside (or resolve through) the governed
+    workspace.  Build contracts preserve compatibility because callers
+    surface this as launcher opacity, which only read-only contracts refuse.
+    """
+    token = str(raw_program or "")
+    if not token:
+        return "empty executable identity can't be screened"
+    normalized = token.replace("\\", "/")
+    if "/" in normalized:
+        return (
+            f"path-qualified executable `{token}` cannot be accepted by "
+            "basename as a trusted read-only program; use its bare name "
+            "under a non-repository-controlled PATH")
+    if token in _READONLY_SHELL_BUILTINS:
+        return None
+
+    root = os.path.abspath(workspace or os.getcwd())
+    for raw_entry in os.environ.get("PATH", "").split(os.pathsep):
+        # execvp resolves an empty/relative PATH component from the shell's
+        # working directory.  Reproduce that lookup against the governed
+        # workspace instead of accidentally using the hook process's cwd.
+        entry = (os.path.abspath(raw_entry) if raw_entry
+                 and os.path.isabs(raw_entry)
+                 else os.path.abspath(os.path.join(root, raw_entry or ".")))
+        resolved_entry = os.path.realpath(entry)
+        candidate = os.path.join(entry, token)
+        # Non-executable/missing candidates cannot be selected by the shell;
+        # permitting the later trusted hit keeps the check deterministic on
+        # hosts whose PATH contains dormant relative entries.
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            resolved_candidate = os.path.realpath(candidate)
+            if (_path_within(entry, root)
+                    or _path_within(resolved_entry, root)
+                    or _path_within(candidate, root)
+                    or _path_within(resolved_candidate, root)):
+                return (
+                    f"PATH candidate `{candidate}` for bare executable "
+                    f"`{token}` resolves through repository-controlled "
+                    "content")
+            # This is the executable the shell will select.  Later PATH
+            # entries cannot shadow an earlier executable hit.
+            break
+    return None
 
 
 def _shsplit(text: str) -> list:
@@ -1194,7 +1418,8 @@ _WRAPPER_VALUE_FLAGS = {
 }
 
 
-def _unwrap(toks, assignment_sink: "list[str] | None" = None) -> list:
+def _unwrap(toks, assignment_sink: "list[str] | None" = None,
+            identity_sink: "list[str] | None" = None) -> list:
     """Strip leading transparent wrapper programs, returning the real argv.
     `env FOO=1 rm x` -> `rm x`; `timeout 5 rm x` -> `rm x`;
     `env -u NAME rm x` -> `rm x` (the `-u` swallows `NAME`).
@@ -1220,6 +1445,8 @@ def _unwrap(toks, assignment_sink: "list[str] | None" = None) -> list:
         prog = os.path.basename(toks[0])
         if prog not in _WRAPPERS:
             return toks
+        if identity_sink is not None:
+            identity_sink.append(toks[0])
         if prog == "env":
             split = _env_split_string(toks[1:], assignment_sink)
             if split is not None:
@@ -1365,7 +1592,8 @@ def _git_readonly_violation(args) -> "str | None":
     return None
 
 
-def _analyze(command: str, _depth: int = 0):
+def _analyze(command: str, _depth: int = 0,
+             workspace: "str | None" = None):
     """Screen a shell command string.
 
     Returns (targets, opaque) where `targets` is the list of concrete write
@@ -1410,10 +1638,15 @@ def _analyze(command: str, _depth: int = 0):
     # that hides the real command.
     command = _ansi_c_unquote(command.replace(">|", ">"))
 
-    for m in _SUBST_RE.finditer(command):
-        body = m.group(1) or m.group(2) or ""
+    substitutions, substitution_error = _shell_substitution_bodies(command)
+    if substitution_error:
+        opaque = opaque or (
+            "launcher",
+            f"shell substitution structure can't be screened: "
+            f"{substitution_error}")
+    for _, body in substitutions:
         if body.strip():
-            t, o = _analyze(body, _depth + 1)
+            t, o = _analyze(body, _depth + 1, workspace)
             targets += t
             opaque = opaque or o
 
@@ -1423,7 +1656,8 @@ def _analyze(command: str, _depth: int = 0):
             continue
         targets += _redirect_targets(toks)
         assignments: list[str] = []
-        toks = _unwrap(_strip_keywords(toks), assignments)
+        wrapper_programs: list[str] = []
+        toks = _unwrap(_strip_keywords(toks), assignments, wrapper_programs)
         if assignments:
             names = [item.split("=", 1)[0] for item in assignments]
             opaque = opaque or (
@@ -1433,10 +1667,29 @@ def _analyze(command: str, _depth: int = 0):
                 "Git/process tracing, loaders, interpreters, pagers, "
                 "editors, or "
                 "external helpers that can't be screened from argv")
+        for wrapper_program in wrapper_programs:
+            identity_violation = _readonly_executable_identity_violation(
+                wrapper_program, workspace)
+            if identity_violation:
+                opaque = opaque or ("launcher", identity_violation)
         if not toks:
             continue
-        prog = os.path.basename(toks[0])
+        raw_prog = toks[0]
+        prog = os.path.basename(raw_prog)
         args = toks[1:]
+
+        identity_sensitive = (
+            prog in _READONLY_SAFE_PROGRAMS
+            or prog in _SHELLS
+            or prog in _INTERPRETERS
+            or prog in _ARCHIVE_EXTRACTORS
+            or prog in {"find", "git"}
+            or _python_program(prog))
+        if identity_sensitive:
+            identity_violation = _readonly_executable_identity_violation(
+                raw_prog, workspace)
+            if identity_violation:
+                opaque = opaque or ("launcher", identity_violation)
 
         if prog in _SHELLS:
             # -c may hide in a short-option cluster (`bash -lc '…'`) — the
@@ -1449,7 +1702,7 @@ def _analyze(command: str, _depth: int = 0):
                         for a in args)
             body = _shell_c_body(args) if saw_c else None
             if body is not None:
-                t, o = _analyze(body, _depth + 1)
+                t, o = _analyze(body, _depth + 1, workspace)
                 targets += t
                 opaque = opaque or o
             else:
@@ -1469,7 +1722,7 @@ def _analyze(command: str, _depth: int = 0):
             # (e.g. `eval "$CMD"`) still isn't provably safe — but eval of
             # a variable is rare in agent traffic and the screen stays a
             # cooperative best-effort layer, not an OS boundary.
-            t, o = _analyze(" ".join(args), _depth + 1)
+            t, o = _analyze(" ".join(args), _depth + 1, workspace)
             targets += t
             opaque = opaque or o
             continue
@@ -1641,8 +1894,9 @@ def _deny_segments(command: str, _depth: int = 0):
     if _depth > 6:
         return segs, True          # runaway nesting: treat as unscreenable
     command = _ansi_c_unquote(command.replace(">|", ">"))
-    for m in _SUBST_RE.finditer(command):
-        body = m.group(1) or m.group(2) or ""
+    substitutions, substitution_error = _shell_substitution_bodies(command)
+    unscreen = bool(substitution_error)
+    for _, body in substitutions:
         if body.strip():
             s, u = _deny_segments(body, _depth + 1)
             segs += s
@@ -1703,7 +1957,7 @@ def screen_command(cmd: str, coding: dict, workspace: str | None) -> str | None:
                                    or {}).get("deny") or [])
     if pattern:
         return f"command matches deny pattern '{pattern}'"
-    targets, opaque = _analyze(cmd)
+    targets, opaque = _analyze(cmd, workspace=workspace)
     for target in targets:
         p = norm(target, workspace)
         if p:
@@ -1839,7 +2093,8 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                                f"'{bad}' is outside it; the reviewed source "
                                "is protected")
         if tool_name in COMMAND_TOOLS:
-            targets, opaque = _analyze(command_text(tool_name, tool_input))
+            targets, opaque = _analyze(
+                command_text(tool_name, tool_input), workspace=workspace)
             leased_paths = [path for path in allow
                             if any(marker in
                                    "/" + str(path).replace("\\", "/")

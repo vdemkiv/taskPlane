@@ -250,11 +250,13 @@ def test_h30_build_contract_keeps_environment_assignment_compatibility(
         tmp_path: Path):
     contract = tp.build_contract("builder")
 
-    allowed, reason = tp.screen_tool(
-        contract, "Bash", {"command": "FEATURE_FLAG=1 cat README.md"},
-        str(tmp_path))
-
-    assert allowed is True, reason
+    for command in (
+            "FEATURE_FLAG=1 cat README.md",
+            "./cat README.md",
+            'echo "$((1 + 1))"'):
+        allowed, reason = tp.screen_tool(
+            contract, "Bash", {"command": command}, str(tmp_path))
+        assert allowed is True, (command, reason)
 
 
 def test_h30_readonly_git_diff_rejects_worktree_clean_filter_surface(
@@ -349,3 +351,102 @@ def test_h30_readonly_git_keeps_one_explicitly_guarded_diff_form(
     allowed, reason = tp.screen_tool(
         contract, "Bash", {"command": command}, str(tmp_path))
     assert allowed is True, reason
+
+
+def test_h30_readonly_rejects_path_qualified_reader_identity(tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    guarded_git = (
+        "--no-pager --no-optional-locks -c core.fsmonitor=false diff "
+        "--no-ext-diff --no-textconv --cached --stat")
+
+    for command in ("./cat README.md", f"./git {guarded_git}",
+                    "/bin/cat README.md", "./env cat README.md",
+                    "./command cat README.md"):
+        allowed, reason = tp.screen_tool(
+            contract, "Bash", {"command": command}, str(tmp_path))
+        assert allowed is False, command
+        assert "path-qualified executable" in reason
+        assert "trusted read-only program" in reason
+
+    allowed, reason = tp.screen_tool(
+        contract, "Bash", {"command": "./if cat README.md"}, str(tmp_path))
+    assert allowed is False
+    assert "can't be screened" in reason
+
+
+def test_h30_readonly_rejects_repository_path_shadow_and_symlink(
+        tmp_path: Path, monkeypatch):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    for program in ("cat", "env", "git"):
+        executable = shadow / program
+        executable.write_text(
+            "#!/bin/sh\ntouch reviewed-source\n", encoding="utf-8")
+        executable.chmod(0o755)
+    original_path = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", f"{shadow}{os.pathsep}{original_path}")
+    guarded_git = (
+        "git --no-pager --no-optional-locks -c core.fsmonitor=false diff "
+        "--no-ext-diff --no-textconv --cached --stat")
+
+    for command in ("cat README.md", "env cat README.md", guarded_git):
+        allowed, reason = tp.screen_tool(
+            contract, "Bash", {"command": command}, str(tmp_path))
+        assert allowed is False, command
+        assert "PATH candidate" in reason
+        assert "repository-controlled" in reason
+
+    # A repository-owned symlink does not become trusted merely because its
+    # target is a genuine system reader.
+    shadow_cat = shadow / "cat"
+    shadow_cat.unlink()
+    shadow_cat.symlink_to("/bin/cat")
+    allowed, reason = tp.screen_tool(
+        contract, "Bash", {"command": "cat README.md"}, str(tmp_path))
+    assert allowed is False
+    assert "PATH candidate" in reason
+    assert "repository-controlled" in reason
+
+
+def test_h30_readonly_balances_nested_shell_substitutions(tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    unsafe = (
+        'echo $(python3 -c "open(\'reviewed-source\', \'w\')")',
+        "echo \"$(printf x; (touch reviewed-source))\"",
+        'echo `python3 -c "open(\'reviewed-source\', \'w\')"`',
+        'cat <(python3 -c "open(\'reviewed-source\', \'w\')")',
+        'echo "$(printf \'%s\' "$(python3 -c '
+        '"open(\'reviewed-source\', \'w\')")")"',
+        'echo "$((1 + $(python3 -c '
+        '"open(\'reviewed-source\', \'w\')")))"',
+        "echo \"$(printf x\"",
+        "echo `printf x",
+    )
+
+    for command in unsafe:
+        allowed, reason = tp.screen_tool(
+            contract, "Bash", {"command": command}, str(tmp_path))
+        assert allowed is False, command
+        assert "read-only review contract" in reason
+
+
+def test_h30_readonly_substitution_scanner_is_quote_and_escape_aware(
+        tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    safe = (
+        "echo '$(touch reviewed-source)'",
+        r"echo \$(touch reviewed-source)",
+        "echo \"$(printf '%s' 'a(b)c')\"",
+        "echo `printf '%s' 'a(b)c'`",
+        "cat <(printf '%s' 'a(b)c')",
+    )
+
+    for command in safe:
+        allowed, reason = tp.screen_tool(
+            contract, "Bash", {"command": command}, str(tmp_path))
+        assert allowed is True, (command, reason)
