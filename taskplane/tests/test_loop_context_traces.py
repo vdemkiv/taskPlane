@@ -4,13 +4,14 @@ WHICH tree a blast radius actually describes.
 
 E3 — `review.write_context` emits `review_context_written`.
     Rubric item R7b-f asserts an EXACT SUBSTRING match of a context path
-    inside a dispatched lens brief. The comparand has to be the literal
-    string `write_context` returned and `context_note` embedded; a row that
-    rebuilds the path from CONTEXT_DIR/DIFF_NAME is equal today and can
-    drift tomorrow, and the item silently becomes unprovable rather than
-    failing. The sha256 is read BACK off the disk, not hashed from the body
-    the caller handed in: the claim being recorded is "this file, with these
-    bytes, is on disk for the lens agents", and only a re-read proves it.
+    inside a dispatched lens brief. At the producer boundary the comparand
+    has to be the literal string `write_context` returned and `context_note`
+    embedded; a rebuilt path is equal today and can drift tomorrow. The
+    durable audit sink intentionally retains only a content-addressed
+    descriptor of those paths. Likewise, sha256 is read BACK off the disk,
+    not hashed from the body the caller handed in, then privacy-minimized at
+    persistence: the descriptor still proves which digest was recorded
+    without disclosing a workstation path or raw digest in the audit log.
 
     THE DEFECT THIS SHIPPED WITH LAST TIME: the refusal path emitted
     `{"paths": []}` and nothing else. Rubric item R4 scores on row existence
@@ -19,7 +20,8 @@ E3 — `review.write_context` emits `review_context_written`.
     met. Every row now carries an explicit `status`, so "refused" and
     "nothing to write" can never be read as "written".
 
-E4 — `head` + `scanned_head` on `graph_impact`, at all THREE emission sites.
+E4 — content-addressed `head` + `scanned_head` on `graph_impact`, at all
+    THREE emission sites.
     `head` is the tree under review; `scanned_head` is the HEAD the
     dependency graph itself was scanned at. Without both, a stale blast
     radius is indistinguishable from a current one.
@@ -69,6 +71,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import depgraph  # noqa: E402
+import build_c  # noqa: E402
 import loop  # noqa: E402
 import requirements as reqs  # noqa: E402
 import review  # noqa: E402
@@ -76,6 +79,16 @@ import taskplane_lite as tp  # noqa: E402
 
 FROZEN_TIME = 1750000000.0
 FROZEN_UUID = uuid.UUID(int=0x5eed)
+
+
+def _audit_field(name):
+    """The durable trace's privacy-safe name for a producer field."""
+    return tp._sanitize_audit_key(name)
+
+
+def _audit_value(value):
+    """The durable trace's content-addressed projection of private text."""
+    return tp._audit_minimized(value)
 
 
 def _git(ws, *args):
@@ -174,15 +187,16 @@ class TestReviewContextRow(unittest.TestCase):
 
     def test_written_row_carries_the_paths_the_caller_was_handed(self):
         """R7b-f asserts an exact substring match of a context path inside a
-        dispatched brief. The row's comparand must therefore be the SAME
-        string the caller got back — not a path rebuilt from CONTEXT_DIR and
-        DIFF_NAME, which is equal today and free to drift tomorrow."""
+        dispatched brief. The producer identity is pinned by the next test;
+        the durable row must carry the exact content-addressed descriptor of
+        that list and must not disclose any path."""
         paths = review.write_context(self.ws, diff="d\n", blast_radius="b\n",
                                      impact={"touched": ["src"]})
         row = self._row()
         self.assertEqual(row["status"], "written")
-        self.assertEqual(row["paths"], list(paths.values()))
-        self.assertEqual(len(row["paths"]), 3)
+        self.assertEqual(row["paths"], _audit_value(list(paths.values())))
+        for path in paths.values():
+            self.assertNotIn(path, json.dumps(row))
 
     def test_row_paths_are_the_caller_s_own_string_objects(self):
         """The identity check is the anti-drift guard the equality check
@@ -198,18 +212,21 @@ class TestReviewContextRow(unittest.TestCase):
 
     def test_row_paths_appear_verbatim_in_the_brief_note(self):
         """The rubric's substring assertion, executed: every path in the row
-        must occur literally in the note a brief carries instead of the
-        payload. If these two ever disagree the item is unprovable."""
+        producer input must occur literally in the note a brief carries.
+        The audit row correlates by digest and does not disclose the path."""
         paths = review.write_context(self.ws, diff="d\n", blast_radius="b\n")
         note = review.context_note(paths)
-        for p in self._row()["paths"]:
+        row = self._row()
+        self.assertEqual(row["paths"], _audit_value(list(paths.values())))
+        for p in paths.values():
             self.assertIn(p, note)
+            self.assertNotIn(p, json.dumps(row))
 
     def test_sha256_is_read_back_off_the_disk_not_hashed_from_the_body(self):
-        """The row's claim is "this file, with these bytes, is on disk for
-        the lens agents". A digest of the in-memory body claims something
-        weaker — it cannot see a short write, a full disk, or anything a
-        wrapper interposed. Proven by making disk and body differ."""
+        """The row's content descriptor means "this file digest was read
+        from disk". A digest of the in-memory body claims something weaker:
+        it cannot see anything a writer interposed. Proven by making disk and
+        body differ and comparing their privacy-minimized digest values."""
         body = "the whole diff\n"
         real_open = open
 
@@ -225,10 +242,11 @@ class TestReviewContextRow(unittest.TestCase):
         with open(os.path.join(self.ws, rel), "rb") as f:
             on_disk = f.read()
         self.assertNotEqual(on_disk, body.encode())
-        self.assertEqual(self._row()["sha256"][rel],
-                         hashlib.sha256(on_disk).hexdigest())
-        self.assertNotEqual(self._row()["sha256"][rel],
-                            hashlib.sha256(body.encode()).hexdigest())
+        recorded = self._row()["sha256"][_audit_field(rel)]
+        self.assertEqual(
+            recorded, _audit_value(hashlib.sha256(on_disk).hexdigest()))
+        self.assertNotEqual(
+            recorded, _audit_value(hashlib.sha256(body.encode()).hexdigest()))
 
     def test_refusal_row_cannot_be_read_as_a_session_that_stored_context(self):
         """THE DEFECT: shipped as `{"paths": []}`, which rubric R4 — scoring
@@ -247,7 +265,7 @@ class TestReviewContextRow(unittest.TestCase):
         self.assertEqual(paths, {})
         row = self._row()
         self.assertEqual(row["status"], "refused")
-        self.assertEqual(row["paths"], [])
+        self.assertEqual(row["paths"], _audit_value([]))
         self.assertEqual(row["sha256"], {})
 
     def test_no_op_row_is_its_own_status_not_a_refusal_and_not_a_write(self):
@@ -297,13 +315,14 @@ class TestGraphImpactHeads(unittest.TestCase):
     def test_evaluate_row_names_the_tree_it_scanned_and_the_graphs_head(self):
         """Site 1 of 3. Without these two fields a reader cannot tell a
         blast radius derived from the tree under review from one derived
-        from a graph scanned three commits ago."""
+        from a graph scanned three commits ago. Audit privacy keeps their
+        exact values content-addressed rather than plaintext."""
         head = _touch_commit(self.ws)
         _state(self.ws, "evaluate", baseline=self.base)
         self.assertIsNone(loop.next_action(self.ws).get("error"))
         row = self._row("evaluate")
-        self.assertEqual(row["head"], head)
-        self.assertIn("scanned_head", row)
+        self.assertEqual(row[_audit_field("head")], _audit_value(head))
+        self.assertIn(_audit_field("scanned_head"), row)
 
     def test_execute_row_names_the_tree_it_scanned_and_the_graphs_head(self):
         """Site 2 of 3 — the builder's pre-change blast radius."""
@@ -311,8 +330,8 @@ class TestGraphImpactHeads(unittest.TestCase):
         _state(self.ws, "execute", baseline=self.base)
         self.assertIsNone(loop.next_action(self.ws).get("error"))
         row = self._row("execute")
-        self.assertEqual(row["head"], head)
-        self.assertIn("scanned_head", row)
+        self.assertEqual(row[_audit_field("head")], _audit_value(head))
+        self.assertIn(_audit_field("scanned_head"), row)
 
     def test_design_row_names_the_tree_it_scanned_and_the_graphs_head(self):
         """Site 3 of 3 — the design step's proposed-module radius."""
@@ -324,8 +343,10 @@ class TestGraphImpactHeads(unittest.TestCase):
                requirement_id=ent["id"], design_required=True)
         self.assertIsNone(loop.next_action(self.ws).get("error"))
         row = self._row("design")
-        self.assertEqual(row["head"], tp.git_head(self.ws))
-        self.assertEqual(row["scanned_head"], tp.git_head(self.ws))
+        head = tp.git_head(self.ws)
+        self.assertEqual(row[_audit_field("head")], _audit_value(head))
+        self.assertEqual(row[_audit_field("scanned_head")],
+                         _audit_value(head))
 
     # Keep the historical node id so baseline inventories remain replayable;
     # canonical serial authority now deliberately selects the project tree.
@@ -346,8 +367,10 @@ class TestGraphImpactHeads(unittest.TestCase):
                parallel=False)
         self.assertIsNone(loop.next_action(self.ws).get("error"))
         row = self._row("evaluate")
-        self.assertEqual(row["head"], project_head)
-        self.assertNotEqual(row["head"], worker_head)
+        self.assertEqual(row[_audit_field("head")],
+                         _audit_value(project_head))
+        self.assertNotEqual(row[_audit_field("head")],
+                            _audit_value(worker_head))
 
     def test_scanned_head_is_the_graphs_head_not_the_projects(self):
         """`scanned_head` answers "which tree produced this dependency
@@ -359,8 +382,9 @@ class TestGraphImpactHeads(unittest.TestCase):
         _state(self.ws, "execute", baseline=self.base)
         self.assertIsNone(loop.next_action(self.ws).get("error"))
         row = self._row("execute")
-        self.assertEqual(row["scanned_head"], scanned)
-        self.assertEqual(row["head"], head)
+        self.assertEqual(row[_audit_field("scanned_head")],
+                         _audit_value(scanned))
+        self.assertEqual(row[_audit_field("head")], _audit_value(head))
 
     def test_affected_reqs_stays_on_the_review_rows_only(self):
         """The row shape is deliberately NOT uniform: the product half of
@@ -369,10 +393,11 @@ class TestGraphImpactHeads(unittest.TestCase):
         _touch_commit(self.ws)
         _state(self.ws, "evaluate", baseline=self.base)
         loop.next_action(self.ws)
-        self.assertIn("affected_reqs", self._row("evaluate"))
+        self.assertIn(_audit_field("affected_reqs"), self._row("evaluate"))
         _state(self.ws, "execute", baseline=self.base)
         loop.next_action(self.ws)
-        self.assertNotIn("affected_reqs", self._row("execute"))
+        self.assertNotIn(_audit_field("affected_reqs"),
+                         self._row("execute"))
 
     def test_review_kernel_reads_the_selected_tree_once(self):
         """The canonical review kernel owns routing now. It reads the project
@@ -448,7 +473,21 @@ def _loop_without_the_recording(tmpdir):
         f.write(stripped)
     spec = importlib.util.spec_from_file_location("loop_norow", path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    captured = {}
+
+    def capture_runtime(**services):
+        captured.update(services)
+
+    # Loading the source-derived control must not replace the immutable
+    # production binding. Capture its services and install them only while
+    # that control is executing.
+    with mock.patch.object(build_c, "bind_loop_runtime",
+                           side_effect=capture_runtime):
+        spec.loader.exec_module(mod)
+    if set(captured) != {"state_loader", "wait_policy_factory",
+                         "wait_invocation_factory"}:  # pragma: no cover
+        raise AssertionError("control module did not publish loop services")
+    mod._test_loop_runtime_services = captured
     return mod
 
 
@@ -512,7 +551,11 @@ class TestRecordingOnly(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
+        cls.default_runtime_before_control = \
+            build_c._default_loop_runtime_services
         cls.norow = _loop_without_the_recording(cls.tmp)
+        cls.default_runtime_after_control = \
+            build_c._default_loop_runtime_services
 
     def setUp(self):
         self.root = tempfile.mkdtemp()
@@ -523,7 +566,12 @@ class TestRecordingOnly(unittest.TestCase):
     def _run(self, module):
         """One next_action: its payload and the event names it appended."""
         before = len(_events(self.ws))
-        payload = module.next_action(self.ws)
+        services = getattr(module, "_test_loop_runtime_services", None)
+        if services is None:
+            payload = module.next_action(self.ws)
+        else:
+            with build_c.scoped_loop_runtime(**services):
+                payload = module.next_action(self.ws)
         # Live progress is a non-gating read model over the growing audit
         # stream. Its sequence and elapsed sample are expected to advance on
         # repeated observations, so they are not part of this differential's
@@ -566,6 +614,19 @@ class TestRecordingOnly(unittest.TestCase):
         self.assertEqual(base2, subject,
                          f"the recording changed behaviour at step={step}")
         return subject
+
+    def test_control_then_subject_order_restores_production_runtime(self):
+        """The source-derived control cannot contaminate the live module.
+
+        This is the exact order used by every differential below: control
+        executions first, production subject last. Both module import and
+        scoped execution must leave the process default unchanged.
+        """
+        self.assertIs(self.default_runtime_before_control,
+                      self.default_runtime_after_control)
+        runtime = build_c._loop_runtime_services()
+        self._differential("plan")
+        self.assertIs(build_c._loop_runtime_services(), runtime)
 
     def test_execute_payload_and_events_are_unchanged(self):
         _touch_commit(self.ws)

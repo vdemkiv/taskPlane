@@ -14,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import taskplane_lite as tp  # noqa: E402
 import tp as cli  # noqa: E402
+import loop as loopmod  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 
@@ -246,7 +247,8 @@ class TestCodexHookProtocol(unittest.TestCase):
             contract, "exec_command", {"cmd": "touch src/forbidden.py"},
             self.ws)
         self.assertFalse(ok)
-        self.assertIn("outside", reason)
+        self.assertIn("every shell command tool is blocked", reason)
+        self.assertIn("scoped Write/Edit tools", reason)
 
     def test_claude_allow_keeps_legacy_approve(self):
         event = {"cwd": self.ws, "tool_name": "Edit",
@@ -271,7 +273,7 @@ class TestCodexHookProtocol(unittest.TestCase):
         ok, reason = tp.screen_tool(
             contract, "Bash", {"command": f"printf fake > {result}"}, self.ws)
         self.assertFalse(ok)
-        self.assertIn("host Write", reason)
+        self.assertIn("every shell command tool is blocked", reason)
         for hook_command in ("screen", "subagent-start"):
             with self.subTest(command=hook_command):
                 ok, reason = tp.screen_tool(
@@ -279,7 +281,7 @@ class TestCodexHookProtocol(unittest.TestCase):
                     {"command": f"python3 taskplane/tp.py {hook_command}"},
                     self.ws)
                 self.assertFalse(ok)
-                self.assertIn("host hook", reason)
+                self.assertIn("every shell command tool is blocked", reason)
 
     def test_claude_and_codex_write_hooks_authorize_leased_results(self):
         for host_event in (
@@ -591,9 +593,23 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
         return rc, out.getvalue(), err.getvalue()
 
     def _stage_ws(self):
-        """A real loop journey parked at the EXECUTE wave dispatch."""
+        """A loop state parked directly at the EXECUTE emitter boundary.
+
+        These tests exercise host-rail emission, not Plan DoR. Building the
+        state directly keeps unrelated repository architecture authority
+        from turning an emitter test into a planner integration journey.
+        """
         ws = stage_fixture.build_repo(tempfile.mkdtemp())
-        stage_fixture.start_loop(ws)
+        state = loopmod.init(
+            ws, stage_fixture.GOAL, spec_path="s", checkpoints=["plan"],
+            parallel=True)
+        state.update({
+            "step": "execute",
+            "tasks": [dict(task, status="pending", fix_cycles=0)
+                      for task in stage_fixture.TASKS],
+            "current_task": 0,
+        })
+        loopmod.save(ws, state)
         return ws
 
     def _lens_ws(self):
@@ -618,6 +634,11 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
         self.assertIn("--emit task", err)    # the Task-path remedy, named
         self.assertIn("auto", err)
 
+    def _assert_minimized_refusal(self, event, err):
+        reason = err.strip().removeprefix("taskplane: ")
+        self.assertEqual(event["path"], tp._audit_minimized("refused"))
+        self.assertEqual(event["reason"], tp._audit_minimized(reason))
+
     # ---- stage emitter surface (loop wave / loop next)
 
     def test_stage_emit_workflow_refuses_on_codex(self):
@@ -629,8 +650,7 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
         self.assertIn("codex host", err)     # the detector's own reason
         evs = self._traces(ws, "stage_dispatch_path")
         self.assertTrue(evs)
-        self.assertEqual(evs[-1]["path"], "refused")
-        self.assertIn("codex host", evs[-1]["reason"])
+        self._assert_minimized_refusal(evs[-1], err)
 
     def test_stage_emit_workflow_refuses_on_kill_switch(self):
         ws = self._stage_ws()
@@ -640,7 +660,7 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
         self._assert_refusal(rc, out, err)
         self.assertIn("TASKPLANE_WORKFLOWS=0", err)
         evs = self._traces(ws, "stage_dispatch_path")
-        self.assertEqual(evs[-1]["path"], "refused")
+        self._assert_minimized_refusal(evs[-1], err)
 
     def test_stage_auto_and_task_byte_identical_on_codex(self):
         """The refusal changes ONLY the explicit override: on Codex the
@@ -669,8 +689,7 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
         self._assert_refusal(rc, out, err)
         evs = self._traces(ws, "review_dispatch_path")
         self.assertTrue(evs)
-        self.assertEqual(evs[-1]["path"], "refused")
-        self.assertIn("codex host", evs[-1]["reason"])
+        self._assert_minimized_refusal(evs[-1], err)
 
     def test_lens_emit_workflow_refuses_on_kill_switch(self):
         ws = self._lens_ws()
@@ -679,7 +698,7 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
                                  "--emit", "workflow")
         self._assert_refusal(rc, out, err)
         evs = self._traces(ws, "review_dispatch_path")
-        self.assertEqual(evs[-1]["path"], "refused")
+        self._assert_minimized_refusal(evs[-1], err)
 
     def test_lens_refusal_records_no_expected_dispatches(self):
         """Fail closed BEFORE side effects: a refused dispatch must leave
