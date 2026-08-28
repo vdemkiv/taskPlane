@@ -9,13 +9,3 @@ exclude:
   # routing works. They currently mint api/auth/components/src as product
   # modules and route lenses at code nobody wrote.
   - taskplane/tests/fixtures
-
-# BUILD-C owners are executable architecture declarations. The dependency
-# scanner verifies that every path exists, every dependency between these
-# owners is declared exactly, and the declared owner graph is acyclic.
-owners:
-  - taskplane/checkpoint.py
-  - taskplane/build_c.py
-
-owner_edges:
-  - taskplane/build_c.py -> taskplane/checkpoint.py

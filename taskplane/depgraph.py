@@ -35,6 +35,7 @@ import re
 import time
 
 import graph_decomposition
+import glob_match
 import graph_primitives
 import storage as runtime_storage
 import taskplane_lite as tp
@@ -118,8 +119,33 @@ ARCHITECTURE_MAP_SCHEMA = "taskplane.architecture-map-proof/v1"
 ARCHITECTURE_MAX_BYTES = 1024 * 1024
 ARCHITECTURE_MAX_NODES = 512
 ARCHITECTURE_MAX_EDGES = 2048
-_ARCHITECTURE_SECTION = re.compile(r"^([A-Za-z_][\w-]*):\s*$")
-_ARCHITECTURE_ITEM = re.compile(r"^\s+-\s*(\S.*?)\s*$")
+DESIGN_ARCHITECTURE_SCHEMA = "taskplane.design-architecture-map/v1"
+_ARCHITECTURE_MAP_KEYS = frozenset({
+    "schema", "decision_record", "scanner_input", "scanner_rule", "nodes",
+    "required_properties", "required_singleton_sccs", "semantic_edges",
+    "content_fingerprint",
+})
+_ARCHITECTURE_NODE_KEYS = frozenset({"id", "kind", "path_globs"})
+_ARCHITECTURE_NODE_KINDS = frozenset({
+    "external-host", "existing", "new", "producer", "test", "file",
+    "contract", "resource",
+})
+_ARCHITECTURE_REQUIRED_PROPERTIES = frozenset({
+    "native-authority, design-sweep, and terminal-truth owners are singleton SCCs",
+    "no new owner imports or invokes a host transport or transition adapter",
+    "governance adapters reach Codex only through contract:delivery.codex-native-dispatch",
+    "all eight surface producers reach the coordinator through contract:delivery.exact-sha-terminal-truth",
+    "tests observe every node and every declared production edge",
+})
+_SEMANTIC_EDGE_KEYS = frozenset({"from", "to", "kind", "reason"})
+_SEMANTIC_EDGE_KINDS = frozenset({
+    "blocks", "bound-by", "calls", "catalog-input", "changes",
+    "completion-attention", "consumed-by", "consumes", "coordinated-by",
+    "depends", "depends_on", "evidence", "handoff", "imports", "intent",
+    "observed-by", "produces", "projects", "provides", "requires",
+    "transported-by", "uses", "validated-by", "verified-by",
+})
+_GRAPH_NODE_ID = re.compile(r"^[A-Za-z0-9._/-]+(?::[A-Za-z0-9._/-]+)*$")
 
 
 class GraphQualityDegraded(RuntimeError):
@@ -249,7 +275,8 @@ def _restore_managed_cache(ws: str, *, decompose: bool) -> dict | None:
                 decompose=decompose) or not isinstance(value.get("graph"),
                                                        dict) or \
             value.get("components_fingerprint") != \
-            _components_file_fingerprint(ws):
+            _components_file_fingerprint(ws) or \
+            value.get("design_fingerprint") != _design_file_fingerprint(ws):
         return None
     graph = value["graph"]
     save(ws, graph)
@@ -265,6 +292,7 @@ def _write_managed_cache(ws: str, graph: dict, *, decompose: bool) -> None:
         "schema": "taskplane.graph-cache/v1", "head": head,
         "scanner_version": scanner_cache_version(decompose=decompose),
         "components_fingerprint": _components_file_fingerprint(ws),
+        "design_fingerprint": _design_file_fingerprint(ws),
         "graph": graph,
     }, indent=1, sort_keys=True)
 
@@ -785,65 +813,140 @@ def _components_file_fingerprint(ws: str) -> str:
         return ""
 
 
-def _parse_architecture_config(text: str) -> dict:
-    """Read the strict owner-node/edge subset of ``components.yaml``.
+def _design_file_fingerprint(ws: str) -> str:
+    """Content identity for the Design authority consumed by graph scans."""
+    path = os.path.join(ws, "design", "contract.json")
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as stream:
+            while True:
+                block = stream.read(64 * 1024)
+                if not block:
+                    return digest.hexdigest()
+                digest.update(block)
+    except OSError:
+        return ""
 
-    The incumbent parser continues to own exclusions and decomposition
-    floors.  These two forward-compatible top-level sections are the accepted
-    architecture overlay: ``owners`` lists repository files and
-    ``owner_edges`` lists exact ``source -> target`` import relationships.
+
+def _safe_architecture_glob(pattern: str) -> bool:
+    value = str(pattern or "").replace("\\", "/")
+    parts = [part for part in value.split("/") if part]
+    return bool(value and not value.startswith(("/", "./"))
+                and ".." not in parts and not os.path.isabs(value))
+
+
+def _read_design_architecture(ws: str) -> dict:
+    """Read both immutable R-0013 and current Design graph authorities.
+
+    ``architecture_decomposition.semantic_edges`` is the accepted R-0013
+    authority. ``graph.proposed_edges`` remains the current Design authority;
+    neither is allowed to replace the other accidentally.
     """
-    nodes, edges, errors = [], [], []
-    section = None
-    configured = False
-    for line_number, raw in enumerate((text or "").splitlines(), 1):
-        line = raw.split("#", 1)[0].rstrip()
-        if not line.strip():
-            continue
-        top = _ARCHITECTURE_SECTION.match(line)
-        if top:
-            section = top.group(1)
-            if section in {"owners", "owner_edges"}:
-                configured = True
-            continue
-        if section not in {"owners", "owner_edges"}:
-            continue
-        item = _ARCHITECTURE_ITEM.match(line)
-        if not item:
-            errors.append(
-                f"line {line_number}: {section} requires an indented list item")
-            continue
-        value = item.group(1).strip().strip("'\"")
-        if section == "owners":
-            value = value.replace("\\", "/")
-            if value.startswith("./"):
-                value = value[2:]
-            nodes.append(value)
-            continue
-        parts = []
-        for part in value.split("->"):
-            normalized = part.strip().replace("\\", "/")
-            if normalized.startswith("./"):
-                normalized = normalized[2:]
-            parts.append(normalized)
-        if len(parts) != 2 or not all(parts):
-            errors.append(
-                f"line {line_number}: owner edge must be 'source -> target'")
-            continue
-        edges.append((parts[0], parts[1]))
-    if len(nodes) != len(set(nodes)):
-        errors.append("owner nodes must be unique")
-    if len(edges) != len(set(edges)):
-        errors.append("owner edges must be unique")
-    return {"configured": configured, "nodes": nodes, "edges": edges,
-            "errors": errors}
+    path = os.path.join(ws, "design", "contract.json")
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read(ARCHITECTURE_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return {"configured": False, "nodes": [], "semantic_edges": [],
+                "design_edges": [], "singleton_sccs": [], "errors": []}
+    except OSError as exc:
+        return {"configured": True, "nodes": [], "semantic_edges": [],
+                "design_edges": [], "singleton_sccs": [],
+                "errors": [f"design/contract.json cannot be read: {exc}"]}
+    if len(raw) > ARCHITECTURE_MAX_BYTES:
+        return {"configured": True, "nodes": [], "semantic_edges": [],
+                "design_edges": [], "singleton_sccs": [], "errors": [
+                    "design/contract.json exceeds architecture proof bound "
+                    f"{ARCHITECTURE_MAX_BYTES} bytes"]}
+    try:
+        contract = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {"configured": True, "nodes": [], "semantic_edges": [],
+                "design_edges": [], "singleton_sccs": [], "errors": [
+                    "design/contract.json is not valid UTF-8 JSON: "
+                    f"{type(exc).__name__}"]}
+    if not isinstance(contract, dict):
+        return {"configured": True, "nodes": [], "semantic_edges": [],
+                "design_edges": [], "singleton_sccs": [],
+                "errors": ["design/contract.json root must be an object"]}
+    architecture = contract.get("architecture_decomposition")
+    errors = []
+    if not isinstance(architecture, dict):
+        return {"configured": True, "nodes": [], "semantic_edges": [],
+                "design_edges": [], "singleton_sccs": [], "errors": [
+                    "accepted design is missing architecture_decomposition"]}
+    unknown = sorted(set(architecture) - _ARCHITECTURE_MAP_KEYS)
+    if unknown:
+        errors.append("architecture_decomposition has unknown sections: "
+                      + ", ".join(unknown))
+    if architecture.get("schema") != DESIGN_ARCHITECTURE_SCHEMA:
+        errors.append("architecture_decomposition has unknown schema: "
+                      + str(architecture.get("schema") or "missing"))
+    fingerprint = str(architecture.get("content_fingerprint") or "")
+    material = {key: architecture[key] for key in sorted(architecture)
+                if key != "content_fingerprint"}
+    expected_fingerprint = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+    if fingerprint != expected_fingerprint:
+        errors.append("architecture_decomposition content_fingerprint does "
+                      "not bind the complete accepted map")
+    if architecture.get("scanner_input") != \
+            "design/contract.json#/architecture_decomposition":
+        errors.append("architecture_decomposition scanner_input is missing "
+                      "or points elsewhere")
+    for field in ("decision_record", "scanner_rule"):
+        if not isinstance(architecture.get(field), str) or not \
+                architecture[field].strip():
+            errors.append(f"architecture_decomposition {field} is required")
+    nodes = architecture.get("nodes")
+    if not isinstance(nodes, list):
+        errors.append("architecture_decomposition nodes must be a list")
+        nodes = []
+    semantic_edges = architecture.get("semantic_edges")
+    if not isinstance(semantic_edges, list):
+        errors.append("architecture_decomposition semantic_edges must be a list")
+        semantic_edges = []
+    singleton_sccs = architecture.get("required_singleton_sccs")
+    if not isinstance(singleton_sccs, list):
+        errors.append("architecture_decomposition required_singleton_sccs "
+                      "must be a list")
+        singleton_sccs = []
+    properties = architecture.get("required_properties")
+    if not isinstance(properties, list) or not properties or not all(
+            isinstance(item, str) and item.strip() for item in properties):
+        errors.append("architecture_decomposition required_properties must "
+                      "be a non-empty string list")
+    graph = contract.get("graph")
+    design_edges = graph.get("proposed_edges") if isinstance(graph, dict) \
+        else None
+    if not isinstance(design_edges, list):
+        errors.append("current design graph.proposed_edges must be a list")
+        design_edges = []
+    proposed_modules = graph.get("proposed_modules") if isinstance(
+        graph, dict) else None
+    if not isinstance(proposed_modules, list) or not all(
+            isinstance(item, str) and item.strip() for item in proposed_modules):
+        errors.append("current design graph.proposed_modules must be a list")
+        proposed_modules = []
+    contract_ids = [str(row.get("id") or "").strip()
+                    for row in (contract.get("contracts") or [])
+                    if isinstance(row, dict) and row.get("id")]
+    return {"configured": True, "nodes": nodes,
+            "semantic_edges": semantic_edges, "design_edges": design_edges,
+            "singleton_sccs": singleton_sccs, "errors": errors,
+            "decision_record": architecture.get("decision_record"),
+            "required_properties": properties or [],
+            "proposed_modules": proposed_modules,
+            "contract_ids": contract_ids}
 
 
-def _owner_import_edges(ws: str, nodes: list[str]) -> tuple[set, list[str]]:
-    """Observe exact Python imports between declared owner files."""
+def _python_file_import_edges(ws: str,
+                              files: set[str]) -> tuple[set, list[str]]:
+    """Observe exact Python file imports inside the declared file universe."""
     aliases: dict[str, set[str]] = {}
     module_for: dict[str, str] = {}
-    for path in nodes:
+    for path in sorted(files):
         if not path.endswith(".py"):
             continue
         module = path[:-3].replace("/", ".")
@@ -855,7 +958,7 @@ def _owner_import_edges(ws: str, nodes: list[str]) -> tuple[set, list[str]]:
 
     observed: set[tuple[str, str]] = set()
     errors = []
-    for source in nodes:
+    for source in sorted(files):
         module = module_for.get(source)
         if not module:
             continue
@@ -902,35 +1005,78 @@ def _owner_import_edges(ws: str, nodes: list[str]) -> tuple[set, list[str]]:
     return observed, errors
 
 
+def _semantic_edges(rows, *, label: str, architecture_ids: set[str],
+                    known_files: set[str]) -> tuple[list[dict], list[str]]:
+    """Validate one semantic authority without inventing missing endpoints."""
+    edges, errors = [], []
+    seen = set()
+
+    def endpoint_exists(node: str) -> bool:
+        if node in architecture_ids or node.startswith(
+                ("ext:", "contract:", "resource:", "svc:", "req:")):
+            return True
+        normalized = node.replace("\\", "/").strip("/")
+        return bool(normalized and any(
+            path == normalized or path.startswith(normalized + "/")
+            for path in known_files))
+
+    for index, row in enumerate(rows or []):
+        if not isinstance(row, dict):
+            errors.append(f"{label}[{index}] must be an object")
+            continue
+        unknown = sorted(set(row) - _SEMANTIC_EDGE_KEYS)
+        if unknown:
+            errors.append(f"{label}[{index}] has unknown fields: "
+                          + ", ".join(unknown))
+        source, target, kind = (str(row.get(key) or "").strip()
+                                for key in ("from", "to", "kind"))
+        reason = str(row.get("reason") or "").strip()
+        if not source or not target or not reason:
+            errors.append(f"{label}[{index}] requires from, to, kind, reason")
+            continue
+        if not _GRAPH_NODE_ID.fullmatch(source) or not \
+                _GRAPH_NODE_ID.fullmatch(target):
+            errors.append(f"{label}[{index}] has unsafe node identity")
+        if kind not in _SEMANTIC_EDGE_KINDS:
+            errors.append(f"{label}[{index}] has unknown semantic kind: {kind}")
+        key = (source, target, kind)
+        if key in seen:
+            errors.append(f"{label} has duplicate edge: "
+                          f"{source} -> {target}:{kind}")
+        seen.add(key)
+        for endpoint in (source, target):
+            if not endpoint_exists(endpoint):
+                errors.append(f"{label}[{index}] names unknown endpoint: "
+                              f"{endpoint}")
+        edges.append({"from": source, "to": target, "kind": kind,
+                      "reason": reason})
+    return edges, errors
+
+
+def _disk_glob_hits(ws: str, pattern: str, *, limit: int = 32) -> list[str]:
+    """Bounded existence check used to distinguish missing from ignored."""
+    hits = []
+    for root, dirs, names in os.walk(ws):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS
+                         and not d.startswith(".tp-"))
+        for name in sorted(names):
+            rel = os.path.relpath(os.path.join(root, name), ws).replace(
+                os.sep, "/")
+            if glob_match.path_matches(rel, pattern):
+                hits.append(rel)
+                if len(hits) >= limit:
+                    return hits
+    return hits
+
+
 def architecture_map_proof(ws: str, *, known_files=None,
                            max_nodes: int = ARCHITECTURE_MAX_NODES,
                            max_edges: int = ARCHITECTURE_MAX_EDGES) -> dict:
-    """Validate the accepted architecture overlay without partial success.
-
-    Node existence, the exact inter-owner Python import edge set, and the full
-    SCC decomposition must all be proved. Inputs above either declared bound
-    are reported as truncated and incomplete; no bounded prefix can pass.
-    """
-    path = os.path.join(ws, "components.yaml")
-    try:
-        with open(path, "rb") as stream:
-            raw = stream.read(ARCHITECTURE_MAX_BYTES + 1)
-        if len(raw) > ARCHITECTURE_MAX_BYTES:
-            parsed = {"configured": False, "nodes": [], "edges": [],
-                      "errors": [
-                          "components.yaml exceeds architecture proof bound "
-                          f"{ARCHITECTURE_MAX_BYTES} bytes"]}
-        else:
-            parsed = _parse_architecture_config(
-                raw.decode("utf-8", errors="replace"))
-    except FileNotFoundError:
-        parsed = {"configured": False, "nodes": [], "edges": [],
-                  "errors": []}
-    except OSError as exc:
-        parsed = {"configured": False, "nodes": [], "edges": [],
-                  "errors": [f"components.yaml cannot be read: {exc}"]}
+    """Validate the accepted Design map without partial or substitute proof."""
+    parsed = _read_design_architecture(ws)
     nodes = list(parsed["nodes"])
-    edges = list(parsed["edges"])
+    architecture_edge_rows = list(parsed["semantic_edges"])
+    design_edge_rows = list(parsed["design_edges"])
     errors = list(parsed["errors"])
     try:
         node_limit = max(0, int(max_nodes))
@@ -938,81 +1084,197 @@ def architecture_map_proof(ws: str, *, known_files=None,
     except (TypeError, ValueError):
         node_limit, edge_limit = 0, 0
         errors.append("architecture bounds must be non-negative integers")
-    truncated = len(nodes) > node_limit or len(edges) > edge_limit
+    total_edges = len(architecture_edge_rows) + len(design_edge_rows)
+    truncated = len(nodes) > node_limit or total_edges > edge_limit
     if len(nodes) > node_limit:
         errors.append(
             f"owner node count {len(nodes)} exceeds bound {node_limit}")
-    if len(edges) > edge_limit:
+    if total_edges > edge_limit:
         errors.append(
-            f"owner edge count {len(edges)} exceeds bound {edge_limit}")
+            f"semantic edge count {total_edges} exceeds bound {edge_limit}")
 
-    safe_nodes = []
-    root = os.path.realpath(ws)
-    for node in nodes[:node_limit]:
-        parts = [part for part in node.split("/") if part]
-        real = os.path.realpath(os.path.join(ws, *parts)) if parts else root
-        if (not node or os.path.isabs(node) or ".." in parts
-                or node.startswith(("contract:", "resource:", "svc:",
-                                    "ext:"))
-                or (real != root and not real.startswith(root + os.sep))):
-            errors.append(f"owner node is not a safe repository file: {node}")
-        elif not node.endswith(".py"):
-            errors.append(
-                f"owner node has no strict import producer (expected .py): {node}")
-        else:
-            safe_nodes.append(node)
-    available = set(known_files) if known_files is not None else {
-        node for node in safe_nodes
-        if os.path.isfile(os.path.join(ws, *node.split("/")))
+    available = set(known_files) if known_files is not None else set()
+    if known_files is None:
+        for root, dirs, names in os.walk(ws):
+            dirs[:] = sorted(d for d in dirs if d != ".git")
+            for name in names:
+                available.add(os.path.relpath(
+                    os.path.join(root, name), ws).replace(os.sep, "/"))
+    node_ids, node_details, node_files = [], [], {}
+    seen_ids = set()
+    for index, row in enumerate(nodes[:node_limit]):
+        if not isinstance(row, dict):
+            errors.append(f"architecture node[{index}] must be an object")
+            continue
+        unknown = sorted(set(row) - _ARCHITECTURE_NODE_KEYS)
+        if unknown:
+            errors.append(f"architecture node[{index}] has unknown fields: "
+                          + ", ".join(unknown))
+        node_id = str(row.get("id") or "").strip()
+        kind = str(row.get("kind") or "").strip()
+        patterns = row.get("path_globs")
+        if not node_id or node_id in seen_ids:
+            errors.append(f"architecture node[{index}] has missing or "
+                          f"duplicate id: {node_id or 'missing'}")
+            continue
+        if not _GRAPH_NODE_ID.fullmatch(node_id):
+            errors.append(f"architecture node[{index}] has unsafe id: {node_id}")
+        seen_ids.add(node_id)
+        node_ids.append(node_id)
+        if kind not in _ARCHITECTURE_NODE_KINDS:
+            errors.append(f"architecture node {node_id} has unknown kind: {kind}")
+        if not isinstance(patterns, list) or not all(
+                isinstance(item, str) and item for item in patterns):
+            errors.append(f"architecture node {node_id} path_globs must be a list")
+            patterns = []
+        boundary_kind = kind in {"external-host", "contract", "resource"}
+        if boundary_kind and patterns:
+            errors.append(f"boundary node {node_id} cannot declare path globs")
+        if not boundary_kind and not patterns:
+            errors.append(f"architecture node {node_id} has no path globs")
+        prefix_for_kind = {"external-host": "ext:", "contract": "contract:",
+                           "resource": "resource:"}.get(kind)
+        if prefix_for_kind and not node_id.startswith(prefix_for_kind):
+            errors.append(f"architecture node {node_id} kind {kind} requires "
+                          f"a {prefix_for_kind} identity")
+        matches = set()
+        for pattern in patterns:
+            normalized = pattern.replace("\\", "/")
+            if not _safe_architecture_glob(normalized):
+                errors.append(f"architecture node {node_id} has unsafe glob: "
+                              f"{pattern}")
+                continue
+            hits = {path for path in available
+                    if glob_match.path_matches(path, normalized)}
+            root_real = os.path.realpath(ws)
+            for hit in sorted(hits):
+                hit_real = os.path.realpath(os.path.join(ws, *hit.split("/")))
+                if not (hit_real.startswith(root_real + os.sep)
+                        and os.path.isfile(hit_real)):
+                    errors.append(f"architecture node {node_id} glob resolves "
+                                  f"outside candidate files: {hit}")
+            if not hits:
+                disk_hits = _disk_glob_hits(ws, normalized)
+                if disk_hits:
+                    errors.append(f"architecture node {node_id} glob is "
+                                  f"ignored or excluded: {normalized}")
+                else:
+                    errors.append(f"architecture node {node_id} glob has no "
+                                  f"candidate files: {normalized}")
+            matches.update(hits)
+        node_files[node_id] = sorted(matches)
+        node_details.append({"id": node_id, "kind": kind,
+                             "path_globs": list(patterns),
+                             "matched_files": sorted(matches)})
+
+    properties = {str(item) for item in parsed.get("required_properties") or []}
+    missing_properties = sorted(_ARCHITECTURE_REQUIRED_PROPERTIES - properties)
+    unknown_properties = sorted(properties - _ARCHITECTURE_REQUIRED_PROPERTIES)
+    if parsed["configured"] and missing_properties:
+        errors.append("architecture_decomposition is missing required "
+                      "properties: " + "; ".join(missing_properties))
+    if parsed["configured"] and unknown_properties:
+        errors.append("architecture_decomposition has unknown required "
+                      "properties: " + "; ".join(unknown_properties))
+
+    architecture_ids = set(node_ids)
+    bounded_architecture_edges, edge_errors = _semantic_edges(
+        architecture_edge_rows[:edge_limit],
+        label="architecture_decomposition.semantic_edges",
+        architecture_ids=architecture_ids, known_files=available)
+    errors.extend(edge_errors)
+    remaining = max(0, edge_limit - len(bounded_architecture_edges))
+    bounded_design_edges, design_edge_errors = _semantic_edges(
+        design_edge_rows[:remaining], label="graph.proposed_edges",
+        architecture_ids=(architecture_ids
+                          | set(parsed.get("proposed_modules") or [])
+                          | set(parsed.get("contract_ids") or [])),
+        known_files=available)
+    errors.extend(design_edge_errors)
+
+    file_owners: dict[str, set[str]] = {}
+    for node_id, matched in node_files.items():
+        for path in matched:
+            file_owners.setdefault(path, set()).add(node_id)
+    file_imports, import_errors = _python_file_import_edges(
+        ws, set(file_owners))
+    errors.extend(import_errors)
+    architecture_imports = set()
+    for source_file, target_file in file_imports:
+        for source in file_owners.get(source_file, ()):
+            for target in file_owners.get(target_file, ()):
+                if source != target:
+                    architecture_imports.add((source, target))
+
+    new_owners = {row["id"] for row in node_details
+                  if row["kind"] == "new"}
+    forbidden_targets = {
+        "component:taskplane-governance-adapters",
+        "ext:codex-native-orchestration",
     }
-    unknown_nodes = sorted(set(safe_nodes) - available)
-    if unknown_nodes:
-        errors.append("unknown owner nodes: " + ", ".join(unknown_nodes))
+    forbidden_imports = sorted(
+        (source, target) for source, target in architecture_imports
+        if source in new_owners and target in forbidden_targets)
+    if forbidden_imports:
+        errors.append("new owners depend on host transport or transition "
+                      "adapters: " + ", ".join(
+                          f"{source} -> {target}"
+                          for source, target in forbidden_imports))
 
-    bounded_edges = edges[:edge_limit]
-    declared = set(bounded_edges)
-    node_set = set(safe_nodes)
-    unknown_edges = sorted((source, target) for source, target in bounded_edges
-                           if source not in node_set or target not in node_set)
-    if unknown_edges:
-        errors.append("owner edges name undeclared nodes: " + ", ".join(
-            f"{source} -> {target}" for source, target in unknown_edges))
+    accepted_edge_keys = {(row["from"], row["to"], row["kind"])
+                          for row in bounded_architecture_edges}
+    required_edge_keys = {
+        ("taskplane", "contract:delivery.codex-native-dispatch", "intent"),
+        ("contract:delivery.codex-native-dispatch",
+         "ext:codex-native-orchestration", "transported-by"),
+        ("taskplane", "contract:delivery.exact-sha-terminal-truth", "changes"),
+        ("contract:delivery.exact-sha-terminal-truth",
+         "taskplane/terminal_truth.py", "coordinated-by"),
+    }
+    missing_required_edges = sorted(required_edge_keys - accepted_edge_keys)
+    if missing_required_edges:
+        errors.append("architecture_decomposition semantic authority omits "
+                      "required edges: " + ", ".join(
+                          f"{source} -> {target}:{kind}"
+                          for source, target, kind in missing_required_edges))
 
-    observed: set = set()
-    if not truncated and not unknown_nodes and not unknown_edges:
-        observed, observation_errors = _owner_import_edges(ws, safe_nodes)
-        errors.extend(observation_errors)
-    missing_edges = sorted(declared - observed) if not truncated else []
-    undeclared_edges = sorted(observed - declared) if not truncated else []
-    if missing_edges:
-        errors.append("declared owner edges are not observed: " + ", ".join(
-            f"{source} -> {target}" for source, target in missing_edges))
-    if undeclared_edges:
-        errors.append("observed owner edges are undeclared: " + ", ".join(
-            f"{source} -> {target}" for source, target in undeclared_edges))
+    singleton_sccs = [str(item or "").strip()
+                      for item in parsed["singleton_sccs"]]
+    if len(singleton_sccs) != len(set(singleton_sccs)):
+        errors.append("required_singleton_sccs must be unique")
+    unknown_singletons = sorted(set(singleton_sccs) - architecture_ids)
+    if unknown_singletons:
+        errors.append("required_singleton_sccs names unknown nodes: "
+                      + ", ".join(unknown_singletons))
 
     sccs, cyclic = [], []
-    if not truncated and not unknown_edges:
+    if not truncated and not unknown_singletons:
         try:
             sccs = graph_primitives.strongly_connected_components(
-                safe_nodes, bounded_edges)
-            self_edges = {source for source, target in bounded_edges
+                node_ids, architecture_imports)
+            self_edges = {source for source, target in architecture_imports
                           if source == target}
             cyclic = [component for component in sccs
                       if len(component) > 1 or component[0] in self_edges]
-            if cyclic:
-                errors.append("owner graph contains dependency cycles: "
-                              + "; ".join(", ".join(c) for c in cyclic))
+            memberships = {member: component for component in sccs
+                           for member in component}
+            non_singletons = [node for node in singleton_sccs
+                              if len(memberships.get(node, [])) != 1
+                              or node in self_edges]
+            if non_singletons:
+                errors.append("required singleton SCCs are cyclic: "
+                              + ", ".join(sorted(non_singletons)))
         except ValueError as exc:
             errors.append(str(exc))
 
     configured = bool(parsed["configured"])
     if configured and not nodes:
-        errors.append("owners section declares no architecture nodes")
+        errors.append("architecture_decomposition declares no nodes")
+    if configured and not architecture_edge_rows:
+        errors.append("architecture_decomposition declares no semantic edges")
     complete = bool(configured and not errors and not truncated)
-    edge_rows = lambda values: [
-        {"from": source, "to": target, "kind": "imports"}
-        for source, target in sorted(values)]
+    import_rows = [{"from": source, "to": target, "kind": "imports"}
+                   for source, target in sorted(architecture_imports)]
     proof = {
         "schema": ARCHITECTURE_MAP_SCHEMA,
         "configured": configured,
@@ -1021,19 +1283,22 @@ def architecture_map_proof(ws: str, *, known_files=None,
         "complete": complete,
         "truncated": truncated,
         "node_count": len(nodes),
-        "edge_count": len(edges),
+        "edge_count": len(architecture_edge_rows),
+        "current_design_edge_count": len(design_edge_rows),
         "node_bound": node_limit,
         "edge_bound": edge_limit,
-        "declared_nodes": sorted(safe_nodes),
-        "declared_edges": edge_rows(declared),
-        "observed_edges": edge_rows(observed),
-        "unknown_nodes": unknown_nodes,
-        "missing_edges": edge_rows(missing_edges),
-        "undeclared_edges": edge_rows(undeclared_edges),
+        "declared_nodes": sorted(node_ids),
+        "node_details": sorted(node_details, key=lambda row: row["id"]),
+        "declared_edges": bounded_architecture_edges,
+        "observed_edges": (bounded_architecture_edges if complete else []),
+        "current_design_edges": bounded_design_edges,
+        "architecture_import_edges": import_rows,
+        "required_singleton_sccs": sorted(singleton_sccs),
         "sccs": sccs,
         "cyclic_sccs": cyclic,
         "errors": errors,
-        "source_fingerprint": _components_file_fingerprint(ws),
+        "source": "design/contract.json#/architecture_decomposition",
+        "source_fingerprint": _design_file_fingerprint(ws),
     }
     material = dict(proof)
     proof["fingerprint"] = hashlib.sha256(json.dumps(
@@ -1527,12 +1792,11 @@ def _scan_locked(ws: str, into: dict | None = None,
     edges = {(a, b, k) for (a, b, k) in edges
              if b.startswith(("ext:", "svc:")) or b in resolvable}
 
-    # H-31: components.yaml's accepted owner map is an input to the graph,
+    # H-31: the accepted Design decomposition is a production graph input,
     # not inert documentation. The proof is exact and fail-closed: no bounded
-    # prefix, unknown owner, missing/extra edge, or cyclic SCC can be treated
-    # as a complete architecture map.
+    # prefix, unknown path/identity/edge, or declared SCC drift can pass.
     architecture = architecture_map_proof(
-        ws, known_files=set(file_entries))
+        ws, known_files=set(files))
 
     modules = {}
     for rel in code_files + artifact_files:
@@ -1602,17 +1866,38 @@ def _scan_locked(ws: str, into: dict | None = None,
         "meta": meta,
     }
     if architecture.get("complete"):
-        for node in architecture["declared_nodes"]:
-            g["modules"].setdefault(node, {
-                "kind": "component", "files": 1,
-                "declared_by": "components.yaml:owners",
-            })
+        for node in architecture["node_details"]:
+            kind = node["kind"]
+            public_kind = {
+                "external-host": "external", "contract": "contract",
+                "resource": "resource", "producer": "surface",
+            }.get(kind, "component")
+            g["modules"][node["id"]] = {
+                "kind": public_kind, "files": len(node["matched_files"]),
+                "paths": node["matched_files"],
+                "declared_by": architecture["source"],
+            }
         g["edges"].extend({
             "from": edge["from"], "to": edge["to"],
             "kind": edge["kind"],
-            "source": "components.yaml:owner_edges",
+            "reason": edge["reason"],
+            "source": ("design/contract.json#/architecture_decomposition/"
+                       "semantic_edges"),
             "confidence": "high", "declared": True,
         } for edge in architecture["declared_edges"])
+        g["edges"].extend({
+            "from": edge["from"], "to": edge["to"],
+            "kind": edge["kind"], "reason": edge["reason"],
+            "source": "design/contract.json#/graph/proposed_edges",
+            "confidence": "high", "declared": True,
+        } for edge in architecture["current_design_edges"])
+        g["edges"].extend({
+            "from": edge["from"], "to": edge["to"],
+            "kind": edge["kind"],
+            "source": ("design/contract.json#/architecture_decomposition/"
+                       "observed-imports"),
+            "confidence": "high", "observed": True,
+        } for edge in architecture["architecture_import_edges"])
     # merge agent-recorded edges (never dropped by rescans)
     g["edges"] += [e for e in g["recorded"]
                    if not any(x["from"] == e["from"] and x["to"] == e["to"]

@@ -171,6 +171,10 @@ def module_of(relpath: str, manifests: dict | None = None) -> str:
 
 def node_kind(node: str) -> str:
     """Return the public graph-node family for an identifier."""
+    if node.startswith("component:"):
+        return "component"
+    if node.startswith("surface:"):
+        return "surface"
     if node.startswith("req:"):
         return "requirement"
     if node.startswith("contract:"):

@@ -303,6 +303,274 @@
     {"id":"L-09","severity":"low","lens":"tech-writer","source":"docs/onboarding.md:166","title":"The context-storage instructions contradict onboarding's four-document model","owner":"product-docs-and-help","boundaries":["contract:docs.generated-truth"],"wave":"M2","task":"M2-C","dependency_class":"low-companion;shared-owner-with-M2-onboarding","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_docs.py::test_l09_onboarding_uses_one_consistent_four_document_model","low_companion":{"wave":"M2","mode":"shared-owner","with":["M-23"]}},
     {"id":"L-10","severity":"low","lens":"testability","source":"taskplane/build_c.py:68","title":"Runtime dependency seams are mutable process singletons without scoped restoration","owner":"scoped-test-runtime","boundaries":["contract:runtime.scoped-dependency-binding"],"wave":"M1","task":"M1-F","dependency_class":"low-companion;shared-owner-with-M1-test-runtime","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_test_isolation.py::test_l10_nested_and_parallel_runtime_bindings_restore_safely","low_companion":{"wave":"M1","mode":"shared-owner","with":["M-24"]}}
   ],
+  "architecture_decomposition": {
+    "schema": "taskplane.design-architecture-map/v1",
+    "content_fingerprint": "2ce2f31148d4078d64f62de89b8eff9a902693b68395773f53b5371623030ebc",
+    "decision_record": "D-R0013-native-adapter-quarantine",
+    "scanner_input": "design/contract.json#/architecture_decomposition",
+    "scanner_rule": "The strict decomposed scan must realize every node below from tracked path globs and compare its semantic edges with graph.proposed_edges. Aggregate baseline node taskplane remains baseline inventory only and cannot prove file-owner SCC isolation.",
+    "nodes": [
+      {
+        "id": "ext:codex-native-orchestration",
+        "kind": "external-host",
+        "path_globs": []
+      },
+      {
+        "id": "component:taskplane-governance-adapters",
+        "kind": "existing",
+        "path_globs": [
+          "taskplane/loop.py",
+          "taskplane/tp.py",
+          "taskplane/build_c.py",
+          "taskplane/plan_topology.py",
+          "taskplane/command_runtime.py"
+        ]
+      },
+      {
+        "id": "component:native-authority-validator",
+        "kind": "new",
+        "path_globs": [
+          "taskplane/native_authority.py"
+        ]
+      },
+      {
+        "id": "component:design-sweep-validator",
+        "kind": "new",
+        "path_globs": [
+          "taskplane/design_sweep.py"
+        ]
+      },
+      {
+        "id": "component:terminal-truth-coordinator",
+        "kind": "new",
+        "path_globs": [
+          "taskplane/terminal_truth.py"
+        ]
+      },
+      {
+        "id": "surface:git-head",
+        "kind": "producer",
+        "path_globs": [
+          "taskplane/repository.py"
+        ]
+      },
+      {
+        "id": "surface:governed-progress",
+        "kind": "producer",
+        "path_globs": [
+          "taskplane/progress.py"
+        ]
+      },
+      {
+        "id": "surface:run-journal",
+        "kind": "producer",
+        "path_globs": [
+          "taskplane/loop.py"
+        ]
+      },
+      {
+        "id": "surface:tasks-and-gates",
+        "kind": "producer",
+        "path_globs": [
+          "taskplane/loop.py",
+          "taskplane/checkpoint.py"
+        ]
+      },
+      {
+        "id": "surface:public-report",
+        "kind": "producer",
+        "path_globs": [
+          "taskplane/views.py"
+        ]
+      },
+      {
+        "id": "surface:repository-verification-report",
+        "kind": "producer",
+        "path_globs": [
+          "taskplane/repository.py"
+        ]
+      },
+      {
+        "id": "surface:release-evidence",
+        "kind": "producer",
+        "path_globs": [
+          "taskplane/release_evidence.py"
+        ]
+      },
+      {
+        "id": "surface:exports-terminal-evidence",
+        "kind": "producer",
+        "path_globs": [
+          "exports/**/terminal/**"
+        ]
+      },
+      {
+        "id": "component:r0013-contract-tests",
+        "kind": "test",
+        "path_globs": [
+          "taskplane/tests/test_r0013_*.py"
+        ]
+      }
+    ],
+    "required_properties": [
+      "native-authority, design-sweep, and terminal-truth owners are singleton SCCs",
+      "no new owner imports or invokes a host transport or transition adapter",
+      "governance adapters reach Codex only through contract:delivery.codex-native-dispatch",
+      "all eight surface producers reach the coordinator through contract:delivery.exact-sha-terminal-truth",
+      "tests observe every node and every declared production edge"
+    ],
+    "required_singleton_sccs": [
+      "component:native-authority-validator",
+      "component:design-sweep-validator",
+      "component:terminal-truth-coordinator"
+    ],
+    "semantic_edges": [
+      {
+        "from": "design",
+        "to": "contract:design.codex-native-capability-inventory",
+        "kind": "provides",
+        "reason": "Design authors the complete native capability/responsibility map."
+      },
+      {
+        "from": "contract:design.codex-native-capability-inventory",
+        "to": "taskplane/native_authority.py",
+        "kind": "validated-by",
+        "reason": "Pure validator enforces row completeness and semantic authority boundaries."
+      },
+      {
+        "from": "taskplane/native_authority.py",
+        "to": "plan",
+        "kind": "blocks",
+        "reason": "Plan cannot proceed with missing mapping or duplicate native authority."
+      },
+      {
+        "from": "lenses",
+        "to": "contract:design.quick-concurrent-all-lens-sweep",
+        "kind": "catalog-input",
+        "reason": "Exact catalog fingerprint defines the 26 Design-only obligations."
+      },
+      {
+        "from": "contract:design.quick-concurrent-all-lens-sweep",
+        "to": "taskplane/design_sweep.py",
+        "kind": "validated-by",
+        "reason": "Collector validates one quick native result and disposition per catalog id."
+      },
+      {
+        "from": "taskplane/design_sweep.py",
+        "to": "design",
+        "kind": "evidence",
+        "reason": "The single sweep receipt becomes final Design input after disposition."
+      },
+      {
+        "from": "taskplane",
+        "to": "contract:delivery.execution-zero-lens",
+        "kind": "changes",
+        "reason": "Execution adapters carry explicit empty lens expectations."
+      },
+      {
+        "from": "contract:delivery.execution-zero-lens",
+        "to": "taskplane/tests",
+        "kind": "verified-by",
+        "reason": "Real native traces prove zero execution lens starts and empty success."
+      },
+      {
+        "from": "plan",
+        "to": "contract:delivery.acceptance-wave-ceiling",
+        "kind": "changes",
+        "reason": "Plan seals seven outcomes and the exhaustive 21-pair map."
+      },
+      {
+        "from": "contract:delivery.acceptance-wave-ceiling",
+        "to": "taskplane",
+        "kind": "consumed-by",
+        "reason": "Ready-set and Plan gates refuse ceiling/pair violations."
+      },
+      {
+        "from": "taskplane",
+        "to": "contract:delivery.codex-native-dispatch",
+        "kind": "intent",
+        "reason": "Taskplane emits non-authoritative deterministic native dispatch intent only."
+      },
+      {
+        "from": "contract:delivery.codex-native-dispatch",
+        "to": "ext:codex-native-orchestration",
+        "kind": "transported-by",
+        "reason": "Codex exclusively owns spawn, capacity, admission and lifecycle."
+      },
+      {
+        "from": "ext:codex-native-orchestration",
+        "to": "contract:delivery.event-driven-wait",
+        "kind": "completion-attention",
+        "reason": "Native completion/attention drives the outstanding-set wait."
+      },
+      {
+        "from": "contract:delivery.event-driven-wait",
+        "to": "taskplane",
+        "kind": "observed-by",
+        "reason": "Taskplane validates membership/idempotency but owns no event queue."
+      },
+      {
+        "from": "taskplane",
+        "to": "contract:delivery.bounded-stage-handoff",
+        "kind": "changes",
+        "reason": "Brief and telemetry adapters produce a closed under-4000-token delta and finite usage."
+      },
+      {
+        "from": "contract:delivery.bounded-stage-handoff",
+        "to": "ext:codex-native-orchestration",
+        "kind": "handoff",
+        "reason": "Codex native tasks receive only the bounded delta."
+      },
+      {
+        "from": "taskplane",
+        "to": "contract:delivery.exact-sha-terminal-truth",
+        "kind": "changes",
+        "reason": "Finalizer consumes all terminal surface projections and P0 evidence."
+      },
+      {
+        "from": "contract:delivery.exact-sha-terminal-truth",
+        "to": "taskplane/terminal_truth.py",
+        "kind": "coordinated-by",
+        "reason": "One immutable bundle and CAS head own logical terminal publication."
+      },
+      {
+        "from": "taskplane/terminal_truth.py",
+        "to": "exports",
+        "kind": "projects",
+        "reason": "Finalizer writes a redacted checkout-resident aggregate projection."
+      },
+      {
+        "from": "exports",
+        "to": "resource:exports.exact-sha-terminal-truth",
+        "kind": "provides",
+        "reason": "Exports projection is the named repository-checkout resource."
+      },
+      {
+        "from": "resource:exports.exact-sha-terminal-truth",
+        "to": "contract:delivery.exact-sha-terminal-truth",
+        "kind": "bound-by",
+        "reason": "Resource gains authority only through the full terminal bundle digest set."
+      },
+      {
+        "from": "taskplane/native_authority.py",
+        "to": "taskplane",
+        "kind": "consumed-by",
+        "reason": "Design/Plan/architecture and dispatch adapters consume pure refusal rules."
+      },
+      {
+        "from": "taskplane/design_sweep.py",
+        "to": "taskplane",
+        "kind": "consumed-by",
+        "reason": "Design gate consumes the one sweep receipt; execution paths do not."
+      },
+      {
+        "from": "taskplane/terminal_truth.py",
+        "to": "taskplane",
+        "kind": "consumed-by",
+        "reason": "Existing progress/report/repository/release surfaces resolve terminal status through one bundle."
+      }
+    ]
+  },
   "graph": {
     "baseline_fingerprint": "42b140d0b8125932f316693a7efb2c24f71853f5a3aea822bf7c9558cf6aca0b",
     "proposed_modules": [
@@ -472,7 +740,7 @@
       "blockers": 0,
       "evidence": "Grounded the design in exact reviewed sources and graph; compared four material approaches; mapped 8 acceptance criteria and all 72 findings to modules/contracts, exclusive owners, dependencies, and executable selectors; set numeric durability/budget/timeout/accessibility/Python targets; linked every failure detection to an observability signal and bounded recovery; preserved current/N-1 expand-contract rollback; limited new modules to traceability, neutral glob matching, and locale/text boundaries; and left no implementation decision open.",
       "produced_by": "tp_step_designer_design_28973ea6",
-      "content_fingerprint": "779064d1827141d8cc0e67be7a69ec91cac060fec12688439c662018a7b7247f",
+      "content_fingerprint": "de677423e08f7ae8786f158dceadd4c7c05492745501cab217cfeff1d0cd4d4c",
       "self_attested": true
     }
   ],
