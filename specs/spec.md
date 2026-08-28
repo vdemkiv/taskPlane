@@ -57,11 +57,119 @@ parallel edits.
 
 - New product features, unrelated refactors, cosmetic cleanup, historical
   R-0001/R-0012 work, or reopening completed R-0013 delivery outcomes.
+- <a id="deferred-r0013-p1-w31-cold-start"></a>R-0013 W31 live-host and
+  cold-start follow-up is deferred under priced debt
+  [D-1301](#debt-d-1301).
+- <a id="deferred-r0013-p1-release-repair"></a>R-0013 historical tag and
+  release repair is deferred under priced debt [D-1302](#debt-d-1302).
+- <a id="deferred-r0013-p2-pushed-sha-closure"></a>R-0013 pushed-SHA release
+  closure is deferred under priced debt [D-1303](#debt-d-1303). These three
+  records exhaust the deferred P1/P2 inventory; another deferral requires a
+  new individually priced debt record and Product link.
 - Reclassifying, suppressing, or deleting a finding merely to reduce counts.
 - A broad rewrite when a bounded correction can satisfy the acceptance
   evidence; Design owns the choice of approach and trade-offs.
 - Push, tag, marketplace upload, publication, release, PR merge, or mutation of
   `origin/main`.
+
+### Priced deferred-work authority
+
+<a id="debt-d-1301"></a>**D-1301 — W31 live-host/cold-start.** Owned by the
+host-runtime maintainer; it re-enters when a live-host compatibility milestone
+is scheduled and requires a new governed requirement plus cold-start proof.
+Current repayment is estimated at 6 relative work units versus 11 after
+compatibility and operator re-teaching accumulate.
+
+<a id="debt-d-1302"></a>**D-1302 — historical release repair.** Owned by the
+release-evidence maintainer; it re-enters when a supported historical release
+is selected for repair and requires a repair requirement plus fetched-tag
+evidence. Current repayment is 4 units versus 8 after migration/backfill grows.
+
+<a id="debt-d-1303"></a>**D-1303 — pushed-SHA release closure.** Owned by the
+release-closure maintainer; it re-enters when publication authority is granted
+for an R-0013 successor and requires a release requirement plus fetched remote
+SHA evidence. Current repayment is 5 units versus 9 after compatibility and
+operator re-teaching grow.
+
+<!-- taskplane:priced-debt-authority:v1:start -->
+[
+  {
+    "debt_id": "D-1301",
+    "deferred_item": "R0013-P1-W31-cold-start",
+    "owner": "owner:host-runtime",
+    "reentry_trigger": {
+      "signal": "live-host-compatibility-milestone-scheduled",
+      "threshold": "A named milestone has an owner, target host, and execution window",
+      "action": "Open a governed requirement and require fresh W31 cold-start evidence"
+    },
+    "follow_up": "Complete live-host W31 and cold-start compatibility proof",
+    "now_cost": {
+      "unit": "relative-work-units", "backfill": 1, "migration": 1,
+      "compatibility": 2, "operator_reteaching": 1, "other": 1,
+      "total": 6, "basis": "Current bounded host matrix and retained W31 fixtures"
+    },
+    "later_cost": {
+      "unit": "relative-work-units", "backfill": 2, "migration": 2,
+      "compatibility": 3, "operator_reteaching": 2, "other": 2,
+      "total": 11, "basis": "Additional host drift, migration, and operator re-teaching"
+    },
+    "references": [
+      "specs/spec.md#deferred-r0013-p1-w31-cold-start",
+      "specs/spec.md#debt-d-1301"
+    ]
+  },
+  {
+    "debt_id": "D-1302",
+    "deferred_item": "R0013-P1-release-repair",
+    "owner": "owner:release-evidence",
+    "reentry_trigger": {
+      "signal": "historical-release-selected-for-repair",
+      "threshold": "A supported historical release and exact repair target are approved",
+      "action": "Open a repair requirement and require fetched-tag evidence"
+    },
+    "follow_up": "Repair the selected historical tag and release evidence chain",
+    "now_cost": {
+      "unit": "relative-work-units", "backfill": 1, "migration": 1,
+      "compatibility": 1, "operator_reteaching": 0, "other": 1,
+      "total": 4, "basis": "Current release evidence and retained compatibility fixtures"
+    },
+    "later_cost": {
+      "unit": "relative-work-units", "backfill": 2, "migration": 2,
+      "compatibility": 2, "operator_reteaching": 1, "other": 1,
+      "total": 8, "basis": "Expected tag drift, backfill, and compatibility migration"
+    },
+    "references": [
+      "specs/spec.md#deferred-r0013-p1-release-repair",
+      "specs/spec.md#debt-d-1302"
+    ]
+  },
+  {
+    "debt_id": "D-1303",
+    "deferred_item": "R0013-P2-pushed-sha-closure",
+    "owner": "owner:release-closure",
+    "reentry_trigger": {
+      "signal": "r0013-successor-publication-authorized",
+      "threshold": "Attributed publication authority names the successor and remote",
+      "action": "Open a release requirement and require fetched remote SHA proof"
+    },
+    "follow_up": "Close pushed-SHA release evidence for the authorized successor",
+    "now_cost": {
+      "unit": "relative-work-units", "backfill": 1, "migration": 1,
+      "compatibility": 1, "operator_reteaching": 1, "other": 1,
+      "total": 5, "basis": "Current remote verification path and release fixtures"
+    },
+    "later_cost": {
+      "unit": "relative-work-units", "backfill": 2, "migration": 1,
+      "compatibility": 2, "operator_reteaching": 2, "other": 2,
+      "total": 9, "basis": "Expected remote drift, compatibility, and operator re-teaching"
+    },
+    "references": [
+      "specs/spec.md#deferred-r0013-p2-pushed-sha-closure",
+      "specs/spec.md#debt-d-1303"
+    ]
+  }
+]
+<!-- taskplane:priced-debt-authority:v1:end -->
 
 ## Functional requirements
 
