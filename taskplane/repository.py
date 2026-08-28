@@ -99,12 +99,14 @@ _ACQUISITION_HTTP11: contextvars.ContextVar[bool] = \
 class RepositoryAcquisitionError(RuntimeError):
     def __init__(self, kind: str, detail: str, *,
                  preparation_result: dict | None = None,
-                 retry_after: str | float | int | None = None):
+                 retry_after: str | float | int | None = None,
+                 recovery_result: dict | None = None):
         super().__init__(detail)
         self.kind = str(kind)
         self.detail = str(detail)
         self.preparation_result = copy.deepcopy(preparation_result)
         self.retry_after = retry_after
+        self.recovery_result = copy.deepcopy(recovery_result)
 
 
 def guard_terminal_delivery(
@@ -1166,27 +1168,11 @@ class RepositoryManager:
                 f"git diff hydration exited {result.returncode}")
 
     def _fetch(self, argv: list[str]) -> str:
-        """Run one fetch attempt selected by the active retry owner.
-
-        A direct legacy call retains its single HTTP/1.1 compatibility retry.
-        Under ``acquire_with_recovery`` this method never retries: the outer
-        owner budgets, delays, and selects HTTP/1.1 for the next attempt.
-        """
-        if _ACQUISITION_RETRY_OWNER.get():
-            selected = argv
-            if _ACQUISITION_HTTP11.get():
-                selected = [argv[0], "-c", "http.version=HTTP/1.1", *argv[1:]]
-            return self._run(selected)
-        try:
-            return self._run(argv)
-        except RepositoryAcquisitionError as exc:
-            detail = exc.detail.lower()
-            if not any(token in detail for token in (
-                    "rpc failed", "http 400", "http/2 stream",
-                    "early eof", "remote end hung up")):
-                raise
-            fallback = [argv[0], "-c", "http.version=HTTP/1.1", *argv[1:]]
-            return self._run(fallback)
+        """Run exactly one fetch attempt chosen by the sole retry owner."""
+        selected = argv
+        if _ACQUISITION_HTTP11.get():
+            selected = [argv[0], "-c", "http.version=HTTP/1.1", *argv[1:]]
+        return self._run(selected)
 
     @staticmethod
     def _remote_url(identity: storage.RepositoryIdentity) -> str:
@@ -1309,8 +1295,34 @@ class RepositoryManager:
             material, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")).hexdigest()}
 
+    def _owned_acquisition(self, acquire: Callable[[], AcquisitionResult]) \
+            -> AcquisitionResult:
+        """Apply the one acquisition policy unless an outer owner is active."""
+        if _ACQUISITION_RETRY_OWNER.get():
+            return acquire()
+        recovered = acquire_with_recovery(acquire)
+        if recovered["status"] == "ready":
+            return recovered["value"]
+        reason = str(recovered.get("reason") or
+                     recovered.get("reason_code") or "repeated_failure")
+        kind = {
+            "authority_required": "authentication",
+            "host_policy": "host-policy",
+            "external_unavailable": "network",
+        }.get(reason, "network")
+        preparation = recovered if "reason_code" in recovered else None
+        raise RepositoryAcquisitionError(
+            kind, str(recovered.get("detail") or reason),
+            preparation_result=preparation, recovery_result=recovered)
+
     def acquire_pr(self, identity: storage.RepositoryIdentity,
                    target: dict) -> AcquisitionResult:
+        """Acquire a pull request through the sole bounded retry owner."""
+        return self._owned_acquisition(
+            lambda: self._acquire_pr_once(identity, target))
+
+    def _acquire_pr_once(self, identity: storage.RepositoryIdentity,
+                         target: dict) -> AcquisitionResult:
         metadata = self._metadata(target)
         number = int(target["number"])
         base_name = str(metadata["baseRefName"])
@@ -1372,7 +1384,39 @@ class RepositoryManager:
                            predecessor_result_fingerprint: str | None = None,
                            prior_result: dict | None = None) \
             -> AcquisitionResult:
-        """Acquire a hosted repository from its verified fetched default."""
+        """Acquire a hosted repository through the sole bounded retry owner."""
+        if _ACQUISITION_RETRY_OWNER.get():
+            return self._acquire_repository_once(
+                identity, target, run_id=run_id, attempt=attempt,
+                predecessor_result_fingerprint=
+                predecessor_result_fingerprint, prior_result=prior_result)
+        current_attempt = attempt
+        current_predecessor = predecessor_result_fingerprint
+        current_prior = prior_result
+
+        def acquire_once() -> AcquisitionResult:
+            nonlocal current_attempt, current_predecessor, current_prior
+            try:
+                return self._acquire_repository_once(
+                    identity, target, run_id=run_id, attempt=current_attempt,
+                    predecessor_result_fingerprint=current_predecessor,
+                    prior_result=current_prior)
+            except RepositoryAcquisitionError as exc:
+                observed = exc.preparation_result
+                if observed is not None and "attempt" in observed and \
+                        "fingerprint" in observed:
+                    current_attempt = int(observed["attempt"]) + 1
+                    current_predecessor = str(observed["fingerprint"])
+                    current_prior = observed
+                raise
+
+        return self._owned_acquisition(acquire_once)
+
+    def _acquire_repository_once(
+            self, identity: storage.RepositoryIdentity, target: dict, *,
+            run_id: str = "acquisition", attempt: int = 1,
+            predecessor_result_fingerprint: str | None = None,
+            prior_result: dict | None = None) -> AcquisitionResult:
         layout = storage.resolve_layout(identity, home=self.home,
                                         run_id="acquisition")
         try:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+import preflight
+import pytest
 import repository
 
 
@@ -19,6 +21,26 @@ class _Clock:
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
         self.value += seconds
+
+
+class _DefaultManager(repository.RepositoryManager):
+    def __init__(self, *, home: str, acquired: repository.AcquisitionResult):
+        super().__init__(home=home)
+        self.acquired = acquired
+        self.fetch_calls: list[list[str]] = []
+
+    def _run(self, argv, *, cwd=None, timeout=600):
+        del cwd, timeout
+        self.fetch_calls.append(list(argv))
+        if len(self.fetch_calls) == 1:
+            raise repository.RepositoryAcquisitionError(
+                "network", "RPC failed; HTTP 400 default preflight")
+        return "fetched"
+
+    def _acquire_repository_once(self, identity, target, **kwargs):
+        del identity, target, kwargs
+        self._fetch(["git", "fetch", "origin", "main"])
+        return self.acquired
 
 
 def test_m19_one_retry_owner_applies_bounded_backoff_and_deadline(
@@ -94,6 +116,80 @@ def test_m19_one_retry_owner_applies_bounded_backoff_and_deadline(
     assert timeout_clock.sleeps == []
 
 
+def test_m19_default_preflight_cannot_bypass_or_nest_retry_owner(
+        monkeypatch, tmp_path):
+    monkeypatch.delenv("TASKPLANE_CONSOLIDATED_FLOW", raising=False)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    acquired = repository.AcquisitionResult(
+        checkout=str(checkout), base_ref="origin/main", base="a" * 40,
+        head="a" * 40, merge_base="a" * 40, changed_files=(),
+        metadata={"url": "https://github.com/example/project"})
+    clock = _Clock()
+    manager = _DefaultManager(
+        home=str(tmp_path / "home"), acquired=acquired)
+    original_recovery = repository.acquire_with_recovery
+    owner_calls = 0
+
+    def deterministic_owner(acquire, **kwargs):
+        nonlocal owner_calls
+        owner_calls += 1
+        return original_recovery(
+            acquire, deadline_seconds=10, base_backoff_seconds=2,
+            max_backoff_seconds=4, monotonic=clock.monotonic,
+            wall_time=clock.wall_time, sleep=clock.sleep,
+            random_value=lambda: 0.5, **kwargs)
+
+    monkeypatch.setattr(
+        repository, "acquire_with_recovery", deterministic_owner)
+    engine = preflight.RepositoryPreflight(
+        home=str(tmp_path / "home"),
+        tools_provider=lambda: {
+            "git": {"present": True},
+            "gh": {"present": False, "authenticated": False},
+        }, acquirer=manager)
+    result = engine.prepare(
+        "https://github.com/example/project",
+        workspace=str(tmp_path / "workspace"), host={"kind": "codex"},
+        run_id="m19-default")
+
+    assert result["status"] == "ready"
+    assert owner_calls == 1
+    assert clock.sleeps == [1.0]
+    assert len(manager.fetch_calls) == 2
+    assert manager.fetch_calls[0] == ["git", "fetch", "origin", "main"]
+    assert manager.fetch_calls[1][:3] == [
+        "git", "-c", "http.version=HTTP/1.1"]
+    retry = result["target"]["metadata"]["repository_retry"]
+    assert [row["status"] for row in retry["attempts"]] == [
+        "failed", "ready"]
+
+    # An explicit outer owner must suppress the manager's default owner, so a
+    # future consolidated caller cannot recreate nested retry loops.
+    outer = repository.acquire_with_recovery(
+        lambda: manager.acquire_repository(None, {}))
+    assert outer["status"] == "ready"
+    assert owner_calls == 2
+    assert len(manager.fetch_calls) == 3
+
+
+def test_m19_direct_fetch_has_no_independent_retry(monkeypatch, tmp_path):
+    manager = repository.RepositoryManager(home=str(tmp_path))
+    calls: list[list[str]] = []
+
+    def fail(argv, *, cwd=None, timeout=600):
+        del cwd, timeout
+        calls.append(list(argv))
+        raise repository.RepositoryAcquisitionError(
+            "network", "RPC failed; HTTP 400 direct fetch")
+
+    monkeypatch.setattr(manager, "_run", fail)
+    with pytest.raises(repository.RepositoryAcquisitionError):
+        manager._fetch(["git", "fetch", "origin", "main"])
+    assert calls == [["git", "fetch", "origin", "main"]]
+
+
 def test_m19_retry_after_is_honored_and_cannot_escape_deadline():
     clock = _Clock()
     attempts = 0
@@ -149,4 +245,3 @@ def test_m19_success_persists_per_attempt_telemetry():
     telemetry = result["value"].metadata["repository_retry"]
     assert telemetry["schema"] == "taskplane.repository-retry-telemetry/v1"
     assert telemetry["attempts"][0]["status"] == "ready"
-
