@@ -8,7 +8,6 @@ performs one bounded read of that snapshot and projects only persisted facts.
 from __future__ import annotations
 
 import json
-import hashlib
 import os
 import statistics
 import tempfile
@@ -210,10 +209,33 @@ def _existing_snapshot(path: str) -> dict[str, Any] | None:
     try:
         with open(path, encoding="utf-8") as stream:
             value = json.load(stream)
-        return value if isinstance(value, dict) and value.get("schema") == \
-            SNAPSHOT_SCHEMA else None
+        if not isinstance(value, dict) or value.get("schema") != \
+                SNAPSHOT_SCHEMA:
+            return None
+        identity = value.get("identity")
+        active = value.get("active")
+        if not isinstance(identity, dict) or not isinstance(active, dict):
+            return None
+        sequence = identity.get("sequence")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or \
+                sequence < 1:
+            return None
+        established = (
+            identity.get("workflow_id"), identity.get("run_id"),
+            active.get("owner"), active.get("agent"), active.get("phase"))
+        if not all(isinstance(item, str) and bool(item.strip())
+                   for item in established):
+            return None
+        if value.get("state") not in STATES:
+            return None
+        return value
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return None
+
+
+def _trace_identity_text(value: object) -> str | None:
+    """A real structural identity value, never a minimized descriptor."""
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _trace_state(event: str, phase: str) -> str:
@@ -246,37 +268,33 @@ def record_trace_event(workspace: str, event: str, data: Mapping[str, Any],
     prior = _existing_snapshot(path)
     prior_identity = prior.get("identity") if prior else {}
     prior_active = prior.get("active") if prior else {}
-    phase_value = data.get("step") or data.get("phase")
-    agent_value = data.get("agent_id") or data.get("agent") or data.get("task")
+    workflow_value = _trace_identity_text(data.get("workflow_id"))
+    run_value = _trace_identity_text(data.get("run_id"))
+    phase_value = (_trace_identity_text(data.get("step")) or
+                   _trace_identity_text(data.get("phase")))
+    agent_value = (_trace_identity_text(data.get("agent_id")) or
+                   _trace_identity_text(data.get("agent")) or
+                   _trace_identity_text(data.get("task")))
     # A generic audit event is not evidence of a live workflow.  The former
     # fallbacks manufactured an ``active-loop`` owned by ``taskplane`` for
     # any trace append, including a denial or rotation marker.  Start the
     # presentation snapshot only from a complete, durable run identity;
     # once started, later events may inherit that established identity.
-    if prior is None and not all(
-            isinstance(value, str) and bool(value.strip()) for value in (
-                data.get("workflow_id"), data.get("run_id"), phase_value,
-                agent_value)):
+    if prior is None and not all((workflow_value, run_value, phase_value,
+                                  agent_value)):
         return {"schema": SNAPSHOT_SCHEMA, "recorded": False,
                 "reason": "incomplete trace identity"}
     moment = float(observed_at if observed_at is not None else time.time())
-    fallback = hashlib.sha256(os.path.realpath(workspace).encode("utf-8")) \
-        .hexdigest()[:16]
     phase = str(phase_value or event)
     identity = {
-        "workflow_id": str(data.get("workflow_id") or
-                           prior_identity.get("workflow_id") or
-                           f"workspace-{fallback}"),
-        "run_id": str(data.get("run_id") or prior_identity.get("run_id") or
-                      "active-loop"),
+        "workflow_id": str(workflow_value or prior_identity["workflow_id"]),
+        "run_id": str(run_value or prior_identity["run_id"]),
         "sequence": int(prior_identity.get("sequence") or 0) + 1,
     }
     active = {
-        "owner": str(data.get("owner") or prior_active.get("owner") or
-                     "taskplane"),
-        "agent": str(data.get("agent_id") or data.get("agent") or
-                     data.get("task") or prior_active.get("agent") or
-                     "taskplane"),
+        "owner": str(_trace_identity_text(data.get("owner")) or
+                     prior_active.get("owner") or "taskplane"),
+        "agent": str(agent_value or prior_active["agent"]),
         "phase": phase,
     }
     state = _trace_state(str(event), phase)

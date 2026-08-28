@@ -319,6 +319,31 @@ def test_generic_trace_does_not_invent_live_progress_identity(tmp_path):
     assert status["gating"] is False
 
 
+@pytest.mark.parametrize("prior", [
+    {"schema": progress.SNAPSHOT_SCHEMA},
+    {"schema": progress.SNAPSHOT_SCHEMA,
+     "identity": {"workflow_id": "wf", "run_id": "run", "sequence": 1}},
+    {"schema": progress.SNAPSHOT_SCHEMA,
+     "identity": {"workflow_id": "wf", "run_id": "run", "sequence": 1},
+     "active": {"owner": "taskplane", "agent": "", "phase": "execute"},
+     "state": "executing"},
+])
+def test_incomplete_prior_cannot_seed_fallback_progress_identity(
+        tmp_path, prior):
+    root = tmp_path / ".taskplane"
+    root.mkdir()
+    path = root / "progress.json"
+    path.write_text(json.dumps(prior), encoding="utf-8")
+
+    outcome = progress.record_trace_event(
+        str(tmp_path), "hook_deny", {"step": "execute"}, observed_at=100.0)
+
+    assert outcome["recorded"] is False
+    assert json.loads(path.read_text(encoding="utf-8")) == prior
+    status = progress.read_workspace_status(str(tmp_path), now=101.0)
+    assert status["status"] == "unavailable"
+
+
 def test_production_status_reads_durable_progress_without_review_recompute(tmp_path):
     progress.record_trace_event(
         str(tmp_path), "loop_step",

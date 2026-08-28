@@ -271,6 +271,30 @@ def test_h25_authority_trace_uses_same_minimized_sink(
     assert "Rowan" not in json.dumps(row)
 
 
+def test_h25_structural_audit_fields_are_closed_not_generic_literals() -> None:
+    secret = "patient_secret"
+    row = tp.audit_record("privacy_probe", {
+        "lenses": [[secret, "deep"], [secret, "light"],
+                   [secret, "n/a"], secret, {"mode": secret}],
+        "dor_ready": secret,
+    })
+    encoded = json.dumps(row)
+
+    assert row["lenses"][0][1] == "deep"
+    assert row["lenses"][1][1] == "light"
+    assert row["lenses"][2][1] == "n/a"
+    for value in (row["lenses"][0][0], row["lenses"][1][0],
+                  row["lenses"][2][0], row["lenses"][3],
+                  row["lenses"][4], row["dor_ready"]):
+        assert value["schema"] == "taskplane.audit-minimized/v1"
+    assert secret not in encoded
+
+    booleans = tp.audit_record(
+        "privacy_probe", {"dor_ready": True, "lenses": ["n/a"]})
+    assert booleans["dor_ready"] is True
+    assert booleans["lenses"] == ["n/a"]
+
+
 def test_h25_rotated_audit_archives_are_bounded(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workspace = _repository(tmp_path / "repo")
