@@ -63,14 +63,7 @@ def isolated_test_runtime():
             name: os.environ.get(name, _MISSING)
             for name in ("TMPDIR", "PYTHONIOENCODING", "TASKPLANE_HOME")
         }
-
-        # Create the aggregation root before redirecting tempfile itself.
-        _TMP_ROOT = os.path.realpath(tempfile.mkdtemp(prefix="tp-tests-"))
-        tempfile.tempdir = _TMP_ROOT
-        os.environ["TMPDIR"] = _TMP_ROOT
-        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-        _SESSION_HOME = tempfile.mkdtemp(prefix="tp-store-test-")
-        os.environ.setdefault("TASKPLANE_HOME", _SESSION_HOME)
+        tmp_root = None
 
         def _force_rmtree(path, ignore_errors=False, **kwargs):
             if ignore_errors or kwargs.get("onerror") or kwargs.get("onexc"):
@@ -91,14 +84,22 @@ def isolated_test_runtime():
             finally:
                 _restore_environment("TASKPLANE_HOME", saved_home)
 
-        shutil.rmtree = _force_rmtree
-        shutil._tp_force_rmtree = True
-        unittest.TestCase.run = _isolating_run
-        unittest.TestCase._tp_isolated = True
         try:
-            yield {"tmp_root": _TMP_ROOT, "session_home": _SESSION_HOME}
+            # Create the aggregation root before redirecting tempfile itself.
+            tmp_root = os.path.realpath(tempfile.mkdtemp(prefix="tp-tests-"))
+            tempfile.tempdir = tmp_root
+            os.environ["TMPDIR"] = tmp_root
+            os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+            session_home = tempfile.mkdtemp(prefix="tp-store-test-")
+            os.environ.setdefault("TASKPLANE_HOME", session_home)
+            shutil.rmtree = _force_rmtree
+            shutil._tp_force_rmtree = True
+            unittest.TestCase.run = _isolating_run
+            unittest.TestCase._tp_isolated = True
+            yield {"tmp_root": tmp_root, "session_home": session_home}
         finally:
-            # Restore exact identities only after the runner has stopped.
+            # Also handles a partial __enter__: every earlier mutation is
+            # restored even if a later setup step raises before ``yield``.
             if unittest.TestCase.run is _isolating_run:
                 unittest.TestCase.run = saved_testcase_run
             if saved_isolated_marker is _MISSING:
@@ -120,7 +121,8 @@ def isolated_test_runtime():
             tempfile.tempdir = saved_tempdir
             for name, value in saved_environment.items():
                 _restore_environment(name, value)
-            saved_rmtree(_TMP_ROOT, ignore_errors=True)
+            if tmp_root is not None:
+                saved_rmtree(tmp_root, ignore_errors=True)
 
 
 def _stop_runner_bootstrap() -> None:

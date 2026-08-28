@@ -16,9 +16,37 @@ import tempfile
 import textwrap
 import unittest
 
+from taskplane.tests import isolated_test_runtime
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
+_MODULE_RUNTIME = None
+
+
+def setUpModule():
+    """Enter isolation when unittest loads this module by its exact name.
+
+    Named unittest loading bypasses the package ``load_tests`` protocol.  A
+    module fixture is the narrow supported hook that starts at execution time
+    (not import time) and is paired with ``tearDownModule`` even when a test
+    fails.
+    """
+    global _MODULE_RUNTIME
+    if _MODULE_RUNTIME is not None:
+        raise RuntimeError("unittest module isolation is already active")
+    context = isolated_test_runtime()
+    context.__enter__()
+    _MODULE_RUNTIME = context
+
+
+def tearDownModule():
+    """Restore every process binding installed by ``setUpModule``."""
+    global _MODULE_RUNTIME
+    context = _MODULE_RUNTIME
+    _MODULE_RUNTIME = None
+    if context is not None:
+        context.__exit__(None, None, None)
 
 
 class TestUnittestRunnerIsolation(unittest.TestCase):
