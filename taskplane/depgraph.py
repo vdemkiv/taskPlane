@@ -120,6 +120,12 @@ ARCHITECTURE_MAX_BYTES = 1024 * 1024
 ARCHITECTURE_MAX_NODES = 512
 ARCHITECTURE_MAX_EDGES = 2048
 DESIGN_ARCHITECTURE_SCHEMA = "taskplane.design-architecture-map/v1"
+ARCHITECTURE_AUTHORITY_FLOOR_SCHEMA = \
+    "taskplane.architecture-authority-floor/v1"
+CURRENT_GRAPH_AUTHORITY_FLOOR_SCHEMA = \
+    "taskplane.current-graph-authority-floor/v1"
+SEMANTIC_ENDPOINT_REGISTRY_SCHEMA = \
+    "taskplane.semantic-endpoint-registry/v1"
 _ARCHITECTURE_MAP_KEYS = frozenset({
     "schema", "decision_record", "scanner_input", "scanner_rule", "nodes",
     "required_properties", "required_singleton_sccs", "semantic_edges",
@@ -146,6 +152,86 @@ _SEMANTIC_EDGE_KINDS = frozenset({
     "transported-by", "uses", "validated-by", "verified-by",
 })
 _GRAPH_NODE_ID = re.compile(r"^[A-Za-z0-9._/-]+(?::[A-Za-z0-9._/-]+)*$")
+
+# These floors are engine-owned copies of the two separately approved graph
+# authorities consumed by the R-0002 review.  A digest carried by
+# design/contract.json proves only internal consistency: a caller could
+# otherwise delete every row and recompute it.  The decision/requirement keyed
+# floors pin both accepted sets independently, including row content and
+# ordering, while the set digests make identity drift explicit in diagnostics.
+_ARCHITECTURE_AUTHORITY_FLOORS = {
+    "D-R0013-native-adapter-quarantine": {
+        "schema": ARCHITECTURE_AUTHORITY_FLOOR_SCHEMA,
+        "content_fingerprint":
+            "2ce2f31148d4078d64f62de89b8eff9a902693b68395773f53b5371623030ebc",
+        "node_count": 14,
+        "node_set_fingerprint":
+            "3d98e052e20e872af075cb337589fc51c10dc2fb4f8609342a1eb41a40310280",
+        "semantic_edge_count": 24,
+        "semantic_edge_set_fingerprint":
+            "605ea7d0927748f945477d32048a1e641d7b0a1441992ac1fd0e4b36c6d6325b",
+        "singleton_sccs": frozenset({
+            "component:native-authority-validator",
+            "component:design-sweep-validator",
+            "component:terminal-truth-coordinator",
+        }),
+    },
+}
+_CURRENT_GRAPH_AUTHORITY_FLOORS = {
+    "R-0002": {
+        "schema": CURRENT_GRAPH_AUTHORITY_FLOOR_SCHEMA,
+        "edge_count": 23,
+        "edge_fingerprint":
+            "d79577ead44054407fbc767fb86a40c5f61da79f84811dfa8d93328f8c5b3d4c",
+        "edge_set_fingerprint":
+            "09d2b45bc0196ed898120235a7c949b76f4cc81e479b86b7366d856b9b3d5748",
+    },
+}
+
+# Versioned, closed semantic boundary vocabulary for the two authorities
+# above.  Prefix syntax is not registration: every ext:/contract:/resource:/
+# svc:/req:/component:/surface: endpoint must appear here before it can enter
+# a production graph.
+_SEMANTIC_ENDPOINT_REGISTRY = frozenset({
+    "component:design-sweep-validator",
+    "component:native-authority-validator",
+    "component:r0013-contract-tests",
+    "component:taskplane-governance-adapters",
+    "component:terminal-truth-coordinator",
+    "contract:ci.reproducible-python-quality",
+    "contract:dashboard.accessible-truthful-actions",
+    "contract:delivery.acceptance-wave-ceiling",
+    "contract:delivery.bounded-stage-handoff",
+    "contract:delivery.codex-native-dispatch",
+    "contract:delivery.event-driven-wait",
+    "contract:delivery.exact-sha-terminal-truth",
+    "contract:delivery.execution-zero-lens",
+    "contract:delivery.production-wiring",
+    "contract:design.codex-native-capability-inventory",
+    "contract:design.quick-concurrent-all-lens-sweep",
+    "contract:docs.generated-truth",
+    "contract:i18n.locale-and-grapheme",
+    "contract:privacy.retention-and-disclosure",
+    "contract:quality.review-remediation",
+    "contract:release.compatibility-and-authority",
+    "contract:review.high-closure-gate",
+    "contract:runtime.durable-state-and-authority",
+    "contract:runtime.scoped-dependency-binding",
+    "ext:codex-native-orchestration",
+    "resource:exports.exact-sha-terminal-truth",
+    "resource:review.exact-candidate-evidence",
+    "resource:review.finding-traceability",
+    "surface:exports-terminal-evidence",
+    "surface:git-head",
+    "surface:governed-progress",
+    "surface:public-report",
+    "surface:release-evidence",
+    "surface:repository-verification-report",
+    "surface:run-journal",
+    "surface:tasks-and-gates",
+})
+_SEMANTIC_ENDPOINT_REGISTRY_FINGERPRINT = \
+    "3756cfb3f83c1d7ac5d024c7bd4672b7e61dd0e3226818327aa286b6c8ba5053"
 
 
 class GraphQualityDegraded(RuntimeError):
@@ -835,6 +921,12 @@ def _safe_architecture_glob(pattern: str) -> bool:
                 and ".." not in parts and not os.path.isabs(value))
 
 
+def _canonical_json_fingerprint(value) -> str:
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def _read_design_architecture(ws: str) -> dict:
     """Read both immutable R-0013 and current Design graph authorities.
 
@@ -882,15 +974,23 @@ def _read_design_architecture(ws: str) -> dict:
     if architecture.get("schema") != DESIGN_ARCHITECTURE_SCHEMA:
         errors.append("architecture_decomposition has unknown schema: "
                       + str(architecture.get("schema") or "missing"))
+    decision_record = str(architecture.get("decision_record") or "").strip()
+    authority_floor = _ARCHITECTURE_AUTHORITY_FLOORS.get(decision_record)
+    if authority_floor is None:
+        errors.append("architecture_decomposition decision_record has no "
+                      "accepted authority floor: "
+                      + (decision_record or "missing"))
     fingerprint = str(architecture.get("content_fingerprint") or "")
     material = {key: architecture[key] for key in sorted(architecture)
                 if key != "content_fingerprint"}
-    expected_fingerprint = hashlib.sha256(json.dumps(
-        material, sort_keys=True, separators=(",", ":"),
-        ensure_ascii=False).encode("utf-8")).hexdigest()
+    expected_fingerprint = _canonical_json_fingerprint(material)
     if fingerprint != expected_fingerprint:
         errors.append("architecture_decomposition content_fingerprint does "
                       "not bind the complete accepted map")
+    if authority_floor is not None and fingerprint != \
+            authority_floor["content_fingerprint"]:
+        errors.append("architecture_decomposition does not match the immutable "
+                      f"authority floor for {decision_record}")
     if architecture.get("scanner_input") != \
             "design/contract.json#/architecture_decomposition":
         errors.append("architecture_decomposition scanner_input is missing "
@@ -903,15 +1003,43 @@ def _read_design_architecture(ws: str) -> dict:
     if not isinstance(nodes, list):
         errors.append("architecture_decomposition nodes must be a list")
         nodes = []
+    if authority_floor is not None:
+        node_set = sorted(
+            nodes, key=lambda row: str(row.get("id") or "")
+            if isinstance(row, dict) else "")
+        if len(nodes) != authority_floor["node_count"] or \
+                _canonical_json_fingerprint(node_set) != \
+                authority_floor["node_set_fingerprint"]:
+            errors.append("architecture_decomposition nodes do not match the "
+                          "immutable 14-node id/kind/path-glob authority")
     semantic_edges = architecture.get("semantic_edges")
     if not isinstance(semantic_edges, list):
         errors.append("architecture_decomposition semantic_edges must be a list")
         semantic_edges = []
+    if authority_floor is not None:
+        edge_set = sorted(semantic_edges, key=lambda row: (
+            str(row.get("from") or ""), str(row.get("to") or ""),
+            str(row.get("kind") or ""), str(row.get("reason") or ""))
+            if isinstance(row, dict) else ("", "", "", ""))
+        if len(semantic_edges) != authority_floor["semantic_edge_count"] or \
+                _canonical_json_fingerprint(edge_set) != \
+                authority_floor["semantic_edge_set_fingerprint"]:
+            errors.append("architecture_decomposition semantic_edges do not "
+                          "match the immutable 24-edge authority")
     singleton_sccs = architecture.get("required_singleton_sccs")
     if not isinstance(singleton_sccs, list):
         errors.append("architecture_decomposition required_singleton_sccs "
                       "must be a list")
         singleton_sccs = []
+    singleton_values = [item.strip() for item in singleton_sccs
+                        if isinstance(item, str) and item.strip()]
+    if len(singleton_values) != len(singleton_sccs):
+        errors.append("architecture_decomposition required_singleton_sccs "
+                      "must contain only non-empty strings")
+    if authority_floor is not None and (len(singleton_values) != 3 or
+            set(singleton_values) != authority_floor["singleton_sccs"]):
+        errors.append("architecture_decomposition required_singleton_sccs "
+                      "do not match the immutable three-singleton authority")
     properties = architecture.get("required_properties")
     if not isinstance(properties, list) or not properties or not all(
             isinstance(item, str) and item.strip() for item in properties):
@@ -923,6 +1051,23 @@ def _read_design_architecture(ws: str) -> dict:
     if not isinstance(design_edges, list):
         errors.append("current design graph.proposed_edges must be a list")
         design_edges = []
+    requirement = str(contract.get("requirement") or "").strip()
+    graph_floor = _CURRENT_GRAPH_AUTHORITY_FLOORS.get(requirement)
+    if graph_floor is None:
+        errors.append("current design requirement has no approved graph "
+                      "authority floor: " + (requirement or "missing"))
+    elif not design_edges:
+        errors.append("current design graph.proposed_edges must be non-empty")
+    elif len(design_edges) != graph_floor["edge_count"] or \
+            _canonical_json_fingerprint(design_edges) != \
+            graph_floor["edge_fingerprint"] or \
+            _canonical_json_fingerprint(sorted(design_edges, key=lambda row: (
+                str(row.get("from") or ""), str(row.get("to") or ""),
+                str(row.get("kind") or ""), str(row.get("reason") or ""))
+                if isinstance(row, dict) else ("", "", "", ""))) != \
+            graph_floor["edge_set_fingerprint"]:
+        errors.append("current design graph.proposed_edges do not match the "
+                      f"approved authority for {requirement}")
     proposed_modules = graph.get("proposed_modules") if isinstance(
         graph, dict) else None
     if not isinstance(proposed_modules, list) or not all(
@@ -935,7 +1080,9 @@ def _read_design_architecture(ws: str) -> dict:
     return {"configured": True, "nodes": nodes,
             "semantic_edges": semantic_edges, "design_edges": design_edges,
             "singleton_sccs": singleton_sccs, "errors": errors,
-            "decision_record": architecture.get("decision_record"),
+            "decision_record": decision_record, "requirement": requirement,
+            "authority_floor": authority_floor,
+            "graph_authority_floor": graph_floor,
             "required_properties": properties or [],
             "proposed_modules": proposed_modules,
             "contract_ids": contract_ids}
@@ -1006,14 +1153,17 @@ def _python_file_import_edges(ws: str,
 
 
 def _semantic_edges(rows, *, label: str, architecture_ids: set[str],
-                    known_files: set[str]) -> tuple[list[dict], list[str]]:
+                    known_files: set[str],
+                    endpoint_registry: frozenset[str]) -> \
+        tuple[list[dict], list[str]]:
     """Validate one semantic authority without inventing missing endpoints."""
     edges, errors = [], []
     seen = set()
 
     def endpoint_exists(node: str) -> bool:
-        if node in architecture_ids or node.startswith(
-                ("ext:", "contract:", "resource:", "svc:", "req:")):
+        if ":" in node:
+            return node in endpoint_registry
+        if node in architecture_ids:
             return True
         normalized = node.replace("\\", "/").strip("/")
         return bool(normalized and any(
@@ -1045,6 +1195,10 @@ def _semantic_edges(rows, *, label: str, architecture_ids: set[str],
                           f"{source} -> {target}:{kind}")
         seen.add(key)
         for endpoint in (source, target):
+            if ":" in endpoint and endpoint not in endpoint_registry:
+                errors.append(f"{label}[{index}] names unregistered semantic "
+                              f"endpoint: {endpoint}")
+                continue
             if not endpoint_exists(endpoint):
                 errors.append(f"{label}[{index}] names unknown endpoint: "
                               f"{endpoint}")
@@ -1078,6 +1232,9 @@ def architecture_map_proof(ws: str, *, known_files=None,
     architecture_edge_rows = list(parsed["semantic_edges"])
     design_edge_rows = list(parsed["design_edges"])
     errors = list(parsed["errors"])
+    if _canonical_json_fingerprint(sorted(_SEMANTIC_ENDPOINT_REGISTRY)) != \
+            _SEMANTIC_ENDPOINT_REGISTRY_FINGERPRINT:
+        errors.append("semantic endpoint registry fingerprint is invalid")
     try:
         node_limit = max(0, int(max_nodes))
         edge_limit = max(0, int(max_edges))
@@ -1119,6 +1276,9 @@ def architecture_map_proof(ws: str, *, known_files=None,
             continue
         if not _GRAPH_NODE_ID.fullmatch(node_id):
             errors.append(f"architecture node[{index}] has unsafe id: {node_id}")
+        if ":" in node_id and node_id not in _SEMANTIC_ENDPOINT_REGISTRY:
+            errors.append(f"architecture node[{index}] names unregistered "
+                          f"semantic endpoint: {node_id}")
         seen_ids.add(node_id)
         node_ids.append(node_id)
         if kind not in _ARCHITECTURE_NODE_KINDS:
@@ -1181,7 +1341,8 @@ def architecture_map_proof(ws: str, *, known_files=None,
     bounded_architecture_edges, edge_errors = _semantic_edges(
         architecture_edge_rows[:edge_limit],
         label="architecture_decomposition.semantic_edges",
-        architecture_ids=architecture_ids, known_files=available)
+        architecture_ids=architecture_ids, known_files=available,
+        endpoint_registry=_SEMANTIC_ENDPOINT_REGISTRY)
     errors.extend(edge_errors)
     remaining = max(0, edge_limit - len(bounded_architecture_edges))
     bounded_design_edges, design_edge_errors = _semantic_edges(
@@ -1189,7 +1350,8 @@ def architecture_map_proof(ws: str, *, known_files=None,
         architecture_ids=(architecture_ids
                           | set(parsed.get("proposed_modules") or [])
                           | set(parsed.get("contract_ids") or [])),
-        known_files=available)
+        known_files=available,
+        endpoint_registry=_SEMANTIC_ENDPOINT_REGISTRY)
     errors.extend(design_edge_errors)
 
     file_owners: dict[str, set[str]] = {}
@@ -1299,6 +1461,25 @@ def architecture_map_proof(ws: str, *, known_files=None,
         "errors": errors,
         "source": "design/contract.json#/architecture_decomposition",
         "source_fingerprint": _design_file_fingerprint(ws),
+        "accepted_authority": {
+            "schema": ARCHITECTURE_AUTHORITY_FLOOR_SCHEMA,
+            "decision_record": str(parsed.get("decision_record") or ""),
+            "content_fingerprint": str(
+                (parsed.get("authority_floor") or {}).get(
+                    "content_fingerprint") or ""),
+        },
+        "current_design_authority": {
+            "schema": CURRENT_GRAPH_AUTHORITY_FLOOR_SCHEMA,
+            "requirement": str(parsed.get("requirement") or ""),
+            "edge_fingerprint": str(
+                (parsed.get("graph_authority_floor") or {}).get(
+                    "edge_fingerprint") or ""),
+        },
+        "semantic_endpoint_registry": {
+            "schema": SEMANTIC_ENDPOINT_REGISTRY_SCHEMA,
+            "count": len(_SEMANTIC_ENDPOINT_REGISTRY),
+            "fingerprint": _SEMANTIC_ENDPOINT_REGISTRY_FINGERPRINT,
+        },
     }
     material = dict(proof)
     proof["fingerprint"] = hashlib.sha256(json.dumps(

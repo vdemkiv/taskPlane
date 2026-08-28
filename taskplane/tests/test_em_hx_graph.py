@@ -26,72 +26,49 @@ def _write(root: Path, relative: str, text: str) -> None:
 
 
 def _architecture(root: Path, *, a: str = "x = 1\n",
-                  b: str = "import a\n", mutate=None) -> dict:
-    _write(root, "a.py", a)
-    _write(root, "b.py", b)
-    _write(root, "taskplane/loop.py", "x = 1\n")
-    _write(root, "taskplane/terminal_truth.py", "x = 1\n")
-    _write(root, "docs/guide.md", "# Guide\n")
-    semantic_edges = [
-        {"from": "taskplane",
-         "to": "contract:delivery.codex-native-dispatch",
-         "kind": "intent", "reason": "governed intent"},
-        {"from": "contract:delivery.codex-native-dispatch",
-         "to": "ext:codex-native-orchestration",
-         "kind": "transported-by", "reason": "native host"},
-        {"from": "taskplane",
-         "to": "contract:delivery.exact-sha-terminal-truth",
-         "kind": "changes", "reason": "terminal aggregation"},
-        {"from": "contract:delivery.exact-sha-terminal-truth",
-         "to": "taskplane/terminal_truth.py",
-         "kind": "coordinated-by", "reason": "one coordinator"},
-    ]
+                  b: str = "x = 2\n", mutate=None) -> dict:
+    repository = Path(__file__).resolve().parents[2]
+    accepted = json.loads(
+        (repository / "design" / "contract.json").read_text(encoding="utf-8"))
     contract = {
-        "contracts": [{"id": "contract:current"}],
-        "architecture_decomposition": {
-            "schema": depgraph.DESIGN_ARCHITECTURE_SCHEMA,
-            "decision_record": "D-test",
-            "scanner_input": (
-                "design/contract.json#/architecture_decomposition"),
-            "scanner_rule": "strict",
-            "nodes": [
-                {"id": "ext:codex-native-orchestration",
-                 "kind": "external-host", "path_globs": []},
-                {"id": "component:taskplane-governance-adapters",
-                 "kind": "existing", "path_globs": ["taskplane/loop.py"]},
-                {"id": "component:native-authority-validator",
-                 "kind": "new", "path_globs": ["a.py"]},
-                {"id": "component:design-sweep-validator",
-                 "kind": "new", "path_globs": ["b.py"]},
-                {"id": "component:terminal-truth-coordinator",
-                 "kind": "new",
-                 "path_globs": ["taskplane/terminal_truth.py"]},
-                {"id": "surface:documentation", "kind": "producer",
-                 "path_globs": ["docs/*.md"]},
-            ],
-            "required_properties": sorted(
-                depgraph._ARCHITECTURE_REQUIRED_PROPERTIES),
-            "required_singleton_sccs": [
-                "component:native-authority-validator",
-                "component:design-sweep-validator",
-                "component:terminal-truth-coordinator",
-            ],
-            "semantic_edges": semantic_edges,
-        },
+        "requirement": accepted["requirement"],
+        "contracts": accepted["contracts"],
+        "architecture_decomposition": accepted["architecture_decomposition"],
         "graph": {
-            "proposed_modules": ["taskplane"],
-            "proposed_edges": [{
-                "from": "taskplane", "to": "contract:current",
-                "kind": "provides", "reason": "current design authority",
-            }],
+            "proposed_modules": accepted["graph"]["proposed_modules"],
+            "proposed_edges": accepted["graph"]["proposed_edges"],
         },
     }
-    architecture = contract["architecture_decomposition"]
-    architecture["content_fingerprint"] = hashlib.sha256(
-        json.dumps(architecture, sort_keys=True, separators=(",", ":"),
-                   ensure_ascii=False).encode("utf-8")).hexdigest()
+    fixtures = {
+        "taskplane/loop.py": "x = 1\n",
+        "taskplane/tp.py": "x = 1\n",
+        "taskplane/build_c.py": "x = 1\n",
+        "taskplane/plan_topology.py": "x = 1\n",
+        "taskplane/command_runtime.py": "x = 1\n",
+        "taskplane/native_authority.py": a,
+        "taskplane/design_sweep.py": b,
+        "taskplane/terminal_truth.py": "x = 1\n",
+        "taskplane/repository.py": "x = 1\n",
+        "taskplane/progress.py": "x = 1\n",
+        "taskplane/checkpoint.py": "x = 1\n",
+        "taskplane/views.py": "x = 1\n",
+        "taskplane/release_evidence.py": "x = 1\n",
+        "taskplane/tests/test_r0013_contract.py": "def test_contract(): pass\n",
+        "exports/run/terminal/evidence.json": "{}\n",
+        "plan/tasks.json": "{}\n",
+        "lenses/catalog.json": "{}\n",
+        "docs/guide.md": "# Guide\n",
+    }
+    for relative, text in fixtures.items():
+        _write(root, relative, text)
     if mutate:
         mutate(contract)
+    architecture = contract.get("architecture_decomposition")
+    if isinstance(architecture, dict):
+        architecture.pop("content_fingerprint", None)
+        architecture["content_fingerprint"] = hashlib.sha256(
+            json.dumps(architecture, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False).encode("utf-8")).hexdigest()
     _write(root, "design/contract.json", json.dumps(contract))
     return contract
 
@@ -172,14 +149,21 @@ def test_h31_file_external_contract_resource_and_semantic_edges_coexist(
     proof = graph["meta"]["architecture_map"]
 
     assert proof["complete"] is True
-    assert any(row["id"] == "surface:documentation"
-               and row["matched_files"] == ["docs/guide.md"]
+    assert any(row["id"] == "surface:exports-terminal-evidence"
+               and row["matched_files"] == [
+                   "exports/run/terminal/evidence.json"]
                for row in proof["node_details"])
     assert graph["modules"]["ext:codex-native-orchestration"]["kind"] == \
         "external"
-    assert graph["modules"]["contract:current"]["kind"] == "contract"
-    assert len(proof["declared_edges"]) == 4
-    assert len(proof["current_design_edges"]) == 1
+    assert graph["modules"]["contract:runtime.durable-state-and-authority"] \
+        ["kind"] == "contract"
+    assert len(proof["declared_edges"]) == 24
+    assert len(proof["current_design_edges"]) == 23
+    assert proof["semantic_endpoint_registry"] == {
+        "schema": depgraph.SEMANTIC_ENDPOINT_REGISTRY_SCHEMA,
+        "count": 36,
+        "fingerprint": depgraph._SEMANTIC_ENDPOINT_REGISTRY_FINGERPRINT,
+    }
 
 
 def test_h31_missing_accepted_map_fails_strict_scan(tmp_path: Path) -> None:
@@ -209,7 +193,7 @@ def test_h31_current_edges_cannot_substitute_for_accepted_edges(
     _architecture(tmp_path, mutate=substitute)
 
     with pytest.raises(depgraph.GraphQualityDegraded,
-                       match="content_fingerprint"):
+                       match="immutable authority floor"):
         _scan_without_external_store(tmp_path, strict=True)
 
 
@@ -222,7 +206,7 @@ def test_h31_current_edges_cannot_substitute_for_accepted_edges(
             "schema", "taskplane.design-architecture-map/v999"),
          "unknown schema"),
         (lambda contract: contract["architecture_decomposition"]
-         ["semantic_edges"].pop(), "omits required edges"),
+         ["semantic_edges"].pop(), "immutable 24-edge authority"),
         (lambda contract: contract["architecture_decomposition"]
          ["semantic_edges"].append({
              "from": "taskplane", "to": "contract:ghost",
@@ -261,7 +245,7 @@ def test_h31_truncated_proof_is_explicitly_incomplete(tmp_path: Path) -> None:
     assert proof["truncated"] is True
     assert proof["complete"] is False
     assert proof["status"] == "incomplete"
-    assert proof["node_count"] == 6
+    assert proof["node_count"] == 14
     assert proof["declared_nodes"] == ["ext:codex-native-orchestration"]
     assert proof["sccs"] == [], "a bounded prefix must not mint SCC proof"
     assert any("exceeds bound" in error for error in proof["errors"])
@@ -282,7 +266,8 @@ def test_h31_production_scan_refuses_over_bound_architecture_map(
 
 
 def test_h31_cycle_fails_complete_scc_proof(tmp_path: Path) -> None:
-    _architecture(tmp_path, a="import b\n", b="import a\n")
+    _architecture(tmp_path, a="import design_sweep\n",
+                  b="import native_authority\n")
 
     proof = depgraph.architecture_map_proof(str(tmp_path))
 
@@ -306,6 +291,92 @@ def test_h31_ignored_architecture_glob_fails_strict_scan(tmp_path: Path) -> None
     with pytest.raises(depgraph.GraphQualityDegraded,
                        match="ignored or excluded"):
         _scan_without_external_store(tmp_path, strict=True)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda contract: contract["architecture_decomposition"]
+         ["nodes"].clear(), "immutable 14-node"),
+        (lambda contract: contract["architecture_decomposition"]
+         ["nodes"][1]["path_globs"].append("taskplane/ghost.py"),
+         "immutable 14-node"),
+        (lambda contract: contract["architecture_decomposition"]
+         ["nodes"].append({"id": "component:ghost", "kind": "new",
+                           "path_globs": ["taskplane/loop.py"]}),
+         "immutable 14-node"),
+        (lambda contract: contract["architecture_decomposition"]
+         ["semantic_edges"].clear(), "immutable 24-edge"),
+        (lambda contract: contract["architecture_decomposition"]
+         ["semantic_edges"][0].__setitem__("kind", "uses"),
+         "immutable 24-edge"),
+        (lambda contract: contract["architecture_decomposition"]
+         ["semantic_edges"].append({
+             "from": "taskplane", "to": "contract:delivery.production-wiring",
+             "kind": "uses", "reason": "extra accepted edge"}),
+         "immutable 24-edge"),
+        (lambda contract: contract["architecture_decomposition"]
+         ["required_singleton_sccs"].clear(), "three-singleton"),
+        (lambda contract: contract["architecture_decomposition"]
+         ["required_singleton_sccs"].append(
+             "component:taskplane-governance-adapters"), "three-singleton"),
+    ],
+)
+def test_h31_recomputed_digest_cannot_redefine_accepted_authority(
+        tmp_path: Path, mutate, message: str) -> None:
+    contract = _architecture(tmp_path, mutate=mutate)
+    architecture = contract["architecture_decomposition"]
+    material = {key: architecture[key] for key in architecture
+                if key != "content_fingerprint"}
+
+    assert architecture["content_fingerprint"] == hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False).encode("utf-8")).hexdigest()
+    proof = depgraph.architecture_map_proof(str(tmp_path))
+
+    assert proof["complete"] is False
+    assert any(message in error for error in proof["errors"])
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda contract: contract["graph"]["proposed_edges"].clear(),
+         "must be non-empty"),
+        (lambda contract: contract["graph"]["proposed_edges"].pop(),
+         "approved authority for R-0002"),
+        (lambda contract: contract["graph"]["proposed_edges"][0].__setitem__(
+            "reason", "caller-redefined reason"),
+         "approved authority for R-0002"),
+        (lambda contract: contract["graph"]["proposed_edges"].append({
+            "from": "taskplane", "to": "contract:ghost",
+            "kind": "uses", "reason": "ghost boundary"}),
+         "unregistered semantic endpoint: contract:ghost"),
+    ],
+)
+def test_h31_current_graph_authority_is_nonempty_exact_and_registered(
+        tmp_path: Path, mutate, message: str) -> None:
+    _architecture(tmp_path, mutate=mutate)
+
+    proof = depgraph.architecture_map_proof(str(tmp_path))
+
+    assert proof["complete"] is False
+    assert any(message in error for error in proof["errors"])
+
+
+def test_h31_prefixed_architecture_ghost_is_not_registered_even_with_new_digest(
+        tmp_path: Path) -> None:
+    def ghost(contract: dict) -> None:
+        contract["architecture_decomposition"]["semantic_edges"][0]["to"] = \
+            "svc:caller-invented"
+
+    _architecture(tmp_path, mutate=ghost)
+
+    proof = depgraph.architecture_map_proof(str(tmp_path))
+
+    assert proof["complete"] is False
+    assert any("unregistered semantic endpoint: svc:caller-invented" in error
+               for error in proof["errors"])
 
 
 def test_l02_both_routing_layers_consume_one_neutral_glob_matcher_with_parity(
