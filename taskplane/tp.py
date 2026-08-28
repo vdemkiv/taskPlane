@@ -3073,6 +3073,15 @@ def cmd_preview(a) -> int:
                "status": "unavailable",
                "outcome": getattr(exc, "outcome", "unavailable"),
                "error": str(exc)}
+    except Exception as exc:
+        # Isolation launchers and host-surface adapters are deliberately
+        # external seams.  Their typed and untyped startup failures must both
+        # remain data on the supported CLI boundary, never a traceback that
+        # makes the preview command appear to have escaped governance.
+        out = {"schema": "taskplane.working-preview-launch/v1",
+               "status": "unavailable", "outcome": "unavailable",
+               "error": (f"preview host startup failed: "
+                         f"{exc.__class__.__name__}: {exc}")[:1024]}
     print(json.dumps(out, sort_keys=True, separators=(",", ":")))
     return 0 if out.get("schema") == \
         "taskplane.working-preview-launch/v1" and \

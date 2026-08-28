@@ -98,7 +98,7 @@ def _startup_limits(limits: Mapping) -> dict[str, int]:
 
 
 def _deadline_check(deadline: float) -> None:
-    if time.monotonic() > deadline:
+    if time.monotonic() >= deadline:
         raise _StartupBoundExceeded("preview startup time limit exceeded")
 
 
@@ -107,6 +107,14 @@ def _entry_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, 
         int(metadata.st_dev), int(metadata.st_ino), int(metadata.st_mode),
         int(metadata.st_size), int(metadata.st_mtime_ns),
         int(metadata.st_ctime_ns),
+    )
+
+
+def _directory_identity(metadata: os.stat_result) -> tuple[int, int, int]:
+    """Stable directory object identity; contents may change during cleanup."""
+    return (
+        int(metadata.st_dev), int(metadata.st_ino),
+        int(stat.S_IFMT(metadata.st_mode)),
     )
 
 
@@ -409,31 +417,211 @@ def _path_fingerprint(root: Path, *, limits: Mapping[str, int],
         root, limits=limits, exclude_generated=exclude_generated)[1]
 
 
-def _bounded_remove_tree(path: Path, *, deadline: float) -> None:
-    """Remove one owned preview scope without following links or overrunning."""
-    if not os.path.lexists(path):
-        return
+def _cleanup_budget(rows: Sequence[Mapping]) -> tuple[int, float]:
+    """Return the bounded delete work and time reserve for one manifest.
+
+    Removing a regular file is constant work regardless of its size.  The
+    manifest therefore gives an exact upper bound for the owned directory and
+    entry operations before any preview scope is created.  The small per-entry
+    reserve is deliberately conservative enough to reject very large trees
+    under short startup budgets instead of creating a scope that cannot be
+    reaped within that same budget.
+    """
+    operations = len(rows) + 2  # sandbox plus the owned scope itself
+    return operations, max(0.05, operations * 0.0001)
+
+
+def _descriptor_entry(parent_descriptor: int, name: str) -> os.stat_result:
+    return os.stat(
+        name, dir_fd=parent_descriptor, follow_symlinks=False)
+
+
+def _remove_directory_contents(descriptor: int, *, deadline: float,
+                               remaining: list[int]) -> None:
+    """Delete one already-open owned directory without resolving child paths."""
+    while True:
+        _deadline_check(deadline)
+        try:
+            with os.scandir(descriptor) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name)
+        except OSError as exc:
+            raise _StartupBoundExceeded(
+                "preview cleanup directory is unreadable") from exc
+        if not entries:
+            return
+        for entry in entries:
+            _deadline_check(deadline)
+            remaining[0] -= 1
+            if remaining[0] < 0:
+                raise _StartupBoundExceeded(
+                    "preview cleanup exceeded its manifest work bound")
+            name = entry.name
+            try:
+                metadata = _descriptor_entry(descriptor, name)
+            except FileNotFoundError:
+                continue
+            identity = _directory_identity(metadata)
+            if not stat.S_ISDIR(metadata.st_mode) or \
+                    stat.S_ISLNK(metadata.st_mode):
+                try:
+                    os.unlink(name, dir_fd=descriptor)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise _StartupBoundExceeded(
+                        "preview cleanup entry could not be removed") from exc
+                continue
+            try:
+                child_descriptor = os.open(
+                    name,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+                    getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=descriptor)
+            except OSError as exc:
+                # A directory swapped to a link or file is safe to unlink;
+                # never follow it.  A replacement directory is left intact.
+                try:
+                    replacement = _descriptor_entry(descriptor, name)
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISLNK(replacement.st_mode) or \
+                        not stat.S_ISDIR(replacement.st_mode):
+                    os.unlink(name, dir_fd=descriptor)
+                    continue
+                raise _StartupBoundExceeded(
+                    "preview cleanup directory identity changed") from exc
+            try:
+                if _directory_identity(os.fstat(child_descriptor)) != identity:
+                    raise _StartupBoundExceeded(
+                        "preview cleanup directory identity changed")
+                _remove_directory_contents(
+                    child_descriptor, deadline=deadline, remaining=remaining)
+            finally:
+                os.close(child_descriptor)
+            try:
+                current = _descriptor_entry(descriptor, name)
+            except FileNotFoundError:
+                continue
+            if _directory_identity(current) != identity:
+                if stat.S_ISLNK(current.st_mode) or \
+                        not stat.S_ISDIR(current.st_mode):
+                    os.unlink(name, dir_fd=descriptor)
+                    continue
+                raise _StartupBoundExceeded(
+                    "preview cleanup directory identity changed")
+            try:
+                os.rmdir(name, dir_fd=descriptor)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise _StartupBoundExceeded(
+                    "preview cleanup directory could not be removed") from exc
+
+
+def _bounded_remove_tree_at(parent_descriptor: int, name: str, *,
+                            expected_identity: tuple[int, int, int],
+                            deadline: float, operation_budget: int) -> None:
+    """Remove one descriptor-bound scope without following mutable paths."""
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise _StartupBoundExceeded("preview cleanup identity is invalid")
     _deadline_check(deadline)
     try:
-        metadata = path.lstat()
+        metadata = _descriptor_entry(parent_descriptor, name)
+    except FileNotFoundError:
+        return
+    if _directory_identity(metadata) != expected_identity:
+        # A root link/file swap can be detached safely, but a replacement
+        # directory must never be traversed or deleted.
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            path.unlink()
+            os.unlink(name, dir_fd=parent_descriptor)
             return
-        with os.scandir(path) as iterator:
-            names = sorted(entry.name for entry in iterator)
-        for name in names:
-            _deadline_check(deadline)
-            child = path / name
-            child_metadata = child.lstat()
-            if stat.S_ISDIR(child_metadata.st_mode) and \
-                    not stat.S_ISLNK(child_metadata.st_mode):
-                _bounded_remove_tree(child, deadline=deadline)
-            else:
-                child.unlink()
-        path.rmdir()
+        raise _StartupBoundExceeded(
+            "preview cleanup root identity changed")
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+            getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor)
+    except OSError as exc:
+        raise _StartupBoundExceeded(
+            "preview cleanup root is unavailable") from exc
+    try:
+        if _directory_identity(os.fstat(descriptor)) != expected_identity:
+            raise _StartupBoundExceeded(
+                "preview cleanup root identity changed")
+        _remove_directory_contents(
+            descriptor, deadline=deadline, remaining=[operation_budget])
+    finally:
+        os.close(descriptor)
+    try:
+        current = _descriptor_entry(parent_descriptor, name)
+    except FileNotFoundError:
+        return
+    if _directory_identity(current) != expected_identity:
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode):
+            os.unlink(name, dir_fd=parent_descriptor)
+            return
+        raise _StartupBoundExceeded(
+            "preview cleanup root identity changed")
+    os.rmdir(name, dir_fd=parent_descriptor)
+    try:
+        _descriptor_entry(parent_descriptor, name)
+    except FileNotFoundError:
+        return
+    raise _StartupBoundExceeded("preview cleanup left an owned scope")
+
+
+def _quarantine_and_remove_scope(
+        previews_descriptor: int, quarantine_descriptor: int, name: str, *,
+        expected_identity: tuple[int, int, int],
+        deadline: float, operation_budget: int) -> None:
+    """Atomically detach a failed scope, then reap only its bound identity."""
+    quarantine_name = f"{name}.{secrets.token_hex(8)}"
+    try:
+        # Detachment intentionally precedes the deadline check.  An expired
+        # cleanup budget may leave a private quarantine for recovery, never an
+        # active preview path.
+        os.rename(
+            name, quarantine_name,
+            src_dir_fd=previews_descriptor,
+            dst_dir_fd=quarantine_descriptor)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise _StartupBoundExceeded(
+            "preview cleanup could not quarantine the owned scope") from exc
+    try:
+        _descriptor_entry(previews_descriptor, name)
+    except FileNotFoundError:
+        pass
+    else:
+        raise _StartupBoundExceeded(
+            "preview cleanup left an active owned scope")
+    _bounded_remove_tree_at(
+        quarantine_descriptor, quarantine_name,
+        expected_identity=expected_identity, deadline=deadline,
+        operation_budget=operation_budget)
+
+
+def _bounded_remove_tree(path: Path, *, deadline: float,
+                         operation_budget: int = MAX_STARTUP_ENTRIES + 2) -> None:
+    """Compatibility wrapper using descriptor-relative, identity-bound removal."""
+    parent_descriptor = _root_descriptor(path.parent)
+    try:
+        try:
+            metadata = _descriptor_entry(parent_descriptor, path.name)
+        except FileNotFoundError:
+            return
+        _bounded_remove_tree_at(
+            parent_descriptor, path.name,
+            expected_identity=_directory_identity(metadata), deadline=deadline,
+            operation_budget=operation_budget)
     except (OSError, _StartupBoundExceeded) as exc:
         raise _StartupBoundExceeded(
             "preview cleanup was not completed within the startup budget") from exc
+    finally:
+        os.close(parent_descriptor)
 
 
 def _saved_startup_limits(preview: Mapping[str, object]) -> dict[str, int] | None:
@@ -468,6 +656,11 @@ class PreviewRuntime:
                  process_teardown: Callable[[str, object], bool] | None = None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        state_descriptor = _root_descriptor(self.root)
+        try:
+            self._root_identity = _entry_identity(os.fstat(state_descriptor))
+        finally:
+            os.close(state_descriptor)
         self.workspace = Path(workspace).resolve()
         if not self.workspace.is_dir():
             raise ValueError("preview workspace must be a directory")
@@ -598,27 +791,82 @@ class PreviewRuntime:
             self._deny("unavailable", str(exc), target=target,
                        revision=revision)
 
-        startup_deadline = time.monotonic() + \
-            startup_limits["startup_seconds"]
-        # Inventory creates no state.  Once an owned preview scope exists,
-        # preparation stops early enough to leave a bounded cleanup reserve
-        # inside this same aggregate deadline.
-        cleanup_reserve = min(
-            1.0, max(0.01, startup_limits["startup_seconds"] / 10.0))
-        preparation_deadline = startup_deadline - cleanup_reserve
-        preview_id = secrets.token_hex(16)
-        preview_scope = self._path(preview_id).parent
-        sandbox = preview_scope / "sandbox"
+        startup_deadline = (
+            time.monotonic() + startup_limits["startup_seconds"])
+        # Inventory is state-free.  Its bounded result determines the exact
+        # cleanup work and reserve before any owned preview entry is created.
         try:
             source_manifest, source_fingerprint, source_identities = \
                 _bounded_manifest(
-                source, limits=startup_limits, exclude_generated=True,
-                deadline=preparation_deadline)
+                    source, limits=startup_limits, exclude_generated=True,
+                    deadline=startup_deadline)
             if source_identities.get(".") != self._workspace_identity:
                 raise _StartupBoundExceeded(
                     "preview source no longer matches registered workspace")
+            cleanup_operations, cleanup_reserve = _cleanup_budget(
+                source_manifest)
+            if cleanup_reserve >= startup_limits["startup_seconds"]:
+                raise _StartupBoundExceeded(
+                    "preview manifest cannot reserve bounded cleanup time")
+            preparation_deadline = startup_deadline - cleanup_reserve
             _deadline_check(preparation_deadline)
-            sandbox.mkdir(parents=True, exist_ok=False)
+        except Exception as exc:
+            detail = str(exc) if isinstance(exc, _StartupBoundExceeded) else \
+                f"preview inventory failed: {exc.__class__.__name__}: {exc}"
+            self._deny("unavailable", detail, target=target,
+                       revision=revision)
+
+        preview_id = secrets.token_hex(16)
+        staging_name = f".{preview_id}.staging-{secrets.token_hex(6)}"
+        active_name = staging_name
+        previews_descriptor = None
+        quarantine_descriptor = None
+        scope_identity = None
+        sandbox = self.root / "previews" / staging_name / "sandbox"
+        try:
+            root_descriptor = _root_descriptor(self.root)
+            try:
+                if _entry_identity(os.fstat(root_descriptor)) != \
+                        self._root_identity:
+                    raise _StartupBoundExceeded(
+                        "preview state root identity changed")
+                child_descriptors = []
+                try:
+                    for directory_name in ("previews", "quarantine"):
+                        try:
+                            os.mkdir(directory_name, 0o700,
+                                     dir_fd=root_descriptor)
+                        except FileExistsError:
+                            pass
+                        child_descriptors.append(os.open(
+                            directory_name,
+                            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+                            getattr(os, "O_NOFOLLOW", 0),
+                            dir_fd=root_descriptor))
+                except Exception:
+                    for descriptor in child_descriptors:
+                        os.close(descriptor)
+                    raise
+                previews_descriptor, quarantine_descriptor = child_descriptors
+            finally:
+                os.close(root_descriptor)
+            _deadline_check(preparation_deadline)
+            os.mkdir(staging_name, 0o700, dir_fd=previews_descriptor)
+            scope_identity = _directory_identity(_descriptor_entry(
+                previews_descriptor, staging_name))
+            scope_descriptor = os.open(
+                staging_name,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+                getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=previews_descriptor)
+            try:
+                if _directory_identity(os.fstat(scope_descriptor)) != \
+                        scope_identity:
+                    raise _StartupBoundExceeded(
+                        "preview owned scope identity changed")
+                os.mkdir("sandbox", 0o700, dir_fd=scope_descriptor)
+            finally:
+                os.close(scope_descriptor)
             _materialize_manifest(
                 source, sandbox, source_manifest, source_identities,
                 limits=startup_limits, deadline=preparation_deadline)
@@ -630,18 +878,33 @@ class PreviewRuntime:
                     materialized_fingerprint != source_fingerprint:
                 raise _StartupBoundExceeded(
                     "pinned source materialization differs from inventory")
+            _deadline_check(preparation_deadline)
+            os.rename(
+                staging_name, preview_id,
+                src_dir_fd=previews_descriptor,
+                dst_dir_fd=previews_descriptor)
+            active_name = preview_id
         except Exception as exc:
             detail = str(exc) if isinstance(exc, _StartupBoundExceeded) else \
                 f"preview preparation failed: {exc.__class__.__name__}: {exc}"
-            try:
-                _bounded_remove_tree(preview_scope, deadline=startup_deadline)
-                if os.path.lexists(preview_scope):
-                    raise _StartupBoundExceeded(
-                        "preview cleanup left an owned startup scope")
-            except _StartupBoundExceeded as cleanup_exc:
-                detail = f"{detail}; {cleanup_exc}"
+            if scope_identity is not None and previews_descriptor is not None \
+                    and quarantine_descriptor is not None:
+                try:
+                    _quarantine_and_remove_scope(
+                        previews_descriptor, quarantine_descriptor,
+                        active_name, expected_identity=scope_identity,
+                        deadline=startup_deadline,
+                        operation_budget=cleanup_operations)
+                except (OSError, _StartupBoundExceeded) as cleanup_exc:
+                    detail = f"{detail}; preview cleanup failed: {cleanup_exc}"
             self._deny("unavailable", detail, target=target,
                        revision=revision)
+        finally:
+            if previews_descriptor is not None:
+                os.close(previews_descriptor)
+            if quarantine_descriptor is not None:
+                os.close(quarantine_descriptor)
+        sandbox = self._path(preview_id).parent / "sandbox"
         now = float(self._clock())
         preview = {
             "schema": SCHEMA, "preview_id": preview_id, "flow": flow,

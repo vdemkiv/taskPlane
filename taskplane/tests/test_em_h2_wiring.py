@@ -331,6 +331,29 @@ def test_h12_preview_entrypoints_execute_from_supported_flow(
             {**request, "command": ["sh", "-c", "python3 app.py"]})
 
 
+def test_h12_preview_cli_normalizes_untyped_host_startup_failure(
+        tmp_path, monkeypatch, capsys):
+    request = tmp_path / "preview.json"
+    request.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        preview_runtime, "load_preview_request", lambda _path: {})
+    monkeypatch.setattr(
+        preview_runtime, "launch_preview_request",
+        lambda _request: (_ for _ in ()).throw(
+            OSError("native isolation startup unavailable")))
+
+    assert tp.main(["preview", "--request", str(request)]) == 1
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result == {
+        "schema": "taskplane.working-preview-launch/v1",
+        "status": "unavailable", "outcome": "unavailable",
+        "error": ("preview host startup failed: OSError: "
+                  "native isolation startup unavailable"),
+    }
+    assert captured.err == ""
+
+
 def _capabilities() -> dict:
     return {
         "sandbox": {"status": "supported", "source": "native"},
@@ -515,3 +538,89 @@ def test_h29_preview_registration_has_one_aggregate_startup_deadline(
                     "memory_bytes": 1_000_000, "startup_seconds": 1},
             network_allowlist=[])
     assert error.value.outcome == "unavailable"
+
+
+def test_h29_expiry_mid_cleanup_detaches_active_scope(
+        tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.py").write_text("bounded", encoding="utf-8")
+    cleanup_started = [False]
+    cleanup_now = [0.1]
+    original_cleanup = preview_runtime._bounded_remove_tree_at
+
+    def fail_after_partial_materialization(_source, sandbox, *_args, **_kwargs):
+        nested = sandbox / "nested"
+        nested.mkdir()
+        (nested / "partial.txt").write_text("owned", encoding="utf-8")
+        raise RuntimeError("injected partial materialization")
+
+    def observed_cleanup(*args, **kwargs):
+        cleanup_started[0] = True
+        return original_cleanup(*args, **kwargs)
+
+    def cleanup_expiry_clock():
+        if not cleanup_started[0]:
+            return 0.1
+        cleanup_now[0] += 0.6
+        return cleanup_now[0]
+
+    monkeypatch.setattr(
+        preview_runtime, "_materialize_manifest",
+        fail_after_partial_materialization)
+    monkeypatch.setattr(
+        preview_runtime, "_bounded_remove_tree_at", observed_cleanup)
+    monkeypatch.setattr(
+        preview_runtime.time, "monotonic", cleanup_expiry_clock)
+    runtime = preview_runtime.PreviewRuntime(
+        tmp_path / "state", workspace=source, authorization="authority")
+
+    with pytest.raises(preview_runtime.PreviewDenied,
+                       match="cleanup failed") as error:
+        runtime.register(
+            flow="build", target="candidate", revision=1, source_root=source,
+            authorization="authority", capabilities=_capabilities(),
+            limits={"lifetime_seconds": 60, "cpu_seconds": 10,
+                    "memory_bytes": 1_000_000, "startup_seconds": 1},
+            network_allowlist=[])
+    assert error.value.outcome == "unavailable"
+    assert not list((tmp_path / "state" / "previews").glob("*"))
+    assert list((tmp_path / "state" / "quarantine").glob("*"))
+
+
+@pytest.mark.parametrize("swap", ["root", "subtree"])
+def test_h29_cleanup_never_follows_root_or_subtree_symlink_swap(
+        tmp_path, monkeypatch, swap):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.py").write_text("bounded", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    protected = outside / "protected.txt"
+    protected.write_text("must-survive", encoding="utf-8")
+
+    def swap_then_fail(_source, sandbox, *_args, **_kwargs):
+        if swap == "root":
+            sandbox.rmdir()
+            sandbox.parent.rmdir()
+            sandbox.parent.symlink_to(outside, target_is_directory=True)
+        else:
+            (sandbox / "nested").symlink_to(
+                outside, target_is_directory=True)
+        raise RuntimeError(f"injected {swap} swap")
+
+    monkeypatch.setattr(
+        preview_runtime, "_materialize_manifest", swap_then_fail)
+    runtime = preview_runtime.PreviewRuntime(
+        tmp_path / "state", workspace=source, authorization="authority")
+    with pytest.raises(preview_runtime.PreviewDenied) as error:
+        runtime.register(
+            flow="build", target="candidate", revision=1, source_root=source,
+            authorization="authority", capabilities=_capabilities(),
+            limits={"lifetime_seconds": 60, "cpu_seconds": 10,
+                    "memory_bytes": 1_000_000}, network_allowlist=[])
+
+    assert error.value.outcome == "unavailable"
+    assert protected.read_text(encoding="utf-8") == "must-survive"
+    assert not list((tmp_path / "state" / "previews").glob("*"))
+    assert not list((tmp_path / "state" / "quarantine").glob("*"))

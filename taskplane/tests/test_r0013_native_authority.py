@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _json(rel: str) -> dict:
+    if rel in {"design/contract.json", "plan/tasks.json"}:
+        design, plan = native_authority.retained_r0013_design_and_plan(ROOT)
+        return design if rel == "design/contract.json" else plan
     return json.loads((ROOT / rel).read_text(encoding="utf-8"))
 
 

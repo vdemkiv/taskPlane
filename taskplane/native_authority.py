@@ -766,6 +766,39 @@ def _repository_json(source_root: str | Path, relative: str) -> dict:
     return value
 
 
+def retained_r0013_design_and_plan(
+        source_root: str | Path) -> tuple[dict, dict]:
+    """Resolve the exact approved R-0013 authority artifacts from Git.
+
+    The active Design and Plan legitimately move on to later requirements.
+    R-0013-specific validation and mutation proofs must therefore request this
+    retained pair instead of accidentally treating today's artifacts as the
+    historical authority.  The revision is engine-owned and lineage-checked;
+    callers cannot select replacement bytes.
+    """
+    try:
+        if __package__:
+            from .design_sweep import retained_repository_bytes
+        else:  # pragma: no cover - legacy direct execution
+            from design_sweep import retained_repository_bytes
+        values = []
+        for relative in ("design/contract.json", "plan/tasks.json"):
+            raw = retained_repository_bytes(
+                source_root, relative, maximum=8_000_000,
+                revision=RETAINED_R0013_AUTHORITY_REVISION)
+            value = json.loads(raw.decode("utf-8"))
+            if not isinstance(value, dict):
+                raise NativeAuthorityError(
+                    "retained R-0013 authority must contain objects")
+            values.append(value)
+    except NativeAuthorityError:
+        raise
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise NativeAuthorityError(
+            "retained R-0013 Design authority is invalid") from exc
+    return values[0], values[1]
+
+
 def validate_production_design_gate(
         source_root: str | Path, *,
         sweep_evidence: Mapping[str, object] | None = None,
@@ -781,6 +814,8 @@ def validate_production_design_gate(
     if authority_revision is None:
         design = _repository_json(root, "design/contract.json")
         plan = _repository_json(root, "plan/tasks.json")
+    elif authority_revision == RETAINED_R0013_AUTHORITY_REVISION:
+        design, plan = retained_r0013_design_and_plan(root)
     else:
         try:
             if __package__:
@@ -918,6 +953,7 @@ __all__ = [
     "validate_delivery_roots",
     "validate_design_and_plan",
     "validate_production_design_gate",
+    "retained_r0013_design_and_plan",
     "retained_r0013_authority_applies",
     "validate_retained_r0013_authority",
 ]
