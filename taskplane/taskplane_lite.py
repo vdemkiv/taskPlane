@@ -7158,7 +7158,8 @@ _AUDIT_LITERAL_FIELDS = frozenset({
     "authority_effect_id", "authorized", "blocking", "capability_source",
     "ceiling_usd", "changed_from", "collected_slots", "contract_id", "count",
     "criteria", "cycle", "decision", "denials", "design_only", "dispatch_pending",
-    "dor_passed", "effective", "emit", "engine_ran", "evidence_id", "exact_route_verified",
+    "dor_passed", "effective", "effective_breadth", "emit", "engine_off_reason",
+    "engine_ran", "evidence_id", "exact_route_verified",
     "failure_code", "fingerprint", "first_step", "flow", "from_step", "gate",
     "graph_fingerprint", "graph_modules", "graph_quality_status", "held", "human_required",
     "id", "impacted", "kernel_status", "key", "kind", "lenses", "max", "max_age_s",
@@ -7167,12 +7168,23 @@ _AUDIT_LITERAL_FIELDS = frozenset({
     "produced_by", "produced_in", "read_only", "receipt", "receipt_fingerprint",
     "receipt_id", "recorded_key", "registry_fingerprint", "registry_version", "replay",
     "requirement", "requirement_id", "resolution", "restored", "retro_id", "review_id",
-    "reviews", "reviews_completed", "role", "routing_complete", "routing_counts",
+    "requested_breadth", "reviews", "reviews_completed", "role",
+    "routing_complete", "routing_counts",
     "routing_mode", "run_id", "seconds", "seconds_saved", "selection", "sha256",
     "shared_with", "slot", "slots", "spent_usd", "stage", "stage_id", "status",
-    "step", "store", "stuck", "submitted", "suite_cited", "tags", "task", "task_id",
+    "lens_count", "step", "store", "stuck", "submitted", "suite_cited",
+    "tags", "task", "task_id",
     "task_slot", "tier", "topology_fingerprint", "track", "triggered", "used", "via",
 })
+_AUDIT_CLOSED_LITERAL_VALUES = {
+    "requested_breadth": frozenset({"all", "routed"}),
+    "effective_breadth": frozenset({"all", "routed"}),
+    "engine_off_reason": frozenset({
+        "forced-all", "signals-disabled", "catalog-stage-profiles-missing",
+        "stage-not-requested", "mapper-unavailable", "engine-not-engaged",
+    }),
+}
+_AUDIT_BOUNDED_INTEGER_VALUES = {"lens_count": (0, 26)}
 _AUDIT_LITERAL_RE = re.compile(r"^[A-Za-z0-9_.:+-]{1,256}$")
 _AUDIT_RELATIVE_PATH_RE = re.compile(
     r"^(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]{1,256}$")
@@ -7217,6 +7229,17 @@ def _sanitize_audit_value(value, *, key: str = "", depth: int = 0):
     if normalized_key in _AUDIT_IDENTITY_FIELDS and value is not None:
         return _audit_pseudonym(value)
     if normalized_key in _AUDIT_FREE_TEXT_FIELDS and value is not None:
+        return _audit_minimized(value)
+    closed_values = _AUDIT_CLOSED_LITERAL_VALUES.get(normalized_key)
+    if closed_values is not None:
+        if isinstance(value, str) and value in closed_values:
+            return value
+        return _audit_minimized(value)
+    integer_bounds = _AUDIT_BOUNDED_INTEGER_VALUES.get(normalized_key)
+    if integer_bounds is not None:
+        if (isinstance(value, int) and not isinstance(value, bool) and
+                integer_bounds[0] <= value <= integer_bounds[1]):
+            return value
         return _audit_minimized(value)
     if depth >= 6:
         return "[TRUNCATED_DEPTH]"
