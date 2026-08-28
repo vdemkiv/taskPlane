@@ -674,7 +674,7 @@ def _inline_bodies_all_readonly(command: str) -> bool:
     bodies, i = [], 0
     while i < len(toks):
         prog = os.path.basename(toks[i])
-        if prog.startswith("python") and prog in _INTERPRETERS:
+        if _python_program(prog):
             j = i + 1
             while j < len(toks):
                 if toks[j] == "-c":
@@ -1251,8 +1251,8 @@ def _analyze(command: str, _depth: int = 0):
                 sub = sub[1:]
             sub = _unwrap(sub)
             subprog = os.path.basename(sub[0]) if sub else ""
-            if subprog in _WRITE_PROGRAMS or subprog in _INTERPRETERS \
-                    or subprog in _SHELLS or subprog == "find":
+            if (subprog in _WRITE_PROGRAMS or subprog in _INTERPRETERS or
+                    _python_program(subprog) or subprog in _SHELLS or subprog == "find"):
                 opaque = opaque or (
                     "destructive",
                     f"`xargs {subprog} …` runs a mutator on stdin-supplied "
@@ -1293,11 +1293,11 @@ def _analyze(command: str, _depth: int = 0):
                     f"`{prog}` extracts files to paths named inside the "
                     "archive, unscopeable from argv")
             continue
-        if prog in _INTERPRETERS:
+        if prog in _INTERPRETERS or _python_program(prog):
             # This package's own CLI is the governed tool, not an arbitrary
             # body — exempt it so a read-only review can still run tp.py.
             first_arg = next((a for a in args if not a.startswith("-")), None)
-            if prog.startswith("python") and first_arg \
+            if _python_program(prog) and first_arg \
                     and _is_tp_cli(first_arg):
                 continue
             if any(a in ("-c", "-e", "-E") or a.startswith("-e")
@@ -1306,7 +1306,7 @@ def _analyze(command: str, _depth: int = 0):
                 # blob. If every construct in it appears on the read-only
                 # allowlist, it is screenable and allowed; anything else
                 # (including code that will not parse) keeps the denial.
-                if not (prog.startswith("python") and ro_inline):
+                if not (_python_program(prog) and ro_inline):
                     opaque = opaque or (
                         "interpreter",
                         f"`{prog} -c/-e …` runs inline code whose file writes "
@@ -1440,7 +1440,7 @@ def _deny_segments(command: str, _depth: int = 0):
             s, u = _deny_segments(" ".join(args), _depth + 1)
             segs += s
             unscreen = unscreen or u
-        elif prog in _INTERPRETERS or prog == "xargs":
+        elif prog in _INTERPRETERS or _python_program(prog) or prog == "xargs":
             unscreen = True
     return segs, unscreen
 

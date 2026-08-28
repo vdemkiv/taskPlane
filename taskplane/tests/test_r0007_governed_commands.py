@@ -308,6 +308,74 @@ def test_launch_rejects_ungoverned_and_opaque_argv_before_spawn(
     assert not (workspace / ".taskplane" / "command-runtime-v1").exists()
 
 
+@pytest.mark.parametrize("qualified", [False, True])
+def test_launch_rejects_version_qualified_python_inline_writes(
+        tmp_path, qualified):
+    workspace = tmp_path / "versioned-python-repo"
+    workspace.mkdir()
+    _activate_command_contract(workspace)
+    identity = {
+        "schema": governed_commands.IDENTITY_SCHEMA,
+        "run_id": "run-r0007", "task_id": "versioned-python",
+    }
+    basename = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    program = (str(Path(sys.executable).with_name(basename))
+               if qualified else basename)
+
+    with pytest.raises(governed_commands.GovernedCommandError,
+                       match="opaque interpreter"):
+        governed_commands._governed_launch_authority(
+            str(workspace), str(workspace), [
+                program, "-c", "open('escaped.txt', 'w').write('opaque')",
+            ], identity)
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--version"],
+    ["-c", "print('read only')"],
+])
+def test_launch_preserves_safe_version_qualified_python_commands(
+        tmp_path, arguments):
+    workspace = tmp_path / "safe-versioned-python-repo"
+    workspace.mkdir()
+    _activate_command_contract(workspace)
+    identity = {
+        "schema": governed_commands.IDENTITY_SCHEMA,
+        "run_id": "run-r0007", "task_id": "safe-versioned-python",
+    }
+    program = f"python{sys.version_info.major}.{sys.version_info.minor}"
+
+    authority = governed_commands._governed_launch_authority(
+        str(workspace), str(workspace), [program, *arguments], identity)
+    assert authority["identity"] == identity
+
+
+def test_version_qualified_python_keeps_analyzer_policy_parity():
+    program = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    read_only = contract_engine.build_contract("review", read_only=True)
+
+    allowed, _ = contract_engine.screen_tool(
+        read_only, "exec_command",
+        {"cmd": f'{program} -c "print(1)"'}, None)
+    assert allowed is True
+    allowed, reason = contract_engine.screen_tool(
+        read_only, "exec_command", {
+            "cmd": (f'{program} -c "open(\'escaped.txt\', '
+                    "'w').write('opaque')\"")
+        }, None)
+    assert allowed is False
+    assert "read-only" in reason
+
+    _, opaque = contract_engine._analyze(
+        f'xargs {program} -c "print(1)"')
+    assert opaque is not None
+    assert opaque[0] == "destructive"
+    assert contract_engine.deny_violation(
+        f'{program} -c "print(\'git push\')"', ["git push"]) == "git push"
+    assert contract_engine._analyze(
+        f"{program} taskplane/tp.py findings")[1] is None
+
+
 def test_launch_authority_roots_subdirectory_targets_at_workspace(tmp_path):
     workspace = tmp_path / "repo"
     subdirectory = workspace / "sub"
