@@ -193,6 +193,10 @@
         "fingerprint": "<SHA>",
         "mode": "modules",
         "producers": {
+          "architecture-map": {
+            "failures": [],
+            "status": "not-requested"
+          },
           "base-scanner": {
             "failures": [],
             "status": "complete"
@@ -1348,7 +1352,7 @@
       "envelope_count": 1,
       "impact_derivation_count": 1,
       "observation_actions": 1,
-      "prompt_view_bytes": 38287,
+      "prompt_view_bytes": 38527,
       "repeated_derivation_bytes": 0,
       "top_level_cli_count": 1,
       "view_count": 4

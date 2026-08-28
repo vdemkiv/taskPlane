@@ -976,14 +976,21 @@ class RunStore:
         path = self._manifest_path(run_id)
         with _lock(path):
             current = self._load_manifest(run_id)
-            current = self._relay_all_stage_journal_outbox_locked(
-                run_id, current)
             if current.get("run_id") != run_id:
                 raise StageStateError("run manifest identity mismatch")
             promoted = _promote_stage_index(current)
             heads = promoted.get("stage_heads")
             expected = _canonical_active_projection(
                 heads, foreground_stage_id)
+            # This operation exists specifically to recover a missing,
+            # corrupt, or stale non-authoritative projection. Validate every
+            # other v4 authority against the canonical replacement before
+            # revision/replay decisions; validating ``current`` here makes
+            # the repair path impossible to enter. Do not persist this
+            # candidate until the revision check and receipt are complete.
+            repairable = copy.deepcopy(promoted)
+            repairable["active_stage_projection"] = expected
+            _validate_stage_index(repairable)
             repair_id = (_operation_id(operation_id, "operation id")
                          if operation_id is not None else
                          f"projection-repair:{int(expected_revision)}")
@@ -1003,7 +1010,12 @@ class RunStore:
                 if checked_previous.get("request_fingerprint") != request:
                     raise OperationConflict(
                         f"operation id {repair_id} was reused with different input")
-                return copy.deepcopy(promoted)
+                if promoted.get("active_stage_projection") != expected:
+                    raise StageStateError(
+                        "committed projection repair result is not present")
+                relayed = self._relay_all_stage_journal_outbox_locked(
+                    run_id, promoted)
+                return copy.deepcopy(relayed)
 
             actual = int(current.get("revision") or 0)
             if actual != int(expected_revision):
@@ -1013,10 +1025,11 @@ class RunStore:
             if current.get("schema") == "taskplane.run/v4" and \
                     current.get("active_stage_projection") == expected:
                 _validate_stage_index(current)
-                return copy.deepcopy(current)
+                relayed = self._relay_all_stage_journal_outbox_locked(
+                    run_id, current)
+                return copy.deepcopy(relayed)
 
-            updated = copy.deepcopy(promoted)
-            updated["active_stage_projection"] = expected
+            updated = repairable
             updated["revision"] = actual + 1
             receipt = _operation_receipt({
                 "operation": "rebuild_active_stage_projection",
@@ -1026,17 +1039,25 @@ class RunStore:
                 committed_revision=updated["revision"])
             updated["stage_operations"] = copy.deepcopy(operations)
             updated["stage_operations"][repair_id] = receipt
+            updated["stage_journal_outbox"] = copy.deepcopy(
+                promoted.get("stage_journal_outbox") or {})
+            updated["stage_journal_outbox"][repair_id] = {
+                "event": {
+                    "event": "stage_operation_committed",
+                    "operation": receipt["operation"],
+                    "operation_id": repair_id,
+                    "request_fingerprint": request,
+                    "revision": updated["revision"],
+                    "stage_ids": receipt["stage_ids"],
+                    "at": int(time.time()),
+                },
+                "delivered": False,
+            }
             _validate_stage_index(updated)
             _atomic_write_json(path, updated)
-            self._append_journal(run_id, {
-                "event": "active_stage_projection_rebuilt",
-                "operation_id": repair_id,
-                "request_fingerprint": request,
-                "revision": updated["revision"],
-                "active_stage_ids": expected["active_stage_ids"],
-                "at": int(time.time()),
-            })
-            return copy.deepcopy(updated)
+            relayed = self._relay_stage_journal_outbox_locked(
+                run_id, updated, repair_id)
+            return copy.deepcopy(relayed)
 
     def put_stage_object(self, run_id: str, stage: dict) -> dict:
         """Write one validated content-addressed stage object create-once."""

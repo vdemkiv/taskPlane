@@ -80,9 +80,14 @@ class TestStateDirOwnership(unittest.TestCase):
                      if _old_store is not None
                      else os.environ.pop("TASKPLANE_STORE", None)))
         os.environ.pop("TASKPLANE_STORE", None)
-        # the KNOWLEDGE store is shared (repo) on a team plan…
-        self.assertEqual(tp.get_mode(ws)["store"], "repo")
-        # …but loop coordination state stays PRIVATE (external)…
+        # A repository's shared config is an offer, not this local user's
+        # consent. Knowledge and coordination both remain private/external
+        # until the user explicitly confirms sharing.
+        mode = tp.get_mode(ws)
+        self.assertEqual(mode["store"], "external")
+        self.assertTrue(mode["private"])
+        self.assertEqual(mode["source"], "shared-config-unconfirmed")
+        # Loop coordination state therefore also stays PRIVATE (external)…
         loop_path = loop._loop_path(ws)
         self.assertNotIn(".taskplane-kb", loop_path)
         self.assertTrue(loop_path.startswith(tp.external_store_root(ws)))
@@ -603,7 +608,9 @@ class TestDesignRebaselineTrace(unittest.TestCase):
         ev = [e for e in read_trace(ws) if e["event"] == "design_rebaseline"]
         self.assertEqual(len(ev), 1)
         self.assertEqual(ev[0]["old"], "stale-fp"[:12])
-        self.assertEqual(ev[0]["new"], (current or "")[:12])
+        new_key = tp._sanitize_audit_key("new")
+        self.assertEqual(ev[0][new_key],
+                         tp._audit_minimized((current or "")[:12]))
         self.assertEqual(loop.load(ws)["design_graph_fingerprint"], current)
 
 
@@ -731,8 +738,13 @@ class TestTrackSafety(unittest.TestCase):
             track.close(ws, "t2")
         finally:
             tp.file_lock = orig
-        self.assertTrue(all(c == loop._loop_path(ws) for c in calls))
-        self.assertGreaterEqual(len(calls), 2)
+        engine = loop._loop_path(ws)
+        engine_calls = [path for path in calls if path == engine]
+        self.assertEqual(engine_calls, [engine, engine])
+        # The only additional acquisition is audit retention's own lock;
+        # it is orthogonal to the state transition authority.
+        self.assertTrue(all(path == engine or path.endswith(
+            ".taskplane/trace.jsonl.retention") for path in calls))
 
     def test_switch_archives_and_restores_the_engine_loop(self):
         ws = git_ws()
