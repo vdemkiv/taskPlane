@@ -7,10 +7,12 @@ this file wins.
 **Release-history truth.** This file is prose, and prose drifts: five
 releases (v2.5.0, v2.5.1, v2.6.0, v2.8.1, v2.8.2) shipped with no tag at
 all and nobody noticed for months, and two rows below name versions no tree
-ever declared. The source of truth for what shipped is the version the
-plugin manifests actually held, commit by commit, on `origin/main`;
-`scripts/ci_release_tags.py` verifies this table and the tags against it and
-fails CI on drift. Two rows are exempt, each with a recorded reason:
+ever declared. The source of truth for declared version trees is the version
+the plugin manifests actually held, commit by commit, on `origin/main`; tags
+and explicit superseded-candidate dispositions establish which trees were
+releases. `scripts/ci_release_tags.py` verifies this table and the tags against
+that history and fails CI on drift. Two rows are exempt, each with a recorded
+reason:
 
 * **v2.3.0** shipped in the SAME commit as v2.3.1 (the manifest went
   2.2.1 → 2.3.1 in one step). The `v2.3.0` tag points at that shared commit.
@@ -22,19 +24,20 @@ fails CI on drift. Two rows are exempt, each with a recorded reason:
 lens rewrite and never bumped to.
 
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
-> remains the source-integration boundary on `main`. The unreleased v2.17.22
-> Marketplace candidate and v2.17.23 local candidate are superseded; local
-> verification moves forward as v2.17.24, which is not released. Historical
+> remains the historical source-integration boundary on `main`. The unreleased
+> v2.17.22, v2.17.23, and v2.17.24 candidates are superseded; R-0013 source
+> integration moves forward as v2.17.25, which is not released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing or validating v2.17.24 is not a tag, upload, Marketplace
-> publication, push, or release claim; those actions retain separate human
-> authority.
+> Preparing, validating, or pushing v2.17.25 to `main` is not a tag, upload,
+> Marketplace publication, installation, or release claim; those actions
+> retain separate human authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.17.24** | **Local verification candidate — not released.** Applies the minimal R-0013 bootstrap correction: W31 producer observations flow through the Codex-native producer-consumer adapter, and execution-time EM uses the governed zero-lens path with an explicit empty collection rather than starting or waiting for a lens producer. This is local candidate truth only and does not claim a tag, upload, installation, Marketplace publication, push, or release. |
-| **v2.17.23** | **Superseded local candidate — not released.** Corrected the hook-home binder so a secure explicit locator may select either a dedicated home or canonical `$HOME/.taskplane`; missing locators, noncanonical locator homes, and inherited `TASKPLANE_HOME` conflicts still fail closed before any receipt. Native hooks, the repository bridge, the generated `.taskplane/codex-hook.py` launcher, and the host runtime retain one locator-bound home without receipt copying. It remains compatibility N-1 for v2.17.24, but did not close the W31 producer-consumer and execution-time zero-lens EM bootstrap seams. This row does not claim a tag, upload, installation, publication, push, or release. |
+| **v2.17.25** | **R-0013 main-integration candidate — not released.** Completes the R-0013 Plan: Codex-native execution authority replaces Taskplane-owned delivery lifecycle control; retained Design evidence validates one concurrent all-26 Design-only sweep; Build, Fix, Evaluate, and execution-time EM start zero Taskplane lens workers; deterministic ready sets, one event-driven wait, bounded acceptance waves, and fail-closed native usage evidence govern delivery; and final closure validates 20 real-checkout selectors, all E01–E21 severed-edge mutations, and one atomic eight-surface exact-SHA terminal bundle. This row claims no tag, upload, installation, Marketplace publication, or release. |
+| **v2.17.24** | **Superseded local candidate — not released; compatibility N-1 for v2.17.25.** Applied the minimal R-0013 bootstrap correction: W31 producer observations flow through the Codex-native producer-consumer adapter, and execution-time EM uses the governed zero-lens path with an explicit empty collection rather than starting or waiting for a lens producer. It was never promoted into released truth. |
+| **v2.17.23** | **Superseded local candidate — not released.** Corrected the hook-home binder so a secure explicit locator may select either a dedicated home or canonical `$HOME/.taskplane`; missing locators, noncanonical locator homes, and inherited `TASKPLANE_HOME` conflicts still fail closed before any receipt. Native hooks, the repository bridge, the generated `.taskplane/codex-hook.py` launcher, and the host runtime retain one locator-bound home without receipt copying. It was compatibility N-1 for v2.17.24, but did not close the W31 producer-consumer and execution-time zero-lens EM bootstrap seams. This row does not claim a tag, upload, installation, publication, push, or release. |
 | **v2.17.22** | **Superseded Marketplace candidate — not released.** Packaged the completed two-part R-0001 delivery after the native-dispatch correction, but its bootstrap binder incorrectly rejected an explicit secure locator for canonical `$HOME/.taskplane`. It was never promoted into released truth. |
 | **v2.17.21** | **Source-integration boundary.** The complete R-0001 change set was integrated and pushed to `main` at this version: forward release evidence, hosted default-branch preparation, package parity, Design/checkpoint closure, performance telemetry, same-SHA pickup work, and the final removal of duplicate scheduler authority. This historical row does not claim a Marketplace upload or installation. |
 | **v2.17.20** | **Stateless pickup now supports explicit, repository-only continuation under attributed human authority.** `tp pickup <design-contract> --trust-source <exact-source-sha>` loads the approved Design Contract and committed shelf evidence from the checkout, records the supplied flag and exact source SHA verbatim in the pickup receipt, and enters the existing direct-assignment/BUILD-C checkpoint path without creating run, track, claim, or lease state. The assertion establishes structural agreement with the selected source SHA; it does not cryptographically authenticate the operator, producer, shelf, or repository origin. Missing or malformed assertions, source mismatches, malformed evidence, structural tampering, and broken receipt lineage fail closed before BUILD-C. The incumbent v1 symmetric shelf handling remains unchanged on its existing private-secret path. |

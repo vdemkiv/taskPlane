@@ -407,6 +407,83 @@ class TestTheExemptionListCannotRot(unittest.TestCase):
                              f"history — tag it and drop the exemption")
 
 
+class TestDeclaredButNotReleasedCannotRot(unittest.TestCase):
+    """Superseded candidate trees are explicit and may never hide a release."""
+
+    def test_every_nonrelease_carries_a_reason_and_successor(self):
+        self.assertEqual(
+            set(gate.NOT_RELEASED), {"2.17.22", "2.17.23", "2.17.24"}
+        )
+        for version, info in gate.NOT_RELEASED.items():
+            with self.subTest(version):
+                self.assertGreater(len(info.get("reason", "")), 60)
+                self.assertRegex(
+                    info.get("superseded_by", ""), r"^\d+\.\d+\.\d+$"
+                )
+
+    def test_real_nonreleases_are_declared_and_untagged(self):
+        res = gate.audit()
+        if res.get("unavailable"):
+            self.skipTest(res["unavailable"])
+        exact_tags = {
+            name.lstrip("v")
+            for name, sha in res["tags"].items()
+            if res["shipped"].get(name.lstrip("v")) == sha
+        }
+        for version in gate.NOT_RELEASED:
+            with self.subTest(version):
+                self.assertIn(
+                    version, set(res["shipped"]) | set(res["prepared"])
+                )
+                self.assertNotIn(version, exact_tags)
+
+    def test_a_tagged_release_cannot_be_marked_not_released(self):
+        d = tempfile.mkdtemp()
+        try:
+            repo = _Repo(d)
+            repo.release("1.0.0")
+            repo.tag("1.0.0")
+            original = gate.NOT_RELEASED
+            gate.NOT_RELEASED = {
+                "1.0.0": {
+                    "reason": "x" * 70,
+                    "superseded_by": "1.0.1",
+                }
+            }
+            try:
+                self.assertIn("C7", repo.checks())
+            finally:
+                gate.NOT_RELEASED = original
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_a_declared_nonrelease_requires_its_changelog_disposition(self):
+        d = tempfile.mkdtemp()
+        try:
+            repo = _Repo(d)
+            repo.release("1.0.0")
+            repo.tag("1.0.0")
+            with open(
+                os.path.join(d, "CHANGELOG.md"), "w", encoding="utf-8"
+            ) as stream:
+                stream.write("| Version | Highlights |\n| --- | --- |\n")
+            original = gate.NOT_RELEASED
+            gate.NOT_RELEASED = {
+                "1.0.0": {
+                    "reason": "x" * 70,
+                    "superseded_by": "1.0.1",
+                }
+            }
+            try:
+                audit = repo.audit()
+            finally:
+                gate.NOT_RELEASED = original
+            self.assertIn("C7", [row["check"] for row in audit["problems"]])
+            self.assertIn("CHANGELOG disposition is missing", audit["problems"][0]["detail"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestItFailsClosedWhenItCannotSee(unittest.TestCase):
     """A gate that skips when the clone is shallow or tagless is a gate that
     passes on every misconfigured runner."""

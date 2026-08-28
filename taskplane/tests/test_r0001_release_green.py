@@ -32,7 +32,7 @@ SHA = "a" * 40
 DIGEST = "d" * 64
 REPOSITORY = "openai/taskplane"
 BRANCH = "main"
-WORKFLOW = "run-21724"
+WORKFLOW = "run-21725"
 CHECK_IDS = ("check-linux", "check-macos")
 CHECK_NAMES = ("full / linux", "full / macos")
 
@@ -59,7 +59,7 @@ def _platform_response(**overrides):
 def _release_inputs():
     return {
         "source_sha": SHA,
-        "version": "2.17.24",
+        "version": "2.17.25",
         "wiring_closure_fingerprint": "1" * 64,
         "feature_receipt_digests": ["2" * 64],
         "full_matrix_receipts": ["3" * 64],

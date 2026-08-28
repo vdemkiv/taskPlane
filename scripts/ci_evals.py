@@ -531,12 +531,12 @@ def verify_forward_release_surface(root):
         errors.append(f"cannot read release runtime identity: {exc}")
     if set(release) != wanted:
         errors.append("release runtime identity is incomplete")
-    if release.get("CURRENT_VERSION") != "2.17.24":
-        errors.append("forward candidate is not exactly 2.17.24")
+    if release.get("CURRENT_VERSION") != "2.17.25":
+        errors.append("forward candidate is not exactly 2.17.25")
     if release.get("PREVIOUS_VERSION") != "2.17.20":
         errors.append("v2.17.20 is not preserved as the last released generation")
-    if release.get("COMPATIBILITY_PREVIOUS_VERSION") != "2.17.23":
-        errors.append("v2.17.23 is not preserved as compatibility N-1")
+    if release.get("COMPATIBILITY_PREVIOUS_VERSION") != "2.17.24":
+        errors.append("v2.17.24 is not preserved as compatibility N-1")
     if release.get("HISTORICAL_GRAPH_REVISION") != expected_graph:
         errors.append("historical graph revision 2757822e is not exact")
 
@@ -587,7 +587,8 @@ def verify_forward_release_surface(root):
 
     required_doc_phrases = (
         "v2.17.20", "released-incomplete", "v2.17.21",
-        "v2.17.22", "v2.17.23", "superseded", "v2.17.24", "not released",
+        "v2.17.22", "v2.17.23", "v2.17.24", "superseded",
+        "v2.17.25", "not released",
         "2757822e", "inherited limitation", "no history rewrite",
         "no re-release", "no verifier weakening",
     )
@@ -1879,7 +1880,7 @@ def _parser():
     p.add_argument("--prove-pushed-sha", action="store_true",
                    help="fetch and prove exact pushed-SHA CI evidence")
     p.add_argument("--verify-release-surface", action="store_true",
-                   help="prove 2.17.24 manifests and both install archives")
+                   help="prove 2.17.25 manifests and both install archives")
     p.add_argument("--checked-sha", metavar="SHA",
                    help="full commit SHA whose required checks were observed")
     p.add_argument("--check-receipts", metavar="FILE",

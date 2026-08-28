@@ -129,20 +129,20 @@ Recent releases. [CHANGELOG.md](CHANGELOG.md) is the
 authoritative, complete history — if the two ever disagree, the CHANGELOG wins.
 
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
-> remains the source-integration boundary on `main`. The unreleased v2.17.22
-> Marketplace candidate and v2.17.23 local candidate are superseded; local
-> verification moves forward as v2.17.24, which is not released. Historical
+> remains the historical source-integration boundary on `main`. The unreleased
+> v2.17.22, v2.17.23, and v2.17.24 candidates are superseded; R-0013 source
+> integration moves forward as v2.17.25, which is not released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing or validating v2.17.24 is not a tag, upload, Marketplace
-> publication, push, or release claim; those actions retain separate human
-> authority.
+> Preparing, validating, or pushing v2.17.25 to `main` is not a tag, upload,
+> Marketplace publication, installation, or release claim; those actions
+> retain separate human authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.17.24** | **Local verification candidate — not released.** Applies the minimal R-0013 bootstrap correction: W31 uses the Codex-native producer-consumer path, and execution-time EM honors governed zero-lens delivery instead of requiring a lens producer. This row claims no tag, upload, installation, Marketplace publication, push, or release. |
-| **v2.17.23** | **Superseded local candidate — not released.** Repaired secure hook-home binding and preserved locator-bound propagation through native, bridge, generated launcher, and host runtime paths, but did not close the W31 producer-consumer and execution-time zero-lens EM bootstrap seams. It remains compatibility N-1 for v2.17.24 and was never promoted into released truth. |
-| **v2.17.22** | **Superseded Marketplace candidate — not released.** Packaged the completed two-part R-0001 delivery after the native-dispatch correction, but its bootstrap binder incorrectly rejected an explicit secure locator for canonical `$HOME/.taskplane`. It was never promoted into released truth. |
+| **v2.17.25** | **R-0013 main-integration candidate — not released.** Completes Codex-native delivery authority, concurrent Design-only sweep validation, zero-lens Build/Fix/Evaluate/EM execution, sealed native dispatch and budget evidence, bounded acceptance waves, real-checkout wiring closure, and atomic eight-surface exact-SHA terminal truth. This row claims no tag, upload, installation, Marketplace publication, or release. |
+| **v2.17.24** | **Superseded local candidate — not released; compatibility N-1 for v2.17.25.** Applied the minimal R-0013 bootstrap correction: W31 uses the Codex-native producer-consumer path, and execution-time EM honors governed zero-lens delivery instead of requiring a lens producer. It was never promoted into released truth. |
+| **v2.17.23** | **Superseded local candidate — not released.** Repaired secure hook-home binding and preserved locator-bound propagation through native, bridge, generated launcher, and host runtime paths, but did not close the W31 producer-consumer and execution-time zero-lens EM bootstrap seams. It was compatibility N-1 for v2.17.24 and was never promoted into released truth. |
 ## Install
 
 How you install taskplane depends on your **account type**, and the paths are

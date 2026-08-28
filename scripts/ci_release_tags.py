@@ -13,15 +13,15 @@ All three are the same failure: the release history was asserted in prose and
 never checked against the only source that can settle it — the version the
 manifests actually held, commit by commit, on the mainline.
 
-So this is the check. The manifest history is the source of truth; tags and
-the CHANGELOG are claims about it, and both are verified here. First-parent
-history identifies releases that require tags. A correctly versioned tag on
-a reachable merged side parent identifies the rarer release that shipped
-without ever becoming a first-parent tree (v2.17.17 is the real example).
+So this is the check. Manifest history is the source of truth for declared
+version trees; tags, NOT_RELEASED dispositions, and the CHANGELOG establish
+which of those trees were releases. A correctly versioned tag on a reachable
+merged side parent identifies the rarer release that shipped without ever
+becoming a first-parent tree (v2.17.17 is the real example).
 
-  C1  every version the manifest held on the mainline has a `v<version>` tag
-      (except the newest, which may be the release in flight — so at most ONE
-      untagged release can ever exist, which is the whole point)
+  C1  every version the manifest held on the mainline has a `v<version>` tag,
+      except the newest release in flight and versions explicitly recorded in
+      NOT_RELEASED as superseded candidates that were never releases
   C2  every release tag resolves to a commit reachable from the mainline
   C3  every tag's commit declares that version in its manifest
   C4  every CHANGELOG version was either shipped or is listed in NOT_SHIPPED
@@ -29,6 +29,7 @@ without ever becoming a first-parent tree (v2.17.17 is the real example).
   C5  nothing in NOT_SHIPPED was actually shipped — an exemption that starts
       being true is a bypass, not an exemption
   C6  no `v*` tag names a version that never existed
+  C7  every NOT_RELEASED entry names a declared, untagged candidate
 
 Run: python3 scripts/ci_release_tags.py [<repo-root>] [--json]
 """
@@ -58,6 +59,32 @@ NOT_SHIPPED = {
                   "2.5.0. No tree has ever declared 2.4.0, so no tag can "
                   "honestly point anywhere.",
         "co_released_with": "2.5.0",
+    },
+}
+
+# Versions with real manifest trees that attributed release history explicitly
+# dispositioned as superseded candidates, not releases. These differ from
+# NOT_SHIPPED because their source snapshots exist. C7 re-derives that each
+# entry remains declared and untagged so the list cannot hide a release or a
+# fictional version.
+NOT_RELEASED = {
+    "2.17.22": {
+        "reason": "superseded Marketplace candidate with a bootstrap locator "
+                  "defect; it was never promoted, installed as released "
+                  "truth, or authorized for a release tag.",
+        "superseded_by": "2.17.23",
+    },
+    "2.17.23": {
+        "reason": "superseded local candidate that repaired locator binding "
+                  "but left the W31 producer and zero-lens EM seams open; it "
+                  "was explicitly withheld from release.",
+        "superseded_by": "2.17.24",
+    },
+    "2.17.24": {
+        "reason": "superseded local bootstrap candidate that closed the W31 "
+                  "and zero-lens EM seams but did not contain the completed "
+                  "R-0013 delivery and was explicitly not released.",
+        "superseded_by": "2.17.25",
     },
 }
 
@@ -196,7 +223,7 @@ def audit(root=ROOT):
         name = "v" + v
         sha = tags.get(name)
         if sha is None:
-            if v == newest:
+            if v == newest or v in NOT_RELEASED:
                 continue          # the release in flight; tagged after CI
             problems.append({
                 "check": "C1", "version": v,
@@ -251,6 +278,30 @@ def audit(root=ROOT):
                           f"but sits in NOT_SHIPPED — remove the exemption "
                           f"and tag it."})
 
+    changelog_claims = set(changelog_versions(root))
+    observed_versions = shipped | prepared | {
+        name[1:] for name in tags if name.startswith("v")
+    }
+    for v, info in NOT_RELEASED.items():
+        if v not in observed_versions:
+            continue
+        if v not in changelog_claims:
+            problems.append({
+                "check": "C7", "version": v,
+                "detail": f"v{v} is marked declared-but-not-released but "
+                          "its CHANGELOG disposition is missing"})
+        elif v not in shipped and v not in prepared:
+            problems.append({
+                "check": "C7", "version": v,
+                "detail": f"v{v} is marked declared-but-not-released but no "
+                          "manifest tree on the mainline or prepared HEAD "
+                          "declares it"})
+        elif v in exact_reachable_tags:
+            problems.append({
+                "check": "C7", "version": v,
+                "detail": f"v{v} is marked declared-but-not-released but has "
+                          "an exact reachable release tag"})
+
     known = shipped | set(NOT_SHIPPED)
     for name in tags:
         v = name[1:]
@@ -266,7 +317,8 @@ def audit(root=ROOT):
                         for v in sorted(shipped_records, key=vkey)},
             "tagged_side_releases": tagged_side_releases,
             "tags": {k: tags[k] for k in sorted(tags, key=lambda t: vkey(t[1:]))},
-            "not_shipped": sorted(NOT_SHIPPED), "skipped": sorted(SKIPPED),
+            "not_shipped": sorted(NOT_SHIPPED),
+            "not_released": sorted(NOT_RELEASED), "skipped": sorted(SKIPPED),
             "problems": problems}
 
 
@@ -285,14 +337,18 @@ def main():
     if res.get("unavailable"):
         print(f"release tags: CANNOT VERIFY — {res['unavailable']}")
         return 1
-    print(f"release tags: {len(res['shipped'])} shipped version(s) on "
+    print(f"release tags: {len(res['shipped'])} declared version tree(s) on "
           f"{res['mainline']}, {len(res['tags'])} tag(s)")
-    print(f"  newest ({res['newest']}) may be untagged — the release in "
-          f"flight; every older one must be tagged")
+    print(f"  newest ({res['newest']}) may be untagged while in flight; "
+          "older untagged versions require an exact NOT_RELEASED disposition")
     if res["not_shipped"]:
         print(f"  never shipped as own version: "
               f"{', '.join('v' + v for v in res['not_shipped'])} "
               f"(reasons in NOT_SHIPPED)")
+    if res["not_released"]:
+        print(f"  declared superseded candidates, not releases: "
+              f"{', '.join('v' + v for v in res['not_released'])} "
+              f"(reasons in NOT_RELEASED)")
     if res["skipped"]:
         print(f"  version numbers skipped: "
               f"{', '.join('v' + v for v in res['skipped'])}")
