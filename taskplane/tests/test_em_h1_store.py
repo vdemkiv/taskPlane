@@ -130,7 +130,8 @@ def test_h30_readonly_contract_refuses_opaque_mutating_launchers(tmp_path: Path)
 
     for command in (
             "rg -n TODO src",
-            "git --no-pager --no-optional-locks diff "
+            "git --no-pager --no-optional-locks "
+            "-c core.fsmonitor=false diff "
             "--no-ext-diff --no-textconv --stat",
             "cat README.md"):
         allowed, reason = tp.screen_tool(
@@ -184,6 +185,8 @@ def test_h30_readonly_git_diff_disables_external_and_textconv_helpers(
         "-c diff.external='touch reviewed-source' diff --stat",
         "git --no-pager --no-optional-locks "
         "-c diff.danger.textconv='touch reviewed-source' diff --stat",
+        "git --no-pager --no-optional-locks -c core.fsmonitor=false "
+        "diff --no-ext-diff --no-textconv --ext --stat",
     )
     for command in unsafe:
         allowed, reason = tp.screen_tool(
@@ -194,8 +197,86 @@ def test_h30_readonly_git_diff_disables_external_and_textconv_helpers(
         assert "can't be screened" in reason
 
     safe = (
-        prefix + "git --no-pager --no-optional-locks diff "
+        prefix + "git --no-pager --no-optional-locks "
+        "-c core.fsmonitor=false diff "
         "--no-ext-diff --no-textconv --stat")
     allowed, reason = tp.screen_tool(
         contract, "Bash", {"command": safe}, str(tmp_path))
+    assert allowed is True, reason
+
+
+def test_h30_readonly_git_rejects_abbreviated_filter_options(tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    commands = (
+        "git --no-pager --no-optional-locks "
+        "cat-file --textcon HEAD:payload.bin",
+        "git --no-pager --no-optional-locks "
+        "cat-file --filt HEAD:payload.bin",
+    )
+
+    for command in commands:
+        allowed, reason = tp.screen_tool(
+            contract, "Bash", {"command": command}, str(tmp_path))
+        assert allowed is False, command
+        assert "read-only review contract" in reason
+        assert "Git" in reason
+        assert "can't be screened" in reason
+
+
+def test_h30_readonly_git_rejects_fsmonitor_capable_index_builtin(
+        tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text(
+        "[core]\n\tfsmonitor = /tmp/untrusted-fsmonitor\n",
+        encoding="utf-8")
+    command = (
+        f"GIT_CONFIG_GLOBAL={shlex.quote(str(global_config))} "
+        "git --no-pager --no-optional-locks ls-files")
+
+    allowed, reason = tp.screen_tool(
+        contract, "Bash", {"command": command}, str(tmp_path))
+    assert allowed is False
+    assert "read-only review contract" in reason
+    assert "Git" in reason
+    assert "can't be screened" in reason
+
+
+def test_h30_readonly_git_rejects_pretty_config_signature_indirection(
+        tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text(
+        "[pretty]\n\tdanger = format:%G? %s\n",
+        encoding="utf-8")
+    prefix = f"GIT_CONFIG_GLOBAL={shlex.quote(str(global_config))} "
+    commands = (
+        prefix + "git --no-pager --no-optional-locks show "
+        "--no-ext-diff --no-textconv --pretty=danger HEAD",
+        prefix + "git --no-pager --no-optional-locks log "
+        "--no-ext-diff --no-textconv --pretty=danger -1",
+    )
+
+    for command in commands:
+        allowed, reason = tp.screen_tool(
+            contract, "Bash", {"command": command}, str(tmp_path))
+        assert allowed is False, command
+        assert "read-only review contract" in reason
+        assert "Git" in reason
+        assert "can't be screened" in reason
+
+
+def test_h30_readonly_git_keeps_one_explicitly_guarded_diff_form(
+        tmp_path: Path):
+    contract = tp.build_contract(
+        "review", read_only=True, write_allow=[".em-review/**"])
+    command = (
+        "git --no-pager --no-optional-locks -c core.fsmonitor=false "
+        "diff --no-ext-diff --no-textconv --stat -- src")
+
+    allowed, reason = tp.screen_tool(
+        contract, "Bash", {"command": command}, str(tmp_path))
     assert allowed is True, reason

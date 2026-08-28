@@ -545,21 +545,25 @@ _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
                    "--super-prefix", "--config-env", "--exec-path"}
 # A Git command name is an execution surface: unknown names resolve to
 # `git-<name>` programs on PATH and then to aliases, including shell aliases
-# from repository/global config. Read-only contracts therefore admit only
-# built-ins whose argv can be classified conservatively. Dual-use porcelain
-# such as status/branch/config is intentionally absent (status can also start
-# a configured fsmonitor process).
-_GIT_READONLY_BUILTINS = frozenset({
-    "cat-file", "describe", "diff", "diff-files", "diff-index",
-    "diff-tree", "for-each-ref", "log", "ls-files", "ls-tree",
-    "merge-base", "name-rev", "rev-list", "rev-parse", "show",
-    "show-ref",
+# from repository/global config. Even nominally read-only built-ins are not a
+# safe class: cat-file accepts abbreviated filter/textconv options, index
+# readers such as ls-files can start core.fsmonitor, and log/show can resolve
+# pretty.<name> config containing signature placeholders. Keep one useful,
+# command-and-option-shaped form instead of inheriting Git's extensible option
+# and configuration grammars.
+_GIT_READONLY_BUILTINS = frozenset({"diff"})
+# Diff can invoke configured external diff/textconv helpers and can consult an
+# executable core.fsmonitor while refreshing the index. These exact guards are
+# therefore mandatory. The sole accepted -c assignment cannot add an alias or
+# any other executable configuration surface.
+_GIT_READONLY_CONFIG = "core.fsmonitor=false"
+_GIT_READONLY_DIFF_OPTIONS = frozenset({
+    "--no-ext-diff", "--no-textconv",
+    "--stat", "--name-only", "--name-status", "--numstat", "--shortstat",
+    "--summary", "--raw", "--patch", "-p", "-u", "--cached", "--staged",
+    "--no-renames", "--minimal", "--patience", "--histogram", "--check",
+    "--quiet", "--exit-code", "--no-color", "--color=never",
 })
-# These porcelain commands can invoke configured external diff or textconv
-# helpers. Both negative flags are mandatory even if the local repository is
-# currently clean: global/repository config and .gitattributes are untrusted
-# inputs to the read-only command boundary.
-_GIT_DIFF_PORCELAIN = frozenset({"diff", "log", "show"})
 _GIT_SAFE_GLOBAL_FLAGS = frozenset({
     "-P", "--no-pager", "--no-optional-locks", "--no-advice",
     "--no-lazy-fetch", "--no-replace-objects", "--literal-pathspecs",
@@ -1259,6 +1263,7 @@ def _git_readonly_violation(args) -> "str | None":
     global_args = args[:sub_index]
     saw_no_pager = False
     saw_no_optional_locks = False
+    saw_fsmonitor_neutralization = False
     i = 0
     while i < len(global_args):
         arg = global_args[i]
@@ -1277,6 +1282,17 @@ def _git_readonly_violation(args) -> "str | None":
             continue
         if arg.startswith("-C") and len(arg) > 2:
             i += 1
+            continue
+        if arg == "-c":
+            if i + 1 >= len(global_args):
+                return "Git `-c` has no assignment, so it can't be screened"
+            assignment = global_args[i + 1]
+            if assignment != _GIT_READONLY_CONFIG:
+                return (
+                    f"Git config assignment `{assignment}` may add an "
+                    "executable extension that can't be screened from argv")
+            saw_fsmonitor_neutralization = True
+            i += 2
             continue
         if arg in _GIT_SAFE_GLOBAL_FLAGS:
             i += 1
@@ -1299,39 +1315,29 @@ def _git_readonly_violation(args) -> "str | None":
         return (
             "Git may perform optional repository-metadata writes that can't "
             "be screened; use `git --no-optional-locks …`")
+    if not saw_fsmonitor_neutralization:
+        return (
+            "Git may launch configured core.fsmonitor that can't be screened "
+            "while reading the working tree; use "
+            "`-c core.fsmonitor=false`")
 
     sub_args = args[sub_index + 1:]
     options = []
     for arg in sub_args:
         if arg == "--":
             break
-        options.append(arg)
-    if "--ext-diff" in options or "--textconv" in options:
-        return (
-            "Git external-diff/textconv execution can't be screened from "
-            "argv; use both `--no-ext-diff` and `--no-textconv`")
-    if sub in _GIT_DIFF_PORCELAIN and (
-            "--no-ext-diff" not in options or "--no-textconv" not in options):
+        if arg.startswith("-"):
+            options.append(arg)
+            if arg not in _GIT_READONLY_DIFF_OPTIONS:
+                return (
+                    f"Git diff option `{arg}` is not on the exact read-only "
+                    "allowlist; abbreviations and prefix equivalents can't "
+                    "be screened from argv")
+    if "--no-ext-diff" not in options or "--no-textconv" not in options:
         return (
             "Git diff output may invoke globally or locally configured "
             "external-diff/textconv helpers that can't be screened; use both "
             "`--no-ext-diff` and `--no-textconv`")
-    if sub == "cat-file" and any(
-            arg in ("--filters", "--textconv")
-            or arg.startswith("--filters=")
-            or arg.startswith("--textconv=")
-            for arg in options):
-        return (
-            "Git cat-file filters/textconv may execute configured helpers "
-            "that can't be screened from argv")
-    if sub in ("log", "show") and any(
-            arg == "--show-signature"
-            or ((arg.startswith("--format=") or arg.startswith("--pretty="))
-                and "%G" in arg)
-            for arg in options):
-        return (
-            "Git signature display may execute a configured verifier that "
-            "can't be screened from argv")
     return None
 
 
