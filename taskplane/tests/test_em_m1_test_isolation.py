@@ -317,3 +317,119 @@ def test_l10_rejects_invalid_scoped_dependencies_before_mutation():
                     wait_invocation_factory=outer["wait_invocation_factory"]):
                 raise AssertionError("unreachable")
         assert _observed_runtime("outer") == ("outer", "outer")
+
+
+@pytest.mark.parametrize("first_module,second_module", [
+    ("loop", "taskplane.loop"),
+    ("taskplane.loop", "loop"),
+])
+def test_l10_loop_import_alias_binding_is_exact_and_idempotent(
+        first_module, second_module):
+    script = r'''
+import importlib
+import os
+import sys
+
+root, first_name, second_name = sys.argv[1:]
+sys.path.insert(0, os.path.join(root, "taskplane"))
+sys.path.insert(0, root)
+first = importlib.import_module(first_name)
+import build_c
+before = build_c._default_loop_runtime_services
+assert before is not None
+second = importlib.import_module(second_name)
+after = build_c._default_loop_runtime_services
+assert after is before
+assert before.state_loader is first.load
+assert before.wait_policy_factory is first.event_wait_policy
+assert before.wait_invocation_factory is first.event_wait_invocation
+assert second.load is not first.load
+assert second.load.__module__ != first.load.__module__
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(ROOT), first_module, second_module],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_l10_loop_runtime_hostile_rebinds_remain_rejected():
+    script = r'''
+import os
+import sys
+import types
+
+root = sys.argv[1]
+sys.path.insert(0, os.path.join(root, "taskplane"))
+sys.path.insert(0, root)
+import loop
+import build_c
+
+current = build_c._default_loop_runtime_services
+assert current is not None
+
+def hostile_state_loader(workspace):
+    return {"hostile": workspace}
+
+# Spoofing the same raw module name cannot turn different code into an alias.
+hostile_state_loader.__module__ = loop.load.__module__
+try:
+    build_c.bind_loop_runtime(
+        state_loader=hostile_state_loader,
+        wait_policy_factory=loop.event_wait_policy,
+        wait_invocation_factory=loop.event_wait_invocation,
+    )
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("different code in the same module was accepted")
+
+# The supported opposite alias name is still insufficient when code differs.
+hostile_state_loader.__module__ = "taskplane.loop"
+try:
+    build_c.bind_loop_runtime(
+        state_loader=hostile_state_loader,
+        wait_policy_factory=loop.event_wait_policy,
+        wait_invocation_factory=loop.event_wait_invocation,
+    )
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("different code under the alias name was accepted")
+
+# Even byte-identical code is not an alias when it comes from another module.
+lookalike = types.FunctionType(
+    loop.load.__code__, loop.load.__globals__, loop.load.__name__,
+    loop.load.__defaults__, loop.load.__closure__)
+lookalike.__kwdefaults__ = loop.load.__kwdefaults__
+lookalike.__annotations__ = dict(loop.load.__annotations__)
+lookalike.__module__ = "hostile.loop"
+lookalike.__qualname__ = loop.load.__qualname__
+try:
+    build_c.bind_loop_runtime(
+        state_loader=lookalike,
+        wait_policy_factory=loop.event_wait_policy,
+        wait_invocation_factory=loop.event_wait_invocation,
+    )
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("same code from a non-alias module was accepted")
+
+assert build_c._default_loop_runtime_services is current
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(ROOT)],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
