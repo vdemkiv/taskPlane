@@ -979,3 +979,532 @@ def verify_h1_trace(workspace: str, trace: Mapping) -> dict:
     if dict(trace) != rebuilt:
         raise RemediationTraceError("H1 trace fingerprint or inventory is mixed")
     return rebuilt
+
+
+# R-0002 final-integration authority is deliberately repository-contained.
+# The review source itself was ignored audit output, so FINAL-I retains its
+# exact bytes as an ID-joined snapshot and pins that snapshot here.  A caller
+# cannot replace findings, commits, exception records, or outcome words.
+FINAL_INVENTORY_SCHEMA = "taskplane.r0002-remediation-inventory/v1"
+FINAL_INTEGRATION_SCHEMA = "taskplane.r0002-final-integration-evidence/v1"
+FINAL_AUTHORITY_SCHEMA = "taskplane.r0002-final-integration-authority/v1"
+FINAL_FINDINGS_SNAPSHOT_SCHEMA = "taskplane.r0002-findings-snapshot/v1"
+_FINAL_AUTHORITY_PATH = \
+    ".em-review/remediation/final-integration/authority.json"
+_FINAL_AUTHORITY_SHA256 = \
+    "1b6ee6ab37ad7553d2d5ab1b5830a4e982978aafc69c3f13dd6f3ec163d5b7f4"
+_FINAL_FINDINGS_SNAPSHOT_PATH = \
+    ".em-review/remediation/final-integration/findings-snapshot.json"
+_FINAL_FINDINGS_SNAPSHOT_SHA256 = \
+    "7f68603d889fc932a7f022c4df4b53e48317ce71fbc3608f4d27704d5a2f30ab"
+_FINAL_CANONICAL_FINDINGS_SHA256 = \
+    "74745ab55c2d0313c9c4271697f2ee024a3e3966ea46f4323a18c9b26f5f6041"
+_FINAL_HIGH_RESULTS_PATH = ".em-review/remediation/high-gate/results.json"
+_FINAL_HIGH_RESULTS_SHA256 = \
+    "a00787374c9c543e7951c5b64e28f414f3c4ed1913a6adfea4eb941c65142628"
+_FINAL_COUNTS = {"total": 72, "high": 34, "medium": 28, "low": 10}
+_FINAL_EXCEPTION_FINDINGS = {
+    "H1-I-selector-receipt-authority": (
+        "H-03", "H-04", "H-05", "H-06", "H-07", "H-08", "H-14",
+        "H-15", "H-19", "H-22", "H-26", "H-30", "H-34",
+    ),
+    "H3-C-retention-gaps": ("H-23", "H-25"),
+}
+_FINAL_JOIN_SELECTORS = {
+    "M1-I": (
+        "be3425eaaee27279febf8937d05dbefc686fea34",
+        "taskplane/tests/test_em_m1_integration.py::"
+        "test_ac6_engineering_foundations_close",
+    ),
+    "M2-I": (
+        "7b3473789caf01d3115301c2308f25c460741fb5",
+        "taskplane/tests/test_em_m2_integration.py::"
+        "test_ac7_user_facing_truth_closes",
+    ),
+}
+
+
+def _json_blob(workspace: str, candidate_sha: str, path: str,
+               label: str) -> dict:
+    try:
+        value = json.loads(_blob(workspace, candidate_sha, path).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, KeyError) as exc:
+        raise RemediationTraceError(f"{label} JSON is invalid") from exc
+    if not isinstance(value, dict):
+        raise RemediationTraceError(f"{label} must be a JSON object")
+    return value
+
+
+def _pinned_blob(workspace: str, candidate_sha: str, path: str,
+                 expected_sha256: str, label: str) -> bytes:
+    value = _blob(workspace, candidate_sha, path)
+    if hashlib.sha256(value).hexdigest() != expected_sha256:
+        raise RemediationTraceError(f"{label} differs from retained authority")
+    return value
+
+
+def _expected_finding_ids() -> tuple[str, ...]:
+    return tuple(
+        [f"H-{number:02d}" for number in range(1, 35)] +
+        [f"M-{number:02d}" for number in range(1, 29)] +
+        [f"L-{number:02d}" for number in range(1, 11)]
+    )
+
+
+def _final_authority(workspace: str, candidate_sha: str) -> dict:
+    raw = _pinned_blob(
+        workspace, candidate_sha, _FINAL_AUTHORITY_PATH,
+        _FINAL_AUTHORITY_SHA256, "final integration authority")
+    try:
+        authority = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RemediationTraceError("final integration authority is invalid") from exc
+    if (not isinstance(authority, dict) or
+            authority.get("schema") != FINAL_AUTHORITY_SCHEMA or
+            authority.get("requirement_id") != "R-0002" or
+            authority.get("inventory") != _FINAL_COUNTS):
+        raise RemediationTraceError("final integration authority is incompatible")
+    status = authority.get("status_contract") or {}
+    if status != {
+        "integration_disposition": "ready-for-independent-final-evaluation",
+        "strict_ac5_status": "not-satisfied",
+        "strict_ac8_status": "pending-independent-final-evaluation",
+        "independently_green_high": 19,
+        "attributed_non_independent_exceptions": 15,
+        "integrated_medium_low_pending_final_evaluation": 38,
+    }:
+        raise RemediationTraceError("final integration status was relabelled")
+    return authority
+
+
+def _final_sources(workspace: str, candidate_sha: str) -> tuple[dict, dict, dict]:
+    authority = _final_authority(workspace, candidate_sha)
+    snapshot_raw = _pinned_blob(
+        workspace, candidate_sha, _FINAL_FINDINGS_SNAPSHOT_PATH,
+        _FINAL_FINDINGS_SNAPSHOT_SHA256, "retained findings snapshot")
+    try:
+        snapshot = json.loads(snapshot_raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RemediationTraceError("retained findings snapshot is invalid") from exc
+    design = _json_blob(
+        workspace, candidate_sha, "design/contract.json", "Design contract")
+    plan = _json_blob(workspace, candidate_sha, "plan/tasks.json", "Plan")
+    if (not isinstance(snapshot, dict) or
+            snapshot.get("schema") != FINAL_FINDINGS_SNAPSHOT_SCHEMA or
+            snapshot.get("canonical_source") != ".em-review/findings.json" or
+            snapshot.get("canonical_source_sha256") !=
+            _FINAL_CANONICAL_FINDINGS_SHA256 or
+            snapshot.get("counts") != _FINAL_COUNTS):
+        raise RemediationTraceError("retained findings source identity is invalid")
+    source = authority.get("source_review") or {}
+    if (source.get("canonical_sha256") != _FINAL_CANONICAL_FINDINGS_SHA256 or
+            source.get("retained_snapshot_path") !=
+            _FINAL_FINDINGS_SNAPSHOT_PATH or
+            source.get("retained_snapshot_sha256") !=
+            _FINAL_FINDINGS_SNAPSHOT_SHA256):
+        raise RemediationTraceError("review source authority is inconsistent")
+    return snapshot, design, plan
+
+
+def _scope_contains(scope: object, selector_path: str) -> bool:
+    if not isinstance(scope, list):
+        return False
+    for entry in scope:
+        if entry == selector_path:
+            return True
+        if (isinstance(entry, str) and entry.endswith("/**") and
+                selector_path.startswith(entry[:-3])):
+            return True
+    return False
+
+
+def build_final_inventory(workspace: str, *, candidate_sha: str) -> dict:
+    """Build the exact 72-row Design/Plan/review inventory at clean HEAD."""
+    workspace = str(_workspace_path(workspace))
+    _clean_candidate(workspace, candidate_sha)
+    snapshot, design, plan = _final_sources(workspace, candidate_sha)
+    design_rows = design.get("finding_map")
+    plan_rows = plan.get("tasks")
+    review_rows = snapshot.get("rows")
+    if not all(isinstance(value, list)
+               for value in (design_rows, plan_rows, review_rows)):
+        raise RemediationTraceError("final finding inventories are unavailable")
+    expected_ids = _expected_finding_ids()
+    if len(design_rows) != 72 or len(review_rows) != 72:
+        raise RemediationTraceError("final finding inventory is not exactly 72 rows")
+    tasks: dict[str, dict] = {}
+    owned: dict[str, str] = {}
+    for task in plan_rows:
+        if not isinstance(task, Mapping) or not isinstance(task.get("id"), str):
+            raise RemediationTraceError("Plan task inventory is invalid")
+        task_id = str(task["id"])
+        if task_id in tasks:
+            raise RemediationTraceError("Plan task ids are duplicated")
+        tasks[task_id] = dict(task)
+        findings = task.get("findings")
+        if not isinstance(findings, list):
+            raise RemediationTraceError("Plan task findings are invalid")
+        for finding_id in findings:
+            if not isinstance(finding_id, str) or finding_id in owned:
+                raise RemediationTraceError("Plan finding ownership is duplicated")
+            owned[finding_id] = task_id
+    design_map: dict[str, dict] = {}
+    for row in design_rows:
+        if not isinstance(row, Mapping) or not isinstance(row.get("id"), str):
+            raise RemediationTraceError("Design finding row is invalid")
+        finding_id = str(row["id"])
+        if finding_id in design_map:
+            raise RemediationTraceError("Design finding ids are duplicated")
+        design_map[finding_id] = dict(row)
+    review_map: dict[str, dict] = {}
+    review_fields = {
+        "id", "severity", "review_severity", "class", "source", "title",
+        "scenario", "fix", "lens", "domain", "status",
+    }
+    for row in review_rows:
+        if (not isinstance(row, Mapping) or set(row) != review_fields or
+                not isinstance(row.get("id"), str)):
+            raise RemediationTraceError("retained review row is invalid")
+        finding_id = str(row["id"])
+        if finding_id in review_map:
+            raise RemediationTraceError("retained review ids are duplicated")
+        review_map[finding_id] = dict(row)
+    if (tuple(design_map) != expected_ids or tuple(review_map) != expected_ids or
+            set(owned) != set(expected_ids)):
+        raise RemediationTraceError(
+            "Design, Plan, and review finding ids do not match exactly")
+    severity_counts = {"high": 0, "medium": 0, "low": 0}
+    rows: list[dict] = []
+    for finding_id in expected_ids:
+        design_row = design_map[finding_id]
+        review_row = review_map[finding_id]
+        task_id = owned[finding_id]
+        task = tasks.get(task_id)
+        if task is None or design_row.get("task") != task_id:
+            raise RemediationTraceError(f"{finding_id} task ownership is inconsistent")
+        severity = design_row.get("severity")
+        review_severity = review_row.get("review_severity")
+        if (severity not in severity_counts or
+                review_severity != ("med" if severity == "medium" else severity)):
+            raise RemediationTraceError(f"{finding_id} severity is inconsistent")
+        severity_counts[str(severity)] += 1
+        if (review_row.get("severity") != severity or
+                review_row.get("source") != design_row.get("source") or
+                review_row.get("title") != design_row.get("title") or
+                review_row.get("lens") != design_row.get("lens") or
+                review_row.get("status") != "open"):
+            raise RemediationTraceError(f"{finding_id} review mapping is inconsistent")
+        required_text = ("owner", "dependency_class", "evidence")
+        if any(not isinstance(design_row.get(field), str) or
+               not design_row.get(field) for field in required_text):
+            raise RemediationTraceError(f"{finding_id} trace metadata is incomplete")
+        boundaries = design_row.get("boundaries")
+        depends_on = design_row.get("depends_on")
+        if (not isinstance(boundaries, list) or not boundaries or
+                not all(isinstance(value, str) and value for value in boundaries) or
+                not isinstance(depends_on, list) or
+                not all(isinstance(value, str) and value for value in depends_on)):
+            raise RemediationTraceError(f"{finding_id} dependency trace is invalid")
+        task_waves = str(task.get("wave") or "").split("+")
+        if (design_row.get("owner") != task.get("owner") or
+                design_row.get("wave") not in task_waves or
+                depends_on != task.get("deps") or
+                not set(boundaries).issubset(set(task.get("contracts") or []))):
+            raise RemediationTraceError(f"{finding_id} Design/Plan boundary differs")
+        selector = str(design_row["evidence"])
+        selector_path, separator, selector_name = selector.partition("::")
+        if (separator != "::" or not selector_path or not selector_name or
+                not _scope_contains(task.get("scope"), selector_path)):
+            raise RemediationTraceError(f"{finding_id} evidence is outside task scope")
+        low_companion = design_row.get("low_companion")
+        if severity == "low":
+            if (not isinstance(low_companion, Mapping) or
+                    low_companion.get("wave") != design_row.get("wave") or
+                    low_companion.get("mode") not in {
+                        "shared-owner", "pairwise-disjoint"} or
+                    not isinstance(low_companion.get("with"), list) or
+                    not low_companion.get("with")):
+                raise RemediationTraceError(
+                    f"{finding_id} low companion declaration is invalid")
+            for companion_id in low_companion["with"]:
+                companion = design_map.get(companion_id)
+                if companion is None or companion.get("wave") != design_row.get("wave"):
+                    raise RemediationTraceError(
+                        f"{finding_id} low companion is outside its wave")
+                if (low_companion["mode"] == "shared-owner" and
+                        companion.get("owner") != design_row.get("owner")):
+                    raise RemediationTraceError(
+                        f"{finding_id} shared-owner companion differs")
+        elif low_companion is not None:
+            raise RemediationTraceError(
+                f"{finding_id} non-low row declares a low companion")
+        row = {
+            "id": finding_id,
+            "severity": severity,
+            "source": design_row["source"],
+            "title": design_row["title"],
+            "owner": design_row["owner"],
+            "boundaries": list(boundaries),
+            "wave": design_row["wave"],
+            "task": task_id,
+            "dependency_class": design_row["dependency_class"],
+            "depends_on": list(depends_on),
+            "evidence": selector,
+            "review_row_fingerprint": _digest(review_row),
+        }
+        if severity == "low":
+            row["low_companion"] = dict(low_companion)
+        rows.append(row)
+    if {"total": len(rows), **severity_counts} != _FINAL_COUNTS:
+        raise RemediationTraceError("final finding severity counts are inconsistent")
+    material = {
+        "schema": FINAL_INVENTORY_SCHEMA,
+        "candidate_sha": candidate_sha,
+        "git_evidence": _git_identity(),
+        "canonical_review": {
+            "path": ".em-review/findings.json",
+            "sha256": _FINAL_CANONICAL_FINDINGS_SHA256,
+            "retained_snapshot_path": _FINAL_FINDINGS_SNAPSHOT_PATH,
+            "retained_snapshot_sha256": _FINAL_FINDINGS_SNAPSHOT_SHA256,
+        },
+        "design_sha256": hashlib.sha256(_blob(
+            workspace, candidate_sha, "design/contract.json")).hexdigest(),
+        "plan_sha256": hashlib.sha256(_blob(
+            workspace, candidate_sha, "plan/tasks.json")).hexdigest(),
+        "counts": dict(_FINAL_COUNTS),
+        "rows": rows,
+    }
+    return {**material, "inventory_fingerprint": _digest(material)}
+
+
+def verify_final_inventory(workspace: str, inventory: Mapping) -> dict:
+    """Rebuild the inventory and reject a removed, relabelled, or mixed row."""
+    if (not isinstance(inventory, Mapping) or
+            inventory.get("schema") != FINAL_INVENTORY_SCHEMA):
+        raise RemediationTraceError("final inventory schema is invalid")
+    candidate_sha = str(inventory.get("candidate_sha") or "")
+    expected = build_final_inventory(workspace, candidate_sha=candidate_sha)
+    if dict(inventory) != expected:
+        raise RemediationTraceError("final inventory differs from exact authority")
+    return expected
+
+
+def _require_ancestor(workspace: str, ancestor: str, candidate_sha: str,
+                      label: str) -> None:
+    if not _SHA.fullmatch(ancestor):
+        raise RemediationTraceError(f"{label} commit identity is invalid")
+    try:
+        _git(workspace, "cat-file", "-e", f"{ancestor}^{{commit}}")
+        _git(workspace, "merge-base", "--is-ancestor", ancestor, candidate_sha)
+    except RemediationTraceError as exc:
+        raise RemediationTraceError(
+            f"{label} commit is not exact-candidate ancestry") from exc
+
+
+def _validate_high_gate(workspace: str, candidate_sha: str,
+                        authority: Mapping) -> dict:
+    raw = _pinned_blob(
+        workspace, candidate_sha, _FINAL_HIGH_RESULTS_PATH,
+        _FINAL_HIGH_RESULTS_SHA256, "high-gate results")
+    try:
+        high = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RemediationTraceError("high-gate results are invalid") from exc
+    counts = high.get("counts") if isinstance(high, Mapping) else None
+    if (high.get("schema") != "taskplane.r0002-high-gate-disposition/v1" or
+            high.get("strict_ac5_status") != "not-satisfied" or
+            counts != {
+                "required_high": 34, "listed_high": 34,
+                "independently_green": 19, "accepted_exception": 15,
+                "missing": 0, "suppressed": 0, "downgraded": 0,
+                "self_attested_green": 0,
+            }):
+        raise RemediationTraceError("high-gate truth was weakened or relabelled")
+    results = high.get("results")
+    exceptions = high.get("exception_records")
+    if not isinstance(results, list) or not isinstance(exceptions, list):
+        raise RemediationTraceError("high-gate result inventory is missing")
+    if [row.get("finding_id") for row in results] != [
+            f"H-{number:02d}" for number in range(1, 35)]:
+        raise RemediationTraceError("high-gate finding ids are not exact")
+    expected_exception_ids = {
+        finding_id for values in _FINAL_EXCEPTION_FINDINGS.values()
+        for finding_id in values
+    }
+    actual_exception_ids = {
+        row.get("finding_id") for row in results
+        if row.get("status") == "accepted-exception" and
+        row.get("independent") is False
+    }
+    independently_green = {
+        row.get("finding_id") for row in results
+        if row.get("status") == "independently-green" and
+        row.get("independent") is True
+    }
+    if (actual_exception_ids != expected_exception_ids or
+            len(independently_green) != 19 or
+            actual_exception_ids & independently_green or
+            len(actual_exception_ids | independently_green) != 34):
+        raise RemediationTraceError("high-gate dispositions are inconsistent")
+    authority_exceptions = authority.get("exceptions")
+    if exceptions != authority_exceptions:
+        raise RemediationTraceError("high-gate exception authority differs")
+    for record in exceptions:
+        affected = tuple(record.get("affected_findings") or [])
+        if (affected != _FINAL_EXCEPTION_FINDINGS.get(record.get("id")) or
+                record.get("independently_green") is not False):
+            raise RemediationTraceError("high-gate exception was changed")
+        _pinned_blob(
+            workspace, candidate_sha, str(record["path"]),
+            str(record["sha256"]), f"{record['id']} exception record")
+    return dict(high)
+
+
+def build_final_integration_evidence(workspace: str, *,
+                                     candidate_sha: str) -> dict:
+    """Join high, M1, and M2 truth without claiming the later FINAL-EVAL."""
+    workspace = str(_workspace_path(workspace))
+    _clean_candidate(workspace, candidate_sha)
+    authority = _final_authority(workspace, candidate_sha)
+    inventory = build_final_inventory(workspace, candidate_sha=candidate_sha)
+    high = _validate_high_gate(workspace, candidate_sha, authority)
+    plan = _json_blob(workspace, candidate_sha, "plan/tasks.json", "Plan")
+    tasks = {row["id"]: row for row in plan.get("tasks", [])
+             if isinstance(row, Mapping) and isinstance(row.get("id"), str)}
+    task_commits = authority.get("task_commits")
+    if not isinstance(task_commits, Mapping):
+        raise RemediationTraceError("final task commit inventory is unavailable")
+    expected_tasks = {
+        str(row["task"]) for row in inventory["rows"]
+    } | {"H1-I", "H2-I", "H3-I", "HG-EVAL", "M1-I", "M2-I"}
+    if set(task_commits) != expected_tasks:
+        raise RemediationTraceError("final task/leaf ancestry inventory differs")
+    for task_id in sorted(expected_tasks):
+        _require_ancestor(
+            workspace, str(task_commits[task_id]), candidate_sha, task_id)
+        task = tasks.get(task_id)
+        if task is None:
+            raise RemediationTraceError(f"{task_id} is absent from the Plan")
+        for dependency in task.get("deps") or []:
+            if dependency in task_commits:
+                _require_ancestor(
+                    workspace, str(task_commits[dependency]),
+                    str(task_commits[task_id]), f"{dependency}->{task_id}")
+    if (authority.get("high_gate", {}).get("commit") !=
+            task_commits.get("HG-EVAL") or
+            authority.get("high_gate", {}).get("results_sha256") !=
+            _FINAL_HIGH_RESULTS_SHA256):
+        raise RemediationTraceError("high-gate ancestry authority differs")
+    focused = []
+    for record in authority.get("focused_integration") or []:
+        task_id = record.get("task_id")
+        expected = _FINAL_JOIN_SELECTORS.get(task_id)
+        if expected != (record.get("commit"), record.get("selector")):
+            raise RemediationTraceError("focused integration selector differs")
+        selector_path = str(record["selector"]).partition("::")[0]
+        candidate_blob = _blob(workspace, candidate_sha, selector_path)
+        integration_blob = _blob(
+            workspace, str(record["commit"]), selector_path)
+        if candidate_blob != integration_blob:
+            raise RemediationTraceError(
+                f"{task_id} focused evidence changed after integration")
+        focused.append({
+            **record,
+            "path_sha256": hashlib.sha256(candidate_blob).hexdigest(),
+            "candidate_sha": candidate_sha,
+        })
+    if {row["task_id"] for row in focused} != set(_FINAL_JOIN_SELECTORS):
+        raise RemediationTraceError("M1/M2 focused integration is incomplete")
+    high_by_id = {row["finding_id"]: row for row in high["results"]}
+    dispositions = []
+    for row in inventory["rows"]:
+        finding_id = row["id"]
+        if row["severity"] == "high":
+            high_row = high_by_id[finding_id]
+            disposition = {
+                "finding_id": finding_id,
+                "status": high_row["status"],
+                "independent": high_row["independent"],
+                "evidence_join": "HG-EVAL",
+            }
+            if "exception_id" in high_row:
+                disposition["exception_id"] = high_row["exception_id"]
+        else:
+            if row["wave"] == "M1":
+                evidence_join = "M1-I"
+            elif row["wave"] == "M2":
+                evidence_join = "M2-I"
+            else:
+                evidence_join = "HG-EVAL"
+            disposition = {
+                "finding_id": finding_id,
+                "status": "focused-integration-green-awaiting-final-evaluation",
+                "independent": False,
+                "evidence_join": evidence_join,
+            }
+        dispositions.append(disposition)
+    input_paths = (
+        _FINAL_AUTHORITY_PATH, _FINAL_FINDINGS_SNAPSHOT_PATH,
+        _FINAL_HIGH_RESULTS_PATH, "design/contract.json", "plan/tasks.json",
+        "design/backlog/r0002-h1i-selector-receipt-authority.md",
+        "design/backlog/r0002-h3c-retention-exceptions.md",
+        "taskplane/remediation_trace.py",
+        "taskplane/tests/test_em_m1_integration.py",
+        "taskplane/tests/test_em_m2_integration.py",
+        "taskplane/tests/test_em_remediation_integration.py",
+    )
+    exact_inputs = [{
+        "path": path,
+        "sha256": hashlib.sha256(_blob(
+            workspace, candidate_sha, path)).hexdigest(),
+    } for path in input_paths]
+    tree = str(_git(
+        workspace, "rev-parse", f"{candidate_sha}^{{tree}}")).strip()
+    material = {
+        "schema": FINAL_INTEGRATION_SCHEMA,
+        "requirement_id": "R-0002",
+        "candidate_sha": candidate_sha,
+        "candidate_tree": tree,
+        "git_evidence": _git_identity(),
+        "disposition": "ready-for-independent-final-evaluation",
+        "strict_ac5_status": "not-satisfied",
+        "strict_ac8_status": "pending-independent-final-evaluation",
+        "counts": {
+            "total_trace_rows": 72,
+            "high": 34,
+            "medium": 28,
+            "low": 10,
+            "independently_green_high": 19,
+            "attributed_non_independent_exceptions": 15,
+            "focused_integrated_awaiting_final_evaluation": 38,
+        },
+        "inventory_fingerprint": inventory["inventory_fingerprint"],
+        "task_commits": dict(task_commits),
+        "high_gate": {
+            "commit": task_commits["HG-EVAL"],
+            "candidate_sha": high["candidate_sha"],
+            "results_sha256": _FINAL_HIGH_RESULTS_SHA256,
+            "strict_ac5_status": "not-satisfied",
+        },
+        "exceptions": list(authority["exceptions"]),
+        "focused_integration": focused,
+        "finding_dispositions": dispositions,
+        "final_evaluation": dict(authority["final_evaluation"]),
+        "exact_candidate_inputs": exact_inputs,
+    }
+    return {**material, "evidence_fingerprint": _digest(material)}
+
+
+def verify_final_integration_evidence(workspace: str,
+                                      evidence: Mapping) -> dict:
+    """Reject mutated outcome, ancestry, exception, or exact-candidate data."""
+    if (not isinstance(evidence, Mapping) or
+            evidence.get("schema") != FINAL_INTEGRATION_SCHEMA):
+        raise RemediationTraceError("final integration evidence schema is invalid")
+    candidate_sha = str(evidence.get("candidate_sha") or "")
+    expected = build_final_integration_evidence(
+        workspace, candidate_sha=candidate_sha)
+    if dict(evidence) != expected:
+        raise RemediationTraceError(
+            "final integration evidence differs from exact candidate truth")
+    return expected

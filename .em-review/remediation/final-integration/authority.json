@@ -1,0 +1,123 @@
+{
+  "schema": "taskplane.r0002-final-integration-authority/v1",
+  "requirement_id": "R-0002",
+  "source_review": {
+    "canonical_path": ".em-review/findings.json",
+    "canonical_sha256": "74745ab55c2d0313c9c4271697f2ee024a3e3966ea46f4323a18c9b26f5f6041",
+    "retained_snapshot_path": ".em-review/remediation/final-integration/findings-snapshot.json",
+    "retained_snapshot_sha256": "7f68603d889fc932a7f022c4df4b53e48317ce71fbc3608f4d27704d5a2f30ab",
+    "reviewed_head": "00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085"
+  },
+  "inventory": {
+    "total": 72,
+    "high": 34,
+    "medium": 28,
+    "low": 10
+  },
+  "status_contract": {
+    "integration_disposition": "ready-for-independent-final-evaluation",
+    "strict_ac5_status": "not-satisfied",
+    "strict_ac8_status": "pending-independent-final-evaluation",
+    "independently_green_high": 19,
+    "attributed_non_independent_exceptions": 15,
+    "integrated_medium_low_pending_final_evaluation": 38
+  },
+  "high_gate": {
+    "task_id": "HG-EVAL",
+    "commit": "46af2978997771c0aab986cd70331eb8a8276a84",
+    "results_path": ".em-review/remediation/high-gate/results.json",
+    "results_sha256": "a00787374c9c543e7951c5b64e28f414f3c4ed1913a6adfea4eb941c65142628"
+  },
+  "exceptions": [
+    {
+      "id": "H1-I-selector-receipt-authority",
+      "path": "design/backlog/r0002-h1i-selector-receipt-authority.md",
+      "sha256": "f705432f38a95f663bdaa3678ed42e2e1ed7c7e2bc5e03d5b439cb20dcdfe890",
+      "accepted_by": "Volodymyr Demkiv",
+      "authority_quote": "bypass and proceed with the plan",
+      "implementation_candidate": "7757ff1bf5418d3d387afe74e733803c05b452aa",
+      "affected_findings": [
+        "H-03",
+        "H-04",
+        "H-05",
+        "H-06",
+        "H-07",
+        "H-08",
+        "H-14",
+        "H-15",
+        "H-19",
+        "H-22",
+        "H-26",
+        "H-30",
+        "H-34"
+      ],
+      "independently_green": false
+    },
+    {
+      "id": "H3-C-retention-gaps",
+      "path": "design/backlog/r0002-h3c-retention-exceptions.md",
+      "sha256": "bd40d659569919abe09b797cf7df66c81f7e1e73ad425efc48dc417f52d550a5",
+      "accepted_by": "Volodymyr Demkiv",
+      "authority_quote": "bypass and proceed",
+      "implementation_candidate": "9b85aa9b578e5210eb31d5f9e6faff916a694d93",
+      "affected_findings": [
+        "H-23",
+        "H-25"
+      ],
+      "independently_green": false
+    }
+  ],
+  "task_commits": {
+    "H1-A": "95901f238ca3e72066fb493d3cb8456a4054ef0e",
+    "H1-B": "e7211fd3f664bce89557d8756c8af712cdd5538b",
+    "H1-C": "73dd54e93cfc09900dae3ed0e4f4e4849662d120",
+    "H1-D": "2539c6c535bc69ee1d201708d09e2f8486246fb3",
+    "H1-E": "d4e79a7dee1694230d20897ff200cd4b605e00c1",
+    "H1-I": "7757ff1bf5418d3d387afe74e733803c05b452aa",
+    "H2-A": "d02fa847731cbfb37caf5143924f862786d30c24",
+    "H2-B": "09d939bd053aff2325616eb1a45e2dc573e3a604",
+    "H2-C": "23b7e5ecb178a2f0d888454c5c4ff44fc61b6464",
+    "HX-GRAPH": "17a726753ddb55340cef7c98c2732ca20f42dc05",
+    "H2-I": "7683309d25a57b90872b67c4d935b81494433bde",
+    "H3-A": "b6a54dc4a585e5486649cf1cdde1f9d028acbc5a",
+    "H3-C": "9b85aa9b578e5210eb31d5f9e6faff916a694d93",
+    "H3-D": "23a08a9d44804b4db1390fea3de3df0c570b3c67",
+    "H3-I": "ecc72d4cdf0d90995e3968e2a57f89f61814cf39",
+    "HG-EVAL": "46af2978997771c0aab986cd70331eb8a8276a84",
+    "M1-A": "863a361392253e7672786471935a60af5d05c110",
+    "MX-DOCS-ARCH": "365876a3278c28f7555550d9c246926041e6931b",
+    "M1-B": "e4c324da4b273e0d1bf8d4a58731c97aac230a3e",
+    "M1-C": "a607084b4a2085f8436dbc0f4aa116fa51647c61",
+    "M1-D": "eaebdfb196865a5f0cae5434a6a114f6b4b55522",
+    "M1-E": "7d68bef91a8f4c294b536543b4c823c2158a5d31",
+    "M1-F": "d1166e5cfdd303c155bdb1559d69db1c7f3020c6",
+    "M1-I": "be3425eaaee27279febf8937d05dbefc686fea34",
+    "M2-A": "1b298defe833f26bf943394f1198993dbd8379bb",
+    "M2-B": "647334358ffabc88afde5f37a96b4e3d849dc8d8",
+    "M2-C": "f0ae6d653b2b57e6cb0104dc776d96064b268ddc",
+    "M2-D": "5347c268465bfa5c170558fd0907dea609e30e22",
+    "M2-E": "3721032909baef8bc25853f464193abd64f593f5",
+    "M2-I": "7b3473789caf01d3115301c2308f25c460741fb5"
+  },
+  "focused_integration": [
+    {
+      "task_id": "M1-I",
+      "commit": "be3425eaaee27279febf8937d05dbefc686fea34",
+      "selector": "taskplane/tests/test_em_m1_integration.py::test_ac6_engineering_foundations_close"
+    },
+    {
+      "task_id": "M2-I",
+      "commit": "7b3473789caf01d3115301c2308f25c460741fb5",
+      "selector": "taskplane/tests/test_em_m2_integration.py::test_ac7_user_facing_truth_closes"
+    }
+  ],
+  "final_evaluation": {
+    "task_id": "FINAL-EVAL",
+    "status": "not-run-by-FINAL-I",
+    "independent_evaluator": "required",
+    "exact_candidate": "required",
+    "focused_selector": "taskplane/tests/test_em_remediation_integration.py",
+    "full_suite": "python3 -m pytest taskplane/tests -q",
+    "full_suite_status": "pending"
+  }
+}
