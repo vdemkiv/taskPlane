@@ -1208,8 +1208,25 @@ class CommandRuntime:
             return snapshot
 
     def cancel(self, handle: str, *, expected_revision: int | None = None) -> dict:
-        return self.transition(handle, "cancelled",
-                               expected_revision=expected_revision)
+        with self._state_lock(handle):
+            snapshot = self._load(handle)
+            if expected_revision is not None and \
+                    snapshot["revision"] != expected_revision:
+                raise RevisionConflict(
+                    f"command revision is {snapshot['revision']}, expected "
+                    f"{expected_revision}")
+            if (snapshot["state"] == "input_required" and
+                    snapshot.get("reason_code") ==
+                    "detached_worker_ownership_lost"):
+                # Reconnect has already established that this process is no
+                # longer ours to signal.  Preserve the durable attention
+                # event: reporting cancellation here would claim authority
+                # the host no longer has and consume the only recovery wake.
+                raise InvalidTransition(
+                    "detached command process ownership no longer matches")
+            return self._transition_locked(
+                handle, snapshot, "cancelled",
+                expected_revision=expected_revision)
 
 
 class WaveState:

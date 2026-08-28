@@ -7,6 +7,7 @@ import pytest
 from taskplane.command_runtime import (
     BindingMismatch,
     CommandRuntime,
+    InvalidTransition,
     InterruptedWait,
 )
 
@@ -228,6 +229,30 @@ def test_handle_is_bound_and_lost_binding_fails_safe(runtime):
     assert "REASON_MINIMIZED" in event["reason"]
     assert runtime.reconnect(handle, binding=None) == event
     assert runtime.snapshot(handle)["metrics"]["launch_count"] == 1
+
+
+def test_cancel_refuses_lost_ownership_without_consuming_attention(runtime):
+    binding = {"pid": 19}
+    handle = runtime.create(command_fingerprint="lost-owner", binding=binding)
+    runtime.transition(handle, "running")
+    attention = runtime.reconnect(
+        handle, binding=binding, ownership_check=lambda _: False)
+
+    with pytest.raises(
+            InvalidTransition, match="process ownership no longer matches"):
+        runtime.cancel(handle)
+
+    preserved = runtime.snapshot(handle)
+    assert preserved["state"] == "input_required"
+    assert preserved["revision"] == attention["revision"]
+    assert preserved["reason_code"] == "detached_worker_ownership_lost"
+    assert "detached_worker_ownership_lost" not in preserved["reason"]
+    candidate = runtime.pending(handle, consumer="model")
+    assert candidate["delivery_key"] == attention["delivery_key"]
+    assert runtime.receive(
+        handle, consumer="model",
+        delivery_key=candidate["delivery_key"])["state"] == "input_required"
+    assert runtime.pending(handle, consumer="model") is None
 
 
 def test_reason_codes_are_closed_machine_data_while_reasons_are_minimized(
