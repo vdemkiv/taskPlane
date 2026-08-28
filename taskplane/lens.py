@@ -285,23 +285,24 @@ _HUB_FULL = 8     # >= this many -> a full design pass
 #
 # The cap DEMOTES, never drops, mirroring lens_signals.apply_budget: an
 # over-budget lens still runs, inline, and says why it was demoted.
-def _deep_cap() -> int:
+def _deep_cap() -> int | None:
     """The one cap, read from the engine that defines it.
 
     Deliberately not a second constant here. A local default would be a
     second reader of one number, which is the drift shape this codebase
-    already carries in RUNTIME_OWNED vs LOOP_OWNED; if lens_signals cannot
-    be imported the budget cannot be honoured, and the fail-safe direction
-    for a review is MORE coverage, so the cap lifts rather than guessing.
+    already carries in RUNTIME_OWNED vs LOOP_OWNED. ``None`` means the
+    engine-owned cap is unavailable; the dispatcher treats that as a hard
+    stop for metered subagents while retaining inline coverage.
     """
     try:
         import lens_signals
-        return int(lens_signals.DEEP_CAP)
+        cap = int(lens_signals.DEEP_CAP)
+        return cap if cap > 0 else None
     except Exception:
-        return 0          # 0 == no cap applied, and it is disclosed
+        return None
 
 
-def _cap_deep_dispatch(selected: list, cap: int) -> list:
+def _cap_deep_dispatch(selected: list, cap: int | None) -> list:
     """Demote subagent-mode lenses past `cap` to inline, best evidence first.
 
     Ranked by how EXPLICIT the deep signal was: a lens whose own deep_globs
@@ -310,6 +311,20 @@ def _cap_deep_dispatch(selected: list, cap: int) -> list:
     whole-codebase review is all of them. Ties break on evidence count and
     then catalog order, so the choice is deterministic.
     """
+    if cap is None:
+        # Cost control must fail closed.  Inline review is still complete and
+        # deterministic, but no metered deep worker may start without the
+        # engine-owned ceiling.  Keep the reason on every affected entry so
+        # operators can distinguish a deliberate cap refusal from routing.
+        for entry in selected:
+            if entry.get("mode") == "subagent":
+                entry["mode"] = "inline"
+                entry["reasons"] = list(entry.get("reasons") or []) + [
+                    "budget: deep cap unavailable; demoted subagent->inline "
+                    "(fail-closed spend control)"
+                ]
+            entry.pop("_explicit_deep", None)
+        return selected
     if cap <= 0:
         return selected
     deep = [e for e in selected if e.get("mode") == "subagent"]
@@ -705,8 +720,8 @@ def _route_legacy(changed_files, task_type, artifact_type, cat,
             "breadth": breadth,
             "hub_dependents": hub_dependents,
             # D-0005: the budget is part of the routing DECISION, so it is
-            # reported with it. `deep_cap: 0` means the cap could not be
-            # read and none was applied — visible, not silent.
+            # reported with it. ``None`` means the engine-owned cap could
+            # not be read and every metered deep dispatch was refused.
             "deep_cap": cap,
             "deep_dispatched": n_deep,
         },

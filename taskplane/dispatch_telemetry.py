@@ -16,15 +16,21 @@ import re
 import secrets
 import stat as stat_runtime
 from collections.abc import Mapping, MutableMapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-try:
-    from . import delivery_policy, spend as spend_runtime
+# Mypy checks the package imports as the authoritative typed boundary.  At
+# runtime Taskplane also supports loading this file directly from the
+# ``taskplane/`` directory, where relative imports have no package context.
+# Choose that compatibility mode explicitly instead of hiding the two import
+# shapes behind unscoped type suppressions.
+if TYPE_CHECKING or __package__:
+    from .delivery_policy import DeliveryPolicyError
     from .delivery_ports import Clock, canonical_json, content_fingerprint
-except ImportError:  # pragma: no cover - direct module loading
-    import delivery_policy  # type: ignore
-    import spend as spend_runtime
-    from delivery_ports import Clock, canonical_json, content_fingerprint  # type: ignore
+    from .spend import normalize_usage
+else:  # pragma: no cover - direct module loading
+    from delivery_policy import DeliveryPolicyError
+    from delivery_ports import Clock, canonical_json, content_fingerprint
+    from spend import normalize_usage
 
 
 LEDGER_SCHEMA = "taskplane.dispatch-telemetry-ledger/v1"
@@ -85,7 +91,7 @@ _STABLE_DISPATCH_IDENTITY_FIELDS = frozenset({
 })
 
 
-class DispatchTelemetryError(delivery_policy.DeliveryPolicyError):
+class DispatchTelemetryError(DeliveryPolicyError):
     """Telemetry input is incomplete, contradictory, or over its bound."""
 
 
@@ -312,8 +318,7 @@ def project_transcript_usage(
         if identity_fingerprint and identity_fingerprint in seen:
             totals["duplicates_removed"] += 1
             continue
-        normalized = spend_runtime.normalize_usage(
-            usage, provider=str(provider))
+        normalized = normalize_usage(usage, provider=str(provider))
         if normalized.get("available") is not True:
             return _unavailable_transcript_projection(
                 provider, str(normalized.get("reason") or
