@@ -6,7 +6,6 @@ import os
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -1374,8 +1373,13 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self._write_slot_results(run_id=second["run_id"])
         entered = threading.Event()
         release = threading.Event()
+        loser_lock_waiting = threading.Event()
+        loser_reservation_resolved = threading.Event()
+        winner_collection_entries = {"count": 0}
         calls = []
         outcomes = {}
+        real_file_lock = review.tp.file_lock
+        collection_lock_path = review._collection_lock_path(self.ws)
 
         def publish(_ws):
             name = threading.current_thread().name
@@ -1392,7 +1396,31 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             except Exception as exc:  # expected only for the losing lease
                 outcomes[name] = exc
 
-        with mock.patch("views.publish_report", side_effect=publish):
+        @contextlib.contextmanager
+        def ordered_file_lock(path, *, timeout=10.0):
+            if path != collection_lock_path:
+                with real_file_lock(path, timeout=timeout):
+                    yield
+                return
+            name = threading.current_thread().name
+            if name == "winner":
+                winner_collection_entries["count"] += 1
+                # The third entry releases the winner's reservation. Hold it
+                # until the already-waiting loser has inspected that lease.
+                if winner_collection_entries["count"] == 3:
+                    self.assertTrue(loser_reservation_resolved.wait(timeout))
+            elif name == "loser":
+                loser_lock_waiting.set()
+            try:
+                with real_file_lock(path, timeout=timeout):
+                    yield
+            finally:
+                if name == "loser":
+                    loser_reservation_resolved.set()
+
+        with mock.patch("views.publish_report", side_effect=publish), \
+                mock.patch.object(
+                    review.tp, "file_lock", side_effect=ordered_file_lock):
             winner = threading.Thread(
                 target=collect, args=("winner", first["run_id"]),
                 name="winner")
@@ -1402,10 +1430,14 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             winner.start()
             self.assertTrue(entered.wait(5))
             loser.start()
-            time.sleep(0.1)
+            self.assertTrue(loser_lock_waiting.wait(5))
             release.set()
             winner.join(5)
             loser.join(5)
+        self.assertFalse(winner.is_alive())
+        self.assertFalse(loser.is_alive())
+        self.assertTrue(loser_reservation_resolved.is_set())
+        self.assertEqual(winner_collection_entries["count"], 3)
         self.assertEqual(calls, ["winner"])
         self.assertEqual(outcomes["winner"]["status"], "complete")
         self.assertIsInstance(outcomes["loser"], review_evidence.RevisionError)
