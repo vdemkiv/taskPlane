@@ -15,9 +15,11 @@ taskplane is not another prompt collection, review bot, or project tracker. It
 is the governed execution and assurance layer between your intent and
 agent-generated changes. Requirements, dependencies, contracts, implementation,
 and review stay connected from Definition of Ready through Definition of Done.
-A 26-lens engineering review makes architecture, solution design, security, data, operability,
-UX, and other technical consequences explicit for engineers, EMs, PMs, and
-nontechnical decision-makers.
+A complete 26-lens disposition makes architecture, solution design, security,
+data, operability, UX, and other technical consequences explicit for engineers,
+EMs, PMs, and nontechnical decision-makers. Evidence-selected deep reviewers
+and at most one light sweep execute; every remaining lens is disclosed with its
+recorded light or n/a rationale rather than silently omitted.
 
 **Simple for the user; strict for the agents.** State the goal, review the
 evidence, and make only the decisions that require human judgment. taskplane
@@ -69,10 +71,13 @@ explicit.
 
 ## What taskplane does
 
-- **The governed Evaluate-Loop.** Optional design → human Design approval → plan →
-  human plan approval → build → evaluate → fix (≤2) → engineering review → human
-  sign-off; serial or parallel waves, one enforced contract per agent, and only the
-  orchestrator invokes the state-transition gate.
+- **The governed Evaluate-Loop.** Product → optional Design → Plan pass their
+  mechanical gates before one consolidated pre-implementation authorization →
+  build → evaluate → fix (≤2) → engineering review → final human sign-off.
+  Serial or parallel waves use one enforced contract per agent, and only the
+  orchestrator invokes the state-transition gate. Separate human checkpoints
+  remain only for named exceptional decisions such as A/B selection or material
+  scope and authority changes.
   [docs/loop-design.md](docs/loop-design.md), [docs/authority-matrix.md](docs/authority-matrix.md).
 - **Enforced contracts.** Every agent runs inside a contract — file scope, action
   budget, denied commands, read-only for reviewers — screened by the PreToolUse
@@ -245,9 +250,11 @@ storage authorization is needed.
 Keep Codex's sandbox and approval controls enabled — taskplane's scope contract
 is an additional guardrail, not a replacement.
 
-Requires `git` in your workspace (the gates need a commit snapshot) and Python 3
-(standard library only; `python3` on macOS/Linux or the `py` launcher on
-Windows). Nothing else to set up.
+Requires `git` in your workspace (the gates need a commit snapshot) and
+**CPython 3.10 or newer** (standard library only; `python3` on macOS/Linux or
+the `py` launcher on Windows). The validated range is CPython 3.10–3.13; see
+[docs/configuration.md](docs/configuration.md#supported-python-runtime). Nothing
+else to set up.
 
 ## Quickstarts
 
@@ -357,6 +364,8 @@ taskplane/
 
 ## Going deeper
 
+- [docs/cli-reference.md](docs/cli-reference.md) — the complete generated command,
+  positional-argument, and flag reference.
 - [docs/specialist-routes.md](docs/specialist-routes.md) — the specialist skill
   routes (`tp-design`, `tp-engineering`, `tp-build`, `tp-go`, `tp-product`,
   `tp-northstar`, `tp-status`, `tp-help`), what you'll see during a governed run,

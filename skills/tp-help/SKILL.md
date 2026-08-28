@@ -42,25 +42,13 @@ the next task starts smarter and cheaper. Requirements and plans carry the
 dependency graph into Ready and Done. Workers submit fingerprinted evidence;
 only the orchestrator can ask the engine to advance a stage.
 
-**What's new in v2.16 — crash-safe Retro, lean validation, approved skill flows,
-and convergent review.** Retro now reserves a stable identity before side effects,
-resumes without duplicating knowledge or trace records, and closes only after its
-evidence receipt exists. The ten
-user-facing skills now carry human-approved flow graphs, Product has an explicit
-DoR and approval boundary, and Engineering admits only reproducible defects or
-violations of named repository declarations. Settled findings stay settled unless
-new evidence is named. The selective review kernel from v2.14 still governs Review,
-Evaluate, and final sign-off. taskplane establishes graph quality and the
-bounded blast radius before it maps all 26 lenses to deep, light, or n/a.
-Only the deep set plus at most one light sweep runs. A standalone PR review can
-continue from its pinned diff with a visible degraded-graph warning; delivery
-Evaluate/EM gates still stop on insufficient impact. Every reviewer receives a scoped reference
-to one immutable diff/impact/requirements/DoR/DoD context and writes a leased,
-fingerprint-bound result. The dashboard renders the same dependency graph,
-workflow state, and human approval gates as the final report. Claude and Codex
-consume the same canonical artifacts; after updating the plugin, start a new
-task only when the host has never loaded taskplane's lifecycle hook. Managed
-repository acquisition and plugin patch updates resume in the current task.
+**What's changed in the installed release.** Do not recite a version number or
+static release story from this skill. Read `.codex-plugin/plugin.json` for the
+installed version, then summarize that version's entry in `CHANGELOG.md`; if no
+matching entry exists, say that current highlights are unavailable and link the
+complete history instead of presenting an older release as current. Keep the
+tour to the behavior that changes what this user should expect, and distinguish
+released features from unreleased candidates exactly as the changelog does.
 
 **In v2.13 — the review got a lot cheaper, and the budget
 finally counts what is scarce.** `tp review start` opens a review in one

@@ -6602,6 +6602,19 @@ def _cli_positionals(parser):
 
 _CLI_NARGS_NOTE = {"*": "zero or more", "+": "one or more", "?": "optional"}
 
+
+def _cli_positional_qualifiers(action):
+    """Render a positional's cardinality and closed value contract."""
+    qualifiers = ["required" if action.required else "optional"]
+    cardinality = _CLI_NARGS_NOTE.get(action.nargs)
+    if cardinality and cardinality != qualifiers[0]:
+        qualifiers.append(cardinality)
+    if action.choices:
+        choices = ", ".join(f"`{_cli_cell(choice)}`"
+                            for choice in action.choices)
+        qualifiers.append("choices: " + choices)
+    return "; ".join(qualifiers)
+
 CLI_REFERENCE_REGEN = ("python3 taskplane/tp.py help --md > "
                        "docs/cli-reference.md")
 
@@ -7065,10 +7078,8 @@ def cli_reference_markdown(parser) -> str:
             out.append("Positional arguments:")
             out.append("")
             for pname, action in positionals:
-                note = _CLI_NARGS_NOTE.get(action.nargs)
-                line = f"- `{pname}`"
-                if note:
-                    line += f" ({note})"
+                line = (f"- `{pname}` "
+                        f"({_cli_positional_qualifiers(action)})")
                 if str(action.help or "").strip():
                     line += f" — {_cli_cell(action.help)}"
                 out.append(line)

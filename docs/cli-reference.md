@@ -90,6 +90,8 @@ not repeated in the tables.
 | `tp.py north-star` | on-demand strategic review: print the project's north star, or render a strategic note |
 | `tp.py onboard` | cold-start readiness — folder + git snapshot + init; renders the onboarding dashboard |
 | `tp.py pickup` | run one approved shelf Design Contract without a loop |
+| `tp.py preview` | launch a private governed working preview from a closed JSON request |
+| `tp.py production-gate` | validate retained Design authority against the current live Taskplane delivery roots |
 | `tp.py ready` | Definition-of-Ready entry gate |
 | `tp.py repository` | automatic source precondition: resolve, authenticate, acquire, checkout, verify, and resume |
 | `tp.py repository migrate` | register clean legacy .em-review/scratch clones without moving or deleting anything |
@@ -199,7 +201,7 @@ cancel a durable command
 
 Positional arguments:
 
-- `handle` — opaque durable command handle
+- `handle` (required) — opaque durable command handle
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -212,7 +214,7 @@ launch direct argv through the durable command runtime
 
 Positional arguments:
 
-- `argv` — direct command argv after --
+- `argv` (optional) — direct command argv after --
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -231,7 +233,7 @@ reconnect a durable command
 
 Positional arguments:
 
-- `handle` — opaque durable command handle
+- `handle` (required) — opaque durable command handle
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -244,7 +246,7 @@ show a durable command
 
 Positional arguments:
 
-- `handle` — opaque durable command handle
+- `handle` (required) — opaque durable command handle
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -257,7 +259,7 @@ wait a durable command
 
 Positional arguments:
 
-- `handle` — opaque durable command handle
+- `handle` (required) — opaque durable command handle
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -306,7 +308,7 @@ move a proposed decision to accepted
 
 Positional arguments:
 
-- `id`
+- `id` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -327,7 +329,7 @@ record a new decision (ADR)
 
 Positional arguments:
 
-- `title`
+- `title` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -348,7 +350,7 @@ print one decision in full
 
 Positional arguments:
 
-- `id`
+- `id` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -360,7 +362,7 @@ mark a decision replaced by a newer one
 
 Positional arguments:
 
-- `id`
+- `id` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -409,7 +411,7 @@ record an explicit distributed boundary; consumers depend on the contract
 
 Positional arguments:
 
-- `name`
+- `name` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -422,8 +424,8 @@ record an edge the scanner cannot see
 
 Positional arguments:
 
-- `src`
-- `dst`
+- `src` (required)
+- `dst` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -522,7 +524,7 @@ record a decision in the knowledge base
 
 Positional arguments:
 
-- `title`
+- `title` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -598,7 +600,7 @@ the full brief for one lens
 
 Positional arguments:
 
-- `id`
+- `id` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -629,7 +631,7 @@ derive routine authority for a real host/facade flow from the bound consolidated
 
 Positional arguments:
 
-- `flow` — routine flow identity (facade, delivery, product, design, build, engineering, status, help, north_star or tag_slack)
+- `flow` (required) — routine flow identity (facade, delivery, product, design, build, engineering, status, help, north_star or tag_slack)
 
 ## `tp.py loop claim`
 
@@ -637,7 +639,7 @@ a worker claims one wave task into its own worktree
 
 Positional arguments:
 
-- `task_id`
+- `task_id` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -655,7 +657,7 @@ cancel a durable command
 
 Positional arguments:
 
-- `handle` — opaque durable command handle
+- `handle` (required) — opaque durable command handle
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -668,7 +670,7 @@ launch direct argv through the durable command runtime
 
 Positional arguments:
 
-- `argv` — direct command argv after --
+- `argv` (optional) — direct command argv after --
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -687,7 +689,7 @@ reconnect a durable command
 
 Positional arguments:
 
-- `handle` — opaque durable command handle
+- `handle` (required) — opaque durable command handle
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -700,7 +702,7 @@ show a durable command
 
 Positional arguments:
 
-- `handle` — opaque durable command handle
+- `handle` (required) — opaque durable command handle
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -713,7 +715,7 @@ wait a durable command
 
 Positional arguments:
 
-- `handle` — opaque durable command handle
+- `handle` (required) — opaque durable command handle
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -737,7 +739,7 @@ orchestrator-only: judge the evidence and advance the loop
 
 Positional arguments:
 
-- `outcome`
+- `outcome` (required; choices: `pass`, `fail`, `unavailable`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -765,7 +767,7 @@ start an Evaluate-Loop for a goal
 
 Positional arguments:
 
-- `goal` (zero or more)
+- `goal` (optional; zero or more)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -807,7 +809,7 @@ resolve a blocked loop: retry, pass, skip, defer or abort
 
 Positional arguments:
 
-- `decision`
+- `decision` (required; choices: `retry`, `pass`, `skip`, `defer`, `abort`)
 
 ## `tp.py loop retro`
 
@@ -819,7 +821,7 @@ A/B selection gate: pick the variant that ships (or 'hybrid')
 
 Positional arguments:
 
-- `choice` — variant letter, task id, or 'hybrid'
+- `choice` (required) — variant letter, task id, or 'hybrid'
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -835,7 +837,7 @@ worker submits evidence without transitioning state; the orchestrator gates
 
 Positional arguments:
 
-- `outcome`
+- `outcome` (required; choices: `pass`, `fail`, `unavailable`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -862,7 +864,7 @@ create + activate a Task Contract
 
 Positional arguments:
 
-- `goal` (one or more)
+- `goal` (required; one or more)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -911,11 +913,29 @@ run one approved shelf Design Contract without a loop
 
 Positional arguments:
 
-- `design_contract` — repository-relative approved Design Contract
+- `design_contract` (required) — repository-relative approved Design Contract
 
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--trust-source` | TRUST_SOURCE | attribute one exact full source SHA to the invoking operator |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py preview`
+
+launch a private governed working preview from a closed JSON request
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | REQUEST (required) | bounded JSON request matching the documented taskplane preview request contract |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py production-gate`
+
+validate retained Design authority against the current live Taskplane delivery roots
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--audit-path` | AUDIT_PATH | exact retained R-0013 Codex audit JSONL (defaults to TASKPLANE_R0013_CODEX_AUDIT or its original locator) |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py ready`
@@ -944,7 +964,7 @@ prepare a local repository or remote pull request
 
 Positional arguments:
 
-- `spec` — PR URL, OWNER/REPO#N, ref, or local target
+- `spec` (required) — PR URL, OWNER/REPO#N, ref, or local target
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -986,7 +1006,7 @@ revise the same requirement after Product requests changes
 
 Positional arguments:
 
-- `R-XXXX`
+- `R-XXXX` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1003,7 +1023,7 @@ record technical debt taken on knowingly
 
 Positional arguments:
 
-- `title`
+- `title` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1032,7 +1052,7 @@ record a requirement (or a change request)
 
 Positional arguments:
 
-- `title`
+- `title` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1052,7 +1072,7 @@ score a requirement's refinement against the bar
 
 Positional arguments:
 
-- `id`
+- `id` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1067,8 +1087,8 @@ record the human Product gate
 
 Positional arguments:
 
-- `R-XXXX`
-- `decision`
+- `R-XXXX` (required)
+- `decision` (required; choices: `approve`, `changes`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1110,8 +1130,8 @@ record approved dynamic validation or render evidence
 
 Positional arguments:
 
-- `kind`
-- `status`
+- `kind` (required; choices: `dynamic_validation`, `functionality_render`)
+- `status` (required; choices: `unavailable`, `failed`, `executed`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1144,7 +1164,7 @@ canonical dashboard from `visuals.final_dashboard.inline.path`.
 
 Positional arguments:
 
-- `selection`
+- `selection` (required; choices: `static`, `dynamic`, `dynamic-render`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1184,7 +1204,7 @@ record the human decision for a collected standalone review
 
 Positional arguments:
 
-- `decision`
+- `decision` (required; choices: `approve`, `changes`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1220,7 +1240,7 @@ run one argv-only dynamic check inside the registered validation sandbox and rec
 
 Positional arguments:
 
-- `command` — command argv after --; no shell interpretation
+- `command` (optional) — command argv after --; no shell interpretation
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1263,7 +1283,7 @@ set the knowledge-storage plan
 
 Positional arguments:
 
-- `value`
+- `value` (required; choices: `personal`, `team`, `enterprise`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1284,7 +1304,7 @@ set the default visibility of new decisions
 
 Positional arguments:
 
-- `value`
+- `value` (required; choices: `private`, `shared`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1757,7 +1777,7 @@ fetch a pull request into this checkout and pin it (git fetch pull/N/head)
 
 Positional arguments:
 
-- `spec` — PR url, OWNER/REPO#N, or #N
+- `spec` (required) — PR url, OWNER/REPO#N, or #N
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1807,7 +1827,7 @@ close a track
 
 Positional arguments:
 
-- `name`
+- `name` (required)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1823,8 +1843,8 @@ open a new track
 
 Positional arguments:
 
-- `name`
-- `goal` (zero or more)
+- `name` (required)
+- `goal` (optional; zero or more)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1836,7 +1856,7 @@ make another track the active one
 
 Positional arguments:
 
-- `name`
+- `name` (required)
 
 ## `tp.py version`
 
@@ -1852,7 +1872,7 @@ replay receipt-scoped post-merge cleanup once; never force-removes or deletes br
 
 Positional arguments:
 
-- `action` — bounded maintenance action
+- `action` (required; choices: `replay`) — bounded maintenance action
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1873,8 +1893,8 @@ record a human verdict on one finding: acted or dismissed
 
 Positional arguments:
 
-- `finding` — the finding fingerprint from `tp yield`
-- `verdict` — durable human disposition
+- `finding` (required) — the finding fingerprint from `tp yield`
+- `verdict` (required; choices: `acted`, `dismissed`, `resolved`, `accepted`, `closed`, `deferred`, `not-a-defect`) — durable human disposition
 
 | Flag | Value | What it does |
 | --- | --- | --- |

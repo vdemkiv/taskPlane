@@ -25,6 +25,15 @@ checkout and then applies these checks there:
    (`product.md` / `tech-stack.md` / `workflow.md` / `current-state.md`),
    scans the dependency graph, and creates the external knowledge base.
 
+   **Before authorizing `tp init` in a brownfield repository, check for a
+   tracked legacy `knowledge/` directory.** On a personal plan, initialization
+   moves that directory into the external project store, runs `git rm --cached`
+   to untrack its contents, and adds `knowledge/` to `.gitignore`. On a Team or
+   Enterprise plan, the shared store remains in-repo under
+   `.taskplane-kb/knowledge/`. Review the full
+   [legacy knowledge migration contract](state-spec.md#migration-from-an-in-repo-knowledge-base)
+   before approving this repository-changing step.
+
    **Fill `current-state.md` first on a brownfield project.** It is the
    as-built inventory — what already runs, what data/integrations exist,
    what hardware is in place. Once filled, it is injected into every task
@@ -163,9 +172,17 @@ tiers are yours to map as models change. Routing is *verified*, not assumed:
 
 ## Context storage (token efficiency)
 
-Fill the three context docs with your project's reality — the product doc's
-*Direction / north star* line is what `tp-northstar` measures against. From
-then on decisions, requirements, tracked debt, and the dependency graph
+Fill all **four context docs** with your project's reality:
+
+- `current-state.md` records what is already built and running; fill it first
+  for a brownfield repository.
+- `product.md` records the user, problem, boundaries, and Direction / north star
+  that `tp-northstar` measures against.
+- `tech-stack.md` records the languages, frameworks, services, and technical
+  constraints.
+- `workflow.md` records how the team builds, tests, reviews, and releases.
+
+From then on decisions, requirements, tracked debt, and the dependency graph
 accumulate in an **external per-project store**
 (`~/.taskplane/projects/<key>/` — `tp kb where` shows the path). That
 location is deliberate resource economics: every loop step recalls only the
