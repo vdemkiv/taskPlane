@@ -84,6 +84,108 @@ else:  # pragma: no cover - direct CLI module loading
     from delivery_ports import SystemClock
 
 LOOP_FILE = "loop.json"
+REVIEW_RAW_DIFF_RETENTION_SECONDS = 24 * 60 * 60
+REVIEW_RAW_DIFF_MAX_ARTIFACTS = 32
+
+
+def _retained_review_diff_payload(*, base: str, files: list[str],
+                                  patch: str,
+                                  now: float | None = None) -> dict:
+    created_at = float(time.time() if now is None else now)
+    return {
+        "schema": "taskplane.retained-review-diff/v1",
+        "base": str(base),
+        "files": list(files),
+        "patch": str(patch),
+        "retention": {
+            "schema": "taskplane.raw-diff-retention/v1",
+            "created_at": created_at,
+            "expires_at": created_at + REVIEW_RAW_DIFF_RETENTION_SECONDS,
+            "raw_fields": ["patch"],
+            "delete_on_expiry": True,
+        },
+    }
+
+
+def enforce_review_diff_retention(
+        workspace: str, *, store, now: float | None = None,
+        keep_fingerprint: str | None = None) -> dict:
+    """Delete expired/excess raw diff artifacts under one canonical store.
+
+    Review diffs remain available to active lens workers for one bounded day.
+    The next review (including the first review after restart) sweeps expired
+    and excess generations before routing.  Content-addressed references to a
+    deleted generation then fail integrity verification instead of silently
+    resolving to stale personal/source data.
+    """
+    del workspace  # store is already bound to its validated workspace/root.
+    observed_at = float(time.time() if now is None else now)
+    directory = os.path.join(store.root, "diff")
+    if not os.path.isdir(directory):
+        return {"removed": 0, "retained": 0,
+                "retention_seconds": REVIEW_RAW_DIFF_RETENTION_SECONDS,
+                "max_artifacts": REVIEW_RAW_DIFF_MAX_ARTIFACTS}
+    removed = 0
+    entries = []
+    lock_path = os.path.join(store.root, ".diff-retention")
+    with tp.file_lock(lock_path):
+        for name in sorted(os.listdir(directory)):
+            if not re.fullmatch(r"[0-9a-f]{64}\.json", name):
+                continue
+            fingerprint = name[:-5]
+            path = os.path.join(directory, name)
+            if os.path.islink(path):
+                os.unlink(path)
+                removed += 1
+                continue
+            try:
+                stat_result = os.stat(path)
+                with open(path, encoding="utf-8") as source:
+                    payload = json.load(source)
+                retention = payload.get("retention") \
+                    if isinstance(payload, dict) else None
+                expires_at = float((retention or {}).get("expires_at") or
+                                   (stat_result.st_mtime +
+                                    REVIEW_RAW_DIFF_RETENTION_SECONDS))
+                created_at = float((retention or {}).get("created_at") or
+                                   stat_result.st_mtime)
+            except (OSError, ValueError, TypeError, AttributeError):
+                # A malformed raw-diff artifact has no authority.  Its mtime
+                # is the conservative legacy retention origin; an unreadable
+                # artifact is removed immediately because it cannot serve a
+                # review and must not become an indefinite data sink.
+                try:
+                    created_at = os.path.getmtime(path)
+                    expires_at = created_at + REVIEW_RAW_DIFF_RETENTION_SECONDS
+                except OSError:
+                    created_at = 0.0
+                    expires_at = 0.0
+            entries.append((created_at, expires_at, fingerprint, path))
+
+        newest = sorted(entries, reverse=True)
+        capacity = REVIEW_RAW_DIFF_MAX_ARTIFACTS - \
+            (1 if keep_fingerprint else 0)
+        retained_non_current = 0
+        retained = 0
+        for _created, expires_at, fingerprint, path in newest:
+            keep = fingerprint == keep_fingerprint
+            eligible = expires_at > observed_at and \
+                (keep or retained_non_current < max(0, capacity))
+            if eligible:
+                retained += 1
+                if not keep:
+                    retained_non_current += 1
+                continue
+            try:
+                os.unlink(path)
+                removed += 1
+            except FileNotFoundError:
+                pass
+        if removed:
+            tp._fsync_directory(directory)
+    return {"removed": removed, "retained": retained,
+            "retention_seconds": REVIEW_RAW_DIFF_RETENTION_SECONDS,
+            "max_artifacts": REVIEW_RAW_DIFF_MAX_ARTIFACTS}
 
 
 def _brief_source_root(ws: str) -> str:
@@ -4144,8 +4246,15 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
         json.dumps(target_material, sort_keys=True, separators=(",", ":"))
         .encode("utf-8")).hexdigest()}
     store = review_evidence.ArtifactStore(diff_ws)
-    diff_ref = store.put("diff", {"base": base, "files": files,
-                                  "patch": patch})
+    # Raw source diffs are private working evidence, not permanent canonical
+    # history.  Sweep first so restart closes overdue retention, then bind the
+    # new generation to its explicit expiry and enforce the count bound while
+    # protecting the just-created active reference.
+    enforce_review_diff_retention(diff_ws, store=store)
+    diff_ref = store.put("diff", _retained_review_diff_payload(
+        base=base, files=files, patch=patch))
+    enforce_review_diff_retention(
+        diff_ws, store=store, keep_fingerprint=diff_ref["fingerprint"])
     stage = "review" if step == "em" else EVALUATE_ROUTE_STAGE
     changed_symbols = review.changed_symbols_from_patch(patch)
     quality_ref = None

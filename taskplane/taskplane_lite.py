@@ -6720,20 +6720,38 @@ def store_meta_path(workspace: str) -> str:
 
 
 def write_store_meta(workspace: str) -> dict:
-    """Record what this store belongs to — absolute workspace path and git
-    remote — so the store is self-describing and a future collaboration/sync
-    can map a shared KB back to its project. Idempotent."""
+    """Record the store owner without publishing workstation identity.
+
+    The private external store retains the exact checkout locator needed by
+    legacy adoption and local recovery.  A repository store is committed and
+    shared, so it carries only stable pseudonyms and a repository fingerprint;
+    neither an absolute path nor a credential-bearing remote URL crosses that
+    boundary.
+    """
     root = store_root(workspace)
     os.makedirs(root, exist_ok=True)
     remote = _run(["git", "config", "--get", "remote.origin.url"],
                   cwd=workspace).stdout.strip() or None
-    meta = {"key": project_key(workspace),
-            "workspace": os.path.abspath(workspace),
-            "workspace_realpath": _workspace_identity(workspace),
-            "git_remote": remote}
+    if get_mode(workspace)["store"] == "repo":
+        workspace_digest = hashlib.sha256(
+            _workspace_identity(workspace).encode("utf-8")).hexdigest()
+        repository_material = remote or project_key(workspace)
+        meta = {
+            "schema": "taskplane.store-meta/v2",
+            "shared": True,
+            "workspace_key": "workspace:" + workspace_digest[:24],
+            "repository_fingerprint": hashlib.sha256(
+                repository_material.encode("utf-8")).hexdigest(),
+        }
+    else:
+        meta = {"key": project_key(workspace),
+                "workspace": os.path.abspath(workspace),
+                "workspace_realpath": _workspace_identity(workspace),
+                "git_remote": remote,
+                "shared": False}
     try:
-        with open(store_meta_path(workspace), "w", encoding="utf-8", newline="") as f:
-            json.dump(meta, f, indent=2)
+        atomic_write_json(store_meta_path(workspace), meta, indent=2,
+                          sort_keys=True)
     except OSError:
         pass
     return meta
@@ -7064,6 +7082,88 @@ _TRACE_FAILED_WARNED = False
 # The bound is on the ACTIVE file — which is what keeps appends and reads
 # cheap — not on the history, which is the thing being audited.
 _TRACE_MAX_BYTES = 5 * 1024 * 1024
+_AUDIT_TEXT_MAX_CHARS = 2048
+_AUDIT_COLLECTION_MAX_ITEMS = 64
+_AUDIT_CONTENT_FIELDS = frozenset({
+    "command", "commands", "conversation", "conversations", "diff",
+    "output", "patch", "prompt", "prompts", "transcript",
+    "transcripts",
+})
+_AUDIT_PERSON_FIELDS = frozenset({
+    "actor", "approved_by", "email", "hostname", "human", "user",
+    "username", "workstation",
+})
+_AUDIT_EMAIL_RE = re.compile(
+    r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+_AUDIT_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9:])/(?:[^/\s'\"`]+/)+[^\s'\"`,;)}\]]+")
+_AUDIT_WINDOWS_PATH_RE = re.compile(
+    r"(?i)\b[A-Z]:\\[^\r\n\t'\"`]+")
+_AUDIT_SECRET_RE = re.compile(
+    r"(?i)\b(?:authorization|token|password|secret|api[_-]?key)"
+    r"\s*[:=]\s*[^\s,;]+")
+
+
+def _audit_pseudonym(value: object) -> str:
+    digest = hashlib.sha256(str(value).encode("utf-8", "replace")).hexdigest()
+    return "anon:" + digest[:20]
+
+
+def _sanitize_audit_text(value: object) -> str:
+    text = str(value)
+    text = _AUDIT_SECRET_RE.sub("[REDACTED_SECRET]", text)
+    text = _AUDIT_EMAIL_RE.sub("[REDACTED_EMAIL]", text)
+    text = _AUDIT_WINDOWS_PATH_RE.sub("[REDACTED_PATH]", text)
+    text = _AUDIT_ABSOLUTE_PATH_RE.sub("[REDACTED_PATH]", text)
+    if len(text) > _AUDIT_TEXT_MAX_CHARS:
+        digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+        text = text[:_AUDIT_TEXT_MAX_CHARS] + \
+            f"...[TRUNCATED sha256={digest}]"
+    return text
+
+
+def _sanitize_audit_key(value: object) -> str:
+    raw = str(value)
+    sanitized = _sanitize_audit_text(raw)
+    if sanitized != raw:
+        return "field:" + hashlib.sha256(
+            raw.encode("utf-8", "replace")).hexdigest()[:20]
+    return sanitized
+
+
+def _sanitize_audit_value(value, *, key: str = "", depth: int = 0):
+    """Return a bounded, JSON-safe audit projection.
+
+    Authority-bearing state remains in its canonical records.  The append-only
+    trace is a diagnostic projection, so raw payload-like fields are replaced
+    by a correlation digest, human/workstation identifiers are pseudonymized,
+    and all remaining text is scrubbed before persistence.
+    """
+    normalized_key = str(key).strip().lower()
+    if normalized_key in _AUDIT_PERSON_FIELDS and value is not None:
+        return _audit_pseudonym(value)
+    if normalized_key in _AUDIT_CONTENT_FIELDS and value is not None:
+        encoded = json.dumps(value, sort_keys=True, default=str,
+                             separators=(",", ":")).encode("utf-8")
+        return {"minimized": True, "bytes": len(encoded),
+                "sha256": hashlib.sha256(encoded).hexdigest()}
+    if depth >= 6:
+        return "[TRUNCATED_DEPTH]"
+    if isinstance(value, dict):
+        rows = sorted(value.items(), key=lambda row: str(row[0]))
+        return {_sanitize_audit_key(child_key): _sanitize_audit_value(
+                    child_value, key=str(child_key), depth=depth + 1)
+                for child_key, child_value in
+                rows[:_AUDIT_COLLECTION_MAX_ITEMS]}
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_audit_value(item, key=normalized_key,
+                                      depth=depth + 1)
+                for item in list(value)[:_AUDIT_COLLECTION_MAX_ITEMS]]
+    if isinstance(value, str):
+        return _sanitize_audit_text(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _sanitize_audit_text(value)
 
 
 def _reserve_trace_archive(path: str) -> "str | None":
@@ -7171,8 +7271,10 @@ def trace(workspace: str, event: str, **data) -> None:
     # Every record carries a monotonic wall-clock ts so the mission-control
     # feed can order events across parallel worker trace files by TIME, not
     # by which file they happened to be concatenated from.
-    rec = {"event": event, "ts": time.time()}
-    rec.update(data)
+    rec = {"event": _sanitize_audit_text(event), "ts": time.time()}
+    rec.update({_sanitize_audit_key(key):
+                _sanitize_audit_value(value, key=str(key))
+                for key, value in data.items()})
     try:
         d = tp_dir(workspace)
         os.makedirs(d, exist_ok=True)

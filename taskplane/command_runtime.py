@@ -36,6 +36,7 @@ except ImportError:  # pragma: no cover - exercised by windows-latest
 
 SCHEMA = "taskplane.command-state/v1"
 MAX_EVENT_OUTPUT = 16 * 1024
+MAX_DURABLE_OUTPUT = 64 * 1024
 DEFAULT_DELIVERY_LEASE_SECONDS = 30.0
 TERMINAL_STATES = frozenset({
     "succeeded", "failed", "timed_out", "cancelled",
@@ -62,6 +63,22 @@ _SECRET_PATTERNS = (
         r"(?i)\b(authorization|token|password|secret|api[_-]?key)"
         r"\s*[:=]\s*([^\s,;]+)"
     ),
+)
+
+_PERSONAL_DATA_PATTERNS = (
+    # Durable logs are operational evidence, not a contact directory.  Keep
+    # the surrounding diagnostic useful while removing common direct
+    # identifiers before either the snapshot journal or output artifact sees
+    # them.
+    (re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
+     "[REDACTED_EMAIL]"),
+    (re.compile(r"(?<![A-Za-z0-9])/(?:Users|home)/[^\s'\"`]+"),
+     "[REDACTED_PATH]"),
+    (re.compile(r"(?<![A-Za-z0-9])/(?:private/var/folders|private/tmp|tmp)/"
+                r"[^\s'\"`]+"), "[REDACTED_PATH]"),
+    (re.compile(r"(?i)\b[A-Z]:\\(?:Users|Documents and Settings)\\"
+                r"[^\r\n\t'\"`]+"), "[REDACTED_PATH]"),
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[REDACTED_IP]"),
 )
 
 
@@ -349,6 +366,9 @@ def _redact(value: str) -> tuple[str, int]:
                 lambda match: f"{match.group(1)}=[REDACTED]", redacted)
         else:
             redacted, hits = pattern.subn("[REDACTED]", redacted)
+        count += hits
+    for pattern, replacement in _PERSONAL_DATA_PATTERNS:
+        redacted, hits = pattern.subn(replacement, redacted)
         count += hits
     return redacted, count
 
@@ -697,10 +717,18 @@ class CommandRuntime:
             artifact_dir = self._dir(handle) / "artifacts"
             artifact_dir.mkdir(parents=True, exist_ok=True)
             artifact_path = artifact_dir / "output.log"
-            # One canonical artifact per command. Output is appended once per
-            # new digest; repeated identical chunks are ignored.
+            # One bounded, privacy-scrubbed artifact per command.  Output is
+            # appended once per new digest; repeated identical chunks are
+            # ignored.  The cap bounds retention rather than just the event
+            # projection: bytes beyond it are represented by the digest and
+            # ``truncated`` flag, never durably copied to disk.
+            retained_before = artifact_path.stat().st_size \
+                if artifact_path.exists() else 0
+            encoded = redacted.encode("utf-8")
+            room = max(0, MAX_DURABLE_OUTPUT - retained_before)
+            retained = encoded[:room]
             with artifact_path.open("a", encoding="utf-8", newline="") as target:
-                target.write(redacted)
+                target.write(retained.decode("utf-8", errors="ignore"))
                 target.flush()
                 os.fsync(target.fileno())
             all_bytes = artifact_path.read_bytes()
@@ -713,7 +741,8 @@ class CommandRuntime:
                 "path": f"artifacts/{artifact_path.name}",
                 "sha256": artifact_digest,
                 "bytes": len(all_bytes),
-                "truncated": len(redacted.encode("utf-8")) > MAX_EVENT_OUTPUT,
+                "truncated": (len(encoded) > MAX_EVENT_OUTPUT or
+                              len(encoded) > room),
             }
             snapshot["metrics"]["output_redactions"] += redactions
             snapshot["updated_at"] = float(self._clock())
