@@ -22,7 +22,8 @@ from taskplane.command_runtime import (
 
 def _git(workspace: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=workspace, check=True,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, encoding="utf-8",
+                   errors="replace")
 
 
 def _repository(path: Path) -> Path:

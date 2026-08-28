@@ -391,10 +391,38 @@ def test_trusted_scanner_predecessor_receipts_are_exactly_closed() -> None:
     assert cycles.TRUSTED_SCANNER_PREDECESSOR_SHA256S == frozenset({
         "c89eddc3d2ed09846b63495a31f927e8678db2052ffe47bca7795636b1d787b0",
         "1728a688ffb8a6e09f7410c9d6ba3da88ec8bfc0590b377cdf5fe7b7d8792752",
+        "77a9adf2e9876ba56867bac07676290706df6b59fbc2b56ffb3c5dfd71865d91",
     })
     assert cycles.TRUSTED_WORKFLOW_PREDECESSOR_SHA256S == frozenset({
         "ad14a00ec79956f401d3c9151fe106c4997959f2a0762061c3a31eb9765b0b45",
+        "bacbceab1fcd8fa45803b37824f6b6b901bd6b224f389508fcf42d596dd9282e",
+        "85436df4f422037a99cace6634cbef8cee2c36a5c76366dd9815153ea4d17c19",
+        "417463d582eabf317cd2cdcbaa1c9f2e67cf397fa0c23e4bc4e59d6ffe41e0e7",
     })
+    assert cycles.TRUSTED_POLICY_REBASELINES == ({
+        "policy_sha256":
+            "55ab2022bdcde4c6a1c363e2b46064ac1e4d583d0c9a900a495c7a83867c5735",
+        "introduced_revision": "95901f238ca3e72066fb493d3cb8456a4054ef0e",
+        "source_revision": "bdfd522bbcce19ca71d107569c441a183ac74025",
+        "commit_count": 41,
+        "violation_codes": ("new-cyclic-member", "physical-loc-growth"),
+        "affected_modules": (
+            "taskplane.audit", "taskplane.collision", "taskplane.dashboard",
+            "taskplane.defect_claim", "taskplane.depgraph",
+            "taskplane.design_contract", "taskplane.evidence",
+            "taskplane.governed_commands", "taskplane.lens",
+            "taskplane.lens_signals", "taskplane.loop",
+            "taskplane.loop_status", "taskplane.regression",
+            "taskplane.requirements", "taskplane.retro", "taskplane.review",
+            "taskplane.review_evidence", "taskplane.review_progression",
+            "taskplane.review_repair", "taskplane.review_retry",
+            "taskplane.runtime_eval", "taskplane.stage_entities",
+            "taskplane.stage_handoff", "taskplane.taskplane_lite",
+            "taskplane.views",
+        ),
+        "history_sha256":
+            "3ff6ca8ab663d1595513da1c379160790c4abdf416fad37e9461d2e32596f8c0",
+    },)
 
 
 def test_history_proof_finds_activation_before_all_five_cuts(
@@ -482,36 +510,40 @@ def test_history_proof_allows_ordinary_evolution_before_seal(
 
 def test_history_proof_allows_only_the_exact_versioned_workflow_transitions(
         tmp_path: Path) -> None:
-    full_history_checkout = (
-        "        with:\n"
-        "          fetch-depth: 0\n"
-        "          persist-credentials: false\n"
+    versioned_history = (
+        ("ca5a4bc1a3d812e3214ea849eb952de2efbfcb0e",
+         cycles.SEALED_WORKFLOW_SHA256),
+        ("f684f721be4a482f8882e8287dbe6442b31bda75",
+         "ad14a00ec79956f401d3c9151fe106c4997959f2a0762061c3a31eb9765b0b45"),
+        ("ed8833060d7a1134c2f0c1af2b41461c4b21579a",
+         "bacbceab1fcd8fa45803b37824f6b6b901bd6b224f389508fcf42d596dd9282e"),
+        ("d14f84247ddb527cdf4c872a68cec3f658a398de",
+         "85436df4f422037a99cace6634cbef8cee2c36a5c76366dd9815153ea4d17c19"),
+        ("d02fa847731cbfb37caf5143924f862786d30c24",
+         "417463d582eabf317cd2cdcbaa1c9f2e67cf397fa0c23e4bc4e59d6ffe41e0e7"),
     )
-    forward_release_step = (
-        "\n"
-        "      # R-0001 forward-only release integration. The 3.12 leg already owns\n"
-        "      # the complete suite, so this adds one deterministic package/runtime\n"
-        "      # proof without replaying it on the compatibility smoke legs.\n"
-        "      - name: Verify forward-release manifests, archives, and runtime\n"
-        "        if: matrix.python == '3.12'\n"
-        "        run: python scripts/ci_evals.py --verify-release-surface --json\n"
-    )
-    assert forward_release_step in ACTIVE_WORKFLOW
-    previous_workflow = ACTIVE_WORKFLOW.replace(full_history_checkout, "", 1)
-    assert cycles.workflow_seal_digest(previous_workflow) in \
+    workflows = []
+    for revision, expected_digest in versioned_history:
+        workflow_source = cycles._show_optional(
+            ROOT, revision, cycles.WORKFLOW_RELATIVE)
+        assert workflow_source is not None
+        assert cycles.workflow_seal_digest(workflow_source) == expected_digest
+        workflows.append(workflow_source)
+    assert {digest for _revision, digest in versioned_history[1:]} == \
         cycles.TRUSTED_WORKFLOW_PREDECESSOR_SHA256S
-    sealed_workflow = previous_workflow.replace(forward_release_step, "", 1)
-    assert cycles.workflow_seal_digest(sealed_workflow) == \
-        cycles.SEALED_WORKFLOW_SHA256
+    assert cycles.workflow_seal_digest(ACTIVE_WORKFLOW) == \
+        cycles.WORKFLOW_SHA256
+
     policy, workflow, _ = _start_history_fixture(
-        tmp_path, active_workflow=sealed_workflow)
+        tmp_path, active_workflow=workflows[0])
     (tmp_path / "taskplane" / "lens.py").write_text(
         "def f():\n    return None\n", encoding="utf-8")
     _commit(tmp_path, "cut protected edge")
-    workflow.write_text(previous_workflow, encoding="utf-8")
-    _commit(tmp_path, "advance to forward-release workflow seal")
+    for index, workflow_source in enumerate(workflows[1:], start=1):
+        workflow.write_text(workflow_source, encoding="utf-8")
+        _commit(tmp_path, f"advance to trusted workflow seal {index}")
     workflow.write_text(ACTIVE_WORKFLOW, encoding="utf-8")
-    _commit(tmp_path, "advance to full-history workflow seal")
+    _commit(tmp_path, "advance to current workflow seal")
 
     assert cycles.verify_history(tmp_path, policy)["status"] == "pass"
 

@@ -31,11 +31,14 @@ HISTORY_RESOLUTIONS_RELATIVE = Path(
 WORKFLOW_RELATIVE = Path(".github/workflows/ci.yml")
 MODULE_RELATIVE = Path("taskplane/import_cycles.py")
 WORKFLOW_SHA256 = \
-    "bacbceab1fcd8fa45803b37824f6b6b901bd6b224f389508fcf42d596dd9282e"
+    "23a7f87fe42cf153318bd703f1f93ddc3f9479e4262177de49568cc69aa50c15"
 SEALED_WORKFLOW_SHA256 = \
     "e61df03fbec44633d945490f9df0c7c2f56e074b5f2da2915343035377bfb505"
 TRUSTED_WORKFLOW_PREDECESSOR_SHA256S = frozenset({
     "ad14a00ec79956f401d3c9151fe106c4997959f2a0762061c3a31eb9765b0b45",
+    "bacbceab1fcd8fa45803b37824f6b6b901bd6b224f389508fcf42d596dd9282e",
+    "85436df4f422037a99cace6634cbef8cee2c36a5c76366dd9815153ea4d17c19",
+    "417463d582eabf317cd2cdcbaa1c9f2e67cf397fa0c23e4bc4e59d6ffe41e0e7",
 })
 SEALED_SCANNER_SHA256 = \
     "fdb1e859898e05323afa2ae77a0189cba164edebb9644edc02daeac8168aace5"
@@ -46,7 +49,39 @@ SEALED_SCANNER_SHA256 = \
 TRUSTED_SCANNER_PREDECESSOR_SHA256S = frozenset({
     "c89eddc3d2ed09846b63495a31f927e8678db2052ffe47bca7795636b1d787b0",
     "1728a688ffb8a6e09f7410c9d6ba3da88ec8bfc0590b377cdf5fe7b7d8792752",
+    "77a9adf2e9876ba56867bac07676290706df6b59fbc2b56ffb3c5dfd71865d91",
 })
+# Exact, one-time policy growth accepted for the reviewed R-0002 remediation
+# integration. A receipt binds the complete pre-rebaseline violation span and
+# the exact measured policy whose source revision is the final failing commit.
+# The repair commit itself is discovered from first-parent history, so no
+# commit is asked to contain its own (impossible) Git id. Any other bound
+# raise, source revision, affected module, or historical observation remains a
+# refusal.
+TRUSTED_POLICY_REBASELINES = ({
+    "policy_sha256":
+        "55ab2022bdcde4c6a1c363e2b46064ac1e4d583d0c9a900a495c7a83867c5735",
+    "introduced_revision": "95901f238ca3e72066fb493d3cb8456a4054ef0e",
+    "source_revision": "bdfd522bbcce19ca71d107569c441a183ac74025",
+    "commit_count": 41,
+    "violation_codes": ("new-cyclic-member", "physical-loc-growth"),
+    "affected_modules": (
+        "taskplane.audit", "taskplane.collision", "taskplane.dashboard",
+        "taskplane.defect_claim", "taskplane.depgraph",
+        "taskplane.design_contract", "taskplane.evidence",
+        "taskplane.governed_commands", "taskplane.lens",
+        "taskplane.lens_signals", "taskplane.loop",
+        "taskplane.loop_status", "taskplane.regression",
+        "taskplane.requirements", "taskplane.retro", "taskplane.review",
+        "taskplane.review_evidence", "taskplane.review_progression",
+        "taskplane.review_repair", "taskplane.review_retry",
+        "taskplane.runtime_eval", "taskplane.stage_entities",
+        "taskplane.stage_handoff", "taskplane.taskplane_lite",
+        "taskplane.views",
+    ),
+    "history_sha256":
+        "3ff6ca8ab663d1595513da1c379160790c4abdf416fad37e9461d2e32596f8c0",
+},)
 RATCHET_JOB_ID = "wave3-contracts"
 RATCHET_CHECK_NAME = "R-0006 graph + CLI contracts"
 RATCHET_STEP_NAME = "Import-cycle inventory, bounds, and activation order"
@@ -283,6 +318,11 @@ def build_inventory_at_revision(root: Path, revision: str) -> dict:
 def canonical_json(record: Mapping) -> str:
     return json.dumps(record, sort_keys=True, indent=2,
                       ensure_ascii=False) + "\n"
+
+
+def policy_inventory_digest(record: Mapping) -> str:
+    """Content-address one complete measured cycle policy."""
+    return hashlib.sha256(canonical_json(record).encode("utf-8")).hexdigest()
 
 
 def _require_keys(record: Mapping, expected: set[str], label: str) -> None:
@@ -1168,6 +1208,35 @@ def verify_history(root: Path, policy_path: Path) -> dict:
                 resolution["_start"]:resolution["_end"]]:
             resolution_for_commit[commit] = resolution_index
 
+    positions = {commit: index for index, commit in enumerate(protected_commits)}
+    rebaseline_for_commit = {}
+    rebaseline_observations = [[] for _ in TRUSTED_POLICY_REBASELINES]
+    rebaseline_repairs = [None for _ in TRUSTED_POLICY_REBASELINES]
+    rebaseline_keys = {
+        "policy_sha256", "introduced_revision", "source_revision",
+        "commit_count", "violation_codes", "affected_modules",
+        "history_sha256",
+    }
+    for rebaseline_index, rebaseline in enumerate(
+            TRUSTED_POLICY_REBASELINES):
+        label = f"trusted policy rebaseline[{rebaseline_index}]"
+        if set(rebaseline) != rebaseline_keys:
+            raise CycleHistoryError(f"{label} fields are not closed")
+        introduced = rebaseline["introduced_revision"]
+        source_revision = rebaseline["source_revision"]
+        if introduced not in positions or source_revision not in positions:
+            continue
+        start = positions[introduced]
+        end = positions[source_revision]
+        if start > end or rebaseline["commit_count"] != end - start + 1:
+            raise CycleHistoryError(
+                f"{label} does not bind its exact first-parent span")
+        for commit in protected_commits[start:end + 1]:
+            if commit in resolution_for_commit or commit in rebaseline_for_commit:
+                raise CycleHistoryError(
+                    f"{label} overlaps another historical resolution")
+            rebaseline_for_commit[commit] = rebaseline_index
+
     previous_policy = activation_policy
     last_policy_commit = activation
     protected_cut_seen = False
@@ -1229,7 +1298,14 @@ def verify_history(root: Path, policy_path: Path) -> dict:
 
         if canonical_json(candidate) != canonical_json(previous_policy):
             monotonic = check_inventory(previous_policy, candidate)
-            if monotonic["status"] != "pass":
+            candidate_digest = policy_inventory_digest(candidate)
+            rebaseline_index = next((
+                index for index, receipt in enumerate(
+                    TRUSTED_POLICY_REBASELINES)
+                if receipt["policy_sha256"] == candidate_digest
+                and receipt["source_revision"] == candidate["source_revision"]
+            ), None)
+            if monotonic["status"] != "pass" and rebaseline_index is None:
                 raise CycleHistoryError(
                     f"policy growth at revision {commit}: " +
                     format_failures(monotonic))
@@ -1244,6 +1320,11 @@ def verify_history(root: Path, policy_path: Path) -> dict:
                 raise CycleHistoryError(
                     f"cycle policy at revision {commit} is not exact for its "
                     "source_revision")
+            if rebaseline_index is not None:
+                if rebaseline_repairs[rebaseline_index] is not None:
+                    raise CycleHistoryError(
+                        "trusted policy rebaseline was applied more than once")
+                rebaseline_repairs[rebaseline_index] = commit
             previous_policy = candidate
             last_policy_commit = commit
 
@@ -1267,7 +1348,14 @@ def verify_history(root: Path, policy_path: Path) -> dict:
                 "revision": commit,
                 "violations": enforced["violations"],
             })
-        if enforced["status"] != "pass" and resolution_index is None:
+        rebaseline_index = rebaseline_for_commit.get(commit)
+        if rebaseline_index is not None:
+            rebaseline_observations[rebaseline_index].append({
+                "revision": commit,
+                "violations": enforced["violations"],
+            })
+        if enforced["status"] != "pass" and resolution_index is None and \
+                rebaseline_index is None:
             raise CycleHistoryError(
                 f"cycle ratchet violation at revision {commit}: " +
                 format_failures(enforced))
@@ -1301,6 +1389,42 @@ def verify_history(root: Path, policy_path: Path) -> dict:
             "history_sha256": digest,
         })
 
+    rebaseline_proof = []
+    for rebaseline, observations, repair in zip(
+            TRUSTED_POLICY_REBASELINES, rebaseline_observations,
+            rebaseline_repairs):
+        if rebaseline["introduced_revision"] not in positions:
+            continue
+        label = rebaseline["introduced_revision"]
+        if repair is None or len(observations) != rebaseline["commit_count"] \
+                or not observations or observations[0]["revision"] != label \
+                or observations[-1]["revision"] != \
+                rebaseline["source_revision"] or any(
+                    not row["violations"] for row in observations):
+            raise CycleHistoryError(
+                f"trusted policy rebaseline {label} does not cover one exact "
+                "continuous failing interval")
+        codes = sorted({violation["code"] for row in observations
+                        for violation in row["violations"]})
+        modules = sorted({module for row in observations
+                          for violation in row["violations"]
+                          for module in violation["affected_modules"]})
+        digest = history_resolution_digest(observations)
+        if codes != list(rebaseline["violation_codes"]) or \
+                modules != list(rebaseline["affected_modules"]) or \
+                digest != rebaseline["history_sha256"]:
+            raise CycleHistoryError(
+                f"trusted policy rebaseline {label} does not match the exact "
+                "measured violations")
+        rebaseline_proof.append({
+            "introduced_revision": label,
+            "source_revision": rebaseline["source_revision"],
+            "repair_revision": repair,
+            "commit_count": len(observations),
+            "policy_sha256": rebaseline["policy_sha256"],
+            "history_sha256": digest,
+        })
+
     if canonical_json(previous_policy) != canonical_json(current_policy):
         raise CycleHistoryError(
             f"working policy differs from the last committed policy at "
@@ -1315,6 +1439,7 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         "current_policy_revision": current_policy["source_revision"],
         "target_edges": [list(edge) for edge in TARGET_CUT_EDGES],
         "resolved_history": resolution_proof,
+        "policy_rebaselines": rebaseline_proof,
     }
 
 

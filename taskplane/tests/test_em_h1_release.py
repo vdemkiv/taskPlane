@@ -521,6 +521,8 @@ def test_h22_package_cli_executes_the_production_observation_path(tmp_path):
             ],
             cwd=ROOT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=False,
         )

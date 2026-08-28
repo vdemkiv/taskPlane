@@ -41,6 +41,7 @@ be deliberately shared under `.taskplane-kb/knowledge/`.
 | --- | --- | --- | --- |
 | `TASKPLANE_STORE` | *(unset)* | Highest-precedence store override: `repo` forces the in-repo shared store (`.taskplane-kb/` — used by Claude Tag so state survives the ephemeral sandbox), `external` forces the external store. Overrides plan, private mode, and shared config (see `docs/state-spec.md`, "Store resolution"). | **Yes** — silently redirects the entire knowledge store, including loop state and worker-submission evidence, into (or out of) the committed repo. |
 | `TASKPLANE_HOME` | `~/.taskplane` | Moves the external store root (all per-project knowledge on a personal plan). `tp kb where` shows the resolved path. | **Yes** — a wrong value redirects the whole knowledge store; the KB, decisions, and loop state follow it. |
+| `TASKPLANE_LOCALE` | *(unset; then `LC_ALL`, `LC_MESSAGES`, `LANG`, finally English)* | Selects the deterministic BCP 47 locale used for dashboard messages, plural rules, and grapheme-safe visible text. Values such as `fr-CA` fall back through `fr` to English when a catalog is absent; malformed values and `C`/`POSIX` resolve to English. | No — it changes presentation only; stored evidence, identifiers, gates, and authority remain unchanged. |
 
 ## Contract lifecycle (the hook's wall)
 

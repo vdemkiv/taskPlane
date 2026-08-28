@@ -724,7 +724,8 @@ def produce_release_compatibility_receipt(
     last_commit = str(producer.get("last_released_commit") or "")
     resolved = subprocess.run(
         ["git", "rev-parse", f"{last_tag}^{{}}"], cwd=ROOT,
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False,
     )
     require(resolved.returncode == 0 and resolved.stdout.strip() == last_commit,
             "last released compatibility tag does not resolve to the pinned commit")
@@ -885,7 +886,8 @@ def validate_release_package_authority(
 def git_head() -> str:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=ROOT,
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False,
     )
     require(result.returncode == 0 and
             re.fullmatch(r"[0-9a-f]{40}", result.stdout.strip()) is not None,
@@ -896,7 +898,8 @@ def git_head() -> str:
 def git_is_clean() -> bool:
     result = subprocess.run(
         ["git", "status", "--porcelain=v1", "--untracked-files=normal"],
-        cwd=ROOT, capture_output=True, text=True, check=False,
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", check=False,
     )
     return result.returncode == 0 and not result.stdout.strip()
 
