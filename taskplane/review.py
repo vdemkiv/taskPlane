@@ -920,7 +920,13 @@ def _host_review_action_receipt(*, run_id: str, action_id: str,
         wanted_ref = ""
     _, _, wanted_receipt = _review_receipt_reference(wanted_ref)
     matches = []
-    for host, path in _host_review_transcripts(wanted_ref):
+    try:
+        transcripts = _host_review_transcripts(wanted_ref)
+    except HostTranscriptUnavailable as exc:
+        raise ReviewKernelError(
+            "review action requires an exact host-observed user receipt") \
+            from exc
+    for host, path in transcripts:
         for record in reversed(_host_review_records(path)):
             observed = _host_user_message(host, record)
             if not observed:
@@ -1051,7 +1057,13 @@ def _host_review_execution_receipt(
                if kind == "dynamic_validation" else
                {"visualize", "browser", "screenshot", "imagegen"})
     matches = []
-    for host, path in _host_review_transcripts(wanted_ref):
+    try:
+        transcripts = _host_review_transcripts(wanted_ref)
+    except HostTranscriptUnavailable as exc:
+        raise ReviewKernelError(
+            "review execution requires an exact host-observed "
+            "process/result receipt") from exc
+    for host, path in transcripts:
         records = _host_review_records(path)
         after_index = max((index for index, record in enumerate(records)
                            if (lambda observed: observed and

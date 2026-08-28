@@ -588,6 +588,14 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
     assert "most-restrictive union of 5 active contracts" in \
         legacy_denial["reason"]
 
+    transcript = tmp_path / "sweep-producer-transcript.jsonl"
+    transcript.write_text(json.dumps({
+        "message": {"id": "sweep-usage", "usage": {
+            "input_tokens": 10,
+            "input_tokens_details": {"cached_tokens": 4},
+            "output_tokens": 2, "total_tokens": 12,
+        }},
+    }) + "\n", encoding="utf-8")
     for index, (slot, lease, brief) in enumerate(
             zip(state["slots"], leases, briefs, strict=True)):
         assert lease["lens_ids"] == slot["lens_ids"]
@@ -610,6 +618,7 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
             "turn_id": f"sweep-child-turn-{index}",
             "tool_use_id": f"sweep-write-{index}",
             "agent_id": f"sweep-child-{index}", "tool_name": "Write",
+            "transcript_path": str(transcript),
             "tool_input": {"file_path": slot["result_path"],
                            "content": content},
         }

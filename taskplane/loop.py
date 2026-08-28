@@ -7039,39 +7039,41 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
     _, review_evidence, review_kernel = _review_runtime_modules()
 
     state = review_kernel._load_state(review_ws, run_id)
-    store = review_evidence.ArtifactStore(review_ws)
-    envelope = store.read(state["envelope"])
-    retained_diff = (envelope.get("diff") or {}).get("artifact")
-    if isinstance(retained_diff, dict):
-        read_retained_review_diff(
-            review_ws, store=store, reference=retained_diff)
-    empty_collection = None
-    if state.get("delivery_mode_receipt") is not None:
-        if state.get("expected_lenses") != [] or state.get("slots") != []:
-            raise review_kernel.ReviewKernelError(
-                "sealed zero-lens Evaluate authority produced lens slots")
-        if evaluator_result is None or \
-                producer_observation_fingerprint is None:
-            raise review_kernel.ReviewKernelError(
-                "zero-lens collection requires a schema-valid producer "
-                "result and validated observation")
-        validator = result_validator
-        if validator is None:
-            validator = (evaluation_output.validate_evaluator_value
-                         if collection_stage == "Evaluate" else
-                         lambda value: value)
-        empty_collection = review_kernel.collect_expected_set(
-            run_id=run_id,
-            task_id=str((state.get("target") or {}).get("task") or ""),
-            stage=collection_stage,
-            expected_lenses=state["expected_lenses"],
-            collected_lenses=[],
-            result=evaluator_result,
-            result_validator=validator,
-            producer_observation_fingerprint=
-                producer_observation_fingerprint,
-        )
     try:
+        store = review_evidence.ArtifactStore(review_ws)
+        envelope_ref = state.get("envelope")
+        envelope = store.read(envelope_ref) \
+            if isinstance(envelope_ref, dict) else {}
+        retained_diff = (envelope.get("diff") or {}).get("artifact")
+        if isinstance(retained_diff, dict):
+            read_retained_review_diff(
+                review_ws, store=store, reference=retained_diff)
+        empty_collection = None
+        if state.get("delivery_mode_receipt") is not None:
+            if state.get("expected_lenses") != [] or state.get("slots") != []:
+                raise review_kernel.ReviewKernelError(
+                    "sealed zero-lens Evaluate authority produced lens slots")
+            if evaluator_result is None or \
+                    producer_observation_fingerprint is None:
+                raise review_kernel.ReviewKernelError(
+                    "zero-lens collection requires a schema-valid producer "
+                    "result and validated observation")
+            validator = result_validator
+            if validator is None:
+                validator = (evaluation_output.validate_evaluator_value
+                             if collection_stage == "Evaluate" else
+                             lambda value: value)
+            empty_collection = review_kernel.collect_expected_set(
+                run_id=run_id,
+                task_id=str((state.get("target") or {}).get("task") or ""),
+                stage=collection_stage,
+                expected_lenses=state["expected_lenses"],
+                collected_lenses=[],
+                result=evaluator_result,
+                result_validator=validator,
+                producer_observation_fingerprint=
+                    producer_observation_fingerprint,
+            )
         result = review_kernel.collect_review(
             review_ws, publish=publish, run_id=run_id,
             empty_lens_collection=empty_collection)

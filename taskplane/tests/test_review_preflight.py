@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 import os
@@ -61,9 +62,18 @@ def _write_host_transcript(tmp_path, monkeypatch, host, *, prompt,
     process_receipt = f"{host}-process"
     if host == "codex":
         home = tmp_path / "codex"
-        thread_id = "codex-review-thread"
+        instant = datetime.datetime(
+            2026, 8, 16, tzinfo=datetime.timezone.utc)
+        milliseconds = int(instant.timestamp() * 1000)
+        prefix = f"{milliseconds:012x}"
+        thread_id = (f"{prefix[:8]}-{prefix[8:]}-7000-8000-"
+                     "000000000001")
         path = (home / "sessions" / "2026" / "08" / "16" /
-                f"rollout-test-{thread_id}.jsonl")
+                f"rollout-2026-08-16T00-00-00-{thread_id}.jsonl")
+        index = home / "session_index.jsonl"
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text(json.dumps({"id": thread_id}) + "\n",
+                         encoding="utf-8")
         tool_input = command if execution_action is None else {
             "command": command,
             "taskplane_action": review._review_tool_action_binding(
@@ -95,6 +105,11 @@ def _write_host_transcript(tmp_path, monkeypatch, host, *, prompt,
         home = tmp_path / "claude"
         session_id = "claude-review-session"
         path = home / "projects" / "fixture" / f"{session_id}.jsonl"
+        index = home / "history.jsonl"
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text(json.dumps({
+            "sessionId": session_id, "project": "fixture",
+        }) + "\n", encoding="utf-8")
         tool_input = {"command": command} if execution_action is None else {
             "command": command,
             "taskplane_action": review._review_tool_action_binding(
@@ -126,7 +141,9 @@ def _write_host_transcript(tmp_path, monkeypatch, host, *, prompt,
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row) + "\n" for row in rows),
                     encoding="utf-8")
-    return action_receipt, process_receipt
+    identity = thread_id if host == "codex" else session_id
+    return (f"{host}:{identity}:{action_receipt}",
+            f"{host}:{identity}:{process_receipt}")
 
 
 def _start_review_without_execution_choice():
@@ -692,10 +709,9 @@ def test_exit_status_must_be_authoritative_not_nested_in_output_text(
         tmp_path, monkeypatch, host, prompt=prompt,
         run_id=run_id, execution_action=action_id)
     # Move the status into a non-authoritative display/output branch.
-    root = review._canonical_host_root(host)
-    pattern = "**/*codex-review-thread.jsonl" if host == "codex" else \
-        "**/claude-review-session.jsonl"
-    path = next(__import__("pathlib").Path(root).glob(pattern))
+    resolved = review._host_review_transcripts(action_ref)
+    assert len(resolved) == 1 and resolved[0][0] == host
+    path = __import__("pathlib").Path(resolved[0][1])
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     result = rows[-1]["payload"]["output"] if host == "codex" else \
         rows[-1]["message"]["content"][0]["content"]
@@ -866,8 +882,10 @@ def test_host_screen_resolves_exact_leased_contract_without_task_slot(
     slot = review._load_state(ws, ready["run_id"])["slots"][0]
     producer = slot["producer_contract"]
     contract = {
+        **review.tp.build_contract(
+            producer["task"], read_only=True,
+            write_allow=producer["write_allow"], max_actions=20),
         **producer, "task_id": producer["task_slot"],
-        "budget": {"max_actions": 20},
     }
     monkeypatch.setenv("TASKPLANE_TASK", producer["task_slot"])
     review.tp.activate(ws, contract, snapshot=None)
