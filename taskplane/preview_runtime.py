@@ -1085,6 +1085,11 @@ class PreviewRuntime:
         preview = self._load(preview_id)
         preview["state"] = "failed"
         preview["outcome"] = outcome
+        # Seal the terminal outcome before stopping owned processes.  Process
+        # teardown is externally observable, so persisting only afterwards
+        # leaves a window where the process tree is gone but the durable
+        # preview still claims to be open.
+        self._save(preview)
         self._teardown(preview, outcome)
         if outcome == "teardown_failed":
             preview["teardown"]["outcome"] = "failed"

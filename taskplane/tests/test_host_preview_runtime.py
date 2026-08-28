@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -412,13 +413,22 @@ def test_deadline_automatically_kills_real_process_tree(tmp_path):
     source.mkdir()
     (source / "app.txt").write_text("pinned")
     holder = {}
+    processes_stopped = threading.Event()
+    allow_teardown_to_finish = threading.Event()
+
+    def delayed_teardown(preview_id, ownership):
+        stopped = teardown_preview_processes(preview_id, ownership)
+        processes_stopped.set()
+        allow_teardown_to_finish.wait(timeout=3)
+        return stopped
+
     def transport(name, cwd, preview):
         return {"schema": "taskplane.host-preview-surface/v1",
                 "surface": name, "binding": "native:fixture",
                 "process_ownership": holder["ownership"]}
     runtime = PreviewRuntime(tmp_path / "state", workspace=source,
                              authorization="a", surface_transport=transport,
-                             process_teardown=teardown_preview_processes)
+                             process_teardown=delayed_teardown)
     preview = runtime.register(
         flow="design", target="pin", revision=1, source_root=source,
         authorization="a", capabilities=capabilities(
@@ -435,11 +445,20 @@ def test_deadline_automatically_kills_real_process_tree(tmp_path):
     runtime._save(preview)
     runtime.open(preview["preview_id"])
     runtime.arm_deadline(preview["preview_id"])
+    try:
+        assert processes_stopped.wait(timeout=3)
+        assert process.poll() is not None
+        assert runtime._load(preview["preview_id"])["outcome"] == "timed_out"
+    finally:
+        allow_teardown_to_finish.set()
     deadline = time.monotonic() + 3
-    while process.poll() is None and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert process.poll() is not None
-    assert runtime._load(preview["preview_id"])["outcome"] == "timed_out"
+    persisted = runtime._load(preview["preview_id"])
+    while not persisted["teardown"]["attempted"] and \
+            time.monotonic() < deadline:
+        time.sleep(0.01)
+        persisted = runtime._load(preview["preview_id"])
+    assert persisted["outcome"] == "timed_out"
+    assert persisted["teardown"]["attempted"] is True
 
 
 def test_resource_limit_enforcement_fails_closed_when_unsupported(
