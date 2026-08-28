@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 from taskplane import terminal_truth
+from taskplane import delivery_ports
 from taskplane.delivery_ports import DeliveryPortError, SandboxEvidenceStore
 
 
@@ -183,7 +184,8 @@ def _commit_competing_successor(root, operation, barrier, queue):
         queue.put(("refused", str(exc)))
 
 
-def test_h06_only_one_successor_wins_per_predecessor(tmp_path):
+def test_h06_only_one_successor_wins_per_predecessor(tmp_path, monkeypatch):
+    monkeypatch.setattr(delivery_ports, "fcntl", None)
     context = multiprocessing.get_context("fork")
     barrier = context.Barrier(2)
     queue = context.Queue()

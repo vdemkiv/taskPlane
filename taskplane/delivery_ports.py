@@ -459,6 +459,58 @@ class SandboxEvidenceStore:
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
                 os.close(descriptor)
 
+    @staticmethod
+    def _claim_successor(
+        domain_dir: Path,
+        predecessor_fingerprint: str | None,
+        successor_fingerprint: str,
+    ) -> None:
+        """Atomically bind one durable successor to one predecessor.
+
+        ``fcntl`` is unavailable on supported Windows hosts and may also be
+        absent in constrained runtimes.  An exclusive create is the portable
+        cross-process CAS primitive; the claim remains durable so a crashed
+        winner can resume, while every competing successor fails closed.
+        """
+        claims_dir = domain_dir / "claims"
+        claims_dir.mkdir(parents=True, exist_ok=True)
+        predecessor_key = content_fingerprint(
+            {"predecessor_fingerprint": predecessor_fingerprint}
+        )
+        claim_path = claims_dir / f"{predecessor_key}.claim"
+        payload = (successor_fingerprint + "\n").encode("ascii")
+        try:
+            descriptor = os.open(
+                claim_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            try:
+                claimed = claim_path.read_bytes()
+            except OSError as exc:
+                raise DeliveryPortError(
+                    "evidence head CAS claim is unreadable"
+                ) from exc
+            if claimed != payload:
+                raise DeliveryPortError("evidence head CAS mismatch")
+            return
+        try:
+            view = memoryview(payload)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("exclusive CAS claim write made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        directory_fd = os.open(claims_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
     def prepare(
         self,
         domain: str,
@@ -526,10 +578,15 @@ class SandboxEvidenceStore:
             actual_head = head_path.read_text().strip() if head_path.exists() else None
             if actual_head not in {intent["expected_head"], receipt["fingerprint"]}:
                 raise DeliveryPortError("evidence head CAS mismatch")
+            self.fault_injector.checkpoint("before-head-cas")
+            self._claim_successor(
+                domain_dir,
+                intent["expected_head"],
+                receipt["fingerprint"],
+            )
             if not receipt_path.exists():
                 self._write_atomic(receipt_path, receipt_bytes)
             self.fault_injector.checkpoint("after-immutable-bytes")
-            self.fault_injector.checkpoint("before-head-cas")
             if actual_head != receipt["fingerprint"]:
                 self._write_atomic(head_path, (receipt["fingerprint"] + "\n").encode())
             self.fault_injector.checkpoint("after-head-cas")
