@@ -46,7 +46,7 @@ files = ["taskplane/*.py"]
 
 # Staged strict baseline measured at H2-A.  Each legacy-debt module is exact:
 # no package wildcard, no error-code disable, and no future module is admitted
-# to this list automatically.  The four modules outside this inventory are the
+# to this list automatically.  The six modules outside this inventory are the
 # current strict ratchet; adding a public untyped API or bad return to any one of
 # them fails CI.  Promotion means deleting an exact entry below.
 [[tool.mypy.overrides]]

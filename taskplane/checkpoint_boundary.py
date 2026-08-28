@@ -10,11 +10,13 @@ from __future__ import annotations
 from collections.abc import Callable
 
 
-_EXECUTION_EVIDENCE_LOADER: Callable[[str, str, str], dict] | None = None
+_EXECUTION_EVIDENCE_LOADER: Callable[
+    [str, str, str], dict[str, object]
+] | None = None
 
 
 def register_execution_evidence_loader(
-        loader: Callable[[str, str, str], dict]) -> None:
+        loader: Callable[[str, str, str], dict[str, object]]) -> None:
     """Register the governed runtime's semantic evidence reader."""
     global _EXECUTION_EVIDENCE_LOADER
     if not callable(loader):
@@ -23,7 +25,7 @@ def register_execution_evidence_loader(
 
 
 def load_execution_evidence(
-        workspace: str, authorization: str, handle: str) -> dict:
+        workspace: str, authorization: str, handle: str) -> dict[str, object]:
     """Read semantic evidence through the registered governed boundary."""
     if _EXECUTION_EVIDENCE_LOADER is None:
         raise RuntimeError("checkpoint evidence loader is not registered")

@@ -21,6 +21,8 @@ EXPECTED_LOCK = {
     "typing-extensions": "4.16.0",
 }
 STRICT_BOUNDARIES = {
+    "taskplane.audit_projection",
+    "taskplane.checkpoint_boundary",
     "taskplane.dispatch_telemetry",
     "taskplane.enforcement",
     "taskplane.host_native",
@@ -192,7 +194,7 @@ def test_h09_staged_strict_baseline_covers_all_top_level_modules() -> None:
     debt = set(_array_values(policy, "module"))
     production = _production_modules()
 
-    assert len(production) == 87
+    assert len(production) == 89
     assert production - debt == STRICT_BOUNDARIES
     assert _strict_policy_violations(policy) == []
 
