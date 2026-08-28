@@ -5288,8 +5288,10 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         ".tp-muted{color:var(--tp-muted)}.tp-value{margin:8px 0}.tp-value div{"
         "display:grid;grid-template-columns:minmax(7rem,auto) 1fr;gap:8px}"
         ".tp-value dt{font-weight:650}.tp-value dd{margin:0;overflow-wrap:anywhere}"
-        ".tp-carousel-controls,.tp-actions{display:flex;flex-wrap:wrap;gap:8px}"
+        ".tp-carousel-controls,.tp-actions,.tp-detail-actions{display:flex;"
+        "flex-wrap:wrap;gap:8px}"
         ".tp-actions{margin-top:12px}.tp-delivery-status{min-height:1.5em}"
+        ".tp-detail-actions{margin:12px 0}"
         ".tp-detail{position:fixed;inset:0;width:100vw;height:100vh;max-width:none;"
         "max-height:none;margin:0;background:var(--tp-background);color:var(--tp-text);"
         "border:0;padding:24px}.tp-composer{display:flex;margin-top:12px}"
@@ -5340,6 +5342,7 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         f'{html.escape(str(action))}</button>' for action in inline_actions)
     detail_buttons = "".join(
         f'<button type="button" aria-label="{html.escape(str(action))}" '
+        f'aria-describedby="tp-detail-delivery-status" '
         f'data-dashboard-action="true" data-prompt="{html.escape(str(action), quote=True)}">'
         f'{html.escape(str(action))}</button>' for action in detail_actions)
     if detail_actions:
@@ -5352,9 +5355,21 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         'var root=document.currentScript.closest(".tp-host");'
         'if(!root){return;}'
         'function all(s){return root.querySelectorAll?Array.from(root.querySelectorAll(s)):[];}'
-        'var status=root.querySelector("[data-delivery-status]");'
-        'function report(message,error){if(!status)return;status.textContent=message;'
+        'function statusFor(control){var surface=null;'
+        'if(control&&typeof control.closest==="function")'
+        '{surface=control.closest(".tp-detail");}'
+        'if(surface&&surface.querySelector){var local='
+        'surface.querySelector("[data-delivery-scope=detail]");if(local)return local;}'
+        'return root.querySelector("[data-delivery-scope=shared]")||'
+        'root.querySelector("[data-delivery-status]");}'
+        'function report(control,message,error){var status=statusFor(control);'
+        'if(!status)return;status.textContent=message;'
         'status.setAttribute("role",error?"alert":"status");}'
+        'function actionGroup(control){var group=null;'
+        'if(control&&typeof control.closest==="function")'
+        '{group=control.closest("[data-delivery-actions]");}'
+        'return group&&group.querySelectorAll?'
+        'Array.from(group.querySelectorAll("[data-dashboard-action]")):[control];}'
         'function hasBridge(){return !!(window.openai&&'
         'typeof window.openai.sendFollowUpMessage==="function")||'
         'typeof window.sendPrompt==="function";}'
@@ -5365,20 +5380,28 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         'else{return null;}}catch(error){return Promise.reject(error);}'
         'return Promise.resolve(result);}'
         'function deliver(control,message){if(!hasBridge()){'
-        'report("No chat bridge in this static view — reply in chat: "+message,false);'
-        'return;}var original=control.textContent;control.disabled=true;'
+        'report(control,"No chat bridge in this static view — reply in chat: "+message,false);'
+        'return;}var controls=actionGroup(control);controls.forEach(function(item){'
+        'if(!item.dataset.deliveryLabel)item.dataset.deliveryLabel=item.textContent;'
+        'item.disabled=true;});'
         'control.setAttribute("aria-busy","true");control.textContent="Sending…";'
-        'report("Sending to chat…",false);bridge(message).then(function(){'
+        'report(control,"Sending to chat…",false);bridge(message).then(function(result){'
+        'if(result===false||(result&&typeof result==="object"&&'
+        '(result.ok===false||result.delivered===false)))'
+        '{throw new Error("bridge did not confirm delivery");}'
+        'return result;}).then(function(){'
         'control.removeAttribute("aria-busy");control.textContent="Sent";'
-        'report("Delivered to chat: "+message,false);},function(){'
-        'control.disabled=false;control.removeAttribute("aria-busy");'
-        'control.textContent=original;report("Delivery failed — retry or reply in chat: "+message,true);});}'
+        'report(control,"Delivered to chat: "+message,false);},function(){'
+        'controls.forEach(function(item){item.disabled=false;'
+        'if(item.dataset.deliveryLabel)item.textContent=item.dataset.deliveryLabel;});'
+        'control.removeAttribute("aria-busy");'
+        'report(control,"Delivery failed — retry or reply in chat: "+message,true);});}'
         'all("[data-dashboard-action]").forEach(function(button){'
         'button.addEventListener("click",function(){deliver(button,button.dataset.prompt);});});'
         'var form=root.querySelector(".tp-composer");'
         'if(form){form.addEventListener("submit",function(event){event.preventDefault();'
         'var input=form.querySelector("textarea");var submit=form.querySelector("button[type=submit]");'
-        'var message=input?input.value.trim():"";if(!message){report("Enter a message first.",true);'
+        'var message=input?input.value.trim():"";if(!message){report(submit,"Enter a message first.",true);'
         'return;}deliver(submit,message);});}'
         'all("[data-carousel-direction]").forEach(function(button){'
         'button.addEventListener("click",function(){var carousel=button.closest(".tp-carousel");'
@@ -5431,17 +5454,24 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         + f'" style="{token_css};font-size:{text_scale_percent}%;transition:{motion}">'
           f'<style>{styles}</style><main class="tp-dashboard" '
           f'aria-label="Taskplane workflow dashboard">{"".join(cards)}</main>'
-          f'<nav class="tp-actions" aria-label="Dashboard actions">{action_buttons}</nav>'
+          f'<nav class="tp-actions" aria-label="Dashboard actions" '
+          f'data-delivery-actions="true">{action_buttons}</nav>'
           f'<dialog id="tp-fullscreen-detail" class="tp-detail" '
           f'aria-labelledby="tp-detail-title"><h2 id="tp-detail-title">Dashboard details</h2>'
-          f'{detail_evidence}{detail_buttons}'
+          f'{detail_evidence}<div class="tp-detail-actions" '
+          f'data-delivery-actions="true">{detail_buttons}</div>'
+          f'<p id="tp-detail-delivery-status" class="tp-delivery-status" '
+          f'data-delivery-status="true" '
+          f'data-delivery-scope="detail" role="status" aria-live="polite" '
+          f'aria-atomic="true"></p>'
           f'<button type="button" aria-label="Close details" '
           f'data-detail-close="true">Close</button></dialog>'
           f'<form class="tp-composer" aria-label="Conversation composer">'
           f'<label for="tp-message">Message</label><textarea id="tp-message" '
           f'name="message"></textarea><button type="submit">Send</button></form>'
           f'<p class="tp-delivery-status" data-delivery-status="true" '
-          f'role="status" aria-live="polite"></p>'
+          f'data-delivery-scope="shared" role="status" aria-live="polite" '
+          f'aria-atomic="true"></p>'
           f'{interaction}</div>')
 
 

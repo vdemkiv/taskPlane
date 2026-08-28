@@ -252,11 +252,11 @@ def test_h21_async_gate_exposes_pending_success_and_failure():
     for state in (
         'control.textContent="Sending…"',
         'control.textContent="Sent"',
-        'report("Delivery failed — retry or reply in chat: "+message,true)',
+        'report(control,"Delivery failed — retry or reply in chat: "+message,true)',
     ):
         assert state in controller
     assert 'return Promise.resolve(result)' in controller
-    assert 'control.disabled=false' in controller
+    assert 'item.disabled=false' in controller
     assert 'control.removeAttribute("aria-busy")' in controller
     harness = r'''
 (async function(){
@@ -286,6 +286,92 @@ action.emit("click");
 if(action.textContent==="Sent") process.exit(4);
 resolveSend(); await new Promise(function(resolve){setImmediate(resolve);});
 if(action.textContent!=="Sent" || status.textContent!=="Delivered to chat: approve") process.exit(5);
+})();
+'''
+    _run_node(harness)
+
+
+def test_h21_detail_action_reports_inside_active_modal_and_retries_truthfully():
+    """Detail actions keep every delivery state visible in the modal."""
+    markup = render_native_dashboard_surface(
+        native_dashboard_projection(_snapshot(), host="codex"))
+    assert re.search(
+        r'<dialog[^>]+id="tp-fullscreen-detail"[\s\S]*?'
+        r'data-delivery-scope="detail"[^>]+role="status"[^>]+'
+        r'aria-live="polite"[^>]+aria-atomic="true"', markup)
+    controller = _controller(markup)
+    harness = r'''
+(async function(){
+class Target {
+  constructor(text="") { this.textContent=text; this.dataset={}; this.listeners={};
+    this.attributes={}; this.disabled=false; this.open=false; this.surface=null;
+    this.group=null; }
+  addEventListener(name,fn){this.listeners[name]=fn;}
+  emit(name,event={}){return this.listeners[name](event);}
+  setAttribute(name,value){this.attributes[name]=value;if(name==="open")this.open=true;}
+  removeAttribute(name){delete this.attributes[name];if(name==="open")this.open=false;}
+  focus(){document.activeElement=this;}
+  closest(selector){if(selector===".tp-detail")return this.surface;
+    if(selector==="[data-delivery-actions]")return this.group;return null;}
+}
+const trigger=new Target("Details"), closer=new Target("Close");
+const localStatus=new Target(), sharedStatus=new Target();
+const inspect=new Target("inspect"), exportAction=new Target("export");
+inspect.dataset.prompt="inspect";exportAction.dataset.prompt="export";
+const detailGroup={querySelectorAll(selector){
+  return selector==="[data-dashboard-action]"?[inspect,exportAction]:[];}};
+const dialog=new Target();dialog.querySelector=function(selector){
+  return selector==="[data-delivery-scope=detail]"?localStatus:null;};
+dialog.showModal=function(){this.open=true;};dialog.close=function(){this.open=false;};
+inspect.surface=dialog;inspect.group=detailGroup;
+exportAction.surface=dialog;exportAction.group=detailGroup;
+const root={querySelector(selector){
+  if(selector==="[data-delivery-scope=shared]" || selector==="[data-delivery-status]")
+    return sharedStatus;
+  if(selector==="[data-detail-trigger]")return trigger;
+  if(selector==="#tp-fullscreen-detail")return dialog;
+  if(selector==="[data-detail-close]")return closer;
+  return null;
+},querySelectorAll(selector){
+  return selector==="[data-dashboard-action]"?[inspect,exportAction]:[];}};
+global.document={activeElement:trigger,currentScript:{closest(){return root;}}};
+global.window={};
+''' + controller + r'''
+trigger.emit("click");
+if(!dialog.open)process.exit(2);
+inspect.emit("click");
+if(inspect.disabled || inspect.textContent!=="inspect")process.exit(3);
+if(localStatus.textContent!==
+   "No chat bridge in this static view — reply in chat: inspect")process.exit(4);
+if(sharedStatus.textContent)process.exit(5);
+
+window.openai={sendFollowUpMessage(){return Promise.resolve({delivered:false});}};
+inspect.emit("click");
+if(!inspect.disabled || !exportAction.disabled || inspect.textContent!=="Sending…")
+  process.exit(6);
+if(localStatus.textContent!=="Sending to chat…" ||
+   localStatus.attributes.role!=="status")process.exit(7);
+if(localStatus.textContent.includes("Delivered"))process.exit(8);
+await new Promise(function(resolve){setImmediate(resolve);});
+if(inspect.disabled || exportAction.disabled || inspect.textContent!=="inspect" ||
+   exportAction.textContent!=="export")process.exit(9);
+if(localStatus.attributes.role!=="alert" || localStatus.textContent!==
+   "Delivery failed — retry or reply in chat: inspect")process.exit(10);
+if(sharedStatus.textContent)process.exit(11);
+
+let resolveRetry;
+window.openai.sendFollowUpMessage=function(){return new Promise(function(resolve){
+  resolveRetry=resolve;});};
+inspect.emit("click");
+if(inspect.textContent!=="Sending…" || !inspect.disabled || !exportAction.disabled)
+  process.exit(12);
+if(localStatus.textContent.includes("Delivered"))process.exit(13);
+resolveRetry({delivered:true});
+await new Promise(function(resolve){setImmediate(resolve);});
+if(inspect.textContent!=="Sent" || localStatus.textContent!==
+   "Delivered to chat: inspect" || localStatus.attributes.role!=="status")
+  process.exit(14);
+if(sharedStatus.textContent)process.exit(15);
 })();
 '''
     _run_node(harness)
