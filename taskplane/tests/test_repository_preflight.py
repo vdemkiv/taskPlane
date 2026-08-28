@@ -563,18 +563,30 @@ class TestManagedMirrorAcquisition(unittest.TestCase):
         self.assertFalse(any("clone" in argv for argv in calls))
         self.assertTrue(os.path.isdir(layout.mirror_path))
 
-    def test_rpc_http_400_retries_once_with_http11(self):
+    def test_acquire_with_recovery_retries_rpc_http_400_once_with_http11(self):
         manager = repository.RepositoryManager(
             home=tempfile.mkdtemp(prefix="tp-mirror-transport-"))
         first = repository.RepositoryAcquisitionError(
             "network", "RPC failed; HTTP 400 curl 22")
+        sleep = mock.Mock()
         with mock.patch.object(manager, "_run",
                                side_effect=[first, "ok"]) as run:
-            result = manager._fetch(
-                ["git", "--git-dir", "/tmp/mirror.git", "fetch", "origin",
-                 "+refs/pull/7/head:refs/taskplane/pr/7/head"])
+            result = repository.acquire_with_recovery(
+                lambda: manager._fetch([
+                    "git", "--git-dir", "/tmp/mirror.git", "fetch", "origin",
+                    "+refs/pull/7/head:refs/taskplane/pr/7/head",
+                ]),
+                base_backoff_seconds=0,
+                max_backoff_seconds=0,
+                random_value=lambda: 0,
+                sleep=sleep,
+            )
 
-        self.assertEqual(result, "ok")
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["value"], "ok")
+        self.assertEqual(result["attempts"], 2)
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_not_called()
         fallback = run.call_args_list[1].args[0]
         self.assertEqual(fallback[:3],
                          ["git", "-c", "http.version=HTTP/1.1"])
