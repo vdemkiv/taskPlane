@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -170,6 +171,18 @@ def _candidate_evidence_paths(
     return tuple(dict.fromkeys(paths))
 
 
+def _canonical_template_path(repository: Path, supplied: Path) -> Path:
+    """Require the fixed in-tree template location without following symlinks."""
+    repository_path = Path(os.path.abspath(repository))
+    expected = repository_path / terminal_truth.EXACT_CANDIDATE_TEMPLATE_PATH
+    supplied_path = Path(os.path.abspath(supplied))
+    if supplied_path != expected:
+        raise TerminalExportError(
+            "successor template must be canonical evidence inside the candidate"
+        )
+    return expected
+
+
 def prepare_candidate_manifest(*args: Any, **kwargs: Any) -> dict[str, Any]:
     """Reject the obsolete caller-authored candidate/receipt path."""
     del args, kwargs
@@ -187,13 +200,14 @@ def prepare_repository_candidate(
     git_inspector: delivery_ports.TrustedGitInspector | None = None,
 ) -> terminal_truth.ExactCandidateExportReceipt:
     """Prepare through trusted Git and the real terminal composition consumer."""
-    template = load_template(template_path)
+    canonical_template_path = _canonical_template_path(repository, template_path)
+    template = load_template(canonical_template_path)
     inspector = git_inspector or delivery_ports.TrustedGitInspector()
     try:
         snapshot = inspector.snapshot(
             repository,
             evidence_paths=_candidate_evidence_paths(
-                Path(repository).resolve(), template_path, template
+                Path(repository).resolve(), canonical_template_path, template
             ),
         )
         receipt = coordinator.compose_exact_candidate_export(
@@ -216,9 +230,12 @@ def verify_candidate_manifest(
     """Revalidate one live, immutable, coordinator-produced successor."""
     if not FULL_OBJECT_ID.fullmatch(str(expected_sha)):
         raise TerminalExportError("expected candidate SHA must be a full object id")
-    template = load_template(template_path)
     if not isinstance(manifest, terminal_truth.ExactCandidateExportReceipt):
         raise TerminalExportError("live exact-candidate receipt is required")
+    canonical_template_path = _canonical_template_path(
+        manifest._snapshot.root, template_path
+    )
+    template = load_template(canonical_template_path)
     try:
         return manifest._coordinator.validate_exact_candidate_export(
             manifest,

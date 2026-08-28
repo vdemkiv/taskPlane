@@ -215,17 +215,21 @@ def test_h32_selector_receipts_reject_fabrication_replay_redigest_and_tamper(
     assert receipt["git_environment_fingerprint"] == \
         manifest._snapshot.environment_fingerprint
     original = dict(receipt)
-    receipt["output_sha256"] = "f" * 64
+    with pytest.raises(TypeError, match="immutable"):
+        receipt["output_sha256"] = "f" * 64
+    # Exercise a hostile caller that deliberately bypasses the public mapping
+    # API; the coordinator-owned seal must still reject it.
+    dict.__setitem__(receipt, "output_sha256", "f" * 64)
     unsigned = {key: value for key, value in receipt.items() if key != "fingerprint"}
-    receipt["fingerprint"] = terminal_truth._digest(unsigned)
-    with pytest.raises(verifier.TerminalExportError, match="redigested|tampered"):
+    dict.__setitem__(receipt, "fingerprint", terminal_truth._digest(unsigned))
+    with pytest.raises(verifier.TerminalExportError, match="coordinator seal"):
         verifier.verify_candidate_manifest(
             template_path=template_path,
             manifest=manifest,
             expected_sha=head,
         )
-    receipt.clear()
-    receipt.update(original)
+    dict.clear(receipt)
+    dict.update(receipt, original)
 
     persisted = receipt._path.read_bytes()
     receipt._path.write_bytes(b"{}")
@@ -241,6 +245,48 @@ def test_h32_selector_receipts_reject_fabrication_replay_redigest_and_tamper(
         expected_sha=head,
         expected_template_sha256=manifest["template_sha256"],
     )["candidate_sha"] == head
+
+
+@pytest.mark.parametrize(
+    "inventory_mutation", ("zero", "missing", "extra", "reordered", "wrong")
+)
+def test_h32_coordinated_candidate_selector_rewrite_cannot_redefine_inventory(
+    tmp_path, monkeypatch, inventory_mutation
+):
+    _, export_root, verifier, _, manifest, _, head = _prepare(tmp_path, monkeypatch)
+    rows = copy.deepcopy(manifest["selectors"])
+    if inventory_mutation == "zero":
+        rows = []
+    elif inventory_mutation == "missing":
+        rows = rows[:-1]
+    elif inventory_mutation == "extra":
+        rows.append(
+            dict(
+                rows[-1],
+                selector="taskplane/tests/test_em_h3_terminal_export.py::extra",
+            )
+        )
+    elif inventory_mutation == "reordered":
+        rows[0], rows[1] = rows[1], rows[0]
+    else:
+        rows[0]["selector"] = \
+            "taskplane/tests/test_em_h3_terminal_export.py::wrong"
+
+    with pytest.raises(TypeError, match="immutable"):
+        manifest["selectors"] = rows
+    # Reproduce the complete reported attack: change the live object, recompute
+    # its public digest, and replace the persisted bytes coherently.
+    dict.__setitem__(manifest, "selectors", rows)
+    unsigned = {key: value for key, value in manifest.items() if key != "fingerprint"}
+    dict.__setitem__(manifest, "fingerprint", terminal_truth._digest(unsigned))
+    manifest._path.write_bytes(terminal_truth._canonical_bytes(manifest))
+
+    with pytest.raises(verifier.TerminalExportError, match="coordinator seal"):
+        verifier.verify_candidate_manifest(
+            template_path=export_root / "successor-template.json",
+            manifest=manifest,
+            expected_sha=head,
+        )
 
 
 def test_h32_candidate_check_rejects_dirty_untracked_and_head_movement(
