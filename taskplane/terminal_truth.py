@@ -8,14 +8,18 @@ all eight derived projections reconcile byte-identically to that bundle.
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
 import re
+import subprocess
+import sys
 import tempfile
 import threading
 from typing import Any
@@ -26,8 +30,9 @@ except ImportError:  # Windows retains the in-process lock and atomic replace
     fcntl = None
 
 try:
-    from taskplane import wiring_closure
+    from taskplane import delivery_ports, wiring_closure
 except ImportError:  # direct executable/import compatibility
+    import delivery_ports
     import wiring_closure
 
 
@@ -35,6 +40,12 @@ TERMINAL_BUNDLE_SCHEMA = "taskplane.exact-sha-terminal-bundle/v1"
 TERMINAL_PROJECTION_SCHEMA = "taskplane.exact-sha-terminal-projection/v1"
 TERMINAL_RECONCILIATION_SCHEMA = "taskplane.terminal-reconciliation/v1"
 PRIVATE_USAGE_CLEANUP_SCHEMA = "taskplane.private-usage-cleanup/v1"
+SELECTOR_EXECUTION_SCHEMA = "taskplane.terminal-selector-execution/v1"
+EXACT_CANDIDATE_SUCCESSOR_SCHEMA = "taskplane.r0013-exact-candidate-successor/v1"
+EXACT_CANDIDATE_TEMPLATE_SCHEMA = (
+    "taskplane.r0013-exact-candidate-successor-template/v1"
+)
+EXACT_CANDIDATE_TEMPLATE_PATH = "exports/terminal/r0013/successor-template.json"
 TERMINAL_STATUS = "feature-complete-not-externally-mutated"
 SURFACE_IDS = (
     "git_head",
@@ -105,7 +116,45 @@ _CLEANUP_FIELDS = frozenset(
         "native_usage_fingerprint", "fingerprint",
     }
 )
+_SELECTOR_EXECUTION_FIELDS = frozenset(
+    {
+        "schema", "status", "producer", "candidate_sha",
+        "repository_snapshot_fingerprint", "git_executable_sha256",
+        "git_environment_fingerprint", "selector", "test_source_sha256",
+        "argv", "exit_code", "stdout_sha256", "stderr_sha256",
+        "output_sha256", "fingerprint",
+    }
+)
+_EXACT_CANDIDATE_FIELDS = frozenset(
+    {
+        "schema", "requirement_id", "finding_id", "status", "candidate_sha",
+        "template_sha256", "repository_snapshot_fingerprint", "surfaces",
+        "selectors", "evidence_state", "fingerprint",
+    }
+)
+_EXACT_CANDIDATE_TEMPLATE_FIELDS = frozenset(
+    {
+        "schema", "requirement_id", "finding_id", "candidate_binding",
+        "surface_ids", "required_selectors", "prepared_evidence_state",
+    }
+)
+_EXACT_CANDIDATE_BINDING = {
+    "source": "trusted-git-head-at-materialization",
+    "field": "candidate_sha",
+    "requires_full_object_id": True,
+    "requires_clean_checkout": True,
+    "output_name": "<candidate_sha>.json",
+}
+_EXACT_CANDIDATE_EVIDENCE_STATE = {
+    "terminal_authority": "not-minted",
+    "full_suite": "not-recorded",
+    "release": "not-granted",
+    "main_mutation": "not-granted",
+    "publication": "not-granted",
+}
 _TERMINAL_RECEIPT_TOKEN = object()
+_SELECTOR_RECEIPT_TOKEN = object()
+_EXACT_CANDIDATE_RECEIPT_TOKEN = object()
 _NONTERMINAL_VALUES = frozenset(
     {
         "active", "blocked", "executing", "in_progress", "needs_user",
@@ -154,6 +203,24 @@ def _seal(value: Mapping[str, Any]) -> dict[str, Any]:
     projection = dict(value)
     projection["fingerprint"] = _digest(projection)
     return projection
+
+
+def _normalize_exact_candidate_template(value: Any) -> dict[str, Any]:
+    """Validate the closed, tracked H-32 template contract."""
+    if not isinstance(value, Mapping) or set(value) != _EXACT_CANDIDATE_TEMPLATE_FIELDS or \
+            value.get("schema") != EXACT_CANDIDATE_TEMPLATE_SCHEMA or \
+            value.get("requirement_id") != "R-0013" or \
+            value.get("finding_id") != "H-32" or \
+            value.get("candidate_binding") != _EXACT_CANDIDATE_BINDING or \
+            tuple(value.get("surface_ids") or ()) != SURFACE_IDS or \
+            value.get("prepared_evidence_state") != _EXACT_CANDIDATE_EVIDENCE_STATE:
+        raise TerminalTruthError("candidate", "exact-candidate template is invalid")
+    selectors = value.get("required_selectors")
+    if not isinstance(selectors, list) or not selectors or \
+            len(selectors) != len(set(selectors)) or \
+            any(not isinstance(selector, str) for selector in selectors):
+        raise TerminalTruthError("selector", "required selector inventory is invalid")
+    return dict(value)
 
 
 def _text(value: Any, field: str) -> str:
@@ -366,6 +433,85 @@ class TerminalAuthorityReceipt(dict):
         raise TypeError("live terminal authority receipt is not serializable")
 
 
+class _ImmutableReceipt(dict):
+    """Dictionary-shaped receipt whose public mutation API is closed."""
+
+    __slots__ = ()
+
+    @staticmethod
+    def _immutable(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise TypeError("coordinator-produced receipts are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable
+
+
+class SelectorExecutionReceipt(_ImmutableReceipt):
+    """Content-addressed result minted only by a terminal coordinator run."""
+
+    __slots__ = ("_coordinator", "_snapshot", "_path", "_token")
+
+    def __init__(
+        self,
+        value: Mapping[str, Any],
+        *,
+        coordinator: "TerminalCoordinator",
+        snapshot: delivery_ports.TrustedGitSnapshot,
+        path: Path,
+        token: object,
+    ) -> None:
+        if token is not _SELECTOR_RECEIPT_TOKEN:
+            raise TypeError("selector receipts are terminal-coordinator-produced")
+        super().__init__(value)
+        self._coordinator = coordinator
+        self._snapshot = snapshot
+        self._path = path
+        self._token = token
+
+    def __reduce__(self):
+        raise TypeError("live selector execution receipts are not serializable")
+
+
+class ExactCandidateExportReceipt(_ImmutableReceipt):
+    """Prepared successor retaining live coordinator and Git bindings."""
+
+    __slots__ = (
+        "_coordinator", "_snapshot", "_selector_receipts",
+        "_surface_documents", "_path", "_token",
+    )
+
+    def __init__(
+        self,
+        value: Mapping[str, Any],
+        *,
+        coordinator: "TerminalCoordinator",
+        snapshot: delivery_ports.TrustedGitSnapshot,
+        selector_receipts: Sequence[SelectorExecutionReceipt],
+        surface_documents: Mapping[str, Mapping[str, Any]],
+        path: Path,
+        token: object,
+    ) -> None:
+        if token is not _EXACT_CANDIDATE_RECEIPT_TOKEN:
+            raise TypeError("candidate exports are terminal-coordinator-produced")
+        super().__init__(value)
+        self._coordinator = coordinator
+        self._snapshot = snapshot
+        self._selector_receipts = tuple(selector_receipts)
+        self._surface_documents = dict(surface_documents)
+        self._path = path
+        self._token = token
+
+    def __reduce__(self):
+        raise TypeError("live exact-candidate exports are not serializable")
+
+
 class TerminalCoordinator:
     """Own the immutable terminal bundle store and its one CAS head."""
 
@@ -387,6 +533,14 @@ class TerminalCoordinator:
         self._issuer = self._bind_orchestrator_issuer(
             orchestrator_issuer, recover_authority=_recover_authority
         )
+        # Live object identity and issuer-keyed seals are intentionally held by
+        # the coordinator, not by caller-visible receipt objects or files.
+        self._selector_receipt_seals: dict[int, tuple[object, str]] = {}
+        self._candidate_export_seals: dict[
+            int, tuple[
+                object, str, object, tuple[str, ...], tuple[str, ...]
+            ]
+        ] = {}
 
     @classmethod
     def recover(
@@ -492,8 +646,431 @@ class TerminalCoordinator:
     def export_path(self, full_source_sha: str) -> Path:
         return self._exports_root / f"{_object_id(full_source_sha, 'full_source_sha')}.json"
 
+    def _private_receipt_seal(self, payload: bytes) -> str:
+        if self._issuer is None:
+            raise TerminalTruthError(
+                "unauthorized", "bound orchestrator authority is required"
+            )
+        return hmac.new(self._issuer._secret, payload, hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _assert_snapshot_unchanged(
+        snapshot: delivery_ports.TrustedGitSnapshot,
+    ) -> None:
+        try:
+            snapshot._inspector.assert_unchanged(snapshot)
+        except delivery_ports.DeliveryPortError as exc:
+            raise TerminalTruthError("candidate", str(exc)) from exc
+
+    def _load_snapshot_candidate_template(
+        self,
+        snapshot: delivery_ports.TrustedGitSnapshot,
+    ) -> dict[str, Any]:
+        """Load the sole selector inventory from tracked bytes at the live SHA."""
+        if not isinstance(snapshot, delivery_ports.TrustedGitSnapshot):
+            raise TerminalTruthError("candidate", "trusted Git snapshot is required")
+        self._assert_snapshot_unchanged(snapshot)
+        expected_sha256 = snapshot.evidence_sha256.get(
+            EXACT_CANDIDATE_TEMPLATE_PATH
+        )
+        if expected_sha256 is None:
+            raise TerminalTruthError(
+                "candidate", "canonical exact-candidate template is not sealed"
+            )
+        path = snapshot.root / EXACT_CANDIDATE_TEMPLATE_PATH
+        try:
+            payload = path.read_bytes()
+            if hashlib.sha256(payload).hexdigest() != expected_sha256:
+                raise TerminalTruthError(
+                    "candidate", "canonical exact-candidate template changed"
+                )
+            decoded = json.loads(payload.decode("utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise TerminalTruthError(
+                "candidate", "canonical exact-candidate template is unreadable"
+            ) from exc
+        template = _normalize_exact_candidate_template(decoded)
+        for selector in template["required_selectors"]:
+            self._selector_path(selector)
+        self._assert_snapshot_unchanged(snapshot)
+        return template
+
     def cleanup_receipt_path(self, bundle_fingerprint: str) -> Path:
         return self._root / "cleanup" / f"{_fingerprint(bundle_fingerprint, 'bundle_fingerprint')}.json"
+
+    @staticmethod
+    def _selector_path(selector: str) -> str:
+        value = _text(selector, "selector")
+        parts = value.split("::")
+        if len(parts) not in {2, 3} or any(not part for part in parts):
+            raise TerminalTruthError(
+                "selector", "selector must be an exact pytest node identity"
+            )
+        relative = parts[0]
+        path = Path(relative)
+        if path.is_absolute() or path.suffix != ".py" or \
+                "\\" in relative or any(part in {"", ".", ".."} for part in path.parts):
+            raise TerminalTruthError(
+                "selector", "selector test path must be safe and repository-relative"
+            )
+        if any(not symbol.isidentifier() for symbol in parts[1:]):
+            raise TerminalTruthError("selector", "selector symbol is not exact")
+        return path.as_posix()
+
+    @staticmethod
+    def _selector_exists(source: bytes, selector: str) -> bool:
+        try:
+            tree = ast.parse(source.decode("utf-8"), filename=selector.split("::", 1)[0])
+        except (SyntaxError, UnicodeError) as exc:
+            raise TerminalTruthError("selector", "selector source is not collectable") from exc
+        symbols = selector.split("::")[1:]
+        for node in tree.body:
+            if len(symbols) == 1 and isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef)
+            ) and node.name == symbols[0]:
+                return True
+            if len(symbols) == 2 and isinstance(node, ast.ClassDef) and \
+                    node.name == symbols[0]:
+                return any(
+                    isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and member.name == symbols[1]
+                    for member in node.body
+                )
+        return False
+
+    def _run_selector(
+        self,
+        snapshot: delivery_ports.TrustedGitSnapshot,
+        argv: Sequence[str],
+        environment: Mapping[str, str],
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Private process boundary overridden only by hermetic unit fixtures."""
+        return subprocess.run(
+            list(argv),
+            cwd=snapshot.root,
+            env=dict(environment),
+            capture_output=True,
+            check=False,
+        )
+
+    def execute_candidate_selectors(
+        self,
+        snapshot: delivery_ports.TrustedGitSnapshot,
+        selectors: Sequence[str],
+    ) -> tuple[SelectorExecutionReceipt, ...]:
+        """Execute and durably mint the exact selector set at one clean SHA."""
+        if not isinstance(snapshot, delivery_ports.TrustedGitSnapshot):
+            raise TerminalTruthError("selector", "trusted Git snapshot is required")
+        try:
+            snapshot._inspector.assert_unchanged(snapshot)
+        except delivery_ports.DeliveryPortError as exc:
+            raise TerminalTruthError("candidate", str(exc)) from exc
+        normalized = tuple(_text(value, "selector") for value in selectors)
+        if not normalized or len(normalized) != len(set(normalized)):
+            raise TerminalTruthError("selector", "selector inventory is empty or duplicated")
+        executable = Path(sys.executable).resolve(strict=True)
+        executable_sha256 = hashlib.sha256(executable.read_bytes()).hexdigest()
+        environment = {
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:" + str(executable.parent),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONHASHSEED": "0",
+        }
+        environment_fingerprint = _digest(environment)
+        receipts: list[SelectorExecutionReceipt] = []
+        for selector in normalized:
+            relative = self._selector_path(selector)
+            expected_source_sha256 = snapshot.evidence_sha256.get(relative)
+            if expected_source_sha256 is None:
+                raise TerminalTruthError(
+                    "selector", "selector source is not trusted candidate evidence"
+                )
+            source = (snapshot.root / relative).read_bytes()
+            if hashlib.sha256(source).hexdigest() != expected_source_sha256 or \
+                    not self._selector_exists(source, selector):
+                raise TerminalTruthError(
+                    "selector", "selector source changed or selector is missing"
+                )
+            try:
+                snapshot._inspector.assert_unchanged(snapshot)
+            except delivery_ports.DeliveryPortError as exc:
+                raise TerminalTruthError("candidate", str(exc)) from exc
+            argv = (
+                str(executable), "-m", "pytest", "-q", "-p",
+                "no:cacheprovider", selector,
+            )
+            completed = self._run_selector(snapshot, argv, environment)
+            try:
+                snapshot._inspector.assert_unchanged(snapshot)
+            except delivery_ports.DeliveryPortError as exc:
+                raise TerminalTruthError("candidate", str(exc)) from exc
+            if completed.returncode != 0:
+                raise TerminalTruthError(
+                    "selector", f"selector did not pass: {selector}"
+                )
+            stdout = bytes(completed.stdout or b"")
+            stderr = bytes(completed.stderr or b"")
+            unsigned = {
+                "schema": SELECTOR_EXECUTION_SCHEMA,
+                "status": "passed",
+                "producer": "taskplane.terminal-coordinator-selector-runner/v1",
+                "candidate_sha": snapshot.head_sha,
+                "repository_snapshot_fingerprint": snapshot.fingerprint,
+                "git_executable_sha256": snapshot.git_executable_sha256,
+                "git_environment_fingerprint": snapshot.environment_fingerprint,
+                "selector": selector,
+                "test_source_sha256": expected_source_sha256,
+                "argv": list(argv),
+                "exit_code": 0,
+                "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
+                "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+                "output_sha256": hashlib.sha256(stdout + b"\0" + stderr).hexdigest(),
+            }
+            receipt = _seal(unsigned)
+            receipt_path = (
+                self._root / "selector-executions" / f"{receipt['fingerprint']}.json"
+            )
+            self._write_immutable(receipt_path, _canonical_bytes(receipt))
+            live_receipt = SelectorExecutionReceipt(
+                receipt,
+                coordinator=self,
+                snapshot=snapshot,
+                path=receipt_path,
+                token=_SELECTOR_RECEIPT_TOKEN,
+            )
+            self._selector_receipt_seals[id(live_receipt)] = (
+                live_receipt,
+                self._private_receipt_seal(_canonical_bytes(live_receipt)),
+            )
+            receipts.append(live_receipt)
+        return tuple(receipts)
+
+    def _validate_selector_receipts(
+        self,
+        snapshot: delivery_ports.TrustedGitSnapshot,
+        selectors: Sequence[str],
+        receipts: Sequence[SelectorExecutionReceipt],
+    ) -> list[dict[str, Any]]:
+        required = tuple(selectors)
+        if len(receipts) != len(required):
+            raise TerminalTruthError("selector", "all required selectors must execute")
+        by_selector: dict[str, SelectorExecutionReceipt] = {}
+        for receipt in receipts:
+            if not isinstance(receipt, SelectorExecutionReceipt) or \
+                    receipt._token is not _SELECTOR_RECEIPT_TOKEN or \
+                    receipt._coordinator is not self or \
+                    receipt._snapshot is not snapshot:
+                raise TerminalTruthError(
+                    "selector", "live coordinator-produced selector receipt is required"
+                )
+            seal = self._selector_receipt_seals.get(id(receipt))
+            if seal is None or seal[0] is not receipt or not hmac.compare_digest(
+                seal[1], self._private_receipt_seal(_canonical_bytes(receipt))
+            ):
+                raise TerminalTruthError(
+                    "selector", "selector receipt coordinator seal is invalid"
+                )
+            selector = str(receipt.get("selector") or "")
+            if selector in by_selector:
+                raise TerminalTruthError("selector", "selector receipt is replayed")
+            by_selector[selector] = receipt
+        if tuple(by_selector) != required:
+            raise TerminalTruthError("selector", "selector receipts are incomplete or reordered")
+        rows: list[dict[str, Any]] = []
+        for selector in required:
+            receipt = by_selector[selector]
+            if set(receipt) != _SELECTOR_EXECUTION_FIELDS or \
+                    receipt.get("schema") != SELECTOR_EXECUTION_SCHEMA or \
+                    receipt.get("status") != "passed" or \
+                    receipt.get("producer") != \
+                    "taskplane.terminal-coordinator-selector-runner/v1" or \
+                    receipt.get("candidate_sha") != snapshot.head_sha or \
+                    receipt.get("repository_snapshot_fingerprint") != snapshot.fingerprint or \
+                    receipt.get("git_executable_sha256") != snapshot.git_executable_sha256 or \
+                    receipt.get("git_environment_fingerprint") != \
+                    snapshot.environment_fingerprint or \
+                    receipt.get("exit_code") != 0:
+                raise TerminalTruthError("selector", "selector receipt binding is invalid")
+            unsigned = {key: value for key, value in receipt.items() if key != "fingerprint"}
+            if receipt.get("fingerprint") != _digest(unsigned):
+                raise TerminalTruthError("selector", "selector receipt was redigested")
+            try:
+                persisted = receipt._path.read_bytes()
+            except OSError as exc:
+                raise TerminalTruthError("selector", "selector receipt is unavailable") from exc
+            if persisted != _canonical_bytes(receipt):
+                raise TerminalTruthError("selector", "selector receipt bytes were tampered")
+            rows.append(
+                {
+                    "selector": selector,
+                    "candidate_sha": snapshot.head_sha,
+                    "receipt_fingerprint": receipt["fingerprint"],
+                    "output_sha256": receipt["output_sha256"],
+                }
+            )
+        try:
+            snapshot._inspector.assert_unchanged(snapshot)
+        except delivery_ports.DeliveryPortError as exc:
+            raise TerminalTruthError("candidate", str(exc)) from exc
+        return rows
+
+    def compose_exact_candidate_export(
+        self,
+        *,
+        snapshot: delivery_ports.TrustedGitSnapshot,
+        template: Mapping[str, Any],
+        surface_documents: Mapping[str, Mapping[str, Any]],
+    ) -> ExactCandidateExportReceipt:
+        """Production consumer for one non-authoritative exact-SHA successor."""
+        canonical_template = self._load_snapshot_candidate_template(snapshot)
+        if not isinstance(template, Mapping) or dict(template) != canonical_template:
+            raise TerminalTruthError(
+                "candidate", "caller template differs from canonical tracked template"
+            )
+        expected_state = dict(_EXACT_CANDIDATE_EVIDENCE_STATE)
+        selectors = tuple(canonical_template["required_selectors"])
+        receipts = self.execute_candidate_selectors(snapshot, selectors)
+        selector_rows = self._validate_selector_receipts(
+            snapshot, selectors, receipts
+        )
+        if not isinstance(surface_documents, Mapping) or \
+                tuple(surface_documents) != SURFACE_IDS:
+            raise TerminalTruthError("partial", "all terminal surfaces are required")
+        identity: Mapping[str, Any] | None = None
+        surface_rows: dict[str, dict[str, str]] = {}
+        for surface_id in SURFACE_IDS:
+            document = surface_documents[surface_id]
+            candidate_identity = document.get("identity") \
+                if isinstance(document, Mapping) else None
+            if not isinstance(candidate_identity, Mapping) or \
+                    candidate_identity.get("full_source_sha") != snapshot.head_sha:
+                raise TerminalTruthError("stale", f"{surface_id} surface names another SHA")
+            identity = candidate_identity if identity is None else identity
+            normalized = validate_terminal_surface(
+                document,
+                expected_surface_id=surface_id,
+                expected_identity=identity,
+            )
+            surface_rows[surface_id] = {
+                "candidate_sha": snapshot.head_sha,
+                "sha256": _digest(normalized),
+            }
+        candidate = _seal(
+            {
+                "schema": EXACT_CANDIDATE_SUCCESSOR_SCHEMA,
+                "requirement_id": "R-0013",
+                "finding_id": "H-32",
+                "status": "prepared-not-authoritative",
+                "candidate_sha": snapshot.head_sha,
+                "template_sha256": _digest(canonical_template),
+                "repository_snapshot_fingerprint": snapshot.fingerprint,
+                "surfaces": surface_rows,
+                "selectors": selector_rows,
+                "evidence_state": expected_state,
+            }
+        )
+        path = self._root / "candidate-exports" / f"{candidate['fingerprint']}.json"
+        self._write_immutable(path, _canonical_bytes(candidate))
+        live_receipt = ExactCandidateExportReceipt(
+            candidate,
+            coordinator=self,
+            snapshot=snapshot,
+            selector_receipts=receipts,
+            surface_documents=surface_documents,
+            path=path,
+            token=_EXACT_CANDIDATE_RECEIPT_TOKEN,
+        )
+        self._candidate_export_seals[id(live_receipt)] = (
+            live_receipt,
+            self._private_receipt_seal(_canonical_bytes(live_receipt)),
+            snapshot,
+            selectors,
+            tuple(receipt["fingerprint"] for receipt in receipts),
+        )
+        return live_receipt
+
+    def validate_exact_candidate_export(
+        self,
+        receipt: Mapping[str, Any],
+        *,
+        expected_sha: str,
+        expected_template_sha256: str,
+    ) -> dict[str, Any]:
+        """Revalidate the live Git state and every immutable producer receipt."""
+        if not isinstance(receipt, ExactCandidateExportReceipt) or \
+                receipt._token is not _EXACT_CANDIDATE_RECEIPT_TOKEN or \
+                receipt._coordinator is not self:
+            raise TerminalTruthError("candidate", "live exact-candidate receipt is required")
+        snapshot = receipt._snapshot
+        canonical_template = self._load_snapshot_candidate_template(snapshot)
+        canonical_template_sha256 = _digest(canonical_template)
+        if _fingerprint(
+            expected_template_sha256, "expected_template_sha256"
+        ) != canonical_template_sha256:
+            raise TerminalTruthError(
+                "candidate", "expected template is not the canonical tracked template"
+            )
+        required_selectors = tuple(canonical_template["required_selectors"])
+        private_seal = self._candidate_export_seals.get(id(receipt))
+        selector_fingerprints = tuple(
+            str(selector_receipt.get("fingerprint") or "")
+            for selector_receipt in receipt._selector_receipts
+        )
+        if private_seal is None or private_seal[0] is not receipt or \
+                not hmac.compare_digest(
+                    private_seal[1],
+                    self._private_receipt_seal(_canonical_bytes(receipt)),
+                ) or private_seal[2] is not snapshot or \
+                private_seal[3] != required_selectors or \
+                private_seal[4] != selector_fingerprints:
+            raise TerminalTruthError(
+                "candidate", "exact-candidate coordinator seal is invalid"
+            )
+        if set(receipt) != _EXACT_CANDIDATE_FIELDS or \
+                receipt.get("schema") != EXACT_CANDIDATE_SUCCESSOR_SCHEMA or \
+                receipt.get("status") != "prepared-not-authoritative" or \
+                receipt.get("candidate_sha") != _object_id(expected_sha, "expected_sha") or \
+                receipt.get("candidate_sha") != snapshot.head_sha or \
+                receipt.get("template_sha256") != canonical_template_sha256 or \
+                receipt.get("repository_snapshot_fingerprint") != snapshot.fingerprint:
+            raise TerminalTruthError("candidate", "exact-candidate binding is stale or invalid")
+        unsigned = {key: value for key, value in receipt.items() if key != "fingerprint"}
+        if receipt.get("fingerprint") != _digest(unsigned):
+            raise TerminalTruthError("candidate", "exact-candidate receipt was redigested")
+        try:
+            persisted = receipt._path.read_bytes()
+        except OSError as exc:
+            raise TerminalTruthError("candidate", "exact-candidate receipt is unavailable") from exc
+        if persisted != _canonical_bytes(receipt):
+            raise TerminalTruthError("candidate", "exact-candidate receipt was tampered")
+        selector_rows = receipt.get("selectors")
+        if not isinstance(selector_rows, list) or \
+                any(not isinstance(row, Mapping) for row in selector_rows):
+            raise TerminalTruthError(
+                "selector", "candidate selector rows are invalid"
+            )
+        selectors = tuple(row.get("selector") for row in selector_rows)
+        if selectors != required_selectors:
+            raise TerminalTruthError(
+                "selector",
+                "candidate selectors differ from canonical required inventory",
+            )
+        rebuilt_rows = self._validate_selector_receipts(
+            snapshot, required_selectors, receipt._selector_receipts
+        )
+        if rebuilt_rows != selector_rows:
+            raise TerminalTruthError("selector", "candidate selector bindings changed")
+        if tuple(receipt._surface_documents) != SURFACE_IDS:
+            raise TerminalTruthError("partial", "candidate surface evidence is unavailable")
+        for surface_id in SURFACE_IDS:
+            document = receipt._surface_documents[surface_id]
+            binding = receipt["surfaces"].get(surface_id)
+            if not isinstance(binding, Mapping) or \
+                    binding.get("candidate_sha") != snapshot.head_sha or \
+                    binding.get("sha256") != _digest(document):
+                raise TerminalTruthError("mixed", "candidate surface binding changed")
+        return dict(receipt)
 
     @contextmanager
     def _authority_lock(self):
