@@ -208,6 +208,28 @@ jobs:
         if: matrix.python == '3.12'
         run: python3 scripts/ci_loop_cost.py
 
+  # H-09: one blocking, non-matrix quality job owns the repository's pinned
+  # Python lint/type policy.  Keeping it outside the test matrix avoids paying
+  # for the same static analysis on every compatibility interpreter.
+  python-quality:
+    name: Python quality (ruff + strict mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install hash-locked Python quality tools
+        run: >-
+          python -m pip install --disable-pip-version-check
+          --require-hashes -r requirements-dev.lock
+      - name: Reject Python correctness lint failures
+        run: python -m ruff check --output-format=github taskplane hooks scripts
+      - name: Enforce the strict typed-boundary policy
+        run: python -m mypy --strict --config-file pyproject.toml
+
   # V1 is deliberately separate from the ordinary test matrix.  The scorer
   # starts with no inherited credentials/proxies and a sitecustomize guard
   # installed before any scorer import, so a green receipt proves the frozen
@@ -427,6 +449,7 @@ jobs:
               taskplane/tests/test_windows_portability.py
               taskplane/tests/test_loop_context_traces.py
               taskplane/tests/test_eval_recorder.py
+              taskplane/tests/test_em_h1_sandbox.py
           - os: macos-latest
             advisory: true
             tests: >-

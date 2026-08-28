@@ -1,0 +1,33 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["taskplane/tests"]
+
+[tool.ruff.lint]
+# Start with correctness rules over every shipped production entry point.  The
+# broader style backlog must not weaken this zero-warning floor.
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.ruff.lint.per-file-ignores]
+# These two modules deliberately bind names during their late composition
+# phase.  Keep the exceptions exact instead of suppressing F821 globally.
+"taskplane/lens_signals.py" = ["F821"]
+"taskplane/review.py" = ["F821"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_configs = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = false
+incremental = false
+follow_imports = "skip"
+
+# These are the current fully typed production boundaries.  Strict checking is
+# a zero-warning gate for them; expanding the list requires fixing the added
+# boundary rather than adding a blanket suppression.
+files = [
+  "taskplane/enforcement.py",
+  "taskplane/review_convergence.py",
+]
