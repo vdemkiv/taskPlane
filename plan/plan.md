@@ -1,81 +1,171 @@
-# R-0013 Plan — native delivery authority and exact-SHA terminal truth
+# R-0002 Plan — remediate all 72 deep-EM findings
 
-## Authority, baseline, and bounded impact
+## Outcome and authority
 
-This remaining-work Plan is anchored at exact source `feadacd4ac0e6bf485c7f93f64afb9fc90aa21c7` on `codex/r0013-fresh-build-c9ec`, whose latest-main implementation parent remains `c9ec81a021ac74b048bfa58abfbfec870e49711a`. Product spec SHA-256 remains `e8d984c54e0900643f68d13d88d87f6f2fe6659ef84956519627a27afa12b3ed`. The retained approved Design fingerprint is `828833b7a08f47b769c801505706659de6d3e10bc9b39c7831e2a84062ef4dc2`, its approved baseline graph is `78b99071f8ebf44529afe2d70497557d4b280f12f63faf60208927ada466c7f4`, and the current `design/contract.json` has SHA-256 `c218c69533146144017b4dfbb5a701512e774e737c836c3e925c0792fa3019d6`.
+This Plan realizes approved Design fingerprint
+`ac5709a4a381d44556318207d8f9a34c98d9bdd69ff1fe74d7408a9f9505d8fe`
+at reviewed source `00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085`. It preserves the
+canonical inventory of 34 high, 28 medium, and 10 low findings from
+`.em-review/findings.json`, with one Build owner per finding and independent
+high/final evaluation.
 
-The two bootstrap corrections are complete historical prerequisites, not pending tasks or acceptance outcomes. The locator/home fix completed in `2.17.23` at `5f5b49844c99f8a9982b6a4a6308fa04fc5bb5d1`. The distinct W31 native producer/consumer and zero-lens execution-time EM bootstrap completed with independent PASS, was committed and pushed as unreleased `2.17.24` at exact SHA `feadacd4ac0e6bf485c7f93f64afb9fc90aa21c7`, was installed from that exact candidate, and produced the deterministic OpenAI ZIP SHA-256 `d03dd338784124ad20d3cf0df3c90f2b3945d245adb77e219f918b474b4dfdc0`. No remaining task repeats, versions, packages, pushes, installs, or re-proves either bootstrap.
+Codex native subagents are the only execution workers. Taskplane governs
+dependency classification, scoped contracts, evidence checks, and gates.
+Build, Fix, Evaluate, and execution-time EM use zero Taskplane lens workers.
+For each ready set the orchestrator dispatches all pairwise-disjoint owners in
+parallel with exact emitted identities, performs one event-driven wait for the
+outstanding set, and merges only green task commits. No implementation, push,
+tag, publication, release, PR merge, or `origin/main` mutation is authorized by
+this Plan.
 
-Those completed bootstrap changes preserve the seven Product outcomes and nine Product contract ids, add no remaining graph task or Design edge, and do not authorize Product or Design replay. The remaining tasks inherit the approved graph and retain local depth 3, contract-only boundary, contract depth 1, and requirement depth 1.
+## Graph and boundary evidence
 
-## Completed bootstrap boundary
+The required single bounded replan impact query covered the corrected
+high-gate seam: `.em-review/remediation`, `taskplane`, and `taskplane/tests`.
+It reported 30 impacted modules and no unknown modules. The graph content
+fingerprint is
+`fd4b8a94bce056bb408ad4ec92c810a966f57220056b1eaa075d9f8cea81c029`
+at the reviewed SHA. Its result ceiling was reached, but depth was not
+truncated and scan quality was complete. The result confirms that the
+evaluator-owned result surface and the H2/H3 integration selectors are already
+declared; no Design module, edge, scope, owner, or task inventory change is
+needed.
 
-The completed locator half binds native-hook and repository-bridge execution in both root and Taskplane task worktrees to the canonical home selected by the secure checkout locator. A missing locator, a non-canonical locator home, a task-worktree locator that does not bind the root run/home, or an inherited home that disagrees with the locator fails closed before any event, capability, observation, or receipt write. An explicit secure locator that selects canonical `$HOME/.taskplane` remains valid; unauthorized fallback or mismatch does not. The generated launcher and host runtime preserve the locator-bound home, and receipt copying remains prohibited as implementation, fixture, fallback, or acceptance evidence.
+Every task uses the approved typed impact policy: local depth 3,
+contract-only boundaries, contract depth 1, and requirement depth 1. The three
+approved code modules are declared at their creating owners:
+`taskplane/remediation_trace.py` at `H1-I`, `taskplane/glob_match.py` at
+`HX-GRAPH`, and `taskplane/text_runtime.py` at `M2-A`. Plan DoR additionally
+classifies `taskplane/locales` as new at `M2-A` and the remediation-evidence
+surface `.em-review/remediation` as new at `HG-EVAL`, `FINAL-I`, and
+`FINAL-EVAL`. The 23 approved Design edges are allocated exactly once across
+their canonical owners.
 
-The completed producer half closes the observed production gap without creating Taskplane lifecycle authority. On a genuine Codex `SubagentStop`, the hook observes the evaluator or execution-time EM result's exact bytes and binds exactly one external event plus one-use capability to the current run, task, lowercase stage, emitted producer identity, Codex session, Codex turn, canonical result path, output schema id, output-contract fingerprint, and exact source SHA. Zero-lens submission locates and consumes exactly one fresh matching observation before collection; missing, stale, ambiguous, mismatched, replayed, caller-authored, copied, or synthetic material fails closed before guidance, collection, submission, or gate success. The production review seam accepts sealed zero-lens delivery authority for execution-time EM, bypasses `automatic_sweep_route`, and produces exactly zero lens slots; legacy EM without that authority remains outside this correction. Duplicate native/bridge delivery may replay protocol disposition only and never mints a second event or capability. This remains a host evidence producer/consumer adapter, not a scheduler, worker registry, lifecycle journal, queue, or general W31/cold-start redesign.
+## Delivery waves
 
-The independently passing bootstrap evidence is retained only as the historical readiness basis for this Plan. It is not assigned to T01–T09, does not satisfy AC1–AC7 by itself, and creates no eighth acceptance outcome.
+### H1 — integrity and authority foundation
 
-## Delivery DAG and receipts
+Dispatch `H1-A` through `H1-E` together. Their code, test, and interface scopes
+are pairwise disjoint:
 
-There are exactly nine remaining tasks in three delivery waves. Wave 1 offers T01–T07, the seven pairwise-disjoint leaf-readiness owners, as one native set with no pending prerequisite task. Wave 2 is the sole shared-adapter integration owner after all seven leaf receipts. Wave 3 is AC7 end-to-end closure after the integration receipt.
+- `H1-A`: terminal composition, restart authority, immutable publication, and
+  exclusive CAS successor.
+- `H1-B`: stage/journal atomicity and durable observation intent.
+- `H1-C`: fsync-before-acknowledgement, migration authority, and read-only
+  screening.
+- `H1-D`: release authority plus current/N-1 compatibility.
+- `H1-E`: bounded validation-sandbox process and preparation deadlines.
 
-| Wave | Task | Exclusive owner | Receipt / barrier |
-| --- | --- | --- | --- |
-| 1 | T01 AC1 | Native authority validator and exact tests | `leaf-ready:AC1` |
-| 1 | T02 AC2 | Design-sweep validator and exact tests; validates the retained one-time Design evidence and never runs another lens sweep | `leaf-ready:AC2` |
-| 1 | T03 AC3 | Zero-lens execution adapters and exact tests | `leaf-ready:AC3` |
-| 1 | T04 AC4 | Sealed ready set, BUILD-C consumption, native intent and wait adapters | `leaf-ready:AC4` |
-| 1 | T05 AC5 | Seven-outcome ceiling and exhaustive pair-map validation | `leaf-ready:AC5` |
-| 1 | T06 AC6 | Delta handoff, native usage and hard budget screen | `leaf-ready:AC6` |
-| 1 | T07 AC7 | Pure wiring/finalization APIs and focused fault/refusal selectors, not end-to-end acceptance | `leaf-ready:AC7` |
-| 2 | T08 | Only `taskplane/loop.py` and `taskplane/tp.py`; remove stage-native execution authority and connect the seven sealed APIs | `integration-ready:r0013`; requires T01–T07 |
-| 3 | T09 AC7 | Exact pinned/final checkout proofs, 21 producer-edge mutations, eight-surface reconciliation, full suite, and redacted terminal projection | `acceptance-complete:AC7`; requires T08 |
+After all five receipts are green, `H1-I` alone creates the remediation-trace
+boundary and proves the H1 contracts at one SHA. No aggregate suite runs here.
 
-The seven Wave-1 leaf scopes are pairwise disjoint and have no task dependencies. T01, T03, T04, and T06 retain leaf-only selectors; shared and live-path R-0013 selectors remain exclusively at T08. No task owns host spawn, scheduling, capacity, reservation, admission, replay, lease-concurrency, worker lifecycle, event queue, or execution DAG. `delivery_mode=build` and `automatic_lenses=[]`; Build, Fix, Evaluate, and execution-time EM use zero Taskplane lens workers. T02 validates retained Design-only evidence without dispatching lenses or repeating the completed all-26 sweep.
+### H2 and H3 — concurrent remaining-high work
 
-## Seven outcomes, four P0 controls, and all 21 pair classifications
+After `H1-I`, dispatch one combined ready set containing `H2-A`, `H2-B`,
+`H2-C`, `HX-GRAPH`, `H3-A`, `H3-C`, and `H3-D`. These scopes are disjoint.
+`HX-GRAPH` is deliberately the single cross-wave owner for `components.yaml`,
+graph interaction, routing, and the shared dependency-neutral glob matcher.
 
-The unique criterion set remains exactly AC1–AC7, copied verbatim into `tasks.json`. The completed bootstrap is readiness evidence only and is not an acceptance owner. T03 owns the execution zero-lens policy; AC7 stays assigned to T07/T09, with T08 carrying only its integration re-attestation. The only P0 controls remain P0-1 atomic exact-SHA finalization (AC7), P0-2 native budget telemetry and enforcement (AC6), P0-3 host-native dispatch authority (AC1 and AC4), and P0-4 real-checkout wiring closure (AC7).
+- H2 closes CI quality enforcement, production reachability, preview/review
+  bounds, architecture-map consumption, and native usage truth. `L-02` stays
+  with `HX-GRAPH`; it has no separate low lane.
+- H3 closes dashboard and graph accessibility, truthful bridge/fallback state,
+  privacy retention/minimization, and exact-SHA terminal export. `L-01` stays
+  with dashboard owner `H3-A`; `L-04` stays with privacy owner `H3-C`.
 
-The Design's exact outcome-level pair policy remains authoritative. A serialized row is an acceptance/evidence dependency, not permission to idle disjoint leaf implementation: all seven leaf owners may build in Wave 1, while T08 and T09 enforce the named receipt barriers before the dependent acceptance can close.
+`H2-I` waits for H2 owners plus `HX-GRAPH`. `H3-I` waits for H3 owners plus
+`HX-GRAPH`. The two integration tasks are pairwise disjoint and may run
+concurrently once their own dependency sets are green.
 
-| Pair | Classification | Available wave / exact reason |
-| --- | --- | --- |
-| AC1–AC2 | parallel | `leaf-wave-1`: disjoint native-authority and Design-sweep owners |
-| AC1–AC3 | parallel | `leaf-wave-1`: disjoint native-authority and zero-lens owners |
-| AC1–AC4 | serialized | AC4 adapter integration consumes the AC1 authority map and removed stage edge |
-| AC1–AC5 | parallel | `leaf-wave-1`: disjoint native-authority and Plan-boundary owners |
-| AC1–AC6 | parallel | `leaf-wave-1`: disjoint native-authority and budget owners |
-| AC1–AC7 | serialized | AC7 finalization consumes the AC1 native-authority receipt |
-| AC2–AC3 | parallel | `leaf-wave-1`: disjoint Design-sweep and zero-lens owners |
-| AC2–AC4 | parallel | `leaf-wave-1`: Design-only sweep validation is independent of native dispatch leaf code |
-| AC2–AC5 | parallel | `leaf-wave-1`: disjoint Design-sweep and Plan-boundary owners |
-| AC2–AC6 | parallel | `leaf-wave-1`: disjoint Design-sweep and budget owners |
-| AC2–AC7 | serialized | terminal acceptance closes only after the Design-sweep receipt is dispositioned |
-| AC3–AC4 | serialized | AC4 native briefs consume AC3 zero-lens execution authorization at the shared loop adapter |
-| AC3–AC5 | parallel | `leaf-wave-1`: disjoint zero-lens and Plan-boundary owners |
-| AC3–AC6 | parallel | `leaf-wave-1`: disjoint zero-lens and budget owners |
-| AC3–AC7 | serialized | AC7 finalization consumes execution zero-lens receipt and trace |
-| AC4–AC5 | serialized | AC4 ready-set emission consumes AC5 exhaustive Plan pair map |
-| AC4–AC6 | serialized | AC4 native start screen consumes AC6 non-null usage and budget decision |
-| AC4–AC7 | serialized | AC7 finalization consumes native dispatch and wait receipts |
-| AC5–AC6 | parallel | `leaf-wave-1`: disjoint Plan-boundary and budget owners |
-| AC5–AC7 | serialized | AC7 finalization consumes exact seven-outcome Plan receipt |
-| AC6–AC7 | serialized | AC7 finalization consumes complete native usage and bounded-handoff receipts |
+### Independent high closure gate
 
-## Contract, module, edge, and depth coverage
+`HG-EVAL` is a fresh independent evaluator after both high integrations. It
+must prove exactly 34 unique high results at one clean candidate SHA. Missing,
+open, suppressed, downgraded, duplicated, wrong-SHA, or Build-self-attested
+rows fail closed. No M1 or M2 task is eligible before this gate passes.
+Its executable check consumes the H2/H3 integration selectors produced by its
+direct predecessors and invokes `taskplane.remediation_trace verify-high`
+against the evaluator-owned high-gate result set. It does not consume the
+downstream `FINAL-I` integration test artifact.
 
-The task-set contract union remains exactly the nine canonical Product ids: `contract:design.codex-native-capability-inventory`, `contract:design.quick-concurrent-all-lens-sweep`, `contract:delivery.execution-zero-lens`, `contract:delivery.codex-native-dispatch`, `contract:delivery.event-driven-wait`, `contract:delivery.acceptance-wave-ceiling`, `contract:delivery.bounded-stage-handoff`, `contract:delivery.exact-sha-terminal-truth`, and `resource:exports.exact-sha-terminal-truth`. The completed bootstrap added or renamed no Product contract.
+### M1 and M2 — concurrent medium work with low companions
 
-The retained terminal inventory still covers all 11 approved proposed modules and the previously planned `exports/terminal` projection. T09 retains the exact 24 approved edge strings, and every remaining task retains local depth 3, contract-only boundary, contract depth 1, and requirement depth 1.
+After `HG-EVAL`, dispatch `M1-A` through `M1-F`, `M2-A` through `M2-E`, and
+`MX-DOCS-ARCH` in one pairwise-disjoint native ready set. `MX-DOCS-ARCH` is
+the sole owner of `docs/loop-design.md`; `M2-C` owns the remaining product and
+documentation surfaces.
 
-## Risks, budgets, exclusions, and stop conditions
+M1 owns engineering foundations: scanner/design decisions, typing and
+fail-closed cost behavior, CI/dependency integrity, mandatory production
+proofs, repository retries, and scoped test/runtime bindings. `L-06` shares
+the CI/dependency owner `M1-C`; `L-10` shares scoped runtime owner `M1-F`.
 
-The completed bootstrap is immutable baseline evidence, not permission to substitute policy coverage, test doubles, caller-authored material, or copied receipts for production evidence during delivery. Any regression in locator binding, exact result-byte observation, one-use capability consumption, replay refusal, or execution-time EM zero-lens authority blocks the affected remaining task; it does not reopen bootstrap or authorize version/install work. Remaining containment is seven disjoint leaf receipts, one exclusive adapter integrator, AC7 only after integration, registered exact checkouts, mutation proofs, an orchestrator-only terminal capability, exactly eight immutable projections, and one bounded CAS reconciliation head.
+M2 owns user-facing truth: dashboard locale/state, privacy defaults/notices,
+product/docs/help, deterministic concurrency, and priced debt traceability.
+`L-03` shares dashboard/text owner `M2-A`; `L-05`, `L-07`, `L-08`, and `L-09`
+share product/docs owner `M2-C`.
 
-Before every native start, elapsed time, unique sessions, total tokens, and uncached input must be finite, non-negative, and strictly below 28,800 seconds, 60 sessions, 150,000,000 tokens, and 25,000,000 uncached tokens. Equality, breach, missing usage, a handoff at or above 4,000 tokens, silent transport deadline, or a second failed Fix/Evaluate cycle stops for attributed human scope or architecture review. The stopped set is never silently resumed or replaced.
+`M1-I` and `M2-I` are independent joins and may run concurrently after their
+respective leaves. There is no low-only tail.
 
-AC7 final truth is exactly eight projections—Git HEAD, governed progress, run journal, tasks/gates, public report, repository verification, release evidence, and redacted exports terminal evidence—sharing one SHA/status/requirement/fingerprint set. No individual projection, opaque fingerprint, generated temporary checkout, or foreign receipt has authority. A dirty/wrong SHA, missing selector, failed severed-edge proof, CAS fork/gap/collision, executing retained run, partial projection, cleanup before reconciliation, or SHA-changing merge blocks Done and every delivery claim.
+### Final integration and evaluation
 
-This revision admits only the remaining T01–T09 delivery graph. It does not admit bootstrap replay, version/package/install work, broader W31/cold-start redesign, history repair, P1/P2 follow-up, R-0011, unrelated R-0013 backlog, completed R-0001 replay, scheduler/capacity/reservation/admission/replay/lease/lifecycle machinery, caller-authored or copied receipts, or another lens sweep. Merge to main, tag, public Marketplace publication, release declaration, credentials for remote mutation, and origin changes remain excluded. Plan authoring runs no product tests or implementation. Volodymyr Demkiv explicitly authorized this direct Plan finalization to bypass only the old run's immutable 8-hour ledger; that authority does not change the acceptance criteria, contracts, Design, task scopes, delivery gates, or execution bounds.
+`FINAL-I` runs after both medium joins. It owns the tight `specs/spec.md`
+surface required by the approved
+`specs->resource:review.finding-traceability:provides` edge and reconciles the
+immutable 72-row map, graph and contract edges, focused receipts, high-gate
+evidence, and exact candidate SHA. Its focused command runs only the AC1 and
+AC8 integration selectors.
+
+`FINAL-EVAL` then independently checks all 72 dispositions at the exact clean
+candidate and runs `python3 -m pytest taskplane/tests -q` exactly once. Earlier
+tasks run only their focused selectors, so the complete suite is not repeated
+while parallel edits are in flight.
+
+## Shared owners and serialization barriers
+
+- `H1-I` owns the new remediation-trace foundation after all five H1 leaves.
+- `HX-GRAPH` owns every H2/H3 graph, architecture-map, graph-keyboard, routing,
+  and glob-matcher edit.
+- `H2-I` and `H3-I` own only their disjoint integration tests.
+- `HG-EVAL` is the only high-closure authority and never edits product code.
+- `MX-DOCS-ARCH` owns `docs/loop-design.md` across M1/M2.
+- `M1-I` and `M2-I` own only their disjoint integration tests.
+- `FINAL-I` is the only final remediation-trace/integration owner.
+- `FINAL-EVAL` is independent and writes only final evidence.
+
+Known repeated production paths are serialized by dependencies: `review.py`
+H1→H2; `taskplane_lite.py` H1→H3→M2; CI H2→M1; dashboard H3→M2; graph/lens
+H2/H3→M1; and remediation trace H1→high gate→M2→final. A task whose actual
+implementation would need another ready owner's file, fixture, schema,
+composition root, or public contract stops for reclassification instead of
+widening scope.
+
+## Verification and merge discipline
+
+Each Build task carries one runnable focused command and owns its test changes
+in the same task commit. Validation progresses from exact selectors to wave
+integration. A failure is classified before edits; a fixture/test correction
+reruns only its exact selector unless it can affect a wider boundary. The
+orchestrator merges a task only after independent Evaluate is green and binds
+the receipt to its exact commit SHA. The complete suite is reserved for
+`FINAL-EVAL` on the integrated clean candidate.
+
+## Risks and stop conditions
+
+- A broad owner can become a bottleneck. The Plan contains it with leaf-only
+  scopes and explicit join owners rather than concurrent edits to broad files.
+- Low companions can distract from high closure. They share the earliest
+  related owner and never create a gating low-only lane.
+- Persistence and migration fixes can become one-way. H1 requires additive
+  current/N-1 readers, prepare/commit markers, fault injection, and predecessor
+  or one-successor recovery before dependent work.
+- Production wiring can introduce cycles. Composition roots depend inward on
+  protocols; graph/import/SCC checks gate joins.
+- Bounds can reject legitimate large repositories. Refusal remains typed and
+  measurable; only an explicit human-authorized bounded override may proceed.
+- Dashboard and docs can drift. One owner controls each shared surface and
+  parity/generated-content checks protect the join.
+- Any inventory mismatch, unplanned graph edge, scope overlap in a ready set,
+  failed high mutation, unresolved finding, mixed SHA, or repeated final full
+  suite blocks progression and returns to the owning task or human gate.
