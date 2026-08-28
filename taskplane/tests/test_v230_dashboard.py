@@ -604,6 +604,19 @@ class TestWidgetComposition(unittest.TestCase):
                      "_widget_parts"):
             self.assertTrue(callable(getattr(dashboard, name)), name)
 
+    def test_graph_and_context_are_routed_once_through_map_detail(self):
+        tmp = tempfile.mkdtemp()
+        ws = _loop_ws(tmp)
+        parts = dashboard._widget_parts(ws)
+        frag = dashboard.widget(ws)
+        self.assertEqual(parts["map_panel"], parts["graph"] + parts["context"])
+        self.assertEqual(frag.count(parts["graph"]), 1)
+        panel_start = frag.index('id="tp-panel-map"')
+        self.assertLess(panel_start, frag.index(parts["graph"]))
+        self.assertLess(frag.index(parts["graph"]), frag.index(parts["context"]))
+        self.assertIn("graph &amp; context detail", frag)
+        self.assertIn("tpTab('map',true)", frag)
+
 
 # ------------------------------------------- A5 machinery warn rows (Phase 3)
 

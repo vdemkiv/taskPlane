@@ -88,7 +88,8 @@ class TestJourney(unittest.TestCase):             # AC2
         pm = next(x for x in v if x["step"] == "pm")
         self.assertEqual(pm["agent"], "tp-product")
         self.assertEqual(pm["outcome"], "pass")
-        self.assertEqual(pm["note"], "spec ok")
+        self.assertIn("note minimized for audit", pm["note"])
+        self.assertNotIn("spec ok", pm["note"])
         self.assertIn(pm["tier"], tp.MODEL_TIERS)
 
     def test_widget_renders_navigator_clickable(self):
@@ -225,7 +226,9 @@ class TestEscaping(unittest.TestCase):            # security NFR
         loop.gate(ws, "pass", note="<script>alert(1)</script>")
         frag = dashboard.widget(ws)
         self.assertNotIn("<script>alert(1)</script>", frag)
-        self.assertIn("&lt;script&gt;", frag)
+        self.assertNotIn("&lt;script&gt;", frag)
+        self.assertIn("note minimized for audit", frag)
+        self.assertIn("raw text intentionally omitted", frag)
 
 
 # ==========================================================================

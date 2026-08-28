@@ -3907,6 +3907,24 @@ def _agents_hero(harness, tasks, step, parallel):
 
 # --- Dashboard v2 (R-0001): step journey, model table, always-on stats ---
 
+def _trace_note_text(value):
+    """Project a trace note into safe, useful dashboard text.
+
+    Current audit events deliberately replace free text with a bounded digest
+    record.  The dashboard must not stringify that implementation record (or,
+    worse, try to recover the original), but legacy traces can still contain a
+    plain note and remain readable through the normal HTML escaping path.
+    """
+    if isinstance(value, dict) and \
+            value.get("schema") == "taskplane.audit-minimized/v1":
+        size = value.get("bytes")
+        suffix = (f" · {size} bytes"
+                  if isinstance(size, int) and not isinstance(size, bool)
+                  and size >= 0 else "")
+        return "note minimized for audit; raw text intentionally omitted" + suffix
+    return "" if value is None else str(value)
+
+
 def _journey(ws, events=None, state=None):
     """Ordered step visits reconstructed from the trace — the single source
     of truth (no new state files). A model_tier event opens a visit; the
@@ -3952,7 +3970,7 @@ def _journey(ws, events=None, state=None):
             for v in reversed(visits):
                 if v["step"] == step and v["outcome"] is None:
                     v["outcome"] = e.get("outcome")
-                    v["note"] = e.get("note") or ""
+                    v["note"] = _trace_note_text(e.get("note"))
                     v["ts_end"] = e.get("ts")
                     break
             else:
@@ -3963,7 +3981,7 @@ def _journey(ws, events=None, state=None):
                     "model": None, "agent": "you",
                     "ts": e.get("ts"), "ts_end": e.get("ts"),
                     "outcome": e.get("outcome"),
-                    "note": e.get("note") or "", "dor": None,
+                    "note": _trace_note_text(e.get("note")), "dor": None,
                     "criteria": criteria if step in
                     ("design_approval", "signoff") else None,
                     "design": _loop._design_context(ws, state)
@@ -4589,6 +4607,7 @@ _WIDGET_JS = (
     'd.textContent=t;}'
     'function tpFire(b,m,l){'
     'if(!tpHasBridge()){tpHint(b,m);return;}'
+    'b.disabled=true;'
     'var choices=Array.from(b.parentNode.querySelectorAll("button"));'
     'choices.forEach(function(x){if(!x.dataset.tpLabel)x.dataset.tpLabel=x.innerHTML;'
     'x.disabled=true;x.setAttribute("aria-disabled","true");x.style.opacity="0.45";});'
@@ -4690,7 +4709,7 @@ def _widget_tabs(tabbtn: str) -> str:
         + f'" onclick="tpTab(\'{key}\',true)" '
           f'onkeydown="tpTabKey(event,\'{key}\')">{label}</button>'
         for key, label in (("loop", "execution detail"),
-                           ("map", "context detail")))
+                           ("map", "graph &amp; context detail")))
     return (f'<div id="tp-detail-tabs" role="tablist" '
             f'aria-label="Dashboard detail views" '
             f'style="display:flex;gap:6px">{tabs}</div>')
@@ -4825,10 +4844,10 @@ def _widget_parts(ws: str) -> dict:
         _context_panel(ws, state, full_trace)
         + f'<div style="{_MICRO};margin-top:10px">action budgets are '
         'hook-enforced; dollar spend stays cooperative in the plugin.</div>')
-    # The graph is now part of the primary report, not hidden behind a tab.
-    # Keep this panel for the deeper work context only; duplicating the same
-    # SVG would spend bytes and make two visual copies drift.
-    map_panel = context_html
+    # Interactive widgets route the graph and its supporting context through
+    # one labelled detail tab.  The durable report still renders both in its
+    # linear evidence order, while the inline widget avoids a duplicate graph.
+    map_panel = graph_html + context_html
 
     # ---- simple view: the focus points only — where we are, your gate,
     # and each agent's harness (on topic + within budget)
@@ -4960,7 +4979,6 @@ def widget(ws: str) -> str:
         + p["dor"]
         + p["stats"]
         + p["workflow"]
-        + p["graph"]
         + f'<div style="margin-bottom:14px;border-bottom:'
           f'1px solid var(--border);padding-bottom:10px">{p["tabs"]}</div>'
         + f'<div id="tp-simple">{p["pipe_s"]}{p["journey_s"]}'
@@ -5530,14 +5548,15 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
     identity = projection.get("identity", {})
     evidence = projection.get("evidence", [])
     detail_evidence = (
-        '<section aria-labelledby="tp-evidence-title"><h3 id="tp-evidence-title">'
+        '<div role="region" aria-labelledby="tp-evidence-title">'
+        '<h3 id="tp-evidence-title">'
         + html.escape(_msg("workflow_evidence", locale=locale)) + '</h3>'
         + _dashboard_value_markup({
             "identity": identity,
             "stage": projection.get("stage"),
             "state": projection.get("state"),
             "evidence": evidence,
-        }, locale=locale) + '</section>')
+        }, locale=locale) + '</div>')
 
     locale_notice = (
         f'<p class="tp-muted" role="status" data-locale-fallback="true">'
