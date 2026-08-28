@@ -1771,7 +1771,7 @@ class TestLoop(unittest.TestCase):
                     contract["coding"]["dod"]["regression_gate"])
 
     def test_read_only_workflow_roles_can_call_the_governed_cli(self):
-        """Codex exposes CLI calls through Bash even for read-only roles."""
+        """H1 blocks governed CLI calls through Bash for read-only roles."""
         state = {"goal": "g", "current_task": 0, "tasks": [TASK]}
         for step in ("pm", "design", "plan"):
             with self.subTest(step=step):
@@ -1781,7 +1781,8 @@ class TestLoop(unittest.TestCase):
                 ok, reason = loop.tp.screen_tool(
                     contract, "Bash",
                     {"command": "python3 taskplane/tp.py status"}, self.tmp)
-                self.assertTrue(ok, reason)
+                self.assertFalse(ok)
+                self.assertIn("every shell command tool is blocked", reason)
 
     def test_step_contract_is_active_before_definition_of_ready(self):
         ws = git_ws(self.tmp, [TASK])
