@@ -701,15 +701,6 @@ def observe_submission(
         "request_or_output_digest": output_digest,
         "contract_fingerprint": output_contract_fingerprint,
     }
-    try:
-        capability_source.consume(
-            capability_handle,
-            expected_bindings=expected_capability,
-            now=now,
-        )
-    except DeliveryPortError as exc:
-        raise ProducerObservationError(str(exc)) from exc
-
     projection = {
         "schema": PRODUCER_OBSERVATION_SCHEMA,
         "run_id": values["run_id"],
@@ -735,5 +726,17 @@ def observe_submission(
         receipt,
         expected_head=predecessor_fingerprint,
     )
+    # The exact, claim-bound reconciliation input must be durable before the
+    # process-private capability is consumed.  A failed prepare therefore
+    # leaves authority reusable; a later commit failure leaves an immutable
+    # intent that EvidenceStore.reconcile can finish after restart.
+    try:
+        capability_source.consume(
+            capability_handle,
+            expected_bindings=expected_capability,
+            now=now,
+        )
+    except DeliveryPortError as exc:
+        raise ProducerObservationError(str(exc)) from exc
     evidence_store.commit(prepared)
     return receipt
