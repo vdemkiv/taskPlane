@@ -1,39 +1,77 @@
-"""H-32 exact-candidate successor export and stale-SHA refusal proofs."""
+"""H-32 exact-candidate successor and immutable-history proofs."""
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
 
-from taskplane import terminal_truth
+from taskplane import delivery_ports, terminal_truth
 
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPORT_ROOT = ROOT / "exports" / "terminal" / "r0013"
 STALE_SHA = "106af4631ab5b5c041055b9b9b918d78a18ae50b"
+ORIGINAL_SHA256 = "1e41748672f8d492823824b6e2103ac87484f2687389d80567f231ea4151c459"
+GIT = "/usr/bin/git"
 
 
-def _verifier():
-    path = EXPORT_ROOT / "verify.py"
-    spec = importlib.util.spec_from_file_location("_em_h3_terminal_export", path)
+def _verifier(path: Path = EXPORT_ROOT / "verify.py"):
+    spec = importlib.util.spec_from_file_location(
+        f"_em_h3_terminal_export_{hash(path)}", path
+    )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def _head() -> str:
+def _git(repository: Path, *args: str) -> str:
     return subprocess.check_output(
-        ["git", "rev-parse", "HEAD"],
-        cwd=ROOT,
-        text=True,
-        encoding="utf-8",
+        [GIT, *args], cwd=repository, text=True, encoding="utf-8"
     ).strip()
+
+
+def _commit(repository: Path, message: str) -> str:
+    subprocess.run([GIT, "add", "-A"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            GIT,
+            "-c", "user.name=H3-D fixture",
+            "-c", "user.email=h3-d@example.invalid",
+            "commit", "-qm", message,
+        ],
+        cwd=repository,
+        check=True,
+    )
+    return _git(repository, "rev-parse", "HEAD")
+
+
+def _fixture_repository(tmp_path: Path):
+    repository = tmp_path / "candidate"
+    export_root = repository / "exports" / "terminal" / "r0013"
+    tests_root = repository / "taskplane" / "tests"
+    export_root.mkdir(parents=True)
+    tests_root.mkdir(parents=True)
+    for name in (
+        "verify.py",
+        "successor-template.json",
+        f"{STALE_SHA}.json",
+        f"{STALE_SHA}.tombstone.json",
+    ):
+        shutil.copyfile(EXPORT_ROOT / name, export_root / name)
+    shutil.copyfile(Path(__file__), tests_root / Path(__file__).name)
+    (repository / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    subprocess.run([GIT, "init", "-q", str(repository)], check=True)
+    head = _commit(repository, "candidate")
+    verifier = _verifier(export_root / "verify.py")
+    return repository, export_root, verifier, head
 
 
 def _surface_documents(candidate_sha: str) -> dict[str, dict]:
@@ -59,202 +97,263 @@ def _surface_documents(candidate_sha: str) -> dict[str, dict]:
     }
 
 
-def _selector_receipts(template: dict, candidate_sha: str) -> dict[str, dict]:
-    return {
-        selector: {
-            "candidate_sha": candidate_sha,
-            "outcome": "passed",
-            "output_sha256": f"{index + 1:064x}",
-        }
-        for index, selector in enumerate(template["required_selectors"])
-    }
+def _passing_selector_runner(calls: list[tuple[str, ...]] | None = None):
+    def run(snapshot, argv, environment):
+        assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+        if calls is not None:
+            calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, b"passed\n", b"")
+    return run
 
 
-def _prepared_candidate(verifier, template: dict, candidate_sha: str) -> dict:
-    return verifier.prepare_candidate_manifest(
-        template,
-        candidate_sha=candidate_sha,
-        surface_documents=_surface_documents(candidate_sha),
-        selector_receipts=_selector_receipts(template, candidate_sha),
+def _prepare(tmp_path: Path, monkeypatch):
+    repository, export_root, verifier, head = _fixture_repository(tmp_path)
+    coordinator = terminal_truth.TerminalCoordinator(tmp_path / "authority")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        coordinator, "_run_selector", _passing_selector_runner(calls)
     )
+    manifest = verifier.prepare_repository_candidate(
+        template_path=export_root / "successor-template.json",
+        repository=repository,
+        surface_documents=_surface_documents(head),
+        coordinator=coordinator,
+    )
+    return repository, export_root, verifier, coordinator, manifest, calls, head
 
 
-def test_h32_terminal_export_matches_current_candidate_sha():
-    verifier = _verifier()
-    template = verifier.load_template(EXPORT_ROOT / "successor-template.json")
-    head = _head()
-    candidate = _prepared_candidate(verifier, template, head)
-    documents = _surface_documents(head)
-    receipts = _selector_receipts(template, head)
+def test_h32_historical_projection_and_separate_tombstone_are_exact(tmp_path):
+    repository, export_root, verifier, _ = _fixture_repository(tmp_path)
+    del repository
+    original_path = export_root / f"{STALE_SHA}.json"
+    tombstone_path = export_root / f"{STALE_SHA}.tombstone.json"
+    template = verifier.load_template(export_root / "successor-template.json")
+    tombstone = json.loads(tombstone_path.read_text(encoding="utf-8"))
 
-    assert verifier.verify_candidate_manifest(
-        template,
-        candidate,
-        expected_sha=head,
-        surface_documents=documents,
-        selector_receipts=receipts,
-    )["candidate_sha"] == head
+    assert hashlib.sha256(original_path.read_bytes()).hexdigest() == ORIGINAL_SHA256
+    assert json.loads(original_path.read_text(encoding="utf-8"))["schema"] == \
+        terminal_truth.TERMINAL_PROJECTION_SCHEMA
+    assert verifier.validate_tombstone(
+        tombstone,
+        expected_template=template,
+        original_path=original_path,
+        tombstone_path=tombstone_path,
+    )["active"] is False
 
-    stale = copy.deepcopy(candidate)
-    stale["candidate_sha"] = STALE_SHA
-    with pytest.raises(verifier.TerminalExportError, match="stale SHA"):
-        verifier.verify_candidate_manifest(
-            template,
-            stale,
-            expected_sha=head,
-            surface_documents=documents,
-            selector_receipts=receipts,
+    with pytest.raises(verifier.TerminalExportError, match="misnamed"):
+        verifier.validate_tombstone(
+            tombstone,
+            expected_template=template,
+            original_path=original_path,
+            tombstone_path=export_root / "tombstone.json",
+        )
+    altered = dict(tombstone, reason="caller-selected")
+    with pytest.raises(verifier.TerminalExportError, match="schema or reason"):
+        verifier.validate_tombstone(
+            altered,
+            expected_template=template,
+            original_path=original_path,
+            tombstone_path=tombstone_path,
         )
 
-    tombstone = json.loads(
-        (EXPORT_ROOT / f"{STALE_SHA}.json").read_text(encoding="utf-8")
+
+def test_h32_terminal_export_matches_current_candidate_sha(tmp_path, monkeypatch):
+    repository, export_root, verifier, _, manifest, calls, head = _prepare(
+        tmp_path, monkeypatch
     )
-    assert verifier.validate_tombstone(
-        tombstone, expected_template=template
-    )["active"] is False
-    assert tombstone["schema"] != terminal_truth.TERMINAL_PROJECTION_SCHEMA
+    verified = verifier.verify_candidate_manifest(
+        template_path=export_root / "successor-template.json",
+        manifest=manifest,
+        expected_sha=head,
+    )
+    template = verifier.load_template(export_root / "successor-template.json")
+
+    assert verified["candidate_sha"] == head
+    assert [row["selector"] for row in verified["selectors"]] == \
+        template["required_selectors"]
+    assert len(calls) == len(template["required_selectors"])
+    assert verified["evidence_state"] == verifier.PREPARED_EVIDENCE_STATE
+    assert verified["status"] == "prepared-not-authoritative"
+    assert _git(repository, "status", "--porcelain=v1", "--untracked-files=all") == ""
+
+    with pytest.raises(verifier.TerminalExportError, match="stale or invalid"):
+        verifier.verify_candidate_manifest(
+            template_path=export_root / "successor-template.json",
+            manifest=manifest,
+            expected_sha=STALE_SHA,
+        )
 
 
-def test_h32_successor_binds_all_terminal_surfaces():
-    verifier = _verifier()
-    template = verifier.load_template(EXPORT_ROOT / "successor-template.json")
-    head = _head()
-    assert tuple(template["surface_ids"]) == terminal_truth.SURFACE_IDS
+def test_h32_selector_receipts_reject_fabrication_replay_redigest_and_tamper(
+    tmp_path, monkeypatch
+):
+    _, export_root, verifier, coordinator, manifest, _, head = _prepare(
+        tmp_path, monkeypatch
+    )
+    template_path = export_root / "successor-template.json"
+    with pytest.raises(verifier.TerminalExportError, match="live exact-candidate"):
+        verifier.verify_candidate_manifest(
+            template_path=template_path,
+            manifest=dict(manifest),
+            expected_sha=head,
+        )
+    with pytest.raises(TypeError, match="not serializable"):
+        copy.deepcopy(manifest)
 
+    foreign = terminal_truth.TerminalCoordinator(tmp_path / "foreign-authority")
+    with pytest.raises(terminal_truth.TerminalTruthError, match="live exact-candidate"):
+        foreign.validate_exact_candidate_export(
+            manifest,
+            expected_sha=head,
+            expected_template_sha256=manifest["template_sha256"],
+        )
+
+    receipt = manifest._selector_receipts[0]
+    assert receipt._path.stem == receipt["fingerprint"]
+    assert json.loads(receipt._path.read_text(encoding="utf-8")) == receipt
+    assert receipt["git_executable_sha256"] == manifest._snapshot.git_executable_sha256
+    assert receipt["git_environment_fingerprint"] == \
+        manifest._snapshot.environment_fingerprint
+    original = dict(receipt)
+    receipt["output_sha256"] = "f" * 64
+    unsigned = {key: value for key, value in receipt.items() if key != "fingerprint"}
+    receipt["fingerprint"] = terminal_truth._digest(unsigned)
+    with pytest.raises(verifier.TerminalExportError, match="redigested|tampered"):
+        verifier.verify_candidate_manifest(
+            template_path=template_path,
+            manifest=manifest,
+            expected_sha=head,
+        )
+    receipt.clear()
+    receipt.update(original)
+
+    persisted = receipt._path.read_bytes()
+    receipt._path.write_bytes(b"{}")
+    with pytest.raises(verifier.TerminalExportError, match="tampered"):
+        verifier.verify_candidate_manifest(
+            template_path=template_path,
+            manifest=manifest,
+            expected_sha=head,
+        )
+    receipt._path.write_bytes(persisted)
+    assert coordinator.validate_exact_candidate_export(
+        manifest,
+        expected_sha=head,
+        expected_template_sha256=manifest["template_sha256"],
+    )["candidate_sha"] == head
+
+
+def test_h32_candidate_check_rejects_dirty_untracked_and_head_movement(
+    tmp_path, monkeypatch
+):
+    repository, export_root, verifier, head = _fixture_repository(tmp_path)
+    coordinator = terminal_truth.TerminalCoordinator(tmp_path / "authority")
+    monkeypatch.setattr(coordinator, "_run_selector", _passing_selector_runner())
+    kwargs = {
+        "template_path": export_root / "successor-template.json",
+        "repository": repository,
+        "surface_documents": _surface_documents(head),
+        "coordinator": coordinator,
+    }
+
+    (repository / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+    with pytest.raises(verifier.TerminalExportError, match="untracked"):
+        verifier.prepare_repository_candidate(**kwargs)
+    (repository / "untracked.txt").unlink()
+
+    template_path = export_root / "successor-template.json"
+    original = template_path.read_text(encoding="utf-8")
+    template_path.write_text(original + "\n", encoding="utf-8")
+    with pytest.raises(verifier.TerminalExportError, match="clean"):
+        verifier.prepare_repository_candidate(**kwargs)
+    template_path.write_text(original, encoding="utf-8")
+
+    moved = False
+
+    def move_head(snapshot, argv, environment):
+        nonlocal moved
+        if not moved:
+            moved = True
+            (repository / "movement.txt").write_text("moved\n", encoding="utf-8")
+            _commit(repository, "move head")
+        return subprocess.CompletedProcess(argv, 0, b"passed\n", b"")
+
+    monkeypatch.setattr(coordinator, "_run_selector", move_head)
+    with pytest.raises(verifier.TerminalExportError, match="changed after|moved"):
+        verifier.prepare_repository_candidate(**kwargs)
+
+
+def test_h32_candidate_check_rejects_symlink_and_external_evidence(
+    tmp_path, monkeypatch
+):
+    repository, export_root, verifier, head = _fixture_repository(tmp_path)
+    coordinator = terminal_truth.TerminalCoordinator(tmp_path / "authority")
+    monkeypatch.setattr(coordinator, "_run_selector", _passing_selector_runner())
+    external = tmp_path / "external-template.json"
+    shutil.copyfile(export_root / "successor-template.json", external)
+
+    with pytest.raises(verifier.TerminalExportError, match="inside the candidate"):
+        verifier.prepare_repository_candidate(
+            template_path=external,
+            repository=repository,
+            surface_documents=_surface_documents(head),
+            coordinator=coordinator,
+        )
+
+    template_path = export_root / "successor-template.json"
+    template_path.unlink()
+    template_path.symlink_to(external)
+    with pytest.raises(verifier.TerminalExportError, match="symlink"):
+        verifier.prepare_repository_candidate(
+            template_path=template_path,
+            repository=repository,
+            surface_documents=_surface_documents(head),
+            coordinator=coordinator,
+        )
+
+
+def test_h32_successor_binds_all_surfaces_and_rejects_stale_surface(
+    tmp_path, monkeypatch
+):
+    repository, export_root, verifier, head = _fixture_repository(tmp_path)
+    coordinator = terminal_truth.TerminalCoordinator(tmp_path / "authority")
+    monkeypatch.setattr(coordinator, "_run_selector", _passing_selector_runner())
     documents = _surface_documents(head)
     documents.pop("run_journal")
     with pytest.raises(verifier.TerminalExportError, match="all terminal surfaces"):
-        verifier.prepare_candidate_manifest(
-            template,
-            candidate_sha=head,
+        verifier.prepare_repository_candidate(
+            template_path=export_root / "successor-template.json",
+            repository=repository,
             surface_documents=documents,
-            selector_receipts=_selector_receipts(template, head),
+            coordinator=coordinator,
         )
 
     documents = _surface_documents(head)
     documents["public_report"]["identity"]["full_source_sha"] = STALE_SHA
-    with pytest.raises(verifier.TerminalExportError, match="stale SHA"):
-        verifier.prepare_candidate_manifest(
-            template,
-            candidate_sha=head,
-            surface_documents=documents,
-            selector_receipts=_selector_receipts(template, head),
-        )
-
-    candidate = _prepared_candidate(verifier, template, head)
-    candidate["surfaces"]["git_head"]["candidate_sha"] = STALE_SHA
-    with pytest.raises(verifier.TerminalExportError, match="binding is stale"):
-        verifier.verify_candidate_manifest(
-            template,
-            candidate,
-            expected_sha=head,
-            surface_documents=_surface_documents(head),
-            selector_receipts=_selector_receipts(template, head),
-        )
-
-
-def test_h32_successor_binds_required_selectors():
-    verifier = _verifier()
-    template = verifier.load_template(EXPORT_ROOT / "successor-template.json")
-    head = _head()
-    receipts = _selector_receipts(template, head)
-    receipts.pop(template["required_selectors"][0])
-    with pytest.raises(verifier.TerminalExportError, match="all required selectors"):
-        verifier.prepare_candidate_manifest(
-            template,
-            candidate_sha=head,
-            surface_documents=_surface_documents(head),
-            selector_receipts=receipts,
-        )
-
-    receipts = _selector_receipts(template, head)
-    receipts[template["required_selectors"][0]]["outcome"] = "failed"
-    with pytest.raises(verifier.TerminalExportError, match="did not pass"):
-        verifier.prepare_candidate_manifest(
-            template,
-            candidate_sha=head,
-            surface_documents=_surface_documents(head),
-            selector_receipts=receipts,
-        )
-
-
-def test_h32_successor_does_not_invent_terminal_or_release_authority():
-    verifier = _verifier()
-    template = verifier.load_template(EXPORT_ROOT / "successor-template.json")
-    head = _head()
-    candidate = _prepared_candidate(verifier, template, head)
-    documents = _surface_documents(head)
-    receipts = _selector_receipts(template, head)
-
-    assert candidate["status"] == "prepared-not-authoritative"
-    assert candidate["evidence_state"] == {
-        "terminal_authority": "not-minted",
-        "full_suite": "not-recorded",
-        "release": "not-granted",
-        "main_mutation": "not-granted",
-        "publication": "not-granted",
-    }
-
-    forged = copy.deepcopy(candidate)
-    forged["evidence_state"]["full_suite"] = "passed"
-    with pytest.raises(verifier.TerminalExportError, match="unavailable authority"):
-        verifier.verify_candidate_manifest(
-            template,
-            forged,
-            expected_sha=head,
-            surface_documents=documents,
-            selector_receipts=receipts,
-        )
-
-    forged = copy.deepcopy(candidate)
-    forged["status"] = "complete"
-    with pytest.raises(verifier.TerminalExportError, match="falsely claims"):
-        verifier.verify_candidate_manifest(
-            template,
-            forged,
-            expected_sha=head,
-            surface_documents=documents,
-            selector_receipts=receipts,
-        )
-
-
-def test_h32_repository_materialization_requires_clean_exact_head(tmp_path):
-    verifier = _verifier()
-    template = verifier.load_template(EXPORT_ROOT / "successor-template.json")
-    repository = tmp_path / "candidate"
-    repository.mkdir()
-    subprocess.run(["git", "init", "-q", str(repository)], check=True)
-    tracked = repository / "candidate.txt"
-    tracked.write_text("committed\n", encoding="utf-8")
-    subprocess.run(["git", "add", "candidate.txt"], cwd=repository, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=H3-D fixture",
-            "-c",
-            "user.email=h3-d@example.invalid",
-            "commit",
-            "-qm",
-            "candidate",
-        ],
-        cwd=repository,
-        check=True,
-    )
-    head = verifier.clean_repository_head(repository)
-    candidate = verifier.prepare_repository_candidate(
-        template,
-        repository=repository,
-        surface_documents=_surface_documents(head),
-        selector_receipts=_selector_receipts(template, head),
-    )
-    assert candidate["candidate_sha"] == head
-
-    tracked.write_text("dirty\n", encoding="utf-8")
-    with pytest.raises(verifier.TerminalExportError, match="clean and committed"):
+    with pytest.raises(verifier.TerminalExportError, match="another SHA"):
         verifier.prepare_repository_candidate(
-            template,
+            template_path=export_root / "successor-template.json",
+            repository=repository,
+            surface_documents=documents,
+            coordinator=coordinator,
+        )
+
+
+def test_h32_verifier_is_wired_to_terminal_coordinator_consumer(
+    tmp_path, monkeypatch
+):
+    repository, export_root, verifier, head = _fixture_repository(tmp_path)
+    coordinator = terminal_truth.TerminalCoordinator(tmp_path / "authority")
+
+    def refuse(**kwargs):
+        del kwargs
+        raise terminal_truth.TerminalTruthError("consumer", "consumer reached")
+
+    monkeypatch.setattr(coordinator, "compose_exact_candidate_export", refuse)
+    with pytest.raises(verifier.TerminalExportError, match="consumer reached"):
+        verifier.prepare_repository_candidate(
+            template_path=export_root / "successor-template.json",
             repository=repository,
             surface_documents=_surface_documents(head),
-            selector_receipts=_selector_receipts(template, head),
+            coordinator=coordinator,
         )

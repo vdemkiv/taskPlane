@@ -42,6 +42,8 @@ EVIDENCE_FAULT_SEAMS = (
     "during-reconcile",
 )
 IRREVERSIBLE_TOOLS = frozenset({"push", "tag", "install", "publish", "credential-release"})
+TRUSTED_GIT_SNAPSHOT_SCHEMA = "taskplane.trusted-git-snapshot/v1"
+_TRUSTED_GIT_SNAPSHOT_TOKEN = object()
 
 
 class DeliveryPortError(RuntimeError):
@@ -236,6 +238,236 @@ class SubprocessGitRunner:
             errors="replace", capture_output=True, check=False
         )
         return GitResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedGitSnapshot:
+    """Live, revalidatable identity for one exact clean repository state."""
+
+    root: Path
+    head_sha: str
+    tree_sha: str
+    git_executable: str
+    git_executable_sha256: str
+    environment_fingerprint: str
+    evidence_sha256: Mapping[str, str]
+    fingerprint: str
+    _inspector: "TrustedGitInspector"
+    _token: object
+
+    def __reduce__(self):
+        raise TypeError("trusted Git snapshots are not serializable")
+
+
+class TrustedGitInspector:
+    """Observe Git through one content-bound executable and closed environment.
+
+    This boundary is intentionally narrower than the general ``GitRunner``:
+    terminal evidence must not inherit aliases, external diff/textconv
+    helpers, hooks, fsmonitor commands, or caller-selected Git configuration.
+    """
+
+    _BASE_ARGS = (
+        "--no-optional-locks",
+        "--literal-pathspecs",
+        "-c", "core.hooksPath=/dev/null",
+        "-c", "core.fsmonitor=false",
+        "-c", "core.attributesFile=/dev/null",
+        "-c", "diff.external=",
+    )
+
+    def __init__(self, git_executable: str | os.PathLike[str] | None = None) -> None:
+        system_git = Path("/usr/bin/git")
+        selected = Path(git_executable) if git_executable is not None else (
+            system_git if system_git.is_file() else Path(shutil.which("git") or "")
+        )
+        if not selected.is_absolute() or selected.is_symlink():
+            raise DeliveryPortError(
+                "trusted Git executable must be an absolute non-symlink path"
+            )
+        try:
+            resolved = selected.resolve(strict=True)
+            executable_bytes = resolved.read_bytes()
+        except OSError as exc:
+            raise DeliveryPortError("trusted Git executable is unavailable") from exc
+        if not resolved.is_file() or not os.access(resolved, os.X_OK):
+            raise DeliveryPortError("trusted Git executable is not executable")
+        self._git_executable = resolved
+        self._git_executable_sha256 = hashlib.sha256(executable_bytes).hexdigest()
+        self._environment = {
+            "PATH": str(resolved.parent),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+        self._environment_fingerprint = content_fingerprint(self._environment)
+
+    @property
+    def executable_sha256(self) -> str:
+        return self._git_executable_sha256
+
+    @property
+    def environment_fingerprint(self) -> str:
+        return self._environment_fingerprint
+
+    def _run(
+        self,
+        root: Path,
+        args: Sequence[str],
+        *,
+        binary: bool = False,
+    ) -> str | bytes:
+        completed = subprocess.run(
+            [str(self._git_executable), *self._BASE_ARGS, *args],
+            cwd=root,
+            env=dict(self._environment),
+            capture_output=True,
+            text=not binary,
+            encoding=None if binary else "utf-8",
+            errors=None if binary else "replace",
+            check=False,
+        )
+        if completed.returncode != 0:
+            stderr = completed.stderr
+            detail = (
+                stderr.decode("utf-8", errors="replace")
+                if isinstance(stderr, bytes)
+                else str(stderr or "")
+            ).strip()
+            raise DeliveryPortError(
+                "trusted Git observation failed: " + (detail or str(args[0]))
+            )
+        if binary:
+            return bytes(completed.stdout)
+        return str(completed.stdout).strip()
+
+    @staticmethod
+    def _root(repository: str | os.PathLike[str]) -> Path:
+        supplied = Path(repository)
+        if supplied.is_symlink():
+            raise DeliveryPortError("candidate repository cannot be a symlink")
+        try:
+            root = supplied.resolve(strict=True)
+        except OSError as exc:
+            raise DeliveryPortError("candidate repository is unavailable") from exc
+        if not root.is_dir():
+            raise DeliveryPortError("candidate repository is not a directory")
+        return root
+
+    @staticmethod
+    def _contained_regular_file(root: Path, value: str | os.PathLike[str]) -> Path:
+        supplied = Path(value)
+        lexical = supplied if supplied.is_absolute() else root / supplied
+        try:
+            relative = lexical.relative_to(root)
+        except ValueError as exc:
+            raise DeliveryPortError("terminal evidence must be inside the candidate") from exc
+        cursor = root
+        for part in relative.parts:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                raise DeliveryPortError("terminal evidence cannot traverse a symlink")
+        try:
+            resolved = lexical.resolve(strict=True)
+            resolved.relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise DeliveryPortError("terminal evidence escapes the candidate") from exc
+        if not resolved.is_file():
+            raise DeliveryPortError("terminal evidence must be a regular file")
+        return resolved
+
+    def _state(self, root: Path) -> tuple[str, str, str]:
+        top = Path(str(self._run(root, ("rev-parse", "--show-toplevel")))).resolve()
+        if top != root:
+            raise DeliveryPortError("candidate repository must be the Git toplevel")
+        head = str(self._run(root, ("rev-parse", "--verify", "HEAD")))
+        tree = str(self._run(root, ("rev-parse", "--verify", "HEAD^{tree}")))
+        status = str(
+            self._run(
+                root,
+                ("status", "--porcelain=v1", "--untracked-files=all"),
+            )
+        )
+        if status:
+            raise DeliveryPortError(
+                "candidate checkout must be clean, including untracked files"
+            )
+        return head, tree, status
+
+    def snapshot(
+        self,
+        repository: str | os.PathLike[str],
+        *,
+        evidence_paths: Sequence[str | os.PathLike[str]] = (),
+    ) -> TrustedGitSnapshot:
+        """Bind exact HEAD/tree and tracked evidence, checking both ends."""
+        root = self._root(repository)
+        contained_evidence = tuple(
+            self._contained_regular_file(root, value) for value in evidence_paths
+        )
+        before_head, before_tree, _ = self._state(root)
+        evidence: dict[str, str] = {}
+        for path in contained_evidence:
+            relative = path.relative_to(root).as_posix()
+            tracked = str(
+                self._run(root, ("ls-files", "--error-unmatch", "--", relative))
+            )
+            if tracked != relative:
+                raise DeliveryPortError("terminal evidence is not tracked at HEAD")
+            head_bytes = self._run(root, ("show", f"HEAD:{relative}"), binary=True)
+            assert isinstance(head_bytes, bytes)
+            working_bytes = path.read_bytes()
+            if working_bytes != head_bytes:
+                raise DeliveryPortError("terminal evidence differs from candidate HEAD")
+            evidence[relative] = hashlib.sha256(head_bytes).hexdigest()
+        after_head, after_tree, _ = self._state(root)
+        if (after_head, after_tree) != (before_head, before_tree):
+            raise DeliveryPortError("candidate HEAD moved during observation")
+        projection = {
+            "schema": TRUSTED_GIT_SNAPSHOT_SCHEMA,
+            "root_sha256": hashlib.sha256(str(root).encode("utf-8")).hexdigest(),
+            "head_sha": before_head,
+            "tree_sha": before_tree,
+            "git_executable": str(self._git_executable),
+            "git_executable_sha256": self._git_executable_sha256,
+            "environment_fingerprint": self._environment_fingerprint,
+            "evidence_sha256": evidence,
+        }
+        return TrustedGitSnapshot(
+            root=root,
+            head_sha=before_head,
+            tree_sha=before_tree,
+            git_executable=str(self._git_executable),
+            git_executable_sha256=self._git_executable_sha256,
+            environment_fingerprint=self._environment_fingerprint,
+            evidence_sha256=evidence,
+            fingerprint=content_fingerprint(projection),
+            _inspector=self,
+            _token=_TRUSTED_GIT_SNAPSHOT_TOKEN,
+        )
+
+    def assert_unchanged(self, snapshot: TrustedGitSnapshot) -> TrustedGitSnapshot:
+        """Re-observe a live snapshot and reject movement, dirt, or replacement."""
+        if not isinstance(snapshot, TrustedGitSnapshot) or \
+                snapshot._token is not _TRUSTED_GIT_SNAPSHOT_TOKEN or \
+                snapshot._inspector is not self:
+            raise DeliveryPortError("live trusted Git snapshot is required")
+        paths = tuple(snapshot.root / path for path in snapshot.evidence_sha256)
+        observed = self.snapshot(snapshot.root, evidence_paths=paths)
+        bindings = (
+            observed.head_sha == snapshot.head_sha,
+            observed.tree_sha == snapshot.tree_sha,
+            observed.git_executable == snapshot.git_executable,
+            observed.git_executable_sha256 == snapshot.git_executable_sha256,
+            observed.environment_fingerprint == snapshot.environment_fingerprint,
+            dict(observed.evidence_sha256) == dict(snapshot.evidence_sha256),
+            observed.fingerprint == snapshot.fingerprint,
+        )
+        if not all(bindings):
+            raise DeliveryPortError("candidate snapshot changed after observation")
+        return snapshot
 
 
 class RecordedPlatformCiQuery:

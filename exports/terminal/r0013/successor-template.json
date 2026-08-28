@@ -3,7 +3,7 @@
   "requirement_id": "R-0013",
   "finding_id": "H-32",
   "candidate_binding": {
-    "source": "git-head-at-materialization",
+    "source": "trusted-git-head-at-materialization",
     "field": "candidate_sha",
     "requires_full_object_id": true,
     "requires_clean_checkout": true,
@@ -20,11 +20,13 @@
     "exports_terminal_evidence"
   ],
   "required_selectors": [
+    "taskplane/tests/test_em_h3_terminal_export.py::test_h32_historical_projection_and_separate_tombstone_are_exact",
     "taskplane/tests/test_em_h3_terminal_export.py::test_h32_terminal_export_matches_current_candidate_sha",
-    "taskplane/tests/test_em_h3_terminal_export.py::test_h32_successor_binds_all_terminal_surfaces",
-    "taskplane/tests/test_em_h3_terminal_export.py::test_h32_successor_binds_required_selectors",
-    "taskplane/tests/test_em_h3_terminal_export.py::test_h32_successor_does_not_invent_terminal_or_release_authority",
-    "taskplane/tests/test_em_h3_terminal_export.py::test_h32_repository_materialization_requires_clean_exact_head"
+    "taskplane/tests/test_em_h3_terminal_export.py::test_h32_selector_receipts_reject_fabrication_replay_redigest_and_tamper",
+    "taskplane/tests/test_em_h3_terminal_export.py::test_h32_candidate_check_rejects_dirty_untracked_and_head_movement",
+    "taskplane/tests/test_em_h3_terminal_export.py::test_h32_candidate_check_rejects_symlink_and_external_evidence",
+    "taskplane/tests/test_em_h3_terminal_export.py::test_h32_successor_binds_all_surfaces_and_rejects_stale_surface",
+    "taskplane/tests/test_em_h3_terminal_export.py::test_h32_verifier_is_wired_to_terminal_coordinator_consumer"
   ],
   "prepared_evidence_state": {
     "terminal_authority": "not-minted",

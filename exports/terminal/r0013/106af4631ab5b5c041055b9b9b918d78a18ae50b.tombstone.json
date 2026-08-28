@@ -1,0 +1,10 @@
+{
+  "schema": "taskplane.exact-sha-terminal-projection-tombstone/v1",
+  "active": false,
+  "superseded_candidate_sha": "106af4631ab5b5c041055b9b9b918d78a18ae50b",
+  "original_filename": "106af4631ab5b5c041055b9b9b918d78a18ae50b.json",
+  "original_sha256": "1e41748672f8d492823824b6e2103ac87484f2687389d80567f231ea4151c459",
+  "reason": "Historical exact-SHA projection retained unchanged; superseded as current candidate evidence by the R-0002 successor contract.",
+  "successor_template": "successor-template.json",
+  "successor_schema": "taskplane.r0013-exact-candidate-successor/v1"
+}
