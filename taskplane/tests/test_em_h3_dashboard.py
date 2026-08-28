@@ -166,6 +166,25 @@ def test_h17_fallback_retains_required_workflow_evidence():
     assert 'page.hidden=Number(page.dataset.carouselPage)!==next' in controller
 
 
+def test_h17_workflow_evidence_details_is_reachable_with_zero_to_two_actions():
+    """Evidence never loses its control merely because action count is low."""
+    for actions in ((), ("inspect",), ("inspect", "export")):
+        markup = render_native_dashboard_surface(
+            native_dashboard_projection(
+                _snapshot(actions=actions), host="codex"))
+        assert markup.count('data-detail-trigger="true"') == 1
+        assert 'aria-controls="tp-fullscreen-detail"' in markup
+        assert '<h3 id="tp-evidence-title">Workflow evidence</h3>' in markup
+        nav = re.search(
+            r'<nav class="tp-actions"[\s\S]*?</nav>', markup).group(0)
+        assert nav.count("<button") <= 2
+        if len(actions) == 2:
+            dialog = re.search(
+                r'<dialog id="tp-fullscreen-detail"[\s\S]*?</dialog>',
+                markup).group(0)
+            assert 'data-prompt="export"' in dialog
+
+
 def test_h18_gate_action_waits_for_bridge_confirmation():
     controller = _WIDGET_JS.removeprefix("<script>").removesuffix("</script>")
     harness = r'''
@@ -202,8 +221,14 @@ let resolveSend;
 window.openai.sendFollowUpMessage=function(){return new Promise(function(resolve){resolveSend=resolve;});};
 tpFire(first,"approve the plan","approved");
 if(first.innerHTML!=="sending…" || first.innerHTML.includes("approved")) process.exit(7);
-resolveSend(); await new Promise(function(resolve){setImmediate(resolve);});
-if(!first.innerHTML.includes("approved") || parent.status.textContent!=="delivered to chat") process.exit(8);
+resolveSend({delivered:false}); await new Promise(function(resolve){setImmediate(resolve);});
+if(first.disabled || second.disabled || first.innerHTML!=="approve plan") process.exit(8);
+if(!parent.status.textContent.includes("delivery failed") ||
+   parent.status.textContent.includes("delivered to chat")) process.exit(9);
+window.openai.sendFollowUpMessage=function(){return Promise.resolve({delivered:true});};
+tpFire(first,"approve the plan","approved");
+await new Promise(function(resolve){setImmediate(resolve);});
+if(!first.innerHTML.includes("approved") || parent.status.textContent!=="delivered to chat") process.exit(10);
 })();
 '''
     _run_node(harness)
@@ -300,6 +325,15 @@ def test_h21_detail_action_reports_inside_active_modal_and_retries_truthfully():
         r'data-delivery-scope="detail"[^>]+role="status"[^>]+'
         r'aria-live="polite"[^>]+aria-atomic="true"', markup)
     controller = _controller(markup)
+    assert re.search(
+        r'data-action-classification="mutually-exclusive"[^>]+data-prompt="approve"',
+        markup)
+    assert re.search(
+        r'data-action-classification="independent"[^>]+data-prompt="inspect"',
+        markup)
+    assert re.search(
+        r'data-action-classification="independent"[^>]+data-prompt="export"',
+        markup)
     harness = r'''
 (async function(){
 class Target {
@@ -372,6 +406,8 @@ if(inspect.textContent!=="Sent" || localStatus.textContent!==
    "Delivered to chat: inspect" || localStatus.attributes.role!=="status")
   process.exit(14);
 if(sharedStatus.textContent)process.exit(15);
+if(exportAction.disabled || exportAction.textContent!=="export")process.exit(16);
+if(!inspect.disabled)process.exit(17);
 })();
 '''
     _run_node(harness)

@@ -4632,7 +4632,10 @@ _WIDGET_JS = (
     'x.disabled=true;x.setAttribute("aria-disabled","true");x.style.opacity="0.45";});'
     'b.setAttribute("aria-busy","true");b.innerHTML="sending…";'
     'tpGateStatus(b,"sending to chat…","pending");'
-    'tpSend(b,m).then(function(){b.removeAttribute("aria-busy");'
+    'tpSend(b,m).then(function(result){if(result===false||'
+    '(result&&typeof result==="object"&&(result.ok===false||'
+    'result.delivered===false))){throw new Error("bridge did not confirm delivery");}'
+    'return result;}).then(function(){b.removeAttribute("aria-busy");'
     'b.innerHTML="<i class=\'ti ti-check\' aria-hidden=\'true\'></i> "+(l||"sent");'
     'tpGateStatus(b,"delivered to chat","success");},function(e){'
     'choices.forEach(function(x){x.disabled=false;x.removeAttribute("aria-disabled");'
@@ -5247,6 +5250,31 @@ def _dashboard_collection_markup(collection):
           '</div></div>')
 
 
+def _dashboard_action_classification(action):
+    """Classify the control effect used by the fallback interaction model.
+
+    Unknown/read-only actions are independent by default.  Only explicit
+    workflow-ending or mutually-exclusive decision verbs retain the disabled
+    group after a confirmed send.
+    """
+    normalized = " ".join(str(action).casefold().replace("_", " ").split())
+    terminal = (
+        "abort", "cancel", "complete", "finish", "close workflow",
+        "end workflow", "sign off", "skip",
+    )
+    exclusive = (
+        "approve", "decline", "reject", "select", "choose",
+        "request changes", "send back",
+    )
+    if any(normalized == verb or normalized.startswith(verb + " ")
+           for verb in terminal):
+        return "terminal"
+    if any(normalized == verb or normalized.startswith(verb + " ")
+           for verb in exclusive):
+        return "mutually-exclusive"
+    return "independent"
+
+
 def render_native_dashboard_surface(projection, *, viewport_px=1024,
                                     theme="light", text_scale_percent=100,
                                     reduced_motion=False):
@@ -5331,24 +5359,27 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
 
     inline_actions = projection.get("presentation", {}).get("primary_actions", [])[:2]
     detail_actions = projection.get("presentation", {}).get("detail_actions", [])
-    # The detail trigger is itself a primary inline action. Reserve one of the
-    # two slots for it when overflow actions exist.
-    if detail_actions:
-        detail_actions = inline_actions[1:] + detail_actions
-        inline_actions = inline_actions[:1]
+    # Workflow evidence must remain reachable even when there are zero, one,
+    # or two safe actions.  Details therefore always occupies one of the two
+    # primary slots and any second action moves into the dialog.
+    detail_actions = inline_actions[1:] + detail_actions
+    inline_actions = inline_actions[:1]
     action_buttons = "".join(
         f'<button class="tp-action" type="button" aria-label="{html.escape(str(action))}" '
-        f'data-dashboard-action="true" data-prompt="{html.escape(str(action), quote=True)}">'
+        f'data-dashboard-action="true" data-action-classification="'
+        f'{_dashboard_action_classification(action)}" '
+        f'data-prompt="{html.escape(str(action), quote=True)}">'
         f'{html.escape(str(action))}</button>' for action in inline_actions)
     detail_buttons = "".join(
         f'<button type="button" aria-label="{html.escape(str(action))}" '
         f'aria-describedby="tp-detail-delivery-status" '
-        f'data-dashboard-action="true" data-prompt="{html.escape(str(action), quote=True)}">'
+        f'data-dashboard-action="true" data-action-classification="'
+        f'{_dashboard_action_classification(action)}" '
+        f'data-prompt="{html.escape(str(action), quote=True)}">'
         f'{html.escape(str(action))}</button>' for action in detail_actions)
-    if detail_actions:
-        action_buttons += (
-            '<button class="tp-action" type="button" aria-label="Open full details" '
-            'aria-controls="tp-fullscreen-detail" data-detail-trigger="true">Details</button>')
+    action_buttons += (
+        '<button class="tp-action" type="button" aria-label="Open full details" '
+        'aria-controls="tp-fullscreen-detail" data-detail-trigger="true">Details</button>')
 
     interaction = (
         '<script>(function(){'
@@ -5391,6 +5422,11 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         '{throw new Error("bridge did not confirm delivery");}'
         'return result;}).then(function(){'
         'control.removeAttribute("aria-busy");control.textContent="Sent";'
+        'if((control.dataset.actionClassification||"independent")==="independent")'
+        '{controls.forEach(function(item){if(item!==control&&'
+        '(item.dataset.actionClassification||"independent")==="independent")'
+        '{item.disabled=false;if(item.dataset.deliveryLabel)'
+        'item.textContent=item.dataset.deliveryLabel;}});}'
         'report(control,"Delivered to chat: "+message,false);},function(){'
         'controls.forEach(function(item){item.disabled=false;'
         'if(item.dataset.deliveryLabel)item.textContent=item.dataset.deliveryLabel;});'
