@@ -1,0 +1,132 @@
+{
+  "schema": "taskplane.r0002-high-gate-disposition/v1",
+  "requirement_id": "R-0002",
+  "candidate_sha": "ecc72d4cdf0d90995e3968e2a57f89f61814cf39",
+  "candidate_tree": "9dc0b0f1b3d529f35e275a608c5a0b03fcdd10ae",
+  "candidate_state": "clean-before-and-after-focused-validation",
+  "disposition": "proceed-under-explicit-human-exceptions",
+  "strict_ac5_status": "not-satisfied",
+  "strict_ac5_reason": "Fifteen high rows cannot truthfully be called independently green: the thirteen H1 rows share the accepted selector-receipt-authority exception and H-23/H-25 share the accepted retention exception.",
+  "medium_low_eligibility": {
+    "status": "permitted-by-attributed-human-bypass",
+    "authority": "Volodymyr Demkiv",
+    "constraint": "This is not an independent high-gate PASS and must not be represented as one. Medium/low delivery may proceed only under the two retained exception records."
+  },
+  "counts": {
+    "required_high": 34,
+    "listed_high": 34,
+    "independently_green": 19,
+    "accepted_exception": 15,
+    "missing": 0,
+    "suppressed": 0,
+    "downgraded": 0,
+    "self_attested_green": 0
+  },
+  "focused_validation": {
+    "command": "python3 -m pytest -q -p no:cacheprovider taskplane/tests/test_em_h2_integration.py taskplane/tests/test_em_h3_integration.py",
+    "exit_code": 0,
+    "summary": "18 passed in 64.46s (0:01:04)",
+    "candidate_sha": "ecc72d4cdf0d90995e3968e2a57f89f61814cf39",
+    "inputs": [
+      {
+        "path": "taskplane/tests/test_em_h2_integration.py",
+        "sha256": "5817dd0cf40724ec5e8c212ae42197ba6aaaa2c221b59e2a5ccca2c3e8456ebf"
+      },
+      {
+        "path": "taskplane/tests/test_em_h3_integration.py",
+        "sha256": "020a020c10868c64dc0bb07ad1ec7962aab51691256b3bed499e443a780c8f9a"
+      }
+    ]
+  },
+  "planned_verifier_surface": {
+    "command": "python3 -m taskplane.remediation_trace verify-high --findings .em-review/findings.json --results .em-review/remediation/high-gate/results.json --candidate-sha HEAD --require-independent",
+    "status": "non-enforcing",
+    "evidence": "The module defines no verify-high CLI surface. A canary invocation against deliberately missing input returned exit code 0 with no output and performed no validation. The planned taskplane/tests/test_em_remediation_integration.py AC5 selector is also absent.",
+    "gate_claim": "No engine high-gate PASS is claimed."
+  },
+  "exception_records": [
+    {
+      "id": "H1-I-selector-receipt-authority",
+      "path": "design/backlog/r0002-h1i-selector-receipt-authority.md",
+      "sha256": "f705432f38a95f663bdaa3678ed42e2e1ed7c7e2bc5e03d5b439cb20dcdfe890",
+      "accepted_by": "Volodymyr Demkiv",
+      "authority_quote": "bypass and proceed with the plan",
+      "implementation_candidate": "7757ff1bf5418d3d387afe74e733803c05b452aa",
+      "affected_findings": [
+        "H-03",
+        "H-04",
+        "H-05",
+        "H-06",
+        "H-07",
+        "H-08",
+        "H-14",
+        "H-15",
+        "H-19",
+        "H-22",
+        "H-26",
+        "H-30",
+        "H-34"
+      ],
+      "independently_green": false
+    },
+    {
+      "id": "H3-C-retention-gaps",
+      "path": "design/backlog/r0002-h3c-retention-exceptions.md",
+      "sha256": "bd40d659569919abe09b797cf7df66c81f7e1e73ad425efc48dc417f52d550a5",
+      "accepted_by": "Volodymyr Demkiv",
+      "authority_quote": "bypass and proceed",
+      "implementation_candidate": "9b85aa9b578e5210eb31d5f9e6faff916a694d93",
+      "affected_findings": [
+        "H-23",
+        "H-25"
+      ],
+      "independently_green": false
+    }
+  ],
+  "authority_inputs": [
+    {
+      "path": "design/contract.json",
+      "sha256": "bd5d26280408bc0859479043729dd3b1444a0d40b88ca6fbfd62a8d4aa9134f4"
+    },
+    {
+      "path": "plan/tasks.json",
+      "sha256": "daf395e0229a8be7e23531c6e264b306fb47880b70b755b1cb47fea73ace7179"
+    }
+  ],
+  "results": [
+    {"finding_id": "H-01", "task": "H3-A", "status": "independently-green", "independent": true, "evidence_join": "H3-I"},
+    {"finding_id": "H-02", "task": "HX-GRAPH", "status": "independently-green", "independent": true, "evidence_join": "H2-I+H3-I"},
+    {"finding_id": "H-03", "task": "H1-A", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-04", "task": "H1-A", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-05", "task": "H1-A", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-06", "task": "H1-A", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-07", "task": "H1-B", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-08", "task": "H1-B", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-09", "task": "H2-A", "status": "independently-green", "independent": true, "evidence_join": "H2-I"},
+    {"finding_id": "H-10", "task": "H2-B", "status": "independently-green", "independent": true, "evidence_join": "H2-I"},
+    {"finding_id": "H-11", "task": "H2-B", "status": "independently-green", "independent": true, "evidence_join": "H2-I"},
+    {"finding_id": "H-12", "task": "H2-B", "status": "independently-green", "independent": true, "evidence_join": "H2-I"},
+    {"finding_id": "H-13", "task": "H2-C", "status": "independently-green", "independent": true, "evidence_join": "H2-I"},
+    {"finding_id": "H-14", "task": "H1-C", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-15", "task": "H1-C", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-16", "task": "H3-A", "status": "independently-green", "independent": true, "evidence_join": "H3-I"},
+    {"finding_id": "H-17", "task": "H3-A", "status": "independently-green", "independent": true, "evidence_join": "H3-I"},
+    {"finding_id": "H-18", "task": "H3-A", "status": "independently-green", "independent": true, "evidence_join": "H3-I"},
+    {"finding_id": "H-19", "task": "H1-D", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-20", "task": "H3-A", "status": "independently-green", "independent": true, "evidence_join": "H3-I"},
+    {"finding_id": "H-21", "task": "H3-A", "status": "independently-green", "independent": true, "evidence_join": "H3-I"},
+    {"finding_id": "H-22", "task": "H1-D", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-23", "task": "H3-C", "status": "accepted-exception", "independent": false, "exception_id": "H3-C-retention-gaps"},
+    {"finding_id": "H-24", "task": "H3-C", "status": "independently-green", "independent": true, "evidence_join": "H3-I"},
+    {"finding_id": "H-25", "task": "H3-C", "status": "accepted-exception", "independent": false, "exception_id": "H3-C-retention-gaps"},
+    {"finding_id": "H-26", "task": "H1-D", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-27", "task": "H2-C", "status": "independently-green", "independent": true, "evidence_join": "H2-I"},
+    {"finding_id": "H-28", "task": "H2-C", "status": "independently-green", "independent": true, "evidence_join": "H2-I"},
+    {"finding_id": "H-29", "task": "H2-B", "status": "independently-green", "independent": true, "evidence_join": "H2-I"},
+    {"finding_id": "H-30", "task": "H1-C", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"},
+    {"finding_id": "H-31", "task": "HX-GRAPH", "status": "independently-green", "independent": true, "evidence_join": "H2-I"},
+    {"finding_id": "H-32", "task": "H3-D", "status": "independently-green", "independent": true, "evidence_join": "H3-I"},
+    {"finding_id": "H-33", "task": "H2-C", "status": "independently-green", "independent": true, "evidence_join": "H2-I"},
+    {"finding_id": "H-34", "task": "H1-E", "status": "accepted-exception", "independent": false, "exception_id": "H1-I-selector-receipt-authority"}
+  ]
+}
