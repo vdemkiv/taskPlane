@@ -27,11 +27,13 @@ import hmac
 import json
 import os
 import re
+import signal
 import shlex
 import shutil
 import subprocess
 import tempfile
 import sys
+import time
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
@@ -605,6 +607,17 @@ def _bounded_review_detail(value: object) -> dict:
         if isinstance(count, int) and not isinstance(count, bool) and \
                 0 <= count <= 1_000_000:
             projected[key] = count
+    reason_code = value.get("reason_code")
+    if reason_code in {
+            "sandbox_process_timeout", "sandbox_preparation_timeout"}:
+        projected["reason_code"] = reason_code
+    phase = value.get("phase")
+    if isinstance(phase, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,40}", phase):
+        projected["phase"] = phase
+    timeout_seconds = value.get("timeout_seconds")
+    if isinstance(timeout_seconds, (int, float)) and not isinstance(
+            timeout_seconds, bool) and 0 < timeout_seconds <= 600:
+        projected["timeout_seconds"] = timeout_seconds
     return projected
 
 
@@ -1131,6 +1144,110 @@ def _validated_validation_sandbox(value: object, run_id: object) -> dict:
         "sandbox_id", "disposable", "push_disabled")}
 
 
+_VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS = 120.0
+_VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS = 600.0
+
+
+class _ValidationSandboxTimeout(RuntimeError):
+    """Typed internal timeout retained until it is persisted for the operator."""
+
+    def __init__(self, *, phase: str, reason_code: str,
+                 timeout_seconds: float):
+        self.phase = phase
+        self.reason_code = reason_code
+        self.timeout_seconds = timeout_seconds
+        super().__init__(f"{reason_code} during {phase}")
+
+
+def _terminate_validation_sandbox_process_tree(process) -> None:
+    """Terminate the preparation subprocess and all descendants it created."""
+    if process.poll() is not None:
+        return
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=1)
+            return
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            process.wait()
+        return
+    # Windows does not expose killpg.  Popen.kill is the strongest stdlib
+    # fallback for the new process group created below.
+    process.terminate()  # pragma: no cover - Windows host
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _run_validation_sandbox_git(
+        argv: list[str], *, cwd: str | None, deadline: float, phase: str,
+        input: bytes | None = None, text: bool = False
+) -> subprocess.CompletedProcess:
+    """Run one Git preparation step within both process and total deadlines."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise _ValidationSandboxTimeout(
+            phase=phase, reason_code="sandbox_preparation_timeout",
+            timeout_seconds=_VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS)
+    timeout = min(_VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS, remaining)
+    reason_code = (
+        "sandbox_process_timeout"
+        if remaining >= _VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS
+        else "sandbox_preparation_timeout")
+    launch = {
+        "cwd": cwd, "stdin": subprocess.PIPE if input is not None else None,
+        "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+        "text": text, "start_new_session": True,
+    }
+    if text:
+        launch.update({"encoding": "utf-8", "errors": "replace"})
+    process = subprocess.Popen(argv, **launch)
+    try:
+        stdout, stderr = process.communicate(input=input, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_validation_sandbox_process_tree(process)
+        raise _ValidationSandboxTimeout(
+            phase=phase, reason_code=reason_code,
+            timeout_seconds=timeout) from exc
+    except BaseException:
+        _terminate_validation_sandbox_process_tree(process)
+        raise
+    result = subprocess.CompletedProcess(
+        argv, process.returncode, stdout=stdout, stderr=stderr)
+    if result.returncode:
+        raise subprocess.CalledProcessError(
+            result.returncode, argv, output=stdout, stderr=stderr)
+    return result
+
+
+def _ensure_validation_sandbox_deadline(deadline: float, phase: str) -> None:
+    if time.monotonic() >= deadline:
+        raise _ValidationSandboxTimeout(
+            phase=phase, reason_code="sandbox_preparation_timeout",
+            timeout_seconds=_VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS)
+
+
+def _persist_validation_sandbox_timeout(
+        ws: str, run_id: str | None,
+        timeout: _ValidationSandboxTimeout) -> None:
+    record_review_execution(
+        ws, kind="dynamic_validation", status="failed", run_id=run_id,
+        detail={
+            "summary": "Validation sandbox preparation timed out",
+            "reason_code": timeout.reason_code, "phase": timeout.phase,
+            "timeout_seconds": timeout.timeout_seconds,
+        })
+
+
 def prepare_review_validation_sandbox(ws: str, *,
                                       run_id: str | None = None) -> dict:
     """Create a writable, independently cloned copy for validation repairs."""
@@ -1142,11 +1259,17 @@ def prepare_review_validation_sandbox(ws: str, *,
         raise ReviewKernelError(
             "validation sandbox requires selected or failed dynamic validation")
     source = os.path.realpath(ws)
+    deadline = time.monotonic() + \
+        _VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS
     try:
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=source, check=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8").stdout.strip()
+        head = _run_validation_sandbox_git(
+            ["git", "rev-parse", "HEAD"], cwd=source, deadline=deadline,
+            phase="resolve-head", text=True).stdout.strip()
+    except _ValidationSandboxTimeout as exc:
+        _persist_validation_sandbox_timeout(source, run_id, exc)
+        raise ReviewKernelError(
+            f"validation sandbox preparation timed out during {exc.phase}") \
+            from exc
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ReviewKernelError(
             "validation sandbox requires a Git review checkout") from exc
@@ -1171,29 +1294,30 @@ def prepare_review_validation_sandbox(ws: str, *,
         temporary = tempfile.mkdtemp(prefix=".prepare-", dir=root)
         candidate = os.path.join(temporary, "checkout")
         try:
-            subprocess.run(
+            _run_validation_sandbox_git(
                 ["git", "clone", "--no-hardlinks", "--no-local", source,
-                 candidate], check=True, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, encoding="utf-8")
-            subprocess.run(
+                 candidate], cwd=None, deadline=deadline, phase="clone",
+                text=True)
+            _run_validation_sandbox_git(
                 ["git", "checkout", "--detach", head], cwd=candidate,
-                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8")
-            patch = subprocess.run(
+                deadline=deadline, phase="checkout", text=True)
+            patch = _run_validation_sandbox_git(
                 ["git", "diff", "--binary", "HEAD", "--"], cwd=source,
-                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                deadline=deadline, phase="diff")
             if patch.stdout:
-                subprocess.run(
+                _run_validation_sandbox_git(
                     ["git", "apply", "--whitespace=nowarn", "-"],
-                    cwd=candidate, check=True, input=patch.stdout,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            untracked = subprocess.run(
+                    cwd=candidate, deadline=deadline, phase="apply-diff",
+                    input=patch.stdout)
+            untracked = _run_validation_sandbox_git(
                 ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-                cwd=source, check=True, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE).stdout.split(b"\0")
+                cwd=source, deadline=deadline,
+                phase="list-untracked").stdout.split(b"\0")
             excluded = (".em-review/", ".eval/", ".taskplane/", ".tp-work/",
                         "node_modules/", "client/dist/", "server/dist/")
             for raw in untracked:
+                _ensure_validation_sandbox_deadline(
+                    deadline, "copy-untracked")
                 if not raw:
                     continue
                 relative = raw.decode("utf-8", errors="strict").replace("\\", "/")
@@ -1210,11 +1334,12 @@ def prepare_review_validation_sandbox(ws: str, *,
                 if os.path.isfile(source_path):
                     os.makedirs(os.path.dirname(destination), exist_ok=True)
                     shutil.copy2(source_path, destination)
-            subprocess.run(
+                    _ensure_validation_sandbox_deadline(
+                        deadline, "copy-untracked")
+            _run_validation_sandbox_git(
                 ["git", "remote", "set-url", "--push", "origin",
                  "taskplane-disabled://validation-sandbox"], cwd=candidate,
-                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8")
+                deadline=deadline, phase="disable-push", text=True)
             hooks = os.path.join(candidate, ".taskplane-validation-hooks")
             os.makedirs(hooks, exist_ok=True)
             pre_push = os.path.join(hooks, "pre-push")
@@ -1222,12 +1347,17 @@ def prepare_review_validation_sandbox(ws: str, *,
                 stream.write("#!/bin/sh\necho 'taskplane: pushing from a "
                              "validation sandbox is disabled' >&2\nexit 1\n")
             os.chmod(pre_push, 0o700)
-            subprocess.run(
+            _run_validation_sandbox_git(
                 ["git", "config", "core.hooksPath",
                  ".taskplane-validation-hooks"], cwd=candidate,
-                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8")
+                deadline=deadline, phase="configure-hooks", text=True)
+            _ensure_validation_sandbox_deadline(deadline, "publish-checkout")
             os.replace(candidate, checkout)
+        except _ValidationSandboxTimeout as exc:
+            _persist_validation_sandbox_timeout(source, run_id, exc)
+            raise ReviewKernelError(
+                f"validation sandbox preparation timed out during {exc.phase}") \
+                from exc
         except (OSError, subprocess.CalledProcessError) as exc:
             raise ReviewKernelError(
                 "could not create isolated validation sandbox") from exc
