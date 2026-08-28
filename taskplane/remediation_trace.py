@@ -28,10 +28,16 @@ EVALUATE_RECEIPT_SCHEMA = "taskplane.remediation-evaluate-receipt/v1"
 IDENTITY_SCHEMA = "taskplane.remediation-agent-identity/v1"
 GIT_EVIDENCE_SCHEMA = "taskplane.trusted-git-evidence/v1"
 SELECTOR_EXECUTION_SCHEMA = "taskplane.selector-execution/v1"
+PRICED_DEBT_SCHEMA = "taskplane.remediation-priced-debt/v1"
+PRICED_DEBT_TRACE_SCHEMA = "taskplane.remediation-priced-debt-trace/v1"
 _SHA = re.compile(r"[0-9a-f]{40,64}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}\Z")
+_DEBT_ID = re.compile(r"D-[0-9]{4,}\Z")
 _MAX_RECEIPT_BYTES = 1024 * 1024
+_DEBT_COST_COMPONENTS = (
+    "backfill", "migration", "compatibility", "operator_reteaching", "other",
+)
 
 
 class RemediationTraceError(ValueError):
@@ -46,6 +52,213 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _debt_text(value: object, label: str, *, limit: int = 2048) -> str:
+    if (not isinstance(value, str) or value != value.strip() or not value or
+            len(value) > limit or any(ord(character) < 32 for character in value)):
+        raise RemediationTraceError(f"priced debt {label} is invalid")
+    return value
+
+
+def _priced_cost(value: object, label: str) -> dict:
+    """Validate one comparable, explicit debt repayment estimate."""
+    if not isinstance(value, Mapping):
+        raise RemediationTraceError(f"priced debt {label} cost is missing")
+    fields = {"unit", *_DEBT_COST_COMPONENTS, "total", "basis"}
+    if set(value) != fields:
+        raise RemediationTraceError(f"priced debt {label} cost fields are invalid")
+    components: dict[str, int] = {}
+    for field in _DEBT_COST_COMPONENTS:
+        amount = value.get(field)
+        if (isinstance(amount, bool) or not isinstance(amount, int) or
+                amount < 0 or amount > 1_000_000):
+            raise RemediationTraceError(
+                f"priced debt {label} {field} cost is invalid")
+        components[field] = amount
+    total = value.get("total")
+    if (isinstance(total, bool) or not isinstance(total, int) or
+            total <= 0 or total != sum(components.values())):
+        raise RemediationTraceError(
+            f"priced debt {label} total does not match its components")
+    return {
+        "unit": _debt_text(value.get("unit"), f"{label} cost unit", limit=64),
+        **components,
+        "total": total,
+        "basis": _debt_text(value.get("basis"), f"{label} cost basis"),
+    }
+
+
+def priced_debt_record(*, debt_id: str, deferred_item: str, owner: str,
+                       reentry_trigger: str, follow_up: str,
+                       now_cost: Mapping, later_cost: Mapping,
+                       references: Sequence[str]) -> dict:
+    """Mint one content-addressed debt record with comparable repayment cost.
+
+    The estimate unit is deliberately caller-owned: relative work units,
+    person-days, or another reviewed unit are valid, but the now/later records
+    must use the same unit and itemized cost shape.
+    """
+    if not isinstance(debt_id, str) or not _DEBT_ID.fullmatch(debt_id):
+        raise RemediationTraceError("priced debt id is invalid")
+    item = _debt_text(deferred_item, "deferred item", limit=256)
+    if not _IDENTIFIER.fullmatch(item):
+        raise RemediationTraceError("priced debt deferred item id is invalid")
+    owner_value = _debt_text(owner, "owner", limit=256)
+    trigger = _debt_text(reentry_trigger, "re-entry trigger")
+    follow_up_value = _debt_text(follow_up, "follow-up")
+    if trigger.casefold() in {"none", "n/a", "na", "tbd", "unknown"}:
+        raise RemediationTraceError("priced debt re-entry trigger is not actionable")
+    if (not isinstance(references, Sequence) or
+            isinstance(references, (str, bytes))):
+        raise RemediationTraceError("priced debt references are invalid")
+    reference_values = [
+        _debt_text(reference, "reference", limit=512) for reference in references
+    ]
+    if not reference_values or len(reference_values) != len(set(reference_values)):
+        raise RemediationTraceError(
+            "priced debt references must be non-empty and unique")
+    current = _priced_cost(now_cost, "now")
+    deferred = _priced_cost(later_cost, "later")
+    if current["unit"] != deferred["unit"]:
+        raise RemediationTraceError(
+            "priced debt now and later estimates use different units")
+    material = {
+        "schema": PRICED_DEBT_SCHEMA,
+        "debt_id": debt_id,
+        "status": "open",
+        "deferred_item": item,
+        "owner": owner_value,
+        "reentry_trigger": trigger,
+        "follow_up": follow_up_value,
+        "now_cost": current,
+        "later_cost": deferred,
+        "references": reference_values,
+    }
+    return {**material, "content_fingerprint": _digest(material)}
+
+
+def _validate_priced_debt_record(value: object) -> dict:
+    if not isinstance(value, Mapping):
+        raise RemediationTraceError("priced debt record is missing")
+    fields = {
+        "schema", "debt_id", "status", "deferred_item", "owner",
+        "reentry_trigger", "follow_up", "now_cost", "later_cost",
+        "references", "content_fingerprint",
+    }
+    if set(value) != fields or value.get("schema") != PRICED_DEBT_SCHEMA or \
+            value.get("status") != "open":
+        raise RemediationTraceError("priced debt record fields are invalid")
+    rebuilt = priced_debt_record(
+        debt_id=str(value.get("debt_id") or ""),
+        deferred_item=str(value.get("deferred_item") or ""),
+        owner=str(value.get("owner") or ""),
+        reentry_trigger=str(value.get("reentry_trigger") or ""),
+        follow_up=str(value.get("follow_up") or ""),
+        now_cost=value.get("now_cost") if isinstance(
+            value.get("now_cost"), Mapping) else {},
+        later_cost=value.get("later_cost") if isinstance(
+            value.get("later_cost"), Mapping) else {},
+        references=value.get("references") if isinstance(
+            value.get("references"), list) else (),
+    )
+    if dict(value) != rebuilt:
+        raise RemediationTraceError("priced debt record was tampered")
+    return rebuilt
+
+
+def _deferred_reference(value: object) -> dict:
+    if not isinstance(value, Mapping) or set(value) != {
+            "item_id", "source_reference", "debt_id", "record_fingerprint"}:
+        raise RemediationTraceError("deferred-work reference fields are invalid")
+    item_id = _debt_text(value.get("item_id"), "deferred item", limit=256)
+    if not _IDENTIFIER.fullmatch(item_id):
+        raise RemediationTraceError("deferred-work item id is invalid")
+    debt_id = str(value.get("debt_id") or "")
+    if not _DEBT_ID.fullmatch(debt_id):
+        raise RemediationTraceError("deferred-work debt link is invalid")
+    record_fingerprint = str(value.get("record_fingerprint") or "")
+    if not _DIGEST.fullmatch(record_fingerprint):
+        raise RemediationTraceError(
+            "deferred-work priced record fingerprint is invalid")
+    return {
+        "item_id": item_id,
+        "source_reference": _debt_text(
+            value.get("source_reference"), "source reference", limit=512),
+        "debt_id": debt_id,
+        "record_fingerprint": record_fingerprint,
+    }
+
+
+def _deferred_inventory(values: Sequence[Mapping]) -> list[dict]:
+    if (not isinstance(values, Sequence) or isinstance(values, (str, bytes)) or
+            not values):
+        raise RemediationTraceError("deferred-work inventory is missing")
+    rows = sorted((_deferred_reference(value) for value in values),
+                  key=lambda row: row["item_id"])
+    if (len({row["item_id"] for row in rows}) != len(rows) or
+            len({row["debt_id"] for row in rows}) != len(rows)):
+        raise RemediationTraceError(
+            "deferred-work inventory reuses an item or debt id")
+    return rows
+
+
+def build_priced_debt_trace(*, deferred_references: Sequence[Mapping],
+                            records: Sequence[Mapping]) -> dict:
+    """Join every authoritative deferred item to one priced debt record."""
+    inventory = _deferred_inventory(deferred_references)
+    if (not isinstance(records, Sequence) or isinstance(records, (str, bytes))):
+        raise RemediationTraceError("priced debt records must be a sequence")
+    validated = [_validate_priced_debt_record(value) for value in records]
+    by_item = {record["deferred_item"]: record for record in validated}
+    if len(by_item) != len(validated):
+        raise RemediationTraceError("priced debt records replay a deferred item")
+    if set(by_item) != {row["item_id"] for row in inventory}:
+        raise RemediationTraceError(
+            "every deferred item needs exactly one priced debt record")
+    ordered = []
+    for row in inventory:
+        record = by_item[row["item_id"]]
+        if (record["debt_id"] != row["debt_id"] or
+                row["source_reference"] not in record["references"] or
+                record["content_fingerprint"] != row["record_fingerprint"]):
+            raise RemediationTraceError(
+                "priced debt record does not match its deferred-work reference")
+        ordered.append(record)
+    material = {
+        "schema": PRICED_DEBT_TRACE_SCHEMA,
+        "deferred_references": inventory,
+        "required_debt_ids": [row["debt_id"] for row in inventory],
+        "record_count": len(ordered),
+        "records_fingerprint": _digest(ordered),
+        "records": ordered,
+    }
+    return {**material, "trace_fingerprint": _digest(material)}
+
+
+def verify_priced_debt_trace(
+        trace: Mapping, *, expected_deferred_references: Sequence[Mapping]
+        ) -> dict:
+    """Rebuild a priced-debt trace against caller-held Product references."""
+    if not isinstance(trace, Mapping) or set(trace) != {
+            "schema", "deferred_references", "required_debt_ids",
+            "record_count", "records_fingerprint", "records",
+            "trace_fingerprint"} or trace.get("schema") != PRICED_DEBT_TRACE_SCHEMA:
+        raise RemediationTraceError("priced debt trace fields are invalid")
+    expected = _deferred_inventory(expected_deferred_references)
+    supplied = _deferred_inventory(trace.get("deferred_references")) \
+        if isinstance(trace.get("deferred_references"), list) else []
+    if supplied != expected:
+        raise RemediationTraceError(
+            "priced debt trace differs from authoritative deferred work")
+    records = trace.get("records")
+    if not isinstance(records, list):
+        raise RemediationTraceError("priced debt trace records are missing")
+    rebuilt = build_priced_debt_trace(
+        deferred_references=expected, records=records)
+    if dict(trace) != rebuilt:
+        raise RemediationTraceError("priced debt trace was tampered or replayed")
+    return rebuilt
 
 
 def _file_sha256(path: Path) -> str:
