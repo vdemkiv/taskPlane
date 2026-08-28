@@ -83,28 +83,69 @@ class StateError(RuntimeError):
 
 def atomic_write_json(path: str, data, *, indent: int = 1,
                       sort_keys: bool = False) -> None:
-    """Write JSON durably: temp file in the same directory + os.replace.
+    """Write JSON durably: fsynced temp + replace + parent-directory fsync.
 
     A crash mid-write leaves the previous version intact instead of a torn
     file. Same-directory temp keeps the replace atomic across filesystems."""
     d = os.path.dirname(path) or "."
     os.makedirs(d, exist_ok=True)
-    tmp = os.path.join(d, f".{os.path.basename(path)}.tmp.{os.getpid()}")
+    tmp = os.path.join(
+        d, f".{os.path.basename(path)}.tmp.{os.getpid()}."
+        f"{secrets.token_hex(8)}")
     try:
         # newline="" disables the host's newline translation. Windows
         # text mode turns every "\n" json.dump writes into "\r\n", so the
         # SAME state written on two hosts produced different BYTES — and
         # these artifacts are fingerprinted and byte-compared (the audit
         # differential caught it: b'{\r\n  "reviews": 6\r\n}').
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
+        with open(tmp, "x", encoding="utf-8", newline="") as f:
             json.dump(data, f, indent=indent, sort_keys=sort_keys)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
+        _fsync_directory(d)
     finally:
         try:
             if os.path.exists(tmp):
                 os.unlink(tmp)
         except OSError:
             pass
+
+
+def _fsync_directory(path: str) -> None:
+    """Persist a directory entry update before its caller acknowledges it."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        if os.name != "nt":
+            raise
+        # Windows refuses opening directories through os.open. Use the
+        # documented backup-semantics handle and flush it instead of silently
+        # weakening durability on a supported host.
+        import ctypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.restype = ctypes.c_void_p
+        kernel.CreateFileW.argtypes = (
+            ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
+        kernel.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
+        kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+        handle = kernel.CreateFileW(
+            str(path), 0x80000000, 0x00000007, None, 3, 0x02000000, None)
+        invalid = ctypes.c_void_p(-1).value
+        if handle == invalid:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not kernel.FlushFileBuffers(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel.CloseHandle(handle)
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 _LOAD_RAISE = object()
@@ -348,7 +389,8 @@ _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 # as python -c). TRADEOFF (named, per the tradeoffs lens): this screen is
 # defense-in-depth, NOT an OS boundary — console-script entry points
 # (pytest, make, tox, npm) run the same Turing-complete code and remain
-# allowed-opaque by design; a hard guarantee needs a read-only mount/container.
+# blocked by the read-only command allowlist below; a hard guarantee still
+# needs a read-only mount/container.
 _INTERPRETERS = {"python", "python2", "python3", "perl", "ruby", "node",
                  "php", "lua", "Rscript", "deno", "bun",
                  "awk", "gawk", "mawk", "nawk", "ed", "ex"}
@@ -364,6 +406,21 @@ _TP_CLI_PATH = os.path.realpath(
 # from argv — like `find -delete`. Extraction modes are destructive-opaque
 # (blocked under ANY governing contract); create/list/test modes are not.
 _ARCHIVE_EXTRACTORS = {"tar", "unzip"}
+
+# Direct programs whose argv has read-only semantics. Read-only contracts
+# fail closed for everything outside this intentionally small set (plus the
+# structured cases handled by _analyze: git reads, find reads, non-extracting
+# archives, screened writers, and Taskplane's own CLI). In particular, build
+# systems, test runners, package managers, and repository-defined executables
+# can run arbitrary project code and therefore never qualify by name alone.
+_READONLY_SAFE_PROGRAMS = frozenset({
+    "[", "basename", "cat", "cmp", "comm", "cut", "date", "diff",
+    "dirname", "du", "echo", "egrep", "expr", "false", "fgrep", "file",
+    "grep", "head", "jq", "ls", "md5", "md5sum", "od", "printf", "pwd",
+    "readlink", "realpath", "rg", "sha256sum", "shasum", "stat", "strings",
+    "tail", "test", "tr", "true", "uname", "uniq", "wc", "whereis",
+    "which", "xxd", "zipinfo", "tp",
+})
 
 
 def _shsplit(text: str) -> list:
@@ -1163,6 +1220,9 @@ def _analyze(command: str, _depth: int = 0):
       kind='interpreter' — `python -c`/`perl -e`/…: a Turing-complete body
         that can write anywhere; blocked under read-only contracts, allowed
         (documented gap) under build contracts.
+      kind='launcher' — an executable outside the narrow read-only argv
+        allowlist; blocked under read-only contracts because it may execute
+        repository-defined code, allowed under build contracts.
     """
     targets: list = []
     opaque = None
@@ -1257,6 +1317,11 @@ def _analyze(command: str, _depth: int = 0):
                     "destructive",
                     f"`xargs {subprog} …` runs a mutator on stdin-supplied "
                     "paths that can't be screened")
+            else:
+                opaque = opaque or (
+                    "launcher",
+                    "`xargs` launches stdin-selected commands whose file "
+                    "writes can't be screened from argv")
             continue
         fn = _WRITE_PROGRAMS.get(prog)
         if fn:
@@ -1348,6 +1413,11 @@ def _analyze(command: str, _depth: int = 0):
                     "destructive",
                     f"`git {sub}` rewrites tracked files in the working tree")
             continue
+        if prog not in _READONLY_SAFE_PROGRAMS:
+            opaque = opaque or (
+                "launcher",
+                f"`{prog}` may launch repository-defined code whose file "
+                "writes can't be screened from argv")
 
     return [t for t in targets if t], opaque
 
@@ -5730,9 +5800,14 @@ def kb_root(workspace: str) -> str:
     Reads and writes share this root, so a reader never sees an empty store
     while the real data still sits in the repo."""
     ext = os.path.join(store_root(workspace), "knowledge")
-    if os.path.isdir(ext):
-        return ext
     legacy = os.path.join(workspace, "knowledge")
+    # If both roots exist, only a tree published by the verified migration
+    # protocol may supersede the complete legacy source. An unmarked external
+    # directory can be the residue of shutil.move's cross-filesystem copy
+    # fallback and must not hide source-only knowledge.
+    if os.path.isdir(ext) and (
+            not os.path.isdir(legacy) or _kb_migration_complete(ext)):
+        return ext
     if os.path.isdir(legacy):
         return legacy
     return ext
@@ -5762,18 +5837,136 @@ def write_store_meta(workspace: str) -> dict:
     return meta
 
 
+_KB_MIGRATION_MARKER = ".taskplane-migration.json"
+
+
+def _kb_tree_manifest(root: str) -> list[dict]:
+    """Content manifest for a KB tree, excluding our publication marker."""
+    manifest: list[dict] = []
+    for current, dirs, files in os.walk(root, topdown=True,
+                                        followlinks=False):
+        dirs.sort()
+        files.sort()
+        rel_current = os.path.relpath(current, root)
+        prefix = "" if rel_current == "." else rel_current.replace("\\", "/")
+        descend = []
+        for name in dirs:
+            full = os.path.join(current, name)
+            rel = "/".join(filter(None, (prefix, name)))
+            if os.path.islink(full):
+                manifest.append({"path": rel, "type": "link",
+                                 "target": os.readlink(full)})
+            else:
+                manifest.append({"path": rel + "/", "type": "dir"})
+                descend.append(name)
+        dirs[:] = descend
+        for name in files:
+            rel = "/".join(filter(None, (prefix, name)))
+            if rel == _KB_MIGRATION_MARKER:
+                continue
+            full = os.path.join(current, name)
+            if os.path.islink(full):
+                manifest.append({"path": rel, "type": "link",
+                                 "target": os.readlink(full)})
+                continue
+            if not os.path.isfile(full):
+                raise StateError(full, "unsupported knowledge entry",
+                                 "replace it with a regular file or symlink")
+            digest = hashlib.sha256()
+            with open(full, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            manifest.append({"path": rel, "type": "file",
+                             "size": os.path.getsize(full),
+                             "sha256": digest.hexdigest()})
+    return manifest
+
+
+def _kb_manifest_digest(manifest: list[dict]) -> str:
+    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _kb_migration_complete(root: str) -> bool:
+    marker = os.path.join(root, _KB_MIGRATION_MARKER)
+    try:
+        record = load_json(marker, what="knowledge migration marker")
+        return record.get("schema") == 1 and record.get("manifest_sha256") == \
+            _kb_manifest_digest(_kb_tree_manifest(root))
+    except (StateError, OSError, AttributeError):
+        return False
+
+
+def _fsync_kb_tree(root: str) -> None:
+    """Flush copied KB bytes and directory entries before publication."""
+    directories = []
+    for current, dirs, files in os.walk(root, topdown=True,
+                                        followlinks=False):
+        directories.append(current)
+        dirs[:] = [name for name in dirs
+                   if not os.path.islink(os.path.join(current, name))]
+        for name in files:
+            path = os.path.join(current, name)
+            if os.path.islink(path) or not os.path.isfile(path):
+                continue
+            with open(path, "rb") as handle:
+                os.fsync(handle.fileno())
+    for directory in reversed(directories):
+        _fsync_directory(directory)
+
+
 def migrate_store(workspace: str) -> dict:
-    """Relocate a legacy in-repo knowledge/ into the external store (data
-    move only — no git ops; the CLI does the untrack + gitignore). Idempotent:
-    a no-op once the external store exists. Returns what happened."""
+    """Publish a verified legacy KB tree, then remove its source.
+
+    Copying occurs in a unique sibling staging directory. The destination is
+    authoritative only after byte-manifest verification, fsync, an atomic
+    rename, and a parent-directory fsync. Interrupted or old partial final
+    directories are quarantined instead of hiding the legacy source.
+    """
     import shutil
     legacy = os.path.join(workspace, "knowledge")
     ext = os.path.join(store_root(workspace), "knowledge")
     moved = False
-    if os.path.isdir(legacy) and not os.path.isdir(ext):
-        os.makedirs(os.path.dirname(ext), exist_ok=True)
-        shutil.move(legacy, ext)
-        moved = True
+    parent = os.path.dirname(ext)
+    os.makedirs(parent, exist_ok=True)
+    lock_path = os.path.join(parent, ".knowledge-migration")
+    with file_lock(lock_path):
+        if os.path.isdir(legacy):
+            if os.path.isdir(ext) and _kb_migration_complete(ext):
+                shutil.rmtree(legacy)
+                moved = True
+            else:
+                if os.path.isdir(ext):
+                    quarantine = os.path.join(
+                        parent, f"knowledge.partial.{os.getpid()}."
+                        f"{secrets.token_hex(8)}")
+                    os.rename(ext, quarantine)
+                    _fsync_directory(parent)
+                stage = os.path.join(
+                    parent, f".knowledge.migrate.{os.getpid()}."
+                    f"{secrets.token_hex(8)}")
+                try:
+                    before = _kb_tree_manifest(legacy)
+                    shutil.copytree(legacy, stage, symlinks=True)
+                    after = _kb_tree_manifest(legacy)
+                    copied = _kb_tree_manifest(stage)
+                    if before != after or after != copied:
+                        raise StateError(
+                            legacy, "knowledge changed during migration",
+                            "retry when no writer is changing the knowledge tree")
+                    _fsync_kb_tree(stage)
+                    atomic_write_json(
+                        os.path.join(stage, _KB_MIGRATION_MARKER),
+                        {"schema": 1,
+                         "manifest_sha256": _kb_manifest_digest(copied)},
+                        sort_keys=True)
+                    os.rename(stage, ext)
+                    _fsync_directory(parent)
+                    shutil.rmtree(legacy)
+                    moved = True
+                finally:
+                    if os.path.isdir(stage):
+                        shutil.rmtree(stage, ignore_errors=True)
     write_store_meta(workspace)
     return {"moved": moved, "store": ext, "legacy": legacy}
 
