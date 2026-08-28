@@ -5251,9 +5251,15 @@ def _dashboard_recovery_action(actions, state: str) -> str | None:
     if state != "failure":
         return None
     available = [str(action) for action in actions if str(action).strip()]
-    preferred = ("retry", "resume", "request changes", "send back", "open")
-    return next((action for word in preferred for action in available
-                 if word in action.casefold()), available[0] if available else None)
+    recovery_prefixes = ("retry", "resume", "request changes", "open recovery")
+
+    def is_recovery(action: str) -> bool:
+        normalized = " ".join(
+            action.casefold().replace("_", " ").replace("-", " ").split())
+        return any(normalized == prefix or normalized.startswith(prefix + " ")
+                   for prefix in recovery_prefixes)
+
+    return next((action for action in available if is_recovery(action)), None)
 
 
 def _dashboard_status_text(catalog: _text.MessageCatalog,

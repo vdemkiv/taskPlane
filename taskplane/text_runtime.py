@@ -152,17 +152,18 @@ def message(key: str, *, locale: str | None = None,
     return load_catalog(locale, catalog_dir=catalog_dir).format(key, **values)
 
 
-def _number(value: object) -> tuple[Decimal, int, int]:
-    """Return CLDR's absolute n, integer i, and visible-fraction digit v."""
+def _number(value: object) -> tuple[Decimal, int, int, int]:
+    """Return CLDR's absolute ``n``, ``i``, ``v``, and ``f`` operands."""
 
     try:
         text = str(value).strip()
         number = abs(Decimal(text))
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"plural value must be numeric, got {value!r}") from exc
-    plain = text.lstrip("+-")
+    plain = format(number, "f")
     visible = len(plain.partition(".")[2]) if "." in plain else 0
-    return number, int(number), visible
+    fraction = int(plain.partition(".")[2] or "0")
+    return number, int(number), visible, fraction
 
 
 def plural_category(locale: str | None, value: object) -> str:
@@ -174,7 +175,7 @@ def plural_category(locale: str | None, value: object) -> str:
     """
 
     language = normalize_locale(locale).split("-", 1)[0]
-    n, i, v = _number(value)
+    n, i, v, f = _number(value)
     n10, n100 = i % 10, i % 100
     if language == "ar":
         if n == 0:
@@ -228,13 +229,13 @@ def plural_category(locale: str | None, value: object) -> str:
         if v != 0 or n == 0 or 1 <= n100 <= 19:
             return "few"
         return "other"
-    if language == "lt" and v == 0:
+    if language == "lt":
+        if f != 0:
+            return "many"
         if n10 == 1 and not 11 <= n100 <= 19:
             return "one"
         if 2 <= n10 <= 9 and not 11 <= n100 <= 19:
             return "few"
-        if v:
-            return "many"
         return "other"
     if language == "lv" and v == 0:
         if n10 == 0 or 11 <= n100 <= 19:
@@ -342,12 +343,38 @@ def _is_regional_indicator(character: str) -> bool:
     return 0x1F1E6 <= ord(character) <= 0x1F1FF
 
 
+def _hangul_syllable_type(character: str) -> str | None:
+    """Return the UAX #29 Hangul class used by grapheme rules GB6–GB8."""
+
+    codepoint = ord(character)
+    if 0x1100 <= codepoint <= 0x115F or 0xA960 <= codepoint <= 0xA97C:
+        return "L"
+    if 0x1160 <= codepoint <= 0x11A7 or 0xD7B0 <= codepoint <= 0xD7C6:
+        return "V"
+    if 0x11A8 <= codepoint <= 0x11FF or 0xD7CB <= codepoint <= 0xD7FB:
+        return "T"
+    if 0xAC00 <= codepoint <= 0xD7A3:
+        return "LV" if (codepoint - 0xAC00) % 28 == 0 else "LVT"
+    return None
+
+
+def _hangul_joins(previous: str, following: str) -> bool:
+    left = _hangul_syllable_type(previous)
+    right = _hangul_syllable_type(following)
+    return (
+        (left == "L" and right in {"L", "V", "LV", "LVT"})
+        or (left in {"LV", "V"} and right in {"V", "T"})
+        or (left in {"LVT", "T"} and right == "T")
+    )
+
+
 def grapheme_clusters(text: object) -> tuple[str, ...]:
     """Segment user-visible text without splitting common extended clusters.
 
     The stdlib has no UAX #29 iterator.  This bounded implementation preserves
-    combining sequences, emoji modifiers and ZWJ families, flag pairs, and
-    Indic virama conjuncts—the destructive cases found in the dashboard.
+    combining sequences, emoji modifiers and ZWJ families, flag pairs,
+    Hangul L/V/T composition, and Indic virama conjuncts—the destructive
+    cases found in the dashboard.
     """
 
     source = str(text)
@@ -369,6 +396,7 @@ def grapheme_clusters(text: object) -> tuple[str, ...]:
             or character in {"\u200c", "\u200d"}
             or "VIRAMA" in previous_name
             or (previous == "\r" and character == "\n")
+            or _hangul_joins(previous, character)
             or (_is_regional_indicator(character)
                 and regional_count % 2 == 1)
         )

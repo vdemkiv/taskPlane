@@ -103,6 +103,35 @@ def test_m05_component_visual_state_matches_semantic_state(monkeypatch):
             _projection(statuses=statuses)))
 
 
+def test_m05_diagnostic_actions_are_not_mislabelled_as_recovery(monkeypatch):
+    failed = {dashboard.HOST_DASHBOARD_COMPONENTS[0]: "failed"}
+
+    def verify_no_false_recovery(markup):
+        assert 'data-state="failure" role="alert"' in markup
+        assert "Recovery action:" not in markup
+        assert 'class="tp-recovery"' not in markup
+
+    projection = _projection(
+        statuses=failed, actions=("Inspect diagnostics", "Export evidence"))
+    verify_no_false_recovery(
+        dashboard.render_native_dashboard_surface(projection))
+    assert dashboard._dashboard_recovery_action(
+        ("Inspect", "request-changes with evidence"), "failure") \
+        == "request-changes with evidence"
+    assert dashboard._dashboard_recovery_action(
+        ("Open full details", "Open recovery controls"), "failure") \
+        == "Open recovery controls"
+
+    # Mutation proof: the former arbitrary-first-action fallback must make
+    # the negative assertion fail, rather than silently blessing Inspect.
+    monkeypatch.setattr(
+        dashboard, "_dashboard_recovery_action",
+        lambda actions, state: str(actions[0]) if state == "failure" else None)
+    with pytest.raises(AssertionError):
+        verify_no_false_recovery(
+            dashboard.render_native_dashboard_surface(projection))
+
+
 def test_m08_dashboard_uses_locale_catalog_with_deterministic_fallback(tmp_path):
     catalog = text_runtime.load_catalog("ar-EG")
     assert catalog.requested_locale == "ar-EG"
@@ -139,6 +168,8 @@ def test_m09_plural_rules_support_locale_categories_beyond_one_other():
                100: "other"},
         "pl": {1: "one", 2: "few", 5: "many", 1.5: "other"},
         "ru": {1: "one", 3: "few", 11: "many", 1.5: "other"},
+        "lt": {1: "one", 2: "few", 11: "other", "1.0": "one",
+               1.5: "many", 2.75: "many"},
         "cy": {0: "zero", 1: "one", 2: "two", 3: "few", 6: "many",
                4: "other"},
     }
@@ -151,9 +182,18 @@ def test_m09_plural_rules_support_locale_categories_beyond_one_other():
 
 def test_l03_visible_truncation_is_grapheme_safe_and_accessible_text_is_full(
         tmp_path, monkeypatch):
+    jamo_one = "각"
+    jamo_two = "나"
     clusters = text_runtime.grapheme_clusters(
-        "e\u0301👨‍👩‍👧‍👦क्ष🇺🇦")
-    assert clusters == ("e\u0301", "👨‍👩‍👧‍👦", "क्ष", "🇺🇦")
+        "e\u0301👨‍👩‍👧‍👦क्ष🇺🇦" + jamo_one + jamo_two)
+    assert clusters == (
+        "e\u0301", "👨‍👩‍👧‍👦", "क्ष", "🇺🇦", jamo_one, jamo_two)
+    # GB6–GB8 also compose prebuilt LV/LVT syllables with trailing Jamo.
+    assert text_runtime.grapheme_clusters("각나") == ("각", "나")
+    hangul_bounded = text_runtime.truncate_graphemes(
+        "x" * 259 + jamo_one + "tail", 260)
+    assert hangul_bounded.visible.endswith(jamo_one + "…")
+    assert hangul_bounded.full.endswith(jamo_one + "tail")
 
     family = "👨‍👩‍👧‍👦"
     full_scenario = "x" * 259 + family + " after"
