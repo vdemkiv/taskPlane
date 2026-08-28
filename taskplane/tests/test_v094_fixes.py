@@ -43,7 +43,7 @@ class TestScreenerBypassClosures(unittest.TestCase):
         # eval of an interpreter one-liner surfaces the opaque mutation
         opaque = tpl._analyze("eval 'python3 -c \"open(1)\"'")[1]
         self.assertIsNotNone(opaque)
-        self.assertEqual(opaque[0], "interpreter")
+        self.assertEqual(opaque[0], "launcher")
 
     def test_ansi_c_quoting_decoded(self):
         # \x2d = '-' → the shell runs `rm -rf x.py`

@@ -527,11 +527,13 @@ class TestScreenerBypassClosed(unittest.TestCase):
             allow, _ = tl.screen_tool(self.ro, "Bash", {"command": cmd}, None)
             self.assertFalse(allow, f"read-only leaked: {cmd}")
 
-    def test_readonly_still_allows_read_commands(self):
+    def test_readonly_blocks_even_apparently_benign_shell_reads(self):
         for cmd in ["find src -name '*.py'", "grep -r x src", "cat src/x.py",
                     "ls -la"]:
-            allow, _ = tl.screen_tool(self.ro, "Bash", {"command": cmd}, None)
-            self.assertTrue(allow, f"over-blocked read cmd: {cmd}")
+            allow, reason = tl.screen_tool(
+                self.ro, "Bash", {"command": cmd}, None)
+            self.assertFalse(allow, f"LOOSENED read-only shell: {cmd}")
+            self.assertIn("every shell command tool is blocked", reason)
 
     def test_scoped_blocks_wrapped_escape_and_destructive(self):
         for cmd in ["env rm -rf ../other", "find . -delete",

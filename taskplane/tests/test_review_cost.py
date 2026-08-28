@@ -549,13 +549,19 @@ class TokenCeilingThroughTheScreener(_WS):
         self.assertEqual(decision, "block")
         self.assertIn("TOKEN BUDGET exhausted", why)
 
-    def test_under_the_ceiling_proceeds(self):
+    def test_under_the_ceiling_still_obeys_read_only_shell_denial(self):
         tr = self._contract_with(900_000)
-        self.assertNotEqual(self._screen("grep -rn foo .", tr)[0], "block")
+        decision, why = self._screen("grep -rn foo .", tr)
+        self.assertEqual(decision, "block")
+        self.assertIn("every shell command tool is blocked", why)
+        self.assertNotIn("TOKEN BUDGET exhausted", why)
 
-    def test_with_no_transcript_the_ceiling_cannot_bind(self):
+    def test_no_transcript_cannot_lift_read_only_shell_denial(self):
         self._contract_with(1)
-        self.assertNotEqual(self._screen("grep -rn foo .")[0], "block")
+        decision, why = self._screen("grep -rn foo .")
+        self.assertEqual(decision, "block")
+        self.assertIn("every shell command tool is blocked", why)
+        self.assertNotIn("TOKEN BUDGET exhausted", why)
 
     def test_inspection_is_still_free_even_over_the_ceiling(self):
         """A run that cannot report why it stopped is worse than one that

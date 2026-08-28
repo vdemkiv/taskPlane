@@ -76,7 +76,7 @@ class TestD0001ShellGroupingHidesTheProgram(unittest.TestCase):
                          ["python3", "-c", "open(1)"])
         opaque = tpl._analyze("eval 'python3 -c \"open(1)\"'")[1]
         self.assertIsNotNone(opaque, "eval-body screening must still work")
-        self.assertEqual(opaque[0], "interpreter")
+        self.assertEqual(opaque[0], "launcher")
 
 
 class TestD0002UnscopedContractCannotGovernItself(unittest.TestCase):
@@ -205,10 +205,9 @@ class TestD0004ArgvParsingGaps(unittest.TestCase):
 
 
 class TestNoLooseningFromTheseFixes(unittest.TestCase):
-    """A deny screen is easy to make strict and useless. These are the
-    ordinary forms an agent needs, and they must all still pass."""
+    """Build commands stay usable; read-only roles use native read tools."""
 
-    ALLOWED = [
+    BUILD_ALLOWED = [
         (BUILD, "echo x > src/main.py"),
         (BUILD, "sed -i s/a/b/ src/main.py"),
         (BUILD, "python3 -m pytest -q"),
@@ -216,17 +215,25 @@ class TestNoLooseningFromTheseFixes(unittest.TestCase):
         (BUILD, "find src -name '*.py'"),
         (BUILD, "git status"),
         (BUILD, "git diff --stat"),
-        (RO, "echo hello"),
-        (RO, "ls -la"),
-        (RO, "cat src/main.py"),
-        (RO, "grep -rn pattern src"),
     ]
+    READ_ONLY_SHELL = (
+        "echo hello",
+        "ls -la",
+        "cat src/main.py",
+        "grep -rn pattern src",
+    )
 
-    def test_ordinary_commands_still_pass(self):
-        for contract, cmd in self.ALLOWED:
+    def test_ordinary_build_commands_still_pass(self):
+        for contract, cmd in self.BUILD_ALLOWED:
             with self.subTest(cmd=cmd):
                 self.assertTrue(_allowed(contract, cmd),
                                 f"OVER-TIGHTENED: {cmd!r} is now refused")
+
+    def test_read_only_shell_has_no_benign_command_exception(self):
+        for cmd in self.READ_ONLY_SHELL:
+            with self.subTest(cmd=cmd):
+                self.assertFalse(_allowed(RO, cmd),
+                                 f"LOOSENED: read-only shell allowed {cmd!r}")
 
 
 if __name__ == "__main__":
