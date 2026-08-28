@@ -226,10 +226,14 @@ class TestShareUX(_Ws):
         os.environ["TASKPLANE_HOME"] = tempfile.mkdtemp()  # fresh user
         try:
             m = tp.get_mode(self.ws)
-            self.assertEqual(m["store"], "repo")     # inheritance works
-            self.assertIn("team-visible", m.get("notice", ""))
-            tp.set_mode(self.ws, private=True)       # any own setting…
+            self.assertEqual((m["store"], m["private"], m["source"]),
+                             ("external", True,
+                              "shared-config-unconfirmed"))
+            self.assertIn("remains PRIVATE", m.get("notice", ""))
+            self.assertIn("tp share set shared", m.get("notice", ""))
+            tp.set_mode(self.ws, private=False)      # explicit opt-in…
             self.assertNotIn("notice", tp.get_mode(self.ws))  # …silences
+            self.assertEqual(tp.get_mode(self.ws)["store"], "repo")
         finally:
             if prev is None:
                 os.environ.pop("TASKPLANE_HOME", None)

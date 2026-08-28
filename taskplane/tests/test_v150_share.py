@@ -55,12 +55,14 @@ class TestModeResolution(_Ws):
     def test_plan_is_updatable_back_to_personal(self):
         tp.set_mode(self.ws, plan="enterprise")
         m = tp.set_mode(self.ws, plan="personal")
-        # NOTE: shared config still exists from the team era, so the store
-        # stays repo via shared-config unless the user goes private — the
-        # committed team store must not silently vanish for teammates.
-        self.assertEqual(m["source"], "shared-config")
-        m2 = tp.set_mode(self.ws, private=True)
-        self.assertEqual(m2["store"], "external")
+        # A local personal-plan choice is explicit private consent even when
+        # the repository still advertises a team store.
+        self.assertEqual(
+            (m["plan"], m["store"], m["private"], m["source"]),
+            ("personal", "external", True, "private-setting"))
+        shared = tp.set_mode(self.ws, private=False)
+        self.assertEqual((shared["store"], shared["source"]),
+                         ("repo", "shared-config"))
 
     def test_private_mode_overrides_team_plan(self):
         tp.set_mode(self.ws, plan="team")
@@ -88,7 +90,12 @@ class TestModeResolution(_Ws):
         os.environ["TASKPLANE_HOME"] = tempfile.mkdtemp()
         try:
             m = tp.get_mode(self.ws)
-            self.assertEqual((m["store"], m["source"]),
+            self.assertEqual((m["store"], m["private"], m["source"]),
+                             ("external", True,
+                              "shared-config-unconfirmed"))
+            self.assertIn("tp share set shared", m.get("notice", ""))
+            confirmed = tp.set_mode(self.ws, private=False)
+            self.assertEqual((confirmed["store"], confirmed["source"]),
                              ("repo", "shared-config"))
         finally:
             if prev is None:

@@ -660,8 +660,10 @@ class TestModeFailsTowardPrivate(_StoreIsolated):
                                "config.json"), "w", encoding="utf-8") as f:
             json.dump({"plan": "team", "store": "repo"}, f)
         m = tpl.get_mode(self._tmp)              # no personal setting
-        self.assertEqual(m["store"], "repo")
-        self.assertIn("team-visible", m.get("notice", ""))
+        self.assertEqual((m["store"], m["private"], m["source"]),
+                         ("external", True, "shared-config-unconfirmed"))
+        self.assertIn("remains PRIVATE", m.get("notice", ""))
+        self.assertIn("tp share set shared", m.get("notice", ""))
 
 
 # =====================================================================
