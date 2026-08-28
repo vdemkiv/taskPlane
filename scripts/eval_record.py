@@ -572,8 +572,14 @@ def breadth_of(row, known) -> "str | None":
         # not read a real governed run's trace at all.
         if isinstance(item, (list, tuple)):
             item = item[0] if item else None
-        elif not isinstance(item, str):
-            item = (item or {}).get("id")
+        elif isinstance(item, dict):
+            item = item.get("id")
+        if not isinstance(item, str) or not item.strip():
+            # A privacy-minimized lens identity is not evidence that the
+            # route was a strict catalog subset. Treat any unreadable entry
+            # as an instrument gap instead of synthesizing "routed" from an
+            # apparently incomplete set.
+            return None
         named.add(lens_name(item))
     if not known:
         return None
