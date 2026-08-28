@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 import threading
 from typing import Any
 
@@ -331,10 +332,12 @@ class OrchestratorIssuer:
 
     __slots__ = ("_secret", "fingerprint")
 
-    def __init__(self, token: object) -> None:
+    def __init__(self, token: object, secret: bytes | None = None) -> None:
         if token is not _TERMINAL_RECEIPT_TOKEN:
             raise TypeError("orchestrator issuers are created by TerminalCoordinator")
-        self._secret = os.urandom(32)
+        self._secret = secret if secret is not None else os.urandom(32)
+        if not isinstance(self._secret, bytes) or len(self._secret) != 32:
+            raise TypeError("orchestrator issuer secret is invalid")
         self.fingerprint = hashlib.sha256(self._secret).hexdigest()
 
     def __reduce__(self):
@@ -372,6 +375,7 @@ class TerminalCoordinator:
         *,
         exports_root: str | Path | None = None,
         orchestrator_issuer: OrchestratorIssuer | None = None,
+        _recover_authority: bool = False,
     ):
         self._root = Path(authority_root).resolve()
         self._exports_root = (
@@ -380,7 +384,23 @@ class TerminalCoordinator:
             else self._root.parent / "exports" / "terminal" / "r0013"
         )
         self._lock = threading.RLock()
-        self._issuer = self._bind_orchestrator_issuer(orchestrator_issuer)
+        self._issuer = self._bind_orchestrator_issuer(
+            orchestrator_issuer, recover_authority=_recover_authority
+        )
+
+    @classmethod
+    def recover(
+        cls,
+        authority_root: str | Path,
+        *,
+        exports_root: str | Path | None = None,
+    ) -> "TerminalCoordinator":
+        """Rebind the orchestrator from root-private durable custody."""
+        return cls(
+            authority_root,
+            exports_root=exports_root,
+            _recover_authority=True,
+        )
 
     @property
     def orchestrator_issuer(self) -> OrchestratorIssuer:
@@ -394,10 +414,17 @@ class TerminalCoordinator:
     def issuer_path(self) -> Path:
         return self._root / "issuer.json"
 
+    @property
+    def _issuer_key_path(self) -> Path:
+        return self._root / ".issuer.key"
+
     def _bind_orchestrator_issuer(
-        self, supplied: OrchestratorIssuer | None
+        self,
+        supplied: OrchestratorIssuer | None,
+        *,
+        recover_authority: bool,
     ) -> OrchestratorIssuer | None:
-        """Claim a new root once, or reopen only with its live issuer object."""
+        """Claim a new root or explicitly recover its root-private issuer."""
         self._root.mkdir(parents=True, exist_ok=True)
         with self._authority_lock():
             if self.issuer_path.exists():
@@ -415,13 +442,36 @@ class TerminalCoordinator:
                     raise TerminalTruthError(
                         "issuer", "terminal authority issuer binding is invalid"
                     )
-                if not isinstance(supplied, OrchestratorIssuer) or \
-                        supplied.fingerprint != payload["issuer_fingerprint"]:
+                issuer = supplied
+                if issuer is None and recover_authority:
+                    try:
+                        issuer = OrchestratorIssuer(
+                            _TERMINAL_RECEIPT_TOKEN,
+                            self._issuer_key_path.read_bytes(),
+                        )
+                    except (OSError, TypeError) as exc:
+                        raise TerminalTruthError(
+                            "issuer", "durable terminal authority is unavailable"
+                        ) from exc
+                if not isinstance(issuer, OrchestratorIssuer) or \
+                        issuer.fingerprint != payload["issuer_fingerprint"]:
                     return None
-                return supplied
+                return issuer
             if supplied is not None and not isinstance(supplied, OrchestratorIssuer):
                 raise TerminalTruthError("issuer", "orchestrator issuer is invalid")
-            issuer = supplied or OrchestratorIssuer(_TERMINAL_RECEIPT_TOKEN)
+            issuer = supplied
+            if issuer is None and recover_authority and self._issuer_key_path.exists():
+                try:
+                    issuer = OrchestratorIssuer(
+                        _TERMINAL_RECEIPT_TOKEN,
+                        self._issuer_key_path.read_bytes(),
+                    )
+                except (OSError, TypeError) as exc:
+                    raise TerminalTruthError(
+                        "issuer", "durable terminal authority is unavailable"
+                    ) from exc
+            issuer = issuer or OrchestratorIssuer(_TERMINAL_RECEIPT_TOKEN)
+            self._write_immutable(self._issuer_key_path, issuer._secret)
             payload = {
                 "schema": _ISSUER_SCHEMA,
                 "issuer_fingerprint": issuer.fingerprint,
@@ -583,8 +633,10 @@ class TerminalCoordinator:
             if path.read_bytes() != payload:
                 raise TerminalTruthError("collision", f"immutable evidence collision: {path.name}")
             return
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        descriptor = os.open(path, flags, 0o600)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        temporary = Path(temporary_name)
         try:
             view = memoryview(payload)
             while view:
@@ -593,6 +645,17 @@ class TerminalCoordinator:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        try:
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                if path.read_bytes() != payload:
+                    raise TerminalTruthError(
+                        "collision", f"immutable evidence collision: {path.name}"
+                    )
+            TerminalCoordinator._fsync_directory(path.parent)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _replace(path: Path, payload: bytes) -> None:
@@ -900,6 +963,50 @@ class TerminalCoordinator:
         if receipt.get("fingerprint") != _digest(unsigned):
             raise TerminalTruthError("cleanup", "cleanup receipt fingerprint mismatch")
         return dict(receipt)
+
+
+def finalize_terminal_delivery(
+    authority_root: str | Path,
+    *,
+    exports_root: str | Path | None = None,
+    run_id: str,
+    operation_id: str,
+    identity: Mapping[str, Any],
+    surfaces: Mapping[str, Mapping[str, Any]],
+    candidate_wiring_receipt: Mapping[str, Any],
+    observed_head_sha: str,
+    checkout_clean: bool,
+    commit_fault_at: str | None = None,
+) -> TerminalAuthorityReceipt:
+    """Compose, commit, reconcile, and return one live terminal authority."""
+    coordinator = TerminalCoordinator.recover(
+        authority_root, exports_root=exports_root
+    )
+    prepared = coordinator.prepare_delivery(
+        run_id=run_id,
+        operation_id=operation_id,
+        identity=identity,
+        surfaces=surfaces,
+        candidate_wiring_receipt=candidate_wiring_receipt,
+    )
+    normalized = normalize_terminal_identity(identity)
+    capability = coordinator.issue_capability(
+        run_id=run_id,
+        full_source_sha=normalized["full_source_sha"],
+        design_fingerprint=normalized["design_fingerprint"],
+        plan_fingerprint=normalized["plan_fingerprint"],
+        expected_predecessor_fingerprint=normalized["predecessor_fingerprint"],
+        operation_id=operation_id,
+    )
+    coordinator.commit_delivery(
+        capability,
+        prepared,
+        observed_head_sha=observed_head_sha,
+        checkout_clean=checkout_clean,
+        fault_at=commit_fault_at,
+    )
+    coordinator.reconcile_delivery(capability, prepared)
+    return coordinator.read_terminal_receipt()
 
 
 def assert_terminal_authority(

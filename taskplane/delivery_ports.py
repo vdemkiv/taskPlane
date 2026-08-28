@@ -8,6 +8,7 @@ events, host capabilities, persistence, platform facts, Git, and faults.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -15,8 +16,15 @@ from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 from typing import Any, Iterable, Mapping, Protocol, Sequence, runtime_checkable
+
+try:  # pragma: no cover - platform branch
+    import fcntl
+except ImportError:  # Windows retains the in-process lock
+    fcntl = None
 
 
 HOST_ACTION_SCHEMA = "taskplane.host-action-capability/v1"
@@ -407,6 +415,7 @@ class SandboxEvidenceStore:
         )
         self.fault_injector = fault_injector or NoopFaultInjector()
         self.disposable = disposable
+        self._lock = threading.RLock()
 
     def _domain_dir(self, domain: str) -> Path:
         if domain not in EVIDENCE_DOMAINS:
@@ -418,17 +427,37 @@ class SandboxEvidenceStore:
 
     @staticmethod
     def _write_atomic(path: Path, data: bytes) -> None:
-        temporary = path.with_name(path.name + ".tmp")
-        with temporary.open("wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
         directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
+
+    @contextmanager
+    def _domain_lock(self, domain_dir: Path):
+        """Serialize one domain's entire read-check-publish transaction."""
+        descriptor = os.open(domain_dir / ".cas.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        with self._lock:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
 
     def prepare(
         self,
@@ -487,26 +516,27 @@ class SandboxEvidenceStore:
         receipt_path = domain_dir / "receipts" / f"{receipt['fingerprint']}.json"
         head_path = domain_dir / "HEAD"
         state_path = domain_dir / "STATE"
-        if receipt_path.exists():
-            existing_receipt = receipt_path.read_bytes()
-            if existing_receipt != receipt_bytes:
-                raise DeliveryPortError("immutable evidence receipt collision")
-            if state_path.exists() and state_path.read_text().strip() == receipt["fingerprint"]:
-                return existing_receipt
-        actual_head = head_path.read_text().strip() if head_path.exists() else None
-        if actual_head not in {intent["expected_head"], receipt["fingerprint"]}:
-            raise DeliveryPortError("evidence head CAS mismatch")
-        if not receipt_path.exists():
-            self._write_atomic(receipt_path, receipt_bytes)
-        self.fault_injector.checkpoint("after-immutable-bytes")
-        self.fault_injector.checkpoint("before-head-cas")
-        if actual_head != receipt["fingerprint"]:
-            self._write_atomic(head_path, (receipt["fingerprint"] + "\n").encode())
-        self.fault_injector.checkpoint("after-head-cas")
-        self.fault_injector.checkpoint("before-domain-state")
-        self._write_atomic(state_path, (receipt["fingerprint"] + "\n").encode())
-        self.fault_injector.checkpoint("after-domain-state")
-        return receipt_bytes
+        with self._domain_lock(domain_dir):
+            if receipt_path.exists():
+                existing_receipt = receipt_path.read_bytes()
+                if existing_receipt != receipt_bytes:
+                    raise DeliveryPortError("immutable evidence receipt collision")
+                if state_path.exists() and state_path.read_text().strip() == receipt["fingerprint"]:
+                    return existing_receipt
+            actual_head = head_path.read_text().strip() if head_path.exists() else None
+            if actual_head not in {intent["expected_head"], receipt["fingerprint"]}:
+                raise DeliveryPortError("evidence head CAS mismatch")
+            if not receipt_path.exists():
+                self._write_atomic(receipt_path, receipt_bytes)
+            self.fault_injector.checkpoint("after-immutable-bytes")
+            self.fault_injector.checkpoint("before-head-cas")
+            if actual_head != receipt["fingerprint"]:
+                self._write_atomic(head_path, (receipt["fingerprint"] + "\n").encode())
+            self.fault_injector.checkpoint("after-head-cas")
+            self.fault_injector.checkpoint("before-domain-state")
+            self._write_atomic(state_path, (receipt["fingerprint"] + "\n").encode())
+            self.fault_injector.checkpoint("after-domain-state")
+            return receipt_bytes
 
     def reconcile(self, domain: str | None = None) -> tuple[bytes, ...]:
         self.fault_injector.checkpoint("during-reconcile")
