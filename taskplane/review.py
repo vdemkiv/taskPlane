@@ -609,7 +609,8 @@ def _bounded_review_detail(value: object) -> dict:
             projected[key] = count
     reason_code = value.get("reason_code")
     if reason_code in {
-            "sandbox_process_timeout", "sandbox_preparation_timeout"}:
+            "sandbox_process_timeout", "sandbox_preparation_timeout",
+            "sandbox_process_reap_timeout"}:
         projected["reason_code"] = reason_code
     phase = value.get("phase")
     if isinstance(phase, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,40}", phase):
@@ -1146,6 +1147,9 @@ def _validated_validation_sandbox(value: object, run_id: object) -> dict:
 
 _VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS = 120.0
 _VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS = 600.0
+_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS = 1.0
+_VALIDATION_SANDBOX_COPY_SCRIPT = (
+    "import shutil, sys; shutil.copy2(sys.argv[1], sys.argv[2])")
 
 
 class _ValidationSandboxTimeout(RuntimeError):
@@ -1159,6 +1163,10 @@ class _ValidationSandboxTimeout(RuntimeError):
         super().__init__(f"{reason_code} during {phase}")
 
 
+class _ValidationSandboxProcessCleanupTimeout(RuntimeError):
+    """The owned preparation process did not confirm exit after a hard kill."""
+
+
 def _terminate_validation_sandbox_process_tree(process) -> None:
     """Terminate the preparation subprocess and all descendants it created."""
     if process.poll() is not None:
@@ -1167,25 +1175,52 @@ def _terminate_validation_sandbox_process_tree(process) -> None:
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
-            return
+            pass
         try:
-            process.wait(timeout=1)
+            process.wait(timeout=_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS)
             return
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
-                return
-            process.wait()
+                pass
+            try:
+                process.wait(
+                    timeout=_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired as exc:
+                raise _ValidationSandboxProcessCleanupTimeout(
+                    "validation sandbox process did not reap after SIGKILL") \
+                    from exc
         return
     # Windows does not expose killpg.  Popen.kill is the strongest stdlib
     # fallback for the new process group created below.
-    process.terminate()  # pragma: no cover - Windows host
     try:
-        process.wait(timeout=1)
+        process.terminate()  # pragma: no cover - Windows host
+    except ProcessLookupError:  # pragma: no cover - Windows host
+        pass
+    try:
+        process.wait(timeout=_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
+        try:
+            process.kill()
+        except ProcessLookupError:  # pragma: no cover - Windows host
+            pass
+        try:
+            process.wait(
+                timeout=_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            raise _ValidationSandboxProcessCleanupTimeout(
+                "validation sandbox process did not reap after kill") from exc
+
+
+def _terminate_validation_sandbox_process_for_phase(process, phase: str) -> None:
+    try:
+        _terminate_validation_sandbox_process_tree(process)
+    except _ValidationSandboxProcessCleanupTimeout as exc:
+        raise _ValidationSandboxTimeout(
+            phase=phase, reason_code="sandbox_process_reap_timeout",
+            timeout_seconds=_VALIDATION_SANDBOX_PROCESS_REAP_TIMEOUT_SECONDS) \
+            from exc
 
 
 def _run_validation_sandbox_git(
@@ -1214,12 +1249,12 @@ def _run_validation_sandbox_git(
     try:
         stdout, stderr = process.communicate(input=input, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        _terminate_validation_sandbox_process_tree(process)
+        _terminate_validation_sandbox_process_for_phase(process, phase)
         raise _ValidationSandboxTimeout(
             phase=phase, reason_code=reason_code,
             timeout_seconds=timeout) from exc
     except BaseException:
-        _terminate_validation_sandbox_process_tree(process)
+        _terminate_validation_sandbox_process_for_phase(process, phase)
         raise
     result = subprocess.CompletedProcess(
         argv, process.returncode, stdout=stdout, stderr=stderr)
@@ -1234,6 +1269,15 @@ def _ensure_validation_sandbox_deadline(deadline: float, phase: str) -> None:
         raise _ValidationSandboxTimeout(
             phase=phase, reason_code="sandbox_preparation_timeout",
             timeout_seconds=_VALIDATION_SANDBOX_PREPARATION_TIMEOUT_SECONDS)
+
+
+def _copy_validation_sandbox_file(source: str, destination: str, *,
+                                  deadline: float) -> None:
+    """Copy through an owned child so the preparation deadline can cancel it."""
+    _run_validation_sandbox_git(
+        [sys.executable, "-I", "-c", _VALIDATION_SANDBOX_COPY_SCRIPT,
+         source, destination],
+        cwd=None, deadline=deadline, phase="copy-untracked")
 
 
 def _persist_validation_sandbox_timeout(
@@ -1333,7 +1377,8 @@ def prepare_review_validation_sandbox(ws: str, *,
                         "unsafe untracked path in validation sandbox input")
                 if os.path.isfile(source_path):
                     os.makedirs(os.path.dirname(destination), exist_ok=True)
-                    shutil.copy2(source_path, destination)
+                    _copy_validation_sandbox_file(
+                        source_path, destination, deadline=deadline)
                     _ensure_validation_sandbox_deadline(
                         deadline, "copy-untracked")
             _run_validation_sandbox_git(

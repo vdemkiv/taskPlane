@@ -82,16 +82,63 @@ def test_h34_cancellation_terminates_the_complete_process_tree(monkeypatch):
     assert terminated == [process]
 
 
+@pytest.mark.parametrize(
+    ("platform_name", "expected_actions"),
+    [("posix", ["SIGTERM", "SIGKILL"]),
+     ("nt", ["terminate", "kill"])],
+)
+def test_h34_kill_recovery_wait_is_bounded_and_fails_closed(
+        monkeypatch, platform_name, expected_actions):
+    class UnreapableProcess(_StuckProcess):
+        def __init__(self):
+            self.returncode = None
+            self.wait_timeouts = []
+            self.actions = []
+
+        def wait(self, timeout=None):
+            self.wait_timeouts.append(timeout)
+            raise subprocess.TimeoutExpired(["git"], timeout)
+
+        def terminate(self):
+            self.actions.append("terminate")
+
+        def kill(self):
+            self.actions.append("kill")
+
+    process = UnreapableProcess()
+    monkeypatch.setattr(review.os, "name", platform_name)
+    monkeypatch.setattr(
+        review.subprocess, "Popen", lambda *args, **kwargs: process)
+    if platform_name == "posix":
+        monkeypatch.setattr(
+            review.os, "killpg",
+            lambda _pid, sig: process.actions.append(signal.Signals(sig).name))
+    monkeypatch.setattr(review.time, "monotonic", lambda: 100.0)
+
+    with pytest.raises(review._ValidationSandboxTimeout) as raised:
+        review._run_validation_sandbox_git(
+            ["git", "clone", "source", "target"], cwd=None,
+            deadline=700.0, phase="clone")
+
+    assert raised.value.reason_code == "sandbox_process_reap_timeout"
+    assert raised.value.phase == "clone"
+    assert process.wait_timeouts == [1.0, 1.0]
+    assert all(timeout is not None for timeout in process.wait_timeouts)
+    assert process.actions == expected_actions
+
+
 def test_h34_process_tree_termination_escalates_to_group_kill(monkeypatch):
     class Process:
         pid = 991
         returncode = None
+        wait_calls = 0
 
         def poll(self):
             return self.returncode
 
         def wait(self, timeout=None):
-            if timeout is not None:
+            self.wait_calls += 1
+            if self.wait_calls == 1:
                 raise subprocess.TimeoutExpired(["git"], timeout)
             self.returncode = -signal.SIGKILL
 
@@ -128,8 +175,13 @@ def _git_review_state(ws: Path) -> tuple[dict, str]:
     return state, head
 
 
+@pytest.mark.parametrize(
+    ("reason_code", "timeout_seconds"),
+    [("sandbox_process_timeout", 120.0),
+     ("sandbox_process_reap_timeout", 1.0)],
+)
 def test_h34_prepare_timeout_is_cleaned_persisted_and_retryable(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, reason_code, timeout_seconds):
     ws = tmp_path / "repo"
     ws.mkdir()
     state, head = _git_review_state(ws)
@@ -141,8 +193,8 @@ def test_h34_prepare_timeout_is_cleaned_persisted_and_retryable(
         if phase == "resolve-head":
             return subprocess.CompletedProcess(argv, 0, head + "\n", "")
         raise review._ValidationSandboxTimeout(
-            phase=phase, reason_code="sandbox_process_timeout",
-            timeout_seconds=120.0)
+            phase=phase, reason_code=reason_code,
+            timeout_seconds=timeout_seconds)
 
     monkeypatch.setattr(review, "_run_validation_sandbox_git", run_git)
 
@@ -153,11 +205,71 @@ def test_h34_prepare_timeout_is_cleaned_persisted_and_retryable(
     persisted = review._load_state(str(ws), state["run_id"])
     detail = persisted["review_execution"]["dynamic_validation"]["detail"]
     assert persisted["review_execution"]["dynamic_validation"]["status"] == "failed"
-    assert detail["reason_code"] == "sandbox_process_timeout"
+    assert detail["reason_code"] == reason_code
     assert detail["phase"] == "clone"
     root = Path(review._kernel_root(str(ws))) / "validation-sandbox"
     assert not list(root.glob(".prepare-*"))
     assert calls == ["resolve-head", "clone"]
+
+
+def test_h34_blocked_untracked_copy_is_killed_cleaned_and_persisted(
+        tmp_path, monkeypatch):
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    state, _head = _git_review_state(ws)
+    (ws / "untracked.bin").write_bytes(b"payload")
+
+    class BlockedCopyProcess(_StuckProcess):
+        pid = 5521
+
+        def __init__(self):
+            self.returncode = None
+            self.timeout = None
+
+        def communicate(self, input=None, timeout=None):
+            del input
+            self.timeout = timeout
+            raise subprocess.TimeoutExpired([sys.executable, "-c"], timeout)
+
+    process = BlockedCopyProcess()
+    original_popen = review.subprocess.Popen
+    launched = []
+    sent = []
+
+    def popen(argv, *args, **kwargs):
+        if argv and argv[0] == sys.executable and not launched:
+            launched.append((argv, kwargs))
+            Path(argv[-1]).write_bytes(b"partial")
+            return process
+        return original_popen(argv, *args, **kwargs)
+
+    monkeypatch.setattr(review.subprocess, "Popen", popen)
+    monkeypatch.setattr(
+        review.shutil, "copy2",
+        lambda *_args, **_kwargs: pytest.fail(
+            "untracked copy ran synchronously in the preparation process"))
+    monkeypatch.setattr(
+        review.os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+
+    with pytest.raises(review.ReviewKernelError, match="timed out.*copy-untracked"):
+        review.prepare_review_validation_sandbox(
+            str(ws), run_id=state["run_id"])
+
+    persisted = review._load_state(str(ws), state["run_id"])
+    detail = persisted["review_execution"]["dynamic_validation"]["detail"]
+    assert detail["reason_code"] == "sandbox_process_timeout"
+    assert detail["phase"] == "copy-untracked"
+    assert 0 < process.timeout <= 120
+    assert process.returncode is not None
+    assert sent == [(process.pid, signal.SIGTERM)]
+    assert launched[0][1]["start_new_session"] is True
+    root = Path(review._kernel_root(str(ws))) / "validation-sandbox"
+    assert not list(root.glob(".prepare-*"))
+
+    sandbox = review.prepare_review_validation_sandbox(
+        str(ws), run_id=state["run_id"])
+    assert (Path(sandbox["path"]) / "untracked.bin").read_bytes() == b"payload"
+    assert not list(root.glob(".prepare-*"))
 
 
 def test_h34_sandbox_prepare_has_process_and_total_deadlines(
