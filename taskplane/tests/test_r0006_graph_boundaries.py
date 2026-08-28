@@ -18,6 +18,7 @@ sys.path.insert(0, str(TASKPLANE))
 
 import decompose  # noqa: E402
 import depgraph  # noqa: E402
+import checkpoint_boundary  # noqa: E402
 import graph_decomposition  # noqa: E402
 import graph_primitives  # noqa: E402
 import import_cycles  # noqa: E402
@@ -82,11 +83,17 @@ def _fresh_python(source: str, *args: str) -> dict:
 
 def test_boundary_imports_follow_the_approved_non_circular_contract() -> None:
     imports = {name: _imports(TASKPLANE / f"{name}.py") for name in (
-        "checkpoint", "depgraph", "decompose", "graph_decomposition",
-        "graph_primitives", "lens_signals", "tp", "wiring_closure")}
+        "checkpoint", "checkpoint_boundary", "depgraph", "decompose",
+        "governed_commands", "graph_decomposition", "graph_primitives",
+        "lens_signals", "tp", "wiring_closure")}
 
     assert "design_contract" not in imports["checkpoint"]
     assert "wiring_closure" in imports["checkpoint"]
+    assert "checkpoint_boundary" in imports["checkpoint"]
+    assert "governed_commands" not in imports["checkpoint"]
+    assert "checkpoint_boundary" in imports["governed_commands"]
+    assert not ({"checkpoint", "governed_commands", "loop"}
+                & imports["checkpoint_boundary"])
     assert not ({"build_c", "checkpoint", "design_contract", "loop", "review"}
                 & imports["wiring_closure"])
     assert "decompose" not in imports["depgraph"]
@@ -167,6 +174,19 @@ def test_registered_graph_loader_resolves_the_live_depgraph_seam(
 
     assert lens_signals._graph_payload("/unused", ["src/auth/a.py"])[
         "module_dependents"] == {"auth": 1}
+
+
+def test_registered_checkpoint_loader_resolves_the_live_governed_seam(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    import governed_commands
+
+    marker = {"schema": "test.semantic-checkpoint-evidence/v1"}
+    monkeypatch.setattr(
+        governed_commands, "semantic_checkpoint_execution_evidence",
+        lambda _workspace, _authorization, _handle: marker)
+
+    assert checkpoint_boundary.load_execution_evidence(
+        "/unused", "authority", "handle") is marker
 
 
 def test_fresh_direct_depgraph_scan_owns_successful_lens_maps(

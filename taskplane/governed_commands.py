@@ -33,6 +33,11 @@ if not __package__:
     if package_root not in sys.path:
         sys.path.insert(0, package_root)
 
+try:
+    import checkpoint_boundary
+except ImportError:  # package import path
+    from taskplane import checkpoint_boundary
+
 from taskplane.command_adapters import (
     CommandAdapter,
     HostLaunch,
@@ -830,6 +835,15 @@ def semantic_checkpoint_execution_evidence(
         raise GovernedCommandError(
             "semantic checkpoint execution receipt is invalid")
     return dict(receipt)
+
+
+# The runtime is the sole producer for this evidence.  Register a late-bound
+# callable so monkeypatching/replacement at the composition root remains
+# observable while checkpoint receipt minting keeps no reverse import edge.
+checkpoint_boundary.register_execution_evidence_loader(
+    lambda workspace, authorization, handle:
+        semantic_checkpoint_execution_evidence(
+            workspace, authorization, handle))
 
 
 def _workspace_rooted_screen_command(

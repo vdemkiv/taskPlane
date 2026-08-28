@@ -21,6 +21,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 try:
+    import checkpoint_boundary
+except ImportError:  # package import path
+    from taskplane import checkpoint_boundary
+
+try:
     from taskplane import taskplane_lite as contract_engine
     from taskplane import terminal_truth
     from taskplane import wiring_closure
@@ -653,11 +658,7 @@ def _validated_runtime_result(
             raise CheckpointReceiptError(
                 "privacy-minimized checkpoint output is invalid")
         try:
-            try:
-                from taskplane import governed_commands
-            except ImportError:  # direct executable/import compatibility
-                import governed_commands
-            boundary = governed_commands.semantic_checkpoint_execution_evidence(
+            boundary = checkpoint_boundary.load_execution_evidence(
                 str(Path(worktree).resolve()), semantic_authorization, handle)
         except Exception as exc:
             raise CheckpointReceiptError(
