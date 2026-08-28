@@ -8,15 +8,17 @@ state.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
 import secrets
 import shutil
+import stat
 import threading
 import time
-from typing import Callable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol, Sequence
 
 
 SCHEMA = "taskplane.host-preview/v1"
@@ -30,6 +32,15 @@ TERMINAL_OUTCOMES = frozenset({
 MAX_LIFETIME_SECONDS = 3600
 MAX_CPU_SECONDS = 1800
 MAX_MEMORY_BYTES = 4 * 1024 * 1024 * 1024
+MAX_STARTUP_ENTRIES = 100_000
+MAX_STARTUP_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+MAX_STARTUP_FILE_BYTES = 512 * 1024 * 1024
+MAX_STARTUP_SECONDS = 30
+HASH_CHUNK_BYTES = 1024 * 1024
+EXCLUDED_PREVIEW_DIRECTORIES = frozenset({
+    ".git", ".hg", ".svn", ".tox", ".venv", "__pycache__",
+    "node_modules",
+})
 
 
 class PreviewError(RuntimeError):
@@ -55,18 +66,192 @@ def _digest(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _path_fingerprint(root: Path, *, exclude_vcs: bool = False) -> str:
-    """Fingerprint names and bytes without following links outside ``root``."""
-    rows: list[tuple[str, str]] = []
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root).as_posix()
-        if exclude_vcs and relative.split("/", 1)[0] == ".git":
+class _StartupBoundExceeded(PreviewError):
+    """A source inventory or materialization crossed a startup budget."""
+
+
+def _startup_limits(limits: Mapping) -> dict[str, int]:
+    names = {
+        "startup_entries": MAX_STARTUP_ENTRIES,
+        "startup_total_bytes": MAX_STARTUP_TOTAL_BYTES,
+        "startup_file_bytes": MAX_STARTUP_FILE_BYTES,
+        "startup_seconds": MAX_STARTUP_SECONDS,
+    }
+    if any(isinstance(limits.get(name, maximum), bool)
+           for name, maximum in names.items()):
+        raise _StartupBoundExceeded(
+            "preview startup limits are invalid")
+    try:
+        bounded = {name: int(limits.get(name, maximum))
+                   for name, maximum in names.items()}
+    except (TypeError, ValueError) as exc:
+        raise _StartupBoundExceeded(
+            "preview startup limits are invalid") from exc
+    if any(value <= 0 or value > names[name]
+           for name, value in bounded.items()):
+        raise _StartupBoundExceeded(
+            "preview startup limits exceed policy")
+    if bounded["startup_file_bytes"] > bounded["startup_total_bytes"]:
+        raise _StartupBoundExceeded(
+            "preview per-file limit exceeds total-byte limit")
+    return bounded
+
+
+def _deadline_check(deadline: float) -> None:
+    if time.monotonic() > deadline:
+        raise _StartupBoundExceeded("preview startup time limit exceeded")
+
+
+def _stream_digest(path: Path, *, deadline: float,
+                   byte_limit: int) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with path.open("rb") as stream:
+            while True:
+                _deadline_check(deadline)
+                chunk = stream.read(HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > byte_limit:
+                    raise _StartupBoundExceeded(
+                        f"preview file exceeds byte limit: {path.name}")
+                digest.update(chunk)
+    except OSError as exc:
+        raise _StartupBoundExceeded(
+            f"preview source file is unreadable: {path.name}") from exc
+    return digest.hexdigest(), total
+
+
+def _bounded_manifest(root: Path, *, limits: Mapping[str, int],
+                      exclude_generated: bool,
+                      deadline: float | None = None) -> tuple[list[dict], str]:
+    """Return one bounded, streaming snapshot without following symlinks."""
+    deadline = (time.monotonic() + limits["startup_seconds"]
+                if deadline is None else deadline)
+    pending = [Path(".")]
+    rows: list[dict] = []
+    total_bytes = 0
+    observed_entries = 0
+    while pending:
+        _deadline_check(deadline)
+        relative_parent = pending.pop()
+        parent = root if relative_parent == Path(".") else root / relative_parent
+        try:
+            entries = []
+            with os.scandir(parent) as iterator:
+                for entry in iterator:
+                    _deadline_check(deadline)
+                    if exclude_generated and \
+                            entry.name in EXCLUDED_PREVIEW_DIRECTORIES:
+                        continue
+                    observed_entries += 1
+                    if observed_entries > limits["startup_entries"]:
+                        raise _StartupBoundExceeded(
+                            "preview source exceeds entry limit")
+                    entries.append(entry)
+            entries.sort(key=lambda row: row.name)
+        except OSError as exc:
+            raise _StartupBoundExceeded(
+                "preview source inventory is unreadable") from exc
+        for entry in entries:
+            _deadline_check(deadline)
+            relative = (relative_parent / entry.name
+                        if relative_parent != Path(".") else Path(entry.name))
+            if entry.is_symlink():
+                raise _StartupBoundExceeded(
+                    f"preview source contains a symlink: {relative.as_posix()}")
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise _StartupBoundExceeded(
+                    f"preview source entry is unreadable: {relative.as_posix()}") \
+                    from exc
+            if stat.S_ISDIR(metadata.st_mode):
+                row = {"path": relative.as_posix(), "kind": "directory"}
+                pending.append(relative)
+            elif stat.S_ISREG(metadata.st_mode):
+                if metadata.st_size > limits["startup_file_bytes"]:
+                    raise _StartupBoundExceeded(
+                        f"preview file exceeds byte limit: {relative.as_posix()}")
+                file_digest, observed_size = _stream_digest(
+                    Path(entry.path), deadline=deadline,
+                    byte_limit=limits["startup_file_bytes"])
+                if observed_size != metadata.st_size:
+                    raise _StartupBoundExceeded(
+                        f"preview source changed during inventory: "
+                        f"{relative.as_posix()}")
+                total_bytes += observed_size
+                if total_bytes > limits["startup_total_bytes"]:
+                    raise _StartupBoundExceeded(
+                        "preview source exceeds total-byte limit")
+                row = {"path": relative.as_posix(), "kind": "file",
+                       "bytes": observed_size, "sha256": file_digest}
+            else:
+                raise _StartupBoundExceeded(
+                    f"preview source contains a special entry: "
+                    f"{relative.as_posix()}")
+            rows.append(row)
+    rows.sort(key=lambda row: str(row["path"]))
+    return rows, _digest(rows)
+
+
+def _materialize_manifest(source: Path, sandbox: Path, rows: Sequence[Mapping],
+                          *, limits: Mapping[str, int], deadline: float) -> None:
+    copied_bytes = 0
+    for row in rows:
+        _deadline_check(deadline)
+        relative = Path(str(row["path"]))
+        source_path = source / relative
+        destination = sandbox / relative
+        if row["kind"] == "directory":
+            destination.mkdir(parents=True, exist_ok=False)
             continue
-        if path.is_symlink():
-            rows.append((relative, f"link:{os.readlink(path)}"))
-        elif path.is_file():
-            rows.append((relative, hashlib.sha256(path.read_bytes()).hexdigest()))
-    return _digest(rows)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        observed = 0
+        try:
+            with source_path.open("rb") as reader, destination.open("xb") as writer:
+                while True:
+                    _deadline_check(deadline)
+                    chunk = reader.read(HASH_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    observed += len(chunk)
+                    copied_bytes += len(chunk)
+                    if observed > limits["startup_file_bytes"] or \
+                            copied_bytes > limits["startup_total_bytes"]:
+                        raise _StartupBoundExceeded(
+                            "preview materialization exceeds byte limit")
+                    writer.write(chunk)
+                    digest.update(chunk)
+        except OSError as exc:
+            raise _StartupBoundExceeded(
+                f"preview materialization failed: {relative.as_posix()}") from exc
+        if observed != row.get("bytes") or digest.hexdigest() != row.get("sha256"):
+            raise _StartupBoundExceeded(
+                f"preview source changed during materialization: "
+                f"{relative.as_posix()}")
+        shutil.copystat(source_path, destination, follow_symlinks=False)
+
+
+def _path_fingerprint(root: Path, *, limits: Mapping[str, int],
+                      exclude_generated: bool = False) -> str:
+    return _bounded_manifest(
+        root, limits=limits, exclude_generated=exclude_generated)[1]
+
+
+def _saved_startup_limits(preview: Mapping[str, object]) -> dict[str, int] | None:
+    value = preview.get("startup_limits")
+    if not isinstance(value, Mapping) or set(value) != {
+            "startup_entries", "startup_total_bytes", "startup_file_bytes",
+            "startup_seconds"}:
+        return None
+    try:
+        return _startup_limits(value)
+    except _StartupBoundExceeded:
+        return None
 
 
 def _atomic_json(path: Path, value: object) -> None:
@@ -207,39 +392,38 @@ class PreviewRuntime:
                for value, maximum in zip(bounded.values(), maxima)):
             self._deny("denied", "preview resource limits exceed policy",
                        target=target, revision=revision)
+        try:
+            startup_limits = _startup_limits(limits)
+        except _StartupBoundExceeded as exc:
+            self._deny("unavailable", str(exc), target=target,
+                       revision=revision)
 
         preview_id = secrets.token_hex(16)
         sandbox = self._path(preview_id).parent / "sandbox"
         sandbox.mkdir(parents=True, exist_ok=False)
-        # Materialize the pinned input.  Never link back into the source: the
-        # descendant process tree may write freely inside this disposable copy.
         try:
-            for child in source.iterdir():
-                # A preview is a pinned content copy, never a repository.
-                # Omitting VCS metadata makes remote mutation/push impossible
-                # even for an arbitrary interpreter inside the sandbox.
-                if child.name == ".git":
-                    continue
-                destination = sandbox / child.name
-                if child.is_symlink():
-                    resolved = child.resolve()
-                    if source not in (resolved, *resolved.parents):
-                        raise PreviewDenied(
-                            "escaped_path", "source contains an escaping link")
-                if child.is_dir():
-                    shutil.copytree(child, destination, symlinks=True)
-                else:
-                    shutil.copy2(child, destination, follow_symlinks=False)
+            startup_deadline = time.monotonic() + \
+                startup_limits["startup_seconds"]
+            source_manifest, source_fingerprint = _bounded_manifest(
+                source, limits=startup_limits, exclude_generated=True,
+                deadline=startup_deadline)
+            _materialize_manifest(
+                source, sandbox, source_manifest, limits=startup_limits,
+                deadline=startup_deadline)
+            materialized_manifest, materialized_fingerprint = _bounded_manifest(
+                sandbox, limits=startup_limits, exclude_generated=False,
+                deadline=startup_deadline)
+            if materialized_manifest != source_manifest or \
+                    materialized_fingerprint != source_fingerprint:
+                raise _StartupBoundExceeded(
+                    "pinned source materialization differs from inventory")
+        except _StartupBoundExceeded as exc:
+            shutil.rmtree(sandbox, ignore_errors=True)
+            self._deny("unavailable", str(exc), target=target,
+                       revision=revision)
         except Exception:
             shutil.rmtree(sandbox, ignore_errors=True)
             raise
-        materialized_fingerprint = _path_fingerprint(sandbox)
-        source_fingerprint = _path_fingerprint(source)
-        source_content_fingerprint = _path_fingerprint(source, exclude_vcs=True)
-        if materialized_fingerprint != source_content_fingerprint:
-            shutil.rmtree(sandbox, ignore_errors=True)
-            self._deny("escaped_path", "pinned source materialization failed",
-                       target=target, revision=revision)
         now = float(self._clock())
         preview = {
             "schema": SCHEMA, "preview_id": preview_id, "flow": flow,
@@ -247,13 +431,19 @@ class PreviewRuntime:
             "state": "registered", "outcome": "registered",
             "surface": surfaces[0], "surface_fallbacks": surfaces[1:],
             "source_fingerprint": source_fingerprint,
-            "source_content_fingerprint": source_content_fingerprint,
+            "source_content_fingerprint": source_fingerprint,
             "materialized_fingerprint": materialized_fingerprint,
             "source_root_fingerprint": _digest(str(source)),
             "authorization_fingerprint": self._authorization,
             "visibility": "private", "push_disabled": True,
             "network": {"mode": "deny", "allowlist": []},
-            "limits": bounded, "registered_at": now,
+            "limits": bounded, "startup_limits": startup_limits,
+            "startup_inventory": {
+                "entries": len(source_manifest),
+                "regular_file_bytes": sum(
+                    int(row.get("bytes") or 0) for row in source_manifest),
+            },
+            "registered_at": now,
             "deadline": now + bounded["lifetime_seconds"],
             # Path stays private; adapters prove their cwd by this digest.
             "sandbox_id": hashlib.sha256(
@@ -275,7 +465,15 @@ class PreviewRuntime:
         if self._surface_transport is None:
             return self.record_outcome(preview_id, "unavailable")
         sandbox = self.sandbox_path(preview_id)
-        if _path_fingerprint(sandbox) != preview["materialized_fingerprint"]:
+        startup_limits = _saved_startup_limits(preview)
+        if startup_limits is None:
+            return self.record_outcome(preview_id, "unavailable")
+        try:
+            sandbox_fingerprint = _path_fingerprint(
+                sandbox, limits=startup_limits)
+        except _StartupBoundExceeded:
+            return self.record_outcome(preview_id, "unavailable")
+        if sandbox_fingerprint != preview["materialized_fingerprint"]:
             return self.record_outcome(preview_id, "escaped_path")
         try:
             result = dict(self._surface_transport(
@@ -418,7 +616,16 @@ class PreviewRuntime:
         preview = self._load(preview_id)
         if preview["state"] not in {"registered", "open"}:
             raise PreviewError("terminal preview cannot close successfully")
-        if _path_fingerprint(self.workspace) != preview["source_fingerprint"]:
+        startup_limits = _saved_startup_limits(preview)
+        if startup_limits is None:
+            return self.record_outcome(preview_id, "unavailable")
+        try:
+            source_fingerprint = _path_fingerprint(
+                self.workspace, limits=startup_limits,
+                exclude_generated=True)
+        except _StartupBoundExceeded:
+            return self.record_outcome(preview_id, "unavailable")
+        if source_fingerprint != preview["source_fingerprint"]:
             return self.record_outcome(preview_id, "escaped_path")
         self._teardown(preview, "closed")
         if preview["teardown"]["outcome"] != "succeeded":
@@ -497,3 +704,73 @@ def launch_build_preview(**kwargs) -> dict:
 def launch_dynamic_review_preview(**kwargs) -> dict:
     """Production dynamic-review preview entry."""
     return launch_working_preview(flow="dynamic_review", **kwargs)
+
+
+_PREVIEW_REQUEST_FIELDS = frozenset({
+    "flow", "host", "state_root", "source_root", "authorization", "target",
+    "revision", "capabilities", "command", "limits",
+})
+
+
+def launch_preview_request(request: Mapping[str, object]) -> dict:
+    """Execute one closed flow request through its production preview edge.
+
+    This is the host-neutral composition root used by orchestration adapters
+    and by this module's executable entry point.  Keeping the flow dispatch
+    here makes all three supported paths live while preserving the stronger
+    flow-specific entry points as the only launch authorities.
+    """
+    if not isinstance(request, Mapping) or set(request) != _PREVIEW_REQUEST_FIELDS:
+        raise PreviewDenied("denied", "preview request fields are invalid")
+    flow = request.get("flow")
+    entrypoints = {
+        "design": launch_design_preview,
+        "build": launch_build_preview,
+        "dynamic_review": launch_dynamic_review_preview,
+    }
+    entry = entrypoints.get(flow) if isinstance(flow, str) else None
+    if entry is None:
+        raise PreviewDenied("denied", "preview request flow is invalid")
+    kwargs = {name: value for name, value in request.items() if name != "flow"}
+    return entry(**kwargs)
+
+
+def _request_file(path: str | Path) -> Mapping[str, object]:
+    source = Path(path)
+    try:
+        metadata = source.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise PreviewDenied("denied", "preview request must be a regular file")
+        if metadata.st_size > 1024 * 1024:
+            raise PreviewDenied("denied", "preview request exceeds byte limit")
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except PreviewDenied:
+        raise
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise PreviewDenied("denied", "preview request is unavailable") from exc
+    if not isinstance(value, Mapping):
+        raise PreviewDenied("denied", "preview request must contain an object")
+    return value
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Launch a governed preview from a bounded JSON request."""
+    parser = argparse.ArgumentParser(prog="python -m taskplane.preview_runtime")
+    parser.add_argument("--request", required=True)
+    args = parser.parse_args(argv)
+    result = launch_preview_request(_request_file(args.request))
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+__all__ = [
+    "AUDIT_SCHEMA", "MAX_STARTUP_ENTRIES", "MAX_STARTUP_FILE_BYTES",
+    "MAX_STARTUP_SECONDS", "MAX_STARTUP_TOTAL_BYTES", "PreviewDenied",
+    "PreviewError", "PreviewRuntime", "SCHEMA", "launch_build_preview",
+    "launch_design_preview", "launch_dynamic_review_preview",
+    "launch_preview_request", "launch_working_preview", "main",
+]
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised as an installed CLI
+    raise SystemExit(main())

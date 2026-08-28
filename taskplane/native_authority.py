@@ -8,6 +8,7 @@ invoking a host transport.
 """
 from __future__ import annotations
 
+import argparse
 import ast
 from collections import deque
 from collections.abc import Mapping, Sequence
@@ -725,14 +726,112 @@ def validate_delivery_roots(
     }
 
 
+PRODUCTION_DESIGN_GATE_SCHEMA = "taskplane.production-design-gate/v1"
+
+
+def _repository_json(source_root: str | Path, relative: str) -> dict:
+    root = Path(source_root).resolve()
+    path = root / relative
+    try:
+        if path.is_symlink() or not path.is_file() or \
+                root not in path.resolve().parents or \
+                path.stat().st_size > 8_000_000:
+            raise NativeAuthorityError(
+                f"production Design artifact is not a confined regular file: "
+                f"{relative}")
+        raw = path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
+    except NativeAuthorityError:
+        raise
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise NativeAuthorityError(
+            f"production Design artifact is unavailable: {relative}") from exc
+    if not isinstance(value, dict):
+        raise NativeAuthorityError(
+            f"production Design artifact must contain an object: {relative}")
+    return value
+
+
+def validate_production_design_gate(
+        source_root: str | Path, *,
+        sweep_evidence: Mapping[str, object] | None = None) -> dict:
+    """Execute the authoritative R-0013 Design/Plan gate from repository bytes.
+
+    This executable composition root is intentionally fail closed.  It binds
+    the closed native responsibility map, scans the actual delivery roots and,
+    when the approved Design declares its one broad sweep, requires the live
+    retained-audit validator before returning a Build-ready receipt.
+    """
+    root = Path(source_root).resolve()
+    design = _repository_json(root, "design/contract.json")
+    plan = _repository_json(root, "plan/tasks.json")
+    authority = validate_design_and_plan(design, plan)
+    roots = validate_delivery_roots(root)
+    sweep = None
+    sweep_declared = isinstance(design.get("design_sweep"), Mapping)
+    if _text(design.get("requirement")) == "R-0013" and not sweep_declared:
+        raise NativeAuthorityError(
+            "production R-0013 Design gate requires the approved sweep")
+    if sweep_declared:
+        if not isinstance(sweep_evidence, Mapping):
+            raise NativeAuthorityError(
+                "production Design gate requires retained sweep evidence")
+        try:
+            if __package__:
+                from .design_sweep import (
+                    DesignSweepError, validate_retained_design_sweep,
+                )
+            else:  # pragma: no cover - legacy direct execution
+                from design_sweep import (  # type: ignore[import-not-found]
+                    DesignSweepError, validate_retained_design_sweep,
+                )
+            sweep = validate_retained_design_sweep(
+                root, evidence=sweep_evidence)
+        except DesignSweepError as exc:
+            raise NativeAuthorityError(
+                f"production Design sweep is invalid: {exc}") from exc
+    material = {"authority": authority, "delivery_roots": roots,
+                "design_sweep": sweep}
+    return {
+        "schema": PRODUCTION_DESIGN_GATE_SCHEMA,
+        "status": "ready",
+        **material,
+        "fingerprint": _fingerprint(material),
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the installed production Design gate and emit its sealed receipt."""
+    parser = argparse.ArgumentParser(
+        prog="python -m taskplane.native_authority")
+    parser.add_argument("--source-root", required=True)
+    parser.add_argument("--sweep-evidence")
+    args = parser.parse_args(argv)
+    sweep_evidence = None
+    if args.sweep_evidence:
+        sweep_evidence = _repository_json(
+            Path(args.sweep_evidence).resolve().parent,
+            Path(args.sweep_evidence).name)
+    receipt = validate_production_design_gate(
+        args.source_root, sweep_evidence=sweep_evidence)
+    print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
 __all__ = [
     "CAPABILITY_INVENTORY_SCHEMA",
     "DELIVERY_ROOTS",
     "LEAF_READINESS_SCHEMA",
     "NATIVE_AUTHORITY_SCHEMA",
     "NATIVE_CAPABILITY_CONTRACT",
+    "PRODUCTION_DESIGN_GATE_SCHEMA",
     "NativeAuthorityError",
     "REQUIRED_CAPABILITIES",
     "validate_delivery_roots",
     "validate_design_and_plan",
+    "validate_production_design_gate",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised as an installed CLI
+    raise SystemExit(main())
