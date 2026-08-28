@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import time
 from contextlib import contextmanager
 from typing import Callable, Mapping
@@ -36,6 +37,14 @@ except ImportError:  # pragma: no cover - exercised by windows-latest
 
 SCHEMA = "taskplane.command-state/v1"
 MAX_EVENT_OUTPUT = 16 * 1024
+MAX_DURABLE_OUTPUT = 64 * 1024
+MAX_JOURNAL_BYTES = 128 * 1024
+MAX_JOURNAL_ROWS = 32
+COMMAND_RETENTION_SECONDS = 24 * 60 * 60
+COMMAND_RETENTION_MAX_HANDLES = 128
+COMMAND_RETENTION_MAX_BYTES = 8 * 1024 * 1024
+COMMAND_RETENTION_SCHEMA = "taskplane.command-retention/v1"
+MAX_SNAPSHOT_BYTES = 512 * 1024
 DEFAULT_DELIVERY_LEASE_SECONDS = 30.0
 TERMINAL_STATES = frozenset({
     "succeeded", "failed", "timed_out", "cancelled",
@@ -62,6 +71,22 @@ _SECRET_PATTERNS = (
         r"(?i)\b(authorization|token|password|secret|api[_-]?key)"
         r"\s*[:=]\s*([^\s,;]+)"
     ),
+)
+
+_PERSONAL_DATA_PATTERNS = (
+    # Durable logs are operational evidence, not a contact directory.  Keep
+    # the surrounding diagnostic useful while removing common direct
+    # identifiers before either the snapshot journal or output artifact sees
+    # them.
+    (re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
+     "[REDACTED_EMAIL]"),
+    (re.compile(r"(?<![A-Za-z0-9])/(?:Users|home)/[^\s'\"`]+"),
+     "[REDACTED_PATH]"),
+    (re.compile(r"(?<![A-Za-z0-9])/(?:private/var/folders|private/tmp|tmp)/"
+                r"[^\s'\"`]+"), "[REDACTED_PATH]"),
+    (re.compile(r"(?i)\b[A-Z]:\\(?:Users|Documents and Settings)\\"
+                r"[^\r\n\t'\"`]+"), "[REDACTED_PATH]"),
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[REDACTED_IP]"),
 )
 
 
@@ -350,6 +375,9 @@ def _redact(value: str) -> tuple[str, int]:
         else:
             redacted, hits = pattern.subn("[REDACTED]", redacted)
         count += hits
+    for pattern, replacement in _PERSONAL_DATA_PATTERNS:
+        redacted, hits = pattern.subn(replacement, redacted)
+        count += hits
     return redacted, count
 
 
@@ -370,6 +398,147 @@ def _atomic_json(path: Path, value: dict) -> None:
             pass
 
 
+def _atomic_bytes(path: Path, value: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _minimized_text(value: object, *, label: str) -> tuple[str, int]:
+    """Project arbitrary caller text to a closed durable schema.
+
+    Names and health information cannot be recognized completely with regular
+    expressions.  Command output and free-form reasons therefore retain only
+    a size and digest; durable runtime evidence is not a second log store.
+    """
+    raw = str(value)
+    scrubbed, hits = _redact(raw)
+    digest = hashlib.sha256(scrubbed.encode("utf-8", "replace")).hexdigest()
+    return (f"[REDACTED]\n[{label}_MINIMIZED bytes="
+            f"{len(raw.encode('utf-8', 'replace'))} sha256={digest}]", hits)
+
+
+def _journal_projection(snapshot: dict) -> dict:
+    """Return a recovery-complete snapshot without repeated output text."""
+    projected = json.loads(json.dumps(snapshot))
+    projected["output_summary"] = ""
+    for field in ("events", "lifecycle"):
+        rows = []
+        for source in projected.get(field) or []:
+            row = dict(source)
+            row["output_delta"] = ""
+            rows.append(row)
+        projected[field] = rows
+    return projected
+
+
+def _privacy_retention(snapshot: Mapping, *, terminal_at: float | None = None) \
+        -> dict:
+    """Return the closed retention policy stored with every command."""
+    created_at = float(snapshot.get("created_at") or 0.0)
+    if terminal_at is None and snapshot.get("state") in TERMINAL_STATES:
+        terminal_at = float(snapshot.get("updated_at") or created_at)
+    return {
+        "schema": COMMAND_RETENTION_SCHEMA,
+        "created_at": created_at,
+        "terminal_at": terminal_at,
+        "expires_at": (terminal_at + COMMAND_RETENTION_SECONDS
+                       if terminal_at is not None else None),
+        "max_handles": COMMAND_RETENTION_MAX_HANDLES,
+        "max_bytes": COMMAND_RETENTION_MAX_BYTES,
+        "delete_on_expiry": True,
+    }
+
+
+def _minimize_legacy_snapshot(snapshot: dict) -> dict:
+    """Migrate authority state without retaining pre-policy free text."""
+    migrated = json.loads(json.dumps(snapshot))
+    migrated["reason"] = (_minimized_text(
+        migrated["reason"], label="REASON")[0]
+        if migrated.get("reason") is not None else None)
+    migrated["output_summary"] = ""
+    migrated["artifact"] = None
+    for field in ("events", "lifecycle"):
+        rows = []
+        for source in migrated.get(field) or []:
+            row = dict(source)
+            row["output_delta"] = ""
+            if row.get("reason") is not None:
+                row["reason"] = _minimized_text(
+                    row["reason"], label="REASON")[0]
+            row["artifact"] = None
+            rows.append(row)
+        migrated[field] = rows
+    migrated["privacy_retention"] = _privacy_retention(migrated)
+    return migrated
+
+
+def _bounded_tree_size(directory: Path) -> int:
+    total = 0
+    for root, dirs, files in os.walk(directory, followlinks=False):
+        dirs[:] = [name for name in dirs
+                   if not (Path(root) / name).is_symlink()]
+        for name in files:
+            path = Path(root) / name
+            if path.is_symlink():
+                return COMMAND_RETENTION_MAX_BYTES + 1
+            try:
+                total += path.stat().st_size
+            except OSError:
+                return COMMAND_RETENTION_MAX_BYTES + 1
+            if total > COMMAND_RETENTION_MAX_BYTES:
+                return total
+    return total
+
+
+def _purge_private_path(path: Path, root: Path) -> None:
+    """Quarantine one owned path by rename, then irreversibly remove it."""
+    if not os.path.lexists(path):
+        return
+    staged = root / f".privacy-purge-{path.name}-{secrets.token_hex(8)}"
+    os.replace(path, staged)
+    if staged.is_dir() and not staged.is_symlink():
+        shutil.rmtree(staged)
+    else:
+        staged.unlink(missing_ok=True)
+
+
+def _valid_retention(value: object, snapshot: Mapping) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+            "schema", "created_at", "terminal_at", "expires_at",
+            "max_handles", "max_bytes", "delete_on_expiry"} or \
+            value.get("schema") != COMMAND_RETENTION_SCHEMA or \
+            value.get("max_handles") != COMMAND_RETENTION_MAX_HANDLES or \
+            value.get("max_bytes") != COMMAND_RETENTION_MAX_BYTES or \
+            value.get("delete_on_expiry") is not True:
+        return False
+    try:
+        created_at = float(value["created_at"])
+        if not math.isfinite(created_at) or created_at != float(
+                snapshot.get("created_at") or 0.0):
+            return False
+        terminal_at = value["terminal_at"]
+        expires_at = value["expires_at"]
+        if snapshot.get("state") in TERMINAL_STATES:
+            terminal = float(terminal_at)
+            expires = float(expires_at)
+            return math.isfinite(terminal) and math.isfinite(expires) and \
+                expires == terminal + COMMAND_RETENTION_SECONDS
+        return terminal_at is None and expires_at is None
+    except (TypeError, ValueError):
+        return False
+
+
 class CommandRuntime:
     """Filesystem-backed authority for durable command lifecycle records."""
 
@@ -384,6 +553,103 @@ class CommandRuntime:
         self._clock = clock or time.time
         self._delivery_lease_seconds = max(0.001,
                                            float(delivery_lease_seconds))
+        self.enforce_retention()
+
+    def enforce_retention(self, *, now: float | None = None) -> dict:
+        """Migrate legacy logs and purge terminal state by age/count/bytes."""
+        observed_at = float(self._clock() if now is None else now)
+        removed = []
+        migrated = []
+        retained = []
+        lock_path = self.root / ".retention.lock"
+        with lock_path.open("a+b") as root_lock:
+            _lock_file(root_lock)
+            try:
+                for stale in list(self.root.glob(".privacy-purge-*")):
+                    _purge_private_path(stale, self.root)
+                for legacy in list(self.root.iterdir()):
+                    if legacy.is_file() and legacy.name != ".retention.lock" \
+                            and legacy.suffix in {".log", ".jsonl"}:
+                        _purge_private_path(legacy, self.root)
+                        removed.append(legacy.name)
+                for directory in sorted(self.root.iterdir()):
+                    if not re.fullmatch(r"[0-9a-f]{32}", directory.name):
+                        continue
+                    if directory.is_symlink() or not directory.is_dir():
+                        _purge_private_path(directory, self.root)
+                        removed.append(directory.name)
+                        continue
+                    lock = directory / "delivery.lock"
+                    with lock.open("a+b") as handle_lock:
+                        _lock_file(handle_lock)
+                        try:
+                            snapshot_path = directory / "snapshot.json"
+                            raw = snapshot_path.read_bytes()
+                            if len(raw) > MAX_SNAPSHOT_BYTES:
+                                raise ValueError("command snapshot is oversized")
+                            snapshot = json.loads(raw.decode("utf-8"))
+                            if snapshot.get("schema") != SCHEMA or \
+                                    snapshot.get("handle") != directory.name:
+                                raise ValueError("command snapshot is invalid")
+                            if not _valid_retention(
+                                    snapshot.get("privacy_retention"), snapshot):
+                                snapshot = _minimize_legacy_snapshot(snapshot)
+                                artifacts = directory / "artifacts"
+                                if os.path.lexists(artifacts):
+                                    _purge_private_path(artifacts, directory)
+                                _atomic_json(snapshot_path, snapshot)
+                                _atomic_bytes(
+                                    directory / "transitions.jsonl",
+                                    (json.dumps({
+                                        "event": {
+                                            "state": "privacy_migrated",
+                                            "revision": snapshot.get("revision"),
+                                        },
+                                        "snapshot": _journal_projection(snapshot),
+                                    }, sort_keys=True,
+                                        separators=(",", ":")) + "\n").encode())
+                                migrated.append(directory.name)
+                            size = _bounded_tree_size(directory)
+                            retention = snapshot["privacy_retention"]
+                            expires_at = retention.get("expires_at")
+                            if snapshot.get("state") in TERMINAL_STATES and \
+                                    expires_at is not None and \
+                                    float(expires_at) <= observed_at:
+                                retained.append((float("inf"), size, directory))
+                            elif snapshot.get("state") in TERMINAL_STATES:
+                                retained.append((float(snapshot.get(
+                                    "updated_at") or 0.0), size, directory))
+                        except (OSError, UnicodeError, ValueError, TypeError,
+                                KeyError, AttributeError):
+                            retained.append((float("inf"),
+                                             COMMAND_RETENTION_MAX_BYTES + 1,
+                                             directory))
+                        finally:
+                            _unlock_file(handle_lock)
+
+                terminal = sorted(retained, key=lambda row: (
+                    row[0] != float("inf"), row[0], row[2].name), reverse=True)
+                kept_count = 0
+                kept_bytes = 0
+                for updated_at, size, directory in terminal:
+                    invalid_or_expired = updated_at == float("inf")
+                    excess = (kept_count >= COMMAND_RETENTION_MAX_HANDLES or
+                              kept_bytes + size > COMMAND_RETENTION_MAX_BYTES)
+                    if invalid_or_expired or excess:
+                        _purge_private_path(directory, self.root)
+                        removed.append(directory.name)
+                    else:
+                        kept_count += 1
+                        kept_bytes += size
+                return {"removed": sorted(set(removed)),
+                        "migrated": sorted(set(migrated)),
+                        "retained": kept_count,
+                        "retained_bytes": kept_bytes,
+                        "retention_seconds": COMMAND_RETENTION_SECONDS,
+                        "max_handles": COMMAND_RETENTION_MAX_HANDLES,
+                        "max_bytes": COMMAND_RETENTION_MAX_BYTES}
+            finally:
+                _unlock_file(root_lock)
 
     def _dir(self, handle: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{32}", str(handle)):
@@ -434,16 +700,35 @@ class CommandRuntime:
     def _save(self, handle: str, snapshot: dict, event: dict | None = None) -> None:
         directory = self._dir(handle)
         directory.mkdir(parents=True, exist_ok=True)
+        existing_retention = snapshot.get("privacy_retention")
+        terminal_at = None
+        if snapshot.get("state") in TERMINAL_STATES:
+            if isinstance(existing_retention, dict):
+                terminal_at = existing_retention.get("terminal_at")
+            terminal_at = float(terminal_at if terminal_at is not None else
+                                snapshot.get("updated_at") or self._clock())
+        snapshot["privacy_retention"] = _privacy_retention(
+            snapshot, terminal_at=terminal_at)
         # Journal first: replay can reconstruct the last intended transition
         # after a crash before the snapshot replacement.
         if event is not None:
             journal = directory / "transitions.jsonl"
-            with journal.open("a", encoding="utf-8", newline="") as target:
-                target.write(json.dumps({"event": event, "snapshot": snapshot},
-                                        sort_keys=True,
-                                        separators=(",", ":")) + "\n")
-                target.flush()
-                os.fsync(target.fileno())
+            safe_event = dict(event)
+            safe_event["output_delta"] = ""
+            encoded = (json.dumps(
+                {"event": safe_event,
+                 "snapshot": _journal_projection(snapshot)},
+                sort_keys=True, separators=(",", ":")) + "\n").encode()
+            prior = []
+            try:
+                prior = [line + b"\n" for line in journal.read_bytes().splitlines()
+                         if line.strip()]
+            except OSError:
+                pass
+            rows = (prior + [encoded])[-MAX_JOURNAL_ROWS:]
+            while len(rows) > 1 and sum(map(len, rows)) > MAX_JOURNAL_BYTES:
+                rows.pop(0)
+            _atomic_bytes(journal, b"".join(rows))
         _atomic_json(self._path(handle), snapshot)
 
     def create(self, *, command_fingerprint: str, binding: Mapping | None,
@@ -618,7 +903,8 @@ class CommandRuntime:
                     return existing
                 revision = int(snapshot["revision"]) + 1
                 now = float(self._clock())
-                safe_reason, reason_redactions = _redact(str(reason)) \
+                safe_reason, reason_redactions = _minimized_text(
+                    reason, label="REASON") \
                     if reason is not None else (None, 0)
                 snapshot["revision"] = revision
                 snapshot["updated_at"] = now
@@ -636,7 +922,8 @@ class CommandRuntime:
 
         revision = int(snapshot["revision"]) + 1
         now = float(self._clock())
-        safe_reason, reason_redactions = _redact(str(reason)) \
+        safe_reason, reason_redactions = _minimized_text(
+            reason, label="REASON") \
             if reason is not None else (None, 0)
         snapshot.update({
             "state": state, "revision": revision, "updated_at": now,
@@ -690,17 +977,28 @@ class CommandRuntime:
     def append_output(self, handle: str, output: str) -> dict:
         with self._state_lock(handle):
             snapshot = self._load(handle)
-            redacted, redactions = _redact(str(output))
-            digest = hashlib.sha256(redacted.encode("utf-8")).hexdigest()
+            raw_output = str(output)
+            redacted, redactions = _minimized_text(
+                raw_output, label="OUTPUT")
+            digest = hashlib.sha256(raw_output.encode("utf-8")).hexdigest()
             if digest == snapshot.get("output_digest"):
                 return snapshot
             artifact_dir = self._dir(handle) / "artifacts"
             artifact_dir.mkdir(parents=True, exist_ok=True)
             artifact_path = artifact_dir / "output.log"
-            # One canonical artifact per command. Output is appended once per
-            # new digest; repeated identical chunks are ignored.
+            # One bounded, privacy-scrubbed artifact per command.  Output is
+            # appended once per new digest; repeated identical chunks are
+            # ignored.  The cap bounds retention rather than just the event
+            # projection: bytes beyond it are represented by the digest and
+            # ``truncated`` flag, never durably copied to disk.
+            retained_before = artifact_path.stat().st_size \
+                if artifact_path.exists() else 0
+            encoded = redacted.encode("utf-8")
+            original_size = len(raw_output.encode("utf-8", "replace"))
+            room = max(0, MAX_DURABLE_OUTPUT - retained_before)
+            retained = encoded[:room]
             with artifact_path.open("a", encoding="utf-8", newline="") as target:
-                target.write(redacted)
+                target.write(retained.decode("utf-8", errors="ignore"))
                 target.flush()
                 os.fsync(target.fileno())
             all_bytes = artifact_path.read_bytes()
@@ -713,7 +1011,8 @@ class CommandRuntime:
                 "path": f"artifacts/{artifact_path.name}",
                 "sha256": artifact_digest,
                 "bytes": len(all_bytes),
-                "truncated": len(redacted.encode("utf-8")) > MAX_EVENT_OUTPUT,
+                "truncated": (original_size > MAX_EVENT_OUTPUT or
+                              len(encoded) > room),
             }
             snapshot["metrics"]["output_redactions"] += redactions
             snapshot["updated_at"] = float(self._clock())

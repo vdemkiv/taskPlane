@@ -6719,23 +6719,73 @@ def store_meta_path(workspace: str) -> str:
     return os.path.join(store_root(workspace), "meta.json")
 
 
+def _quarantine_shared_store_meta(path: str) -> str | None:
+    """Move a stale shared locator into private recovery storage."""
+    if not os.path.lexists(path):
+        return None
+    quarantine = os.path.join(store_home(), "privacy-quarantine")
+    _durable_makedirs(quarantine)
+    identity = hashlib.sha256(os.path.abspath(path).encode("utf-8")).hexdigest()
+    destination = os.path.join(quarantine, f"store-meta-{identity}.json")
+    if os.path.exists(destination):
+        destination += "." + secrets.token_hex(8)
+    os.replace(path, destination)
+    _fsync_directory(os.path.dirname(path) or ".")
+    _fsync_directory(quarantine)
+    return destination
+
+
 def write_store_meta(workspace: str) -> dict:
-    """Record what this store belongs to — absolute workspace path and git
-    remote — so the store is self-describing and a future collaboration/sync
-    can map a shared KB back to its project. Idempotent."""
+    """Record the store owner without publishing workstation identity.
+
+    The private external store retains the exact checkout locator needed by
+    legacy adoption and local recovery.  A repository store is committed and
+    shared, so it carries only stable pseudonyms and a repository fingerprint;
+    neither an absolute path nor a credential-bearing remote URL crosses that
+    boundary.
+    """
     root = store_root(workspace)
     os.makedirs(root, exist_ok=True)
     remote = _run(["git", "config", "--get", "remote.origin.url"],
                   cwd=workspace).stdout.strip() or None
-    meta = {"key": project_key(workspace),
-            "workspace": os.path.abspath(workspace),
-            "workspace_realpath": _workspace_identity(workspace),
-            "git_remote": remote}
+    shared = get_mode(workspace)["store"] == "repo"
+    if shared:
+        workspace_digest = hashlib.sha256(
+            _workspace_identity(workspace).encode("utf-8")).hexdigest()
+        repository_material = remote or project_key(workspace)
+        meta = {
+            "schema": "taskplane.store-meta/v2",
+            "shared": True,
+            "workspace_key": "workspace:" + workspace_digest[:24],
+            "repository_fingerprint": hashlib.sha256(
+                repository_material.encode("utf-8")).hexdigest(),
+        }
+    else:
+        meta = {"key": project_key(workspace),
+                "workspace": os.path.abspath(workspace),
+                "workspace_realpath": _workspace_identity(workspace),
+                "git_remote": remote,
+                "shared": False}
+    path = store_meta_path(workspace)
     try:
-        with open(store_meta_path(workspace), "w", encoding="utf-8", newline="") as f:
-            json.dump(meta, f, indent=2)
-    except OSError:
-        pass
+        atomic_write_json(path, meta, indent=2,
+                          sort_keys=True)
+    except OSError as exc:
+        if shared:
+            try:
+                quarantined = _quarantine_shared_store_meta(path)
+            except OSError as quarantine_error:
+                raise StateError(
+                    path, "shared store metadata write failed and stale raw "
+                    "metadata could not be quarantined",
+                    str(quarantine_error)) from exc
+            raise StateError(
+                path, "shared store metadata write failed closed",
+                ("stale raw metadata moved to private quarantine " +
+                 str(quarantined)) if quarantined else
+                "no shared metadata was published") from exc
+        raise StateError(path, "private store metadata write failed",
+                         str(exc)) from exc
     return meta
 
 
@@ -7060,10 +7110,131 @@ _TRACE_FAILED_WARNED = False
 # that never rotated: the false claim is what makes it dangerous, because
 # the only reader who would notice is the one auditing the gap.
 #
-# Archives are now a monotonic sequence and no generation is ever reused.
-# The bound is on the ACTIVE file — which is what keeps appends and reads
-# cheap — not on the history, which is the thing being audited.
+# Archives use monotonic names while retained and are never overwritten.
+# The active file and retained archive set have independent size bounds;
+# expired or excess archives are privacy-purged under the trace lock.
 _TRACE_MAX_BYTES = 5 * 1024 * 1024
+_TRACE_ARCHIVE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+_TRACE_ARCHIVE_MAX_FILES = 8
+_TRACE_ARCHIVE_MAX_BYTES = 40 * 1024 * 1024
+_AUDIT_TEXT_MAX_CHARS = 2048
+_AUDIT_COLLECTION_MAX_ITEMS = 64
+_AUDIT_IDENTITY_FIELDS = frozenset({
+    "actor", "agent", "agent_id", "agent_type", "approved_by", "by",
+    "email", "host", "host_id", "host_session_id", "host_turn_id",
+    "hostname", "human", "session", "session_id", "thread", "thread_id",
+    "turn_id", "user", "username", "validator", "workstation",
+})
+_AUDIT_FREE_TEXT_FIELDS = frozenset({
+    "block", "blockers", "command", "commands", "context_docs",
+    "conversation", "conversations", "diff", "dor_blockers", "dor_warnings",
+    "error", "errors", "files", "goal", "lessons", "missing", "note",
+    "notices", "observations", "output", "patch", "path", "paths",
+    "prompt", "prompts", "reason", "reasons", "scope", "snapshot",
+    "title", "touched", "transcript", "transcripts", "warnings",
+    "write_allow",
+})
+_AUDIT_LITERAL_FIELDS = frozenset({
+    "action", "action_id", "age_s", "approval_enabled", "archived_tasks",
+    "archived_to",
+    "authority_effect_id", "authorized", "blocking", "capability_source",
+    "ceiling_usd", "changed_from", "collected_slots", "contract_id", "count",
+    "criteria", "cycle", "decision", "denials", "design_only", "dispatch_pending",
+    "dor_passed", "effective", "emit", "engine_ran", "evidence_id", "exact_route_verified",
+    "failure_code", "fingerprint", "first_step", "flow", "from_step", "gate",
+    "graph_fingerprint", "graph_modules", "graph_quality_status", "held", "human_required",
+    "id", "impacted", "kernel_status", "key", "kind", "lenses", "max", "max_age_s",
+    "max_fix_cycles", "migrated", "mode", "model", "modules", "old", "open",
+    "operation", "operation_id", "outcome", "passed", "pending", "permission_mode",
+    "produced_by", "produced_in", "read_only", "receipt", "receipt_fingerprint",
+    "receipt_id", "recorded_key", "registry_fingerprint", "registry_version", "replay",
+    "requirement", "requirement_id", "resolution", "restored", "retro_id", "review_id",
+    "reviews", "reviews_completed", "role", "routing_complete", "routing_counts",
+    "routing_mode", "run_id", "seconds", "seconds_saved", "selection", "sha256",
+    "shared_with", "slot", "slots", "spent_usd", "stage", "stage_id", "status",
+    "step", "store", "stuck", "submitted", "suite_cited", "tags", "task", "task_id",
+    "task_slot", "tier", "topology_fingerprint", "track", "triggered", "used", "via",
+})
+_AUDIT_LITERAL_RE = re.compile(r"^[A-Za-z0-9_.:+-]{1,256}$")
+_AUDIT_RELATIVE_PATH_RE = re.compile(
+    r"^(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]{1,256}$")
+
+
+def _audit_pseudonym(value: object) -> str:
+    digest = hashlib.sha256(str(value).encode("utf-8", "replace")).hexdigest()
+    return "anon:" + digest[:20]
+
+
+def _audit_minimized(value: object) -> dict:
+    encoded = json.dumps(value, sort_keys=True, default=str,
+                         separators=(",", ":")).encode("utf-8", "replace")
+    return {"schema": "taskplane.audit-minimized/v1",
+            "bytes": len(encoded), "sha256": hashlib.sha256(encoded).hexdigest()}
+
+
+def _sanitize_audit_key(value: object) -> str:
+    raw = str(value)
+    normalized = raw.strip().lower()
+    allowed = _AUDIT_IDENTITY_FIELDS | _AUDIT_FREE_TEXT_FIELDS | \
+        _AUDIT_LITERAL_FIELDS | {"event", "ts", "schema"}
+    if normalized in allowed:
+        return normalized
+    return "field:" + hashlib.sha256(
+        raw.encode("utf-8", "replace")).hexdigest()[:20]
+
+
+def _sanitize_audit_value(value, *, key: str = "", depth: int = 0):
+    """Return a bounded, JSON-safe audit projection.
+
+    Authority-bearing state remains in its canonical records.  The append-only
+    trace is a diagnostic projection, so raw payload-like fields are replaced
+    by a correlation digest, human/workstation identifiers are pseudonymized,
+    and all remaining text is scrubbed before persistence.
+    """
+    normalized_key = str(key).strip().lower()
+    if normalized_key == "archived_to" and isinstance(value, str) and \
+            _AUDIT_RELATIVE_PATH_RE.fullmatch(value) and \
+            ".." not in value.split("/"):
+        return value
+    if normalized_key in _AUDIT_IDENTITY_FIELDS and value is not None:
+        return _audit_pseudonym(value)
+    if normalized_key in _AUDIT_FREE_TEXT_FIELDS and value is not None:
+        return _audit_minimized(value)
+    if depth >= 6:
+        return "[TRUNCATED_DEPTH]"
+    if isinstance(value, dict):
+        rows = sorted(value.items(), key=lambda row: str(row[0]))
+        return {_sanitize_audit_key(child_key): _sanitize_audit_value(
+                    child_value, key=str(child_key), depth=depth + 1)
+                for child_key, child_value in
+                rows[:_AUDIT_COLLECTION_MAX_ITEMS]}
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_audit_value(item, key=normalized_key,
+                                      depth=depth + 1)
+                for item in list(value)[:_AUDIT_COLLECTION_MAX_ITEMS]]
+    if isinstance(value, str):
+        if normalized_key in _AUDIT_LITERAL_FIELDS and \
+                _AUDIT_LITERAL_RE.fullmatch(value):
+            return value
+        return _audit_minimized(value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _audit_minimized(value)
+
+
+def audit_record(event: object, data: dict | None = None, *,
+                 observed_at: float | None = None) -> dict:
+    """Create the one closed, minimized record accepted by every trace sink."""
+    event_text = str(event)
+    safe_event = (event_text if _AUDIT_LITERAL_RE.fullmatch(event_text)
+                  else "event:" + hashlib.sha256(
+                      event_text.encode("utf-8", "replace")).hexdigest()[:20])
+    rec = {"schema": "taskplane.audit-event/v2", "event": safe_event,
+           "ts": float(_time.time() if observed_at is None else observed_at)}
+    rec.update({_sanitize_audit_key(key):
+                _sanitize_audit_value(value, key=str(key))
+                for key, value in (data or {}).items()})
+    return rec
 
 
 def _reserve_trace_archive(path: str) -> "str | None":
@@ -7074,6 +7245,14 @@ def _reserve_trace_archive(path: str) -> "str | None":
     empty placeholder is then replaced by the real file.
     """
     n = 1
+    directory = os.path.dirname(path) or "."
+    prefix = os.path.basename(path) + "."
+    try:
+        n = max([int(name[len(prefix):]) for name in os.listdir(directory)
+                 if name.startswith(prefix) and
+                 name[len(prefix):].isdigit()] or [0]) + 1
+    except OSError:
+        pass
     while n < 100000:
         dest = f"{path}.{n}"
         try:
@@ -7102,8 +7281,73 @@ def _maybe_rotate_trace(path: str) -> "str | None":
         return None
 
 
+def _purge_trace_archive(path: str) -> None:
+    directory = os.path.dirname(path) or "."
+    staged = os.path.join(
+        directory, ".privacy-purge-" + os.path.basename(path) + "-" +
+        secrets.token_hex(8))
+    os.replace(path, staged)
+    os.unlink(staged)
+
+
+def _enforce_trace_retention_locked(path: str, observed_at: float) -> dict:
+    """Bound rotated audit history while leaving the active trace intact."""
+    directory = os.path.dirname(path) or "."
+    prefix = os.path.basename(path) + "."
+    candidates = []
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        names = []
+    for name in names:
+        suffix = name[len(prefix):] if name.startswith(prefix) else ""
+        if not suffix.isdigit():
+            continue
+        archive = os.path.join(directory, name)
+        try:
+            info = os.lstat(archive)
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError("audit archive is not a regular file")
+            candidates.append((float(info.st_mtime), int(suffix),
+                               int(info.st_size), archive))
+        except OSError:
+            if os.path.lexists(archive):
+                _purge_trace_archive(archive)
+    retained = 0
+    retained_bytes = 0
+    removed = 0
+    for modified_at, _suffix, size, archive in sorted(
+            candidates, reverse=True):
+        expired = modified_at + _TRACE_ARCHIVE_RETENTION_SECONDS <= observed_at
+        excess = (retained >= _TRACE_ARCHIVE_MAX_FILES or
+                  retained_bytes + size > _TRACE_ARCHIVE_MAX_BYTES)
+        if expired or excess:
+            _purge_trace_archive(archive)
+            removed += 1
+        else:
+            retained += 1
+            retained_bytes += size
+    if removed:
+        _fsync_directory(directory)
+    return {"removed": removed, "retained": retained,
+            "retained_bytes": retained_bytes,
+            "retention_seconds": _TRACE_ARCHIVE_RETENTION_SECONDS,
+            "max_files": _TRACE_ARCHIVE_MAX_FILES,
+            "max_bytes": _TRACE_ARCHIVE_MAX_BYTES}
+
+
+def enforce_trace_retention(workspace: str, *, now: float | None = None,
+                            _lock_held: bool = False) -> dict:
+    path = os.path.join(tp_dir(workspace), "trace.jsonl")
+    observed_at = float(_time.time() if now is None else now)
+    if _lock_held:
+        return _enforce_trace_retention_locked(path, observed_at)
+    with file_lock(path + ".retention"):
+        return _enforce_trace_retention_locked(path, observed_at)
+
+
 def trace_paths(workspace: str) -> list:
-    """Every trace file for this workspace, OLDEST first, active last.
+    """Retained trace files for this workspace, OLDEST first, active last.
 
     Rotation splits one logical audit trace across files; a consumer that
     reads only `trace.jsonl` is reading the tail of the record and cannot
@@ -7171,26 +7415,30 @@ def trace(workspace: str, event: str, **data) -> None:
     # Every record carries a monotonic wall-clock ts so the mission-control
     # feed can order events across parallel worker trace files by TIME, not
     # by which file they happened to be concatenated from.
-    rec = {"event": event, "ts": time.time()}
-    rec.update(data)
+    rec = audit_record(event, data, observed_at=time.time())
     try:
         d = tp_dir(workspace)
         os.makedirs(d, exist_ok=True)
         _ensure_self_ignored(d)
         path = os.path.join(d, "trace.jsonl")
-        archived_to = _maybe_rotate_trace(path)
-        with open(path, "a", encoding="utf-8") as f:
-            if archived_to:
-                f.write(json.dumps(
-                    {"event": "trace_rotated", "ts": time.time(),
-                     "archived_to": to_posix(
-                         os.path.relpath(archived_to, workspace)),
-                     "note": "earlier events moved aside, not lost — "
-                             "no archive is ever reused or overwritten; "
-                             "read the whole record with "
-                             "taskplane_lite.trace_paths()"}) + "\n")
-            f.write(json.dumps(rec, default=str) + "\n")
-    except OSError as e:
+        with file_lock(path + ".retention"):
+            enforce_trace_retention(workspace, _lock_held=True)
+            if os.path.islink(path):
+                raise OSError("audit trace is a symlink")
+            archived_to = _maybe_rotate_trace(path)
+            with open(path, "a", encoding="utf-8") as f:
+                if archived_to:
+                    rotation = audit_record("trace_rotated", {
+                        "archived_to": to_posix(
+                            os.path.relpath(archived_to, workspace)),
+                        "note": "earlier events moved to bounded archive",
+                    }, observed_at=time.time())
+                    f.write(json.dumps(rotation, default=str) + "\n")
+                f.write(json.dumps(rec, default=str) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            enforce_trace_retention(workspace, _lock_held=True)
+    except (OSError, StateError) as e:
         # NEVER crash the hook over a broken audit log — but never go dark
         # silently either: one stderr warning per process (v2.3.0).
         if not _TRACE_FAILED_WARNED:
