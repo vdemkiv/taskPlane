@@ -604,20 +604,39 @@ class TestScopeDiffLoopArtifacts(unittest.TestCase):
 
 class TestUnittestRunnerIsolation(unittest.TestCase):
     def test_unittest_run_never_touches_real_home_store(self):
+        """Package import is inert; the actual runner opts into isolation."""
         fake_home = tempfile.mkdtemp(prefix="tp-fakehome-")
         self.addCleanup(shutil.rmtree, fake_home, ignore_errors=True)
         env = dict(os.environ)
-        env.pop("TASKPLANE_HOME", None)          # the belt must catch it
+        env.pop("TASKPLANE_HOME", None)
         env["HOME"] = fake_home
-        r = subprocess.run(
-            [sys.executable, "-m", "unittest",
-             "taskplane.tests.test_requirements"],
-            cwd=ROOT, capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")
-        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+
+        imported = subprocess.run(
+            [sys.executable, "-c", "import taskplane.tests"],
+            cwd=ROOT, capture_output=True, text=True, env=env,
+            encoding="utf-8", errors="replace")
+        self.assertEqual(imported.returncode, 0, imported.stderr[-2000:])
+        self.assertFalse(os.path.exists(os.path.join(fake_home, ".taskplane")))
+
+        script = """
+import sys
+import unittest
+from taskplane.tests import isolated_test_runtime
+
+with isolated_test_runtime():
+    suite = unittest.defaultTestLoader.loadTestsFromName(
+        "taskplane.tests.test_requirements")
+    result = unittest.TextTestRunner(verbosity=0).run(suite)
+raise SystemExit(0 if result.wasSuccessful() else 1)
+"""
+        executed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT, capture_output=True, text=True, env=env,
+            encoding="utf-8", errors="replace")
+        self.assertEqual(executed.returncode, 0, executed.stderr[-2000:])
         self.assertFalse(
             os.path.exists(os.path.join(fake_home, ".taskplane")),
-            "a plain `python -m unittest` run wrote into ~/.taskplane — "
-            "the tests/__init__.py session belt is not effective")
+            "an explicitly isolated unittest run wrote into ~/.taskplane")
 
 
 # =====================================================================
