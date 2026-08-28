@@ -11,19 +11,19 @@ can enforce *mechanically* on the host agent:
 
 What a host plugin CANNOT do (the honest limitation): intercept the host
 agent's model calls, so the dollar/token budget is tracked cooperatively,
-not enforced before spend. The tool/scope/command screen IS enforced by the
-PreToolUse hook before the action runs — but it screens a *cooperative*
-shell, not an OS sandbox. It reads the command string, makes wrapper
-programs (env/nohup/sudo/xargs/…) and nested `sh -c`/`$()` transparent, and
-blocks resolvable out-of-scope writes plus the clearly-destructive
-unscopeable verbs (`find -delete/-exec`, `git checkout/reset/…`). A
-read-only review contract additionally blocks every un-screenable mutator,
-so the reviewed source is protected on a best-effort basis. It is NOT a
-boundary against a determined interpreter: `python -c "…"` under a *build*
-contract can still write anywhere, because a Turing-complete body can't be
-screened from argv. For a hard guarantee, run review/build contracts on a
-read-only bind-mount or in a container — the screen is defense-in-depth,
-not the wall.
+not enforced before spend. The PreToolUse hook screens a *cooperative* shell
+for build contracts: it makes wrappers (env/nohup/sudo/xargs/…) and nested
+`sh -c`/`$()` transparent, and blocks resolvable out-of-scope writes plus
+clearly destructive unscopeable verbs (`find -delete/-exec`,
+`git checkout/reset/…`). A read-only review never authorizes a shell command:
+an allow/deny hook cannot rewrite a host command into shell=False execution,
+scrub its process environment, or bind the bytes of the eventual executable.
+It admits only explicitly listed host-native Read/Grep/Glob calls and scoped
+host-native edits to review artifacts. A future host-owned direct-exec broker
+may add command access; caller-authored argv/receipt fields do not. Under a
+*build* contract, `python -c "…"` can still write anywhere because a
+Turing-complete body cannot be screened from argv. For a hard build boundary,
+use a container or OS sandbox.
 
 Behavior mirrors the audited taskplane hooks/DoD logic so a governed task
 behaves consistently across supported hosts.
@@ -53,6 +53,7 @@ import posixpath
 import re
 import secrets
 import shlex
+import stat
 import subprocess
 import sys
 import time as _time
@@ -88,7 +89,7 @@ def atomic_write_json(path: str, data, *, indent: int = 1,
     A crash mid-write leaves the previous version intact instead of a torn
     file. Same-directory temp keeps the replace atomic across filesystems."""
     d = os.path.dirname(path) or "."
-    os.makedirs(d, exist_ok=True)
+    _durable_makedirs(d)
     tmp = os.path.join(
         d, f".{os.path.basename(path)}.tmp.{os.getpid()}."
         f"{secrets.token_hex(8)}")
@@ -112,9 +113,63 @@ def atomic_write_json(path: str, data, *, indent: int = 1,
             pass
 
 
+def _durable_makedirs(path: str) -> None:
+    """Create a directory chain without acknowledging volatile ancestors.
+
+    ``os.makedirs`` makes the complete chain but provides no point at which a
+    caller can persist each newly linked directory.  Governance state may be
+    the first write beneath a fresh run/store hierarchy, so create each
+    missing component separately.  The child is flushed first, then the
+    parent that owns its name.  Any failure propagates before the state file
+    is opened; a partially created (but unacknowledged) empty chain is safe to
+    retry.
+    """
+    target = os.path.abspath(path)
+    missing = []
+    cursor = target
+    while not os.path.lexists(cursor):
+        missing.append(cursor)
+        parent = os.path.dirname(cursor)
+        if parent == cursor:
+            break
+        cursor = parent
+    _durable_directory_identity(cursor)
+
+    for directory in reversed(missing):
+        parent = os.path.dirname(directory) or "."
+        try:
+            os.mkdir(directory)
+        except FileExistsError:
+            # Treat a concurrent creator exactly like our own mkdir: verify
+            # its object type and establish durability ourselves before
+            # descending.  Never assume another process completed its fsync.
+            pass
+        identity = _durable_directory_identity(directory)
+        _fsync_directory(directory)
+        _fsync_directory(parent)
+        if _durable_directory_identity(directory) != identity:
+            raise StateError(directory,
+                             "durable directory identity changed during fsync")
+
+
+def _durable_directory_identity(path: str) -> tuple[int, int]:
+    """Return a stable non-symlink directory identity or fail closed."""
+    try:
+        value = os.lstat(path)
+    except OSError as exc:
+        raise StateError(path, f"durable directory is unavailable ({exc})") \
+            from None
+    if stat.S_ISLNK(value.st_mode):
+        raise StateError(path, "durable directory anchor is a symlink")
+    if not stat.S_ISDIR(value.st_mode):
+        raise StateError(path, "durable directory anchor is not a directory")
+    return int(value.st_dev), int(value.st_ino)
+
+
 def _fsync_directory(path: str) -> None:
     """Persist a directory entry update before its caller acknowledges it."""
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
     try:
         fd = os.open(path, flags)
     except OSError:
@@ -251,6 +306,7 @@ WRITE_TOOL_PATH_FIELDS = {
 WRITE_TOOLS = set(WRITE_TOOL_PATH_FIELDS)
 COMMAND_TOOLS = {"Bash", "BashOutput", "exec_command",
                  "functions.exec_command"}
+READONLY_NATIVE_READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
 TOOL_ALIASES = {
     "apply_patch": ("apply_patch", "Edit", "Write"),
     "Agent": ("Agent", "Task"),
@@ -1842,7 +1898,7 @@ _TP_READONLY_NESTED = frozenset({
     ("kb", "list"), ("kb", "lint"), ("kb", "retrieve"),
     ("kb", "where"),
     ("lens", "list"), ("lens", "show"),
-    ("loop", "status"), ("loop", "retro"),
+    ("loop", "status"),
     ("req", "list"),
     ("repository", "status"),
     ("share", "status"),
@@ -2494,6 +2550,23 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                                "active contracts; set TASKPLANE_TASK to work "
                                "under a single task's contract)")
         return True, f"within every active contract ({len(members)}-way union)"
+    if contract.get("read_only"):
+        if tool_name in COMMAND_TOOLS:
+            return False, (
+                "read-only review contract: every shell command tool is "
+                "blocked because this host hook cannot prove shell=False, a "
+                "sanitized process environment, or executable bytes; use "
+                "explicitly allowed host-native Read/Grep/Glob and scoped "
+                "Write/Edit tools")
+        native_tools = READONLY_NATIVE_READ_TOOLS | WRITE_TOOLS
+        if tool_name not in native_tools:
+            return False, (
+                f"read-only review contract: '{tool_name}' is not an exact "
+                "host-native Read/Grep/Glob or scoped Write/Edit tool")
+        if not contract.get("allowed_tools"):
+            return False, (
+                "read-only review contract has no explicit allowed_tools; "
+                "implicit tool admission is forbidden")
     allowed = contract.get("allowed_tools") or []
     if allowed and not any(name in allowed for name in tool_aliases(tool_name)):
         return False, f"tool '{tool_name}' not in allowed_tools"
@@ -2504,7 +2577,6 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
         if hook_command:
             return False, ("host hook entry point cannot be invoked through "
                            f"an agent shell: {hook_command}")
-
     coding = contract.get("coding") or {}
 
     # Read-only contract: no filesystem writes EXCEPT an optional allowlist
@@ -2526,42 +2598,6 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
                                f"only write under {allow or '(nothing)'} — "
                                f"'{bad}' is outside it; the reviewed source "
                                "is protected")
-        if tool_name in COMMAND_TOOLS:
-            command = command_text(tool_name, tool_input)
-            grammar_violation = _readonly_command_grammar_violation(
-                command, workspace, allow)
-            if grammar_violation:
-                return False, (
-                    "read-only review contract: " + grammar_violation
-                    + "; this shell form can't be screened by the admitted "
-                    f"grammar — writes must stay under {allow or '(nothing)'}; "
-                    "the reviewed source is protected (fail-closed grammar)")
-            targets, opaque = _analyze(command, workspace=workspace)
-            leased_paths = [path for path in allow
-                            if any(marker in
-                                   "/" + str(path).replace("\\", "/")
-                                   for marker in (
-                                       "/kernel-v2/results/",
-                                       "/lenses/results/"))]
-            for t in targets:
-                if leased_paths and writable_target(
-                        t, leased_paths, workspace):
-                    return False, ("leased review result must use the host "
-                                   "Write tool; Bash cannot establish result "
-                                   "provenance")
-                if not writable_target(t, allow, workspace):
-                    return False, ("read-only review contract: command writes "
-                                   f"'{t}' outside {allow or '(nothing)'} — "
-                                   "the reviewed source is protected")
-            # A review needs no mutator at all — block every un-screenable
-            # one (interpreters AND destructive verbs), not just concrete
-            # writes. This is what makes the read-only source protection hold
-            # against `python -c`, `find -delete`, and `git checkout`.
-            if opaque:
-                return False, ("read-only review contract: " + opaque[1]
-                               + f" — writes must stay under "
-                               f"{allow or '(nothing)'}; the reviewed source "
-                               "is protected (best-effort screen)")
         # deny patterns still apply below
 
     if tool_name in WRITE_TOOLS and (coding.get("scope_paths")
@@ -4452,6 +4488,14 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
         raise ValueError(
             "max_actions must be >= 0 — 0 means a ZERO-action ceiling "
             "(every governed action blocks); omit it for the default")
+    if read_only and tools is None:
+        # Persist an explicit closed host-native tool list.  An empty list has
+        # historically meant "all tools", which is not a safe default for a
+        # read-only authority.  Artifact writers are added only when their
+        # target allowlist is also present.
+        tools = sorted(READONLY_NATIVE_READ_TOOLS)
+        if write_allow:
+            tools += sorted(WRITE_TOOLS)
     c = {
         "task_id": "task_" + uuid.uuid4().hex[:8],
         "task": task,
