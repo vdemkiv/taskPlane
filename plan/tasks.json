@@ -5,7 +5,7 @@
   "automatic_lenses": [],
   "design_fingerprint": "ac5709a4a381d44556318207d8f9a34c98d9bdd69ff1fe74d7408a9f9505d8fe",
   "plan_authority": "Codex native subagents execute every ready pairwise-disjoint Build set in parallel. Taskplane classifies dependencies, emits scoped contracts, validates evidence, and holds orchestrator and human gates; it supplies zero Build, Fix, Evaluate, or execution-time EM lens workers.",
-  "impact": {"files_argument_count": 44, "touched_modules": ["(root)", ".codex-plugin", ".github/workflows", "design", "docs", "exports/terminal", "scripts", "skills/tp-help", "specs", "taskplane", "taskplane/tests"], "total_impacted": 24, "unknown_modules": [], "graph_fingerprint": "49e6d05913fc158ef52b3386afc184735ab88015a886c78cd6b2897e7a6a10e8", "scanned_revision": "00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085", "truncated_by_result_ceiling": true, "depth_truncated": false},
+  "impact": {"files_argument_count": 4, "touched_modules": ["taskplane", "taskplane/tests"], "total_impacted": 30, "unknown_modules": [], "graph_fingerprint": "f5e97aa40e7a3566039da309b849050fb96446ea142412bf1c32f140164e8fca", "scanned_revision": "00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085", "truncated_by_result_ceiling": true, "depth_truncated": false},
   "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
   "traceability": {
     "canonical_source": "design/contract.json#/finding_map",
@@ -17,7 +17,7 @@
   "tasks": [
     {
       "id": "H1-A", "wave": "H1", "owner": "terminal-and-cas",
-      "scope": ["taskplane/terminal_truth.py", "taskplane/delivery_ports.py", "taskplane/tests/test_em_h1_terminal.py"],
+      "scope": ["taskplane/loop.py", "taskplane/terminal_truth.py", "taskplane/delivery_ports.py", "taskplane/tests/test_em_h1_terminal.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_terminal.py",
       "req": "R-0002", "deps": [], "type": "reliability",
       "contracts": ["contract:runtime.durable-state-and-authority", "contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
