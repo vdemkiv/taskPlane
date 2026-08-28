@@ -133,6 +133,39 @@
       "release": "historical-only"
     }
   ],
+  "release_observation_producer": {
+    "entrypoint": "scripts/package_openai.py --write-compatibility-receipt <path>",
+    "platform": "openai-marketplace-zip",
+    "check_identity_prefix": "package-openai/release-matrix/",
+    "test_name": "openai-package-archive-roundtrip",
+    "last_released_tag": "v2.17.20",
+    "last_released_commit": "4a0378e7f080136d27f01d4ab7ecdf9bac8a1ad6"
+  },
+  "release_authority": {
+    "provider": "github",
+    "repository": "vdemkiv/taskPlane",
+    "protected_ref": "refs/heads/main",
+    "workflow": {
+      "name": "CI",
+      "path": ".github/workflows/ci.yml",
+      "event": "push"
+    },
+    "required_checks": [
+      "tests (python 3.12)",
+      "zero-token corpus (credential-empty, no-egress)",
+      "R-0006 graph + CLI contracts",
+      "pushed SHA delivery proof"
+    ],
+    "publication_decision": {
+      "kind": "github-verified-annotated-tag/v1",
+      "tag_prefix": "openai-publication/",
+      "message_schema": "taskplane.openai-publication-approval/v1",
+      "decision": "approve",
+      "allowed_tagger_emails": [
+        "vdemkiv@gmail.com"
+      ]
+    }
+  },
   "json_evolution": {
     "authority_objects": "closed",
     "additionalProperties": false,
@@ -202,10 +235,10 @@
   ],
   "authority_limitations": {
     "cryptographic_authenticity_claimed": false,
-    "actor_strings": "attributed but unauthenticated inherited limitation",
+    "actor_strings": "Local receipt actor strings remain attributed but unauthenticated; OpenAI publication separately requires a live GitHub-verified signed annotated-tag actor and exact decision.",
     "host_action_capability": "single-use exact-bound host-channel continuity only",
     "local_receipts": "not actor or platform authenticity proof",
-    "asymmetric_authority": "shelved; no signer/verifier/key/MAC/signature workflow in R-0001"
+    "asymmetric_authority": "OpenAI publication uses GitHub's signature verification for the pinned repository approval tag; local receipt fingerprints alone never grant authority."
   },
   "dispatch_capability": {
     "schema": "taskplane.task-dispatch-capability/v1",
