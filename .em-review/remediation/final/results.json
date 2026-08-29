@@ -1,0 +1,124 @@
+{
+  "schema": "taskplane.r0002-final-evaluation/v1",
+  "requirement_id": "R-0002",
+  "candidate": {
+    "sha": "4dacd46faba12b2662f265c7665bf13fd5bc2cf8",
+    "tree": "434eafc2c1fa7804c35d397a0bbca79bb59692da",
+    "branch": "codex/r0013-fresh-build-c9ec",
+    "clean": true
+  },
+  "inventory": {
+    "total": 72,
+    "high": 34,
+    "medium": 28,
+    "low": 10,
+    "independently_green": 57,
+    "accepted_non_independent_exceptions": 15,
+    "missing_or_suppressed": 0
+  },
+  "strict_status": {
+    "ac5": "not-satisfied-15-attributed-high-exceptions",
+    "ac8": "not-satisfied-no-repeat-exact-final-sha-aggregate",
+    "delivery": "complete-under-attributed-exceptions-and-selective-rerun-policy"
+  },
+  "test_manifest": {
+    "file_count": 265,
+    "sha256": "4ece8a2091cf0ca400bfecc213653795e46d4a8cd52826a1ffc2f4ec951b3f91",
+    "partition": "lexicographic taskplane/tests/test*.py; zero-based index modulo 10",
+    "digest_encoding": "newline-joined relative paths without trailing newline"
+  },
+  "aggregate_run": {
+    "source_sha": "b9adea3e61781431feb9af9b1fd3330b18591507",
+    "execution": "10 pairwise-disjoint shards in parallel; one valid pytest run per shard",
+    "totals": {
+      "passed": 4822,
+      "failed": 4,
+      "skipped": 5,
+      "subtests_passed": 738,
+      "pytest_seconds_sum": 8885.16,
+      "critical_path_seconds": 1782.09
+    },
+    "shards": [
+      {"id": "S00", "files": 27, "digest": "9426c0b545a568f7491a672a4872dbeceb85f36183894d59e91581ffef292cb7", "passed": 368, "failed": 2, "skipped": 1, "subtests_passed": 0, "seconds": 448.27},
+      {"id": "S01", "files": 27, "digest": "50f156e952aa3d5c72080aef79e5cec5cca2cb788aefd420c34b051c5229e0e0", "passed": 473, "failed": 0, "skipped": 0, "subtests_passed": 109, "seconds": 1782.09},
+      {"id": "S02", "files": 27, "digest": "134ac6e7399035e4022519aeb9fe54120fff57d343157d9140fc9065232267c2", "passed": 465, "failed": 0, "skipped": 1, "subtests_passed": 0, "seconds": 797.29},
+      {"id": "S03", "files": 27, "digest": "e18cc2453666d28a557fa91b620824fbe4e4ce8b8a555355cdcc372ac4394a62", "passed": 551, "failed": 1, "skipped": 0, "subtests_passed": 0, "seconds": 657.29},
+      {"id": "S04", "files": 27, "digest": "c53ce5a05f48bbcd49d8e1a2fddfce02cab79d5669e3f0d658cb3b41bcd05858", "passed": 556, "failed": 1, "skipped": 0, "subtests_passed": 261, "seconds": 1142.49},
+      {"id": "S05", "files": 26, "digest": "89de8f29f92ad54c34010e494311bfc50257c880bd26b9ef04be0e4131b03e85", "passed": 657, "failed": 0, "skipped": 1, "subtests_passed": 61, "seconds": 962.91},
+      {"id": "S06", "files": 26, "digest": "77bb7a89a99e50a94b57e193da68b8728446591b2bd45d00807a5034446caa31", "passed": 454, "failed": 0, "skipped": 0, "subtests_passed": 0, "seconds": 795.96},
+      {"id": "S07", "files": 26, "digest": "13a791a4fa3c0dfcaf4900656b006a85c72b8d0a4cce5ac6448c1304e41c1122", "passed": 488, "failed": 0, "skipped": 1, "subtests_passed": 272, "seconds": 665.94},
+      {"id": "S08", "files": 26, "digest": "5e01441e1697395f1276417819331c886328cc20b28215d1a79b86fcc320b7f6", "passed": 438, "failed": 0, "skipped": 1, "subtests_passed": 0, "seconds": 1134.48, "note": "one preceding malformed invocation collected and ran zero tests; the authorized array-based recovery was the sole valid run"},
+      {"id": "S09", "files": 26, "digest": "ed0b1fd0aad3217c6b9b5a09b96cc5eac56a91cc45acc4856328387c372bafe0", "passed": 372, "failed": 0, "skipped": 0, "subtests_passed": 35, "seconds": 498.44}
+    ]
+  },
+  "failure_closure": [
+    {
+      "source_shard": "S00",
+      "selectors": 2,
+      "cause": "new top-level modules were absent from the strict quality inventory",
+      "commit": "7984035998047d0045e51e9d29cbf7977d1778b1",
+      "final_validation": "2 passed; Ruff clean; strict mypy clean"
+    },
+    {
+      "source_shard": "S03",
+      "selectors": 1,
+      "cause": "test-only duplicate depgraph module identity overwrote the live loader registration",
+      "commit": "f74d6fbb53225fee4915492d68ceb9bd531a4e37",
+      "final_validation": "18 same-process tests passed; exact fresh selector passed"
+    },
+    {
+      "source_shard": "S04",
+      "selectors": 1,
+      "cause": "ordinary Design contracts inherited the sealed R-0002/R-0013 architecture authority",
+      "commit": "bb210acef375c9977edd509fff8934f9c3909ac6",
+      "reseal_commit": "4dacd46faba12b2662f265c7665bf13fd5bc2cf8",
+      "final_validation": "gate selector passed; 35 architecture/tamper tests passed"
+    }
+  ],
+  "focused_final_validation": {
+    "pytest_executions_passed": 183,
+    "groups": [
+      {"id": "architecture", "passed": 36, "status": "pass"},
+      {"id": "release-history-and-packaging", "passed": 20, "status": "pass"},
+      {"id": "graph-loader-isolation", "passed": 19, "status": "pass", "note": "one exact selector repeats a selector in the ordered 18-test receipt"},
+      {"id": "cycle-and-quality-ratchets", "passed": 108, "status": "pass"}
+    ],
+    "effective_aggregate_disposition": {
+      "passed": 4826,
+      "failed": 0,
+      "skipped": 5,
+      "subtests_passed": 738,
+      "basis": "4822 preserved green aggregate receipts plus exact final-candidate closure of four failures"
+    }
+  },
+  "graph_and_quality": {
+    "scc_count": 2,
+    "protected_scc": {"members": 7, "edges": 13, "physical_loc": 15701, "ceiling": 15822},
+    "inventory_sha256": "6343dd0697926107b22121f725be4dab58d2f8a4c0987e42bf48fc8f8353297d",
+    "policy_sha256": "55ab2022bdcde4c6a1c363e2b46064ac1e4d583d0c9a900a495c7a83867c5735",
+    "top_level_modules": 89,
+    "strict_modules": 6,
+    "legacy_debt_modules": 83
+  },
+  "verifier_reseal": {
+    "accepted_by": "Volodymyr Demkiv",
+    "authority_quote": "Approve",
+    "previous_depgraph_blob": "285fdba9a1207cdf729079aa6d111283572ff8d8",
+    "current_depgraph_blob": "13aca2b71e907dc8fafa7351786cfefd39075e30",
+    "historical_depgraph_blob": "3a98d31a9dfeea8456a123cef4636cf004e56bee",
+    "ci_verifier_blob": "c34136b3ea6275665e9a95f9fbc87850c161034d",
+    "scope": "ordinary Design contracts do not opt into the sealed R-0002/R-0013 architecture map; pinned authorities remain fail-closed"
+  },
+  "exceptions": {
+    "high_selector_receipt_authority": 13,
+    "high_retention": 2,
+    "exact_final_sha_aggregate_not_repeated": true
+  },
+  "external_actions": {
+    "pushed": false,
+    "tagged": false,
+    "published": false,
+    "origin_main_mutated": false,
+    "pr_merged": false
+  }
+}
