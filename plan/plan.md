@@ -10,10 +10,12 @@ This Plan preserves integration HEAD
 LR-06, LR-07 green Build commit
 `3ce35c6d9e9ca0e5d503212d9e56b85fa1abb91d` on `tp/LR-07` for later
 Evaluate, and LR-08 clean checkpoint
-`65e462cc99fdce9ae190f6d368b5bc180d6e0ad1` on `tp/LR-08`. Completed tasks remain in `plan/tasks.json` only for
+`7d2bcfecd1b1bb3751a62b179f31811dbf8ad103` with tree
+`91c260ffb9042a7170e8c9779f36d06e576d4b38` on `tp/LR-08`. Completed tasks remain in `plan/tasks.json` only for
 exact Design, module, edge, contract, and reanchor evidence. They have no new
-dispatch authority and are neither recreated nor rerun. LR-08 resumes in place
-only to amend the authoritative generator for its generated catalog.
+dispatch authority and are neither recreated nor rerun. LR-08's generator,
+generated catalog, and argv-safe regression are already green at that exact
+commit/tree; the Build gate reanchors them without implementation redispatch.
 
 Only `LR-08 Build → (LR-07 Evaluate ∥ LR-08 Evaluate) → LR-09` remains. The
 night-mode authorization permits the root orchestrator to apply intermediate
@@ -45,11 +47,13 @@ evidence produces more than four independent mandatory risks, Evaluate must
 split scope or use the exact protected expanded-route capability; it may not
 silently discard a mandatory lens.
 
-Four native read-only quick lens agents executed concurrently. Security found
-and then verified the least-privilege scope and immutable checkpoint fixes;
-testability found and then verified the explicit generator `--check` seam.
-Architecture and cost-finops remained clean. The four final signed child
-identities and canonical result digests are retained in
+Four native read-only quick lens agents originally executed concurrently. The
+current immutable Taskplane source recalculated all four canonical lens input
+fingerprints after the argv-safe command correction and exact LR-08 commit/tree
+binding. No prior receipt was therefore eligible for reuse: architecture,
+security, testability, and cost-finops each reran once at quick/light depth and
+passed with zero findings. The four final signed child identities, native
+canonical input fingerprints, evidence actions, and result digests are retained in
 `plan/tasks.json#/plan_route/lens_receipts`; every final verdict is pass, with
 zero deep execution and all 26 dispositions unchanged.
 
@@ -108,10 +112,11 @@ selector.
 
 LR-08 resumes from the exact clean checkpoint above; its mechanically narrowed
 scope contains only `scripts/gen_lens_catalog.py`, generated
-`docs/lens-catalog.md`, and the focused product-truth test. Its one command
-runs the generator's new read-only `--check` seam before pytest. Its only remaining Build work is
-the authoritative `scripts/gen_lens_catalog.py` generator amendment for
-generated `docs/lens-catalog.md`. After that Build passes, LR-07 and LR-08 may
+`docs/lens-catalog.md`, and the focused product-truth test. Its argv-safe
+pytest command contains the generator's read-only `--check` regression without
+using shell operators. The generator amendment and generated catalog are
+already committed and green, so only exact commit/tree reanchor remains before
+LR-07 and LR-08 may
 Evaluate together:
 
 - LR-07 updates agent/skill contracts for request-only protected authority,
@@ -129,7 +134,8 @@ implementation and must return to Design if behavior would drift.
 
 LR-09 waits for both truth tasks and runs one remaining-chain command covering
 provider/adapter, focused stages, agent/skill truth, product truth, and
-integration. Its command begins with the same hermetic generator `--check`.
+integration. The product-truth pytest in that argv-safe command executes the
+same hermetic generator `--check` regression.
 It verifies all ten acceptance strings, seven contracts/resources,
 29 edges, protected overflow, and normal-route continuity without reopening
 retained LR-01/LR-02/LR-04/LR-05 selectors. Evaluate then computes a fresh
