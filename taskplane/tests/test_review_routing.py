@@ -1750,6 +1750,52 @@ def test_evaluate_selects_three_or_four_from_material_implementation_evidence():
     assert not [row for row in refused["lenses"] if row["tier"] == "sweep"]
 
 
+def test_focused_evaluate_accepts_integer_depth_dependency_impact():
+    graph = {
+        "meta": {"scanned_head": "abc123"},
+        "modules": {"service": {}, "consumer": {}, "api": {}},
+        "edges": [
+            {"from": "consumer", "to": "service", "kind": "imports"},
+            {"from": "api", "to": "consumer", "kind": "imports"},
+        ],
+    }
+    with mock.patch.object(depgraph, "load", return_value=graph):
+        impact = depgraph.impact("/unused", ["service"])
+    assert set(impact["impacted"]) == {1, 2}
+
+    catalog = lens.load_catalog()
+    files = ["src/service.py"]
+    content = {"src/service.py": "def changed():\n    return 2\n"}
+    mapped = lens.route(
+        files, task_type="reliability", stage="build", breadth="routed",
+        requirement_text="A reliable focused review with executable tests",
+        content_by_file=content)
+    inputs = {
+        "target": {"fingerprint": "a" * 64, "head": "abc123"},
+        "requirement": {"id": "R-0001", "text": "focused review"},
+        "acceptance": ["the focused route evaluates the implementation"],
+        "design_contract": {"fingerprint": "design-v1", "edges": ["a->b"]},
+        "diff": {"files": files, "changed_symbols": ["changed"],
+                 "artifact": {"fingerprint": "diff-v1"}},
+        "test_evidence": {"summary": "passed", "selectors": ["focused"]},
+        "unresolved_findings": [],
+        "routing_content": content,
+    }
+
+    route, _ = review._focused_evaluate_route(
+        mapped, catalog=catalog, impact=impact, **inputs)
+    string_depth_impact = {
+        **impact,
+        "impacted": {str(depth): rows
+                     for depth, rows in impact["impacted"].items()},
+    }
+    string_route, _ = review._focused_evaluate_route(
+        mapped, catalog=catalog, impact=string_depth_impact, **inputs)
+
+    assert route["status"] == "ready"
+    assert route["route_fingerprint"] == string_route["route_fingerprint"]
+
+
 def test_fix_reruns_only_invalidated_fingerprinted_lens_evidence():
     selected = ["architecture", "code-quality", "testability", "qa"]
     prior = {

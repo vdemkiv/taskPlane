@@ -2459,6 +2459,25 @@ _FOCUSED_RISK_GROUPS = {
 }
 
 
+def _dependency_impact_for_routing_fingerprint(impact: dict) -> dict:
+    """Adapt depgraph integer depth keys to the policy's JSON boundary."""
+    normalized = copy.deepcopy(impact or {})
+    by_depth = normalized.get("impacted")
+    if not isinstance(by_depth, dict):
+        return normalized
+    normalized_depths = {}
+    for depth, rows in by_depth.items():
+        key = str(depth) if isinstance(depth, int) and not isinstance(
+            depth, bool) else depth
+        if key in normalized_depths:
+            raise ReviewKernelError(
+                "dependency impact depth keys collide after normalization: "
+                f"{key}")
+        normalized_depths[key] = rows
+    normalized["impacted"] = normalized_depths
+    return normalized
+
+
 def _focused_evaluate_route(
         routing: dict, *, catalog: dict, target: dict,
         requirement: dict | None, acceptance: Iterable | None,
@@ -2501,7 +2520,8 @@ def _focused_evaluate_route(
         # bound to the semantic diff bytes and symbols, never that envelope.
         "actual_diff": lens_route_policy.fingerprint(semantic_diff),
         "changed_files": lens_route_policy.fingerprint(changed_files),
-        "dependency_impact": lens_route_policy.fingerprint(impact or {}),
+        "dependency_impact": lens_route_policy.fingerprint(
+            _dependency_impact_for_routing_fingerprint(impact)),
         "test_evidence": lens_route_policy.fingerprint(test_evidence or {}),
         "unresolved_findings": lens_route_policy.fingerprint(unresolved),
     }
