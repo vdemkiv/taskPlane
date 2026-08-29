@@ -1,5 +1,7 @@
 # R-0001 Plan — focused dynamic lens routing
 
+**Status: blocked on Design drift `DD-LR03-PROTECTED-HOST-AUTHORITY`.**
+
 ## Outcome and authority
 
 This Plan realizes approved Design fingerprint
@@ -14,6 +16,14 @@ wave recomputes and executes three or four focused quick lenses from actual
 implementation evidence. Product and Design remain minimum-sufficient focused
 quick routes. No push, merge to main, tag, package, publication, release, or CI
 wait is part of this Plan.
+
+Canonical security finding `6ea9aff0107f4bb6` proves that LR-03 cannot satisfy
+AC-LR5 inside its approved worker-controlled two-file scope. LR-01, LR-02,
+LR-04, and LR-05 remain passed and archived; they are not recreated or rerun.
+All LR-03 commits and evidence are preserved in place. This amendment records
+the Design blocker and does not authorize implementation until Design approves
+a real protected boundary. Final human signoff remains the only human approval
+after governed delivery resumes.
 
 ## Plan route and complete disposition
 
@@ -60,6 +70,44 @@ no unknown module. Any implementation need outside these modules or any
 undeclared cross-boundary edge is Design drift and returns to Design rather
 than widening a Build scope.
 
+## Protected authority Design blocker
+
+The required single bounded authority-replan impact query covered
+`taskplane/taskplane_lite.py`, `taskplane/tp.py`,
+`taskplane/tests/test_expanded_lens_route_authority.py`, `hooks`, and `.codex`.
+It reported 28 impacted modules, no unknown modules, no external or boundary
+nodes, no result/depth truncation, graph fingerprint
+`431ddff0d899c3b6122cf2d005f3065148e0f2aaeb919e562c7da5a2fca56739`, and
+scanned revision `e5183c36da43a3c945adfbc39d329b0b127cf107`. The query retained the
+approved depth-3, contract-only policy. That evidence proves the repository
+graph has no protected host/control-plane provider available to this Plan.
+
+`taskplane/taskplane_lite.py` is an approved module, but its source and Python
+interpreter are both worker-controlled. A worker can therefore monkeypatch its
+locator, clock, RSA verification, issuance, and consumption helpers. The other
+examined candidates—`taskplane/tp.py`, `hooks`, and `.codex`—are likewise in
+the worktree and are not approved feature modules. Reusing any of them as a
+nominal authority would not create isolation.
+
+Design must now name the smallest genuine host/control-plane provider outside
+the worker-controlled checkout and interpreter, and revise the graph so that
+provider—not `taskplane/taskplane_lite.py`—provides
+`contract:authority.expanded-lens-route`. The Design amendment must also name:
+
+- a protected source locator outside the worker workspace that fails closed
+  when missing, altered, relocated, or symlinked;
+- 0600 custody outside that workspace;
+- host-owned issuance and an authoritative host clock;
+- exact RSA verification and atomic one-use consumption; and
+- a worker adapter that can request and consume only the host decision, without
+  supplying or replacing authority inputs.
+
+No host module or new Design edge is invented in this Plan. LR-03 keeps its
+approved two-file scope and is explicitly blocked until the Design contract
+names the protected provider, resource, and edges. Its existing commits
+`8af3d8e`, `03a6c8f`, `3736e7c`, `000704a`, and `76dc79d`, plus all associated
+evidence, remain retained for the later in-place amendment.
+
 ## Dependency-aware delivery
 
 ### Foundation
@@ -79,9 +127,11 @@ canonical dependency-impact route:
 - LR-02 adapts ReviewKernel and Fix-to-Evaluate reuse. It recomputes a three-or-
   four-lens Evaluate route, normalizes the ordinary integer-depth dependency
   impact at that adapter boundary, and leases only invalidated/new evidence.
-- LR-03 implements the exact target/context/lens/cost/expiry/policy signed
-  expansion capability and its tamper/replay matrix. Its Evaluate gate waits
-  for LR-02 so the canonical dependency-impact route is available.
+- LR-03 is blocked by `DD-LR03-PROTECTED-HOST-AUTHORITY`. After Design names
+  the protected provider, it amends the preserved exact
+  target/context/lens/cost/expiry/policy capability in place and retains its
+  tamper/replay matrix. Its Evaluate gate still waits for LR-02 so the canonical
+  dependency-impact route is available.
 - LR-04 persists bounded redacted terminal route telemetry for every lifecycle
   outcome.
 - LR-05 narrows zero-lens delivery enforcement to Build, Fix, and EM while
@@ -98,6 +148,9 @@ minimum-sufficient Product/Design routes, proves Plan accepts only three/four
 for non-trivial targets, connects overflow authority, and confines lens starts
 to Product, Design, Plan, and Evaluate. Keeping the loop edit in one join
 prevents overlapping ready workers from racing on lifecycle authority.
+Because LR-06 depends on LR-03, it and all later tasks remain blocked until the
+Design amendment is approved and LR-03 passes. Their task topology and scopes
+are unchanged.
 
 ### Parallel truth surfaces
 
@@ -129,7 +182,10 @@ actual diff and test evidence; it does not inherit this Plan's selected route.
 - LR-02: Evaluate three/four routing, ordinary integer-depth dependency-impact
   normalization, and single/multiple/unchanged Fix invalidation.
 - LR-03: overflow refusal, exact authorization, tamper, replay, expiry, and
-  target/context mismatch.
+  target/context mismatch; worker monkeypatch attempts cannot replace host
+  issuance, clock, exact RSA verification, locator, or one-use consumption;
+  missing, non-0600, symlinked, relocated, or altered locator/custody state
+  fails closed with zero issuance or consumption.
 - LR-04: terminal telemetry completeness, 512-byte reasons, 128-KiB artifacts,
   redaction, tokens, runtime, reuse, and invalidation.
 - LR-05: zero Build/Fix lens starts on success, failure, cancellation,

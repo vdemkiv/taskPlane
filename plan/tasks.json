@@ -5,6 +5,52 @@
   "automatic_lenses": [],
   "design_fingerprint": "6be9206b3e78138c37ea7557b422d0593f4a217b87dc8584e6b131108fab1525",
   "plan_authority": "The orchestrator dispatches every pairwise-disjoint ready Build set through Codex native workers. Build and Fix launch zero lens workers. Evaluate runs a freshly computed focused quick route of exactly three or four lenses for every non-trivial task or wave, except for a closed trivial-target record or an exact authenticated expanded-route capability.",
+  "status": "blocked_design_drift",
+  "design_drift": {
+    "id": "DD-LR03-PROTECTED-HOST-AUTHORITY",
+    "task": "LR-03",
+    "finding": "6ea9aff0107f4bb6",
+    "status": "requires-approved-design-amendment",
+    "reason": "The approved Design assigns expanded-route authority to taskplane/taskplane_lite.py, but every approved candidate executes from the worker-controlled checkout and interpreter. No approved module provides a protected host/control-plane boundary for issuance, authoritative time, exact RSA verification, or atomic one-use consumption.",
+    "replan_impact": {
+      "files_argument_count": 5,
+      "touched_modules": [".codex", "hooks", "taskplane", "taskplane/tests"],
+      "total_impacted": 28,
+      "unknown_modules": [],
+      "graph_fingerprint": "431ddff0d899c3b6122cf2d005f3065148e0f2aaeb919e562c7da5a2fca56739",
+      "scanned_revision": "e5183c36da43a3c945adfbc39d329b0b127cf107",
+      "truncated_by_result_ceiling": false,
+      "depth_truncated": false,
+      "scan_quality": "complete",
+      "policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "external_nodes": [],
+      "boundary_nodes": []
+    },
+    "rejected_candidates": [
+      {"module": "taskplane/taskplane_lite.py", "reason": "Approved, but its source and interpreter remain worker-controlled and monkeypatchable."},
+      {"module": "taskplane/loop.py", "reason": "Approved orchestrator module, but its source and interpreter remain in the same worker-controlled worktree; module ownership alone is not process isolation."},
+      {"module": "taskplane/tp.py", "reason": "Worktree-controlled and not an approved Design module for this feature."},
+      {"module": "hooks", "reason": "Worktree-controlled and not an approved Design module for this feature."},
+      {"module": ".codex", "reason": "Worktree-controlled and not an approved Design module for this feature."}
+    ],
+    "required_design_amendment": [
+      "Name an approved protected host/control-plane provider outside the worker-controlled checkout and interpreter.",
+      "Name a protected source locator outside the worker-controlled workspace; missing, altered, relocated, or symlinked locator state must fail closed.",
+      "Require 0600 custody for protected authority material outside the worker-controlled workspace.",
+      "Assign expanded-route issuance, authoritative host clock, exact RSA verification, and atomic one-use consumption to that provider.",
+      "Constrain the worktree adapter to request and consume a host decision without supplying or replacing authority inputs."
+    ],
+    "required_graph_contract_changes": [
+      "Replace taskplane/taskplane_lite.py->contract:authority.expanded-lens-route:provides because a worker-controlled adapter cannot provide the isolation contract.",
+      "Add a Design-approved protected host provider edge for contract:authority.expanded-lens-route and make taskplane/taskplane_lite.py its consumer/adapter.",
+      "Add a named protected locator/custody resource or contract outside the worker-controlled workspace."
+    ],
+    "preserve": {
+      "passed_tasks": ["LR-01", "LR-02", "LR-04", "LR-05"],
+      "lr03_commits": ["8af3d8e", "03a6c8f", "3736e7c", "000704a", "76dc79d"],
+      "instruction": "Preserve all existing LR-03 commits and evidence; amend in place only after Design approves the protected boundary."
+    }
+  },
   "impact": {
     "files_argument_count": 23,
     "touched_modules": ["(root)", "agents", "design", "docs", "plan", "skills/taskplane", "skills/tp-build", "skills/tp-design", "skills/tp-engineering", "skills/tp-go", "skills/tp-product", "specs", "taskplane", "taskplane/tests"],
@@ -92,12 +138,15 @@
     },
     {
       "id": "LR-03", "wave": "parallel-adapters", "owner": "expanded-route-authority",
+      "status": "blocked-design-drift", "finding": "6ea9aff0107f4bb6",
+      "preserve_commits": ["8af3d8e", "03a6c8f", "3736e7c", "000704a", "76dc79d"],
+      "blockers": ["DD-LR03-PROTECTED-HOST-AUTHORITY: no approved Design module is outside the worker-controlled checkout and interpreter; Design must name the protected provider and locator/custody boundary before LR-03 can continue."],
       "scope": ["taskplane/taskplane_lite.py", "taskplane/tests/test_expanded_lens_route_authority.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_expanded_lens_route_authority.py", "req": "R-0001", "deps": ["LR-01", "LR-02"], "type": "security",
       "contracts": ["contract:authority.expanded-lens-route"], "new_modules": ["taskplane/taskplane_lite.py"],
       "design_edges": ["taskplane/taskplane_lite.py->contract:authority.expanded-lens-route:provides", "taskplane/tests->contract:authority.expanded-lens-route:verifies"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval."]
+      "criteria": ["AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval.", "Regression: Worker monkeypatches of the worktree issuer, clock, RSA verifier, locator, or consumption helpers cannot cause the protected host authority to issue, verify, or consume an expanded route.", "Regression: A missing, non-0600, symlinked, relocated, or altered protected source locator or custody artifact fails closed with zero expanded-route issuance or consumption."]
     },
     {
       "id": "LR-04", "wave": "parallel-adapters", "owner": "route-telemetry",
@@ -119,6 +168,7 @@
     },
     {
       "id": "LR-06", "wave": "stage-integration", "owner": "product-design-plan-loop-adapters",
+      "blocked_by": ["DD-LR03-PROTECTED-HOST-AUTHORITY"],
       "scope": ["taskplane/loop.py", "taskplane/tests/test_focused_lens_routing.py", "taskplane/tests/test_loop.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_focused_lens_routing.py taskplane/tests/test_loop.py", "req": "R-0001", "deps": ["LR-02", "LR-03", "LR-04", "LR-05"], "type": "integration",
       "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": ["taskplane/loop.py"],
