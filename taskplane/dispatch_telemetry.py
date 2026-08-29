@@ -43,6 +43,12 @@ DISPATCH_SCREEN_SCHEMA = "taskplane.native-dispatch-budget-screen/v1"
 CYCLE_DECISION_SCHEMA = "taskplane.fix-evaluate-cycle-decision/v1"
 TRANSCRIPT_PROJECTION_SCHEMA = "taskplane.transcript-usage-checkpoint/v1"
 USAGE_CAPABILITY_SCHEMA = "taskplane.host-usage-capability/v1"
+LENS_ROUTE_TELEMETRY_SCHEMA = "taskplane.lens-route-telemetry/v1"
+
+MAX_LENS_ROUTE_REASON_BYTES = 512
+MAX_LENS_ROUTE_ARTIFACT_BYTES = 128 * 1024
+MAX_LENS_ROUTE_TOKENS = 150_000_000
+MAX_LENS_ROUTE_RUNTIME_MS = 28_800 * 1000
 
 # Incremental totals are useful only inside the engine instance that observed
 # them.  A persisted checkpoint from another process is deliberately treated
@@ -89,6 +95,40 @@ _STABLE_DISPATCH_IDENTITY_FIELDS = frozenset({
     "dispatch_id", "thread_id", "thread_type", "task_id", "dependencies",
     "shared_owner",
 })
+_LENS_ROUTE_TELEMETRY_FIELDS = frozenset({
+    "schema", "stage", "target_pseudonym", "route_fingerprint",
+    "selected_count", "lenses", "totals", "terminal_status",
+    "redactions", "fingerprint",
+})
+_LENS_ROUTE_METRIC_FIELDS = frozenset({
+    "estimated_tokens", "actual_tokens", "runtime_ms", "cache_reused",
+    "invalidation_cause",
+})
+_LENS_ROUTE_ROW_FIELDS = frozenset({"lens", "reason"}) | \
+    _LENS_ROUTE_METRIC_FIELDS
+_LENS_ROUTE_TOTAL_FIELDS = frozenset({
+    "estimated_tokens", "actual_tokens", "runtime_ms",
+    "cache_reused_count", "invalidation_count",
+})
+_LENS_ROUTE_STAGES = frozenset({"product", "design", "plan", "evaluate"})
+_LENS_ROUTE_TERMINAL_ALIASES = {
+    "success": "success", "pass": "success", "passed": "success",
+    "complete": "success", "completed": "success",
+    "failed": "failed", "fail": "failed", "failure": "failed",
+    "cancelled": "cancelled", "canceled": "cancelled",
+    "interrupted": "interrupted", "interruption": "interrupted",
+    "handoff": "handoff", "handed-off": "handoff",
+    "handed_off": "handoff",
+}
+_LENS_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,127}")
+_REASON_CODE = re.compile(r"[a-z0-9][a-z0-9._:-]*", re.IGNORECASE)
+_REDACTED_REASON_CODE = re.compile(r"redacted-content:[0-9a-f]{64}")
+_PRIVATE_REASON = re.compile(
+    r"(?i)(?:\b(?:authorization|password|secret|token|api[_-]?key)\s*[=:]"
+    r"|\b(?:sk|gh[opsu]|xox[baprs])-[a-z0-9_-]{8,}"
+    r"|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}"
+    r"|(?:^|[\s=])/(?:[^/\s]+/)+[^\s]*"
+    r"|(?:^|[\s=])[a-z]:\\[^\s]+)")
 
 
 class DispatchTelemetryError(DeliveryPolicyError):
@@ -420,6 +460,101 @@ def _nonnegative_integer(value: object, label: str) -> int:
     return value
 
 
+def _route_counter(value: object, label: str, maximum: int) -> int:
+    normalized = _nonnegative_integer(value, label)
+    if normalized > maximum:
+        kind = "token" if "token" in label else "runtime"
+        raise DispatchTelemetryError(
+            f"{label} exceeds the lens-route {kind} bound")
+    return normalized
+
+
+def _lens_id(value: object, label: str = "lens") -> str:
+    if not isinstance(value, str):
+        raise DispatchTelemetryError(
+            f"{label} must be a bounded lowercase lens id")
+    normalized = value.strip()
+    if _LENS_ID.fullmatch(normalized) is None:
+        raise DispatchTelemetryError(
+            f"{label} must be a bounded lowercase lens id")
+    return normalized
+
+
+def _bounded_reason_code(
+        value: object, label: str, *, persisted: bool = False,
+) -> tuple[str, int]:
+    """Return one reason code without retaining private content."""
+    if not isinstance(value, str) or not value.strip():
+        raise DispatchTelemetryError(f"{label} must be a non-empty string")
+    normalized = value.strip()
+    if persisted and _REDACTED_REASON_CODE.fullmatch(normalized) is not None:
+        return normalized, 0
+    encoded = normalized.encode("utf-8")
+    safe = len(encoded) <= MAX_LENS_ROUTE_REASON_BYTES and \
+        _REASON_CODE.fullmatch(normalized) is not None and \
+        _PRIVATE_REASON.search(normalized) is None and \
+        not normalized.lower().startswith("redacted-content:")
+    if safe:
+        return normalized, 0
+    digest = hashlib.sha256(
+        ("taskplane.lens-route-reason/v1\0" + normalized).encode(
+            "utf-8")).hexdigest()
+    return f"redacted-content:{digest}", 1
+
+
+def _canonical_route_status(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    status = _LENS_ROUTE_TERMINAL_ALIASES.get(normalized)
+    if status is None:
+        raise DispatchTelemetryError(
+            "lens-route terminal status must be success, failed, cancelled, "
+            "interrupted, or handoff")
+    return status
+
+
+def _route_selection(route: Mapping[str, Any]) \
+        -> tuple[str, str, list[str], dict[str, Mapping[str, Any]]]:
+    if not isinstance(route, Mapping) or route.get("schema") != \
+            "taskplane.lens-route-policy/v1":
+        raise DispatchTelemetryError(
+            "lens-route telemetry requires a focused route decision")
+    stage = str(route.get("stage") or "")
+    if stage not in _LENS_ROUTE_STAGES:
+        raise DispatchTelemetryError("lens-route telemetry stage is invalid")
+    route_fingerprint = _sha256_fingerprint(
+        route.get("route_fingerprint"), "route fingerprint")
+    raw_selected = route.get(
+        "dispatchable_selected", route.get("selected"))
+    if not isinstance(raw_selected, list):
+        raise DispatchTelemetryError(
+            "lens-route selected lenses must be a list")
+    selected = [_lens_id(value, "selected lens") for value in raw_selected]
+    if len(selected) > 26 or len(set(selected)) != len(selected):
+        raise DispatchTelemetryError(
+            "lens-route selected lenses must be unique and bounded")
+    dispositions = route.get("dispositions")
+    if not isinstance(dispositions, list):
+        raise DispatchTelemetryError(
+            "lens-route dispositions must be a list")
+    indexed: dict[str, Mapping[str, Any]] = {}
+    for row in dispositions:
+        if not isinstance(row, Mapping):
+            raise DispatchTelemetryError(
+                "lens-route disposition must be a mapping")
+        lens = _lens_id(row.get("lens"), "disposition lens")
+        if lens in indexed:
+            raise DispatchTelemetryError(
+                "lens-route disposition lens is duplicated")
+        indexed[lens] = row
+    if any(
+            lens not in indexed or indexed[lens].get("disposition") not in
+            {"execute_deep", "execute_light"}
+            for lens in selected):
+        raise DispatchTelemetryError(
+            "lens-route selected dispositions are incomplete or invalid")
+    return stage, route_fingerprint, selected, indexed
+
+
 def _identity(values: Mapping[str, object]) -> dict[str, str]:
     unknown = set(values).difference(_IDENTITY_FIELDS)
     missing = _IDENTITY_FIELDS.difference(values)
@@ -440,6 +575,225 @@ def _sha256_fingerprint(value: object, label: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
         raise DispatchTelemetryError(f"{label} must be one SHA-256 fingerprint")
     return fingerprint
+
+
+def build_lens_route_telemetry(
+        route: Mapping[str, Any], *, target: str, terminal_status: str,
+        lens_metrics: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Build one closed, bounded, privacy-safe terminal route receipt."""
+    stage, route_fingerprint, selected, dispositions = _route_selection(route)
+    if not isinstance(target, str) or not target.strip():
+        raise DispatchTelemetryError(
+            "lens-route telemetry target is required")
+    if len(target.encode("utf-8")) > 64 * 1024:
+        raise DispatchTelemetryError(
+            "lens-route telemetry target exceeds the input bound")
+    if not isinstance(lens_metrics, Mapping) or \
+            any(not isinstance(key, str) for key in lens_metrics) or \
+            set(lens_metrics) != set(selected):
+        raise DispatchTelemetryError(
+            "lens-route metrics must name exactly selected lenses")
+
+    rows: list[dict[str, Any]] = []
+    redactions = 0
+    for lens in selected:
+        metric = lens_metrics[lens]
+        if not isinstance(metric, Mapping) or \
+                set(metric) != _LENS_ROUTE_METRIC_FIELDS:
+            raise DispatchTelemetryError(
+                f"lens-route metric for {lens} must use its closed schema")
+        reason, reason_redactions = _bounded_reason_code(
+            dispositions[lens].get("reason"), f"lens {lens} reason")
+        cause_value = metric.get("invalidation_cause")
+        if cause_value is None:
+            cause = None
+            cause_redactions = 0
+        else:
+            cause, cause_redactions = _bounded_reason_code(
+                cause_value, f"lens {lens} invalidation cause")
+        estimated = _route_counter(
+            metric.get("estimated_tokens"),
+            f"lens {lens} estimated_tokens", MAX_LENS_ROUTE_TOKENS)
+        actual = _route_counter(
+            metric.get("actual_tokens"),
+            f"lens {lens} actual_tokens", MAX_LENS_ROUTE_TOKENS)
+        runtime_ms = _route_counter(
+            metric.get("runtime_ms"),
+            f"lens {lens} runtime_ms", MAX_LENS_ROUTE_RUNTIME_MS)
+        reused = metric.get("cache_reused")
+        if not isinstance(reused, bool):
+            raise DispatchTelemetryError(
+                f"lens {lens} cache_reused must be a boolean")
+        if reused and actual:
+            raise DispatchTelemetryError(
+                "reused lens cannot record actual tokens")
+        if reused and cause is not None:
+            raise DispatchTelemetryError(
+                "reused lens cannot record invalidation")
+        rows.append({
+            "lens": lens, "reason": reason,
+            "estimated_tokens": estimated, "actual_tokens": actual,
+            "runtime_ms": runtime_ms, "cache_reused": reused,
+            "invalidation_cause": cause,
+        })
+        redactions += reason_redactions + cause_redactions
+
+    totals = {
+        "estimated_tokens": sum(row["estimated_tokens"] for row in rows),
+        "actual_tokens": sum(row["actual_tokens"] for row in rows),
+        "runtime_ms": sum(row["runtime_ms"] for row in rows),
+        "cache_reused_count": sum(
+            1 for row in rows if row["cache_reused"]),
+        "invalidation_count": sum(
+            1 for row in rows if row["invalidation_cause"] is not None),
+    }
+    if totals["estimated_tokens"] > MAX_LENS_ROUTE_TOKENS or \
+            totals["actual_tokens"] > MAX_LENS_ROUTE_TOKENS:
+        raise DispatchTelemetryError(
+            "lens-route totals exceed the token bound")
+    if totals["runtime_ms"] > MAX_LENS_ROUTE_RUNTIME_MS:
+        raise DispatchTelemetryError(
+            "lens-route totals exceed the runtime bound")
+    material: dict[str, Any] = {
+        "schema": LENS_ROUTE_TELEMETRY_SCHEMA,
+        "stage": stage,
+        "target_pseudonym": hashlib.sha256(
+            ("taskplane.lens-route-target/v1\0" + target.strip()).encode(
+                "utf-8")).hexdigest(),
+        "route_fingerprint": route_fingerprint,
+        "selected_count": len(selected),
+        "lenses": rows,
+        "totals": totals,
+        "terminal_status": _canonical_route_status(terminal_status),
+        "redactions": redactions,
+    }
+    material["fingerprint"] = content_fingerprint(material)
+    if len(canonical_json(material)) > MAX_LENS_ROUTE_ARTIFACT_BYTES:
+        raise DispatchTelemetryError(
+            "lens-route telemetry artifact exceeds 128 KiB")
+    return validate_lens_route_telemetry(material)
+
+
+def validate_lens_route_telemetry(
+        record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate an untrusted terminal route receipt without private inputs."""
+    if not isinstance(record, Mapping) or \
+            record.get("schema") != LENS_ROUTE_TELEMETRY_SCHEMA or \
+            set(record) != _LENS_ROUTE_TELEMETRY_FIELDS:
+        raise DispatchTelemetryError(
+            "lens-route telemetry must use its closed schema")
+    fingerprint_value = _sha256_fingerprint(
+        record.get("fingerprint"), "lens-route telemetry fingerprint")
+    material = {key: value for key, value in record.items()
+                if key != "fingerprint"}
+    if not hmac.compare_digest(
+            content_fingerprint(material), fingerprint_value):
+        raise DispatchTelemetryError(
+            "lens-route telemetry fingerprint mismatched")
+    if record.get("stage") not in _LENS_ROUTE_STAGES:
+        raise DispatchTelemetryError("lens-route telemetry stage is invalid")
+    _sha256_fingerprint(
+        record.get("target_pseudonym"), "target pseudonym")
+    _sha256_fingerprint(
+        record.get("route_fingerprint"), "route fingerprint")
+    if record.get("terminal_status") not in set(
+            _LENS_ROUTE_TERMINAL_ALIASES.values()):
+        raise DispatchTelemetryError(
+            "lens-route telemetry terminal status is invalid")
+    rows = record.get("lenses")
+    if not isinstance(rows, list):
+        raise DispatchTelemetryError(
+            "lens-route telemetry lenses must be a list")
+    selected_count = _nonnegative_integer(
+        record.get("selected_count"), "selected_count")
+    if selected_count != len(rows) or selected_count > 26:
+        raise DispatchTelemetryError(
+            "lens-route selected count mismatched")
+    normalized_rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    redaction_count = 0
+    for row in rows:
+        if not isinstance(row, Mapping) or set(row) != _LENS_ROUTE_ROW_FIELDS:
+            raise DispatchTelemetryError(
+                "lens-route telemetry row must use its closed schema")
+        lens = _lens_id(row.get("lens"))
+        if lens in seen:
+            raise DispatchTelemetryError(
+                "lens-route telemetry lens is duplicated")
+        seen.add(lens)
+        reason, changed = _bounded_reason_code(
+            row.get("reason"), f"lens {lens} reason", persisted=True)
+        if changed or reason != row.get("reason"):
+            raise DispatchTelemetryError(
+                "persisted lens-route reason is not privacy-safe")
+        cause_value = row.get("invalidation_cause")
+        if cause_value is None:
+            cause = None
+        else:
+            cause, changed = _bounded_reason_code(
+                cause_value, f"lens {lens} invalidation cause",
+                persisted=True)
+            if changed or cause != cause_value:
+                raise DispatchTelemetryError(
+                    "persisted invalidation cause is not privacy-safe")
+        estimated = _route_counter(
+            row.get("estimated_tokens"),
+            f"lens {lens} estimated_tokens", MAX_LENS_ROUTE_TOKENS)
+        actual = _route_counter(
+            row.get("actual_tokens"),
+            f"lens {lens} actual_tokens", MAX_LENS_ROUTE_TOKENS)
+        runtime_ms = _route_counter(
+            row.get("runtime_ms"),
+            f"lens {lens} runtime_ms", MAX_LENS_ROUTE_RUNTIME_MS)
+        reused = row.get("cache_reused")
+        if not isinstance(reused, bool):
+            raise DispatchTelemetryError(
+                f"lens {lens} cache_reused must be a boolean")
+        if reused and actual:
+            raise DispatchTelemetryError(
+                "reused lens cannot record actual tokens")
+        if reused and cause is not None:
+            raise DispatchTelemetryError(
+                "reused lens cannot record invalidation")
+        normalized_rows.append({
+            "lens": lens, "reason": reason,
+            "estimated_tokens": estimated, "actual_tokens": actual,
+            "runtime_ms": runtime_ms, "cache_reused": reused,
+            "invalidation_cause": cause,
+        })
+        redaction_count += int(
+            _REDACTED_REASON_CODE.fullmatch(reason) is not None)
+        redaction_count += int(isinstance(cause, str) and
+                               _REDACTED_REASON_CODE.fullmatch(cause)
+                               is not None)
+
+    expected_totals = {
+        "estimated_tokens": sum(
+            row["estimated_tokens"] for row in normalized_rows),
+        "actual_tokens": sum(
+            row["actual_tokens"] for row in normalized_rows),
+        "runtime_ms": sum(row["runtime_ms"] for row in normalized_rows),
+        "cache_reused_count": sum(
+            1 for row in normalized_rows if row["cache_reused"]),
+        "invalidation_count": sum(
+            1 for row in normalized_rows
+            if row["invalidation_cause"] is not None),
+    }
+    totals = record.get("totals")
+    if not isinstance(totals, Mapping) or \
+            set(totals) != _LENS_ROUTE_TOTAL_FIELDS or \
+            dict(totals) != expected_totals:
+        raise DispatchTelemetryError(
+            "lens-route telemetry totals mismatched")
+    redactions = _nonnegative_integer(
+        record.get("redactions"), "redactions")
+    if redactions != redaction_count:
+        raise DispatchTelemetryError(
+            "lens-route telemetry redaction count mismatched")
+    if len(canonical_json(record)) > MAX_LENS_ROUTE_ARTIFACT_BYTES:
+        raise DispatchTelemetryError(
+            "lens-route telemetry artifact exceeds 128 KiB")
+    return dict(record)
 
 
 def _usage_integrity_fingerprint(
