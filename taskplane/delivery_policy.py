@@ -16,9 +16,20 @@ EMPTY_LENS_COLLECTION_SCHEMA = "taskplane.empty-lens-collection/v1"
 EXECUTION_ZERO_LENS_AUTHORIZATION_SCHEMA = \
     "taskplane.execution-zero-lens-authorization/v1"
 EXECUTION_STAGE_ORIGIN_SCHEMA = "taskplane.execution-stage-origin/v1"
+STAGE_LENS_EXECUTION_RECEIPT_SCHEMA = \
+    "taskplane.stage-lens-execution-receipt/v1"
 DELIVERY_MODES = frozenset({"build", "review", "design"})
 AUTOMATIC_LENS_MODES = frozenset({"design"})
+# ``EXECUTION_STAGES`` is retained for the v1 zero-lens authorization reader.
+# New delivery decisions use the closed routed/zero split below so Evaluate is
+# never accidentally treated as an editing-time zero-lens stage.
 EXECUTION_STAGES = frozenset({"build", "fix", "evaluate", "em"})
+ROUTED_LENS_STAGES = frozenset({"product", "design", "plan", "evaluate"})
+ZERO_LENS_STAGES = frozenset({"build", "fix", "em"})
+DELIVERY_STAGES = ROUTED_LENS_STAGES | ZERO_LENS_STAGES
+TERMINAL_OUTCOMES = frozenset({
+    "passed", "failed", "cancelled", "interrupted", "handed_off",
+})
 
 
 class DeliveryPolicyError(ValueError):
@@ -78,6 +89,19 @@ def _execution_stage(value: Any, field: str = "stage") -> str:
     return compact
 
 
+def _delivery_stage(value: Any, field: str = "stage") -> str:
+    text = _required_text(value, field).strip().lower()
+    compact = "".join(character for character in text if character.isalnum())
+    if compact == "executiontimeem":
+        compact = "em"
+    if compact not in DELIVERY_STAGES:
+        raise DeliveryPolicyError(
+            f"{field} must be product, design, plan, build, fix, evaluate, "
+            "or em"
+        )
+    return compact
+
+
 def _observation_rows(value: Any, field: str) -> tuple[dict[str, Any], ...]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise DeliveryPolicyError(f"{field} must be a collection")
@@ -133,6 +157,63 @@ def _is_taskplane_lens_role(identities: Sequence[str]) -> bool:
     )
 
 
+def _lifecycle_kind_and_outcome(
+    row: Mapping[str, Any], field: str
+) -> tuple[str, str | None]:
+    event = _normalized_event(row, field)
+    if event in {"subagentstart", "start", "started", "active", "running"}:
+        return "start", None
+
+    outcomes = {
+        "subagentstop": "passed",
+        "stop": "passed",
+        "stopped": "passed",
+        "complete": "passed",
+        "completed": "passed",
+        "success": "passed",
+        "succeeded": "passed",
+        "pass": "passed",
+        "passed": "passed",
+        "subagentfailed": "failed",
+        "failure": "failed",
+        "fail": "failed",
+        "failed": "failed",
+        "error": "failed",
+        "errored": "failed",
+        "subagentcancelled": "cancelled",
+        "subagentcanceled": "cancelled",
+        "cancel": "cancelled",
+        "cancelled": "cancelled",
+        "canceled": "cancelled",
+        "subagentinterrupted": "interrupted",
+        "interrupt": "interrupted",
+        "interrupted": "interrupted",
+        "subagenthandedoff": "handed_off",
+        "handoff": "handed_off",
+        "handedoff": "handed_off",
+        "transferred": "handed_off",
+    }
+    outcome = outcomes.get(event)
+    if outcome is None:
+        raise DeliveryPolicyError(f"{field} has no recognized lifecycle state")
+
+    # Native hosts may use a generic stop hook with a more precise terminal
+    # result beside it. Preserve that result instead of misreporting success.
+    if event in {"subagentstop", "stop", "stopped"}:
+        explicit = next((row.get(key) for key in (
+            "terminal_outcome", "outcome", "result", "status"
+        ) if row.get(key) is not None), None)
+        if isinstance(explicit, str) and explicit.strip():
+            explicit_key = "".join(
+                character for character in explicit.lower()
+                if character.isalnum()
+            )
+            explicit_outcome = outcomes.get(explicit_key)
+            if explicit_outcome is not None:
+                outcome = explicit_outcome
+    return "terminal", outcome
+
+
 def _origin_identity(
     row: Mapping[str, Any], field: str
 ) -> tuple[str, str, str, str]:
@@ -160,7 +241,7 @@ def create_execution_stage_origin_receipt(
     return _seal({
         "schema": EXECUTION_STAGE_ORIGIN_SCHEMA,
         "contract": "contract:delivery.execution-zero-lens",
-        "stage": _execution_stage(stage),
+        "stage": _delivery_stage(stage),
         "run_id": _required_text(run_id, "run_id"),
         "session_id": _required_text(session_id, "session_id"),
         "task_name": _required_text(task_name, "task_name"),
@@ -209,6 +290,204 @@ def validate_execution_stage_origin_receipt(
             "execution-stage origin receipt fingerprint mismatch"
         )
     return normalized
+
+
+def _expected_origin_terminal_outcome(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    stage: str,
+    expected_origin: tuple[str, str, str, str],
+    field: str,
+) -> str:
+    starts = 0
+    outcomes: set[str] = set()
+    for index, row in enumerate(rows):
+        row_stage = _row_stage(row, f"{field}[{index}].stage")
+        if row_stage != stage:
+            continue
+        origin = _origin_identity(row, f"{field}[{index}]")
+        if origin != expected_origin:
+            continue
+        lifecycle, outcome = _lifecycle_kind_and_outcome(
+            row, f"{field}[{index}].event"
+        )
+        if lifecycle == "start":
+            starts += 1
+        elif outcome is not None:
+            outcomes.add(outcome)
+    if starts < 1 or len(outcomes) != 1:
+        raise DeliveryPolicyError(
+            f"{field} requires complete, origin-bound start/terminal "
+            f"evidence for {stage}"
+        )
+    return next(iter(outcomes))
+
+
+def _lens_worker_starts(
+    rows: Sequence[Mapping[str, Any]], *, stage: str, field: str
+) -> tuple[tuple[str, str, str, str], ...]:
+    starts: list[tuple[str, str, str, str]] = []
+    for index, row in enumerate(rows):
+        if _row_stage(row, f"{field}[{index}].stage") != stage:
+            continue
+        identities = _role_identities(row)
+        if not identities or not _is_taskplane_lens_role(identities):
+            continue
+        lifecycle, _outcome = _lifecycle_kind_and_outcome(
+            row, f"{field}[{index}].event"
+        )
+        if lifecycle == "start":
+            starts.append(_origin_identity(row, f"{field}[{index}]"))
+    return tuple(sorted(starts))
+
+
+def _has_lens_worker_observation(
+    rows: Sequence[Mapping[str, Any]], *, stage: str, field: str
+) -> bool:
+    for index, row in enumerate(rows):
+        if _row_stage(row, f"{field}[{index}].stage") != stage:
+            continue
+        identities = _role_identities(row)
+        if identities and _is_taskplane_lens_role(identities):
+            _lifecycle_kind_and_outcome(row, f"{field}[{index}].event")
+            return True
+    return False
+
+
+def validate_stage_lens_execution(
+    *,
+    stage: str,
+    native_trace: Sequence[Mapping[str, Any]],
+    session_ledger: Sequence[Mapping[str, Any]],
+    expected_origin_receipt: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Validate the routed/zero-lens boundary against native lifecycle data.
+
+    Product, Design, Plan, and Evaluate may contain focused lens starts.
+    Build, Fix, and EM fail closed on any such start. Every stage attempt must
+    carry matching terminal evidence for success, failure, cancellation,
+    interruption, or handoff in both native sources.
+    """
+    normalized_stage = _delivery_stage(stage)
+    expected = validate_execution_stage_origin_receipt(expected_origin_receipt)
+    if expected["stage"] != normalized_stage:
+        raise DeliveryPolicyError(
+            "expected execution-stage origin does not match current stage"
+        )
+    trusted_origin = (
+        expected["run_id"], expected["session_id"],
+        expected["task_name"], expected["agent_id"],
+    )
+    trace_rows = _observation_rows(native_trace, "native_trace")
+    ledger_rows = _observation_rows(session_ledger, "session_ledger")
+    trace_outcome = _expected_origin_terminal_outcome(
+        trace_rows, stage=normalized_stage, expected_origin=trusted_origin,
+        field="native_trace",
+    )
+    ledger_outcome = _expected_origin_terminal_outcome(
+        ledger_rows, stage=normalized_stage, expected_origin=trusted_origin,
+        field="session_ledger",
+    )
+    if trace_outcome != ledger_outcome:
+        raise DeliveryPolicyError(
+            "native_trace and session_ledger terminal outcomes do not match"
+        )
+
+    trace_lenses = _lens_worker_starts(
+        trace_rows, stage=normalized_stage, field="native_trace"
+    )
+    ledger_lenses = _lens_worker_starts(
+        ledger_rows, stage=normalized_stage, field="session_ledger"
+    )
+    if trace_lenses != ledger_lenses:
+        raise DeliveryPolicyError(
+            "native_trace and session_ledger lens worker starts do not match"
+        )
+    zero_stage_lens_observation = (
+        normalized_stage in ZERO_LENS_STAGES and (
+            _has_lens_worker_observation(
+                trace_rows, stage=normalized_stage, field="native_trace"
+            ) or _has_lens_worker_observation(
+                ledger_rows, stage=normalized_stage, field="session_ledger"
+            )
+        )
+    )
+    if zero_stage_lens_observation:
+        raise DeliveryPolicyError(
+            "Taskplane lens worker start is forbidden; lens worker "
+            f"observation found in {normalized_stage}"
+        )
+
+    return _seal({
+        "schema": STAGE_LENS_EXECUTION_RECEIPT_SCHEMA,
+        "contract": "contract:delivery.stage-lens-execution",
+        "stage": normalized_stage,
+        "lens_execution_policy": (
+            "focused" if normalized_stage in ROUTED_LENS_STAGES else "none"
+        ),
+        "terminal_outcome": trace_outcome,
+        "expected_origin_fingerprint": expected["fingerprint"],
+        "lens_worker_start_count": len(trace_lenses),
+        "native_trace_fingerprint": content_fingerprint(list(trace_rows)),
+        "session_ledger_fingerprint": content_fingerprint(list(ledger_rows)),
+        "status": "observed",
+    })
+
+
+def validate_stage_lens_execution_receipt(
+    receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate a closed routed/zero-lens lifecycle receipt."""
+    if not isinstance(receipt, Mapping):
+        raise DeliveryPolicyError("stage lens execution receipt must be a mapping")
+    fields = {
+        "schema", "contract", "stage", "lens_execution_policy",
+        "terminal_outcome", "expected_origin_fingerprint",
+        "lens_worker_start_count", "native_trace_fingerprint",
+        "session_ledger_fingerprint", "status", "fingerprint",
+    }
+    if set(receipt) != fields:
+        raise DeliveryPolicyError(
+            "stage lens execution receipt fields are not closed"
+        )
+    if receipt.get("schema") != STAGE_LENS_EXECUTION_RECEIPT_SCHEMA:
+        raise DeliveryPolicyError("stage lens execution receipt schema is invalid")
+    if receipt.get("contract") != "contract:delivery.stage-lens-execution":
+        raise DeliveryPolicyError("stage lens execution receipt contract is invalid")
+    stage = _delivery_stage(receipt.get("stage"))
+    policy = receipt.get("lens_execution_policy")
+    expected_policy = "focused" if stage in ROUTED_LENS_STAGES else "none"
+    if policy != expected_policy:
+        raise DeliveryPolicyError("stage lens execution policy is invalid")
+    if receipt.get("terminal_outcome") not in TERMINAL_OUTCOMES:
+        raise DeliveryPolicyError("stage terminal outcome is invalid")
+    _fingerprint(
+        receipt.get("expected_origin_fingerprint"),
+        "expected_origin_fingerprint",
+    )
+    worker_count = receipt.get("lens_worker_start_count")
+    if isinstance(worker_count, bool) or not isinstance(worker_count, int) or \
+            worker_count < 0:
+        raise DeliveryPolicyError("lens worker start count must be non-negative")
+    if stage in ZERO_LENS_STAGES and worker_count != 0:
+        raise DeliveryPolicyError(
+            f"stage lens execution receipt contains lens starts for {stage}"
+        )
+    _fingerprint(
+        receipt.get("native_trace_fingerprint"), "native_trace_fingerprint"
+    )
+    _fingerprint(
+        receipt.get("session_ledger_fingerprint"),
+        "session_ledger_fingerprint",
+    )
+    if receipt.get("status") != "observed":
+        raise DeliveryPolicyError("stage lens execution status must be observed")
+    projection = {key: receipt[key] for key in fields - {"fingerprint"}}
+    if receipt.get("fingerprint") != content_fingerprint(projection):
+        raise DeliveryPolicyError(
+            "stage lens execution receipt fingerprint mismatch"
+        )
+    return dict(receipt)
 
 
 def _complete_stage_origins(
