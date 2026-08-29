@@ -144,9 +144,11 @@ belongs only to a separate explicitly authorized calibration workflow.
 
 **Consume the exact focused set.** `review start` provides the sealed results
 from Evaluate's exactly three or four quick lenses, each tied to its scoped
-view and producer receipt. Engineering validates and synthesizes those results;
-it does not launch lens agents or a promotion wave. Missing or invalid producer
-evidence returns to Evaluate as a bounded blocker.
+view and producer receipt. Engineering consumes the sealed three-or-four quick
+Evaluate results and the complete all-26 disposition ledger; it never launches
+lens workers or a promotion wave. Missing or insufficient substantive evidence
+returns to a newly authorized focused Evaluate route; missing or invalid
+producer evidence remains a bounded blocker.
 
 **Runnability is probed ONCE, before briefs.** `review start` answers
 "can `go test` / `npm test` / `pytest` even start in this checkout"
@@ -186,9 +188,10 @@ Do not substitute `review resume` or a prose-only instruction. The opening
 canonical dashboard is `visuals.workflow_and_wave.inline.path`; after
 collection the canonical dashboard is `visuals.final_dashboard.inline.path`.
 
-On hosts that do not register `agents/` as named definitions, dispatch a
-general subagent with the brief plus `agents/tp-lens.md` as its role
-instructions. The contract and output path remain identical.
+If the host cannot verify or expose the sealed Evaluate producer results,
+return that specific evidence gap to Evaluate for a newly authorized focused
+route. Engineering must not use a general subagent, a fallback `tp-lens`
+dispatch, or an inferred result to bypass the sealed producer boundary.
 
 **SHOW PROGRESS WITHOUT RE-DERIVING.** Render or deliver the wave-board
 artifact at `review start.visuals.workflow_and_wave` inline through the host
@@ -298,11 +301,11 @@ unresolved — `medium` → `med`, `minor` → `low`, `question`/`praise` →
 (fail closed). So carry lens findings' own vocabulary through verbatim if
 you like, but never re-grade a finding downward — an unknown or softened
 label still blocks. Include a `meta` block: `title`, `subtitle`, `tests`, `clean:[…]`, a `gate` with
-buttons, and — required (v1.5.4) — `lens_coverage` (the `{id: deep|sweep}`
-map projected by `review collect` from the canonical routing decision, so the
-dashboard shows all 26 lenses marked
-deep / sweep / didn't-fire, and adding a lens to the catalog appears
-automatically) and `impact` (the `tp graph impact` payload, so the
+buttons, and — required (v1.5.4) — `lens_coverage` (the canonical all-26
+disposition map projected by `review collect`: `execute_deep`, `execute_light`,
+`covered_by`, or `not_applicable`, with selected execution represented by
+quick-only output; adding a lens to the catalog appears automatically) and
+`impact` (the `tp graph impact` payload, so the
 blast-radius panel renders). Both also fold into the never-skippable
 headline. Then render it.
 

@@ -22,7 +22,9 @@ declared tools; deny-listed commands) is active — the hook blocks anything
 outside it. In a parallel wave you were `claim`ed into your own worktree;
 work ONLY there.
 
-**Zero-lens Build invariant.** Build launches zero lens workers. This remains
+## Zero-lens Build invariant
+
+Build launches zero lens workers. This remains
 true on success, failure, cancellation, interruption, and handoff. Lens
 execution is confined to Product, Design, Plan, and Evaluate; Build consumes
 approved artifacts and acceptance criteria without spawning reviewers.
