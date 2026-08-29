@@ -145,6 +145,14 @@ unpublished count.
 
 ## Models (cost routing)
 
+Lens routing is stage-owned, not a setup choice. Product and Design choose a
+minimum-sufficient focused quick route; non-trivial Plan and Evaluate execute
+exactly 3–4 quick lenses; Build and Fix launch zero lens workers. Every routed
+stage still publishes all 26 evidenced dispositions. Overflow splits scope or
+requires protected exact-target expanded-route authority. A Fix invalidates
+only changed fingerprint inputs, so the next Evaluate reuses unchanged sealed
+evidence. Route telemetry is bounded and redacted.
+
 Every loop step, task, and lens brief carries a capability tier —
 `cheap` / `standard` / `deep` — and taskplane resolves it to a model at
 dispatch time. `tp onboard` reports the resolved map. Claude retains the

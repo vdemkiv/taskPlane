@@ -136,6 +136,20 @@ toward the governed fallback. Users normally inspect these through
 
 ## Model tiers (cost routing)
 
+Focused routing does not use an environment variable to widen normal delivery.
+Product and Design use minimum-sufficient quick routes, non-trivial Plan and
+Evaluate use exactly 3–4 quick lenses, and Build and Fix launch zero lens
+workers. More than four independent mandatory risks must split scope or use the
+protected expanded-route provider; a worker-controlled environment value cannot
+grant that authority.
+
+The private route record includes stage, selected count and reasons, estimated and actual tokens,
+runtime, cache reuse, invalidation cause, terminal status,
+and fingerprint. Reasons are bounded to 512 UTF-8 bytes, paths are
+repository-relative and redacted, and the artifact is capped at 128 KiB.
+After Fix, Evaluate dispatches only invalidated fingerprint inputs and reuses
+unchanged sealed passing evidence.
+
 | Variable | Default | Effect | Enforcement-relevant |
 | --- | --- | --- | --- |
 | `TASKPLANE_MODEL_CHEAP` | Claude: `haiku`; Codex: inherit | Model id for the `cheap` tier (lens sweep, planner-marked simple tasks). `""` or `inherit` → inherit the session model. | No (cost/quality routing). |

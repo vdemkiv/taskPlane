@@ -17,9 +17,10 @@ agent-generated changes. Requirements, dependencies, contracts, implementation,
 and review stay connected from Definition of Ready through Definition of Done.
 A complete 26-lens disposition makes architecture, solution design, security,
 data, operability, UX, and other technical consequences explicit for engineers,
-EMs, PMs, and nontechnical decision-makers. Evidence-selected deep reviewers
-and at most one light sweep execute; every remaining lens is disclosed with its
-recorded light or n/a rationale rather than silently omitted.
+EMs, PMs, and nontechnical decision-makers. Only evidence-selected
+`execute_deep` and `execute_light` rows dispatch; every remaining lens is
+disclosed as evidenced `covered_by` or `not_applicable` rather than silently
+omitted. Normal delivery is quick-only.
 
 **Simple for the user; strict for the agents.** State the goal, review the
 evidence, and make only the decisions that require human judgment. taskplane
@@ -83,19 +84,17 @@ explicit.
   budget, denied commands, read-only for reviewers — screened by the PreToolUse
   hook before each tool call. Literal scope overrides carry provenance: only the
   human-approved plan's `plan_minted` mark authorizes them, never a CLI flag. [docs/state-spec.md](docs/state-spec.md).
-- **26 lenses with intelligent routing v2.** The lens catalog (generated:
-  [docs/lens-catalog.md](docs/lens-catalog.md)) is routed per stage profile (design
-  8 · build 5 · review 26) by a signal engine that scores each lens against the
-  actual diff and returns `deep` / `light` / `n/a` — every `n/a` carries
-  machine-checkable negative evidence, the cap-8 budget demotes (never drops),
-  security floors hold on enforcement diffs, and engine failure fails open to the
-  full catalog. [docs/routing-and-flows.md](docs/routing-and-flows.md).
+- **26 lenses with focused stage routing.** Product and Design execute the
+  minimum-sufficient focused quick route; every non-trivial Plan and Evaluate
+  executes exactly 3–4 quick lenses; Build and Fix launch zero lens workers.
+  All 26 lenses still receive one evidenced disposition, and missing or invalid
+  routing evidence fails closed. [docs/routing-and-flows.md](docs/routing-and-flows.md).
 - **Graph decomposition.** `tp graph scan --decompose` derives a component layer
   inside the dependency graph (directory convention + import cohesion + AST
   clustering; floors overridable via `components.yaml`) with fingerprint-cached
-  per-component lens maps. Reviews route the capped union of touched components'
-  maps, `component_attribution` names which component proposed each routed lens, and
-  the fail-open ladder only ever widens (component → module → full catalog). Same doc.
+  per-component lens maps. Reviews re-evidence the union of touched components'
+  proposals, `component_attribution` names which component proposed each routed
+  lens, and incomplete routing evidence stops with zero dispatch. Same doc.
 - **Governed flows.** The review wave and the execute/evaluate/fix waves each
   dispatch as one journaled, resumable Dynamic Workflow on Claude; the Task-dispatch
   path stays mandatory and byte-identical everywhere — it is the only Codex path —
@@ -123,8 +122,8 @@ explicit.
 
 The moving parts: an enforcement kernel (contracts + lifecycle hook +
 orchestrator-only gates + audit trace), the loop engine, the Design Contract phase,
-a 26-lens catalog with exactly 4–5 relevant light-sweep agents selected for automatic review, the requirements/decisions/debt
-knowledge base, a deterministic dependency graph with a zero-token blast-radius map,
+a 26-lens catalog with complete dispositions and focused quick execution, the
+requirements/decisions/debt knowledge base, a deterministic dependency graph with a zero-token blast-radius map,
 and portable `cheap`/`standard`/`deep` model tiers routed per step, task, and lens —
 mapped to models by env config, verifiable with `tp loop verify-dispatch`.
 

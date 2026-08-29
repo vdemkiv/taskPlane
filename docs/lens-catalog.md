@@ -37,15 +37,23 @@
 
 *opt* = suggested/optional (off unless its files appear).
 
-## Always-on floor: architecture & system design
+## Mandatory floors remain evidence-based
 
-**Architecture is routed on every code change** — a light pass on any diff, a full pass when the change is structurally significant. That floor is enforced by the engine (`tp lens route --all`), not by memory: component boundaries, data flow, contracts, and failure modes get a look even when no architecture files changed.
+Architecture and security cannot be silently omitted when canonical evidence
+shows their owned boundary. The focused policy applies each floor before it
+groups overlapping risks and caps normal Plan/Evaluate execution at 3–4 quick
+lenses. A floor guarantees an evidenced disposition; it does not authorize a
+Build/Fix worker or an automatic full-catalog run.
 
 ## Routing notes
 
-- **Baselines are intentionally only four** — `code-quality`, `security`, `testability`, and always-on `architecture` — so a typical change fires ~4–7 lenses, not all 26. Role lenses fire by context (files/task type).
-- **Mode** (`inline` vs governed `subagent`) is per-lens, set by `deep_globs` or change size; a wide review fans them out as parallel `tp-lens` agents (`tp lens dispatch`).
-- **`tp lens route`** shows exactly which fired and why; `--only`/`--skip` override; `--all` returns the full catalog (deep + sweep).
+- Every routed Product, Design, Plan, and Evaluate stage emits one evidenced
+  `execute_deep`, `execute_light`, `covered_by`, or `not_applicable` row for
+  all 26 lenses.
+- Only the two `execute_*` rows dispatch. Normal delivery uses focused quick
+  routes; Build and Fix launch zero lens workers.
+- More than four independent mandatory Plan/Evaluate risks split scope or
+  require protected exact-target expanded-route authority.
 
 ## Adding a lens
 
