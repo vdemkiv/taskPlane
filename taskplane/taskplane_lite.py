@@ -2642,6 +2642,43 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
 
 # --------------------------------------------------------------- DoD
 
+DEFAULT_TEST_TIMEOUT_SECONDS = 600
+MAX_TEST_TIMEOUT_SECONDS = 3600
+
+
+def validate_test_timeout_seconds(value, *, field: str) -> int:
+    """Return one strict, bounded suite timeout or fail deterministically."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{field} must be a real integer from 1 to "
+            f"{MAX_TEST_TIMEOUT_SECONDS}")
+    if value <= 0 or value > MAX_TEST_TIMEOUT_SECONDS:
+        raise ValueError(
+            f"{field} must be from 1 to {MAX_TEST_TIMEOUT_SECONDS}")
+    return value
+
+
+def task_test_timeout_seconds(task: dict) -> int:
+    """Derive the approved aggregate test timeout from one plan task."""
+    field = "verification_runner.gate_timeout.aggregate_seconds"
+    if not isinstance(task, dict):
+        raise ValueError(f"{field} task container must be an object")
+    if "verification_runner" not in task:
+        return DEFAULT_TEST_TIMEOUT_SECONDS
+    runner = task.get("verification_runner")
+    if not isinstance(runner, dict):
+        raise ValueError(f"{field} parent containers must be objects")
+    if "gate_timeout" not in runner:
+        raise ValueError(f"{field} is required when verification_runner is present")
+    gate_timeout = runner.get("gate_timeout")
+    if not isinstance(gate_timeout, dict):
+        raise ValueError(f"{field} parent containers must be objects")
+    if "aggregate_seconds" not in gate_timeout:
+        raise ValueError(f"{field} is required when gate_timeout is present")
+    return validate_test_timeout_seconds(
+        gate_timeout.get("aggregate_seconds"), field=field)
+
+
 def _run(cmd, cwd, shell=False, timeout=600, env=None):
     # env=None inherits the parent environment (subprocess default) — every
     # pre-existing caller is unchanged; dod_check passes a sanitized copy
@@ -3288,6 +3325,13 @@ def dod_check(contract: dict, workspace: str,
     errors: list = []
     coding = contract.get("coding") or {}
     dod = coding.get("dod") or {}
+    try:
+        test_timeout_seconds = validate_test_timeout_seconds(
+            dod.get("test_timeout_seconds", DEFAULT_TEST_TIMEOUT_SECONDS),
+            field="coding.dod.test_timeout_seconds")
+    except ValueError as exc:
+        test_timeout_seconds = None
+        errors.append(str(exc))
 
     if dod.get("require_clean_scope_diff", True) and coding.get("scope_paths"):
         if not snapshot_ref:
@@ -3319,7 +3363,7 @@ def dod_check(contract: dict, workspace: str,
     tc = dod.get("test_command")
     declared_suite_passed = False
     suite_launch_failed = False
-    if tc:
+    if tc and test_timeout_seconds is not None:
         # A3 (R-0007): strip the wave slot from the CHILD env only — a gate
         # run under TASKPLANE_TASK=<slot> must not leak the slot into the
         # DoD test subprocess (slot-sensitive tests would resolve the
@@ -3363,7 +3407,9 @@ def dod_check(contract: dict, workspace: str,
         else:
             _t0 = _time.time()
             try:
-                proc = run_suite_command(workspace, tc, env=env)
+                proc = run_suite_command(
+                    workspace, tc, env=env,
+                    timeout=test_timeout_seconds)
             except (OSError, subprocess.SubprocessError,
                     TypeError, ValueError) as exc:
                 suite_launch_failed = True
@@ -4480,7 +4526,8 @@ def contract_projection(contract: dict | None) -> dict:
 def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
                    tools=None, test_command=None, deny_extra=None,
                    max_actions=None, regression_gate=False,
-                   plan_minted=False) -> dict:
+                   plan_minted=False,
+                   test_timeout_seconds: int | None = None) -> dict:
     """Build a contract dict — shared by tp.py new and the loop engine so a
     step's contract is exactly what the hook will enforce. Every contract
     carries an ACTION BUDGET (max_actions): the hook counts each governed
@@ -4525,6 +4572,11 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
                     "regression_gate": bool(regression_gate)},
         },
     }
+    if test_timeout_seconds is not None:
+        c["coding"]["dod"]["test_timeout_seconds"] = \
+            validate_test_timeout_seconds(
+                test_timeout_seconds,
+                field="coding.dod.test_timeout_seconds")
     if plan_minted:
         c["coding"]["plan_minted"] = True
     if read_only:

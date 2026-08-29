@@ -3404,6 +3404,112 @@ class TestStatelessReviewContractBootstrap(unittest.TestCase):
         TestLoop._assert_managed_worktree_result_is_exact_and_fail_closed
 
 
+class TestTaskSuiteTimeoutAuthority(unittest.TestCase):
+    @staticmethod
+    def _task(timeout=None):
+        task = dict(TASK)
+        if timeout is not None:
+            task["verification_runner"] = {
+                "gate_timeout": {"aggregate_seconds": timeout}}
+        return task
+
+    def test_absent_task_timeout_defaults_to_exactly_600(self):
+        task = self._task()
+        self.assertEqual(tp.task_test_timeout_seconds(task), 600)
+        contract = loop._step_contract(
+            "execute", {"current_task": 0, "tasks": [task]})
+        self.assertEqual(
+            contract["coding"]["dod"]["test_timeout_seconds"], 600)
+
+    def test_nested_task_timeout_reaches_claimed_execute_runner(self):
+        task = self._task(1800)
+        contract = loop._step_contract(
+            "execute", {"current_task": 0, "tasks": [task]})
+        contract["coding"]["dod"]["require_clean_scope_diff"] = False
+        completed = subprocess.CompletedProcess(
+            ["python3", "-m", "pytest"], 0, "", "")
+        with loop._claimed_execute_suite_binding(), \
+                unittest.mock.patch.object(
+                    subprocess, "run", return_value=completed) as invoked:
+            self.assertEqual(tp.dod_check(contract, tempfile.mkdtemp(), None), [])
+        self.assertTrue(any(
+            call.kwargs.get("timeout") == 1800
+            for call in invoked.call_args_list), invoked.call_args_list)
+
+    def test_invalid_task_timeout_blocks_plan_without_suite_launch(self):
+        invalid = [True, 0, 3601, {"invalid": "shape"}]
+        for value in invalid:
+            with self.subTest(value=value), \
+                    unittest.mock.patch.object(
+                        loop, "_plan_delivery_mode_from_file"), \
+                    unittest.mock.patch.object(
+                        loop.tp, "run_suite_command") as runner:
+                task = self._task()
+                if isinstance(value, dict):
+                    task["verification_runner"] = value
+                else:
+                    task["verification_runner"] = {
+                        "gate_timeout": {"aggregate_seconds": value}}
+                errors = loop._plan_dor_errors(
+                    tempfile.mkdtemp(), {"tasks": [task]})
+                self.assertTrue(any(
+                    "verification_runner.gate_timeout.aggregate_seconds" in e
+                    for e in errors), errors)
+                runner.assert_not_called()
+
+    def test_final_signoff_preserves_each_task_timeout(self):
+        task = self._task(1800)
+        task["status"] = "passed"
+        captured = []
+
+        def check(contract, *_args, **_kwargs):
+            captured.append(contract)
+            return []
+
+        with unittest.mock.patch.object(
+                loop.tp, "requirement_coverage_errors", return_value=[]), \
+                unittest.mock.patch.object(
+                    loop.tp, "changed_files", return_value=[]), \
+                unittest.mock.patch.object(
+                    loop.tp, "dod_check", side_effect=check), \
+                unittest.mock.patch.object(
+                    loop, "_engineering_review_errors", return_value=[]), \
+                unittest.mock.patch.object(loop.kb, "lint", return_value=[]):
+            loop._compute_signoff_dod(
+                tempfile.mkdtemp(), {"tasks": [task], "baseline": "HEAD"})
+        self.assertEqual(
+            captured[0]["coding"]["dod"]["test_timeout_seconds"], 1800)
+
+    def test_unrelated_task_dod_keeps_600(self):
+        captured = []
+
+        def check(contract, *_args, **_kwargs):
+            captured.append(contract)
+            return []
+
+        with unittest.mock.patch.object(loop.tp, "dod_check", side_effect=check):
+            loop._task_dod_errors(
+                tempfile.mkdtemp(), {}, self._task(), None)
+        self.assertEqual(
+            captured[0]["coding"]["dod"]["test_timeout_seconds"], 600)
+
+    def test_invalid_contract_timeout_skips_suite_launch(self):
+        contract = tp.build_contract(
+            "test", test_command="true", scope=["taskplane/**"])
+        contract["coding"]["dod"]["require_clean_scope_diff"] = False
+        contract["coding"]["dod"]["test_timeout_seconds"] = True
+        with unittest.mock.patch.object(
+                tp, "run_suite_command") as runner, \
+                unittest.mock.patch.object(tp, "suite_cache_lookup") as cache:
+            errors = tp.dod_check(contract, tempfile.mkdtemp(), None)
+        self.assertEqual(
+            errors,
+            ["coding.dod.test_timeout_seconds must be a real integer from 1 "
+             "to 3600"])
+        cache.assert_not_called()
+        runner.assert_not_called()
+
+
 class TestSupersededPendingWorkerRecovery(unittest.TestCase):
     def _active(self, workspace, *, stage="execute", task="t1", now=10,
                 name=None):

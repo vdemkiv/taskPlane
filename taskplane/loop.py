@@ -4105,6 +4105,7 @@ def _step_contract(step: str, state: dict, ws: str | None = None) -> dict:
         return tp.build_contract(
             f"{verb}: {task['id']}", scope=task["scope"],
             test_command=task.get("tests"), plan_minted=True, regression_gate=True,
+            test_timeout_seconds=tp.task_test_timeout_seconds(task),
             tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
                    "MultiEdit"])
     if step == "evaluate":
@@ -5720,6 +5721,7 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     contract = tp.build_contract(
         f"EXECUTE: {t['id']}", scope=t.get("scope"),
         test_command=t.get("tests"), plan_minted=True, regression_gate=True,
+        test_timeout_seconds=tp.task_test_timeout_seconds(t),
         tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
                "MultiEdit"])
     enforcement = ((state.get("enforcement") or {}).get("current"))
@@ -6749,6 +6751,10 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
             errors.append(prefix + "scope is missing")
         errors.extend(prefix + problem for problem in
                       tp.plan_test_command_errors(task.get("tests")))
+        try:
+            tp.task_test_timeout_seconds(task)
+        except ValueError as exc:
+            errors.append(prefix + "test timeout: " + str(exc))
         # A requirement or test command can help an evaluator explain a
         # legacy task, but neither is the executable task contract approved
         # at Plan.  Every task must carry its own non-empty criteria so a
@@ -7364,7 +7370,8 @@ def _task_dod_errors(ws: str, state: dict, task: dict,
                      snapshot: str | None) -> list:
     contract = tp.build_contract(
         f"EXECUTE: {task['id']}", scope=task.get("scope"),
-        test_command=task.get("tests"), plan_minted=True, regression_gate=True)
+        test_command=task.get("tests"), plan_minted=True, regression_gate=True,
+        test_timeout_seconds=tp.task_test_timeout_seconds(task))
     # Scope regression evidence to this task; loop-owned artifacts self-gate.
     regression_files = [f for f in (tp.changed_files(ws, snapshot) if snapshot else [])
                         if tp.match_any(f, task.get("scope") or [])]
@@ -9347,7 +9354,8 @@ def _compute_signoff_dod(ws: str, state: dict) -> dict:
         test_contract = tp.build_contract(
             f"SIGNOFF TEST: {task.get('id', '?')}",
             scope=task.get("scope"), test_command=test_command,
-            plan_minted=True, regression_gate=True)
+            plan_minted=True, regression_gate=True,
+            test_timeout_seconds=tp.task_test_timeout_seconds(task))
         # Aggregate scope is already checked; run each task's scoped evidence.
         test_contract["coding"]["dod"]["require_clean_scope_diff"] = False
         regression_files = [f for f in (tp.changed_files(ws, baseline)
