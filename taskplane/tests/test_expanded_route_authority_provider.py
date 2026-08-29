@@ -632,6 +632,80 @@ def test_orchestrator_client_fails_closed_on_process_and_transport_errors(
     assert failure.value.code == expected_code
 
 
+@pytest.mark.parametrize("stream", ["stdout", "stderr", "combined"])
+def test_provider_transport_caps_real_runaway_child_and_reaps_it(
+    tmp_path: Path, stream: str,
+) -> None:
+    pid_path = tmp_path / f"{stream}.pid"
+    limit = terminal_truth._EXPANDED_ROUTE_PROVIDER_MAX_OUTPUT_BYTES
+    combined_limit = \
+        terminal_truth._EXPANDED_ROUTE_PROVIDER_MAX_COMBINED_OUTPUT_BYTES
+    if stream == "combined":
+        each = combined_limit // 2 + 4_096
+        writes = (
+            f"os.write(1, b'x' * {each});"
+            f"os.write(2, b'y' * {each});"
+            "time.sleep(30)"
+        )
+    else:
+        descriptor = 1 if stream == "stdout" else 2
+        writes = (
+            f"chunk = b'x' * 65536;"
+            f"\nwhile True: os.write({descriptor}, chunk)"
+        )
+    program = (
+        "import os, pathlib, sys, time;"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));"
+        f"{writes}"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(
+        terminal_truth._ExpandedRouteProviderTransportOverflow,
+    ) as failure:
+        terminal_truth.ExpandedRouteProviderClient._run_provider(
+            [sys.executable, "-I", "-c", program, str(pid_path)],
+            cwd=tmp_path,
+            environment={"PATH": os.defpath, "PYTHONNOUSERSITE": "1"},
+            payload=b"",
+        )
+
+    assert failure.value.stream == stream
+    assert time.monotonic() - started < 5
+    child_pid = int(pid_path.read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+    assert limit == combined_limit
+
+
+def test_provider_transport_deadline_terminates_and_reaps_real_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid_path = tmp_path / "timeout.pid"
+    monkeypatch.setattr(
+        terminal_truth,
+        "_EXPANDED_ROUTE_PROVIDER_TIMEOUT_SECONDS",
+        0.1,
+    )
+    program = (
+        "import os, pathlib, sys, time;"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));"
+        "time.sleep(30)"
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        terminal_truth.ExpandedRouteProviderClient._run_provider(
+            [sys.executable, "-I", "-c", program, str(pid_path)],
+            cwd=tmp_path,
+            environment={"PATH": os.defpath, "PYTHONNOUSERSITE": "1"},
+            payload=b"",
+        )
+
+    child_pid = int(pid_path.read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+
+
 def test_orchestrator_client_fails_closed_if_protected_package_changes(
     tmp_path: Path,
 ) -> None:
