@@ -92,6 +92,12 @@ NOT_RELEASED = {
                   "remediation; it was explicitly not released.",
         "superseded_by": "2.17.26",
     },
+    "2.17.26": {
+        "reason": "superseded whole-codebase remediation candidate that "
+                  "preceded the public-metadata regression correction; it "
+                  "was explicitly not released.",
+        "superseded_by": "2.18.0",
+    },
 }
 
 # Version numbers deliberately skipped — never bumped to, never released.

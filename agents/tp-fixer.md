@@ -1,7 +1,6 @@
 ---
 name: tp-fixer
 description: >
-  Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs.
   The FIX step of the Evaluate-Loop: repairs the evaluator's reproducible
   failures for one task, adds regression tests, never expands scope.
   Examples: <example>Context: evaluate gated fail with a repro. user: "run

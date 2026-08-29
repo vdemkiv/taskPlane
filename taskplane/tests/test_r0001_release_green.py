@@ -59,7 +59,7 @@ def _platform_response(**overrides):
 def _release_inputs():
     return {
         "source_sha": SHA,
-        "version": "2.17.26",
+        "version": "2.18.0",
         "wiring_closure_fingerprint": "1" * 64,
         "feature_receipt_digests": ["2" * 64],
         "full_matrix_receipts": ["3" * 64],

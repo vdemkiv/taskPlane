@@ -293,6 +293,5 @@ anyone yourself.
   (routing the loop's existing fix cycle to tp-fixer), and at engineering
   review an unresolved critical/high finding blocks sign-off mechanically.
   If fix cycles exhaust without clearing it, the loop escalates to the
-  human (`escalated`). Never silently dropped — and never routed to
-  machinery taskplane does not ship (there is no Conductor, Board, or CSO;
-  strategy input is the summoned, advisory `tp-northstar` review only).
+  human (`escalated`). Never silently dropped. Strategy input is the
+  summoned, advisory `tp-northstar` review only.

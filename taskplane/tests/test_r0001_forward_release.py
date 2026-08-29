@@ -31,38 +31,43 @@ def test_v21720_remains_released_incomplete():
     }
 
 
-def test_forward_candidate_is_exactly_v21726():
+def test_forward_candidate_is_exactly_v2180():
     history = forward_history_receipt()
 
-    assert CURRENT_VERSION == "2.17.26"
+    assert CURRENT_VERSION == "2.18.0"
     assert PREVIOUS_VERSION == "2.17.20"
-    assert COMPATIBILITY_PREVIOUS_VERSION == "2.17.25"
-    assert SUPERSEDED_CANDIDATE_VERSION == "2.17.25"
+    assert COMPATIBILITY_PREVIOUS_VERSION == "2.17.26"
+    assert SUPERSEDED_CANDIDATE_VERSION == "2.17.26"
     assert history["forward_generation"] == {
-        "version": "2.17.26",
-        "repair_of": "2.17.25",
+        "version": "2.18.0",
+        "repair_of": "2.17.26",
         "history_rewrite": False,
     }
 
 
+def test_forward_candidate_is_exactly_v21726():
+    """Retain the superseded remediation selector as a historical alias."""
+    test_forward_candidate_is_exactly_v2180()
+
+
 def test_forward_candidate_is_exactly_v21725():
     """Retain the superseded local-candidate selector as a historical alias."""
-    test_forward_candidate_is_exactly_v21726()
+    test_forward_candidate_is_exactly_v2180()
 
 
 def test_forward_candidate_is_exactly_v21724():
     """Retain the superseded local-candidate selector as a historical alias."""
-    test_forward_candidate_is_exactly_v21726()
+    test_forward_candidate_is_exactly_v2180()
 
 
 def test_forward_candidate_is_exactly_v21723():
     """Retain the superseded local-candidate selector as a historical alias."""
-    test_forward_candidate_is_exactly_v21726()
+    test_forward_candidate_is_exactly_v2180()
 
 
 def test_forward_candidate_is_exactly_v21722():
     """Retain the immutable R-0001 wiring selector as a historical alias."""
-    test_forward_candidate_is_exactly_v21726()
+    test_forward_candidate_is_exactly_v2180()
 
 
 def test_historical_graph_revision_is_attributed_without_history_rewrite():

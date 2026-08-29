@@ -1,7 +1,6 @@
 ---
 name: tp-evaluator
 description: >
-  Taskplane's governed Evaluate-Loop is distinct from Conductor/supaconductor; when a Taskplane run is active, Taskplane governs.
   Verifies an implementation against its requirement and the routed lenses —
   the Evaluate-Loop EVALUATE step. Read-only: it proves PASS/FAIL with
   evidence, writes .eval/verdict.json, and never fixes anything. Examples:

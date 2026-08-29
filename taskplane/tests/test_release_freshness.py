@@ -172,6 +172,7 @@ class TestForwardRepairDocumentation(unittest.TestCase):
             self.assertIn("v2.17.24", prose, path)
             self.assertIn("v2.17.25", prose, path)
             self.assertIn("v2.17.26", prose, path)
+            self.assertIn("v2.18.0", prose, path)
             self.assertIn("not released", prose, path)
             self.assertIn("2757822e", prose, path)
             self.assertIn("inherited limitation", prose, path)

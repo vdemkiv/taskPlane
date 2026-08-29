@@ -25,17 +25,18 @@ lens rewrite and never bumped to.
 
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
-> v2.17.22, v2.17.23, v2.17.24, and v2.17.25 candidates are superseded;
-> the completed R-0002 remediation moves forward as v2.17.26, which is not released. Historical
+> v2.17.22, v2.17.23, v2.17.24, v2.17.25, and v2.17.26 candidates are superseded; the public-metadata
+> regression correction moves forward as v2.18.0, which is not released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.17.26 to `main` is not a tag, upload,
+> Preparing, validating, or pushing v2.18.0 to `main` is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.17.26** | **R-0002 whole-codebase EM remediation candidate — not released.** Integrates the completed high-, medium-, and low-priority remediation waves, focused final defect fixes, exact-SHA verification evidence, and final Engineering Manager disposition. This row claims no tag, upload, installation, Marketplace publication, or release. |
+| **v2.18.0** | **Public metadata is product-only again, with a merge-regression guard — not released.** Removes external orchestration-product comparisons from every public skill and agent discovery description plus public security guidance, while preserving exact external namespaces only in internal collision enforcement and tests. Restores the deleted repository-wide branding regression test so a future merge cannot silently reintroduce the copy. This row claims no tag, upload, installation, Marketplace publication, or release. |
+| **v2.17.26** | **Superseded R-0002 whole-codebase EM remediation candidate — not released; compatibility N-1 for v2.18.0.** Integrated the completed high-, medium-, and low-priority remediation waves, focused final defect fixes, exact-SHA verification evidence, and final Engineering Manager disposition. It was never promoted into released truth. |
 | **v2.17.25** | **Superseded R-0013 main-integration candidate — not released; compatibility N-1 for v2.17.26.** Completed the R-0013 Plan: Codex-native execution authority replaced Taskplane-owned delivery lifecycle control; retained Design evidence validated one concurrent all-26 Design-only sweep; Build, Fix, Evaluate, and execution-time EM started zero Taskplane lens workers; deterministic ready sets, one event-driven wait, bounded acceptance waves, fail-closed native usage evidence, real-checkout wiring closure, and atomic exact-SHA terminal truth governed delivery. It was never promoted into released truth. |
 | **v2.17.24** | **Superseded local candidate — not released; compatibility N-1 for v2.17.25.** Applied the minimal R-0013 bootstrap correction: W31 producer observations flow through the Codex-native producer-consumer adapter, and execution-time EM uses the governed zero-lens path with an explicit empty collection rather than starting or waiting for a lens producer. It was never promoted into released truth. |
 | **v2.17.23** | **Superseded local candidate — not released.** Corrected the hook-home binder so a secure explicit locator may select either a dedicated home or canonical `$HOME/.taskplane`; missing locators, noncanonical locator homes, and inherited `TASKPLANE_HOME` conflicts still fail closed before any receipt. Native hooks, the repository bridge, the generated `.taskplane/codex-hook.py` launcher, and the host runtime retain one locator-bound home without receipt copying. It was compatibility N-1 for v2.17.24, but did not close the W31 producer-consumer and execution-time zero-lens EM bootstrap seams. This row does not claim a tag, upload, installation, publication, push, or release. |
