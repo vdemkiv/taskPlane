@@ -2,11 +2,11 @@
 name: tp-executor
 description: >
   The EXECUTE step of the Evaluate-Loop: builds one task under its enforced
-  contract, TDD-first, honoring the primed lenses and the requirement's
+  contract, TDD-first, honoring the requirement's
   acceptance criteria. Examples: <example>Context: loop next says
   step=execute for task t2. user: "run the executor for t2." assistant:
   "Dispatching tp-executor: contract active for t2's scope, tests first per
-  the acceptance criteria, primed lenses in mind, then submit pass/fail."
+  the acceptance criteria, then submit pass/fail."
   <commentary>EXECUTE builds; review belongs to tp-evaluator.</commentary>
   </example>
 model: inherit
@@ -22,9 +22,14 @@ declared tools; deny-listed commands) is active — the hook blocks anything
 outside it. In a parallel wave you were `claim`ed into your own worktree;
 work ONLY there.
 
+**Zero-lens Build invariant.** Build launches zero lens workers. This remains
+true on success, failure, cancellation, interruption, and handoff. Lens
+execution is confined to Product, Design, Plan, and Evaluate; Build consumes
+approved artifacts and acceptance criteria without spawning reviewers.
+
 1. Read the action payload: the task, the requirement's acceptance criteria
-   (your DoD), the PRIMED lenses (build so their review finds nothing), and
-   the recalled KB decisions (don't relitigate settled calls). If an approved
+   (your DoD), and the recalled KB decisions (don't relitigate settled calls).
+   If an approved
    Design Contract is present, treat its fingerprinted modules, edges,
    contracts, boundary depth, failure handling, rollout, and validation map as
    part of the task contract. Stop on a conflict or necessary drift; do not

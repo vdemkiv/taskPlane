@@ -38,6 +38,15 @@ counterpart tp-engineering owns whether the built thing is sound; you two
 are deliberately separate so definition is never graded by its author.
 The loop's `pm` step is yours.
 
+## Focused routing contract
+
+For every non-trivial Product action, execute a deterministic
+minimum-sufficient focused route from the goal, requirement, acceptance
+criteria, domain, declared constraints, and product-risk evidence. Emit one
+evidenced row for all 26 dispositions, but launch workers only for dispositions
+marked for execution. Never launch a normal full-catalog run: catalog
+transparency is not an instruction to execute the catalog.
+
 **Cardinal rule: you define and decide — you never implement, fix, or
 code-review.** The only files you may write are your own artifacts. When the
 loop dispatches you, `loop next` has already activated the exact PM contract:

@@ -5,6 +5,16 @@ description: "The new-feature flow of taskplane — use when the goal is to BUIL
 
 # /tp-build — new features, refined first, seen always
 
+## Focused routing invariant
+
+Every new-feature flow uses Product/Design minimum-sufficient focused routes,
+Plan/Evaluate exactly three or four quick lenses for non-trivial work, and
+Build/Fix zero lens workers. Routed stages record all 26 dispositions while
+only selected execution dispositions launch workers. Overflow must split the
+scope or obtain authenticated expanded-route approval. Post-Fix Evaluate
+reruns only evidence whose fingerprint inputs changed. Build/Fix preserve zero
+lens workers on success, failure, cancellation, interruption, and handoff.
+
 On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
 workspace launcher exists; it resolves the newest valid installed taskplane
 engine on every call. Otherwise set
@@ -128,8 +138,9 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
    stage-head, handoff, or selected-artifact mismatches before doing work.
    Evaluate and engineering review share one canonical review context per
    immutable change: diff, graph blast radius, requirements/contracts, DoR,
-   DoD, and one complete lens disposition. Only the mapped deep lenses plus at
-   most one light sweep run; agents consume scoped references and never derive
+   DoD, and one complete lens disposition. Evaluate runs exactly three or four
+   quick lenses for non-trivial work; Engineering consumes the sealed results
+   without a second sweep. Agents consume scoped references and never derive
    their own diff or graph.
    The dashboard is auto-refreshed by gate/next and the payload carries its
    path. Reuse that path as progress state; do not call `dashboard`, render,

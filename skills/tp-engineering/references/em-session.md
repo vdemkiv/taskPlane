@@ -98,8 +98,9 @@ How hard it was to mock the code *is itself a testability finding*. Clean seams 
 
 Run `review start` exactly once. It pins the target, derives the diff and graph
 blast radius once, probes runnability once, maps all 26 lenses, writes one
-immutable shared context, and returns only the deep slots plus at most one
-light sweep. Deliver its workflow/wave and dependency-graph artifacts by
+immutable shared context, and returns the sealed results for exactly three or
+four quick Evaluate lenses on non-trivial work. Engineering consumes those
+results without launching a second sweep. Deliver its workflow/wave and dependency-graph artifacts by
 reference. Do not separately run target, graph impact, lens route, runnability,
 or a second review start.
 

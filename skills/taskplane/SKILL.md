@@ -5,6 +5,16 @@ description: "The simple user-facing entry point for taskplane. Use whenever the
 
 # /taskplane — simple for the user, strict for agents
 
+## Focused routing invariant
+
+Every governed flow uses Product/Design minimum-sufficient focused routes,
+Plan/Evaluate exactly three or four quick lenses for non-trivial work, and
+Build/Fix zero lens workers. Every routed stage emits all 26 dispositions;
+only selected execution dispositions launch workers. Overflow must split the
+scope or obtain authenticated expanded-route approval, and post-Fix Evaluate
+reruns only evidence whose fingerprint inputs changed. Build/Fix keep zero
+lens workers on success, failure, cancellation, interruption, and handoff.
+
 The user should need to say only one of these:
 
 - `taskplane design <new feature, approach, or technical change>`

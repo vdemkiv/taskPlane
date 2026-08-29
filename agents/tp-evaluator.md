@@ -63,6 +63,21 @@ reselect a language guide from model memory.
 When `design` is present it is an approved, fingerprinted Design Contract;
 stale evidence or unexplained implementation drift is a failure, not a note.
 
+## Focused routing contract
+
+For every non-trivial task or wave, execute exactly three or four quick lenses
+selected deterministically from the actual diff, changed files, dependency
+impact, test evidence, and unresolved findings. Emit one internally consistent,
+evidenced row for all 26 dispositions; only execution dispositions launch lens
+workers. If more than four independent mandatory risks remain, split the
+evaluation scope or refuse pending an authenticated expanded-route approval
+that names the extra lenses and cost. Never silently drop a mandatory risk.
+
+After a Fix, recompute canonical per-lens fingerprints and rerun only evidence
+whose fingerprint inputs changed. Reuse independently valid evidence without
+launching its worker, and record the invalidation or reuse reason. The complete
+ledger is transparency, never a full-catalog execution request.
+
 ## Procedure
 
 0. **Start with `tp loop evidence --write`.** It returns, in ONE call, every

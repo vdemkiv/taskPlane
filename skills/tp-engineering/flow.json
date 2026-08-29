@@ -9,12 +9,11 @@
     {"id": "diff", "label": "one diff + graph impact", "kind": "stage"},
     {"id": "quality", "label": "graph-quality gate", "kind": "stage"},
     {"id": "route", "label": "26 lens dispositions", "kind": "stage"},
-    {"id": "wave", "label": "deep slots + one light sweep", "kind": "parallel"},
-    {"id": "promote", "label": "high-risk light → bounded deep wave", "kind": "parallel"},
+    {"id": "wave", "label": "consume 3–4 quick Evaluate results", "kind": "stage"},
     {"id": "collect", "label": "canonical collection", "kind": "stage"},
     {"id": "dashboard", "label": "workflow + graph + findings", "kind": "visual"},
     {"id": "signoff", "label": "approve / request changes", "kind": "gate"},
     {"id": "terminal", "label": "stage terminal; no implicit child or cleanup", "kind": "stage"}
   ],
-  "edges": [["manifest", "target"], ["target", "diff"], ["diff", "quality"], ["quality", "route"], ["route", "wave"], ["wave", "promote"], ["promote", "collect"], ["collect", "dashboard"], ["dashboard", "signoff"], ["signoff", "terminal"]]
+  "edges": [["manifest", "target"], ["target", "diff"], ["diff", "quality"], ["quality", "route"], ["route", "wave"], ["wave", "collect"], ["collect", "dashboard"], ["dashboard", "signoff"], ["signoff", "terminal"]]
 }

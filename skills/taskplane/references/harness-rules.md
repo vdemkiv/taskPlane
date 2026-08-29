@@ -1,5 +1,17 @@
 # Harness rules — submit / gate / human checkpoint (canonical)
 
+## Focused routing invariant
+
+Product/Design minimum-sufficient focused routes and Plan/Evaluate exactly
+three or four quick lenses are the only normal lens-execution points;
+Build/Fix zero lens workers. Every routed stage records all 26 dispositions,
+while only selected execution dispositions launch workers. More than four
+independent mandatory Plan/Evaluate risks must split the scope or stop for an
+authenticated expanded-route approval naming extra lenses and cost. After a
+Fix, rerun only lens evidence whose fingerprint inputs changed and reuse the
+rest. Build/Fix preserve zero workers on success, failure, cancellation,
+interruption, and handoff.
+
 This file is the SINGLE canonical statement of the invariants every
 taskplane flow runs under. Skills summarize them in one line and point
 here; the engine enforces them mechanically. If a skill and this file ever

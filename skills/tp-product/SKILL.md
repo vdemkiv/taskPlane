@@ -14,6 +14,14 @@ step is this persona. Its counterpart, `/tp-engineering`, owns whether the
 built thing is sound — deliberately separate seats so definition is never
 graded by its own author.
 
+## Focused routing contract
+
+Product executes a deterministic minimum-sufficient focused route from goal,
+requirement, acceptance criteria, domain, declared constraints, and
+product-risk evidence. It records all 26 dispositions with evidence and reason,
+but only selected execution dispositions launch workers. A complete ledger is
+not a normal full-catalog run, and Product must never turn it into one.
+
 `flow.json` is the approved Product graph: **idea/change request → product
 context → complete requirement → contracts/dependencies → Product DoR →
 product review → human approve/sign-off → governed Build handoff**. A scored
