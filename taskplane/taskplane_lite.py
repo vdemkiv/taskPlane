@@ -4834,6 +4834,307 @@ def activate_review_contract_action(
                     task_slot_override=slot)
 
 
+EXPANDED_LENS_ROUTE_ACTION_SCHEMA = \
+    "taskplane.expanded-lens-route-action/v1"
+EXPANDED_LENS_ROUTE_AUTHORITY_SCHEMA = \
+    "taskplane.expanded-lens-route-authority/v1"
+EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA = \
+    "taskplane.expanded-lens-route-consumption/v1"
+EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS = 60 * 60
+_EXPANDED_LENS_ROUTE_ACTION_FIELDS = frozenset({
+    "schema", "key_id", "action_id", "workspace_fingerprint", "stage",
+    "target", "context_fingerprint", "extra_lens_ids", "expected_cost",
+    "policy_version", "issued_at", "expires_at", "signature",
+})
+_EXPANDED_LENS_ROUTE_CONSUMPTION_FIELDS = frozenset({
+    "schema", "key_id", "action_id", "action_fingerprint",
+    "workspace_fingerprint", "stage", "target", "context_fingerprint",
+    "extra_lens_ids", "expected_cost", "policy_version", "consumed_at",
+    "signature",
+})
+_EXPANDED_LENS_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+_EXPANDED_ROUTE_TEXT_RE = re.compile(r"^[\x21-\x7e]{1,256}$")
+
+
+def _expanded_lens_route_authority_path(workspace: str) -> str:
+    return os.path.join(tp_dir(workspace),
+                        "expanded-lens-route-authority.json")
+
+
+def _expanded_lens_route_authority(workspace: str, *, create: bool) -> dict:
+    """Load the issuer used only for exact expanded-route capabilities."""
+    path = _expanded_lens_route_authority_path(workspace)
+    with file_lock(path):
+        authority = load_json(
+            path, default=None, what="expanded lens route signing authority")
+        if authority is None and create:
+            secret = secrets.token_bytes(32)
+            authority = {
+                "schema": EXPANDED_LENS_ROUTE_AUTHORITY_SCHEMA,
+                "key_id": hashlib.sha256(secret).hexdigest(),
+                "secret": base64.b64encode(secret).decode("ascii"),
+            }
+            atomic_write_json(path, authority, sort_keys=True)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        if not isinstance(authority, dict) or set(authority) != {
+                "schema", "key_id", "secret"} or authority.get("schema") != \
+                EXPANDED_LENS_ROUTE_AUTHORITY_SCHEMA:
+            raise StateError(
+                path, "expanded lens route signing authority is invalid")
+        try:
+            secret = base64.b64decode(
+                str(authority.get("secret") or ""), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise StateError(
+                path, "expanded lens route signing authority is invalid") \
+                from exc
+        if len(secret) != 32 or authority.get("key_id") != \
+                hashlib.sha256(secret).hexdigest():
+            raise StateError(
+                path, "expanded lens route signing authority is invalid")
+        return {"key_id": authority["key_id"], "secret": secret}
+
+
+def _expanded_lens_route_error(workspace: str, reason: str) -> StateError:
+    return StateError(
+        _expanded_lens_route_authority_path(workspace), reason,
+        "obtain a fresh exact expanded-route action for the current "
+        "Plan/Evaluate context; split the target if approval is unavailable")
+
+
+def _expanded_lens_route_signed_bytes(value: dict) -> bytes:
+    unsigned = {key: item for key, item in value.items()
+                if key != "signature"}
+    return json.dumps(unsigned, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def _expanded_lens_route_signature(secret: bytes, value: dict) -> str:
+    return hmac.new(secret, _expanded_lens_route_signed_bytes(value),
+                    hashlib.sha256).hexdigest()
+
+
+def expanded_lens_route_action_fingerprint(action: dict) -> str:
+    """Fingerprint the complete signed capability without trusting it."""
+    try:
+        encoded = json.dumps(
+            action, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("expanded lens route action is not canonical JSON") \
+            from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validated_expanded_lens_route_bindings(
+        workspace: str, *, stage: str, target: str,
+        context_fingerprint: str, extra_lens_ids: list[str],
+        expected_cost: int, policy_version: str, action_id: str) -> dict:
+    if stage not in {"plan", "evaluate"}:
+        raise _expanded_lens_route_error(
+            workspace, "expanded routes are limited to Plan and Evaluate")
+    if not isinstance(target, str) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(target) or \
+            os.path.isabs(target) or re.match(r"^[A-Za-z]:[\\/]", target):
+        raise _expanded_lens_route_error(
+            workspace, "expanded route target identity is malformed")
+    if not isinstance(context_fingerprint, str) or \
+            not re.fullmatch(r"[0-9a-f]{64}", context_fingerprint):
+        raise _expanded_lens_route_error(
+            workspace, "expanded route context fingerprint is malformed")
+    if not isinstance(extra_lens_ids, list) or \
+            not 1 <= len(extra_lens_ids) <= 26 or \
+            any(not isinstance(lens, str) or
+                not _EXPANDED_LENS_ID_RE.fullmatch(lens)
+                for lens in extra_lens_ids) or \
+            len(set(extra_lens_ids)) != len(extra_lens_ids):
+        raise _expanded_lens_route_error(
+            workspace, "expanded route extra lens identity is malformed")
+    if isinstance(expected_cost, bool) or \
+            not isinstance(expected_cost, int) or \
+            not 1 <= expected_cost <= 1_000_000_000:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route expected cost is malformed")
+    if not isinstance(policy_version, str) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(policy_version):
+        raise _expanded_lens_route_error(
+            workspace, "expanded route policy version is malformed")
+    if not isinstance(action_id, str) or \
+            not _TASK_SLOT_RE.fullmatch(action_id):
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action identity is malformed")
+    return {
+        "stage": stage,
+        "target": target,
+        "context_fingerprint": context_fingerprint,
+        "extra_lens_ids": list(extra_lens_ids),
+        "expected_cost": expected_cost,
+        "policy_version": policy_version,
+        "action_id": action_id,
+    }
+
+
+def issue_expanded_lens_route_action(
+        workspace: str, *, stage: str, target: str,
+        context_fingerprint: str, extra_lens_ids: list[str],
+        expected_cost: int, policy_version: str, action_id: str,
+        now: int | None = None,
+        ttl_seconds: int = EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS) -> dict:
+    """Issue one exact, short-lived Plan/Evaluate expansion capability.
+
+    The closed action deliberately carries no contract-clear, scope-change,
+    cap-change, or mandatory-floor authority.  Its only effect is to permit
+    the listed extra lenses for the exact current routing context.
+    """
+    bindings = _validated_expanded_lens_route_bindings(
+        workspace, stage=stage, target=target,
+        context_fingerprint=context_fingerprint,
+        extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
+        policy_version=policy_version, action_id=action_id)
+    try:
+        issued_at = int(_time.time() if now is None else now)
+        ttl = int(ttl_seconds)
+    except (TypeError, ValueError) as exc:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action time bounds are malformed") \
+            from exc
+    if isinstance(ttl_seconds, bool) or \
+            not 1 <= ttl <= EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action TTL is invalid")
+    authority = _expanded_lens_route_authority(workspace, create=True)
+    action = {
+        "schema": EXPANDED_LENS_ROUTE_ACTION_SCHEMA,
+        "key_id": authority["key_id"],
+        "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
+        **bindings,
+        "issued_at": issued_at,
+        "expires_at": issued_at + ttl,
+    }
+    action["signature"] = _expanded_lens_route_signature(
+        authority["secret"], action)
+    return action
+
+
+def verify_expanded_lens_route_action(
+        workspace: str, action: dict, *, stage: str, target: str,
+        context_fingerprint: str, extra_lens_ids: list[str],
+        expected_cost: int, policy_version: str, action_id: str,
+        now: int | None = None) -> dict:
+    """Verify an action against the exact current route without consuming it."""
+    expected = _validated_expanded_lens_route_bindings(
+        workspace, stage=stage, target=target,
+        context_fingerprint=context_fingerprint,
+        extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
+        policy_version=policy_version, action_id=action_id)
+    if not isinstance(action, dict) or \
+            set(action) != _EXPANDED_LENS_ROUTE_ACTION_FIELDS or \
+            action.get("schema") != EXPANDED_LENS_ROUTE_ACTION_SCHEMA:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action schema is malformed")
+    authority = _expanded_lens_route_authority(workspace, create=False)
+    if action.get("key_id") != authority["key_id"] or \
+            not hmac.compare_digest(
+                str(action.get("signature") or ""),
+                _expanded_lens_route_signature(authority["secret"], action)):
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action signature is invalid")
+    try:
+        issued_at = int(action["issued_at"])
+        expires_at = int(action["expires_at"])
+        current = int(_time.time() if now is None else now)
+    except (TypeError, ValueError) as exc:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action time bounds are malformed") \
+            from exc
+    if issued_at > current or expires_at <= current or \
+            expires_at <= issued_at or expires_at - issued_at > \
+            EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action is stale or expired")
+    if action.get("workspace_fingerprint") != \
+            _workspace_identity_fingerprint(workspace):
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action belongs to another workspace")
+    for field, value in expected.items():
+        if action.get(field) != value:
+            raise _expanded_lens_route_error(
+                workspace,
+                f"expanded route action {field} mismatches current route")
+    return json.loads(json.dumps(action))
+
+
+def _expanded_lens_route_consumption_path(
+        workspace: str, action_id: str) -> str:
+    digest = hashlib.sha256(action_id.encode("utf-8")).hexdigest()
+    return os.path.join(tp_dir(workspace), "expanded-lens-route-consumed",
+                        f"{digest}.json")
+
+
+def expanded_lens_route_action_consumed(
+        workspace: str, action_id: str) -> bool:
+    if not isinstance(action_id, str) or \
+            not _TASK_SLOT_RE.fullmatch(action_id):
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action identity is malformed")
+    path = _expanded_lens_route_consumption_path(workspace, action_id)
+    receipt = load_json(
+        path, default=None, what="expanded lens route consumption receipt")
+    if receipt is None:
+        return False
+    if not isinstance(receipt, dict) or \
+            set(receipt) != _EXPANDED_LENS_ROUTE_CONSUMPTION_FIELDS or \
+            receipt.get("schema") != EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA:
+        raise StateError(path, "expanded lens route consumption is invalid")
+    return True
+
+
+def consume_expanded_lens_route_action(
+        workspace: str, action: dict, *, stage: str, target: str,
+        context_fingerprint: str, extra_lens_ids: list[str],
+        expected_cost: int, policy_version: str, action_id: str,
+        now: int | None = None) -> dict:
+    """Atomically consume one verified action; its action id cannot replay."""
+    verified = verify_expanded_lens_route_action(
+        workspace, action, stage=stage, target=target,
+        context_fingerprint=context_fingerprint,
+        extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
+        policy_version=policy_version, action_id=action_id, now=now)
+    current = int(_time.time() if now is None else now)
+    path = _expanded_lens_route_consumption_path(workspace, action_id)
+    with file_lock(path):
+        prior = load_json(
+            path, default=None, what="expanded lens route consumption receipt")
+        if prior is not None:
+            raise StateError(
+                path, "expanded lens route action was already consumed (replay)",
+                "split the target or obtain a fresh action id for the current "
+                "route")
+        authority = _expanded_lens_route_authority(workspace, create=False)
+        receipt = {
+            "schema": EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA,
+            "key_id": authority["key_id"],
+            "action_id": action_id,
+            "action_fingerprint": expanded_lens_route_action_fingerprint(
+                verified),
+            "workspace_fingerprint": verified["workspace_fingerprint"],
+            "stage": stage,
+            "target": target,
+            "context_fingerprint": context_fingerprint,
+            "extra_lens_ids": list(extra_lens_ids),
+            "expected_cost": expected_cost,
+            "policy_version": policy_version,
+            "consumed_at": current,
+        }
+        receipt["signature"] = _expanded_lens_route_signature(
+            authority["secret"], receipt)
+        atomic_write_json(path, receipt, sort_keys=True)
+    return receipt
+
+
 def _workspace_identity_fingerprint(workspace: str) -> str:
     """Opaque checkout identity used to bind lifecycle evidence.
 
