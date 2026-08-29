@@ -22,7 +22,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "taskplane"))
 
-from taskplane import dashboard, depgraph, terminal_truth  # noqa: E402
+from taskplane import dashboard, terminal_truth  # noqa: E402
+import depgraph  # noqa: E402
 from taskplane import taskplane_lite as tp  # noqa: E402
 from taskplane.command_runtime import (  # noqa: E402
     COMMAND_RETENTION_SECONDS,
