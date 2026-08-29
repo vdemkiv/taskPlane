@@ -1,5 +1,6 @@
 import json
 import hashlib
+import contextlib
 import os
 import shutil
 import subprocess
@@ -1778,6 +1779,42 @@ class TestLoop(unittest.TestCase):
                 contract = loop._step_contract(step, state)
                 self.assertTrue(
                     contract["coding"]["dod"]["regression_gate"])
+
+    def test_fix_gate_runs_suite_in_claimed_task_namespace(self):
+        """A repair that changes Taskplane validates with repaired bytes."""
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="s", checkpoints=["em"])
+        state = loop.load(ws)
+        state.update({
+            "step": "fix",
+            "parallel": True,
+            "submission_required": False,
+            "current_task": 0,
+            "tasks": [dict(TASK, status="built", workspace=ws)],
+        })
+        loop.save(ws, state)
+        lifecycle = []
+
+        @contextlib.contextmanager
+        def claimed_binding():
+            lifecycle.append("enter")
+            try:
+                yield
+            finally:
+                lifecycle.append("exit")
+
+        def blocked_dod(*_args, **_kwargs):
+            self.assertEqual(lifecycle, ["enter"])
+            return ["bounded stop after namespace assertion"]
+
+        with unittest.mock.patch.object(
+                loop, "_claimed_execute_suite_binding",
+                new=claimed_binding), unittest.mock.patch.object(
+                    loop, "_task_dod_errors", side_effect=blocked_dod):
+            result = loop.gate(ws, "pass", task_id="t1")
+
+        self.assertEqual(lifecycle, ["enter", "exit"])
+        self.assertIn("Definition of Done failed", result["error"])
 
     def test_read_only_workflow_roles_can_call_the_governed_cli(self):
         """H1 blocks governed CLI calls through Bash for read-only roles."""

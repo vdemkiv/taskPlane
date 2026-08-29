@@ -7029,7 +7029,7 @@ def _task_dod_errors(ws: str, state: dict, task: dict,
 
 @contextlib.contextmanager
 def _claimed_execute_suite_binding():
-    """Run parallel EXECUTE suites from the claimed checkout namespace.
+    """Run claimed EXECUTE/FIX suites from the task checkout namespace.
 
     The orchestrator engine may be older than a task branch that changes the
     engine itself. ``taskplane_lite.run_suite_command`` deliberately injects
@@ -7038,6 +7038,9 @@ def _claimed_execute_suite_binding():
     worktree. A wave gate instead needs the same plain command semantics the
     executor used in that exact checkout. Force a fresh run so an earlier
     validator-namespace cache record cannot substitute for that evidence.
+    FIX needs the same binding: a repair can change the engine that runs its
+    declared suite, so injecting the stale orchestrator copy would reject the
+    repair and can widen the gate into a repository-scale baseline run.
     """
     import subprocess
 
@@ -8547,9 +8550,10 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
     # A reported PASS is a request to evaluate the gate. Evidence, not the
     # agent's assertion, determines whether the state machine advances.
     if outcome == "pass" and step in ("execute", "fix"):
-        dod_errors = _task_dod_errors(
-            act_ws, state, task,
-            _worker_stage_snapshot(act_ws, step, task))
+        with _claimed_execute_suite_binding():
+            dod_errors = _task_dod_errors(
+                act_ws, state, task,
+                _worker_stage_snapshot(act_ws, step, task))
         if dod_errors:
             tp.trace(ws, "loop_gate_blocked", step=step, reason="dod",
                      errors=dod_errors)
