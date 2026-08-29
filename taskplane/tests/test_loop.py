@@ -2225,6 +2225,39 @@ class TestParallelExecution(unittest.TestCase):
         # the MAIN workspace is not governed by this worker's contract
         self.assertIsNone(tpl.load_active(ws))
 
+    def test_fresh_claim_quarantines_older_unbound_pending_duplicate(self):
+        ws = self._ws()
+        agent_ws = os.path.join(ws, ".tp-work", "t1")
+        subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
+                        "tp/t1-stale-pending"], cwd=ws, check=True)
+        stale = tp.prepare_worker_contract(
+            agent_ws,
+            tp.build_contract("EXECUTE: t1", scope=["src/a/**"],
+                              test_command="true", plan_minted=True,
+                              regression_gate=True),
+            stage="execute", task="t1",
+            task_name="tp_step_executor_t1_stale000",
+            role_marker="taskplane-role:tp-executor", now=1)
+        tp.activate(agent_ws, stale, snapshot=tp.git_head(agent_ws),
+                    task_slot_override=stale["task_slot"])
+
+        claimed = loop.claim(ws, "t1", agent_ws)
+
+        fresh_slot = claimed["contract_bootstrap"]["task_slot"]
+        self.assertNotEqual(fresh_slot, stale["task_slot"])
+        self.assertEqual(tp.list_task_slots(agent_ws), [fresh_slot])
+        quarantine = os.path.join(
+            agent_ws, ".taskplane", "quarantine", "contracts")
+        archived = [json.load(open(os.path.join(quarantine, name),
+                                   encoding="utf-8"))
+                    for name in os.listdir(quarantine)]
+        self.assertEqual(len(archived), 1)
+        terminal = archived[0]["worker_lifecycle"]["terminal"]
+        self.assertEqual(terminal["authority"], "orphan-recovery")
+        self.assertEqual(terminal["outcome"], "interruption")
+        self.assertEqual(terminal["submission_status"],
+                         "superseded_pending_claim")
+
     def test_parallel_execute_gate_validates_claimed_task_worktree(self):
         """EXECUTE DoD must import and test the claimed branch's bytes."""
         tests = (
@@ -3369,6 +3402,78 @@ class TestStatelessReviewContractBootstrap(unittest.TestCase):
         TestLoop._assert_loop_binds_worker_action_to_each_immutable_review_slot
     test_managed_worktree_result_is_exact_and_fail_closed = \
         TestLoop._assert_managed_worktree_result_is_exact_and_fail_closed
+
+
+class TestSupersededPendingWorkerRecovery(unittest.TestCase):
+    def _active(self, workspace, *, stage="execute", task="t1", now=10,
+                name=None):
+        name = name or f"tp_step_executor_{task}_{now:08d}"
+        contract = tp.prepare_worker_contract(
+            workspace,
+            tp.build_contract(f"{stage.upper()}: {task}", read_only=True,
+                              write_allow=[".eval/**"]),
+            stage=stage, task=task, task_name=name,
+            role_marker="taskplane-role:tp-executor", now=now)
+        tp.activate(workspace, contract, snapshot=f"head-{now}",
+                    task_slot_override=contract["task_slot"])
+        return contract
+
+    def test_session_sweep_keeps_unique_newest_and_quarantines_older(self):
+        workspace = tempfile.mkdtemp()
+        older = self._active(workspace, now=10)
+        newest = self._active(workspace, now=20)
+        released = tp.sweep_completed_worker_contracts(
+            workspace, loop_state={
+                "step": "execute", "parallel": True,
+                "tasks": [{"id": "t1", "status": "running"}]}, now=30)
+        self.assertEqual([row["slot"] for row in released],
+                         [older["task_slot"]])
+        self.assertEqual(tp.list_task_slots(workspace),
+                         [newest["task_slot"]])
+        archived = json.load(open(released[0]["quarantine"],
+                                  encoding="utf-8"))
+        terminal = archived["worker_lifecycle"]["terminal"]
+        self.assertEqual(terminal["authority"], "orphan-recovery")
+        self.assertEqual(terminal["outcome"], "interruption")
+        self.assertEqual(terminal["submission_status"],
+                         "superseded_pending_claim")
+
+    def test_active_owned_duplicate_fails_closed_without_release(self):
+        workspace = tempfile.mkdtemp()
+        older = self._active(workspace, now=10, name="worker-old")
+        newest = self._active(workspace, now=20, name="worker-new")
+        tp.bind_worker_contract_event(workspace, {
+            "session_id": "session", "agent_id": "agent",
+            "task_name": "worker-old"}, now=11)
+        with self.assertRaisesRegex(tp.StateError, "unbound pending"):
+            tp.release_superseded_pending_worker_contracts(
+                workspace, stage="execute", task="t1",
+                keep_slot=newest["task_slot"], now=30)
+        self.assertEqual(set(tp.list_task_slots(workspace)),
+                         {older["task_slot"], newest["task_slot"]})
+
+    def test_equal_prepared_at_fails_closed_without_release(self):
+        workspace = tempfile.mkdtemp()
+        first = self._active(workspace, now=10, name="worker-one")
+        second = self._active(workspace, now=10, name="worker-two")
+        with self.assertRaisesRegex(tp.StateError, "unique newest"):
+            tp.release_superseded_pending_worker_contracts(
+                workspace, stage="execute", task="t1")
+        self.assertEqual(set(tp.list_task_slots(workspace)),
+                         {first["task_slot"], second["task_slot"]})
+
+    def test_unrelated_worker_slots_are_preserved(self):
+        workspace = tempfile.mkdtemp()
+        older = self._active(workspace, task="t1", now=10)
+        newest = self._active(workspace, task="t1", now=20)
+        unrelated = self._active(workspace, task="t2", now=5)
+        released = tp.release_superseded_pending_worker_contracts(
+            workspace, stage="execute", task="t1",
+            keep_slot=newest["task_slot"], now=30)
+        self.assertEqual([row["slot"] for row in released],
+                         [older["task_slot"]])
+        self.assertEqual(set(tp.list_task_slots(workspace)),
+                         {newest["task_slot"], unrelated["task_slot"]})
 
 
 class TestReviewBridge(unittest.TestCase):

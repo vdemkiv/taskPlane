@@ -5550,6 +5550,90 @@ def worker_contract_for_stage(workspace: str, *, stage: str,
     return {"slot": slot, "contract": contract}
 
 
+def release_superseded_pending_worker_contracts(
+        workspace: str, *, stage: str, task: str,
+        keep_slot: str | None = None,
+        now: int | None = None) -> list[dict]:
+    """Quarantine stale duplicates only when one pending claim is newest.
+
+    This is deliberately narrower than a clear operation. Every same-stage,
+    same-task candidate is validated before any terminal receipt is minted,
+    and unrelated worker slots are never considered for release.
+    """
+    stage = str(stage or "").strip()
+    task = str(task or "").strip()
+    explicit = str(keep_slot or "").strip()
+    if not stage or not task:
+        raise _worker_lifecycle_error(
+            workspace, "worker stage/task identity is incomplete")
+    if explicit and not _TASK_SLOT_RE.fullmatch(explicit):
+        raise _worker_lifecycle_error(
+            workspace, "explicit keeper slot is invalid")
+
+    matches = []
+    for slot, contract in _active_worker_contracts(workspace):
+        lifecycle = contract.get("worker_lifecycle") or {}
+        if lifecycle.get("stage") == stage and str(
+                lifecycle.get("task") or "") == task:
+            matches.append((slot, contract))
+    if not matches:
+        if explicit:
+            raise _worker_lifecycle_error(
+                workspace, "explicit keeper does not identify a candidate")
+        return []
+
+    prepared = []
+    for slot, contract in matches:
+        lifecycle = contract.get("worker_lifecycle") or {}
+        stamp = lifecycle.get("prepared_at")
+        if lifecycle.get("schema") != WORKER_CONTRACT_LIFECYCLE_SCHEMA:
+            raise _worker_lifecycle_error(
+                workspace, f"worker slot {slot} lifecycle is malformed")
+        if lifecycle.get("slot") != slot or \
+                lifecycle.get("status") != "pending" or \
+                lifecycle.get("owner") is not None or \
+                lifecycle.get("terminal") is not None:
+            raise _worker_lifecycle_error(
+                workspace, "superseded recovery requires every competing "
+                "worker to be unbound pending")
+        if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0:
+            raise _worker_lifecycle_error(
+                workspace, "worker prepared_at is invalid")
+        action = lifecycle.get("release_action")
+        _verify_worker_release_action(workspace, slot, action, contract)
+        prepared.append((stamp, slot, contract))
+
+    newest_at = max(row[0] for row in prepared)
+    newest = [row for row in prepared if row[0] == newest_at]
+    if len(newest) != 1:
+        raise _worker_lifecycle_error(
+            workspace, "superseded recovery has no unique newest slot")
+    keeper = newest[0][1]
+    if explicit and explicit != keeper:
+        raise _worker_lifecycle_error(
+            workspace, "explicit keeper is not the unique newest slot")
+    if len(prepared) == 1:
+        return []
+
+    released = []
+    for _, slot, contract in sorted(prepared):
+        if slot == keeper:
+            continue
+        lifecycle = contract["worker_lifecycle"]
+        receipt = record_worker_terminal(
+            workspace, slot, event=None, outcome="interruption",
+            submission_status="superseded_pending_claim", now=now,
+            authority="orphan-recovery")
+        released.append(release_worker_contract(
+            workspace, slot, action=lifecycle["release_action"],
+            terminal_receipt=receipt))
+    trace(workspace, "worker_contract_duplicates_recovered",
+          stage=stage, task=task, keeper=keeper,
+          released=[row["slot"] for row in released],
+          authority="orphan-recovery")
+    return released
+
+
 def bind_worker_contract_event(workspace: str, event: dict, *,
                                now: int | None = None) -> dict:
     """Bind one pending worker slot to one exact native child start."""
@@ -5918,6 +6002,24 @@ def sweep_completed_worker_contracts(
         now: int | None = None) -> list[dict]:
     """Session-start fail-safe: release only loop-proven completed workers."""
     released = []
+    identities = {}
+    # Preflight every worker lifecycle before recovering any group. One
+    # malformed or ambiguous slot must leave the entire active set untouched.
+    for slot, contract in _active_worker_contracts(workspace):
+        lifecycle = contract.get("worker_lifecycle") or {}
+        if lifecycle.get("schema") != WORKER_CONTRACT_LIFECYCLE_SCHEMA:
+            raise _worker_lifecycle_error(
+                workspace, f"worker slot {slot} lifecycle is malformed")
+        stage = str(lifecycle.get("stage") or "").strip()
+        task = str(lifecycle.get("task") or "").strip()
+        if not stage or not task:
+            raise _worker_lifecycle_error(
+                workspace, f"worker slot {slot} lifecycle is malformed")
+        identities.setdefault((stage, task), []).append(slot)
+    for (stage, task), slots in sorted(identities.items()):
+        if len(slots) > 1:
+            released.extend(release_superseded_pending_worker_contracts(
+                workspace, stage=stage, task=task, now=now))
     for slot, contract in _active_worker_contracts(workspace):
         if not _worker_loop_completed(contract, loop_state):
             continue

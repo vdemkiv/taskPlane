@@ -5760,6 +5760,9 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         tp.activate(
             agent_ws, contract, snapshot=snapshot,
             task_slot_override=contract["task_slot"])
+        tp.release_superseded_pending_worker_contracts(
+            agent_ws, stage="execute", task=str(task_id),
+            keep_slot=contract["task_slot"])
         t["status"] = "running"
         t["workspace"] = agent_ws
     tp.trace(ws, "loop_claim", task=task_id, agent_workspace=agent_ws,
