@@ -37,7 +37,7 @@ import tempfile
 import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 try:  # pwd is unavailable on Windows.
     import pwd
@@ -47,6 +47,7 @@ except ImportError:  # pragma: no cover - Windows host
 import storage as runtime_storage
 import taskplane_lite as tp
 import review_evidence as review_evidence_runtime
+import terminal_truth as terminal_truth_runtime
 
 # This value crosses host boundaries inside immutable briefs. Keep the
 # reference POSIX-shaped; ``context_dir`` joins it to the native workspace.
@@ -2459,6 +2460,159 @@ _FOCUSED_RISK_GROUPS = {
 }
 
 
+def project_focused_route(
+        routing: Mapping[str, object], focused: Mapping[str, object],
+        catalog: Mapping[str, object]) -> dict[str, object]:
+    """Project one closed focused decision onto the incumbent lens shape.
+
+    The policy artifact remains the authority.  This compatibility projection
+    is what existing dispatch, lease, and collection code consumes: selected
+    rows are quick singleton sweeps and every other catalog row is explicitly
+    non-dispatching with evidence.  A non-ready overflow route therefore
+    cannot accidentally leak workers through an older positive signal.
+    """
+    mapped = {str(row.get("id") or ""): row
+              for row in routing.get("lenses") or [] if isinstance(row, dict)}
+    disposition = {row["lens"]: row for row in focused["dispositions"]}
+    dispatchable = set(focused["dispatchable_selected"])
+    projected = copy.deepcopy(dict(routing))
+    projected_rows = []
+    for definition in catalog.get("lenses") or []:
+        lens_id = str(definition.get("id") or "")
+        source = copy.deepcopy(mapped.get(lens_id) or definition)
+        row = disposition[lens_id]
+        source["focused_disposition"] = row["disposition"]
+        if lens_id in dispatchable:
+            source["tier"] = source["verdict"] = "sweep"
+            source["mode"] = "subagent"
+            source["evidence"] = list(row.get("evidence") or [])
+            source["reasons"] = [str(row.get("reason"))]
+            source.pop("negative_evidence", None)
+        else:
+            source["tier"] = source["verdict"] = "n/a"
+            source["mode"] = "none"
+            negative = list(row.get("negative_evidence") or [])
+            if row.get("disposition") == "covered_by":
+                negative = ["covered by selected lens " +
+                            str(row["covered_by"])]
+            if focused["status"] != "ready" and row.get("disposition") in {
+                    "execute_deep", "execute_light"}:
+                negative = ["focused route is not dispatchable: " +
+                            str(focused["status"])]
+            source["negative_evidence"] = negative or [
+                "focused policy did not select this lens"]
+            source["reasons"] = list(source["negative_evidence"])
+            source.pop("evidence", None)
+        projected_rows.append(source)
+    projected["lenses"] = projected_rows
+    projected.setdefault("context", {}).update({
+        "focused_route_status": focused["status"],
+        "focused_route_fingerprint": focused["route_fingerprint"],
+        "focused_selected_count": len(focused["selected"]),
+        "execution_mode": "quick-only",
+    })
+    return projected
+
+
+def expanded_route_authority_request(
+        ws: str, focused: Mapping[str, object]
+        ) -> dict[str, object] | None:
+    """Return the exact request for a non-dispatchable Plan/Evaluate route.
+
+    This is deliberately request-only.  The protected control-plane provider
+    authenticates and atomically consumes approval outside the worker
+    checkout; ReviewKernel cannot mint or validate its own authority.
+    """
+    if focused.get("status") != "expanded_approval_required":
+        return None
+    stage = str(focused.get("stage") or "")
+    if stage not in {"plan", "evaluate"}:
+        raise ReviewKernelError("expanded route requested for unsupported stage")
+    overflow = focused.get("overflow") or {}
+    additional = [str(lens_id) for lens_id in
+                  overflow.get("additional_lenses") or []]
+    if not additional:
+        raise ReviewKernelError("expanded route has no additional lenses")
+    context_fp = str(focused.get("context_fingerprint") or "")
+    return tp.build_expanded_lens_route_authority_request(
+        ws, stage=stage, target=str(focused.get("target") or ""),
+        context_fingerprint=context_fp, extra_lens_ids=additional,
+        expected_cost=600 * len(additional),
+        policy_version=str(focused.get("policy_version") or ""),
+        catalog_version=str(focused.get("catalog_fingerprint") or ""),
+        action_id=f"expanded-{stage}-{context_fp[:16]}")
+
+
+def apply_expanded_route_authority(
+        ws: str, focused: Mapping[str, object],
+        catalog: Mapping[str, object], *,
+        provider_client: terminal_truth_runtime.ExpandedRouteProviderClient |
+        None = None,
+        provider_receipt: terminal_truth_runtime.ExpandedRouteProviderReceipt |
+        None = None,
+        ) -> tuple[dict[str, object], dict[str, object] | None]:
+    """Authenticate and bind one exceptional Plan/Evaluate route.
+
+    The worktree remains request-only: it cannot construct either live type.
+    The protected orchestrator client authenticates the provider receipt
+    against the request regenerated from the *current* route.  Only that
+    exact live pair can turn the closed overflow decision into a dispatchable
+    route, whose new fingerprint binds the original refused route and the
+    authenticated request/consumption identities.
+    """
+    if __package__:
+        from . import lens_route_policy
+    else:  # pragma: no cover - direct CLI module loading
+        import lens_route_policy
+
+    definitions = list(catalog.get("lenses") or [])
+    route = copy.deepcopy(dict(focused))
+    lens_route_policy.validate_route(route, definitions)
+    request = expanded_route_authority_request(ws, route)
+    supplied = provider_client is not None or provider_receipt is not None
+    if request is None:
+        if supplied:
+            raise ReviewKernelError(
+                "expanded-route authority supplied for a non-overflow route")
+        return route, None
+    if not supplied:
+        return route, request
+    if not isinstance(
+            provider_client,
+            terminal_truth_runtime.ExpandedRouteProviderClient) or \
+            not isinstance(
+                provider_receipt,
+                terminal_truth_runtime.ExpandedRouteProviderReceipt):
+        raise ReviewKernelError(
+            "live expanded-route provider client and receipt are required")
+    try:
+        provider_client.assert_authenticated(provider_receipt, request)
+    except terminal_truth_runtime.TerminalTruthError as exc:
+        raise ReviewKernelError(
+            "expanded-route provider receipt is not authenticated") from exc
+
+    requested_route_fingerprint = str(route.get("route_fingerprint") or "")
+    consumption = dict(provider_receipt)
+    route["status"] = "ready"
+    route["dispatchable_selected"] = list(route.get("selected") or [])
+    route["expanded_route_authority"] = {
+        "schema": "taskplane.expanded-lens-route-review-authority/v1",
+        "requested_route_fingerprint": requested_route_fingerprint,
+        "request_fingerprint":
+            tp.expanded_lens_route_provider_request_fingerprint(request),
+        "consumption_receipt_fingerprint":
+            lens_route_policy.fingerprint(consumption),
+        "provider_protocol_version": str(
+            consumption.get("provider_protocol_version") or ""),
+        "action_fingerprint": str(
+            consumption.get("action_fingerprint") or ""),
+    }
+    route.pop("route_fingerprint", None)
+    route["route_fingerprint"] = lens_route_policy.fingerprint(route)
+    lens_route_policy.validate_route(route, definitions)
+    return route, request
+
+
 def _dependency_impact_for_routing_fingerprint(impact: dict) -> dict:
     """Adapt depgraph integer depth keys to the policy's JSON boundary."""
     normalized = copy.deepcopy(impact or {})
@@ -2540,12 +2694,33 @@ def _focused_evaluate_route(
               for row in routing.get("lenses") or [] if isinstance(row, dict)}
     mandatory_floors = ({"architecture", "code-quality", "testability"} |
                         set(context["mandatory_lenses"]))
+    # Incumbent scoring is intentionally generous; focused execution is not.
+    # Admit the three ordinary Evaluate floors, every explicit mandatory
+    # risk, then at most one highest-scoring independent group. A genuine
+    # five-mandatory-risk target is preserved as overflow by the policy, while
+    # five merely positive/overlapping incumbent signals never manufacture a
+    # needless approval boundary.
+    admitted = set(mandatory_floors)
+    represented = {_FOCUSED_RISK_GROUPS.get(lens_id, lens_id)
+                   for lens_id in admitted}
+    candidates = sorted((
+        (str(source.get("id") or lens_id), source)
+        for lens_id, source in mapped.items()
+        if str(source.get("verdict") or source.get("tier") or "n/a") != "n/a"
+        and lens_id not in admitted
+    ), key=lambda item: (-float(item[1].get("score") or 0), item[0]))
+    for lens_id, _source in candidates:
+        group = _FOCUSED_RISK_GROUPS.get(lens_id, lens_id)
+        if len(admitted) >= 4 or group in represented:
+            continue
+        admitted.add(lens_id)
+        represented.add(group)
     signal_rows = []
     for definition in definitions:
         lens_id = str(definition.get("id") or "")
         source = mapped.get(lens_id) or {}
         raw_verdict = str(source.get("verdict") or source.get("tier") or "n/a")
-        positive = raw_verdict != "n/a" or lens_id in mandatory_floors
+        positive = lens_id in admitted
         evidence_rows = [str(value) for value in
                          source.get("evidence") or source.get("reasons") or []
                          if str(value)]
@@ -2585,43 +2760,7 @@ def _focused_evaluate_route(
             "fingerprint_inputs": relevant,
         })
     focused = lens_route_policy.build_route(context, signal_rows, definitions)
-    disposition = {row["lens"]: row for row in focused["dispositions"]}
-    dispatchable = set(focused["dispatchable_selected"])
-    projected = copy.deepcopy(routing)
-    projected_rows = []
-    for definition in definitions:
-        lens_id = str(definition.get("id") or "")
-        source = copy.deepcopy(mapped.get(lens_id) or definition)
-        row = disposition[lens_id]
-        if lens_id in dispatchable:
-            source["tier"] = source["verdict"] = "sweep"
-            source["mode"] = "subagent"
-            source["evidence"] = list(row.get("evidence") or [])
-            source["reasons"] = [str(row.get("reason"))]
-            source.pop("negative_evidence", None)
-        else:
-            source["tier"] = source["verdict"] = "n/a"
-            source["mode"] = "none"
-            negative = list(row.get("negative_evidence") or [])
-            if row.get("disposition") == "covered_by":
-                negative = ["covered by selected lens " + str(row["covered_by"])]
-            if focused["status"] != "ready" and row.get("disposition") in {
-                    "execute_deep", "execute_light"}:
-                negative = ["focused route is not dispatchable: " +
-                            str(focused["status"])]
-            source["negative_evidence"] = negative or [
-                "focused policy did not select this lens"]
-            source["reasons"] = list(source["negative_evidence"])
-            source.pop("evidence", None)
-        projected_rows.append(source)
-    projected["lenses"] = projected_rows
-    projected.setdefault("context", {}).update({
-        "focused_route_status": focused["status"],
-        "focused_route_fingerprint": focused["route_fingerprint"],
-        "focused_selected_count": len(focused["selected"]),
-        "execution_mode": "quick-only",
-    })
-    return focused, projected
+    return focused, project_focused_route(routing, focused, catalog)
 
 
 def _focused_prior_reuse(ws: str, store, source_run_id: str | None,
@@ -3859,6 +3998,7 @@ def publish_production_review(root: str, state: dict, revision: dict, *,
 
 def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  diff: dict, runnability: dict | None = None,
+                 test_evidence: Mapping[str, object] | None = None,
                  requirement: dict | None = None,
                  acceptance: Iterable | None = None,
                  contracts: Iterable | None = None, stage: str = "review",
@@ -3870,6 +4010,12 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  unresolved_findings: Iterable | None = None,
                  retry_lenses: Iterable[str] | None = None,
                  retry_source_run_id: str | None = None,
+                 expanded_route_provider_client:
+                 terminal_truth_runtime.ExpandedRouteProviderClient |
+                 None = None,
+                 expanded_route_provider_receipt:
+                 terminal_truth_runtime.ExpandedRouteProviderReceipt |
+                 None = None,
                  delivery_mode_receipt: object =
                  _DELIVERY_MODE_AUTHORITY_UNSET) -> dict:
     """Run the normal Review/Evaluate/final-EM evidence kernel once.
@@ -4007,6 +4153,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         workspace=ws, requirement_text=(requirement or {}).get("text"),
         content_by_file=routing_content))
     focused_route = None
+    expanded_route_request = None
     reuse_plan = None
     reused_lens_evidence = []
     zero_lens_authority = delivery_authority if stage == "review" else None
@@ -4076,17 +4223,27 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                             (prior_state.get("revision") or {}).get("findings") or [])
                     except Exception:
                         unresolved_findings = []
+                incumbent_routing = routing
                 focused_route, routing = _focused_evaluate_route(
-                    routing, catalog=catalog, target=target,
+                    incumbent_routing, catalog=catalog, target=target,
                     requirement=requirement, acceptance=acceptance,
                     design_contract=design_contract, diff=diff,
                     impact=quality.get("impact") or impact,
-                    test_evidence=runnability or {},
+                    test_evidence=test_evidence or runnability or {},
                     unresolved_findings=unresolved_findings,
                     routing_content=routing_content,
                     mandatory_lenses=(set(requested) |
                                       ({"architecture", "security"}
                                        if graph_degraded else set())))
+                focused_route, expanded_route_request = \
+                    apply_expanded_route_authority(
+                        ws, focused_route, catalog,
+                        provider_client=expanded_route_provider_client,
+                        provider_receipt=expanded_route_provider_receipt)
+                if focused_route.get("status") == "ready" and \
+                        focused_route.get("expanded_route_authority"):
+                    routing = project_focused_route(
+                        incumbent_routing, focused_route, catalog)
                 reuse_plan, reused_lens_evidence = _focused_prior_reuse(
                     ws, store, retry_source_run_id, focused_route)
                 routing = _project_focused_reuse(routing, reuse_plan)
@@ -4098,6 +4255,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                     "selected": list(focused_route["selected"]),
                     "reused": list(reuse_plan["reused"]),
                     "invalidated": copy.deepcopy(reuse_plan["invalidation"]),
+                    **({"expanded_route_authority": copy.deepcopy(
+                        focused_route["expanded_route_authority"])}
+                       if focused_route.get("expanded_route_authority") else {}),
                 }
         elif zero_lens_authority is not None:
             routing = _zero_automatic_lens_route(
@@ -4138,13 +4298,16 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "schema": "taskplane.routing-decision/v2", "stage": stage,
         "routing_mode": "selective", "dispositions": decision,
         **({"focused_route": focused_route} if focused_route else {}),
+        **({"expanded_route_request": expanded_route_request}
+           if expanded_route_request else {}),
         **({"reuse_plan": reuse_plan} if reuse_plan else {}),
         "review_depth_policy": copy.deepcopy(depth_policy)})
     routing_input_ref = store.put("routing-input", {
         "schema": "taskplane.routing-input/v2", "target": target,
         "diff": diff, "impact": quality.get("impact") or impact,
         "graph_quality": _portable_ref(quality_ref),
-        "runnability": runnability, "requirement": requirement or {},
+        "runnability": runnability, "test_evidence": test_evidence or {},
+        "requirement": requirement or {},
         "acceptance": list(acceptance or []),
         "contracts": sorted({str(x) for x in contracts or []}),
         "change": {"type": task_type, "stage": stage, "dor": dor,
@@ -4170,6 +4333,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                 "selected_count": len(focused_route["selected"]),
                 "overflow": copy.deepcopy(focused_route.get("overflow") or {}),
             },
+            **({"expanded_route_request": expanded_route_request}
+               if expanded_route_request else {}),
             "reason": str((focused_route.get("overflow") or {}).get(
                 "requires") or "focused route is not dispatchable"),
             "counters": counters,
@@ -4181,6 +4346,8 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
             "routing_decision": decision_ref,
             "routing_input": routing_input_ref, "quality": quality_ref,
             "focused_route": focused_route, "reuse_plan": reuse_plan,
+            **({"expanded_route_request": expanded_route_request}
+               if expanded_route_request else {}),
             "review_depth_policy": depth_policy, "manifest": manifest,
         })
         return manifest
@@ -4292,6 +4459,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                 "selected_count": len(focused_route["selected"]),
                 "reused": list((reuse_plan or {}).get("reused") or []),
                 "dispatched": list((reuse_plan or {}).get("dispatch") or []),
+                **({"expanded_route_authority": copy.deepcopy(
+                    focused_route["expanded_route_authority"])}
+                   if focused_route.get("expanded_route_authority") else {}),
             }} if focused_route else {}),
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
