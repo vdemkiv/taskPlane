@@ -1,0 +1,105 @@
+{
+  "schema_version": "1.0",
+  "kind": "design_contract_amendment",
+  "status": "approved_requirement",
+  "supersedes": [
+    "dynamic routing limited to Evaluate or Engineering Review",
+    "automatic full-catalog execution at Product, Design, Plan, or Evaluate"
+  ],
+  "routing_stages": {
+    "product": {
+      "mode": "focused_dynamic",
+      "selection": "minimum_sufficient",
+      "hard_cap": null,
+      "inputs": [
+        "goal",
+        "requirement",
+        "acceptance_criteria",
+        "domain",
+        "constraints",
+        "product_risk"
+      ]
+    },
+    "design": {
+      "mode": "focused_dynamic",
+      "selection": "minimum_sufficient",
+      "hard_cap": null,
+      "mandatory_coverage": ["solution_design"],
+      "inputs": [
+        "approved_requirements",
+        "acceptance_criteria",
+        "proposed_components",
+        "interfaces",
+        "data_boundaries",
+        "trust_boundaries",
+        "migration_risk",
+        "rollback_risk"
+      ]
+    },
+    "plan": {
+      "mode": "focused_dynamic",
+      "minimum_executed": 3,
+      "maximum_executed": 4,
+      "inputs": [
+        "approved_product",
+        "approved_design",
+        "dependency_graph",
+        "task_scopes",
+        "ownership",
+        "selectors",
+        "validation_strategy"
+      ]
+    },
+    "build": {
+      "mode": "none",
+      "reason": "implementation workers do not execute review lenses"
+    },
+    "fix": {
+      "mode": "none",
+      "reason": "implementation workers do not execute review lenses"
+    },
+    "evaluate": {
+      "mode": "focused_dynamic",
+      "minimum_executed": 3,
+      "maximum_executed": 4,
+      "scope": "task_or_wave",
+      "inputs": [
+        "acceptance_criteria",
+        "specification",
+        "design_contract",
+        "actual_diff",
+        "changed_files",
+        "dependency_impact",
+        "test_evidence",
+        "unresolved_findings"
+      ]
+    }
+  },
+  "catalog_dispositions": [
+    "execute_deep",
+    "execute_light",
+    "covered_by",
+    "not_applicable"
+  ],
+  "invariants": [
+    "every catalog lens receives an evidenced disposition",
+    "only the selected focused set launches workers",
+    "mandatory lenses cannot be silently removed to satisfy a cap",
+    "plan and evaluate overflow is resolved by scope splitting or explicit expanded-lens-route approval",
+    "routes are recalculated at every stage",
+    "fixes rerun only invalidated lens evidence",
+    "equal canonical inputs and policy version produce the same ordered route and fingerprint"
+  ],
+  "acceptance_criteria": [
+    "AC-LR1",
+    "AC-LR2",
+    "AC-LR3",
+    "AC-LR4",
+    "AC-LR5",
+    "AC-LR6",
+    "AC-LR7",
+    "AC-LR8",
+    "AC-LR9",
+    "AC-LR10"
+  ]
+}
