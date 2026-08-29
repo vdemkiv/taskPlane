@@ -1,354 +1,253 @@
-# Design: remediate all 72 deep-EM findings
+# Design — focused dynamic lens routing
 
-Status: proposed for human Design approval
+Requirement: **R-0001 — Focused dynamic lens routing across Product, Design,
+Plan, and Evaluate**
 
-Requirement: `R-0002`
+## Outcome
 
-Reviewed baseline: `00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085`
+Taskplane will keep the 26-lens catalog but stop treating catalog coverage as
+catalog execution. A single deterministic policy will produce a complete
+stage-specific route: every lens receives one evidenced disposition, while
+only the smallest sufficient focused set runs. Product and Design have no
+numeric cap beyond minimum sufficiency; non-trivial Plan and Evaluate routes
+contain exactly three or four lenses. Build and Fix launch no lens workers.
 
-Canonical finding inventory: `.em-review/findings.json` (34 high, 28 medium, 10 low)
+The policy is synchronous, dependency-neutral, and implemented as a pure
+Python module. Existing stage owners assemble typed context, invoke the policy,
+persist its closed artifact, and enforce its result. Existing signal scoring,
+ReviewKernel leases, native dispatch, contract screening, and artifact storage
+remain the incumbents rather than being recreated.
 
-## Decision
+## As-built constraints
 
-Use a **contract-first, severity-gated remediation train**. First stabilize the
-durability, authority, compatibility, and timeout contracts in H1. Once those
-interfaces are fixed, execute H2 (production wiring and operating bounds) and
-H3 (human-facing, privacy, and terminal truth) as concurrent, pairwise-disjoint
-native waves. An independent, fail-closed high gate must prove all 34 high
-findings closed at one candidate SHA before any medium-only task is eligible.
-M1 and M2 then run concurrently through disjoint owners, followed by one
-integration/evaluation pass.
+The design is a delta against these repository facts:
 
-All 10 low findings are companions of the earliest related H2, H3, M1, or M2
-owner. There is no low-only tail:
+- `taskplane/graph_primitives.py` already owns deterministic 26-lens signal
+  scoring, negative evidence, security/architecture floors, and the current
+  eight-deep budget.
+- `taskplane/lens.py` turns those scores into `deep`, `light`, and `n/a`
+  entries. Its automatic review projection currently selects four or five
+  singleton sweep slots and always includes architecture.
+- `lenses/catalog.json` has all 26 lenses but only `design`, `build`, and
+  `review` stage profiles. It has no canonical Product or Plan profile.
+- `taskplane/loop.py` uses legacy strategy routing for Product/Plan, forces a
+  solution-design route for Design, primes Execute/Fix, and passes Evaluate to
+  ReviewKernel as stage `build`.
+- `taskplane/review.py` already seals routing input, complete dispositions,
+  scoped evidence views, leases, dispatch slots, results, and provenance. Its
+  decision schema currently accepts only `sweep`, `light`, and `n/a` and its
+  automatic selection is four or five lenses.
+- `taskplane/review_retry.py` can retry previously failed lenses, but it does
+  not compare canonical per-lens input fingerprints and therefore cannot prove
+  that unchanged evidence remains valid after a Fix.
+- `taskplane/delivery_policy.py` and the Plan delivery receipt correctly prove
+  zero-lens Build/Fix execution, but currently class Evaluate and EM as the same
+  zero-lens execution family. Evaluate must instead run its focused route; EM
+  remains synthesis-only.
+- `taskplane/dispatch_telemetry.py` already provides immutable dispatch usage
+  accounting, but has no closed stage-route record for estimated/actual lens
+  cost, runtime, reuse, or invalidation.
+- The runtime contract is standard-library-only CPython 3.10+, with separate
+  Python 3.14 lint/type validation. New code must remain valid at the 3.10
+  syntax floor while being designed and statically checked against Python
+  3.14 behavior.
 
-- H2: `L-02` (dependency-neutral glob matcher).
-- H3: `L-01` (metadata contrast) and `L-04` (workstation identity minimization).
-- M1: `L-06` (development-only Pillow pin) and `L-10` (scoped runtime bindings).
-- M2: `L-03`, `L-05`, `L-07`, `L-08`, and `L-09` (graphemes, help, and docs).
+The Design baseline is dependency-graph fingerprint
+`7fdc2cc45c225323046430570f04d0580d8868b3ed57132a627a636450adf76f`.
+The graph remains read-only during Design.
 
-The authoritative 72-row finding map is `finding_map` in
-`design/contract.json`. It preserves every canonical finding independently,
-even where one root fix closes corroborating rows.
+## Alternatives
 
-The wave and ownership diagram is [visual.html](visual.html).
+### A. Shared pure policy with incumbent adapters — selected
 
-## Current-state grounding
+Add `taskplane/lens_route_policy.py` as the one dependency-neutral owner of
+canonical context, disposition validation, deterministic ordering, caps,
+overflow, and per-lens fingerprints. Keep signal detection in
+`graph_primitives.py`; keep stage lifecycle in `loop.py`; keep leased Evaluate
+execution in `review.py`; keep signing in `taskplane_lite.py` and telemetry in
+`dispatch_telemetry.py`.
 
-This is a bounded overlay on the current Python implementation, not a rewrite.
-The baseline already contains useful controls that should be repaired and
-wired rather than replaced:
+This introduces one abstraction at the actual policy boundary and lets every
+stage reuse the same invariants without forcing ReviewKernel concerns into
+Product or Plan.
 
-- `taskplane/terminal_truth.py` has immutable objects, a CAS head, ordered
-  terminal surfaces, fsync helpers, and a coordinator, but the coordinator has
-  no supported composition root and its in-memory issuer cannot survive a
-  restart.
-- `taskplane/delivery_ports.py`, `taskplane/run_store.py`, and
-  `taskplane/producer_observation.py` already use prepare/commit-style evidence,
-  immutable rows, and reconciliation concepts; their acknowledgement order and
-  successor exclusivity are incomplete at crash boundaries.
-- `taskplane/taskplane_lite.py` owns the file-level runtime state, knowledge
-  migration, read-only command screening, store metadata, and append-only
-  trace. It is therefore the single H1 owner for durability, migration,
-  read-only mutation safety, audit sanitization, and shared-store metadata.
-- `taskplane/dashboard.py` is a server-rendered, self-contained dashboard with
-  host-bridge and fallback paths. Its present tab, action, state, message,
-  motion, contrast, and truncation behavior share one generated HTML/JS surface
-  and need one owner per wave.
-- `taskplane/depgraph.py` renders interactive SVG graph nodes;
-  `taskplane/graph_primitives.py` and the lens router contain parallel glob
-  semantics. The accepted `components.yaml` architecture map is recorded but
-  is not an enforced scanner input.
-- `taskplane/native_authority.py`, `taskplane/design_sweep.py`, and
-  `taskplane/preview_runtime.py` contain production-capable validators or
-  entrypoints that are not reached from supported flows. Preview materialization
-  fingerprints an unbounded tree even though runtime lifetime/CPU/memory limits
-  already exist.
-- `taskplane/review.py` and `taskplane/tp.py` provide routing and cost controls,
-  but validation-sandbox Git operations can wait indefinitely, transcript
-  discovery scans unrelated history, and standalone review does not set a
-  token ceiling unless the caller supplies one.
-- `.github/workflows/ci.yml` runs the suite but does not enforce lint/strict
-  typing and resolves moving test dependencies; some checkout jobs retain
-  credentials. `CONTRIBUTING.md` says the runtime is stdlib-only but omits the
-  Pillow asset-generation dependency.
-- `taskplane/tests/__init__.py` and `taskplane/build_c.py` mutate process-global
-  runner/service state. The former is especially broad because import alone
-  rewires `tempfile`, environment variables, `shutil`, and `unittest`.
-- `design/compatibility.json`, `PRIVACY.md`, `README.md`,
-  `docs/loop-design.md`, `docs/onboarding.md`, `docs/cli-reference.md`,
-  `.codex-plugin/plugin.json`, and `skills/tp-help/SKILL.md` contain the
-  reviewed compatibility, privacy, product, and documentation claims.
+### B. Extend each stage independently
 
-These premises are sourced from the exact files above, `specs/spec.md`, the
-canonical review, and baseline graph fingerprint
-`42b140d0b8125932f316693a7efb2c24f71853f5a3aea822bf7c9558cf6aca0b`.
+Patch Product, Design, Plan, and Evaluate with local selection rules and teach
+each artifact gate its own disposition shape. This is initially smaller, but
+duplicates canonicalization, cap behavior, mandatory-risk handling, privacy,
+and fingerprint semantics. Equal inputs could produce different answers at
+different gates, directly contradicting AC-LR8.
 
-## Decision drivers and measurable targets
+### C. Replace the signal engine and ReviewKernel
 
-1. **No inventory loss:** machine comparison must return exactly 72 unique ids,
-   split 34/28/10, with no missing or extra trace row.
-2. **High first:** the high gate consumes 34 independently checkable results at
-   one SHA; one missing, open, suppressed, downgraded, or self-attested result
-   makes eligibility false.
-3. **Crash consistency:** every H1 persistence boundary must pass its positive
-   selector and a fault-injection matrix covering every acknowledged write
-   boundary; a restart yields either the predecessor or one complete successor,
-   never a partial authoritative state.
-4. **Bounded work:** standalone review defaults to a finite 25,000,000-token
-   ceiling; transcript routing reads only the selected session/run and at most
-   64 MiB; preview inventory refuses more than 100,000 entries or 2 GiB of
-   regular-file bytes; repository acquisition has one retry owner, at most
-   three routine attempts, and an absolute 600-second operation deadline;
-   validation-sandbox subprocesses have a 120-second per-command deadline and
-   a 600-second preparation deadline.
-5. **Accessible truth:** interactive dashboard/graph controls meet their stated
-   keyboard and ARIA contracts, asynchronous actions never claim success before
-   bridge confirmation, reduced-motion disables nonessential infinite motion,
-   and small metadata text has a WCAG AA contrast ratio of at least 4.5:1.
-6. **Python quality:** CI supports the documented Python floor (3.10+) and the
-   project validation target (3.14), runs the selected linter and strict type
-   checker on production modules, permits no unexplained bare suppression, and
-   installs a hash-locked test/tool dependency set. Runtime remains stdlib-only;
-   Pillow is development/asset-generation only.
-7. **Test determinism:** concurrency tests use events/conditions, not sleeps;
-   scoped bindings restore in LIFO order for nesting and isolate concurrent
-   contexts; importing a test package does not mutate global runner state.
-8. **Final proof:** focused selectors run per task; the full
-   `python3 -m pytest taskplane/tests -q` suite runs once, after integration, at
-   the exact clean candidate SHA.
+Build a new end-to-end router, artifact store, dispatcher, and retry engine.
+This offers a clean vocabulary but discards mature graph floors, scoped views,
+host-observed leases, collection atomicity, and current review provenance. The
+migration and regression surface is disproportionate to the requirement.
 
-## Alternatives considered
+## Selected architecture
 
-### A. Contract-first severity train (selected)
+### 1. Canonical stage context
 
-Stabilize shared authority/durability contracts in H1, then use file/interface
-ownership to fan out H2/H3 and later M1/M2. Add only three narrow supporting
-modules: a remediation-trace validator, a dependency-neutral glob matcher, and
-a locale/text boundary.
+Each routed stage builds `taskplane.lens-route-context/v1`. It contains:
 
-Gains: preserves high-first priority; makes parallelism mechanically safe;
-reuses the existing architecture; provides a fail-closed gate and exact
-finding traceability; keeps rollback additive. Costs: shared integration joins
-remain serial, and broad files such as `dashboard.py` and `taskplane_lite.py`
-must have one owner per wave. Revisit when two consecutive releases show that
-one broad owner is still the dominant delivery bottleneck after the fixes.
+- `stage`, `target`, `policy_version`, and catalog fingerprint;
+- fingerprints of the requirement, exact acceptance rows, declared
+  constraints, and stage-owned evidence;
+- bounded semantic signals and named graph modules/edges;
+- stage-specific inputs: Product risks; Design components/interfaces/trust and
+  rollback boundaries; Plan tasks/owners/selectors; or Evaluate diff hashes,
+  changed files, impact, tests, and unresolved findings;
+- a redacted evidence manifest, never raw prompts, raw diffs, secrets,
+  workstation identity, or absolute private paths.
 
-### B. Lens-by-lens remediation
+Context adapters validate their closed schemas before invoking policy. The
+pure policy performs no filesystem, process, network, clock, or global-state
+access. Canonical JSON uses sorted keys, stable list ordering where order is
+not semantic, finite numbers, and explicit policy/catalog versions.
 
-Give each of the 26 review lenses its own task and merge their corrections in
-severity order.
+### 2. One complete route decision
 
-Gains: mirrors review authorship and makes lens reporting simple. Costs: the
-same production files and contracts would have many simultaneous owners,
-corroborating findings would duplicate fixes, and severity would not imply a
-safe dependency order. Revisit only if future review artifacts emit a
-file/interface ownership partition instead of lens ownership.
+`taskplane.lens-route-policy/v1` contains exactly 26 ordered disposition rows:
 
-### C. One monolithic remediation change
+- `execute_deep` — run a dedicated deep producer;
+- `execute_light` — run the bounded quick producer used by the stage;
+- `covered_by` — do not run; identify the selected lens that covers the same
+  material risk and cite evidence for the equivalence;
+- `not_applicable` — do not run; carry machine-readable negative evidence.
 
-Fix all findings in one branch and validate at the end.
+Only the two `execute_*` values may create work. A duplicate/missing catalog
+id, unsupported disposition, empty evidence, invalid `covered_by`, coverage
+cycle, or selected/disposition mismatch fails closed before dispatch.
 
-Gains: no intermediate integration protocol. Costs: no safe parallelism,
-high-severity evidence is delayed behind docs and cosmetic work, rollback is
-all-or-nothing, and one regression obscures 72 obligations. Revisit only for a
-small emergency patch with a single root cause; this inventory is not one.
+Selection first applies security, architecture, solution-design, and other
+evidenced mandatory floors. It then groups materially duplicate contributions
+by independent risk and selects the highest-ranked representative using score,
+floor priority, and lens id as the final stable tie-break. It never invents
+work merely to fill Product/Design. For non-trivial Plan/Evaluate it fills to
+three only from positively evidenced independent risks and may select a fourth
+when its contribution is material. A route with fewer than three is legal only
+with a closed trivial-target record and negative evidence for each omitted
+slot.
 
-### D. Suppress or defer medium/low findings
+### 3. Stage ownership and execution
 
-Close only the 34 highs and retain the remaining review as backlog.
+| Stage | Context owner | Execution | Gate |
+|---|---|---|---|
+| Product | Product worker + Product gate | minimum-sufficient focused quick route | canonical spec and 26 dispositions agree |
+| Design | Designer + Design gate | minimum-sufficient focused route including solution-design | proposed solution mutations recompute route; Design Contract records evidence |
+| Plan | Planner + Plan gate | exactly 3–4 quick lenses for non-trivial plans | task/AC coverage and count are mechanical |
+| Build | loop/build delivery policy | zero lens workers | native start/terminal trace proves zero |
+| Fix | loop/build delivery policy | zero lens workers | native start/terminal trace proves zero |
+| Evaluate | ReviewKernel | exactly 3–4 quick singleton producers per task/wave unless valid reuse applies | sealed route, lease, result, and provenance conservation |
+| EM | engineering synthesis | zero new lens workers; consume canonical Evaluate evidence | final conformance and human sign-off |
 
-Gains: shortest high-only path. Costs: directly contradicts `R-0002`, loses
-the user's explicit low-companion requirement, and leaves known production and
-documentation defects. Revisit only through a new attributed Product scope
-decision.
+The current delivery receipt is split semantically: its zero-lens authority
+continues to govern Build, Fix, and EM, but cannot zero Evaluate. Evaluate must
+carry a valid focused route or stop.
 
-## Proposed modules and contracts
+### 4. Overflow and authenticated expansion
 
-No service, database, queue, or framework is added. Local traversal remains at
-depth 3 and stops at named contract/resource nodes.
+If more than four independent mandatory Plan/Evaluate risks remain after
+deduplication, policy returns no dispatchable route. It returns either:
 
-New narrow modules:
+1. deterministic split candidates whose evidence scopes and task/AC ownership
+   are disjoint; or
+2. `expanded_approval_required` naming the target fingerprint, extra lens ids,
+   reasons, estimated token cost, and expiry.
 
-- `taskplane/remediation_trace.py` validates the immutable 72-row map, severity
-  counts, candidate-SHA result set, high-gate eligibility, and final closure.
-- `taskplane/glob_match.py` provides the dependency-neutral matching primitive
-  consumed by graph and lens routing; it imports neither router.
-- `taskplane/text_runtime.py` owns locale selection, CLDR-capable plural
-  formatting through an optional boundary, deterministic English fallback,
-  and grapheme-safe visible truncation. The core runtime must remain usable
-  without optional packages.
+`taskplane_lite.py` issues and verifies a signed
+`taskplane.expanded-lens-route-action/v1` capability. It is bound to workspace,
+stage, target, canonical context fingerprint, exact extra lenses, expected
+cost, policy version, expiry, and one action id. The control-plane command can
+authorize only that route; it cannot clear contracts, alter mandatory floors,
+or weaken screening. Tampering, replay, stale context, or scope mismatch fails
+closed.
 
-Named contracts:
+### 5. Fingerprinted reuse after Fix
 
-- `contract:runtime.durable-state-and-authority`: prepare/durable-commit,
-  exclusive successor, restart recovery, migration cutover, and authority
-  ownership.
-- `contract:delivery.production-wiring`: supported composition roots,
-  bounded preview/review/repository execution, and live reachability.
-- `contract:quality.review-remediation`: code-quality, boundedness, test,
-  documentation, and no-dead-surface closure rules.
-- `contract:review.high-closure-gate`: exact-SHA independent closure of all 34
-  high rows before medium-only eligibility.
-- `contract:dashboard.accessible-truthful-actions`: semantic controls, honest
-  action/state feedback, WCAG contrast, reduced motion, and accessible text.
-- `contract:i18n.locale-and-grapheme`: locale/plural selection, deterministic
-  fallback, grapheme-safe display, and full accessible values.
-- `contract:privacy.retention-and-disclosure`: data minimization,
-  pseudonymized shared metadata, bounded raw-diff retention, and accurate
-  notices.
-- `contract:release.compatibility-and-authority`: current/N-1 compatibility,
-  release-authority receipt, exact-SHA export, and additive cutover.
-- `contract:ci.reproducible-python-quality`: locked CI dependencies, least
-  checkout privilege, lint, strict typing, canonical proofs, and dev-only
-  asset tooling.
-- `contract:runtime.scoped-dependency-binding`: context-scoped, nested and
-  concurrent-safe runtime seams with deterministic restoration.
-- `contract:docs.generated-truth`: generated CLI/help/docs navigation and
-  onboarding claims match supported behavior.
-- `resource:review.finding-traceability`: immutable source-to-result map.
-- `resource:review.exact-candidate-evidence`: focused and integrated result set
-  bound to one candidate SHA.
+Each selected lens has a `lens_input_fingerprint` derived only from its
+canonical relevant inputs: applicable AC/spec records, Design edges,
+content-hashed changed files, dependency impact, test evidence, unresolved
+findings, catalog definition, and policy version. The route also has a complete
+`route_fingerprint`.
 
-## Delivery waves and native parallelism
+When Fix finishes, no lens runs. Evaluate rebuilds the canonical context and
+compares each newly selected lens with the prior canonical result:
 
-Taskplane supplies dependency and scope intent only. Codex native subagents own
-execution. For every ready set, the orchestrator dispatches the exact emitted
-identities concurrently, then performs one event-driven wait for that
-outstanding set. No Taskplane scheduler, lens-worker runtime, polling loop,
-capacity reservation, or execution DAG is introduced.
+- equal input fingerprint + sealed passing result + valid host provenance =
+  `reused`, with no lease or worker;
+- changed input, new selection, prior failure, missing result, stale policy, or
+  invalid provenance = `invalidated`, with a new lease and worker;
+- no selected-input change = all eligible evidence reused and zero duplicate
+  lens starts.
 
-| Phase | Native-ready lanes | Join / eligibility |
-| --- | --- | --- |
-| H1 foundation | `H1-A` terminal/CAS; `H1-B` journal/observation; `H1-C` durable store/read-only safety; `H1-D` release compatibility/authority; `H1-E` sandbox deadlines | Pairwise-disjoint leaf scopes; `H1-I` alone owns shared integration and compatibility fixtures. |
-| H2 + H3 | H2: `H2-A` CI quality, `H2-B` production roots/preview bounds, `H2-C` review/budget bounds. H3: `H3-A` dashboard controls, `H3-C` privacy/retention, `H3-D` exact-SHA export. `HX-GRAPH` is the one shared owner for H2 architecture/glob and H3 graph keyboard work. | Starts only after `H1-I`. Distinct H2/H3 leaves share no files; `HX-GRAPH` is dispatched once from the combined ready set. `H2-I` and `H3-I` own their respective shared tests/contracts. |
-| High gate | `HG-EVAL` independent evaluator only | Requires H1/H2/H3 joins and 34 exact-SHA high results; injected missing/open/self-attested row must fail. |
-| M1 + M2 | M1: `M1-A` scanner/design proof, `M1-B` typing/cost, `M1-C` CI/dependencies/assets, `M1-D` proof paths, `M1-E` repository retry, `M1-F` scoped test/runtime. M2: `M2-A` dashboard locale/state, `M2-B` privacy defaults/notices, `M2-C` product/docs/help, `M2-D` deterministic concurrency, `M2-E` priced debt. `MX-DOCS-ARCH` is the one shared owner for loop-design obligations in both branches. | Starts only after `HG-EVAL`. Distinct M1/M2 leaves run together when scopes are disjoint; `MX-DOCS-ARCH` is dispatched once. Each group has one join (`M1-I`, `M2-I`). |
-| Final | `FINAL-I` integration, then `FINAL-EVAL` | Reconcile shared boundaries, run all focused evidence, machine-check 72 rows, then run the full suite exactly once. |
+ReviewKernel conserves the union of reused evidence and newly collected slots.
+It never treats the whole candidate SHA as a reuse key; that would invalidate
+everything after any Fix and defeat AC-LR7.
 
-`design/contract.json` declares exact file/interface owners and dependencies for
-all 72 rows. If Plan discovers that two proposed lanes need the same file,
-fixture, schema, public contract, or composition root, it must combine them
-under one named owner or add a dependency; it may not dispatch them in the same
-ready set.
+### 6. Persistence and telemetry
 
-## High closure gate
+Route input, route decision, per-lens fingerprints, approval receipt, reuse
+decision, and final usage are immutable content-addressed records written
+atomically through existing Taskplane storage primitives. The stage pointer is
+updated only after the complete record is durable.
 
-`taskplane/remediation_trace.py` consumes:
+`resource:telemetry.lens-route` records stage, target pseudonym, selected
+count, bounded per-lens reason codes, estimated and actual tokens, runtime,
+cache reuse, invalidation cause, terminal status, and route fingerprint.
+Reasons are capped at 512 UTF-8 bytes, path evidence is repository-relative,
+and raw content is represented only by SHA-256 fingerprints. Route selection
+must complete under 50 ms p95 for 26 prepared lens rows; end-to-end context
+assembly must complete under 500 ms p95 on the frozen repository corpus. A
+route artifact is capped at 128 KiB.
 
-1. the immutable Design/Plan finding map;
-2. the exact candidate Git SHA and clean-tree receipt;
-3. one independent result per `H-01` through `H-34`;
-4. the focused selector fingerprint and outcome for each row; and
-5. the H1/H2/H3 integration receipts.
+### 7. Python/runtime boundaries
 
-Eligibility is true only for exactly 34 unique high ids, all `closed`, all on
-the same candidate SHA, all selectors passing, no missing/suppressed/downgraded
-row, and an evaluator identity different from every owning Build identity. A
-mutation test removes or changes one row and proves the gate refuses medium
-eligibility.
+The new policy is synchronous: no async task ownership or cancellation
+contract is needed. Stage dispatch retains existing cancellation,
+interruption, and handoff ownership. The new module has no mutable global
+state and no dependency on GIL serialization, so it remains safe under
+free-threaded Python when callers provide immutable input values.
 
-## Compatibility, migration, and rollback
+Protocols sit at consuming boundaries: stage adapters pass mappings to the
+pure policy; trust-boundary JSON is validated at load; signed authority is
+validated in `taskplane_lite.py`; ReviewKernel validates stored references and
+leases. There are no new runtime or development dependencies. The module is
+included by the existing plugin/package scripts and is import-smoke-tested in
+a clean packaged artifact. CI retains the Python 3.10 compatibility floor and
+runs lint/strict type checks on Python 3.14.
 
-Durability and evidence changes use expand/contract:
+## Rollout and rollback
 
-1. readers accept the current durable shape and the new versioned shape;
-2. writers emit the new prepared/committed/reconciled shape;
-3. restart and crash-injection evidence proves either predecessor or one full
-   successor is authoritative;
-4. the compatibility matrix tests current and the last released generation;
-5. only after mixed-version evidence is green may old writes be retired.
+Delivery is additive and versioned:
 
-Knowledge-store migration writes a durable manifest and copy-complete marker in
-the destination, verifies content, fsyncs files/directories, then atomically
-switches the locator. An interrupted copy remains non-authoritative and can be
-resumed or discarded. Shared metadata carries repository/public identifiers
-and a pseudonymous workspace key; absolute paths and raw workstation identity
-remain only in the private locator.
+1. add the pure policy and exhaustive unit/mutation tests;
+2. wire Product/Design/Plan artifacts and gates;
+3. wire Evaluate selection and per-lens reuse while retaining read support for
+   prior `deep/light/n/a` evidence as non-authoritative migration input;
+4. narrow zero-lens enforcement to Build/Fix/EM and prove all terminal paths;
+5. add signed overflow authority, telemetry, docs, skills, and agent guidance;
+6. run focused selectors, compatibility tests, clean-package smoke, graph
+   verification, and the full Taskplane test suite before final review.
 
-Dashboard, docs, CI, and production-wiring changes are additive until their
-focused tests pass. A production surface may be removed only together with its
-public claims and callers. Terminal bundles are immutable: rollback never
-rewrites an old bundle; it disables the candidate, restores the last green
-reader/writer path, and creates a successor at a new SHA. Packaging remains
-blocked without current/N-1 compatibility and explicit release-authority
-evidence. This Design grants no push, tag, publication, release, or main-merge
-authority.
+No stage silently falls back to the old full-catalog or zero-Evaluate behavior.
+If the new policy is unavailable, routed stages stop with
+`routing_policy_unavailable`. Before release, rollback is a commit revert. Once
+versioned route artifacts exist, rollback restores the previous code reader
+but leaves immutable evidence intact and prevents new governed delivery until
+an operator selects a compatible policy version; it never rewrites history.
 
-## Failure modes and recovery
+## Known temporary compatibility work
 
-- A crash between prepare and commit is detected by the durable-intent/reconcile
-  signal; the owning coordinator resumes idempotently within the next startup
-  and exposes only predecessor or full successor.
-- A split-brain successor is detected by the CAS-lineage signal; the writer
-  refuses both competing completion claims and requires operator inspection.
-- A migration interruption is detected by the copy-complete/locator signal;
-  startup keeps the legacy store authoritative and resumes or removes the
-  incomplete destination.
-- A bridge rejection is detected by the dashboard action-delivery signal; the
-  UI restores the enabled/error state and retains the exact user action.
-- A review/preview/repository deadline is detected by the bounded-operation
-  signal; the owner cancels/terminates the child operation, records a typed
-  timeout, and returns control within the declared deadline.
-- A locale resource is missing or malformed is detected by the locale-fallback
-  signal; the renderer uses deterministic English without dropping the full
-  accessible value.
-- A CI lock or hash does not match is detected by the dependency-integrity
-  signal; CI stops before tests instead of resolving a moving tree.
-- A missing finding result is detected by the remediation-cardinality signal;
-  the high or final gate refuses eligibility and names the missing ids.
+The one-generation reader for legacy `deep/light/n/a` route artifacts is
+intentional migration debt. It cannot authorize dispatch or reuse; it only
+renders prior history. Remove it after one released compatibility generation
+once telemetry shows no legacy reads for two consecutive releases.
 
-The corresponding signal strings and actionable alerts are normative in
-`design/contract.json`.
+## Visualization
 
-## Python structure and test strategy
-
-- Keep protocols at consuming boundaries. `remediation_trace`, glob matching,
-  locale/text services, clocks, persistence, subprocess runners, and runtime
-  bindings receive dependencies explicitly; untrusted JSON/environment/store
-  data is validated at the boundary.
-- Keep domain validation separate from CLI/dashboard composition roots. Avoid
-  new import-time clients, settings, or service locators.
-- Synchronous ownership remains the default. Existing host/event asynchronous
-  paths must surface pending/success/failure and propagate cancellation; no new
-  unowned background task is introduced.
-- Mutable state is protected by file/process locks or context-local bindings;
-  no correctness claim relies on the GIL, so the focused suite must also cover
-  concurrent access paths suitable for free-threaded Python.
-- Public runtime imports remain stdlib-only. Development dependencies are
-  hash-locked in a separate group; Pillow is present only there. A clean wheel
-  install and package-content inspection prove the boundary.
-- Each finding has one named focused selector. Atomicity/authority/privacy/
-  timeout findings also have adversarial mutation or fault-injection cases.
-  Integration validates each wave join. `HG-EVAL` is independent. Final
-  evaluation runs focused selectors and static/accessibility/docs checks, then
-  the full suite once.
-
-## Graph DoR and DoD
-
-Design DoR requires the exact baseline fingerprint, complete canonical review,
-all 72 mapped rows, named contracts, local-depth 3/contract-only boundary
-policy, and no open Product question. Plan DoR must cover every proposed edge,
-preserve the owner/dependency partition, carry all 72 finding rows, and prevent
-medium-only eligibility before the high gate.
-
-Review DoD compares the realized graph with the approved proposal, checks every
-module/edge/contract, requires an empty drift list, machine-compares the 72-row
-map to the canonical review, verifies the high gate and final exact-SHA result,
-and runs SCC/import/package checks. Any drift returns to Design or requires an
-explicit attributed human acceptance; it cannot be explained away in Review.
-
-## Solution-design lens disposition
-
-The proposed HOW is grounded in the cited as-built files; alternatives are
-materially distinct; numeric quality bounds and executable evidence are named;
-all failure detections correspond to declared signals; migration and terminal
-rollback are additive; three new modules have direct acceptance traceability;
-all 72 findings have owners and selectors; and Plan can decompose the work
-without inventing a contract or scope decision. The lens is self-attested by
-this exact Design worker and must be surfaced as such at the human approval
-gate, not represented as independent review.
-
-## Open questions
-
-None. Implementation and release authority remain outside this Design gate.
+`design/visual.html` shows the stage-specific route flow, the overflow refusal,
+and the Fix-to-Evaluate selective-reuse loop. These relationships materially
+clarify which stages execute lenses and why Build/Fix remain zero-lens.

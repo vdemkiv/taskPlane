@@ -1,177 +1,161 @@
-# R-0002 Plan — remediate all 72 deep-EM findings
+# R-0001 Plan — focused dynamic lens routing
 
 ## Outcome and authority
 
 This Plan realizes approved Design fingerprint
-`ac5709a4a381d44556318207d8f9a34c98d9bdd69ff1fe74d7408a9f9505d8fe`
-at reviewed source `00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085`. It preserves the
-canonical inventory of 34 high, 28 medium, and 10 low findings from
-`.em-review/findings.json`, with one Build owner per finding and independent
-high/final evaluation.
+`6be9206b3e78138c37ea7557b422d0593f4a217b87dc8584e6b131108fab1525`
+for R-0001. It replaces the stale R-0002 remediation plan; it does not reopen
+the approved shared-policy design or authorize release work.
 
-Codex native subagents are the only execution workers. Taskplane governs
-dependency classification, scoped contracts, evidence checks, and gates.
-Build, Fix, Evaluate, and execution-time EM use zero Taskplane lens workers.
-For each ready set the orchestrator dispatches all pairwise-disjoint owners in
-parallel with exact emitted identities, performs one event-driven wait for the
-outstanding set, and merges only green task commits. No implementation, push,
-tag, publication, release, PR merge, or `origin/main` mutation is authorized by
-this Plan.
+Codex native workers implement only scoped Build tasks. Build and Fix launch
+zero lens workers on success, failure, cancellation, interruption, and
+handoff. Evaluate is a separate decision boundary: every non-trivial task or
+wave recomputes and executes three or four focused quick lenses from actual
+implementation evidence. Product and Design remain minimum-sufficient focused
+quick routes. No push, merge to main, tag, package, publication, release, or CI
+wait is part of this Plan.
 
-## Graph and boundary evidence
+## Plan route and complete disposition
 
-The required single bounded replan impact query covered the corrected H1-A
-production-composition seam: `taskplane/loop.py`,
-`taskplane/terminal_truth.py`, `taskplane/delivery_ports.py`, and
-`taskplane/tests/test_em_h1_terminal.py`.
-It reported 30 impacted modules and no unknown modules. The graph content
-fingerprint is
-`f5e97aa40e7a3566039da309b849050fb96446ea142412bf1c32f140164e8fca`
-at the reviewed SHA. Its result ceiling was reached, but depth was not
-truncated and scan quality was complete. The result confirms that the shipped
-`taskplane.loop.retro` terminal transition caller and its terminal
-implementation/test boundary are known graph surfaces; no new module or Design
-edge is needed.
+This non-trivial Plan uses four quick lenses: security, testability,
+architecture, and cost-finops. They independently cover authenticated overflow
+and privacy, mutation/lifecycle evidence, the 23-edge adapter topology, and the
+fan-out/token/reuse objective. `plan/tasks.json#/plan_route` records all 26
+catalog dispositions in catalog order. Non-selected lenses are either covered
+by one of those four with concrete evidence or carry machine-readable negative
+evidence; no full-catalog execution is implied.
 
-Every task uses the approved typed impact policy: local depth 3,
-contract-only boundaries, contract depth 1, and requirement depth 1. The three
-approved code modules are declared at their creating owners:
-`taskplane/remediation_trace.py` at `H1-I`, `taskplane/glob_match.py` at
-`HX-GRAPH`, and `taskplane/text_runtime.py` at `M2-A`. Plan DoR additionally
-classifies `taskplane/locales` as new at `M2-A` and the remediation-evidence
-surface `.em-review/remediation` as new at `HG-EVAL`, `FINAL-I`, and
-`FINAL-EVAL`. The 23 approved Design edges are allocated exactly once across
-their canonical owners.
+The selected route maps every AC-LR1..10 criterion to concrete tasks. More
+than four independent mandatory risks did not remain after grouping: privacy
+and authority share the security boundary; implementation quality and QA share
+the testability proof; stage integration, runtime behavior, and operational
+lifecycle share the architecture boundary; delivery speed and worker fan-out
+share the cost boundary. If implementation evidence later separates any of
+those risks, Evaluate must split scope or stop for an exact authenticated
+expanded-route capability. It may not silently discard a mandatory lens.
 
-## Delivery waves
+## Graph and Design coverage
 
-### H1 — integrity and authority foundation
+The single bounded impact query covered all 23 proposed module surfaces. It
+reported 28 impacted modules, no unknown modules, complete scan quality, and
+graph content fingerprint
+`7fdc2cc45c225323046430570f04d0580d8868b3ed57132a627a636450adf76f` at
+reviewed revision `19358d9cf82f68677cce824c703af14ccfddfbd4`. The result ceiling was reached,
+but dependency depth was not truncated. Every task therefore retains the
+approved typed policy: local depth 3, contract-only boundaries, contract depth
+1, and requirement depth 1.
 
-Dispatch `H1-A` through `H1-E` together. Their code, test, and interface scopes
-are pairwise disjoint:
+The task set covers every existing Design module plus new
+`taskplane/lens_route_policy.py`, all six named contracts/resources, and every
+one of the 23 proposed edges exactly once. The current dependency graph maps
+exact existing `taskplane/*.py` file scopes to the aggregate `taskplane`
+module, while the approved Design names nine of those files as exact module
+ids. Their owning tasks therefore repeat those exact ids in `new_modules` as
+gate-compatibility coverage declarations; this does not classify the existing
+files as newly created and does not change their scope or owner. LR-01 remains
+the only creator of a genuinely new module. The bounded impact query reported
+no unknown module. Any implementation need outside these modules or any
+undeclared cross-boundary edge is Design drift and returns to Design rather
+than widening a Build scope.
 
-- `H1-A`: terminal composition through the shipped `taskplane.loop.retro`
-  caller, restart
-  authority, immutable publication, and exclusive CAS successor.
-- `H1-B`: stage/journal atomicity and durable observation intent.
-- `H1-C`: fsync-before-acknowledgement, migration authority, and read-only
-  screening.
-- `H1-D`: release authority plus current/N-1 compatibility.
-- `H1-E`: bounded validation-sandbox process and preparation deadlines.
+## Dependency-aware delivery
 
-After all five receipts are green, `H1-I` alone creates the remediation-trace
-boundary and proves the H1 contracts at one SHA. No aggregate suite runs here.
+### Foundation
 
-### H2 and H3 — concurrent remaining-high work
+Run LR-01 first. It introduces the dependency-neutral pure policy, canonical
+serialization, complete disposition validation, deterministic ordering,
+mandatory floors, overflow result, and route/per-lens fingerprints. Its focused
+tests own the 26-row conservation and equal-input determinism invariants.
 
-After `H1-I`, dispatch one combined ready set containing `H2-A`, `H2-B`,
-`H2-C`, `HX-GRAPH`, `H3-A`, `H3-C`, and `H3-D`. These scopes are disjoint.
-`HX-GRAPH` is deliberately the single cross-wave owner for `components.yaml`,
-graph interaction, routing, and the shared dependency-neutral glob matcher.
+### Parallel adapters
 
-- H2 closes CI quality enforcement, production reachability, preview/review
-  bounds, architecture-map consumption, and native usage truth. `L-02` stays
-  with `HX-GRAPH`; it has no separate low lane.
-- H3 closes dashboard and graph accessibility, truthful bridge/fallback state,
-  privacy retention/minimization, and exact-SHA terminal export. `L-01` stays
-  with dashboard owner `H3-A`; `L-04` stays with privacy owner `H3-C`.
+After LR-01 passes, dispatch LR-02 through LR-05 together. Their production and
+test scopes are pairwise disjoint:
 
-`H2-I` waits for H2 owners plus `HX-GRAPH`. `H3-I` waits for H3 owners plus
-`HX-GRAPH`. The two integration tasks are pairwise disjoint and may run
-concurrently once their own dependency sets are green.
+- LR-02 adapts ReviewKernel and Fix-to-Evaluate reuse. It recomputes a three-or-
+  four-lens Evaluate route and leases only invalidated/new evidence.
+- LR-03 implements the exact target/context/lens/cost/expiry/policy signed
+  expansion capability and its tamper/replay matrix.
+- LR-04 persists bounded redacted terminal route telemetry for every lifecycle
+  outcome.
+- LR-05 narrows zero-lens delivery enforcement to Build, Fix, and EM while
+  keeping Evaluate eligible for its focused route.
 
-### Independent high closure gate
+Each task runs one focused selector. Build and Fix remain zero-lens throughout;
+these are implementation workers, not review workers.
 
-`HG-EVAL` is a fresh independent evaluator after both high integrations. It
-must prove exactly 34 unique high results at one clean candidate SHA. Missing,
-open, suppressed, downgraded, duplicated, wrong-SHA, or Build-self-attested
-rows fail closed. No M1 or M2 task is eligible before this gate passes.
-Its executable check consumes the H2/H3 integration selectors produced by its
-direct predecessors and invokes `taskplane.remediation_trace verify-high`
-against the evaluator-owned high-gate result set. It does not consume the
-downstream `FINAL-I` integration test artifact.
+### Stage integration
 
-### M1 and M2 — concurrent medium work with low companions
+LR-06 waits for all four adapters because `taskplane/loop.py` is the shared
+composition root. It wires fresh Product, Design, and Plan contexts, enforces
+minimum-sufficient Product/Design routes, proves Plan accepts only three/four
+for non-trivial targets, connects overflow authority, and confines lens starts
+to Product, Design, Plan, and Evaluate. Keeping the loop edit in one join
+prevents overlapping ready workers from racing on lifecycle authority.
 
-After `HG-EVAL`, dispatch `M1-A` through `M1-F`, `M2-A` through `M2-E`, and
-`MX-DOCS-ARCH` in one pairwise-disjoint native ready set. `MX-DOCS-ARCH` is
-the sole owner of `docs/loop-design.md`; `M2-C` owns the remaining product and
-documentation surfaces.
+### Parallel truth surfaces
 
-M1 owns engineering foundations: scanner/design decisions, typing and
-fail-closed cost behavior, CI/dependency integrity, mandatory production
-proofs, repository retries, and scoped test/runtime bindings. `L-06` shares
-the CI/dependency owner `M1-C`; `L-10` shares scoped runtime owner `M1-F`.
+After LR-06, LR-07 and LR-08 run together:
 
-M2 owns user-facing truth: dashboard locale/state, privacy defaults/notices,
-product/docs/help, deterministic concurrency, and priced debt traceability.
-`L-03` shares dashboard/text owner `M2-A`; `L-05`, `L-07`, `L-08`, and `L-09`
-share product/docs owner `M2-C`.
+- LR-07 updates the exact agent and skill contracts so Product/Design use
+  minimum-sufficient quick routes, Plan/Evaluate use three or four quick
+  lenses, and Build/Fix never spawn lenses.
+- LR-08 keeps Product, approved Design, this Plan, documentation, onboarding,
+  catalog guidance, configuration, and README truthful about dispositions,
+  overflow, reuse, telemetry, and the separate explicit all-deep audit.
 
-`M1-I` and `M2-I` are independent joins and may run concurrently after their
-respective leaves. There is no low-only tail.
+Their scopes are disjoint. Approved Design decisions remain immutable; LR-08
+may make only truth-preserving artifact adjustments required by the realized
+implementation and must return to Design if behavior would drift.
 
-### Final integration and evaluation
+### Conformance
 
-`FINAL-I` runs after both medium joins. It owns the tight `specs/spec.md`
-surface required by the approved
-`specs->resource:review.finding-traceability:provides` edge and reconciles the
-immutable 72-row map, graph and contract edges, focused receipts, high-gate
-evidence, and exact candidate SHA. Its focused command runs only the AC1 and
-AC8 integration selectors.
+LR-09 waits for both truth tasks and adds the integrated proof. It runs the
+focused selector set once, verifies all ten exact acceptance strings and all
+six contracts at one candidate, checks Build/Fix zero-lens traces for every
+terminal path, and verifies fresh Evaluate routing plus conservative reuse.
+The independent Evaluate phase then routes three or four quick lenses from the
+actual diff and test evidence; it does not inherit this Plan's selected route.
 
-`FINAL-EVAL` then independently checks all 72 dispositions at the exact clean
-candidate and runs `python3 -m pytest taskplane/tests -q` exactly once. Earlier
-tasks run only their focused selectors, so the complete suite is not repeated
-while parallel edits are in flight.
+## Regression ownership
 
-## Shared owners and serialization barriers
-
-- `H1-I` owns the new remediation-trace foundation after all five H1 leaves.
-- `H1-A` owns `taskplane/loop.py` for the shipped terminal-truth composition
-  correction; later H3 privacy/retention edits to that same caller remain
-  serialized through the existing `H1-A` → `H1-I` → `H3-C` dependency path.
-- `HX-GRAPH` owns every H2/H3 graph, architecture-map, graph-keyboard, routing,
-  and glob-matcher edit.
-- `H2-I` and `H3-I` own only their disjoint integration tests.
-- `HG-EVAL` is the only high-closure authority and never edits product code.
-- `MX-DOCS-ARCH` owns `docs/loop-design.md` across M1/M2.
-- `M1-I` and `M2-I` own only their disjoint integration tests.
-- `FINAL-I` is the only final remediation-trace/integration owner.
-- `FINAL-EVAL` is independent and writes only final evidence.
-
-Known repeated production paths are serialized by dependencies: `review.py`
-H1→H2; `taskplane_lite.py` H1→H3→M2; CI H2→M1; dashboard H3→M2; graph/lens
-H2/H3→M1; and remediation trace H1→high gate→M2→final. A task whose actual
-implementation would need another ready owner's file, fixture, schema,
-composition root, or public contract stops for reclassification instead of
-widening scope.
-
-## Verification and merge discipline
-
-Each Build task carries one runnable focused command and owns its test changes
-in the same task commit. Validation progresses from exact selectors to wave
-integration. A failure is classified before edits; a fixture/test correction
-reruns only its exact selector unless it can affect a wider boundary. The
-orchestrator merges a task only after independent Evaluate is green and binds
-the receipt to its exact commit SHA. The complete suite is reserved for
-`FINAL-EVAL` on the integrated clean candidate.
+- LR-01: closed 26-row dispositions and canonical determinism.
+- LR-02: Evaluate three/four routing and single/multiple/unchanged Fix
+  invalidation.
+- LR-03: overflow refusal, exact authorization, tamper, replay, expiry, and
+  target/context mismatch.
+- LR-04: terminal telemetry completeness, 512-byte reasons, 128-KiB artifacts,
+  redaction, tokens, runtime, reuse, and invalidation.
+- LR-05: zero Build/Fix lens starts on success, failure, cancellation,
+  interruption, and handoff, plus positive Evaluate eligibility.
+- LR-06: Product/Design minimum sufficiency, Plan 3/4 acceptance and 2/5
+  refusal, stage isolation, and complete route conservation.
+- LR-07/LR-08: machine-checked agent, skill, spec, Design, Plan, docs, and
+  README truth.
+- LR-09: exact integrated AC-LR1..10 conformance and compatibility behavior.
 
 ## Risks and stop conditions
 
-- A broad owner can become a bottleneck. The Plan contains it with leaf-only
-  scopes and explicit join owners rather than concurrent edits to broad files.
-- Low companions can distract from high closure. They share the earliest
-  related owner and never create a gating low-only lane.
-- Persistence and migration fixes can become one-way. H1 requires additive
-  current/N-1 readers, prepare/commit markers, fault injection, and predecessor
-  or one-successor recovery before dependent work.
-- Production wiring can introduce cycles. Composition roots depend inward on
-  protocols; graph/import/SCC checks gate joins.
-- Bounds can reject legitimate large repositories. Refusal remains typed and
-  measurable; only an explicit human-authorized bounded override may proceed.
-- Dashboard and docs can drift. One owner controls each shared surface and
-  parity/generated-content checks protect the join.
-- Any inventory mismatch, unplanned graph edge, scope overlap in a ready set,
-  failed high mutation, unresolved finding, mixed SHA, or repeated final full
-  suite blocks progression and returns to the owning task or human gate.
+- A stage adapter may normalize semantically equal evidence differently. Equal
+  bytes, key-order mutation, relevant-input mutation, and policy-version tests
+  block the owning task.
+- Deduplication may hide independent mandatory risks. The five-risk mutation
+  must produce a deterministic split or zero dispatch pending exact authority.
+- Reuse may accept stale evidence. Missing provenance, prior failure, policy or
+  catalog change, and any relevant-input uncertainty invalidate that lens.
+- Expansion authority may become a general bypass. The capability cannot clear
+  contracts or override floors; any field mutation, replay, or stale target
+  blocks dispatch.
+- Delivery zero-lens enforcement may suppress Evaluate or allow Build/Fix
+  fan-out. Positive Evaluate and negative five-outcome Build/Fix traces are one
+  coupled gate.
+- Telemetry may leak private content. Absolute paths, secrets, workstation
+  identity, prompts, and raw diffs are refused or redacted before persistence.
+- Legacy `deep/light/n/a` history is read-only compatibility input. It never
+  authorizes new dispatch or reuse and remains tracked debt for removal after
+  two compatible released generations.
+
+Any scope overlap inside a ready set, failed selector, missing catalog row,
+unplanned graph edge, unbounded reason/artifact, unauthenticated expansion,
+new runtime dependency, release-surface edit, or need to weaken a mandatory
+floor stops the owning task and returns to the orchestrator.

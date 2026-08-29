@@ -3,166 +3,83 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>R-0002 remediation waves</title>
+  <title>Focused dynamic lens routing</title>
   <style>
-    :root {
-      color-scheme: light dark;
-      --bg: #f7f8fb;
-      --panel: #ffffff;
-      --text: #172033;
-      --muted: #526079;
-      --line: #a9b2c3;
-      --high: #a51d32;
-      --high-bg: #fff0f2;
-      --med: #7a4b00;
-      --med-bg: #fff7df;
-      --low: #185a73;
-      --low-bg: #eaf8ff;
-      --gate: #453095;
-      --gate-bg: #f1edff;
-      --ok: #17623c;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    main { max-width: 1260px; margin: 0 auto; padding: 32px 24px 56px; }
-    h1 { font-size: clamp(1.7rem, 3vw, 2.5rem); margin: 0 0 8px; }
-    .lead { color: var(--muted); max-width: 85ch; margin: 0 0 28px; }
-    .counts { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 26px; }
-    .badge { border: 1px solid currentColor; border-radius: 999px; padding: 5px 11px; font-weight: 700; }
-    .high { color: var(--high); background: var(--high-bg); }
-    .med { color: var(--med); background: var(--med-bg); }
-    .low { color: var(--low); background: var(--low-bg); }
-    .flow { display: grid; gap: 15px; }
-    .phase {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 16px;
-      box-shadow: 0 4px 18px rgb(15 23 42 / 7%);
-    }
-    .phase > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 12px; }
-    .phase h2 { font-size: 1.05rem; margin: 0; }
-    .rule { color: var(--muted); font-size: .9rem; }
-    .lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
-    .lane { border: 1px solid var(--line); border-left: 5px solid var(--high); border-radius: 8px; padding: 11px; min-height: 112px; }
-    .lane.medium { border-left-color: var(--med); }
-    .lane h3 { font-size: .92rem; margin: 0 0 5px; }
-    .lane p { margin: 0; color: var(--muted); font-size: .84rem; }
-    .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
-    .chip { background: var(--high-bg); color: var(--high); border-radius: 4px; padding: 2px 6px; font: 700 .72rem ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .chip.medium { background: var(--med-bg); color: var(--med); }
-    .chip.low { background: var(--low-bg); color: var(--low); }
-    .fork { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-    .gate { border: 2px solid var(--gate); background: var(--gate-bg); text-align: center; }
-    .gate h2 { color: var(--gate); justify-content: center; }
-    .arrow { text-align: center; color: var(--muted); font-size: 1.35rem; line-height: 1; }
-    .legend { margin-top: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
-    .legend div { border-left: 3px solid var(--ok); padding-left: 10px; color: var(--muted); }
-    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
-    @media (max-width: 850px) { .fork { grid-template-columns: 1fr; } }
-    @media (prefers-color-scheme: dark) {
-      :root { --bg:#111522; --panel:#1a2030; --text:#f3f5fa; --muted:#bdc6d8; --line:#4d596f; --high:#ff9aaa; --high-bg:#3a1820; --med:#ffd17b; --med-bg:#392d10; --low:#91ddf7; --low-bg:#123242; --gate:#c6b7ff; --gate-bg:#262044; --ok:#7de0aa; }
-    }
+    :root { color-scheme: light dark; --ink:#14213d; --muted:#64748b;
+      --line:#94a3b8; --panel:#f8fafc; --run:#dbeafe; --zero:#dcfce7;
+      --warn:#ffedd5; --reuse:#ede9fe; }
+    @media (prefers-color-scheme: dark) { :root { --ink:#e2e8f0;
+      --muted:#94a3b8; --line:#64748b; --panel:#111827; --run:#172554;
+      --zero:#052e16; --warn:#431407; --reuse:#2e1065; } }
+    * { box-sizing:border-box; }
+    body { margin:0; font:15px/1.45 system-ui,sans-serif; color:var(--ink);
+      background:var(--panel); }
+    main { max-width:1180px; margin:auto; padding:32px 22px 48px; }
+    h1 { margin:0 0 6px; font-size:clamp(24px,4vw,38px); }
+    p { color:var(--muted); margin:0 0 24px; }
+    .flow { display:grid; grid-template-columns:repeat(7,minmax(120px,1fr));
+      gap:12px; align-items:stretch; }
+    .box { border:1px solid var(--line); border-radius:12px; padding:14px;
+      background:var(--run); min-height:132px; position:relative; }
+    .box.zero { background:var(--zero); }
+    .box.warn { background:var(--warn); }
+    .box.reuse { background:var(--reuse); }
+    .box:not(:last-child)::after { content:"→"; position:absolute; right:-13px;
+      top:49px; z-index:2; font-size:20px; color:var(--muted); }
+    strong { display:block; font-size:17px; margin-bottom:8px; }
+    small { display:block; color:var(--muted); }
+    code { font:12px ui-monospace,monospace; }
+    .rule { margin:28px 0; border-top:2px solid var(--line); }
+    .lower { display:grid; grid-template-columns:1fr 1.3fr 1fr; gap:16px; }
+    ul { margin:8px 0 0; padding-left:18px; }
+    .legend { display:flex; gap:18px; flex-wrap:wrap; margin-top:24px;
+      color:var(--muted); }
+    .dot { width:12px; height:12px; display:inline-block; border:1px solid
+      var(--line); border-radius:3px; margin-right:6px; vertical-align:-1px; }
+    @media (max-width:900px) { .flow { grid-template-columns:1fr; }
+      .box:not(:last-child)::after { content:"↓"; right:auto; left:50%;
+        top:auto; bottom:-20px; } .lower { grid-template-columns:1fr; } }
   </style>
 </head>
-<body>
-<main>
-  <h1>All 72 findings, high first</h1>
-  <p class="lead">Each distinct box id is one native Build owner. The repeated HX-GRAPH and MX-DOCS-ARCH cards show one cross-branch owner, never two dispatches. Boxes in the same row are eligible together only when Plan confirms disjoint files and interfaces. The orchestrator dispatches the ready set once and waits once for completion or attention. Low findings ride with their earliest related owner; there is no low-only tail.</p>
-  <div class="counts" aria-label="Finding counts">
-    <span class="badge high">34 high — blocking</span>
-    <span class="badge med">28 medium</span>
-    <span class="badge low">10 low companions</span>
-  </div>
-
-  <div class="flow">
-    <section class="phase" aria-labelledby="h1-title">
-      <header><h2 id="h1-title">H1 · integrity and authority foundation</h2><span class="rule">first native ready set → one integration owner</span></header>
-      <div class="lanes">
-        <article class="lane"><h3>H1-A · terminal/CAS</h3><p>composition root, restart authority, immutable publication, exclusive successor</p><div class="chips"><span class="chip">H-03–H-06</span></div></article>
-        <article class="lane"><h3>H1-B · journal/observation</h3><p>atomic stage journal and durable producer intent</p><div class="chips"><span class="chip">H-07–H-08</span></div></article>
-        <article class="lane"><h3>H1-C · store safety</h3><p>durable writes, resumable migration, read-only mutation boundary</p><div class="chips"><span class="chip">H-14</span><span class="chip">H-15</span><span class="chip">H-30</span></div></article>
-        <article class="lane"><h3>H1-D · release compatibility</h3><p>release authority plus current/N-1 matrix</p><div class="chips"><span class="chip">H-19</span><span class="chip">H-22</span><span class="chip">H-26</span></div></article>
-        <article class="lane"><h3>H1-E · sandbox deadline</h3><p>bounded clone, checkout, and patch preparation</p><div class="chips"><span class="chip">H-34</span></div></article>
-      </div>
-    </section>
-
-    <div class="arrow" aria-hidden="true">↓ H1-I stabilizes shared contracts</div>
-
-    <div class="fork" aria-label="Concurrent H2 and H3 branches">
-      <section class="phase" aria-labelledby="h2-title">
-        <header><h2 id="h2-title">H2 · production wiring and bounds</h2><span class="rule">runs concurrently with H3</span></header>
-        <div class="lanes">
-          <article class="lane"><h3>H2-A · Python CI</h3><p>enforced lint and strict typing</p><div class="chips"><span class="chip">H-09</span></div></article>
-          <article class="lane"><h3>H2-B · production roots</h3><p>native authority, design sweep, bounded preview</p><div class="chips"><span class="chip">H-10–H-12</span><span class="chip">H-29</span></div></article>
-          <article class="lane"><h3>H2-C · review/budget bounds</h3><p>finite review, transcript, and usage truth</p><div class="chips"><span class="chip">H-13</span><span class="chip">H-27</span><span class="chip">H-28</span><span class="chip">H-33</span></div></article>
-          <article class="lane"><h3>HX-GRAPH · shared H2/H3 owner</h3><p>architecture-map consumer, graph keyboard behavior, and one neutral glob primitive</p><div class="chips"><span class="chip">H-31</span><span class="chip">H-02</span><span class="chip low">L-02</span></div></article>
-        </div>
-      </section>
-
-      <section class="phase" aria-labelledby="h3-title">
-        <header><h2 id="h3-title">H3 · human and terminal truth</h2><span class="rule">runs concurrently with H2</span></header>
-        <div class="lanes">
-          <article class="lane"><h3>H3-A · dashboard controls</h3><p>tabs, actions, pending/error states, fallback and contrast</p><div class="chips"><span class="chip">H-01</span><span class="chip">H-16–H-18</span><span class="chip">H-20–H-21</span><span class="chip low">L-01</span></div></article>
-          <article class="lane"><h3>HX-GRAPH · same shared owner</h3><p>shown here for H3 traceability; it is dispatched once from the combined ready set</p><div class="chips"><span class="chip">H-02</span><span class="chip">H-31</span><span class="chip low">L-02</span></div></article>
-          <article class="lane"><h3>H3-C · privacy/retention</h3><p>redacted commands, bounded diffs, sanitized audit/store metadata</p><div class="chips"><span class="chip">H-23–H-25</span><span class="chip low">L-04</span></div></article>
-          <article class="lane"><h3>H3-D · exact-SHA export</h3><p>terminal evidence describes the actual candidate</p><div class="chips"><span class="chip">H-32</span></div></article>
-        </div>
-      </section>
-    </div>
-
-    <div class="arrow" aria-hidden="true">↓ H2-I + H3-I</div>
-    <section class="phase gate" aria-labelledby="gate-title">
-      <header><h2 id="gate-title">Independent high closure gate</h2></header>
-      <p>Exactly 34 unique high results · one clean candidate SHA · focused selectors green · no suppression, downgrade, omission, or Build self-attestation. Failure keeps all medium-only work ineligible.</p>
-    </section>
-    <div class="arrow" aria-hidden="true">↓ only after the gate passes</div>
-
-    <div class="fork" aria-label="Concurrent M1 and M2 branches">
-      <section class="phase" aria-labelledby="m1-title">
-        <header><h2 id="m1-title">M1 · engineering foundations</h2><span class="rule">parallel leaves</span></header>
-        <div class="lanes">
-          <article class="lane medium"><h3>M1-A · scanner/design proof</h3><p>decomposition input and terminal recoverability evidence</p><div class="chips"><span class="chip medium">M-02</span><span class="chip medium">M-26</span></div></article>
-          <article class="lane medium"><h3>MX-DOCS-ARCH · shared M1/M2 owner</h3><p>loop outcome, stage-migration tradeoffs, and decision registry</p><div class="chips"><span class="chip medium">M-22</span><span class="chip medium">M-27–M-28</span></div></article>
-          <article class="lane medium"><h3>M1-B · typing/cost</h3><p>explicit compatibility types and fail-closed deep cap</p><div class="chips"><span class="chip medium">M-03–M-04</span></div></article>
-          <article class="lane medium"><h3>M1-C · CI/dependencies/assets</h3><p>least privilege, hash lock, dev-only Pillow</p><div class="chips"><span class="chip medium">M-06–M-07</span><span class="chip medium">M-17–M-18</span><span class="chip low">L-06</span></div></article>
-          <article class="lane medium"><h3>M1-D · mandatory proofs</h3><p>canonical design and live producer paths required in CI</p><div class="chips"><span class="chip medium">M-14–M-15</span></div></article>
-          <article class="lane medium"><h3>M1-E · repository retry</h3><p>one bounded backoff owner</p><div class="chips"><span class="chip medium">M-19</span></div></article>
-          <article class="lane medium"><h3>M1-F · scoped runtime tests</h3><p>no import mutation; nested/concurrent restoration</p><div class="chips"><span class="chip medium">M-24</span><span class="chip low">L-10</span></div></article>
-        </div>
-      </section>
-
-      <section class="phase" aria-labelledby="m2-title">
-        <header><h2 id="m2-title">M2 · user-facing truth</h2><span class="rule">parallel leaves</span></header>
-        <div class="lanes">
-          <article class="lane medium"><h3>M2-A · dashboard locale/state</h3><p>motion, truthful state, plurals, grapheme-safe text</p><div class="chips"><span class="chip medium">M-01</span><span class="chip medium">M-05</span><span class="chip medium">M-08–M-09</span><span class="chip low">L-03</span></div></article>
-          <article class="lane medium"><h3>M2-B · privacy truth</h3><p>safe storage default and accurate network disclosure</p><div class="chips"><span class="chip medium">M-10–M-11</span><span class="chip medium">M-20</span></div></article>
-          <article class="lane medium"><h3>M2-C · product/docs/help</h3><p>current journey, version-neutral tour, generated CLI, navigation, onboarding</p><div class="chips"><span class="chip medium">M-12–M-13</span><span class="chip medium">M-21</span><span class="chip medium">M-23</span><span class="chip low">L-05</span><span class="chip low">L-07–L-09</span></div></article>
-          <article class="lane medium"><h3>MX-DOCS-ARCH · same shared owner</h3><p>shown here for M2 traceability; it is dispatched once from the combined ready set</p><div class="chips"><span class="chip medium">M-22</span><span class="chip medium">M-27–M-28</span></div></article>
-          <article class="lane medium"><h3>M2-D · deterministic concurrency</h3><p>event/condition proof instead of fixed sleep</p><div class="chips"><span class="chip medium">M-16</span></div></article>
-          <article class="lane medium"><h3>M2-E · priced debt</h3><p>deferred outcomes link to governed debt records</p><div class="chips"><span class="chip medium">M-25</span></div></article>
-        </div>
-      </section>
-    </div>
-
-    <div class="arrow" aria-hidden="true">↓ M1-I + M2-I</div>
-    <section class="phase gate" aria-labelledby="final-title">
-      <header><h2 id="final-title">Final integration and independent evaluation</h2></header>
-      <p>Machine-compare all 72 trace rows, execute every focused selector and applicable quality check, verify the realized graph and empty drift, then run the full Taskplane suite once at the exact clean candidate SHA.</p>
-    </section>
-  </div>
-
-  <section class="legend" aria-label="Execution rules">
-    <div><strong>One owner per shared surface.</strong><br>Any newly discovered overlap is merged under one owner or serialized.</div>
-    <div><strong>One wait per ready set.</strong><br>Dispatch all disjoint native lanes, then wait on completion or attention—never scheduled polling.</div>
-    <div><strong>No lens-worker runtime.</strong><br>The completed 26-lens review is input evidence; Build/Fix/Evaluate do not rerun it.</div>
-    <div><strong>Low work cannot block high work.</strong><br>A low companion may ship with its named owner, but high closure does not wait on a disjoint low-only concern.</div>
+<body><main>
+  <h1>One policy, stage-specific evidence</h1>
+  <p>All routed stages disposition 26 lenses. Only blue stages execute a
+    focused set; green stages prove zero lens-worker starts.</p>
+  <section class="flow" aria-label="Taskplane stage routing flow">
+    <div class="box"><strong>Product</strong><small>Minimum sufficient from
+      goal, ACs, constraints, and product risks.</small></div>
+    <div class="box"><strong>Design</strong><small>Minimum sufficient from
+      components and boundaries; solution-design is mandatory.</small></div>
+    <div class="box"><strong>Plan</strong><small>Exactly 3–4 for a non-trivial
+      task graph; task and AC coverage is sealed.</small></div>
+    <div class="box zero"><strong>Build</strong><small>No lens workers. Native
+      lifecycle evidence proves zero starts.</small></div>
+    <div class="box"><strong>Evaluate</strong><small>Exactly 3–4 from diff,
+      impact, tests, and unresolved findings.</small></div>
+    <div class="box zero"><strong>Fix</strong><small>No lens workers. Change
+      code and evidence inputs only.</small></div>
+    <div class="box reuse"><strong>Re-evaluate</strong><small>Reuse equal
+      per-lens fingerprints; dispatch only invalidated selections.</small></div>
   </section>
-</main>
-</body>
-</html>
+
+  <div class="rule"></div>
+  <section class="lower" aria-label="Routing decision outcomes">
+    <div class="box warn"><strong>More than four mandatory risks</strong>
+      <ul><li>split into independently evaluable scopes, or</li>
+      <li>stop for one signed, exact-target expanded route.</li></ul></div>
+    <div class="box"><strong>Canonical policy artifact</strong>
+      <small><code>taskplane.lens-route-policy/v1</code></small>
+      <ul><li>26 complete dispositions</li><li>ordered selected route</li>
+      <li>route and per-lens fingerprints</li><li>bounded redacted evidence</li></ul>
+    </div>
+    <div class="box zero"><strong>EM synthesis</strong><small>No new lens
+      workers. Consume canonical Evaluate evidence, verify Design conformance,
+      and present the final human sign-off.</small></div>
+  </section>
+  <div class="legend" aria-label="Legend">
+    <span><i class="dot" style="background:var(--run)"></i>focused execution</span>
+    <span><i class="dot" style="background:var(--zero)"></i>zero-lens stage</span>
+    <span><i class="dot" style="background:var(--warn)"></i>fail-closed overflow</span>
+    <span><i class="dot" style="background:var(--reuse)"></i>fingerprinted reuse</span>
+  </div>
+</main></body></html>
