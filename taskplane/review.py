@@ -3998,7 +3998,7 @@ def publish_production_review(root: str, state: dict, revision: dict, *,
 
 def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  diff: dict, runnability: dict | None = None,
-                 test_evidence: dict | None = None,
+                 test_evidence: Mapping[str, object] | None = None,
                  requirement: dict | None = None,
                  acceptance: Iterable | None = None,
                  contracts: Iterable | None = None, stage: str = "review",

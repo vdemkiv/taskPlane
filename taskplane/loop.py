@@ -4663,7 +4663,7 @@ def _strict_review_graph_quality(review_ws: str, *, target: dict,
 def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
                    task: dict | None, graph: dict, impact: dict,
                    requirement: dict | None,
-                   test_evidence: dict | None = None,
+                   test_evidence: Mapping[str, object] | None = None,
                    retry_context: dict | None = None,
                    expanded_route_provider_client:
                    terminal_truth.ExpandedRouteProviderClient | None = None,
