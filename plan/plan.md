@@ -73,9 +73,11 @@ After LR-01 passes, dispatch LR-02 through LR-05 together. Their production and
 test scopes are pairwise disjoint:
 
 - LR-02 adapts ReviewKernel and Fix-to-Evaluate reuse. It recomputes a three-or-
-  four-lens Evaluate route and leases only invalidated/new evidence.
+  four-lens Evaluate route, normalizes the ordinary integer-depth dependency
+  impact at that adapter boundary, and leases only invalidated/new evidence.
 - LR-03 implements the exact target/context/lens/cost/expiry/policy signed
-  expansion capability and its tamper/replay matrix.
+  expansion capability and its tamper/replay matrix. Its Evaluate gate waits
+  for LR-02 so the canonical dependency-impact route is available.
 - LR-04 persists bounded redacted terminal route telemetry for every lifecycle
   outcome.
 - LR-05 narrows zero-lens delivery enforcement to Build, Fix, and EM while
@@ -120,8 +122,8 @@ actual diff and test evidence; it does not inherit this Plan's selected route.
 ## Regression ownership
 
 - LR-01: closed 26-row dispositions and canonical determinism.
-- LR-02: Evaluate three/four routing and single/multiple/unchanged Fix
-  invalidation.
+- LR-02: Evaluate three/four routing, ordinary integer-depth dependency-impact
+  normalization, and single/multiple/unchanged Fix invalidation.
 - LR-03: overflow refusal, exact authorization, tamper, replay, expiry, and
   target/context mismatch.
 - LR-04: terminal telemetry completeness, 512-byte reasons, 128-KiB artifacts,
