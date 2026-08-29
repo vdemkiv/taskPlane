@@ -1,0 +1,44 @@
+{
+  "schema": "taskplane.r0002-final-signoff/v1",
+  "requirement_id": "R-0002",
+  "decision": "approved",
+  "status": "closed",
+  "accepted_by": "Volodymyr Demkiv",
+  "authority_quote": "approve",
+  "recorded_at": "2026-08-29T00:45:22Z",
+  "reviewed_evidence": {
+    "commit": "0b589fc32e238364821106d495e78e8b0836642f",
+    "tree": "b094d6d85eba30675ab233ef1180a0fc1e57d964",
+    "code_candidate": "4dacd46faba12b2662f265c7665bf13fd5bc2cf8",
+    "code_tree": "434eafc2c1fa7804c35d397a0bbca79bb59692da",
+    "independent_evaluation": "pass"
+  },
+  "artifacts": {
+    "results": {
+      "path": ".em-review/remediation/final/results.json",
+      "sha256": "043ecce33d53ea15b95c214fbd52cfa8b2f5263e52602f70a6f5daba70ce73ee"
+    },
+    "disposition": {
+      "path": ".em-review/remediation/final/disposition.md",
+      "sha256": "1e9fb4dc957670aeb6588a546074a82bb7791af0be8973ef76a2064429b2258d"
+    },
+    "retro": {
+      "path": ".em-review/remediation/final/retro.md",
+      "sha256": "630aab4a848d31a959581e38db4da478001ecdbaa4a6c146668ed02135286cb2"
+    }
+  },
+  "acknowledged_caveats": {
+    "strict_ac5_satisfied": false,
+    "accepted_non_independent_high_exceptions": 15,
+    "strict_ac8_satisfied": false,
+    "exact_final_sha_aggregate_repeated": false,
+    "test_policy": "preserved green shard receipts plus exact affected-selector closure"
+  },
+  "external_authority": {
+    "push": false,
+    "tag": false,
+    "publication": false,
+    "origin_main_mutation": false,
+    "pr_merge": false
+  }
+}
