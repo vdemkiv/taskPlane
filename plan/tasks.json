@@ -3,61 +3,23 @@
   "requirement": "R-0001",
   "delivery_mode": "build",
   "automatic_lenses": [],
-  "design_fingerprint": "6be9206b3e78138c37ea7557b422d0593f4a217b87dc8584e6b131108fab1525",
-  "plan_authority": "The orchestrator dispatches every pairwise-disjoint ready Build set through Codex native workers. Build and Fix launch zero lens workers. Evaluate runs a freshly computed focused quick route of exactly three or four lenses for every non-trivial task or wave, except for a closed trivial-target record or an exact authenticated expanded-route capability.",
-  "status": "blocked_design_drift",
-  "design_drift": {
-    "id": "DD-LR03-PROTECTED-HOST-AUTHORITY",
-    "task": "LR-03",
-    "finding": "6ea9aff0107f4bb6",
-    "status": "requires-approved-design-amendment",
-    "reason": "The approved Design assigns expanded-route authority to taskplane/taskplane_lite.py, but every approved candidate executes from the worker-controlled checkout and interpreter. No approved module provides a protected host/control-plane boundary for issuance, authoritative time, exact RSA verification, or atomic one-use consumption.",
-    "replan_impact": {
-      "files_argument_count": 5,
-      "touched_modules": [".codex", "hooks", "taskplane", "taskplane/tests"],
-      "total_impacted": 28,
-      "unknown_modules": [],
-      "graph_fingerprint": "431ddff0d899c3b6122cf2d005f3065148e0f2aaeb919e562c7da5a2fca56739",
-      "scanned_revision": "e5183c36da43a3c945adfbc39d329b0b127cf107",
-      "truncated_by_result_ceiling": false,
-      "depth_truncated": false,
-      "scan_quality": "complete",
-      "policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "external_nodes": [],
-      "boundary_nodes": []
-    },
-    "rejected_candidates": [
-      {"module": "taskplane/taskplane_lite.py", "reason": "Approved, but its source and interpreter remain worker-controlled and monkeypatchable."},
-      {"module": "taskplane/loop.py", "reason": "Approved orchestrator module, but its source and interpreter remain in the same worker-controlled worktree; module ownership alone is not process isolation."},
-      {"module": "taskplane/tp.py", "reason": "Worktree-controlled and not an approved Design module for this feature."},
-      {"module": "hooks", "reason": "Worktree-controlled and not an approved Design module for this feature."},
-      {"module": ".codex", "reason": "Worktree-controlled and not an approved Design module for this feature."}
-    ],
-    "required_design_amendment": [
-      "Name an approved protected host/control-plane provider outside the worker-controlled checkout and interpreter.",
-      "Name a protected source locator outside the worker-controlled workspace; missing, altered, relocated, or symlinked locator state must fail closed.",
-      "Require 0600 custody for protected authority material outside the worker-controlled workspace.",
-      "Assign expanded-route issuance, authoritative host clock, exact RSA verification, and atomic one-use consumption to that provider.",
-      "Constrain the worktree adapter to request and consume a host decision without supplying or replacing authority inputs."
-    ],
-    "required_graph_contract_changes": [
-      "Replace taskplane/taskplane_lite.py->contract:authority.expanded-lens-route:provides because a worker-controlled adapter cannot provide the isolation contract.",
-      "Add a Design-approved protected host provider edge for contract:authority.expanded-lens-route and make taskplane/taskplane_lite.py its consumer/adapter.",
-      "Add a named protected locator/custody resource or contract outside the worker-controlled workspace."
-    ],
-    "preserve": {
-      "passed_tasks": ["LR-01", "LR-02", "LR-04", "LR-05"],
-      "lr03_commits": ["8af3d8e", "03a6c8f", "3736e7c", "000704a", "76dc79d"],
-      "instruction": "Preserve all existing LR-03 commits and evidence; amend in place only after Design approves the protected boundary."
-    }
+  "design_fingerprint": "0a29e35a5b6ba341affbca95e123da35f9a84a4a1831d18fec9ae6c3859e257b",
+  "plan_authority": "The root orchestrator may automatically gate approved night-mode intermediate transitions, commit scoped work, and push the isolated delivery branch. It dispatches only the remaining dependency chain through Codex native workers. Build and Fix launch zero lens workers. Evaluate runs a freshly computed focused quick route of exactly three or four lenses for every non-trivial task or wave, except for a closed trivial-target record or an exact authenticated expanded-route capability. No main merge, tag, publication, or release is authorized; final human signoff remains mandatory.",
+  "retained_completion": {
+    "integration_head": "539e7ba1d73f99b1f1ed6c9ce05ba97a23beea47",
+    "passed_tasks_without_dispatch_authority": ["LR-01", "LR-02", "LR-04", "LR-05"],
+    "lr03_branch": ".tp-work/LR-03",
+    "lr03_preserved_commits": ["8af3d8e", "03a6c8f", "3736e7c", "000704a", "76dc79d"],
+    "instruction": "Retain the completed task contracts only for Design/module/edge coverage and reanchor evidence. Do not dispatch, recreate, or rerun LR-01, LR-02, LR-04, or LR-05. Amend LR-03 in place from its preserved branch history."
   },
+  "remaining_dispatch_chain": ["LR-03", "LR-06", ["LR-07", "LR-08"], "LR-09"],
   "impact": {
-    "files_argument_count": 23,
+    "files_argument_count": 25,
     "touched_modules": ["(root)", "agents", "design", "docs", "plan", "skills/taskplane", "skills/tp-build", "skills/tp-design", "skills/tp-engineering", "skills/tp-go", "skills/tp-product", "specs", "taskplane", "taskplane/tests"],
     "total_impacted": 19,
     "unknown_modules": [],
-    "graph_fingerprint": "357ad892013154c667251f14ff9733bd59873367a438ffa3883cc08397929ddf",
-    "scanned_revision": "4031515ece2080897e863c6f9bc096115b370f9e",
+    "graph_fingerprint": "c885f0de2a952add0ccbc476b44e94664c7c2c0a427a8ae62b37ab9ec1f86ad7",
+    "scanned_revision": "a6c36812608e712555532ce9e45c2f4db8a52327",
     "truncated_by_result_ceiling": false,
     "depth_truncated": false,
     "scan_quality": "complete"
@@ -81,9 +43,9 @@
     "selected": ["security", "testability", "architecture", "cost-finops"],
     "selected_count": 4,
     "coverage": [
-      {"lens": "security", "reason": "The exact-target expansion capability and bounded telemetry cross authority and privacy boundaries.", "tasks": ["LR-03", "LR-04", "LR-06", "LR-09"], "acceptance": ["AC-LR5", "AC-LR9"]},
+      {"lens": "security", "reason": "The protected provider, immutable package binding, external 0600 custody, exact RSA approval, atomic one-use consumption, and bounded telemetry cross authority and privacy boundaries.", "tasks": ["LR-03", "LR-04", "LR-06", "LR-09"], "acceptance": ["AC-LR5", "AC-LR9"]},
       {"lens": "testability", "reason": "The requirement depends on deterministic, mutation, fail-closed, lifecycle, and selective-invalidation evidence.", "tasks": ["LR-01", "LR-02", "LR-03", "LR-04", "LR-05", "LR-06", "LR-09"], "acceptance": ["AC-LR1", "AC-LR2", "AC-LR3", "AC-LR4", "AC-LR5", "AC-LR6", "AC-LR7", "AC-LR8", "AC-LR9", "AC-LR10"]},
-      {"lens": "architecture", "reason": "One pure policy must remain dependency-neutral while six adapters realize all 23 approved graph edges.", "tasks": ["LR-01", "LR-02", "LR-05", "LR-06", "LR-07", "LR-08", "LR-09"], "acceptance": ["AC-LR1", "AC-LR2", "AC-LR3", "AC-LR4", "AC-LR6", "AC-LR7", "AC-LR8", "AC-LR10"]},
+      {"lens": "architecture", "reason": "One pure policy remains dependency-neutral while the separately executed provider, request adapter, ReviewKernel consumer, custody resource, and stage adapters realize all 29 approved graph edges.", "tasks": ["LR-01", "LR-02", "LR-03", "LR-05", "LR-06", "LR-07", "LR-08", "LR-09"], "acceptance": ["AC-LR1", "AC-LR2", "AC-LR3", "AC-LR4", "AC-LR5", "AC-LR6", "AC-LR7", "AC-LR8", "AC-LR10"]},
       {"lens": "cost-finops", "reason": "Minimum-sufficient execution, the three-or-four bound, route overflow, and reuse determine the promised fan-out and token savings.", "tasks": ["LR-01", "LR-02", "LR-04", "LR-06", "LR-09"], "acceptance": ["AC-LR1", "AC-LR2", "AC-LR3", "AC-LR4", "AC-LR5", "AC-LR7", "AC-LR9", "AC-LR10"]}
     ],
     "dispositions": [
@@ -94,20 +56,20 @@
       {"lens": "design", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The approved Design Contract fixes the module, contract, and edge topology consumed by this Plan.", "reason": "approved-architecture-covers-design"},
       {"lens": "scalability", "disposition": "not_applicable", "evidence": "The selector operates over a fixed 26-row catalog with explicit latency and artifact bounds; no distributed scale surface is introduced.", "reason": "fixed-bounded-input"},
       {"lens": "integrability", "disposition": "covered_by", "covered_by": "architecture", "evidence": "Adapter boundaries and the final conformance join cover integration without a separate independent risk group.", "reason": "adapter-topology-coverage"},
-      {"lens": "data-safety", "disposition": "covered_by", "covered_by": "security", "evidence": "Atomic route evidence, signed authority, and fail-closed reuse are part of the security-owned boundary.", "reason": "authority-integrity-coverage"},
+      {"lens": "data-safety", "disposition": "covered_by", "covered_by": "security", "evidence": "Immutable receipts, external 0600 custody, durable atomic one-use consumption, and fail-closed reuse are security-owned boundary proofs.", "reason": "authority-integrity-coverage"},
       {"lens": "tech-writer", "disposition": "covered_by", "covered_by": "architecture", "evidence": "LR-07 and LR-08 derive guidance from the same approved stage boundary and contract topology.", "reason": "architecture-truth-source"},
       {"lens": "qa", "disposition": "covered_by", "covered_by": "testability", "evidence": "The mutation matrix and final integration selector supply the independent QA proof.", "reason": "testability-proof-coverage"},
-      {"lens": "devops", "disposition": "not_applicable", "evidence": "The authorized delivery excludes release, publication, deployment, and CI waiting.", "reason": "no-deployment-surface"},
+      {"lens": "devops", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The architecture route owns immutable provider packaging, protected locator installation, permission checks, restart recovery, and rollback; release, main merge, tags, and publication remain excluded.", "reason": "provider-installation-is-architecture-boundary"},
       {"lens": "dba", "disposition": "not_applicable", "evidence": "No database, schema migration, or query surface is introduced.", "reason": "no-database-surface"},
-      {"lens": "sre", "disposition": "covered_by", "covered_by": "architecture", "evidence": "Terminal lifecycle, fail-closed overflow, and atomic persistence are assigned to the architecture integration graph.", "reason": "lifecycle-topology-coverage"},
+      {"lens": "sre", "disposition": "covered_by", "covered_by": "architecture", "evidence": "Provider availability, fail-closed overflow, authority locking, restart recovery, atomic persistence, and locator-only rollback are assigned to the architecture graph.", "reason": "lifecycle-topology-coverage"},
       {"lens": "project-management", "disposition": "covered_by", "covered_by": "architecture", "evidence": "Dependencies, disjoint ready sets, scope ownership, and joins are explicit in the architecture-owned task graph.", "reason": "dependency-graph-coverage"},
       {"lens": "frontend", "disposition": "not_applicable", "evidence": "No frontend behavior or interactive UI is changed.", "reason": "no-frontend-surface"},
-      {"lens": "backend", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The Python policy, adapters, control plane, and ReviewKernel are the architecture route's implementation surface.", "reason": "architecture-owns-runtime-boundary"},
+      {"lens": "backend", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The Python policy, separately executed provider command, request adapter, protected filesystem transaction, control plane, and ReviewKernel are the architecture route's implementation surface.", "reason": "architecture-owns-runtime-boundary"},
       {"lens": "tradeoffs", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The approved shared-policy choice and rollback boundary are fixed in the Design Contract.", "reason": "approved-design-tradeoff"},
       {"lens": "solution-design", "disposition": "covered_by", "covered_by": "architecture", "evidence": "Approved solution-design evidence selected the shared pure policy and incumbent adapters; Plan preserves it unchanged.", "reason": "approved-solution-coverage"},
-      {"lens": "services-selection", "disposition": "not_applicable", "evidence": "No external service, runtime dependency, or vendor is introduced.", "reason": "no-service-selection"},
+      {"lens": "services-selection", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The approved architecture explicitly selected a local content-addressed provider and rejected extending terminal authority or adding a host service; no vendor or network dependency is introduced.", "reason": "approved-provider-placement"},
       {"lens": "time-to-market", "disposition": "covered_by", "covered_by": "cost-finops", "evidence": "The smallest dependency graph and parallel disjoint leaves are the same delivery-efficiency control measured by cost/fan-out.", "reason": "delivery-efficiency-coverage"},
-      {"lens": "architecture", "disposition": "execute_light", "evidence": "Twenty-three approved edges cross policy, loop, review, authority, telemetry, tests, roles, and documentation.", "reason": "cross-module-contract-topology"},
+      {"lens": "architecture", "disposition": "execute_light", "evidence": "Twenty-nine approved edges cross policy, protected provider execution/custody, request and review consumers, loop, telemetry, tests, roles, and documentation.", "reason": "cross-module-contract-topology"},
       {"lens": "mobile", "disposition": "not_applicable", "evidence": "No mobile runtime or presentation surface is changed.", "reason": "no-mobile-surface"},
       {"lens": "accessibility", "disposition": "not_applicable", "evidence": "No interactive or rendered UI behavior is introduced; documentation remains plain semantic text.", "reason": "no-interactive-surface"},
       {"lens": "privacy-compliance", "disposition": "covered_by", "covered_by": "security", "evidence": "Bounded redaction, pseudonymous targets, and private-path refusal are explicit security-owned tests.", "reason": "security-owns-privacy-boundary"},
@@ -137,16 +99,17 @@
       "criteria": ["AC-LR4: Every non-trivial task or wave Evaluate executes exactly three or four lenses from actual diff, changed files, dependency impact, test evidence, and unresolved findings; verify material evidence changes alter the route.", "AC-LR7: A material Fix invalidates and reruns only lens evidence whose canonical fingerprint inputs changed while unchanged evidence is reused without launching a worker; verify single-input, multi-input, and unchanged cases."]
     },
     {
-      "id": "LR-03", "wave": "parallel-adapters", "owner": "expanded-route-authority",
-      "status": "blocked-design-drift", "finding": "6ea9aff0107f4bb6",
+      "id": "LR-03", "wave": "authority-amendment", "owner": "expanded-route-authority",
+      "finding": "6ea9aff0107f4bb6",
       "preserve_commits": ["8af3d8e", "03a6c8f", "3736e7c", "000704a", "76dc79d"],
-      "blockers": ["DD-LR03-PROTECTED-HOST-AUTHORITY: no approved Design module is outside the worker-controlled checkout and interpreter; Design must name the protected provider and locator/custody boundary before LR-03 can continue."],
-      "scope": ["taskplane/taskplane_lite.py", "taskplane/tests/test_expanded_lens_route_authority.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_expanded_lens_route_authority.py", "req": "R-0001", "deps": ["LR-01", "LR-02"], "type": "security",
-      "contracts": ["contract:authority.expanded-lens-route"], "new_modules": ["taskplane/taskplane_lite.py"],
-      "design_edges": ["taskplane/taskplane_lite.py->contract:authority.expanded-lens-route:provides", "taskplane/tests->contract:authority.expanded-lens-route:verifies"],
+      "amend_in_place": ".tp-work/LR-03",
+      "scope": ["taskplane/expanded_route_authority_provider.py", "taskplane/taskplane_lite.py", "taskplane/terminal_truth.py", "taskplane/tests/test_expanded_route_authority_provider.py", "taskplane/tests/test_expanded_lens_route_authority.py", "components.yaml", "pyproject.toml"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_expanded_route_authority_provider.py taskplane/tests/test_expanded_lens_route_authority.py", "req": "R-0001", "deps": ["LR-01", "LR-02"], "type": "security",
+      "contracts": ["contract:authority.expanded-lens-route", "resource:authority.expanded-lens-route-custody"], "new_modules": ["taskplane/expanded_route_authority_provider.py", "taskplane/taskplane_lite.py", "taskplane/terminal_truth.py", "resource:authority.expanded-lens-route-custody", "ext:orchestrator-control-plane-runtime"],
+      "design_edges": ["taskplane/taskplane_lite.py->contract:authority.expanded-lens-route:requests", "taskplane/terminal_truth.py->resource:authority.expanded-lens-route-custody:provides-precedent", "taskplane/expanded_route_authority_provider.py->resource:authority.expanded-lens-route-custody:owns", "ext:orchestrator-control-plane-runtime->taskplane/expanded_route_authority_provider.py:executes-verified-package", "taskplane/expanded_route_authority_provider.py->contract:authority.expanded-lens-route:provides", "taskplane/tests->contract:authority.expanded-lens-route:verifies", "taskplane/tests->resource:authority.expanded-lens-route-custody:verifies"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval.", "Regression: Worker monkeypatches of the worktree issuer, clock, RSA verifier, locator, or consumption helpers cannot cause the protected host authority to issue, verify, or consume an expanded route.", "Regression: A missing, non-0600, symlinked, relocated, or altered protected source locator or custody artifact fails closed with zero expanded-route issuance or consumption."]
+      "regression_selectors": ["taskplane/tests/test_expanded_route_authority_provider.py::test_worker_monkeypatch_cannot_replace_provider_source_clock_or_rsa", "taskplane/tests/test_expanded_route_authority_provider.py::test_missing_altered_relocated_or_symlinked_locator_and_custody_fail_closed", "taskplane/tests/test_expanded_route_authority_provider.py::test_exact_source_workspace_route_cost_policy_action_expiry_approver_and_receipt_binding", "taskplane/tests/test_expanded_route_authority_provider.py::test_atomic_one_use_consume_allows_one_concurrent_success", "taskplane/tests/test_expanded_route_authority_provider.py::test_restart_recovers_issuer_receipts_and_consumed_actions", "taskplane/tests/test_expanded_route_authority_provider.py::test_clock_injection_is_available_only_to_trusted_provider_tests"],
+      "criteria": ["AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval."]
     },
     {
       "id": "LR-04", "wave": "parallel-adapters", "owner": "route-telemetry",
@@ -168,13 +131,12 @@
     },
     {
       "id": "LR-06", "wave": "stage-integration", "owner": "product-design-plan-loop-adapters",
-      "blocked_by": ["DD-LR03-PROTECTED-HOST-AUTHORITY"],
-      "scope": ["taskplane/loop.py", "taskplane/tests/test_focused_lens_routing.py", "taskplane/tests/test_loop.py"],
+      "scope": ["taskplane/loop.py", "taskplane/review.py", "taskplane/tests/test_focused_lens_routing.py", "taskplane/tests/test_loop.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_focused_lens_routing.py taskplane/tests/test_loop.py", "req": "R-0001", "deps": ["LR-02", "LR-03", "LR-04", "LR-05"], "type": "integration",
       "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": ["taskplane/loop.py"],
-      "design_edges": ["taskplane/loop.py->contract:lens.focused-stage-routing:consumes", "taskplane/loop.py->contract:delivery.stage-lens-execution:enforces"],
+      "design_edges": ["taskplane/loop.py->contract:lens.focused-stage-routing:consumes", "taskplane/loop.py->contract:delivery.stage-lens-execution:enforces", "taskplane/review.py->contract:authority.expanded-lens-route:consumes"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "criteria": ["AC-LR1: Product deterministically executes a minimum-sufficient focused route from goal, requirement, AC, domain, constraints, and product-risk evidence, emits all 26 dispositions, and never launches a normal full-catalog run; verify identical-input and product-risk mutation tests.", "AC-LR2: Design deterministically executes a minimum-sufficient focused route from approved requirement and proposed solution evidence, includes solution-design coverage, and emits findings, design changes, and all 26 dispositions; verify independent interface, trust-boundary, and rollback-risk mutations.", "AC-LR3: Every non-trivial Plan executes exactly three or four selected lenses with rationale and task-to-AC coverage; verify passing 3/4 cases and refusal of 2/5."]
+      "criteria": ["AC-LR1: Product deterministically executes a minimum-sufficient focused route from goal, requirement, AC, domain, constraints, and product-risk evidence, emits all 26 dispositions, and never launches a normal full-catalog run; verify identical-input and product-risk mutation tests.", "AC-LR2: Design deterministically executes a minimum-sufficient focused route from approved requirement and proposed solution evidence, includes solution-design coverage, and emits findings, design changes, and all 26 dispositions; verify independent interface, trust-boundary, and rollback-risk mutations.", "AC-LR3: Every non-trivial Plan executes exactly three or four selected lenses with rationale and task-to-AC coverage; verify passing 3/4 cases and refusal of 2/5.", "AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval."]
     },
     {
       "id": "LR-07", "wave": "parallel-truth", "owner": "agents-and-skill-contracts",
@@ -189,7 +151,7 @@
       "id": "LR-08", "wave": "parallel-truth", "owner": "canonical-product-and-documentation-truth",
       "scope": ["specs/spec.md", "design/contract.json", "design/design.md", "design/visual.html", "plan/tasks.json", "plan/plan.md", "docs/routing-and-flows.md", "docs/lenses-and-knowledge.md", "docs/lens-catalog.md", "docs/configuration.md", "docs/onboarding.md", "README.md", "taskplane/tests/test_lens_routing_product_truth.py"],
       "tests": "python3 -m pytest -q taskplane/tests/test_lens_routing_product_truth.py", "req": "R-0001", "deps": ["LR-06"], "type": "documentation",
-      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": [],
+      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:authority.expanded-lens-route-custody", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": [],
       "design_edges": ["specs->contract:review.catalog-disposition:declares", "design->contract:lens.focused-stage-routing:declares", "plan->contract:delivery.stage-lens-execution:declares", "docs->resource:telemetry.lens-route:documents", "(root)->contract:lens.focused-stage-routing:documents"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC-LR6: Product, Design, Plan, and Evaluate each emit exactly one internally consistent evidenced disposition for every catalog lens, and only execute_deep/execute_light launch workers; verify missing, duplicate, unsupported, and unevidenced rows fail closed.", "AC-LR9: Each route records stage, selected count, reasons, estimated/actual tokens, runtime, cache reuse, and invalidation cause with bounded redaction; verify schema completeness and privacy behavior."]
@@ -197,8 +159,8 @@
     {
       "id": "LR-09", "wave": "conformance", "owner": "focused-routing-integration-proof",
       "scope": ["taskplane/tests/test_lens_routing_integration.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_lens_route_policy.py taskplane/tests/test_review_routing.py taskplane/tests/test_expanded_lens_route_authority.py taskplane/tests/test_lens_route_telemetry.py taskplane/tests/test_delivery_policy.py taskplane/tests/test_focused_lens_routing.py taskplane/tests/test_agents_skills_focused_routing.py taskplane/tests/test_lens_routing_product_truth.py taskplane/tests/test_lens_routing_integration.py", "req": "R-0001", "deps": ["LR-07", "LR-08"], "type": "integration",
-      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": [], "design_edges": [],
+      "tests": "python3 -m pytest -q taskplane/tests/test_expanded_route_authority_provider.py taskplane/tests/test_expanded_lens_route_authority.py taskplane/tests/test_focused_lens_routing.py taskplane/tests/test_agents_skills_focused_routing.py taskplane/tests/test_lens_routing_product_truth.py taskplane/tests/test_lens_routing_integration.py", "req": "R-0001", "deps": ["LR-07", "LR-08"], "type": "integration",
+      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:authority.expanded-lens-route-custody", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC-LR1: Product deterministically executes a minimum-sufficient focused route from goal, requirement, AC, domain, constraints, and product-risk evidence, emits all 26 dispositions, and never launches a normal full-catalog run; verify identical-input and product-risk mutation tests.", "AC-LR2: Design deterministically executes a minimum-sufficient focused route from approved requirement and proposed solution evidence, includes solution-design coverage, and emits findings, design changes, and all 26 dispositions; verify independent interface, trust-boundary, and rollback-risk mutations.", "AC-LR3: Every non-trivial Plan executes exactly three or four selected lenses with rationale and task-to-AC coverage; verify passing 3/4 cases and refusal of 2/5.", "AC-LR4: Every non-trivial task or wave Evaluate executes exactly three or four lenses from actual diff, changed files, dependency impact, test evidence, and unresolved findings; verify material evidence changes alter the route.", "AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval.", "AC-LR6: Product, Design, Plan, and Evaluate each emit exactly one internally consistent evidenced disposition for every catalog lens, and only execute_deep/execute_light launch workers; verify missing, duplicate, unsupported, and unevidenced rows fail closed.", "AC-LR7: A material Fix invalidates and reruns only lens evidence whose canonical fingerprint inputs changed while unchanged evidence is reused without launching a worker; verify single-input, multi-input, and unchanged cases.", "AC-LR8: Equal canonical inputs and policy version produce the same ordered route, dispositions, and fingerprint for all routed stages; verify repeats, key-order variance, relevant-input change, and policy-version change.", "AC-LR9: Each route records stage, selected count, reasons, estimated/actual tokens, runtime, cache reuse, and invalidation cause with bounded redaction; verify schema completeness and privacy behavior.", "AC-LR10: Successful, failed, cancelled, interrupted, and handed-off Build/Fix attempts launch zero lens workers, with lens execution confined to Product, Design, Plan, and Evaluate; verify native-dispatch traces."]
     }
