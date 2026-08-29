@@ -2,9 +2,9 @@
   "schema": "taskplane.design/v1",
   "requirement": "R-0001",
   "title": "Focused dynamic lens routing with fingerprinted selective reuse",
-  "summary": "Add one dependency-neutral deterministic routing policy over the incumbent 26-lens signal engine; adapt Product, Design, Plan, and Evaluate to stage-specific focused routes; preserve complete dispositions, fail-closed overflow, authenticated expansion, per-lens evidence reuse, and zero lens workers in Build, Fix, and EM.",
+  "summary": "Add one dependency-neutral deterministic routing policy over the incumbent 26-lens signal engine; adapt Product, Design, Plan, and Evaluate to stage-specific focused routes; preserve complete dispositions, fail-closed overflow through a protected content-addressed provider, per-lens evidence reuse, and zero lens workers in Build, Fix, and EM.",
   "current_state": {
-    "summary": "The incumbent signal engine scores all 26 lenses as deep/light/n/a with an eight-deep cap and security/architecture floors. Product and Plan still use legacy strategy routing, Design forces only solution-design, automatic Review/Evaluate projects four or five sweep lenses, retry membership follows prior failures rather than canonical per-lens input changes, and the sealed zero-lens delivery mode currently suppresses Evaluate and EM together with Build/Fix. Existing ReviewKernel evidence, leases, native dispatch, storage, signing, and telemetry are retained.",
+    "summary": "The incumbent signal engine scores all 26 lenses as deep/light/n/a with an eight-deep cap and security/architecture floors. Product and Plan still use legacy strategy routing, Design forces only solution-design, automatic Review/Evaluate projects four or five sweep lenses, retry membership follows prior failures rather than canonical per-lens input changes, and the sealed zero-lens delivery mode currently suppresses Evaluate and EM together with Build/Fix. Canonical finding 6ea9aff0107f4bb6 additionally proves that worktree-side expanded-route issuance, clock, RSA verification, and consumption are not protected from worker monkeypatching. Existing ReviewKernel evidence, leases, native dispatch, storage, and telemetry are retained, while authority moves outside the worker checkout and interpreter.",
     "sources": [
       "specs/spec.md",
       "docs/token-efficiency-lens-routing-amendment.md",
@@ -18,6 +18,8 @@
       "taskplane/review_retry.py",
       "taskplane/delivery_policy.py",
       "taskplane/taskplane_lite.py",
+      "taskplane/terminal_truth.py",
+      "components.yaml",
       "taskplane/dispatch_telemetry.py",
       "pyproject.toml",
       ".github/workflows/ci.yml"
@@ -77,8 +79,56 @@
       }
     }
   ],
+  "authority_alternatives": [
+    {
+      "id": "content-addressed-control-plane-provider",
+      "name": "New packaged content-addressed control-plane provider",
+      "selected": true,
+      "description": "Package taskplane/expanded_route_authority_provider.py as an immutable content-addressed object and have the orchestrator execute it in a separate trusted process from an external protected locator and 0600 authority store.",
+      "gains": [
+        "Removes issuance, real time, exact RSA verification, and one-use consumption from both the worker checkout and interpreter",
+        "Reuses the proven durably-protected-issuer custody and atomic-recovery pattern without sharing terminal-finalization authority",
+        "Keeps normal routes and rollback independent from the exceptional-route provider"
+      ],
+      "costs": [
+        "Adds one packaged provider module, content manifest, external locator, custody store, and recovery path",
+        "Requires orchestrator installation and permission checks before expanded routes can execute"
+      ],
+      "revisit_when": "A general authenticated host control-plane service already exists and can preserve this exact source, custody, binding, and atomic-consume contract with a smaller operational surface."
+    },
+    {
+      "id": "extend-terminal-authority-provider",
+      "name": "Extend the existing terminal authority provider",
+      "selected": false,
+      "description": "Add expanded-route approval and consumption to taskplane/terminal_truth.py and its durably-protected issuer.",
+      "gains": [
+        "Reuses existing root-private custody, lock, immutable write, recovery, and receipt patterns directly",
+        "Adds no second protected provider lifecycle"
+      ],
+      "costs": [
+        "Couples independent route approval and terminal-finalization subjects, keys, recovery, revocation, and blast radius",
+        "Makes route-provider rollback capable of disturbing terminal truth"
+      ],
+      "revisit_when": "Terminal and expanded-route authorities acquire one approved subject, key lifecycle, revocation policy, and failure domain."
+    },
+    {
+      "id": "separate-host-service",
+      "name": "Separate host service",
+      "selected": false,
+      "description": "Move expanded-route authority to an authenticated local daemon or remote host service.",
+      "gains": [
+        "Strong process and deployment boundary",
+        "Potential reuse by multiple repositories and runtimes"
+      ],
+      "costs": [
+        "Adds service authentication, availability, deployment, upgrade, and recovery surfaces",
+        "Introduces a network or daemon dependency for a narrow local exceptional action"
+      ],
+      "revisit_when": "Multiple independent control-plane actions require a shared continuously available host authority."
+    }
+  ],
   "selected_approach": "shared-policy-adapters",
-  "decision": "Select the shared pure policy because the approved behavior is one cross-stage invariant while context and execution remain stage-owned. A dependency-neutral core makes ordering, dispositions, overflow, fingerprints, and privacy mechanically identical; incumbent adapters retain proven scoring, authority, dispatch, and evidence collection. This is the smallest change that satisfies all ten acceptance criteria without a stage-local consistency gap or a ReviewKernel rewrite.",
+  "decision": "Select the shared pure policy because the approved behavior is one cross-stage invariant while context and execution remain stage-owned. For canonical finding 6ea9aff0107f4bb6, select the new packaged content-addressed control-plane provider: it is the smallest authority boundary that follows the graph's selected durably-protected-issuer custody precedent while removing authority from the worker checkout and interpreter without coupling it to terminal finalization or adding a host service. Incumbent adapters retain proven scoring, dispatch, and evidence collection; taskplane_lite becomes request-only.",
   "modules": {
     "existing": [
       "taskplane/graph_primitives.py",
@@ -89,6 +139,7 @@
       "taskplane/review_retry.py",
       "taskplane/delivery_policy.py",
       "taskplane/taskplane_lite.py",
+      "taskplane/terminal_truth.py",
       "taskplane/dispatch_telemetry.py",
       "agents",
       "skills/taskplane",
@@ -105,7 +156,8 @@
       "taskplane/tests"
     ],
     "new": [
-      "taskplane/lens_route_policy.py"
+      "taskplane/lens_route_policy.py",
+      "taskplane/expanded_route_authority_provider.py"
     ]
   },
   "contracts": [
@@ -127,7 +179,12 @@
     {
       "relation": "changes",
       "id": "contract:authority.expanded-lens-route",
-      "description": "A narrowly scoped signed capability may authorize one exact Plan/Evaluate route above four lenses without altering mandatory floors or general contract enforcement."
+      "description": "A separately executed protected provider may issue and atomically consume one exact Plan/Evaluate route above four lenses after validating immutable provider source, external custody, real time, and an exact RSA approval receipt; the worktree adapter is request-only."
+    },
+    {
+      "relation": "provides",
+      "id": "resource:authority.expanded-lens-route-custody",
+      "description": "An external orchestrator-owned 0700 provider root holds a 0600 content-addressed locator, issuer key, approver-key manifest, receipt journal, and atomic one-use consumption state, with no symlink, relocation, worktree, or environment fallback."
     },
     {
       "relation": "provides",
@@ -140,6 +197,86 @@
       "description": "Bounded redacted records expose stage, selected count and reasons, estimated/actual tokens, runtime, cache reuse, invalidation, terminal status, and route fingerprint."
     }
   ],
+  "expanded_route_authority": {
+    "schema": "taskplane.expanded-route-authority-provider/v1",
+    "finding": "6ea9aff0107f4bb6",
+    "provider_module": "taskplane/expanded_route_authority_provider.py",
+    "packaged_source": "providers/expanded-route/<source-sha256>/expanded_route_authority_provider.py",
+    "execution_owner": "orchestrator control plane in a separate trusted Python process",
+    "worker_adapter": "taskplane/taskplane_lite.py serializes a closed request and consumes a provider-sealed decision; it cannot choose the provider, supply time or verification functions, mint authority, inspect custody, or declare consumption",
+    "source_binding": [
+      "repository source path",
+      "repository commit",
+      "source SHA-256",
+      "package SHA-256",
+      "provider protocol version"
+    ],
+    "external_locator": {
+      "resource": "resource:authority.expanded-lens-route-custody",
+      "location": "orchestrator-configured absolute path outside the worker-controlled checkout",
+      "directory_mode": "0700",
+      "object_mode": "0600",
+      "objects": [
+        "content-addressed provider locator and manifest",
+        "issuer key",
+        "approved RSA public-key manifest",
+        "approval receipt journal",
+        "issued-action journal",
+        "atomic one-use consumption state"
+      ],
+      "validation": "Open without following symlinks; require orchestrator ownership, exact modes, resolved-root containment, immutable source/commit/digest match, and an unrelocated configured root. Missing, altered, relocated, ownership-invalid, mode-invalid, or symlinked locator, package, or custody object fails closed with no worktree or environment fallback."
+    },
+    "exclusive_responsibilities": [
+      "issue taskplane.expanded-lens-route-action/v1 only after exact approval validation",
+      "read production time from the provider process real system clock",
+      "verify the approval receipt using exact RSA-PSS/SHA-256 parameters",
+      "atomically consume each action once before returning a provider-sealed consumption receipt"
+    ],
+    "rsa_verification": {
+      "scheme": "RSA-PSS",
+      "hash": "SHA-256",
+      "mgf": "MGF1-SHA-256",
+      "salt_length_bytes": 32,
+      "modulus_bits": 3072,
+      "public_exponent": 65537,
+      "signature_length": "exactly the modulus length",
+      "message": "canonical UTF-8 JSON bytes of the closed approval receipt payload",
+      "key_selection": "exact approved key fingerprint from the protected approver-key manifest"
+    },
+    "issued_action_seal": "HMAC-SHA-256 over canonical UTF-8 JSON of every binding field using the provider issuer key held only in 0600 external custody; verification and compare-and-swap consumption occur only inside the provider process",
+    "binding_fields": [
+      "repository_source_path",
+      "repository_commit",
+      "source_sha256",
+      "package_sha256",
+      "workspace",
+      "stage",
+      "target",
+      "context_fingerprint",
+      "exact_ordered_lens_ids",
+      "estimated_cost",
+      "policy_version",
+      "catalog_version",
+      "action_id",
+      "expiry",
+      "approver_identity",
+      "approver_key_fingerprint",
+      "approval_receipt_digest"
+    ],
+    "atomic_consume": "Under an external authority lock, compare unused state, append the consume receipt, fsync the record, atomically rename the updated head, fsync the containing directory, and only then return success; concurrent consumers can produce at most one success.",
+    "clock": {
+      "production": "The production provider constructor and command expose no clock parameter and read real time only inside the trusted provider process.",
+      "tests": "Deterministic clock injection exists only in a non-exported trusted-provider test fixture using a temporary external provider root; production construction rejects it."
+    },
+    "regressions": [
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_worker_monkeypatch_cannot_replace_provider_source_clock_or_rsa",
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_missing_altered_relocated_or_symlinked_locator_and_custody_fail_closed",
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_exact_source_workspace_route_cost_policy_action_expiry_approver_and_receipt_binding",
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_atomic_one_use_consume_allows_one_concurrent_success",
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_restart_recovers_issuer_receipts_and_consumed_actions",
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_clock_injection_is_available_only_to_trusted_provider_tests"
+    ]
+  },
   "route_schema": {
     "context_schema": "taskplane.lens-route-context/v1",
     "decision_schema": "taskplane.lens-route-policy/v1",
@@ -163,6 +300,7 @@
     "product": {
       "selection": "minimum_sufficient",
       "numeric_cap": null,
+      "execution_depth": "quick-only",
       "inputs": [
         "goal",
         "requirement",
@@ -175,6 +313,7 @@
     "design": {
       "selection": "minimum_sufficient",
       "numeric_cap": null,
+      "execution_depth": "quick-only",
       "mandatory": [
         "solution-design"
       ],
@@ -193,6 +332,7 @@
       "selection": "focused",
       "non_trivial_minimum": 3,
       "non_trivial_maximum": 4,
+      "execution_depth": "quick-only",
       "inputs": [
         "approved_product",
         "approved_design",
@@ -205,16 +345,19 @@
     },
     "build": {
       "selection": "none",
-      "lens_worker_count": 0
+      "lens_worker_count": 0,
+      "execution_depth": "none"
     },
     "fix": {
       "selection": "none",
-      "lens_worker_count": 0
+      "lens_worker_count": 0,
+      "execution_depth": "none"
     },
     "evaluate": {
       "selection": "focused",
       "non_trivial_minimum": 3,
       "non_trivial_maximum": 4,
+      "execution_depth": "quick-only",
       "inputs": [
         "acceptance",
         "specification",
@@ -229,11 +372,17 @@
     "em": {
       "selection": "none",
       "lens_worker_count": 0,
+      "execution_depth": "none",
       "source": "canonical Evaluate evidence"
     }
   },
+  "approval_policy": {
+    "intermediate_human_gates": 0,
+    "human_approval": "final delivery sign-off only after EM synthesis",
+    "orchestrator_only": "Only the root orchestrator may gate or approve Design, Plan, Build, Evaluate, Fix, or EM transitions."
+  },
   "graph": {
-    "baseline_fingerprint": "7fdc2cc45c225323046430570f04d0580d8868b3ed57132a627a636450adf76f",
+    "baseline_fingerprint": "84060cc51be9c6769a356be30edf699f880c3bb7fe54495e28950eaf86543e0b",
     "proposed_modules": [
       "taskplane/graph_primitives.py",
       "taskplane/lens.py",
@@ -243,6 +392,7 @@
       "taskplane/review_retry.py",
       "taskplane/delivery_policy.py",
       "taskplane/taskplane_lite.py",
+      "taskplane/terminal_truth.py",
       "taskplane/dispatch_telemetry.py",
       "agents",
       "skills/taskplane",
@@ -257,7 +407,10 @@
       "docs",
       "(root)",
       "taskplane/tests",
-      "taskplane/lens_route_policy.py"
+      "taskplane/lens_route_policy.py",
+      "taskplane/expanded_route_authority_provider.py",
+      "resource:authority.expanded-lens-route-custody",
+      "ext:orchestrator-control-plane-runtime"
     ],
     "proposed_edges": [
       {
@@ -311,8 +464,38 @@
       {
         "from": "taskplane/taskplane_lite.py",
         "to": "contract:authority.expanded-lens-route",
+        "kind": "requests",
+        "reason": "The worktree adapter may serialize a closed request and consume a provider-sealed decision, but cannot issue, verify, time, locate, or consume authority."
+      },
+      {
+        "from": "taskplane/terminal_truth.py",
+        "to": "resource:authority.expanded-lens-route-custody",
+        "kind": "provides-precedent",
+        "reason": "The graph-selected durably-protected-issuer demonstrates root-private key custody, authority locking, atomic immutable writes, directory fsync, and explicit restart recovery; the new provider follows this pattern with separate keys and lifecycle."
+      },
+      {
+        "from": "taskplane/expanded_route_authority_provider.py",
+        "to": "resource:authority.expanded-lens-route-custody",
+        "kind": "owns",
+        "reason": "The packaged provider exclusively validates the external content-addressed locator, 0600 keys/manifests/journals, real clock, exact RSA receipt, and atomic one-use state."
+      },
+      {
+        "from": "ext:orchestrator-control-plane-runtime",
+        "to": "taskplane/expanded_route_authority_provider.py",
+        "kind": "executes-verified-package",
+        "reason": "The orchestrator executes only the exact immutable packaged object in a separate trusted interpreter after source, commit, digest, location, ownership, mode, and no-symlink validation."
+      },
+      {
+        "from": "taskplane/expanded_route_authority_provider.py",
+        "to": "contract:authority.expanded-lens-route",
         "kind": "provides",
-        "reason": "The control plane signs and verifies one target-, context-, lens-, cost-, expiry-, and policy-bound exceptional route action."
+        "reason": "Only the protected provider may issue, validate authoritative time, perform exact RSA-PSS verification, atomically consume once, and seal the dispatch receipt."
+      },
+      {
+        "from": "taskplane/review.py",
+        "to": "contract:authority.expanded-lens-route",
+        "kind": "consumes",
+        "reason": "ReviewKernel permits an expanded dispatch only when the provider-sealed consumption receipt binds its exact current route and context fingerprint."
       },
       {
         "from": "taskplane/review.py",
@@ -360,7 +543,13 @@
         "from": "taskplane/tests",
         "to": "contract:authority.expanded-lens-route",
         "kind": "verifies",
-        "reason": "Authority tests reject tampering, replay, expiry, stage/target mismatch, and any attempt to weaken mandatory floors."
+        "reason": "Provider tests reject binding mutation, tampering, replay, expiry, concurrent double-consume, stage/target mismatch, worktree clock/RSA/source monkeypatches, and any attempt to weaken mandatory floors."
+      },
+      {
+        "from": "taskplane/tests",
+        "to": "resource:authority.expanded-lens-route-custody",
+        "kind": "verifies",
+        "reason": "Custody tests reject missing, altered, relocated, ownership/mode-invalid, and symlinked locators or objects, prove restart recovery, and confine deterministic clock injection to trusted provider tests."
       },
       {
         "from": "taskplane/tests",
@@ -412,11 +601,11 @@
       },
       {
         "check": "The as-built dependency graph is current and remains unchanged during Design.",
-        "evidence": "baseline fingerprint 7fdc2cc45c225323046430570f04d0580d8868b3ed57132a627a636450adf76f"
+        "evidence": "amendment baseline fingerprint 84060cc51be9c6769a356be30edf699f880c3bb7fe54495e28950eaf86543e0b; prior approved Design baseline 7fdc2cc45c225323046430570f04d0580d8868b3ed57132a627a636450adf76f remains historical evidence"
       },
       {
         "check": "Incumbent scoring, stage, ReviewKernel, authority, retry, and telemetry boundaries are grounded in repository sources.",
-        "evidence": "current_state.sources and design/design.md As-built constraints"
+        "evidence": "current_state.sources, components.yaml selected durably-protected-issuer decision, taskplane/terminal_truth.py custody implementation, and design/design.md As-built constraints"
       },
       {
         "check": "Python runtime, packaging, synchronization, and trust-boundary constraints are explicit.",
@@ -434,11 +623,11 @@
       },
       {
         "check": "Fingerprint reuse is conservative, overflow is fail-closed, and expanded authority is exact-target and tamper-evident.",
-        "evidence": "single/multi/unchanged invalidation mutation matrix and signed-action tamper/replay/expiry matrix"
+        "evidence": "single/multi/unchanged invalidation mutation matrix plus protected-provider source/custody/binding/RSA/replay/expiry/concurrent-consume/worker-monkeypatch matrix"
       },
       {
-        "check": "The Python implementation remains synchronous, dependency-free, CPython 3.10 compatible, Python 3.14 lint/type checked, clean-package importable, and graph verified.",
-        "evidence": "compatibility matrix, Python 3.14 ruff/mypy job, packaged-plugin import smoke, cancellation/failure lifecycle tests, and strict graph verification"
+        "check": "The Python implementation remains synchronous, dependency-free, CPython 3.10 compatible, Python 3.14 lint/type checked, clean-package importable, and graph verified; expanded authority executes only from the verified immutable package with external 0600 custody and production real time.",
+        "evidence": "compatibility matrix, Python 3.14 ruff/mypy job, packaged-plugin and content-addressed-provider import smoke, custody/recovery/monkeypatch/race/cancellation/failure lifecycle tests, and strict graph verification"
       }
     ]
   },
@@ -477,10 +666,13 @@
     },
     {
       "criterion": "AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval.",
-      "design_element": "contract:authority.expanded-lens-route; overflow result in taskplane/lens_route_policy.py; signed action in taskplane/taskplane_lite.py",
-      "validation": "Inject five independent mandatory risks, prove zero dispatch and deterministic split/refusal, then verify only an exact signed route/cost capability succeeds while lens, cost, context, target, expiry, and signature mutations fail.",
+      "design_element": "contract:authority.expanded-lens-route; resource:authority.expanded-lens-route-custody; overflow result in taskplane/lens_route_policy.py; request-only taskplane/taskplane_lite.py; protected taskplane/expanded_route_authority_provider.py",
+      "validation": "Inject five independent mandatory risks, prove zero dispatch and deterministic split/refusal, then verify only the separately executed provider can validate exact RSA approval, issue and atomically consume the exact route/cost action. Mutate source, commit, digest, workspace, stage, target, context, lenses, cost, policy, action, expiry, approver, receipt, locator, custody, clock, and worktree helpers; every mutation or replay must fail with zero dispatch.",
       "tests": [
-        "taskplane/tests/test_focused_lens_routing.py::test_overflow_splits_or_requires_exact_signed_expansion"
+        "taskplane/tests/test_focused_lens_routing.py::test_overflow_splits_or_requires_exact_signed_expansion",
+        "taskplane/tests/test_expanded_route_authority_provider.py::test_worker_monkeypatch_cannot_replace_provider_source_clock_or_rsa",
+        "taskplane/tests/test_expanded_route_authority_provider.py::test_missing_altered_relocated_or_symlinked_locator_and_custody_fail_closed",
+        "taskplane/tests/test_expanded_route_authority_provider.py::test_atomic_one_use_consume_allows_one_concurrent_success"
       ]
     },
     {
@@ -568,9 +760,14 @@
       "owner": "ReviewKernel owner"
     },
     {
-      "risk": "Expanded-route authority becomes a generic bypass or can be replayed.",
-      "mitigation": "Use a closed signed capability bound to workspace, stage, target, context fingerprint, exact lenses, cost, expiry, policy, and one action id; never expose a general clear or floor override.",
-      "owner": "control-plane authority owner"
+      "risk": "A worker replaces provider source, clock, RSA verification, locator, issuance, or consumption and turns expanded-route authority into a generic or replayable bypass.",
+      "mitigation": "Execute only the exact content-addressed packaged provider in a separate orchestrator process; validate external 0600 custody without symlinks or fallback; bind source/commit/digests, workspace, stage, target, context, exact lenses/cost/policy/action/expiry/approver/receipt; use provider-owned real time, exact RSA-PSS verification, and atomic one-use consumption.",
+      "owner": "protected expanded-route provider owner"
+    },
+    {
+      "risk": "The protected provider or external custody is unavailable, invalid, or rolled back during overflow.",
+      "mitigation": "Fail closed with zero expanded dispatch and preserve normal routes; require a deterministic split or a repaired/reinstalled exact provider. Never fall back to worktree authority or alter immutable receipts/consumed state.",
+      "owner": "orchestrator control-plane owner"
     },
     {
       "risk": "The existing zero-lens delivery authority continues to suppress Evaluate.",
@@ -607,7 +804,22 @@
     {
       "mode": "An expanded-route action is tampered, replayed, expired, or bound to another target/context.",
       "detection": "expanded_route_authority_rejection",
-      "recovery": "The control-plane authority owner rejects it with zero dispatch; the orchestrator requests a new exact action only if the human still authorizes the same current route."
+      "recovery": "The protected provider rejects it with zero dispatch and preserves its consumption journal; the orchestrator requests a new exact action only if the human still authorizes the same current route."
+    },
+    {
+      "mode": "The provider source, commit, digest, external locator, ownership, mode, custody, or resolved location is missing, altered, relocated, or symlinked.",
+      "detection": "expanded_route_provider_custody_rejection",
+      "recovery": "Disable expanded dispatch. The orchestrator repairs or reinstalls the exact immutable provider/custody under the configured protected root and reruns validation; it never imports worktree source or accepts an environment fallback."
+    },
+    {
+      "mode": "A worker monkeypatches its clock, RSA helper, provider locator, issuance helper, or consume helper.",
+      "detection": "expanded_route_worker_boundary_probe",
+      "recovery": "The separately executed provider remains authoritative and returns only its sealed result. Record the rejected/probed request without sensitive material; no worker-supplied callable or time value crosses the request schema."
+    },
+    {
+      "mode": "Two processes attempt to consume the same valid expanded-route action.",
+      "detection": "expanded_route_replay_rejection",
+      "recovery": "The provider authority lock and durable compare-and-swap permit one sealed success; all other consumers fail closed and ReviewKernel accepts only the unique consumption receipt."
     },
     {
       "mode": "A Taskplane lens worker starts during Build, Fix, or EM.",
@@ -633,6 +845,12 @@
       "lens_route_dispatch_count",
       "lens_route_usage",
       "expanded_route_authority_rejection",
+      "expanded_route_provider_source_rejection",
+      "expanded_route_provider_custody_rejection",
+      "expanded_route_rsa_rejection",
+      "expanded_route_replay_rejection",
+      "expanded_route_worker_boundary_probe",
+      "expanded_route_provider_issuance",
       "build_fix_lens_start_violation",
       "route_artifact_write_failure"
     ],
@@ -641,12 +859,14 @@
       "Require human-visible overflow handling when lens_route_overflow is emitted and no deterministic split is available.",
       "Block Build/Fix/EM completion on any build_fix_lens_start_violation.",
       "Surface repeated expanded_route_authority_rejection after two attempts for the same target fingerprint without weakening validation.",
+      "Block expanded dispatch immediately on any provider source, custody, RSA, or replay rejection; do not substitute worktree code, time, verification, or state.",
+      "Alert on any expanded_route_worker_boundary_probe and on more than one expanded_route_provider_issuance for the same action id.",
       "Fail the cost/reuse ratchet when lens_route_dispatch_count exceeds four without a valid expanded-route receipt or when unchanged evidence launches a worker."
     ]
   },
   "rollout": {
-    "strategy": "Add focused-routing/v1 and its exhaustive unit/mutation tests first; wire Product/Design/Plan gates; wire Evaluate route/reuse while retaining read-only legacy history rendering; narrow zero-lens enforcement to Build/Fix/EM; add signed expansion, telemetry, skills/agents/docs; then run focused selectors, compatibility interpreters, Python 3.14 lint/strict types, packaged-plugin import smoke, strict graph verification, and the full Taskplane suite before final review.",
-    "rollback": "Before release, revert the implementation commits. After focused-routing/v1 artifacts exist, restore the prior reader while retaining immutable route history and stop new routed stages as routing_policy_unavailable until an explicitly compatible policy is selected; never fall back automatically to full-catalog execution, zero-Evaluate execution, or rewritten evidence."
+    "strategy": "Preserve completed LR-01, LR-02, LR-04, LR-05, and LR-03 commits/evidence; replan only LR-03 and blocked downstream work for canonical finding 6ea9aff0107f4bb6. Package expanded_route_authority_provider.py as an immutable content-addressed provider; install its external protected locator/custody; make taskplane_lite request-only; run source/custody/RSA/binding/replay/race/restart/worker-monkeypatch tests; then continue quick-only Product/Design, 3–4 quick Plan/Evaluate, zero-lens Build/Fix, clean-package smoke, strict graph verification, and final-only human sign-off.",
+    "rollback": "Disable or remove only the external provider locator while retaining immutable approval, issuance, and consumption records. Normal routes of at most four lenses continue; overflow must split or fail closed. Never restore worktree-side issuance, time, RSA verification, or consumption. Before release the provider code may be reverted; after artifacts exist, preserve their readers and history without rewriting evidence."
   },
   "technical_debt": [
     {
@@ -660,14 +880,14 @@
     }
   ],
   "python_runtime": {
-    "execution_model": "synchronous pure policy; existing stage owners retain cancellation, interruption, handoff, and child lifecycle control",
-    "mutable_shared_state": "none in lens_route_policy.py; callers pass immutable values and storage mutations remain under incumbent atomic locks",
-    "free_threaded": "safe by construction for the pure policy; no extension modules or GIL-dependent mutation are introduced",
+    "execution_model": "synchronous pure policy plus a synchronous protected provider command executed by the orchestrator in a separate trusted process; existing stage owners retain cancellation, interruption, handoff, and child lifecycle control",
+    "mutable_shared_state": "none in lens_route_policy.py; expanded provider issuance and one-use state are external and serialized by an authority lock with durable atomic transitions, never by worker globals or GIL behavior",
+    "free_threaded": "safe by construction for the pure policy; provider correctness depends on filesystem authority locking and durable compare-and-swap rather than GIL serialization; no extension modules are introduced",
     "runtime_dependencies": [],
     "development_dependencies": [],
     "supported_floor": "CPython 3.10 syntax/runtime compatibility",
     "quality_interpreter": "Python 3.14 ruff and strict mypy",
-    "packaging": "existing Taskplane plugin/package namespace; include lens_route_policy.py and verify a clean packaged-plugin import with no network access"
+    "packaging": "existing Taskplane plugin/package namespace includes lens_route_policy.py and expanded_route_authority_provider.py; installation copies the latter to providers/expanded-route/<source-sha256>/expanded_route_authority_provider.py with an immutable manifest binding source path, commit, source digest, package digest, and protocol version; authority executes only that verified object with no network or worktree fallback"
   },
   "visualization": {
     "required": true,
@@ -675,15 +895,204 @@
     "path": "design/visual.html",
     "reason": "The stage execution boundary, overflow refusal, and Fix-to-Evaluate selective-reuse transition are easier to verify together as one state flow than as separate prose rules."
   },
+  "design_route": {
+    "schema": "taskplane.lens-route-policy/v1",
+    "stage": "design",
+    "target": "R-0001 authority amendment for finding 6ea9aff0107f4bb6",
+    "policy_version": "focused-routing/v1",
+    "execution_depth": "quick-only",
+    "producer": "tp_step_designer_design_28973ea6",
+    "self_attested": true,
+    "selected": [
+      "solution-design"
+    ],
+    "selected_count": 1,
+    "context_fingerprint": "84060cc51be9c6769a356be30edf699f880c3bb7fe54495e28950eaf86543e0b",
+    "route_fingerprint": "737068a55c9a94b346a062dfc115d1e0bd0ff68dd6809b244759642b38357271",
+    "dispositions": [
+      {
+        "lens": "product",
+        "disposition": "not_applicable",
+        "reason": "The approved R-0001 WHAT and acceptance criteria are unchanged by this authority-boundary amendment.",
+        "evidence": "Narrow scope is canonical finding 6ea9aff0107f4bb6; no requirement or acceptance mutation."
+      },
+      {
+        "lens": "security",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The selected sweep directly resolves the worker-controlled trust boundary, custody, signature, replay, and fail-closed behavior.",
+        "evidence": "expanded_route_authority and authority-specific graph edges, risks, failure modes, and regressions."
+      },
+      {
+        "lens": "code-quality",
+        "disposition": "not_applicable",
+        "reason": "No implementation code is authored in Design and module-level coding details remain Build-owned.",
+        "evidence": "Design changes are confined to design/** and define contracts rather than code style."
+      },
+      {
+        "lens": "testability",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The selected sweep defines runnable trust-boundary, mutation, race, restart, and test-clock regressions.",
+        "evidence": "expanded_route_authority.regressions names six runnable selectors and closed assertions."
+      },
+      {
+        "lens": "design",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The solution-design sweep owns the narrow Design artifact, alternatives, contracts, boundaries, and rollback.",
+        "evidence": "design/design.md authority alternatives and selected architecture sections."
+      },
+      {
+        "lens": "scalability",
+        "disposition": "not_applicable",
+        "reason": "The action is exceptional local control-plane authorization, not a throughput-scaled service.",
+        "evidence": "Separate host service is rejected; provider handles one bounded 26-lens route action."
+      },
+      {
+        "lens": "integrability",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Provider/consumer and packaging edges are part of the selected solution boundary.",
+        "evidence": "Graph names orchestrator execution, request adapter, ReviewKernel consumer, provider, custody, and test edges."
+      },
+      {
+        "lens": "data-safety",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Atomic one-use state, immutable receipts, fsync, custody modes, and rollback preservation are designed explicitly.",
+        "evidence": "expanded_route_authority.atomic_consume, external_locator, and rollout.rollback."
+      },
+      {
+        "lens": "tech-writer",
+        "disposition": "not_applicable",
+        "reason": "User-facing documentation wording is downstream Build scope, while this artifact already names the exact contract.",
+        "evidence": "No docs/** mutation is permitted in this Design task."
+      },
+      {
+        "lens": "qa",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The solution sweep includes executable positive, negative, mutation, concurrency, recovery, and packaging validation.",
+        "evidence": "AC-LR5 validation and expanded_route_authority.regressions."
+      },
+      {
+        "lens": "devops",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Installation, external locator permissions, immutable package selection, recovery, and rollback are architecture inputs here.",
+        "evidence": "expanded_route_authority.packaged_source/external_locator and rollout strategy."
+      },
+      {
+        "lens": "dba",
+        "disposition": "not_applicable",
+        "reason": "No database or schema is introduced; state is a small protected filesystem journal.",
+        "evidence": "Provider custody uses atomic local files under an authority lock."
+      },
+      {
+        "lens": "sre",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Availability, fail-closed recovery, signals, alerts, restart, and rollback are designed in the selected sweep.",
+        "evidence": "Provider failure modes, observability, restart regression, and provider-specific rollback."
+      },
+      {
+        "lens": "project-management",
+        "disposition": "not_applicable",
+        "reason": "Task sequencing and estimates belong to the subsequent Plan; Design preserves completed work and scopes replan to LR-03/downstream.",
+        "evidence": "Rollout states preservation and replan boundary without authoring Plan artifacts."
+      },
+      {
+        "lens": "frontend",
+        "disposition": "not_applicable",
+        "reason": "The provider, adapter, and custody boundary have no frontend surface.",
+        "evidence": "All named components are Python control-plane, storage, or orchestration resources."
+      },
+      {
+        "lens": "backend",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The synchronous provider command, closed request, receipt, and filesystem transaction are central solution interfaces.",
+        "evidence": "expanded_route_authority execution, binding, and atomic-consume contracts."
+      },
+      {
+        "lens": "tradeoffs",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The selected sweep compares the three required placements and records gain, cost, and revisit triggers.",
+        "evidence": "authority_alternatives A/B/C."
+      },
+      {
+        "lens": "solution-design",
+        "disposition": "execute_light",
+        "reason": "A minimum-sufficient quick sweep is required to settle the protected provider boundary for the canonical finding.",
+        "evidence": "Self-attested quick review of exact Python reference, current graph precedent, provider options, contracts, edges, failures, rollback, observability, and regressions."
+      },
+      {
+        "lens": "services-selection",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The solution sweep explicitly rejects a separate host service and selects a local packaged provider.",
+        "evidence": "authority_alternatives compares packaged provider, terminal-provider extension, and host service."
+      },
+      {
+        "lens": "time-to-market",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The selected provider is the smallest sound change and preserves completed evidence while replanning only invalidated work.",
+        "evidence": "Decision and rollout preserve completed commits/evidence and isolate LR-03/downstream."
+      },
+      {
+        "lens": "architecture",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Trust boundary, provider/consumer graph, custody precedent, packaging, lifecycle, and rollback are explicitly architectural.",
+        "evidence": "expanded_route_authority plus seven authority-specific graph edges."
+      },
+      {
+        "lens": "mobile",
+        "disposition": "not_applicable",
+        "reason": "No mobile runtime, UI, or platform contract is affected.",
+        "evidence": "Scope is local Python control-plane authority."
+      },
+      {
+        "lens": "accessibility",
+        "disposition": "not_applicable",
+        "reason": "No end-user interaction or presentation component changes.",
+        "evidence": "The visualization explains architecture but is not a shipped interactive feature."
+      },
+      {
+        "lens": "privacy-compliance",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The closed binding and observability contracts limit persisted content to identifiers, digests, bounded reasons, and protected receipts.",
+        "evidence": "Binding fields and existing bounded/redacted telemetry contract exclude raw prompts, diffs, and secrets."
+      },
+      {
+        "lens": "cost-finops",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Exact estimated cost is bound into approval and consumption; provider overhead remains a local exceptional action.",
+        "evidence": "estimated_cost is a mandatory binding field and AC-LR5 mutation target."
+      },
+      {
+        "lens": "i18n",
+        "disposition": "not_applicable",
+        "reason": "No localized user-facing strings or locale-sensitive data are introduced.",
+        "evidence": "Provider protocol uses canonical machine JSON and bounded reason codes."
+      }
+    ]
+  },
   "lens_evidence": [
     {
       "lens": "solution-design",
       "verdict": "pass",
       "blockers": 0,
-      "evidence": "Checked the exact R-0001 criteria against incumbent signal, loop, ReviewKernel, retry, authority, delivery-policy, telemetry, packaging, Python 3.14, and graph boundaries; compared three real approaches; verified every proposed module/edge traces to acceptance, a failure control, or a numeric quality target; made overflow, per-lens invalidation, zero-lens stages, rollback, storage atomicity, trust-boundary validation, and clean-package verification implementable without unresolved invention.",
+      "evidence": "Quick-only self-attested sweep checked the exact R-0001 criteria and canonical finding 6ea9aff0107f4bb6 against incumbent signal, loop, ReviewKernel, terminal-capability custody precedent, delivery-policy, telemetry, packaging, Python 3.14, and graph boundaries; compared the required packaged-provider, terminal-provider extension, and host-service placements; selected the smallest sound option; and made provider source/custody, request-only adaptation, exact RSA verification, real time, atomic one-use consumption, worker-monkeypatch regressions, overflow, reuse, zero-lens stages, rollback, observability, and clean-package verification implementable without unresolved invention.",
       "produced_by": "tp_step_designer_design_28973ea6",
-      "content_fingerprint": "e9bd74fce4ef9ad72bd33128459a06cf10a0f24865483aba103e0e99a63e452a",
-      "self_attested": true
+      "content_fingerprint": "90142ad22472e2f66dbe3ef5c9eea04bc73a84695099549c56373ec3d92fa99f",
+      "self_attested": true,
+      "tier": "quick"
     }
   ],
   "open_questions": []

@@ -7,10 +7,10 @@
   <style>
     :root { color-scheme: light dark; --ink:#14213d; --muted:#64748b;
       --line:#94a3b8; --panel:#f8fafc; --run:#dbeafe; --zero:#dcfce7;
-      --warn:#ffedd5; --reuse:#ede9fe; }
+      --warn:#ffedd5; --reuse:#ede9fe; --trust:#fce7f3; }
     @media (prefers-color-scheme: dark) { :root { --ink:#e2e8f0;
       --muted:#94a3b8; --line:#64748b; --panel:#111827; --run:#172554;
-      --zero:#052e16; --warn:#431407; --reuse:#2e1065; } }
+      --zero:#052e16; --warn:#431407; --reuse:#2e1065; --trust:#500724; } }
     * { box-sizing:border-box; }
     body { margin:0; font:15px/1.45 system-ui,sans-serif; color:var(--ink);
       background:var(--panel); }
@@ -24,6 +24,7 @@
     .box.zero { background:var(--zero); }
     .box.warn { background:var(--warn); }
     .box.reuse { background:var(--reuse); }
+    .box.trust { background:var(--trust); }
     .box:not(:last-child)::after { content:"→"; position:absolute; right:-13px;
       top:49px; z-index:2; font-size:20px; color:var(--muted); }
     strong { display:block; font-size:17px; margin-bottom:8px; }
@@ -31,6 +32,10 @@
     code { font:12px ui-monospace,monospace; }
     .rule { margin:28px 0; border-top:2px solid var(--line); }
     .lower { display:grid; grid-template-columns:1fr 1.3fr 1fr; gap:16px; }
+    .authority { display:grid; grid-template-columns:1fr auto 1.4fr auto 1fr;
+      gap:12px; align-items:stretch; }
+    .arrow { align-self:center; color:var(--muted); font-size:22px; }
+    .authority .box::after { content:none; }
     ul { margin:8px 0 0; padding-left:18px; }
     .legend { display:flex; gap:18px; flex-wrap:wrap; margin-top:24px;
       color:var(--muted); }
@@ -38,7 +43,8 @@
       var(--line); border-radius:3px; margin-right:6px; vertical-align:-1px; }
     @media (max-width:900px) { .flow { grid-template-columns:1fr; }
       .box:not(:last-child)::after { content:"↓"; right:auto; left:50%;
-        top:auto; bottom:-20px; } .lower { grid-template-columns:1fr; } }
+        top:auto; bottom:-20px; } .lower, .authority { grid-template-columns:1fr; }
+      .authority .box::after { content:none; } .arrow { text-align:center; } }
   </style>
 </head>
 <body><main>
@@ -66,7 +72,7 @@
   <section class="lower" aria-label="Routing decision outcomes">
     <div class="box warn"><strong>More than four mandatory risks</strong>
       <ul><li>split into independently evaluable scopes, or</li>
-      <li>stop for one signed, exact-target expanded route.</li></ul></div>
+      <li>stop for one protected, exact-target expanded route.</li></ul></div>
     <div class="box"><strong>Canonical policy artifact</strong>
       <small><code>taskplane.lens-route-policy/v1</code></small>
       <ul><li>26 complete dispositions</li><li>ordered selected route</li>
@@ -76,10 +82,28 @@
       workers. Consume canonical Evaluate evidence, verify Design conformance,
       and present the final human sign-off.</small></div>
   </section>
+
+  <div class="rule"></div>
+  <section class="authority" aria-label="Protected expanded-route authority boundary">
+    <div class="box warn"><strong>Worker checkout</strong>
+      <small><code>taskplane_lite.py</code> is request-only. It cannot supply
+      source, clock, verifier, issuance, or consumption state.</small></div>
+    <div class="arrow" aria-hidden="true">→</div>
+    <div class="box trust"><strong>Protected provider process</strong>
+      <small><code>providers/expanded-route/&lt;sha256&gt;/…</code></small>
+      <ul><li>exact immutable source + manifest</li>
+      <li>real clock + exact RSA-PSS verification</li>
+      <li>atomic one-use issue/consume receipt</li></ul></div>
+    <div class="arrow" aria-hidden="true">→</div>
+    <div class="box zero"><strong>ReviewKernel</strong><small>Accepts only the
+      provider-sealed receipt bound to the exact current route and context.
+      Missing or invalid custody means zero expanded dispatch.</small></div>
+  </section>
   <div class="legend" aria-label="Legend">
     <span><i class="dot" style="background:var(--run)"></i>focused execution</span>
     <span><i class="dot" style="background:var(--zero)"></i>zero-lens stage</span>
     <span><i class="dot" style="background:var(--warn)"></i>fail-closed overflow</span>
     <span><i class="dot" style="background:var(--reuse)"></i>fingerprinted reuse</span>
+    <span><i class="dot" style="background:var(--trust)"></i>protected authority</span>
   </div>
 </main></body></html>
