@@ -30,9 +30,14 @@ except ImportError:  # Windows retains the in-process lock and atomic replace
     fcntl = None
 
 try:
-    from taskplane import delivery_ports, wiring_closure
+    from taskplane import (
+        delivery_ports,
+        expanded_route_authority_provider,
+        wiring_closure,
+    )
 except ImportError:  # direct executable/import compatibility
     import delivery_ports
+    import expanded_route_authority_provider
     import wiring_closure
 
 
@@ -155,6 +160,10 @@ _EXACT_CANDIDATE_EVIDENCE_STATE = {
 _TERMINAL_RECEIPT_TOKEN = object()
 _SELECTOR_RECEIPT_TOKEN = object()
 _EXACT_CANDIDATE_RECEIPT_TOKEN = object()
+_EXPANDED_ROUTE_PROVIDER_RECEIPT_TOKEN = object()
+_EXPANDED_ROUTE_PROVIDER_MAX_INPUT_BYTES = 128 * 1024
+_EXPANDED_ROUTE_PROVIDER_MAX_OUTPUT_BYTES = 256 * 1024
+_EXPANDED_ROUTE_PROVIDER_TIMEOUT_SECONDS = 10
 _NONTERMINAL_VALUES = frozenset(
     {
         "active", "blocked", "executing", "in_progress", "needs_user",
@@ -453,6 +462,273 @@ class _ImmutableReceipt(dict):
     __ior__ = _immutable
 
 
+class ExpandedRouteProviderReceipt(_ImmutableReceipt):
+    """Live terminal result minted only by an orchestrator-owned client."""
+
+    __slots__ = ("_client", "_request_fingerprint", "_token")
+
+    def __init__(
+        self,
+        value: Mapping[str, Any],
+        *,
+        client: "ExpandedRouteProviderClient",
+        request_fingerprint: str,
+        token: object,
+    ) -> None:
+        if token is not _EXPANDED_ROUTE_PROVIDER_RECEIPT_TOKEN:
+            raise TypeError(
+                "expanded-route receipts are orchestrator-provider-produced")
+        dict.__init__(self, value)
+        self._client = client
+        self._request_fingerprint = request_fingerprint
+        self._token = token
+
+    def __reduce__(self):
+        raise TypeError(
+            "live expanded-route provider receipts are not serializable")
+
+
+class ExpandedRouteProviderClient:
+    """Launch and authenticate one protected expanded-route provider.
+
+    Construction is restricted to a live ``TerminalCoordinator``.  The
+    worker-visible adapter never receives the locator, package path, process
+    runner, provider HMAC material, or the live receipt seal maintained here.
+    """
+
+    __slots__ = (
+        "_coordinator", "_locator_path", "_package_path", "_authority_root",
+        "_locator_fingerprint", "_receipt_seals", "_token",
+    )
+
+    def __init__(
+        self,
+        locator_path: str,
+        *,
+        coordinator: "TerminalCoordinator",
+        token: object,
+    ) -> None:
+        if token is not _EXPANDED_ROUTE_PROVIDER_RECEIPT_TOKEN or \
+                coordinator._issuer is None:
+            raise TypeError(
+                "expanded-route provider clients are orchestrator-produced")
+        try:
+            package_path = \
+                expanded_route_authority_provider._configured_package_path(
+                    locator_path)
+            state = expanded_route_authority_provider._validate_installation(
+                locator_path, execution_path=package_path)
+        except expanded_route_authority_provider.ProviderError as exc:
+            raise TerminalTruthError(
+                "provider-provenance", exc.detail) from exc
+        self._coordinator = coordinator
+        self._locator_path = str(Path(locator_path).resolve(strict=True))
+        self._package_path = str(state["package_path"])
+        self._authority_root = Path(state["root"])
+        self._locator_fingerprint = str(state["locator_fingerprint"])
+        self._receipt_seals: dict[
+            int, tuple[ExpandedRouteProviderReceipt, str]
+        ] = {}
+        self._token = token
+
+    @staticmethod
+    def _run_provider(
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        environment: Mapping[str, str],
+        payload: bytes,
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Private process boundary overridden only by hermetic tests."""
+        return subprocess.run(
+            list(argv),
+            cwd=cwd,
+            env=dict(environment),
+            input=payload,
+            capture_output=True,
+            check=False,
+            timeout=_EXPANDED_ROUTE_PROVIDER_TIMEOUT_SECONDS,
+        )
+
+    def _installation(self) -> dict[str, Any]:
+        try:
+            state = expanded_route_authority_provider._validate_installation(
+                self._locator_path, execution_path=self._package_path)
+        except expanded_route_authority_provider.ProviderError as exc:
+            raise TerminalTruthError(
+                "provider-provenance", exc.detail) from exc
+        if str(state["package_path"]) != self._package_path or \
+                Path(state["root"]) != self._authority_root or \
+                state["locator_fingerprint"] != self._locator_fingerprint:
+            raise TerminalTruthError(
+                "provider-provenance",
+                "expanded-route provider installation identity changed",
+            )
+        return state
+
+    def authorize(
+        self,
+        request: Mapping[str, Any],
+        approval: Mapping[str, Any],
+    ) -> ExpandedRouteProviderReceipt:
+        """Return only an authenticated live result from the exact package."""
+        self._installation()
+        try:
+            payload = _canonical_bytes({
+                "request": dict(request), "approval": dict(approval),
+            }) + b"\n"
+        except (TypeError, ValueError) as exc:
+            raise TerminalTruthError(
+                "provider-request",
+                "expanded-route provider request is not canonical JSON",
+            ) from exc
+        if len(payload) > _EXPANDED_ROUTE_PROVIDER_MAX_INPUT_BYTES:
+            raise TerminalTruthError(
+                "provider-request",
+                "expanded-route provider request exceeds transport limit",
+            )
+        executable = Path(sys.executable).resolve(strict=True)
+        environment = {
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:" + str(executable.parent),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONHASHSEED": "0",
+            "PYTHONNOUSERSITE": "1",
+        }
+        argv = (
+            str(executable), "-I", self._package_path, "authorize",
+            "--locator", self._locator_path,
+        )
+        try:
+            completed = self._run_provider(
+                argv, cwd=self._authority_root, environment=environment,
+                payload=payload)
+        except subprocess.TimeoutExpired as exc:
+            raise TerminalTruthError(
+                "provider-timeout",
+                "expanded-route provider exceeded its execution deadline",
+            ) from exc
+        except OSError as exc:
+            raise TerminalTruthError(
+                "provider-process",
+                "expanded-route provider could not be launched",
+            ) from exc
+        stdout = completed.stdout
+        stderr = completed.stderr
+        if not isinstance(stdout, bytes) or not isinstance(stderr, bytes):
+            raise TerminalTruthError(
+                "provider-transport",
+                "expanded-route provider transport returned non-byte output",
+            )
+        if len(stdout) > _EXPANDED_ROUTE_PROVIDER_MAX_OUTPUT_BYTES or \
+                len(stderr) > _EXPANDED_ROUTE_PROVIDER_MAX_OUTPUT_BYTES:
+            raise TerminalTruthError(
+                "provider-transport",
+                "expanded-route provider output exceeds transport limit",
+            )
+        if completed.returncode != 0:
+            raise TerminalTruthError(
+                "provider-process",
+                "expanded-route provider rejected the request",
+            )
+        if stderr or not stdout.endswith(b"\n") or stdout.count(b"\n") != 1:
+            raise TerminalTruthError(
+                "provider-output",
+                "expanded-route provider terminal output is malformed",
+            )
+        try:
+            decoded = json.loads(stdout.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise TerminalTruthError(
+                "provider-output",
+                "expanded-route provider terminal output is unreadable",
+            ) from exc
+        if not isinstance(decoded, Mapping):
+            raise TerminalTruthError(
+                "provider-output",
+                "expanded-route provider terminal output is not canonical",
+            )
+        try:
+            canonical_output = _canonical_bytes(decoded) + b"\n"
+        except (TypeError, ValueError) as exc:
+            raise TerminalTruthError(
+                "provider-output",
+                "expanded-route provider terminal output is not canonical",
+            ) from exc
+        if canonical_output != stdout:
+            raise TerminalTruthError(
+                "provider-output",
+                "expanded-route provider terminal output is not canonical",
+            )
+        if decoded.get("schema") != \
+                expanded_route_authority_provider.CONSUMPTION_SCHEMA or \
+                decoded.get("provider_protocol_version") != \
+                expanded_route_authority_provider.PROTOCOL_VERSION:
+            raise TerminalTruthError(
+                "provider-protocol",
+                "expanded-route provider terminal protocol mismatches",
+            )
+        self._installation()
+        try:
+            authenticated = \
+                expanded_route_authority_provider._authenticate_terminal_receipt(
+                    self._locator_path, request, decoded)
+        except expanded_route_authority_provider.ProviderError as exc:
+            raise TerminalTruthError(
+                "provider-authentication", exc.detail) from exc
+        request_fingerprint = _digest(request)
+        receipt = ExpandedRouteProviderReceipt(
+            authenticated,
+            client=self,
+            request_fingerprint=request_fingerprint,
+            token=_EXPANDED_ROUTE_PROVIDER_RECEIPT_TOKEN,
+        )
+        private_seal = hmac.new(
+            self._coordinator.orchestrator_issuer._secret,
+            _canonical_bytes({
+                "request_fingerprint": request_fingerprint,
+                "provider_receipt": authenticated,
+                "locator_fingerprint": self._locator_fingerprint,
+            }),
+            hashlib.sha256,
+        ).hexdigest()
+        self._receipt_seals[id(receipt)] = (receipt, private_seal)
+        return receipt
+
+    def assert_authenticated(
+        self,
+        receipt: ExpandedRouteProviderReceipt,
+        request: Mapping[str, Any],
+    ) -> None:
+        """Reject copied, reconstructed, cross-client, or mutated receipts."""
+        request_fingerprint = _digest(request)
+        if not isinstance(receipt, ExpandedRouteProviderReceipt) or \
+                receipt._token is not _EXPANDED_ROUTE_PROVIDER_RECEIPT_TOKEN or \
+                receipt._client is not self or \
+                receipt._request_fingerprint != request_fingerprint:
+            raise TerminalTruthError(
+                "provider-authentication",
+                "live expanded-route provider receipt is required",
+            )
+        stored = self._receipt_seals.get(id(receipt))
+        expected = hmac.new(
+            self._coordinator.orchestrator_issuer._secret,
+            _canonical_bytes({
+                "request_fingerprint": request_fingerprint,
+                "provider_receipt": dict(receipt),
+                "locator_fingerprint": self._locator_fingerprint,
+            }),
+            hashlib.sha256,
+        ).hexdigest()
+        if stored is None or stored[0] is not receipt or \
+                not hmac.compare_digest(stored[1], expected):
+            raise TerminalTruthError(
+                "provider-authentication",
+                "expanded-route provider receipt authentication changed",
+            )
+
+
 class SelectorExecutionReceipt(_ImmutableReceipt):
     """Content-addressed result minted only by a terminal coordinator run."""
 
@@ -563,6 +839,19 @@ class TerminalCoordinator:
                 "unauthorized", "coordinator is not the authority-root orchestrator"
             )
         return self._issuer
+
+    def expanded_route_provider_client(
+        self, locator_path: str,
+    ) -> ExpandedRouteProviderClient:
+        """Bind the protected provider selected by this orchestrator."""
+        if self._issuer is None:
+            raise TerminalTruthError(
+                "unauthorized", "bound orchestrator authority is required")
+        return ExpandedRouteProviderClient(
+            locator_path,
+            coordinator=self,
+            token=_EXPANDED_ROUTE_PROVIDER_RECEIPT_TOKEN,
+        )
 
     @property
     def issuer_path(self) -> Path:

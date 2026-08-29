@@ -19,6 +19,7 @@ import pytest
 
 from taskplane import expanded_route_authority_provider as provider
 from taskplane import taskplane_lite as tp
+from taskplane import terminal_truth
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -167,6 +168,52 @@ def _run_package(
         env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": ""},
         check=False,
     )
+
+
+def _client(
+    tmp_path: Path, installation: dict[str, object],
+) -> terminal_truth.ExpandedRouteProviderClient:
+    coordinator = terminal_truth.TerminalCoordinator(
+        tmp_path / "terminal-orchestrator-authority")
+    return coordinator.expanded_route_provider_client(
+        str(installation["locator_path"]))
+
+
+def _fabricated_receipt(
+    installation: dict[str, object], request: dict[str, object], *,
+    protocol: str = provider.PROTOCOL_VERSION,
+) -> dict[str, object]:
+    action: dict[str, object] = {
+        "schema": provider.ACTION_SCHEMA,
+        "key_id": "1" * 64,
+        "repository_source_path": installation["repository_source_path"],
+        "repository_commit": installation["repository_commit"],
+        "source_sha256": installation["source_sha256"],
+        "package_sha256": installation["package_sha256"],
+        "provider_protocol_version": protocol,
+        **{field: request[field] for field in (
+            "workspace", "stage", "target", "context_fingerprint",
+            "exact_ordered_lens_ids", "estimated_cost", "policy_version",
+            "catalog_version", "action_id",
+        )},
+        "issued_at": NOW,
+        "expiry": NOW + 300,
+        "approver_identity": "human:operator",
+        "approver_key_fingerprint": _key()["key_fingerprint"],
+        "approval_receipt_digest": "5" * 64,
+        "seal": "6" * 64,
+    }
+    return {
+        "schema": provider.CONSUMPTION_SCHEMA,
+        "provider_protocol_version": protocol,
+        "locator_fingerprint": "7" * 64,
+        "action": action,
+        "action_fingerprint": hashlib.sha256(_canonical(action)).hexdigest(),
+        "approval_receipt_digest": "5" * 64,
+        "consumed_at": NOW + 1,
+        "recovered": False,
+        "seal": "8" * 64,
+    }
 
 
 def test_worker_monkeypatch_cannot_replace_provider_source_clock_or_rsa(
@@ -446,3 +493,181 @@ def test_clean_content_addressed_package_import_and_protocol_binding(
         check=False,
     )
     assert refused.returncode != 0
+
+
+def test_orchestrator_client_launches_exact_package_and_returns_live_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation = _install(tmp_path / "provider")
+    client = _client(tmp_path, installation)
+    request = _request(action_id="client-honest")
+    current = int(time.time())
+    approval = _approval(installation, request, now=current)
+    observed: dict[str, object] = {}
+    real_run = terminal_truth.ExpandedRouteProviderClient._run_provider
+
+    def spy(
+        argv, *, cwd: Path, environment: dict[str, str], payload: bytes,
+    ) -> subprocess.CompletedProcess[bytes]:
+        observed.update({
+            "argv": tuple(argv), "cwd": cwd,
+            "environment": dict(environment), "payload": payload,
+        })
+        return real_run(
+            argv, cwd=cwd, environment=environment, payload=payload)
+
+    monkeypatch.setattr(
+        terminal_truth.ExpandedRouteProviderClient,
+        "_run_provider", staticmethod(spy))
+    receipt = client.authorize(request, approval)
+
+    assert isinstance(receipt, terminal_truth.ExpandedRouteProviderReceipt)
+    client.assert_authenticated(receipt, request)
+    assert receipt["action"]["action_id"] == "client-honest"
+    assert observed["argv"] == (
+        str(Path(sys.executable).resolve()), "-I",
+        str(installation["package_path"]), "authorize", "--locator",
+        str(installation["locator_path"]),
+    )
+    assert observed["cwd"] == Path(str(installation["authority_root"]))
+    assert set(observed["environment"]) == {
+        "PATH", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE",
+        "PYTHONHASHSEED", "PYTHONNOUSERSITE",
+    }
+    assert b'"request"' in observed["payload"]
+
+
+def test_orchestrator_client_rejects_worker_fabricated_hmac_seals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation = _install(tmp_path / "provider")
+    client = _client(tmp_path, installation)
+    request = _request(action_id="client-forgery")
+    approval = _approval(installation, request)
+    fabricated = _fabricated_receipt(installation, request)
+
+    def forged(*_args, **_kwargs) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            [], 0, stdout=_canonical(fabricated) + b"\n", stderr=b"")
+
+    monkeypatch.setattr(
+        terminal_truth.ExpandedRouteProviderClient,
+        "_run_provider", staticmethod(forged))
+    with pytest.raises(
+        terminal_truth.TerminalTruthError,
+        match="seal|authentic",
+    ) as failure:
+        client.authorize(request, approval)
+    assert failure.value.code == "provider-authentication"
+
+
+def test_orchestrator_client_rejects_receipt_from_other_provider_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted = _install(tmp_path / "trusted")
+    foreign = _install(tmp_path / "foreign")
+    client = _client(tmp_path, trusted)
+    request = _request(action_id="client-cross-provider")
+    foreign_receipt = provider._authorize_for_test(
+        str(foreign["locator_path"]), request,
+        _approval(foreign, request), now=NOW)
+
+    def crossed(*_args, **_kwargs) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            [], 0, stdout=_canonical(foreign_receipt) + b"\n", stderr=b"")
+
+    monkeypatch.setattr(
+        terminal_truth.ExpandedRouteProviderClient,
+        "_run_provider", staticmethod(crossed))
+    with pytest.raises(terminal_truth.TerminalTruthError) as failure:
+        client.authorize(request, _approval(trusted, request))
+    assert failure.value.code == "provider-authentication"
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code"),
+    [
+        ("timeout", "provider-timeout"),
+        ("nonzero", "provider-process"),
+        ("malformed", "provider-output"),
+        ("protocol", "provider-protocol"),
+        ("oversized", "provider-transport"),
+    ],
+)
+def test_orchestrator_client_fails_closed_on_process_and_transport_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    case: str, expected_code: str,
+) -> None:
+    installation = _install(tmp_path / case)
+    client = _client(tmp_path, installation)
+    request = _request(action_id=f"client-{case}")
+    approval = _approval(installation, request)
+
+    def failed(*_args, **_kwargs) -> subprocess.CompletedProcess[bytes]:
+        if case == "timeout":
+            raise subprocess.TimeoutExpired(["provider"], 10)
+        if case == "nonzero":
+            return subprocess.CompletedProcess(
+                [], 2, stdout=b"", stderr=b'{"error":"closed"}\n')
+        if case == "malformed":
+            return subprocess.CompletedProcess(
+                [], 0, stdout=b"not-json\n", stderr=b"")
+        if case == "protocol":
+            mismatched = _fabricated_receipt(
+                installation, request, protocol="provider/v0")
+            return subprocess.CompletedProcess(
+                [], 0, stdout=_canonical(mismatched) + b"\n", stderr=b"")
+        return subprocess.CompletedProcess(
+            [], 0,
+            stdout=b"x" * (
+                terminal_truth._EXPANDED_ROUTE_PROVIDER_MAX_OUTPUT_BYTES + 1),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        terminal_truth.ExpandedRouteProviderClient,
+        "_run_provider", staticmethod(failed))
+    with pytest.raises(terminal_truth.TerminalTruthError) as failure:
+        client.authorize(request, approval)
+    assert failure.value.code == expected_code
+
+
+def test_orchestrator_client_fails_closed_if_protected_package_changes(
+    tmp_path: Path,
+) -> None:
+    installation = _install(tmp_path / "provider")
+    client = _client(tmp_path, installation)
+    package = Path(str(installation["package_path"]))
+    package.write_bytes(package.read_bytes() + b" ")
+    os.chmod(package, 0o600)
+
+    with pytest.raises(terminal_truth.TerminalTruthError) as failure:
+        client.authorize(
+            _request(action_id="client-provenance-change"),
+            _approval(
+                installation,
+                _request(action_id="client-provenance-change"),
+            ),
+        )
+    assert failure.value.code == "provider-provenance"
+
+
+def test_copied_or_reconstructed_provider_mapping_has_no_live_authority(
+    tmp_path: Path,
+) -> None:
+    installation = _install(tmp_path / "provider")
+    client = _client(tmp_path, installation)
+    request = _request(action_id="client-live-only")
+    current = int(time.time())
+    receipt = client.authorize(
+        request, _approval(installation, request, now=current))
+
+    client.assert_authenticated(receipt, request)
+    with pytest.raises(terminal_truth.TerminalTruthError):
+        client.assert_authenticated(dict(receipt), request)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        terminal_truth.ExpandedRouteProviderReceipt(
+            dict(receipt), client=client,
+            request_fingerprint=hashlib.sha256(_canonical(request)).hexdigest(),
+            token=object(),
+        )

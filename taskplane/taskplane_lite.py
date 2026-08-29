@@ -4836,30 +4836,10 @@ def activate_review_contract_action(
 
 EXPANDED_LENS_ROUTE_REQUEST_SCHEMA = \
     "taskplane.expanded-lens-route-provider-request/v1"
-EXPANDED_LENS_ROUTE_ACTION_SCHEMA = \
-    "taskplane.expanded-lens-route-action/v1"
-EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA = \
-    "taskplane.expanded-lens-route-consumption/v2"
-EXPANDED_LENS_ROUTE_PROVIDER_PROTOCOL = \
-    "taskplane.expanded-route-authority-provider/v1"
 _EXPANDED_LENS_ROUTE_REQUEST_FIELDS = frozenset({
     "schema", "workspace", "stage", "target", "context_fingerprint",
     "exact_ordered_lens_ids", "estimated_cost", "policy_version",
     "catalog_version", "action_id",
-})
-_EXPANDED_LENS_ROUTE_ACTION_FIELDS = frozenset({
-    "schema", "key_id", "repository_source_path", "repository_commit",
-    "source_sha256", "package_sha256", "provider_protocol_version",
-    "workspace", "stage", "target", "context_fingerprint",
-    "exact_ordered_lens_ids", "estimated_cost", "policy_version",
-    "catalog_version", "action_id", "issued_at", "expiry",
-    "approver_identity", "approver_key_fingerprint",
-    "approval_receipt_digest", "seal",
-})
-_EXPANDED_LENS_ROUTE_CONSUMPTION_FIELDS = frozenset({
-    "schema", "provider_protocol_version", "locator_fingerprint", "action",
-    "action_fingerprint", "approval_receipt_digest", "consumed_at",
-    "recovered", "seal",
 })
 _EXPANDED_LENS_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _EXPANDED_ROUTE_TEXT_RE = re.compile(r"^[\x21-\x7e]{1,256}$")
@@ -4941,81 +4921,6 @@ def expanded_lens_route_provider_request_fingerprint(request: dict) -> str:
     return hashlib.sha256(json.dumps(
         request, sort_keys=True, separators=(",", ":"),
         ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
-
-
-def project_expanded_lens_route_provider_receipt(
-        request: dict, receipt: dict) -> dict:
-    """Project one provider result after trusted-process provenance is checked.
-
-    Structural projection is not signature verification.  The caller must
-    obtain this value from the orchestrator-launched, content-addressed
-    provider process; worker bytes alone never confer authority.
-    """
-    if not isinstance(request, dict) or \
-            set(request) != _EXPANDED_LENS_ROUTE_REQUEST_FIELDS or \
-            request.get("schema") != EXPANDED_LENS_ROUTE_REQUEST_SCHEMA:
-        raise ValueError("expanded route provider request is malformed")
-    if not isinstance(receipt, dict) or \
-            set(receipt) != _EXPANDED_LENS_ROUTE_CONSUMPTION_FIELDS or \
-            receipt.get("schema") != EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA or \
-            receipt.get("provider_protocol_version") != \
-            EXPANDED_LENS_ROUTE_PROVIDER_PROTOCOL or \
-            not isinstance(receipt.get("recovered"), bool):
-        raise ValueError("expanded route provider receipt is malformed")
-    action = receipt.get("action")
-    if not isinstance(action, dict) or \
-            set(action) != _EXPANDED_LENS_ROUTE_ACTION_FIELDS or \
-            action.get("schema") != EXPANDED_LENS_ROUTE_ACTION_SCHEMA or \
-            action.get("provider_protocol_version") != \
-            EXPANDED_LENS_ROUTE_PROVIDER_PROTOCOL:
-        raise ValueError("expanded route provider action is malformed")
-    for field in _EXPANDED_LENS_ROUTE_REQUEST_FIELDS - {"schema"}:
-        if action.get(field) != request.get(field):
-            raise ValueError(
-                f"expanded route provider action {field} mismatches request")
-    for field in (
-            "key_id", "source_sha256", "package_sha256",
-            "approver_key_fingerprint",
-            "approval_receipt_digest", "locator_fingerprint",
-            "action_fingerprint", "seal"):
-        value = (receipt.get(field)
-                 if field in receipt else action.get(field))
-        if not isinstance(value, str) or \
-                not re.fullmatch(r"[0-9a-f]{64}", value):
-            raise ValueError(
-                f"expanded route provider receipt {field} is malformed")
-    if action.get("repository_source_path") != \
-            "taskplane/expanded_route_authority_provider.py" or \
-            not isinstance(action.get("repository_commit"), str) or \
-            not re.fullmatch(
-                r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
-                action["repository_commit"]) or \
-            not isinstance(action.get("approver_identity"), str) or \
-            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(
-                action["approver_identity"]):
-        raise ValueError(
-            "expanded route provider provenance is malformed")
-    if receipt.get("approval_receipt_digest") != \
-            action.get("approval_receipt_digest"):
-        raise ValueError(
-            "expanded route provider approval digest is inconsistent")
-    action_fingerprint = hashlib.sha256(json.dumps(
-        action, sort_keys=True, separators=(",", ":"),
-        ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
-    if receipt.get("action_fingerprint") != action_fingerprint:
-        raise ValueError(
-            "expanded route provider action fingerprint is inconsistent")
-    for field in ("issued_at", "expiry", "consumed_at", "estimated_cost"):
-        value = (receipt.get(field)
-                 if field in receipt else action.get(field))
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(
-                f"expanded route provider receipt {field} is malformed")
-    if action["issued_at"] > receipt["consumed_at"] or \
-            receipt["consumed_at"] >= action["expiry"]:
-        raise ValueError(
-            "expanded route provider receipt time order is invalid")
-    return json.loads(json.dumps(receipt))
 
 
 def _workspace_identity_fingerprint(workspace: str) -> str:

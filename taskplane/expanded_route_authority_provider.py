@@ -633,6 +633,118 @@ def _validate_sealed(
     return dict(value)
 
 
+def _configured_package_path(locator_path: str) -> str:
+    """Read only the configured executable identity from protected custody."""
+    try:
+        value = json.loads(_read_protected(
+            Path(os.path.abspath(locator_path))).decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise ProviderError("locator", "provider locator is unreadable") from exc
+    if not isinstance(value, Mapping) or set(value) != _LOCATOR_FIELDS or \
+            value.get("schema") != LOCATOR_SCHEMA or \
+            value.get("provider_protocol_version") != PROTOCOL_VERSION or \
+            not isinstance(value.get("package_path"), str):
+        raise ProviderError("locator", "provider locator is invalid")
+    return value["package_path"]
+
+
+def _authenticate_terminal_receipt(
+    locator_path: str,
+    request_value: object,
+    receipt_value: object,
+) -> dict[str, Any]:
+    """Authenticate one terminal result inside the orchestrator boundary.
+
+    A shape-valid mapping is never enough.  The receipt must carry both
+    provider HMACs, match the protected content-addressed installation, and
+    be the exact durable one-use transaction selected by its consumed head.
+    """
+    execution_path = _configured_package_path(locator_path)
+    request = _validate_request(request_value)
+    state = _validate_installation(
+        locator_path, execution_path=execution_path)
+    receipt = _validate_sealed(
+        state["issuer"], receipt_value, _CONSUMPTION_FIELDS,
+        CONSUMPTION_SCHEMA, "expanded route terminal receipt")
+    action = _validate_sealed(
+        state["issuer"], receipt.get("action"), _ACTION_FIELDS,
+        ACTION_SCHEMA, "expanded route terminal action")
+    locator = state["locator"]
+    expected_action = {
+        "key_id": hashlib.sha256(state["issuer"]).hexdigest(),
+        **{field: locator[field] for field in (
+            "repository_source_path", "repository_commit", "source_sha256",
+            "package_sha256",
+        )},
+        "provider_protocol_version": PROTOCOL_VERSION,
+        **{field: request[field]
+           for field in _REQUEST_FIELDS if field != "schema"},
+    }
+    if any(action.get(field) != expected
+           for field, expected in expected_action.items()):
+        raise ProviderError(
+            "binding", "expanded route terminal action binding mismatches")
+    if receipt.get("provider_protocol_version") != PROTOCOL_VERSION or \
+            receipt.get("locator_fingerprint") != \
+            state["locator_fingerprint"] or \
+            receipt.get("action_fingerprint") != _digest(action) or \
+            receipt.get("approval_receipt_digest") != \
+            action.get("approval_receipt_digest") or \
+            not isinstance(receipt.get("recovered"), bool):
+        raise ProviderError(
+            "binding", "expanded route terminal receipt binding mismatches")
+    for field in (
+        "approver_key_fingerprint", "approval_receipt_digest",
+    ):
+        if not isinstance(action.get(field), str) or \
+                not _SHA256.fullmatch(action[field]):
+            raise ProviderError(
+                "binding", f"expanded route terminal action {field} is invalid")
+    if not isinstance(action.get("approver_identity"), str) or \
+            not _TEXT.fullmatch(action["approver_identity"]):
+        raise ProviderError(
+            "binding", "expanded route terminal approver identity is invalid")
+    issued_at = action.get("issued_at")
+    expiry = action.get("expiry")
+    consumed_at = receipt.get("consumed_at")
+    if any(isinstance(value, bool) or not isinstance(value, int)
+           for value in (issued_at, expiry, consumed_at)) or \
+            issued_at > consumed_at or consumed_at >= expiry:
+        raise ProviderError(
+            "time", "expanded route terminal receipt time order is invalid")
+
+    approval_digest = action["approval_receipt_digest"]
+    approval_path = state["approval_root"] / f"{approval_digest}.json"
+    approval = _read_json_protected(
+        approval_path, "expanded route terminal approval")
+    if _digest(approval) != approval_digest:
+        raise ProviderError(
+            "approval", "expanded route terminal approval digest changed")
+    _validate_approval(
+        approval, request=request, state=state, now=issued_at)
+
+    transaction = state["transactions_root"] / hashlib.sha256(
+        request["action_id"].encode("utf-8")).hexdigest()
+    head = _json_file(
+        transaction / "head.json", _HEAD_FIELDS, TRANSACTION_HEAD_SCHEMA,
+        "expanded route terminal transaction head")
+    if head.get("state") != "consumed" or \
+            head.get("action_id") != request["action_id"]:
+        raise ProviderError(
+            "consumption", "expanded route terminal transaction is not consumed")
+    expected_bytes = _canonical(receipt)
+    receipt_name = (
+        "recovered-consumption-receipt.json"
+        if receipt["recovered"] else "consumption-receipt.json"
+    )
+    durable_bytes = _read_protected(transaction / receipt_name)
+    if durable_bytes != expected_bytes or \
+            head.get("receipt_sha256") != _bytes_digest(durable_bytes):
+        raise ProviderError(
+            "consumption", "expanded route terminal receipt is not durable head")
+    return json.loads(expected_bytes.decode("utf-8"))
+
+
 class _AuthorityEngine:
     def __init__(
         self, locator_path: str, *, execution_path: str,
