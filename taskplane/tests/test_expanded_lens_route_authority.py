@@ -7,7 +7,6 @@ import base64
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -78,12 +77,47 @@ def _approval_key_id() -> str:
         value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _provision_control_plane_verifier(workspace: Path) -> None:
-    control = workspace / ".taskplane"
+def _workspace_locator_path(workspace: Path) -> Path:
+    relative = subprocess.run(
+        ["git", "rev-parse", "--git-path", "taskplane/workspace.json"],
+        cwd=workspace, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    locator = Path(relative)
+    if not locator.is_absolute():
+        locator = workspace / locator
+    return locator
+
+
+def _control_plane_state(workspace: Path) -> Path:
+    """Provision the test host's protected Git locator and external state."""
+    home = (workspace.parent / f".control-plane-{workspace.name}").resolve()
+    paths = {
+        name: str(home / name)
+        for name in ("state", "graph", "evidence", "lenses", "artifacts")
+    }
+    for path in paths.values():
+        Path(path).mkdir(parents=True, exist_ok=True)
+    locator = _workspace_locator_path(workspace)
+    locator.parent.mkdir(parents=True, exist_ok=True)
+    tp.atomic_write_json(str(locator), {
+        "schema": "taskplane.workspace/v1",
+        "run_id": "run-expanded-route-test",
+        "repo_id": f"local/{workspace.name}",
+        "repository_key": f"local-{workspace.name}",
+        "checkout": str(workspace.resolve()),
+        "primary_checkout": str(workspace.resolve()),
+        "home": str(home),
+        "paths": paths,
+    }, sort_keys=True)
+    return Path(paths["state"])
+
+
+def _provision_control_plane_verifier(workspace: Path) -> Path:
+    control = _control_plane_state(workspace) / "control"
     control.mkdir(exist_ok=True)
     path = control / "expanded-lens-route-approval-verifier.json"
     if path.exists():
-        return
+        return path
     tp.atomic_write_json(str(path), {
         "schema": "taskplane.expanded-lens-route-approval-verifier/v1",
         "key_id": _approval_key_id(),
@@ -92,6 +126,7 @@ def _provision_control_plane_verifier(workspace: Path) -> None:
         "exponent": _RSA_E,
     }, sort_keys=True)
     os.chmod(path, 0o600)
+    return path
 
 
 def _proof_signature(value: dict[str, object]) -> str:
@@ -182,10 +217,11 @@ def test_exact_action_verifies_and_consumes_once(tmp_path: Path) -> None:
     assert receipt["approved_by"] == "human:operator"
     assert receipt["approval_receipt_id"] == \
         "host-receipt-expanded-LR-03-1"
-    assert receipt["approval_fingerprint"] == action["approval_fingerprint"]
+    assert receipt["approval_fingerprint"] == \
+        tp.expanded_lens_route_action_fingerprint(action)
     assert receipt["action_fingerprint"] == \
         tp.expanded_lens_route_action_fingerprint(action)
-    assert receipt["signature"]
+    assert "signature" not in receipt
 
     with pytest.raises(tp.StateError, match="already consumed|replay"):
         tp.consume_expanded_lens_route_action(
@@ -256,11 +292,11 @@ def test_schema_is_closed_and_cannot_weaken_general_enforcement(
     workspace = _workspace(tmp_path / "repo")
     action = _issue(workspace)
     assert set(action) == {
-        "schema", "key_id", "action_id", "workspace_fingerprint",
+        "schema", "key_id", "proof_id", "action_id",
+        "workspace_fingerprint",
         "stage", "target", "context_fingerprint", "extra_lens_ids",
         "expected_cost", "policy_version", "issued_at", "expires_at",
-        "approved_by", "approval_receipt_id", "approval_fingerprint",
-        "signature",
+        "approved_by", "approval_receipt_id", "signature",
     }
     assert not ({"clear", "scope", "mandatory_floor", "contract"}
                 & set(action))
@@ -330,6 +366,72 @@ def test_worker_cannot_self_issue_after_clearing_task_environment(
                 "expanded-lens-route-authority.json").exists()
 
 
+def test_worker_cannot_retrieve_or_use_downstream_action_signer(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path / "repo")
+    action = _issue(workspace)
+    public_verifier = tp._expanded_lens_route_approval_verifier(str(workspace))
+    forged = copy.deepcopy(action)
+    forged["action_id"] = "expanded-LR-03-forged"
+
+    assert not hasattr(tp, "_expanded_lens_route_authority")
+    assert not hasattr(tp, "_expanded_lens_route_signature")
+    assert set(public_verifier) == {
+        "key_id", "algorithm", "modulus", "exponent"}
+    assert "secret" not in public_verifier
+    with pytest.raises(tp.StateError, match="signature|mismatches"):
+        tp.consume_expanded_lens_route_action(
+            str(workspace), forged,
+            **_expected(action_id="expanded-LR-03-forged"),
+        )
+
+
+def test_worker_workspace_cannot_replace_external_verifier_anchor(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path / "repo")
+    proof = _approval(workspace)
+    external_anchor = Path(
+        tp._expanded_lens_route_approval_verifier_path(str(workspace)))
+    workspace_anchor = workspace / ".taskplane" / \
+        "expanded-lens-route-approval-verifier.json"
+    workspace_anchor.parent.mkdir(exist_ok=True)
+    tp.atomic_write_json(str(workspace_anchor), {
+        "schema": "taskplane.expanded-lens-route-approval-verifier/v1",
+        "key_id": "0" * 64,
+        "algorithm": "rsa-pkcs1v15-sha256",
+        "modulus": "f" * 512,
+        "exponent": 65_537,
+    }, sort_keys=True)
+    os.chmod(workspace_anchor, 0o600)
+
+    assert os.path.commonpath((workspace.resolve(), external_anchor.resolve())) \
+        != str(workspace.resolve())
+    action = tp.issue_expanded_lens_route_action(
+        str(workspace), approval_proof=proof, **_route_values())
+    assert action == proof
+    assert external_anchor != workspace_anchor
+
+    unmanaged = _workspace(tmp_path / "unmanaged")
+    unmanaged_proof = _approval(unmanaged)
+    trusted_anchor = Path(
+        tp._expanded_lens_route_approval_verifier_path(str(unmanaged)))
+    unmanaged_anchor = unmanaged / ".taskplane" / \
+        "expanded-lens-route-approval-verifier.json"
+    unmanaged_anchor.parent.mkdir(exist_ok=True)
+    tp.atomic_write_json(
+        str(unmanaged_anchor), json.loads(trusted_anchor.read_text()),
+        sort_keys=True)
+    os.chmod(unmanaged_anchor, 0o600)
+    _workspace_locator_path(unmanaged).unlink()
+
+    with pytest.raises(tp.StateError, match="locator is missing"):
+        tp.issue_expanded_lens_route_action(
+            str(unmanaged), approval_proof=unmanaged_proof,
+            **_route_values())
+
+
 def test_control_plane_proof_tamper_and_replay_fail_closed(
     tmp_path: Path,
 ) -> None:
@@ -347,7 +449,7 @@ def test_control_plane_proof_tamper_and_replay_fail_closed(
     first = tp.issue_expanded_lens_route_action(
         str(replay_workspace), approval_proof=replay_proof,
         **_route_values())
-    assert first["approval_fingerprint"]
+    assert first == replay_proof
     with pytest.raises(tp.StateError, match="proof.*replay|already used"):
         tp.issue_expanded_lens_route_action(
             str(replay_workspace), approval_proof=replay_proof,
@@ -371,21 +473,22 @@ def test_expiry_crossing_under_consumption_lock_fails_closed(
         str(workspace), "expanded-LR-03-1")
 
 
-def test_permission_hardening_failure_leaves_no_usable_authority(
+def test_permission_hardening_failure_rejects_external_trust_anchor(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path / "repo")
     proof = _approval(workspace)
-    authority_path = workspace / ".taskplane" / \
-        "expanded-lens-route-authority.json"
+    verifier_path = Path(
+        tp._expanded_lens_route_approval_verifier_path(str(workspace)))
+    os.chmod(verifier_path, 0o644)
 
-    with mock.patch.object(tp.os, "chmod", side_effect=OSError("denied")):
-        with pytest.raises(tp.StateError, match="private permissions"):
-            tp.issue_expanded_lens_route_action(
-                str(workspace), approval_proof=proof,
-                **_route_values())
+    with pytest.raises(tp.StateError, match="trusted permissions|mode 0600"):
+        tp.issue_expanded_lens_route_action(
+            str(workspace), approval_proof=proof,
+            **_route_values())
 
-    assert not authority_path.exists()
+    assert not (workspace / ".taskplane" /
+                "expanded-lens-route-authority.json").exists()
 
 
 def test_expiry_and_workspace_binding_fail_without_consuming(
@@ -401,12 +504,7 @@ def test_expiry_and_workspace_binding_fail_without_consuming(
     assert not tp.expanded_lens_route_action_consumed(
         str(workspace), "expanded-LR-03-1")
 
-    other_control = other / ".taskplane"
-    other_control.mkdir()
-    shutil.copy2(
-        workspace / ".taskplane" / "expanded-lens-route-authority.json",
-        other_control / "expanded-lens-route-authority.json",
-    )
+    _provision_control_plane_verifier(other)
     with pytest.raises(tp.StateError, match="another workspace"):
         tp.verify_expanded_lens_route_action(
             str(other), action, **_expected())
