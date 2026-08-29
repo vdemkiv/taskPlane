@@ -1780,6 +1780,34 @@ class TestLoop(unittest.TestCase):
                 self.assertTrue(
                     contract["coding"]["dod"]["regression_gate"])
 
+    def test_product_and_plan_actions_expose_focused_quick_routes(self):
+        product_ws = git_ws(self.tmp, [TASK])
+        loop.init(product_ws, "secure account onboarding")
+        product = loop.next_action(product_ws)
+        self.assertEqual(product["step"], "pm")
+        self.assertEqual(product["focused_route"]["stage"], "product")
+        self.assertEqual(len(product["focused_route"]["dispositions"]), 26)
+        self.assertTrue(all(row["tier"] == "sweep" for row in
+                            product["lenses"] if row["mode"] != "none"))
+
+        # Use a distinct root because each stage action owns an active worker
+        # contract until the host reports its terminal lifecycle event.
+        plan_root = os.path.join(self.tmp, "plan-root")
+        os.makedirs(plan_root)
+        plan_ws = git_ws(plan_root, [TASK])
+        loop.init(plan_ws, "focused plan", spec_path="specs/spec.md")
+        plan = loop.next_action(plan_ws)
+        self.assertEqual(plan["step"], "plan")
+        self.assertEqual(plan["focused_route"]["stage"], "plan")
+        self.assertIn(len(plan["focused_route"]["selected"]), {3, 4})
+        self.assertEqual(len(plan["lenses"]), 26)
+        self.assertTrue(all(row["focused_disposition"] in {
+            "execute_light", "covered_by", "not_applicable"
+        } for row in plan["lenses"]))
+        self.assertEqual(
+            (next(row for row in plan["lenses"]
+                  if row["id"] == "architecture"))["tier"], "sweep")
+
     def test_fix_gate_runs_suite_in_claimed_task_namespace(self):
         """A repair that changes Taskplane validates with repaired bytes."""
         ws = git_ws(self.tmp, [TASK])
@@ -2044,8 +2072,7 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         self.assertEqual(loop.load(ws)["step"], "pm")
 
     def test_evaluate_routes_on_real_diff(self):
-        """R-0006 row 1: EVALUATE routes the real diff with stage='build'
-        (route v2) — not the legacy stage-less route it pinned pre-design."""
+        """Evaluate adapts the real diff to a 3--4 lens quick route."""
         ws = self._ws()
         loop.approve(ws)
         loop.next_action(ws)
@@ -2055,32 +2082,26 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         submit_gate(ws, "pass")                   # execute -> evaluate
         act = loop.next_action(ws)
         self.assertEqual(act["step"], "evaluate")
-        # v2 build-stage signature: full-catalog coverage honesty (every
-        # lens appears, the narrowed-away ones as mode "none") — the
-        # legacy routed path returned only the summoned subset.
+        # Coverage honesty remains complete even though only the focused
+        # execute dispositions launch quick singleton workers.
         catalog_ids = {l["id"] for l in lens.load_catalog()["lenses"]}
         self.assertEqual({x["id"] for x in act["lenses"]}, catalog_ids)
         self.assertTrue([x for x in act["lenses"] if x["mode"] == "none"])
-        # security is floored on an auth diff: routed in the current bounded
-        # sweep, never n/a.
+        routed = [x for x in act["lenses"] if x["mode"] != "none"]
+        self.assertGreaterEqual(len(routed), 3)
+        self.assertLessEqual(len(routed), 4)
+        self.assertTrue(all(x["tier"] == "sweep" for x in routed))
+        # Auth evidence earns the one independent fourth slot.
         sec = next(x for x in act["lenses"] if x["id"] == "security")
         self.assertNotEqual(sec["mode"], "none")
         self.assertEqual(sec["tier"], "sweep")
-        # ...and carries the v2 engine keys the legacy path never emitted
+        # ...and carries the incumbent signal keys in the focused projection.
         self.assertIn("verdict", sec)
         self.assertIn("score", sec)
-        # the brief IS route v2 on this diff: same mode as the direct
-        # build-stage derivation the validator single-sources
-        state = loop.load(ws)
-        direct = lens.route_git_diff(
-            ws, base=state.get("baseline") or "HEAD",
-            task_type=None, stage=loop.EVALUATE_ROUTE_STAGE,
-            breadth="routed")
-        dsec = next(x for x in direct["lenses"] if x["id"] == "security")
-        self.assertEqual(sec["mode"], dsec["mode"])
-        self.assertEqual(
-            {x["id"] for x in act["lenses"] if x["mode"] != "none"},
-            {x["id"] for x in direct["lenses"] if x["mode"] != "none"})
+        focused = act["review_kernel"]["focused_route"]
+        self.assertEqual(focused["status"], "ready")
+        self.assertEqual(set(focused["selected"]),
+                         {x["id"] for x in routed})
 
     def test_high_cost_unrefined_blocks_until_force(self):
         import requirements as reqs
@@ -3394,8 +3415,8 @@ class TestReviewBridge(unittest.TestCase):
         self.assertEqual(quality["scanned_head"], tp.git_head(workspace))
         routed = [row for row in routing["lenses"]
                   if row.get("mode") != "none"]
-        self.assertGreaterEqual(len(routed), 4)
-        self.assertLessEqual(len(routed), 5)
+        self.assertGreaterEqual(len(routed), 3)
+        self.assertLessEqual(len(routed), 4)
         self.assertIn("architecture", {row["id"] for row in routed})
         self.assertFalse(any(row.get("tier") == "deep" for row in routed))
         self.assertEqual(bound["wait_invocation"]["operation"],

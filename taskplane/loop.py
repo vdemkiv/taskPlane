@@ -72,6 +72,7 @@ if __package__:
     from . import delivery_policy
     from . import dispatch_telemetry
     from . import evaluation_output as evaluation_output
+    from . import lens_route_policy
     from . import plan_topology
     from . import producer_observation as producer_observation_policy
     from . import terminal_truth
@@ -80,6 +81,7 @@ else:  # pragma: no cover - direct CLI module loading
     import brief_projection
     import delivery_policy
     import dispatch_telemetry
+    import lens_route_policy
     import plan_topology
     import producer_observation as producer_observation_policy
     import terminal_truth
@@ -495,6 +497,301 @@ def build_dispatch_lens_routing(
             "automatic_lens_worker_count": 0,
         },
     }, authorization)
+
+
+_FOCUSED_STAGE_LENSES = {
+    "product": frozenset({
+        "product", "design", "security", "privacy-compliance",
+        "accessibility", "i18n", "mobile", "cost-finops",
+        "time-to-market", "services-selection",
+    }),
+    "design": frozenset({
+        "solution-design", "architecture", "integrability", "security",
+        "privacy-compliance", "data-safety", "scalability", "tradeoffs",
+        "services-selection", "testability",
+        "devops", "dba", "sre",
+    }),
+    "plan": frozenset({
+        "architecture", "project-management", "testability", "security",
+        "cost-finops", "integrability", "devops",
+        "data-safety", "privacy-compliance",
+    }),
+}
+_FOCUSED_STAGE_DEFAULTS = {
+    "product": ("product",),
+    "design": ("solution-design",),
+    "plan": ("architecture", "project-management", "testability"),
+}
+_FOCUSED_STAGE_KEYWORDS = {
+    "security": ("auth", "credential", "permission", "security", "trust"),
+    "privacy-compliance": ("personal data", "privacy", "retention"),
+    "data-safety": ("backup", "data loss", "migration", "storage"),
+    "integrability": (" api ", "contract", "integration", "interface"),
+    "scalability": ("capacity", "scale", "throughput"),
+    "performance": ("latency", "performance", "runtime"),
+    "accessibility": ("accessibility", "keyboard", "screen reader"),
+    "i18n": ("i18n", "locale", "translation"),
+    "mobile": ("android", "ios", "mobile"),
+    "cost-finops": ("budget", "cost", "spend", "token"),
+    "time-to-market": ("deadline", "launch", "time to market"),
+    "services-selection": ("provider", "service", "vendor"),
+    "tradeoffs": ("alternative", "tradeoff", "trade-off"),
+    "devops": ("deploy", "packaging", "pipeline", "release"),
+    "dba": ("database", "query", "schema"),
+    "sre": ("availability", "crash", "failure", "incident", "operational",
+            "recovery", "retry", "rollback"),
+}
+
+
+def _focused_stage_route(
+        ws: str, *, stage: str, target: str, evidence: Mapping[str, object],
+        mandatory_lenses=None) -> tuple[dict, dict, dict | None]:
+    """Build one pre-Build focused quick route from stage-owned evidence.
+
+    Product and Design keep only stage-relevant positive signals. Plan uses
+    three mandatory delivery floors and at most one highest incumbent risk in
+    its normal path. An explicit mandatory set is exact: two refuses, three
+    or four dispatches, and five or more produces a closed provider request
+    with zero workers.
+    """
+    if stage not in {"product", "design", "plan"}:
+        raise lens_route_policy.LensRoutePolicyError(
+            "focused adapter requires a routed stage: product, design, or plan")
+    if not isinstance(evidence, Mapping):
+        raise lens_route_policy.LensRoutePolicyError(
+            "focused stage evidence must be an object")
+    material = json.loads(json.dumps(
+        evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False))
+    files = sorted({str(path) for path in material.get("files") or []
+                    if str(path)})
+    evidence_text = " " + json.dumps(
+        material, sort_keys=True, ensure_ascii=False).lower() + " "
+    incumbent_stage = "design" if stage == "design" else "build"
+    incumbent = lens_router.route(
+        files, task_type=("solution-design" if stage == "design" else stage),
+        breadth="routed", stage=incumbent_stage, workspace=ws,
+        requirement_text=evidence_text[:128 * 1024])
+    if (incumbent.get("context") or {}).get("status") == \
+            "mapper_unavailable":
+        raise lens_route_policy.LensRoutePolicyError(
+            "incumbent applicability mapper is unavailable")
+
+    catalog = lens_router.load_catalog()
+    definitions = list(catalog.get("lenses") or [])
+    known = {str(row.get("id") or "") for row in definitions}
+    explicit = mandatory_lenses is not None
+    mandatory = tuple(str(lens_id) for lens_id in (
+        mandatory_lenses if explicit else _FOCUSED_STAGE_DEFAULTS[stage]))
+    if not mandatory or len(set(mandatory)) != len(mandatory) or \
+            not set(mandatory) <= known:
+        raise lens_route_policy.LensRoutePolicyError(
+            "mandatory focused lenses must be unique catalog ids")
+    positive = set(mandatory)
+    keyword_hits = {
+        lens_id for lens_id, words in _FOCUSED_STAGE_KEYWORDS.items()
+        if lens_id in _FOCUSED_STAGE_LENSES[stage] and
+        any(word in evidence_text for word in words)
+    }
+    mapped = {str(row.get("id") or ""): row
+              for row in incumbent.get("lenses") or []
+              if isinstance(row, dict)}
+    incumbent_hits = {
+        lens_id for lens_id, row in mapped.items()
+        if lens_id in _FOCUSED_STAGE_LENSES[stage] and
+        str(row.get("verdict") or row.get("tier") or "n/a") != "n/a"
+    }
+    if not explicit:
+        candidates = (keyword_hits | incumbent_hits) - positive
+        if stage == "plan":
+            # The normal Plan path is bounded before policy dispatch. The
+            # deterministic incumbent score chooses one fourth risk; callers
+            # with five independent mandatory risks must declare them exactly
+            # and receive the protected overflow path below.
+            ranked = sorted(candidates, key=lambda lens_id: (
+                -float((mapped.get(lens_id) or {}).get("score") or 0), lens_id))
+            positive.update(ranked[:1])
+        else:
+            positive.update(candidates)
+
+    catalog_fp = lens_route_policy.catalog_fingerprint(definitions)
+    evidence_fp = lens_route_policy.fingerprint(material)
+    context = {
+        "schema": lens_route_policy.CONTEXT_SCHEMA,
+        "stage": stage,
+        "target": str(target),
+        "policy_version": lens_route_policy.POLICY_VERSION,
+        "catalog_fingerprint": catalog_fp,
+        "execution_mode": "quick-only",
+        "stage_input_fingerprint": evidence_fp,
+        "mandatory_lenses": list(mandatory),
+    }
+    rows = []
+    for index, definition in enumerate(definitions):
+        lens_id = str(definition.get("id") or "")
+        source = mapped.get(lens_id) or {}
+        hit = lens_id in positive
+        source_evidence = [str(value) for value in
+                           source.get("evidence") or source.get("reasons") or []
+                           if str(value)]
+        reasons = []
+        if lens_id in mandatory:
+            reasons.append(f"{stage} mandatory focused risk: {lens_id}")
+        if lens_id in keyword_hits:
+            reasons.append(f"{stage} evidence matched focused risk: {lens_id}")
+        if lens_id in incumbent_hits:
+            reasons.extend(source_evidence[:3])
+        score = float(source.get("score") or 0)
+        if lens_id in mandatory:
+            score = max(score, 0.95 - index / 10000)
+        elif lens_id in keyword_hits:
+            score = max(score, 0.75 - index / 10000)
+        rows.append({
+            "id": lens_id,
+            "verdict": "light" if hit else "n/a",
+            "score": min(1.0, max(0.0, score)),
+            "evidence": reasons or ([f"{stage} applicable signal: {lens_id}"]
+                                     if hit else []),
+            "negative_evidence": ([] if hit else
+                                  [f"no applicable {stage} signal for {lens_id}"]),
+            # Each admitted pre-Build concern is independently evidenced;
+            # minimum sufficiency happens in the adapter's positive set.
+            "risk_group": f"{stage}:{lens_id}",
+            "mandatory": lens_id in mandatory,
+            "fingerprint_inputs": {
+                "stage_input": evidence_fp,
+                "lens": lens_id,
+                "source_signal": lens_route_policy.fingerprint({
+                    "verdict": source.get("verdict") or source.get("tier"),
+                    "score": source.get("score"),
+                    "evidence": source_evidence[:3],
+                }),
+            },
+        })
+    focused = lens_route_policy.build_route(context, rows, definitions)
+    _, _, review_module = _review_runtime_modules()
+    projected = review_module.project_focused_route(
+        incumbent, focused, catalog)
+    projected.setdefault("context", {})["task_to_ac_coverage"] = \
+        _copy_json(material.get("task_to_ac_coverage") or {})
+    request = review_module.expanded_route_authority_request(ws, focused)
+    return focused, projected, request
+
+
+def _copy_json(value):
+    """Return a detached canonical JSON value for action payloads."""
+    return json.loads(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False))
+
+
+def _focused_stage_evidence(ws: str, state: Mapping[str, object],
+                            stage: str) -> tuple[dict, list[str] | None]:
+    """Assemble the closed, stage-owned inputs required by the Design."""
+    requirement = reqs.get_requirement(ws, state.get("requirement_id")) \
+        if state.get("requirement_id") else None
+    req_material = ({
+        key: _copy_json(requirement.get(key))
+        for key in ("id", "title", "functional", "nfr", "acceptance",
+                    "open_questions", "contracts", "depends_on",
+                    "context_files", "review_policy")
+        if requirement.get(key) is not None
+    } if isinstance(requirement, dict) else {})
+    acceptance = _copy_json(req_material.get("acceptance") or [])
+    files = sorted({str(path) for path in
+                    req_material.get("context_files") or [] if str(path)})
+    domains = sorted({path.split("/", 1)[0] for path in files if path})
+
+    if stage == "product":
+        return ({
+            "goal": str(state.get("goal") or ""),
+            "requirement": req_material,
+            "acceptance": acceptance,
+            "domain": domains,
+            "constraints": {
+                "nfr": _copy_json(req_material.get("nfr") or {}),
+                "open_questions": _copy_json(
+                    req_material.get("open_questions") or []),
+                "contracts": _copy_json(req_material.get("contracts") or []),
+            },
+            "product_risk": _copy_json(
+                req_material.get("review_policy") or {}),
+            "files": files,
+        }, None)
+
+    design = tp.load_json(
+        os.path.join(ws, "design", "contract.json"), default={},
+        what="focused Design Contract")
+    design_material = ({
+        key: _copy_json(design.get(key))
+        for key in ("schema", "summary", "selected_approach", "modules",
+                    "contracts", "expanded_route_authority", "stage_policy",
+                    "validation", "rollback")
+        if isinstance(design, dict) and design.get(key) is not None
+    })
+    if stage == "design":
+        return ({
+            "approved_requirement": req_material,
+            "acceptance": acceptance,
+            "proposed_solution": design_material,
+            "interfaces": _copy_json(
+                (design.get("interfaces") or design.get("contracts") or [])
+                if isinstance(design, dict) else []),
+            "data_boundaries": _copy_json(
+                design.get("data_boundaries") or []
+                if isinstance(design, dict) else []),
+            "trust_boundaries": _copy_json(
+                (design.get("trust_boundaries") or
+                 design.get("expanded_route_authority") or {})
+                if isinstance(design, dict) else {}),
+            "migration_risk": _copy_json(
+                (design.get("migration") or {})
+                if isinstance(design, dict) else {}),
+            "rollback_risk": _copy_json(
+                (design.get("rollback") or {})
+                if isinstance(design, dict) else {}),
+            "files": files,
+        }, None)
+
+    if stage != "plan":
+        raise lens_route_policy.LensRoutePolicyError(
+            "focused evidence stage is unsupported")
+    plan = tp.load_json(
+        os.path.join(ws, "plan", "tasks.json"), default={},
+        what="focused Plan")
+    tasks = list(plan.get("tasks") or []) if isinstance(plan, dict) else []
+    task_scopes = {str(task.get("id")): _copy_json(task.get("scope") or [])
+                   for task in tasks if isinstance(task, dict) and task.get("id")}
+    ownership = {str(task.get("id")): str(task.get("owner") or "")
+                 for task in tasks if isinstance(task, dict) and task.get("id")}
+    selectors = {str(task.get("id")): str(task.get("tests") or "")
+                 for task in tasks if isinstance(task, dict) and task.get("id")}
+    task_to_ac = {
+        str(task.get("id")): _copy_json(
+            task.get("acceptance_refs") or task.get("criteria") or [])
+        for task in tasks if isinstance(task, dict) and task.get("id")
+    }
+    scope_files = sorted({str(path) for paths in task_scopes.values()
+                          for path in paths if str(path)}) or files
+    declared_route = plan.get("plan_route") \
+        if isinstance(plan, dict) and isinstance(plan.get("plan_route"), dict) \
+        else {}
+    declared_selected = declared_route.get("selected")
+    mandatory = ([str(lens_id) for lens_id in declared_selected]
+                 if isinstance(declared_selected, list) else None)
+    return ({
+        "approved_product": req_material,
+        "approved_design": design_material,
+        "dependency_graph": _copy_json(depgraph.summary(ws)),
+        "task_scopes": task_scopes,
+        "ownership": ownership,
+        "selectors": selectors,
+        "validation_strategy": _copy_json({
+            str(task.get("id")): task.get("tests")
+            for task in tasks if isinstance(task, dict) and task.get("id")}),
+        "task_to_ac_coverage": task_to_ac,
+        "files": scope_files,
+    }, mandatory)
 
 
 def bind_producer_observation(
@@ -4340,6 +4637,7 @@ def _strict_review_graph_quality(review_ws: str, *, target: dict,
 def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
                    task: dict | None, graph: dict, impact: dict,
                    requirement: dict | None,
+                   test_evidence: dict | None = None,
                    retry_context: dict | None = None,
                    delivery_mode_receipt: object =
                    _DELIVERY_MODE_AUTHORITY_UNSET) -> tuple[dict, dict]:
@@ -4397,6 +4695,7 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
               "changed_symbols": changed_symbols,
               "artifact": review._portable_ref(diff_ref)},
         requirement=requirement or {},
+        test_evidence=test_evidence or {},
         acceptance=(requirement or {}).get("acceptance") or [],
         contracts=(task or {}).get("contracts") or [],
         stage=stage,
@@ -5757,29 +6056,29 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     # explicit human/calibration `tp lens route --all` surface remains, but
     # delivery never substitutes full-catalog fan-out for uncertainty.
     routing, breadth = None, "routed"
+    focused_route = None
+    expanded_route_request = None
     delivery_dispatch = None
-    if step in ("pm", "plan"):
-        # Advisory tier: C-level lenses run at STRATEGY level, always-on at
-        # the pm/plan steps — never on code.
-        routing = lens_router.route([], artifact_type="strategy", catalog=None)
-    elif step == "design":
-        # The design lens is mandatory at this phase, independent of diff
-        # routing. Keep a fallback brief so an in-place minor update remains
-        # resumable while the catalog file itself is being upgraded.
-        design_req = reqs.get_requirement(ws, state.get("requirement_id"))
-        design_scope = (design_req or {}).get("context_files") or []
-        design_files = list(design_scope) + \
-            lens_router.workspace_language_markers(ws, design_scope)
-        routed = lens_router.route(
-            design_files,
-            task_type="solution-design", only=["solution-design"])
-        routing = routed if routed.get("lenses") else {"lenses": [{
-            "id": "solution-design", "name": "Solution design",
-            "mode": "inline", "tier": "deep",
-            "reasons": ["mandatory Design Contract lens"], "checks": [],
-            "looks_for": "approach coherence, dependency boundaries, "
-                         "trade-offs, failure modes, and verifiable delivery"
-        }]}
+    if step in {"pm", "design", "plan"}:
+        focused_stage = "product" if step == "pm" else step
+        try:
+            stage_evidence, mandatory = _focused_stage_evidence(
+                ws, state, focused_stage)
+            focused_target = str(
+                state.get("requirement_id") or
+                f"goal-{hashlib.sha256(str(state.get('goal') or '').encode()).hexdigest()[:16]}")
+            focused_route, routing, expanded_route_request = \
+                _focused_stage_route(
+                    ws, stage=focused_stage, target=focused_target,
+                    evidence=stage_evidence, mandatory_lenses=mandatory)
+        except (OSError, TypeError, ValueError) as exc:
+            return {
+                "error": "focused stage routing failed closed: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "step": step, "status": status(ws),
+                "focused_route": {"status": "mapper_unavailable",
+                                  "slots": []},
+            }
     elif step in ("execute", "fix"):
         try:
             routing, delivery_dispatch = build_dispatch_lens_routing(
@@ -5907,7 +6206,10 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             review_kernel, routing = _review_kernel(
                 ws, diff_ws, base=base_ref, step=step, task=task,
                 graph=depgraph.load(graph_ws), impact=imp or {},
-                requirement=req_rec, retry_context=retry_context,
+                requirement=req_rec,
+                test_evidence=((state.get("_suite_evidence") or {}).get(
+                    str((task or {}).get("id") or "")) or {}),
+                retry_context=retry_context,
                 delivery_mode_receipt=review_delivery_authority)
             if step == "em" and review_delivery_authority is not \
                     _DELIVERY_MODE_AUTHORITY_UNSET and \
@@ -6039,6 +6341,9 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         "wait_policy": dispatch_wait_policy,
         **({"delivery_dispatch": delivery_dispatch}
            if delivery_dispatch is not None else {}),
+        **({"focused_route": focused_route} if focused_route else {}),
+        **({"expanded_route_request": expanded_route_request}
+           if expanded_route_request else {}),
         # cross-host artifact: '/'-shaped out, host-shaped in state
         "task": tp.posix_workspace(task),
         "contract": {"read_only": bool(contract.get("read_only")),
