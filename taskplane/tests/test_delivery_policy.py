@@ -10,7 +10,7 @@ from taskplane.delivery_policy import (
 )
 
 
-TERMINAL_EVENTS = {
+TERMINAL_EVENTS: dict[str, tuple[str, str]] = {
     "passed": ("SubagentStop", "completed"),
     "failed": ("SubagentFailed", "failed"),
     "cancelled": ("SubagentCancelled", "cancelled"),
@@ -36,7 +36,9 @@ def _expected_origin(stage: str) -> dict[str, object]:
     )
 
 
-def _attempt(stage: str, outcome: str):
+def _attempt(
+    stage: str, outcome: str
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     native_terminal, ledger_terminal = TERMINAL_EVENTS[outcome]
     origin = _origin(stage)
     native_trace = [
@@ -73,8 +75,8 @@ def _attempt(stage: str, outcome: str):
 @pytest.mark.parametrize("stage", ["build", "fix"])
 @pytest.mark.parametrize("outcome", list(TERMINAL_EVENTS))
 def test_build_and_fix_all_terminal_paths_prove_zero_lens_starts(
-    stage, outcome
-):
+    stage: str, outcome: str
+) -> None:
     native_trace, session_ledger = _attempt(stage, outcome)
 
     receipt = validate_stage_lens_execution(
@@ -93,8 +95,8 @@ def test_build_and_fix_all_terminal_paths_prove_zero_lens_starts(
 @pytest.mark.parametrize("stage", ["build", "fix", "em"])
 @pytest.mark.parametrize("outcome", list(TERMINAL_EVENTS))
 def test_zero_lens_stages_refuse_lens_workers_for_every_terminal_path(
-    stage, outcome
-):
+    stage: str, outcome: str
+) -> None:
     native_trace, session_ledger = _attempt(stage, outcome)
     lens_origin = {
         "run_id": "run-focused-routing",
@@ -123,7 +125,7 @@ def test_zero_lens_stages_refuse_lens_workers_for_every_terminal_path(
 
 
 @pytest.mark.parametrize("stage", ["product", "design", "plan", "evaluate"])
-def test_routed_stages_allow_focused_lens_workers(stage):
+def test_routed_stages_allow_focused_lens_workers(stage: str) -> None:
     native_trace, session_ledger = _attempt(stage, "passed")
     lens_origin = {
         "run_id": "run-focused-routing",
@@ -152,7 +154,50 @@ def test_routed_stages_allow_focused_lens_workers(stage):
     assert receipt["lens_worker_start_count"] == 1
 
 
-def test_terminal_outcome_must_match_across_native_trace_and_ledger():
+def test_routed_stage_preserves_duplicate_lens_worker_start_count() -> None:
+    native_trace, session_ledger = _attempt("evaluate", "passed")
+    lens_origin = {
+        "run_id": "run-focused-routing",
+        "session_id": "session-focused-routing",
+        "task_name": "tp_lens_architecture_deadbeef",
+        "agent_id": "architecture-lens-agent",
+    }
+    native_lens_start = {
+        "hook_event_name": "SubagentStart",
+        "stage": "evaluate",
+        **lens_origin,
+    }
+    ledger_lens_start = {
+        "event": "started",
+        "stage": "evaluate",
+        **lens_origin,
+    }
+    native_trace[1:1] = [native_lens_start, native_lens_start.copy()]
+    session_ledger[1:1] = [ledger_lens_start, ledger_lens_start.copy()]
+
+    receipt = validate_stage_lens_execution(
+        stage="evaluate",
+        native_trace=native_trace,
+        session_ledger=session_ledger,
+        expected_origin_receipt=_expected_origin("evaluate"),
+    )
+
+    assert receipt["lens_worker_start_count"] == 2
+
+    session_ledger.pop(2)
+    with pytest.raises(
+        DeliveryPolicyError,
+        match="lens worker starts do not match",
+    ):
+        validate_stage_lens_execution(
+            stage="evaluate",
+            native_trace=native_trace,
+            session_ledger=session_ledger,
+            expected_origin_receipt=_expected_origin("evaluate"),
+        )
+
+
+def test_terminal_outcome_must_match_across_native_trace_and_ledger() -> None:
     native_trace, session_ledger = _attempt("fix", "failed")
     session_ledger[-1]["event"] = "cancelled"
 
@@ -165,7 +210,7 @@ def test_terminal_outcome_must_match_across_native_trace_and_ledger():
         )
 
 
-def test_zero_lens_stage_refuses_terminal_only_lens_observation():
+def test_zero_lens_stage_refuses_terminal_only_lens_observation() -> None:
     native_trace, session_ledger = _attempt("build", "passed")
     lens_terminal = {
         "stage": "build",

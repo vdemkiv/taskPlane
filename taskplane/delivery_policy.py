@@ -325,8 +325,8 @@ def _expected_origin_terminal_outcome(
 
 def _lens_worker_starts(
     rows: Sequence[Mapping[str, Any]], *, stage: str, field: str
-) -> frozenset[tuple[str, str, str, str]]:
-    starts: set[tuple[str, str, str, str]] = set()
+) -> tuple[tuple[str, str, str, str], ...]:
+    starts: list[tuple[str, str, str, str]] = []
     for index, row in enumerate(rows):
         if _row_stage(row, f"{field}[{index}].stage") != stage:
             continue
@@ -337,8 +337,8 @@ def _lens_worker_starts(
             row, f"{field}[{index}].event"
         )
         if lifecycle == "start":
-            starts.add(_origin_identity(row, f"{field}[{index}]"))
-    return frozenset(starts)
+            starts.append(_origin_identity(row, f"{field}[{index}]"))
+    return tuple(sorted(starts))
 
 
 def _has_lens_worker_observation(
