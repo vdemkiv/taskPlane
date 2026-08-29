@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import copy
+import base64
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -17,6 +20,30 @@ from taskplane import taskplane_lite as tp
 NOW = 1_700_000_000
 CONTEXT = "c" * 64
 EXTRA_LENSES = ["privacy-compliance", "cost-finops"]
+_RSA_N = int(
+    "a624209c76ef5732b116b1e648580b29bdb0e7f6a90565fb6f9d83e56fdaea37"
+    "d07e815dc554d1ec449dc6cd4642b305ffba3bc608c08d131df0098036c0ad79"
+    "4b087969d55a812a8b29768ade83ca8a669dbce71b3acb70cf97554059fa01b2"
+    "3fc4b658883e8743a614c2e846d7280cc003c0a7993546c3c5305c08a02f460d"
+    "945cfd9d88fb04f5fc952de253a86aeb2c0ecbc39baaf02720a4b7e0ca3da123"
+    "c8bc8198e14d2c1f8d0a183508372c3f96338cd5bda4b87583c671bccce3999f"
+    "7549e42e338505a1bffc8ee07266770c92a3c34221df7d2dd3851ef939cac3ca"
+    "4259be3f2ef022d3bcd75407905215b0b8d7490aa725618df134590d9249cebd",
+    16,
+)
+_RSA_D = int(
+    "191c9f503efadca575165ed3d58df73bfb27bcdbefbeb8e42901f8306af87e0b"
+    "eb27dfe25e43fc89d772389d08d8668a4ad5a998bc746c2e5e494c8a545c49ac"
+    "2a6ef0b9122e40953f5d0845a3adec64806fa9a08de154642c006dfa90cf04c8"
+    "1e32dbb3e47dfd0078df2cf9a2517d8475d66b5d79bf0f7fe23375c9b8fa843e"
+    "255b6b72211ffdb8950fa2d558a5b79a52572a0b1de9634f5f46b3a13c0fc5f5"
+    "03cc7ceec52d15f17bf516854055817f3372b273ffdea069fbc55373ef3587a257"
+    "6a491892617f54c9f3866d3640a39666a4e3b1372a516fa3baaa5c5fea4d3a0a"
+    "63a75619c2c3cafe60e5f0085127fc4c08a21688910e4ed512c3ab95fb2389",
+    16,
+)
+_RSA_E = 65_537
+_RSA_SHA256_PREFIX = bytes.fromhex("3031300d060960864801650304020105000420")
 
 
 def _workspace(path: Path) -> Path:
@@ -41,33 +68,81 @@ def _route_values(**overrides: object) -> dict[str, object]:
     return values
 
 
-def _approval(workspace: Path, **overrides: object) -> object:
+def _approval_key_id() -> str:
+    value = {
+        "algorithm": "rsa-pkcs1v15-sha256",
+        "modulus": format(_RSA_N, "x"),
+        "exponent": _RSA_E,
+    }
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _provision_control_plane_verifier(workspace: Path) -> None:
+    control = workspace / ".taskplane"
+    control.mkdir(exist_ok=True)
+    path = control / "expanded-lens-route-approval-verifier.json"
+    if path.exists():
+        return
+    tp.atomic_write_json(str(path), {
+        "schema": "taskplane.expanded-lens-route-approval-verifier/v1",
+        "key_id": _approval_key_id(),
+        "algorithm": "rsa-pkcs1v15-sha256",
+        "modulus": format(_RSA_N, "x"),
+        "exponent": _RSA_E,
+    }, sort_keys=True)
+    os.chmod(path, 0o600)
+
+
+def _proof_signature(value: dict[str, object]) -> str:
+    unsigned = {key: item for key, item in value.items()
+                if key != "signature"}
+    encoded = json.dumps(
+        unsigned, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode()
+    digest_info = _RSA_SHA256_PREFIX + hashlib.sha256(encoded).digest()
+    size = (_RSA_N.bit_length() + 7) // 8
+    message = b"\x00\x01" + (b"\xff" * (size - len(digest_info) - 3)) + \
+        b"\x00" + digest_info
+    signature = pow(int.from_bytes(message, "big"), _RSA_D, _RSA_N)
+    return base64.b64encode(signature.to_bytes(size, "big")).decode("ascii")
+
+
+def _approval(workspace: Path, **overrides: object) -> dict:
     values = _route_values(**overrides)
-    approval = {
+    _provision_control_plane_verifier(workspace)
+    proof_identity = hashlib.sha256(json.dumps({
         key: values[key] for key in (
             "stage", "target", "context_fingerprint", "extra_lens_ids",
             "expected_cost", "policy_version", "action_id", "now",
-            "ttl_seconds",
         )
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
+    approval = {
+        "schema": "taskplane.expanded-lens-route-control-plane-proof/v1",
+        "key_id": _approval_key_id(),
+        "proof_id": "approval-" + proof_identity,
+        "workspace_fingerprint": tp._workspace_identity_fingerprint(
+            str(workspace)),
+        **{key: values[key] for key in (
+            "stage", "target", "context_fingerprint", "extra_lens_ids",
+            "expected_cost", "policy_version", "action_id",
+        )},
+        "approved_by": "human:operator",
+        "approval_receipt_id": "host-receipt-expanded-LR-03-1",
+        "issued_at": values["now"],
+        "expires_at": int(values["now"]) + int(values["ttl_seconds"]),
     }
-    approval.update({
-        "actor": "human:operator",
-        "receipt_id": "host-receipt-expanded-LR-03-1",
-        "authenticated": True,
-    })
-    with mock.patch.dict(os.environ, {"TASKPLANE_TASK": ""}):
-        return tp.control_plane_expanded_lens_route_approval_attestation(
-            str(workspace), **approval)
+    approval["signature"] = _proof_signature(approval)
+    return approval
 
 
 def _issue(workspace: Path, **overrides: object) -> dict:
     values = _route_values(**overrides)
-    attestation = values.pop("approval_attestation", None)
-    if attestation is None:
-        attestation = _approval(workspace, **overrides)
-    with mock.patch.dict(os.environ, {"TASKPLANE_TASK": ""}):
-        return tp.issue_expanded_lens_route_action(
-            str(workspace), approval_attestation=attestation, **values)
+    proof = values.pop("approval_proof", None)
+    if proof is None:
+        proof = _approval(workspace, **overrides)
+    return tp.issue_expanded_lens_route_action(
+        str(workspace), approval_proof=proof, **values)
 
 
 def _expected(**overrides: object) -> dict:
@@ -230,44 +305,53 @@ def test_issuer_rejects_broadened_or_malformed_authority(
         _issue(workspace, **overrides)
 
 
-def test_worker_cannot_self_issue_expanded_route_authority(
+def test_worker_cannot_self_issue_after_clearing_task_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = _workspace(tmp_path / "repo")
     values = _route_values()
-    valid_attestation = _approval(workspace)
-
-    with mock.patch.dict(os.environ, {"TASKPLANE_TASK": ""}):
-        with pytest.raises(tp.StateError, match="approval attestation"):
-            tp.issue_expanded_lens_route_action(
-                str(workspace), approval_attestation={
-                    "authenticated": True, "actor": "human:operator"},
-                **values,
-            )
-        with pytest.raises(tp.StateError, match="mismatches"):
-            tp.issue_expanded_lens_route_action(
-                str(workspace), approval_attestation=valid_attestation,
-                **{**values, "expected_cost": 2_401},
-            )
-
     monkeypatch.setenv("TASKPLANE_TASK", "task_worker_attempt")
+    monkeypatch.delenv("TASKPLANE_TASK")
+    _provision_control_plane_verifier(workspace)
+    forged = _approval(workspace)
+    forged["approved_by"] = "human:attacker"
+    forged["approval_receipt_id"] = "caller-chosen"
+    forged["signature"] = base64.b64encode(b"0" * 256).decode("ascii")
 
-    with pytest.raises(tp.StateError, match="slotless control plane"):
-        tp.control_plane_expanded_lens_route_approval_attestation(
-            str(workspace),
-            **values,
-            actor="human:operator",
-            receipt_id="host-receipt-expanded-LR-03-1",
-            authenticated=True,
-        )
-    with pytest.raises(tp.StateError, match="slotless control plane"):
+    assert not hasattr(
+        tp, "control_plane_expanded_lens_route_approval_attestation")
+    with pytest.raises(tp.StateError, match="proof signature"):
         tp.issue_expanded_lens_route_action(
-            str(workspace), approval_attestation=valid_attestation,
+            str(workspace), approval_proof=forged,
             **values,
         )
 
     assert not (workspace / ".taskplane" /
                 "expanded-lens-route-authority.json").exists()
+
+
+def test_control_plane_proof_tamper_and_replay_fail_closed(
+    tmp_path: Path,
+) -> None:
+    tamper_workspace = _workspace(tmp_path / "tamper")
+    proof = _approval(tamper_workspace)
+    tampered = copy.deepcopy(proof)
+    tampered["expected_cost"] = 2_401
+    with pytest.raises(tp.StateError, match="proof signature"):
+        tp.issue_expanded_lens_route_action(
+            str(tamper_workspace), approval_proof=tampered,
+            **_route_values())
+
+    replay_workspace = _workspace(tmp_path / "replay")
+    replay_proof = _approval(replay_workspace)
+    first = tp.issue_expanded_lens_route_action(
+        str(replay_workspace), approval_proof=replay_proof,
+        **_route_values())
+    assert first["approval_fingerprint"]
+    with pytest.raises(tp.StateError, match="proof.*replay|already used"):
+        tp.issue_expanded_lens_route_action(
+            str(replay_workspace), approval_proof=replay_proof,
+            **_route_values())
 
 
 def test_expiry_crossing_under_consumption_lock_fails_closed(
@@ -291,16 +375,15 @@ def test_permission_hardening_failure_leaves_no_usable_authority(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path / "repo")
-    attestation = _approval(workspace)
+    proof = _approval(workspace)
     authority_path = workspace / ".taskplane" / \
         "expanded-lens-route-authority.json"
 
     with mock.patch.object(tp.os, "chmod", side_effect=OSError("denied")):
-        with mock.patch.dict(os.environ, {"TASKPLANE_TASK": ""}):
-            with pytest.raises(tp.StateError, match="private permissions"):
-                tp.issue_expanded_lens_route_action(
-                    str(workspace), approval_attestation=attestation,
-                    **_route_values())
+        with pytest.raises(tp.StateError, match="private permissions"):
+            tp.issue_expanded_lens_route_action(
+                str(workspace), approval_proof=proof,
+                **_route_values())
 
     assert not authority_path.exists()
 
