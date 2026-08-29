@@ -4973,6 +4973,27 @@ def _expanded_lens_route_error(workspace: str, reason: str) -> StateError:
         "Plan/Evaluate context; split the target if approval is unavailable")
 
 
+def _expanded_lens_route_security_time(workspace: str) -> int:
+    """Return host UTC epoch seconds through a private security-clock seam.
+
+    Signed proof bounds are UTC epochs, so a UTC clock is the authoritative
+    comparison source.  Production entry points expose no time override; tests
+    may replace this private seam.  Callers re-read it under one-use locks so
+    queueing cannot preserve an authorization that expires while waiting.
+    """
+    try:
+        observed = _time.time_ns()
+    except (AttributeError, OSError, OverflowError, ValueError) as exc:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route security clock is unavailable") \
+            from exc
+    if isinstance(observed, bool) or not isinstance(observed, int) or \
+            observed < 0:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route security clock is invalid")
+    return observed // 1_000_000_000
+
+
 def _expanded_lens_route_signed_bytes(value: dict) -> bytes:
     unsigned = {key: item for key, item in value.items()
                 if key != "signature"}
@@ -5084,13 +5105,12 @@ def _validated_expanded_lens_route_approval_proof(
         raise _expanded_lens_route_error(
             workspace, "expanded route control-plane proof signature is invalid")
     proof_id = str(proof.get("proof_id") or "")
-    try:
-        issued_at = int(proof["issued_at"])
-        expires_at = int(proof["expires_at"])
-    except (TypeError, ValueError) as exc:
+    issued_at = proof["issued_at"]
+    expires_at = proof["expires_at"]
+    if isinstance(issued_at, bool) or not isinstance(issued_at, int) or \
+            isinstance(expires_at, bool) or not isinstance(expires_at, int):
         raise _expanded_lens_route_error(
-            workspace, "expanded route control-plane proof time is malformed") \
-            from exc
+            workspace, "expanded route control-plane proof time is malformed")
     if not _TASK_SLOT_RE.fullmatch(proof_id) or issued_at > current or \
             expires_at <= current or expires_at <= issued_at or \
             expires_at - issued_at > \
@@ -5125,7 +5145,6 @@ def issue_expanded_lens_route_action(
         context_fingerprint: str, extra_lens_ids: list[str],
         expected_cost: int, policy_version: str, action_id: str,
         approval_proof: dict | None = None,
-        now: int | None = None,
         ttl_seconds: int = EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS) -> dict:
     """Issue one exact, short-lived Plan/Evaluate expansion capability.
 
@@ -5143,7 +5162,6 @@ def issue_expanded_lens_route_action(
         extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
         policy_version=policy_version, action_id=action_id)
     try:
-        issued_at = int(_time.time() if now is None else now)
         ttl = int(ttl_seconds)
     except (TypeError, ValueError) as exc:
         raise _expanded_lens_route_error(
@@ -5153,6 +5171,7 @@ def issue_expanded_lens_route_action(
             not 1 <= ttl <= EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS:
         raise _expanded_lens_route_error(
             workspace, "expanded route action TTL is invalid")
+    issued_at = _expanded_lens_route_security_time(workspace)
     approval = _validated_expanded_lens_route_approval_proof(
         workspace, approval_proof, bindings=bindings, current=issued_at)
     if approval["expires_at"] - approval["issued_at"] != ttl:
@@ -5177,7 +5196,7 @@ def issue_expanded_lens_route_action(
                 proof_path, "expanded route control-plane proof was already "
                 "used (replay)",
                 "obtain one fresh exact human/control-plane proof")
-        issued_at = int(_time.time() if now is None else now)
+        issued_at = _expanded_lens_route_security_time(workspace)
         approval = _validated_expanded_lens_route_approval_proof(
             workspace, approval, bindings=bindings, current=issued_at)
         if approval["expires_at"] - approval["issued_at"] != ttl:
@@ -5197,12 +5216,12 @@ def issue_expanded_lens_route_action(
     return approval
 
 
-def verify_expanded_lens_route_action(
+def _verify_expanded_lens_route_action_at(
         workspace: str, action: dict, *, stage: str, target: str,
         context_fingerprint: str, extra_lens_ids: list[str],
         expected_cost: int, policy_version: str, action_id: str,
-        now: int | None = None) -> dict:
-    """Verify an action against the exact current route without consuming it."""
+        current: int) -> dict:
+    """Verify one exact action at an internally supplied security instant."""
     expected = _validated_expanded_lens_route_bindings(
         workspace, stage=stage, target=target,
         context_fingerprint=context_fingerprint,
@@ -5213,12 +5232,6 @@ def verify_expanded_lens_route_action(
             action.get("schema") != EXPANDED_LENS_ROUTE_ACTION_SCHEMA:
         raise _expanded_lens_route_error(
             workspace, "expanded route action schema is malformed")
-    try:
-        current = int(_time.time() if now is None else now)
-    except (TypeError, ValueError) as exc:
-        raise _expanded_lens_route_error(
-            workspace, "expanded route action time bounds are malformed") \
-            from exc
     verified = _validated_expanded_lens_route_approval_proof(
         workspace, action, bindings=expected, current=current)
     proof_path = _expanded_lens_route_approval_consumption_path(
@@ -5242,6 +5255,19 @@ def verify_expanded_lens_route_action(
             workspace, "expanded route action was not issued by the "
             "control-plane proof consumer")
     return verified
+
+
+def verify_expanded_lens_route_action(
+        workspace: str, action: dict, *, stage: str, target: str,
+        context_fingerprint: str, extra_lens_ids: list[str],
+        expected_cost: int, policy_version: str, action_id: str) -> dict:
+    """Verify an action using only the internally owned security clock."""
+    return _verify_expanded_lens_route_action_at(
+        workspace, action, stage=stage, target=target,
+        context_fingerprint=context_fingerprint,
+        extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
+        policy_version=policy_version, action_id=action_id,
+        current=_expanded_lens_route_security_time(workspace))
 
 
 def _expanded_lens_route_consumption_path(
@@ -5272,14 +5298,13 @@ def expanded_lens_route_action_consumed(
 def consume_expanded_lens_route_action(
         workspace: str, action: dict, *, stage: str, target: str,
         context_fingerprint: str, extra_lens_ids: list[str],
-        expected_cost: int, policy_version: str, action_id: str,
-        now: int | None = None) -> dict:
+        expected_cost: int, policy_version: str, action_id: str) -> dict:
     """Atomically consume one verified action; its action id cannot replay."""
     verified = verify_expanded_lens_route_action(
         workspace, action, stage=stage, target=target,
         context_fingerprint=context_fingerprint,
         extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
-        policy_version=policy_version, action_id=action_id, now=now)
+        policy_version=policy_version, action_id=action_id)
     path = _expanded_lens_route_consumption_path(workspace, action_id)
     with file_lock(path):
         prior = load_json(
@@ -5292,12 +5317,13 @@ def consume_expanded_lens_route_action(
         # The pre-lock check rejects malformed/tampered input early.  This
         # second check owns the consumption timestamp and revalidates expiry
         # under the replay lock immediately before receipt creation.
-        current = int(_time.time() if now is None else now)
-        verified = verify_expanded_lens_route_action(
+        current = _expanded_lens_route_security_time(workspace)
+        verified = _verify_expanded_lens_route_action_at(
             workspace, action, stage=stage, target=target,
             context_fingerprint=context_fingerprint,
             extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
-            policy_version=policy_version, action_id=action_id, now=current)
+            policy_version=policy_version, action_id=action_id,
+            current=current)
         receipt = {
             "schema": EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA,
             "action_id": action_id,

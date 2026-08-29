@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import base64
 import hashlib
+import inspect
 import json
 import os
 import subprocess
@@ -43,6 +44,13 @@ _RSA_D = int(
 )
 _RSA_E = 65_537
 _RSA_SHA256_PREFIX = bytes.fromhex("3031300d060960864801650304020105000420")
+_PRODUCTION_SECURITY_TIME = tp._expanded_lens_route_security_time
+
+
+@pytest.fixture(autouse=True)
+def _fixed_private_security_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        tp, "_expanded_lens_route_security_time", lambda workspace: NOW)
 
 
 def _workspace(path: Path) -> Path:
@@ -60,7 +68,6 @@ def _route_values(**overrides: object) -> dict[str, object]:
         "expected_cost": 2_400,
         "policy_version": "focused-routing/v1",
         "action_id": "expanded-LR-03-1",
-        "now": NOW,
         "ttl_seconds": 300,
     }
     values.update(overrides)
@@ -149,9 +156,10 @@ def _approval(workspace: Path, **overrides: object) -> dict:
     proof_identity = hashlib.sha256(json.dumps({
         key: values[key] for key in (
             "stage", "target", "context_fingerprint", "extra_lens_ids",
-            "expected_cost", "policy_version", "action_id", "now",
+            "expected_cost", "policy_version", "action_id",
         )
-    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
+    } | {"issued_at": NOW}, sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest()[:24]
     approval = {
         "schema": "taskplane.expanded-lens-route-control-plane-proof/v1",
         "key_id": _approval_key_id(),
@@ -164,8 +172,8 @@ def _approval(workspace: Path, **overrides: object) -> dict:
         )},
         "approved_by": "human:operator",
         "approval_receipt_id": "host-receipt-expanded-LR-03-1",
-        "issued_at": values["now"],
-        "expires_at": int(values["now"]) + int(values["ttl_seconds"]),
+        "issued_at": NOW,
+        "expires_at": NOW + int(values["ttl_seconds"]),
     }
     approval["signature"] = _proof_signature(approval)
     return approval
@@ -189,7 +197,6 @@ def _expected(**overrides: object) -> dict:
         "expected_cost": 2_400,
         "policy_version": "focused-routing/v1",
         "action_id": "expanded-LR-03-1",
-        "now": NOW + 1,
     }
     values.update(overrides)
     return values
@@ -225,7 +232,7 @@ def test_exact_action_verifies_and_consumes_once(tmp_path: Path) -> None:
 
     with pytest.raises(tp.StateError, match="already consumed|replay"):
         tp.consume_expanded_lens_route_action(
-            str(workspace), action, **_expected(now=NOW + 2))
+            str(workspace), action, **_expected())
 
 
 @pytest.mark.parametrize(
@@ -366,6 +373,75 @@ def test_worker_cannot_self_issue_after_clearing_task_environment(
                 "expanded-lens-route-authority.json").exists()
 
 
+def test_public_authority_apis_have_no_caller_security_time_override(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path / "repo")
+    proof = _approval(workspace, ttl_seconds=10)
+
+    for entry_point in (
+        tp.issue_expanded_lens_route_action,
+        tp.verify_expanded_lens_route_action,
+        tp.consume_expanded_lens_route_action,
+    ):
+        assert "now" not in inspect.signature(entry_point).parameters
+
+    with pytest.raises(TypeError, match="now"):
+        tp.issue_expanded_lens_route_action(
+            str(workspace), approval_proof=proof,
+            **_route_values(ttl_seconds=10), now=NOW + 1)
+
+    with mock.patch.object(
+        tp, "_expanded_lens_route_security_time", _PRODUCTION_SECURITY_TIME,
+    ):
+        with pytest.raises(tp.StateError, match="stale|expired"):
+            tp.issue_expanded_lens_route_action(
+                str(workspace), approval_proof=proof,
+                **_route_values(ttl_seconds=10))
+
+    with mock.patch.object(
+        tp, "_expanded_lens_route_security_time", return_value=NOW + 11,
+    ):
+        with pytest.raises(tp.StateError, match="stale|expired"):
+            tp.issue_expanded_lens_route_action(
+                str(workspace), approval_proof=proof,
+                **_route_values(ttl_seconds=10))
+
+    action = tp.issue_expanded_lens_route_action(
+        str(workspace), approval_proof=proof,
+        **_route_values(ttl_seconds=10))
+    with pytest.raises(TypeError, match="now"):
+        tp.verify_expanded_lens_route_action(
+            str(workspace), action, **_expected(), now=NOW + 1)
+    with pytest.raises(TypeError, match="now"):
+        tp.consume_expanded_lens_route_action(
+            str(workspace), action, **_expected(), now=NOW + 1)
+
+    with mock.patch.object(
+        tp, "_expanded_lens_route_security_time",
+        side_effect=[NOW + 9, NOW + 11],
+    ):
+        with pytest.raises(tp.StateError, match="stale|expired"):
+            tp.consume_expanded_lens_route_action(
+                str(workspace), action, **_expected())
+    assert not tp.expanded_lens_route_action_consumed(
+        str(workspace), "expanded-LR-03-1")
+
+
+@pytest.mark.parametrize("field", ["issued_at", "expires_at"])
+def test_signed_numeric_string_timestamp_fails_with_governed_error(
+    tmp_path: Path, field: str,
+) -> None:
+    workspace = _workspace(tmp_path / "repo")
+    proof = _approval(workspace)
+    proof[field] = str(proof[field])
+    proof["signature"] = _proof_signature(proof)
+
+    with pytest.raises(tp.StateError, match="proof time is malformed"):
+        tp.issue_expanded_lens_route_action(
+            str(workspace), approval_proof=proof, **_route_values())
+
+
 def test_worker_cannot_retrieve_or_use_downstream_action_signer(
     tmp_path: Path,
 ) -> None:
@@ -463,11 +539,12 @@ def test_expiry_crossing_under_consumption_lock_fails_closed(
     action = _issue(workspace, ttl_seconds=300)
 
     with mock.patch.object(
-        tp._time, "time", side_effect=[NOW + 299, NOW + 300],
+        tp, "_expanded_lens_route_security_time",
+        side_effect=[NOW + 299, NOW + 300],
     ):
         with pytest.raises(tp.StateError, match="stale|expired"):
             tp.consume_expanded_lens_route_action(
-                str(workspace), action, **_expected(now=None))
+                str(workspace), action, **_expected())
 
     assert not tp.expanded_lens_route_action_consumed(
         str(workspace), "expanded-LR-03-1")
@@ -498,9 +575,12 @@ def test_expiry_and_workspace_binding_fail_without_consuming(
     other = _workspace(tmp_path / "other")
     action = _issue(workspace, ttl_seconds=10)
 
-    with pytest.raises(tp.StateError, match="stale|expired"):
-        tp.consume_expanded_lens_route_action(
-            str(workspace), action, **_expected(now=NOW + 11))
+    with mock.patch.object(
+        tp, "_expanded_lens_route_security_time", return_value=NOW + 11,
+    ):
+        with pytest.raises(tp.StateError, match="stale|expired"):
+            tp.consume_expanded_lens_route_action(
+                str(workspace), action, **_expected())
     assert not tp.expanded_lens_route_action_consumed(
         str(workspace), "expanded-LR-03-1")
 
@@ -520,7 +600,6 @@ def test_action_id_cannot_be_reissued_to_bypass_replay(tmp_path: Path) -> None:
         context_fingerprint="f" * 64,
         extra_lens_ids=["security"],
         expected_cost=1_000,
-        now=NOW + 2,
     )
 
     with pytest.raises(tp.StateError, match="already consumed|replay"):
@@ -530,6 +609,5 @@ def test_action_id_cannot_be_reissued_to_bypass_replay(tmp_path: Path) -> None:
                 context_fingerprint="f" * 64,
                 extra_lens_ids=["security"],
                 expected_cost=1_000,
-                now=NOW + 3,
             ),
         )
