@@ -136,6 +136,25 @@ def test_more_than_four_mandatory_risks_returns_non_dispatchable_overflow():
     assert route["overflow"]["mandatory_lenses"] == list(mandatory)
 
 
+def test_fifth_independent_positive_risk_is_not_falsely_covered_by_cap():
+    independent = ("security", "testability", "data-safety", "architecture",
+                   "privacy-compliance")
+    signal_rows = rows(independent)
+    for row in signal_rows:
+        row["mandatory"] = False
+    route = policy.build_route(
+        context("evaluate"), signal_rows, CATALOG["lenses"])
+
+    assert route["status"] == "expanded_approval_required"
+    assert route["dispatchable_selected"] == []
+    assert route["selected"] == list(independent)
+    assert route["overflow"]["independent_lenses"] == list(independent)
+    privacy = next(row for row in route["dispositions"]
+                   if row["lens"] == "privacy-compliance")
+    assert privacy["disposition"] == "execute_deep"
+    assert "covered_by" not in privacy
+
+
 def test_design_applies_solution_design_floor_before_deduplication():
     signal_rows = rows(("architecture", "solution-design"), duplicate=True)
     route = policy.build_route(

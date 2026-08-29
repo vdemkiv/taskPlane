@@ -211,19 +211,15 @@ def _select(rows: list[dict[str, Any]], context: dict[str, Any]
     selected.sort(key=_rank)
 
     if stage in _BOUNDED_STAGES:
-        mandatory_selected = [row for row in selected if row["mandatory"]]
-        if len(mandatory_selected) > 4:
+        # Every row in ``selected`` represents an independent risk group.
+        # The policy cannot truthfully relabel a fifth group as covered by an
+        # unrelated fourth group merely to enforce the normal dispatch cap.
+        # Preserve the complete selection so build_route can emit a
+        # non-dispatchable overflow decision for scope splitting or explicit
+        # expanded-route authority.
+        if len(selected) > 4:
             return selected, covered
         selected = selected[:4]
-        selected_ids = {row["id"] for row in selected}
-        # A lower-ranked positive risk that is outside the normal cap is
-        # explicitly covered by the fourth selected representative. A stage
-        # adapter may instead split before invoking this policy.
-        if selected:
-            cap_owner = selected[-1]["id"]
-            for row in positive:
-                if row["id"] not in selected_ids and row["id"] not in covered:
-                    covered[row["id"]] = cap_owner
         trivial = context.get("trivial_target")
         if len(selected) < 3:
             if not isinstance(trivial, Mapping) or trivial.get("trivial") is not True:
@@ -259,7 +255,7 @@ def build_route(context: Any, signal_rows: Any, catalog: Sequence[Any],
     selected_rows, covered = _select(rows, ctx)
     selected_ids = [row["id"] for row in selected_rows]
     mandatory_ids = [row["id"] for row in selected_rows if row["mandatory"]]
-    overflow = ctx["stage"] in _BOUNDED_STAGES and len(mandatory_ids) > 4
+    overflow = ctx["stage"] in _BOUNDED_STAGES and len(selected_ids) > 4
 
     dispositions: list[dict[str, Any]] = []
     selected_set = set(selected_ids)
@@ -302,9 +298,10 @@ def build_route(context: Any, signal_rows: Any, catalog: Sequence[Any],
         decision["trivial_target"] = ctx["trivial_target"]
     if overflow:
         decision["overflow"] = {
-            "reason": "more-than-four-independent-mandatory-risks",
+            "reason": "more-than-four-independent-risks",
+            "independent_lenses": selected_ids,
             "mandatory_lenses": mandatory_ids,
-            "additional_lenses": mandatory_ids[4:],
+            "additional_lenses": selected_ids[4:],
             "requires": "split-or-authenticated-expanded-route",
         }
     decision["route_fingerprint"] = fingerprint(decision)
