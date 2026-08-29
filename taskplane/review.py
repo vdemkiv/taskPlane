@@ -37,7 +37,7 @@ import tempfile
 import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 try:  # pwd is unavailable on Windows.
     import pwd
@@ -47,6 +47,7 @@ except ImportError:  # pragma: no cover - Windows host
 import storage as runtime_storage
 import taskplane_lite as tp
 import review_evidence as review_evidence_runtime
+import terminal_truth as terminal_truth_runtime
 
 # This value crosses host boundaries inside immutable briefs. Keep the
 # reference POSIX-shaped; ``context_dir`` joins it to the native workspace.
@@ -2459,8 +2460,9 @@ _FOCUSED_RISK_GROUPS = {
 }
 
 
-def project_focused_route(routing: dict, focused: dict,
-                          catalog: dict) -> dict:
+def project_focused_route(
+        routing: Mapping[str, object], focused: Mapping[str, object],
+        catalog: Mapping[str, object]) -> dict[str, object]:
     """Project one closed focused decision onto the incumbent lens shape.
 
     The policy artifact remains the authority.  This compatibility projection
@@ -2473,7 +2475,7 @@ def project_focused_route(routing: dict, focused: dict,
               for row in routing.get("lenses") or [] if isinstance(row, dict)}
     disposition = {row["lens"]: row for row in focused["dispositions"]}
     dispatchable = set(focused["dispatchable_selected"])
-    projected = copy.deepcopy(routing)
+    projected = copy.deepcopy(dict(routing))
     projected_rows = []
     for definition in catalog.get("lenses") or []:
         lens_id = str(definition.get("id") or "")
@@ -2512,7 +2514,9 @@ def project_focused_route(routing: dict, focused: dict,
     return projected
 
 
-def expanded_route_authority_request(ws: str, focused: dict) -> dict | None:
+def expanded_route_authority_request(
+        ws: str, focused: Mapping[str, object]
+        ) -> dict[str, object] | None:
     """Return the exact request for a non-dispatchable Plan/Evaluate route.
 
     This is deliberately request-only.  The protected control-plane provider
@@ -2537,6 +2541,76 @@ def expanded_route_authority_request(ws: str, focused: dict) -> dict | None:
         policy_version=str(focused.get("policy_version") or ""),
         catalog_version=str(focused.get("catalog_fingerprint") or ""),
         action_id=f"expanded-{stage}-{context_fp[:16]}")
+
+
+def apply_expanded_route_authority(
+        ws: str, focused: Mapping[str, object],
+        catalog: Mapping[str, object], *,
+        provider_client: terminal_truth_runtime.ExpandedRouteProviderClient |
+        None = None,
+        provider_receipt: terminal_truth_runtime.ExpandedRouteProviderReceipt |
+        None = None,
+        ) -> tuple[dict[str, object], dict[str, object] | None]:
+    """Authenticate and bind one exceptional Plan/Evaluate route.
+
+    The worktree remains request-only: it cannot construct either live type.
+    The protected orchestrator client authenticates the provider receipt
+    against the request regenerated from the *current* route.  Only that
+    exact live pair can turn the closed overflow decision into a dispatchable
+    route, whose new fingerprint binds the original refused route and the
+    authenticated request/consumption identities.
+    """
+    if __package__:
+        from . import lens_route_policy
+    else:  # pragma: no cover - direct CLI module loading
+        import lens_route_policy
+
+    definitions = list(catalog.get("lenses") or [])
+    route = copy.deepcopy(dict(focused))
+    lens_route_policy.validate_route(route, definitions)
+    request = expanded_route_authority_request(ws, route)
+    supplied = provider_client is not None or provider_receipt is not None
+    if request is None:
+        if supplied:
+            raise ReviewKernelError(
+                "expanded-route authority supplied for a non-overflow route")
+        return route, None
+    if not supplied:
+        return route, request
+    if not isinstance(
+            provider_client,
+            terminal_truth_runtime.ExpandedRouteProviderClient) or \
+            not isinstance(
+                provider_receipt,
+                terminal_truth_runtime.ExpandedRouteProviderReceipt):
+        raise ReviewKernelError(
+            "live expanded-route provider client and receipt are required")
+    try:
+        provider_client.assert_authenticated(provider_receipt, request)
+    except terminal_truth_runtime.TerminalTruthError as exc:
+        raise ReviewKernelError(
+            "expanded-route provider receipt is not authenticated") from exc
+
+    requested_route_fingerprint = str(route.get("route_fingerprint") or "")
+    consumption = dict(provider_receipt)
+    route["status"] = "ready"
+    route["dispatchable_selected"] = list(route.get("selected") or [])
+    route["expanded_route_authority"] = {
+        "schema": "taskplane.expanded-lens-route-review-authority/v1",
+        "requested_route_fingerprint": requested_route_fingerprint,
+        "request_fingerprint":
+            tp.expanded_lens_route_provider_request_fingerprint(request),
+        "consumption_receipt_fingerprint":
+            lens_route_policy.fingerprint(consumption),
+        "provider_protocol_version": str(
+            consumption.get("provider_protocol_version") or ""),
+        "action_fingerprint": str(
+            consumption.get("action_fingerprint") or ""),
+    }
+    route.pop("route_fingerprint", None)
+    route["route_fingerprint"] = lens_route_policy.fingerprint(route)
+    lens_route_policy.validate_route(route, definitions)
+    return route, request
 
 
 def _dependency_impact_for_routing_fingerprint(impact: dict) -> dict:
@@ -3936,6 +4010,12 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  unresolved_findings: Iterable | None = None,
                  retry_lenses: Iterable[str] | None = None,
                  retry_source_run_id: str | None = None,
+                 expanded_route_provider_client:
+                 terminal_truth_runtime.ExpandedRouteProviderClient |
+                 None = None,
+                 expanded_route_provider_receipt:
+                 terminal_truth_runtime.ExpandedRouteProviderReceipt |
+                 None = None,
                  delivery_mode_receipt: object =
                  _DELIVERY_MODE_AUTHORITY_UNSET) -> dict:
     """Run the normal Review/Evaluate/final-EM evidence kernel once.
@@ -4143,8 +4223,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                             (prior_state.get("revision") or {}).get("findings") or [])
                     except Exception:
                         unresolved_findings = []
+                incumbent_routing = routing
                 focused_route, routing = _focused_evaluate_route(
-                    routing, catalog=catalog, target=target,
+                    incumbent_routing, catalog=catalog, target=target,
                     requirement=requirement, acceptance=acceptance,
                     design_contract=design_contract, diff=diff,
                     impact=quality.get("impact") or impact,
@@ -4154,8 +4235,15 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                     mandatory_lenses=(set(requested) |
                                       ({"architecture", "security"}
                                        if graph_degraded else set())))
-                expanded_route_request = expanded_route_authority_request(
-                    ws, focused_route)
+                focused_route, expanded_route_request = \
+                    apply_expanded_route_authority(
+                        ws, focused_route, catalog,
+                        provider_client=expanded_route_provider_client,
+                        provider_receipt=expanded_route_provider_receipt)
+                if focused_route.get("status") == "ready" and \
+                        focused_route.get("expanded_route_authority"):
+                    routing = project_focused_route(
+                        incumbent_routing, focused_route, catalog)
                 reuse_plan, reused_lens_evidence = _focused_prior_reuse(
                     ws, store, retry_source_run_id, focused_route)
                 routing = _project_focused_reuse(routing, reuse_plan)
@@ -4167,6 +4255,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                     "selected": list(focused_route["selected"]),
                     "reused": list(reuse_plan["reused"]),
                     "invalidated": copy.deepcopy(reuse_plan["invalidation"]),
+                    **({"expanded_route_authority": copy.deepcopy(
+                        focused_route["expanded_route_authority"])}
+                       if focused_route.get("expanded_route_authority") else {}),
                 }
         elif zero_lens_authority is not None:
             routing = _zero_automatic_lens_route(
@@ -4368,6 +4459,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                 "selected_count": len(focused_route["selected"]),
                 "reused": list((reuse_plan or {}).get("reused") or []),
                 "dispatched": list((reuse_plan or {}).get("dispatch") or []),
+                **({"expanded_route_authority": copy.deepcopy(
+                    focused_route["expanded_route_authority"])}
+                   if focused_route.get("expanded_route_authority") else {}),
             }} if focused_route else {}),
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),

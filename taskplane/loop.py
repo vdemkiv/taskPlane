@@ -26,7 +26,7 @@ existing spec (→plan).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 import base64
 import contextlib
 import contextvars
@@ -545,7 +545,13 @@ _FOCUSED_STAGE_KEYWORDS = {
 
 def _focused_stage_route(
         ws: str, *, stage: str, target: str, evidence: Mapping[str, object],
-        mandatory_lenses=None) -> tuple[dict, dict, dict | None]:
+        mandatory_lenses: Iterable[str] | None = None,
+        expanded_route_provider_client:
+        terminal_truth.ExpandedRouteProviderClient | None = None,
+        expanded_route_provider_receipt:
+        terminal_truth.ExpandedRouteProviderReceipt | None = None,
+        ) -> tuple[
+            dict[str, object], dict[str, object], dict[str, object] | None]:
     """Build one pre-Build focused quick route from stage-owned evidence.
 
     Product and Design keep only stage-relevant positive signals. Plan uses
@@ -669,16 +675,26 @@ def _focused_stage_route(
             },
         })
     focused = lens_route_policy.build_route(context, rows, definitions)
-    _, _, review_module = _review_runtime_modules()
+    try:
+        _, _, review_module = _review_runtime_modules()
+    except RuntimeError as exc:
+        raise lens_route_policy.LensRoutePolicyError(
+            "checkout ReviewKernel runtime is unavailable") from exc
+    try:
+        focused, request = review_module.apply_expanded_route_authority(
+            ws, focused, catalog,
+            provider_client=expanded_route_provider_client,
+            provider_receipt=expanded_route_provider_receipt)
+    except review_module.ReviewKernelError as exc:
+        raise lens_route_policy.LensRoutePolicyError(str(exc)) from exc
     projected = review_module.project_focused_route(
         incumbent, focused, catalog)
     projected.setdefault("context", {})["task_to_ac_coverage"] = \
         _copy_json(material.get("task_to_ac_coverage") or {})
-    request = review_module.expanded_route_authority_request(ws, focused)
     return focused, projected, request
 
 
-def _copy_json(value):
+def _copy_json(value: object) -> object:
     """Return a detached canonical JSON value for action payloads."""
     return json.loads(json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
@@ -686,7 +702,8 @@ def _copy_json(value):
 
 
 def _focused_stage_evidence(ws: str, state: Mapping[str, object],
-                            stage: str) -> tuple[dict, list[str] | None]:
+                            stage: str
+                            ) -> tuple[dict[str, object], list[str] | None]:
     """Assemble the closed, stage-owned inputs required by the Design."""
     requirement = reqs.get_requirement(ws, state.get("requirement_id")) \
         if state.get("requirement_id") else None
@@ -4556,6 +4573,8 @@ def _review_runtime_modules():
         is imported_storage
         and getattr(imported_review, "review_evidence_runtime", None)
         is imported_evidence
+        and getattr(imported_review, "terminal_truth_runtime", None)
+        is terminal_truth
     )
     if consistent:
         runtime, evidence, review_kernel = tp, imported_evidence, imported_review
@@ -4566,6 +4585,11 @@ def _review_runtime_modules():
         evidence = loader.load("review_evidence")
         review_kernel = loader.load("review")
         graph_quality_kernel = loader.load("graph_quality")
+        # The provider client and live receipt are orchestrator-owned object
+        # identities.  A private checkout ReviewKernel must consume those
+        # launcher's exact classes rather than a second private import that no
+        # authentic live receipt could ever inhabit.
+        review_kernel.terminal_truth_runtime = terminal_truth
         runtime_import = runtime.__dict__["__builtins__"]["__import__"]
         if getattr(evidence, "tp", None) is not runtime or \
                 getattr(evidence, "runtime_storage", None) is not \
@@ -4573,7 +4597,9 @@ def _review_runtime_modules():
                 runtime or getattr(review_kernel, "runtime_storage", None) is \
                 not target_storage or getattr(
                     review_kernel, "review_evidence_runtime", None) is not \
-                evidence or runtime_import("storage") is not target_storage:
+                evidence or getattr(
+                    review_kernel, "terminal_truth_runtime", None) is not \
+                terminal_truth or runtime_import("storage") is not target_storage:
             raise RuntimeError(
                 "target review runtime bundle is internally inconsistent")
     _REVIEW_RUNTIME_BUNDLE = {
@@ -4639,6 +4665,10 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
                    requirement: dict | None,
                    test_evidence: dict | None = None,
                    retry_context: dict | None = None,
+                   expanded_route_provider_client:
+                   terminal_truth.ExpandedRouteProviderClient | None = None,
+                   expanded_route_provider_receipt:
+                   terminal_truth.ExpandedRouteProviderReceipt | None = None,
                    delivery_mode_receipt: object =
                    _DELIVERY_MODE_AUTHORITY_UNSET) -> tuple[dict, dict]:
     """One evidence/routing kernel shared by Evaluate and final EM."""
@@ -4706,6 +4736,8 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
                       if step == "evaluate" else None),
         retry_source_run_id=((retry_context or {}).get("source_run_id")
                              if step == "evaluate" else None),
+        expanded_route_provider_client=expanded_route_provider_client,
+        expanded_route_provider_receipt=expanded_route_provider_receipt,
         **delivery_mode_argument)
     state = review._load_state(diff_ws, manifest.get("run_id"))
     if quality_ref is not None and state.get("quality") != quality_ref:
@@ -5755,7 +5787,12 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
 
 # --------------------------------------------------------------- next / gate
 
-def next_action(ws: str, rid: str | None = None) -> dict:
+def next_action(
+        ws: str, rid: str | None = None, *,
+        expanded_route_provider_client:
+        terminal_truth.ExpandedRouteProviderClient | None = None,
+        expanded_route_provider_receipt:
+        terminal_truth.ExpandedRouteProviderReceipt | None = None) -> dict:
     """Advance to the current step's work: activate its contract and return
     what the driver should run. Human steps pause without activating."""
     if refusal := _stage_loop_mutation_refusal(
@@ -5789,6 +5826,18 @@ def next_action(ws: str, rid: str | None = None) -> dict:
     if state is None:
         return {"error": "no active loop — run `tp.py loop init` first"}
     step = state["step"]
+    expanded_authority_supplied = (
+        expanded_route_provider_client is not None or
+        expanded_route_provider_receipt is not None)
+    if (expanded_route_provider_client is None) != \
+            (expanded_route_provider_receipt is None):
+        return {"error": "expanded-route authority requires the live provider "
+                         "client and receipt together",
+                "step": step, "status": status(ws)}
+    if expanded_authority_supplied and step not in {"plan", "evaluate"}:
+        return {"error": "expanded-route authority is limited to Plan and "
+                         "Evaluate",
+                "step": step, "status": status(ws)}
 
     if step == "retro":
         return {
@@ -5879,7 +5928,12 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                     fresh["step"] = "evaluate"
             state = fresh
         if moved:
-            return next_action(ws)
+            return next_action(
+                ws,
+                expanded_route_provider_client=
+                    expanded_route_provider_client,
+                expanded_route_provider_receipt=
+                    expanded_route_provider_receipt)
         step = state["step"]
         if step == "execute":
             return wave(ws)
@@ -6070,7 +6124,11 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             focused_route, routing, expanded_route_request = \
                 _focused_stage_route(
                     ws, stage=focused_stage, target=focused_target,
-                    evidence=stage_evidence, mandatory_lenses=mandatory)
+                    evidence=stage_evidence, mandatory_lenses=mandatory,
+                    expanded_route_provider_client=
+                        expanded_route_provider_client,
+                    expanded_route_provider_receipt=
+                        expanded_route_provider_receipt)
         except (OSError, TypeError, ValueError) as exc:
             return {
                 "error": "focused stage routing failed closed: "
@@ -6210,6 +6268,10 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                 test_evidence=((state.get("_suite_evidence") or {}).get(
                     str((task or {}).get("id") or "")) or {}),
                 retry_context=retry_context,
+                expanded_route_provider_client=
+                    expanded_route_provider_client,
+                expanded_route_provider_receipt=
+                    expanded_route_provider_receipt,
                 delivery_mode_receipt=review_delivery_authority)
             if step == "em" and review_delivery_authority is not \
                     _DELIVERY_MODE_AUTHORITY_UNSET and \

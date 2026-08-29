@@ -1808,6 +1808,20 @@ class TestLoop(unittest.TestCase):
             (next(row for row in plan["lenses"]
                   if row["id"] == "architecture"))["tier"], "sweep")
 
+    def test_focused_stage_runtime_loader_failure_is_mapper_unavailable(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "secure account onboarding")
+
+        with unittest.mock.patch.object(
+                loop, "_review_runtime_modules",
+                side_effect=RuntimeError("checkout review bundle unavailable")):
+            action = loop.next_action(ws)
+
+        self.assertEqual(action["step"], "pm")
+        self.assertIn("focused stage routing failed closed", action["error"])
+        self.assertEqual(action["focused_route"], {
+            "status": "mapper_unavailable", "slots": []})
+
     def test_fix_gate_runs_suite_in_claimed_task_namespace(self):
         """A repair that changes Taskplane validates with repaired bytes."""
         ws = git_ws(self.tmp, [TASK])
@@ -3473,6 +3487,8 @@ class TestReviewBridge(unittest.TestCase):
                       review_kernel.runtime_storage)
         self.assertIs(review_kernel.tp, runtime)
         self.assertIs(review_kernel.review_evidence_runtime, evidence)
+        self.assertIs(review_kernel.terminal_truth_runtime,
+                      loop.terminal_truth)
         target_import = runtime.__dict__["__builtins__"]["__import__"]
         self.assertIs(target_import("storage"), evidence.runtime_storage)
         self.assertEqual(os.path.realpath(runtime.__file__), os.path.realpath(
