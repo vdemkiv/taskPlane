@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -117,3 +119,20 @@ def test_guides_name_bounded_private_route_telemetry_and_selective_reuse() -> No
         "only invalidated",
     ):
         assert required in truth, required
+
+
+def test_generated_catalog_is_current_via_argv_safe_check() -> None:
+    command = [sys.executable, "scripts/gen_lens_catalog.py", "--check"]
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = "\n".join(part for part in (completed.stdout, completed.stderr)
+                       if part).strip()
+    assert completed.returncode == 0, (
+        f"generated lens catalog is stale; argv={command!r}; output={output}"
+    )
+    assert "current" in completed.stdout, output
