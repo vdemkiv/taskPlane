@@ -4834,6 +4834,95 @@ def activate_review_contract_action(
                     task_slot_override=slot)
 
 
+EXPANDED_LENS_ROUTE_REQUEST_SCHEMA = \
+    "taskplane.expanded-lens-route-provider-request/v1"
+_EXPANDED_LENS_ROUTE_REQUEST_FIELDS = frozenset({
+    "schema", "workspace", "stage", "target", "context_fingerprint",
+    "exact_ordered_lens_ids", "estimated_cost", "policy_version",
+    "catalog_version", "action_id",
+})
+_EXPANDED_LENS_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+_EXPANDED_ROUTE_TEXT_RE = re.compile(r"^[\x21-\x7e]{1,256}$")
+
+
+def _validated_expanded_lens_route_request_bindings(
+        workspace: str, *, stage: str, target: str,
+        context_fingerprint: str, extra_lens_ids: list[str],
+        expected_cost: int, policy_version: str, catalog_version: str,
+        action_id: str) -> dict:
+    """Validate worker-owned route facts without granting authority."""
+    if stage not in {"plan", "evaluate"}:
+        raise ValueError("expanded routes are limited to Plan and Evaluate")
+    if not isinstance(target, str) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(target):
+        raise ValueError("expanded route target identity is malformed")
+    if not isinstance(context_fingerprint, str) or \
+            not re.fullmatch(r"[0-9a-f]{64}", context_fingerprint):
+        raise ValueError("expanded route context fingerprint is malformed")
+    if not isinstance(extra_lens_ids, list) or \
+            not 1 <= len(extra_lens_ids) <= 26 or \
+            len(set(extra_lens_ids)) != len(extra_lens_ids) or \
+            any(not isinstance(lens, str) or
+                not _EXPANDED_LENS_ID_RE.fullmatch(lens)
+                for lens in extra_lens_ids):
+        raise ValueError("expanded route lens identity is malformed")
+    if isinstance(expected_cost, bool) or \
+            not isinstance(expected_cost, int) or \
+            not 1 <= expected_cost <= 1_000_000_000:
+        raise ValueError("expanded route expected cost is malformed")
+    if not isinstance(policy_version, str) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(policy_version) or \
+            not isinstance(catalog_version, str) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(catalog_version):
+        raise ValueError("expanded route policy/catalog version is malformed")
+    if not isinstance(action_id, str) or \
+            not _TASK_SLOT_RE.fullmatch(action_id):
+        raise ValueError("expanded route action identity is malformed")
+    return {
+        "workspace": _workspace_identity_fingerprint(workspace),
+        "stage": stage,
+        "target": target,
+        "context_fingerprint": context_fingerprint,
+        "exact_ordered_lens_ids": list(extra_lens_ids),
+        "estimated_cost": expected_cost,
+        "policy_version": policy_version,
+        "catalog_version": catalog_version,
+        "action_id": action_id,
+    }
+
+
+def build_expanded_lens_route_authority_request(
+        workspace: str, *, stage: str, target: str,
+        context_fingerprint: str, extra_lens_ids: list[str],
+        expected_cost: int, policy_version: str, catalog_version: str,
+        action_id: str) -> dict:
+    """Serialize the closed request passed to the orchestrator provider.
+
+    This adapter intentionally cannot select or launch a provider, accept a
+    locator, supply time or verification functions, inspect custody, issue an
+    action, or mutate consumption state.
+    """
+    return {
+        "schema": EXPANDED_LENS_ROUTE_REQUEST_SCHEMA,
+        **_validated_expanded_lens_route_request_bindings(
+            workspace, stage=stage, target=target,
+            context_fingerprint=context_fingerprint,
+            extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
+            policy_version=policy_version, catalog_version=catalog_version,
+            action_id=action_id),
+    }
+
+
+def expanded_lens_route_provider_request_fingerprint(request: dict) -> str:
+    if not isinstance(request, dict) or \
+            set(request) != _EXPANDED_LENS_ROUTE_REQUEST_FIELDS or \
+            request.get("schema") != EXPANDED_LENS_ROUTE_REQUEST_SCHEMA:
+        raise ValueError("expanded route provider request is malformed")
+    return hashlib.sha256(json.dumps(
+        request, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+
+
 def _workspace_identity_fingerprint(workspace: str) -> str:
     """Opaque checkout identity used to bind lifecycle evidence.
 
