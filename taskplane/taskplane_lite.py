@@ -4834,516 +4834,188 @@ def activate_review_contract_action(
                     task_slot_override=slot)
 
 
-EXPANDED_LENS_ROUTE_APPROVAL_PROOF_SCHEMA = \
-    "taskplane.expanded-lens-route-control-plane-proof/v1"
+EXPANDED_LENS_ROUTE_REQUEST_SCHEMA = \
+    "taskplane.expanded-lens-route-provider-request/v1"
 EXPANDED_LENS_ROUTE_ACTION_SCHEMA = \
-    EXPANDED_LENS_ROUTE_APPROVAL_PROOF_SCHEMA
-EXPANDED_LENS_ROUTE_APPROVAL_VERIFIER_SCHEMA = \
-    "taskplane.expanded-lens-route-approval-verifier/v1"
-EXPANDED_LENS_ROUTE_APPROVAL_CONSUMPTION_SCHEMA = \
-    "taskplane.expanded-lens-route-approval-consumption/v1"
+    "taskplane.expanded-lens-route-action/v1"
 EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA = \
-    "taskplane.expanded-lens-route-consumption/v1"
-EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS = 60 * 60
+    "taskplane.expanded-lens-route-consumption/v2"
+EXPANDED_LENS_ROUTE_PROVIDER_PROTOCOL = \
+    "taskplane.expanded-route-authority-provider/v1"
+_EXPANDED_LENS_ROUTE_REQUEST_FIELDS = frozenset({
+    "schema", "workspace", "stage", "target", "context_fingerprint",
+    "exact_ordered_lens_ids", "estimated_cost", "policy_version",
+    "catalog_version", "action_id",
+})
 _EXPANDED_LENS_ROUTE_ACTION_FIELDS = frozenset({
-    "schema", "key_id", "proof_id", "workspace_fingerprint", "stage",
-    "target", "context_fingerprint", "extra_lens_ids", "expected_cost",
-    "policy_version", "action_id", "approved_by", "approval_receipt_id",
-    "issued_at", "expires_at", "signature",
-})
-_EXPANDED_LENS_ROUTE_APPROVAL_PROOF_FIELDS = frozenset({
-    "schema", "key_id", "proof_id", "workspace_fingerprint", "stage",
-    "target", "context_fingerprint", "extra_lens_ids", "expected_cost",
-    "policy_version", "action_id", "approved_by", "approval_receipt_id",
-    "issued_at", "expires_at", "signature",
-})
-_EXPANDED_LENS_ROUTE_APPROVAL_VERIFIER_FIELDS = frozenset({
-    "schema", "key_id", "algorithm", "modulus", "exponent",
-})
-_EXPANDED_LENS_ROUTE_APPROVAL_CONSUMPTION_FIELDS = frozenset({
-    "schema", "proof_id", "proof_fingerprint", "action_id", "consumed_at",
+    "schema", "key_id", "repository_source_path", "repository_commit",
+    "source_sha256", "package_sha256", "provider_protocol_version",
+    "workspace", "stage", "target", "context_fingerprint",
+    "exact_ordered_lens_ids", "estimated_cost", "policy_version",
+    "catalog_version", "action_id", "issued_at", "expiry",
+    "approver_identity", "approver_key_fingerprint",
+    "approval_receipt_digest", "seal",
 })
 _EXPANDED_LENS_ROUTE_CONSUMPTION_FIELDS = frozenset({
-    "schema", "action_id", "action_fingerprint",
-    "workspace_fingerprint", "stage", "target", "context_fingerprint",
-    "extra_lens_ids", "expected_cost", "policy_version", "approved_by",
-    "approval_receipt_id", "approval_fingerprint", "consumed_at",
+    "schema", "provider_protocol_version", "locator_fingerprint", "action",
+    "action_fingerprint", "approval_receipt_digest", "consumed_at",
+    "recovered", "seal",
 })
 _EXPANDED_LENS_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _EXPANDED_ROUTE_TEXT_RE = re.compile(r"^[\x21-\x7e]{1,256}$")
-_EXPANDED_ROUTE_HUMAN_RE = re.compile(r"^human:[\x21-\x7e]{1,249}$")
-_EXPANDED_ROUTE_RSA_ALGORITHM = "rsa-pkcs1v15-sha256"
-_EXPANDED_ROUTE_RSA_SHA256_PREFIX = bytes.fromhex(
-    "3031300d060960864801650304020105000420")
 
 
-def _expanded_lens_route_approval_verifier_path(workspace: str) -> str:
-    """Resolve the host-owned anchor only through protected Git metadata."""
-    import storage as runtime_storage
-    try:
-        locator = runtime_storage.load_workspace_locator(workspace)
-    except runtime_storage.StorageIdentityError as exc:
-        raise StateError(
-            workspace, "expanded lens route control-plane locator is invalid",
-            "restore the host-managed Git locator before using expanded "
-            "route authority") from exc
-    if not locator:
-        raise StateError(
-            workspace, "expanded lens route control-plane locator is missing",
-            "only a managed control-plane checkout can consume expanded "
-            "route approval proofs")
-    path = os.path.join(
-        locator["paths"]["state"], "control",
-        "expanded-lens-route-approval-verifier.json")
-    workspace_root = _workspace_identity(workspace)
-    state_root = os.path.realpath(locator["paths"]["state"])
-    resolved = os.path.realpath(path)
-    try:
-        inside_workspace = os.path.commonpath(
-            (workspace_root, resolved)) == workspace_root
-        inside_state = os.path.commonpath(
-            (state_root, resolved)) == state_root
-    except ValueError:
-        inside_workspace = True
-        inside_state = False
-    if inside_workspace or not inside_state:
-        raise StateError(
-            path, "expanded lens route verifier is worker-replaceable",
-            "the host must pin the public verifier outside the worker "
-            "checkout")
-    return path
-
-
-def _expanded_lens_route_trusted_verifier_file(path: str) -> None:
-    """Require one regular owner-only external trust-anchor file."""
-    try:
-        details = os.lstat(path)
-    except OSError as exc:
-        raise StateError(
-            path, f"expanded lens route trusted permissions unavailable ({exc})") \
-            from exc
-    if not stat.S_ISREG(details.st_mode) or \
-            stat.S_IMODE(details.st_mode) != 0o600:
-        raise StateError(
-            path, "expanded lens route trusted permissions are not mode 0600",
-            "let the privileged control plane restore its external public "
-            "verifier; never place private signing material in the checkout")
-
-
-def _expanded_lens_route_approval_key_id(value: dict) -> str:
-    material = {key: value[key]
-                for key in ("algorithm", "modulus", "exponent")}
-    return hashlib.sha256(json.dumps(
-        material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def _expanded_lens_route_approval_verifier(workspace: str) -> dict:
-    """Load public verification material from host-owned external state."""
-    path = _expanded_lens_route_approval_verifier_path(workspace)
-    _expanded_lens_route_trusted_verifier_file(path)
-    verifier = load_json(
-        path, default=None, what="expanded lens route approval verifier")
-    if not isinstance(verifier, dict) or \
-            set(verifier) != _EXPANDED_LENS_ROUTE_APPROVAL_VERIFIER_FIELDS or \
-            verifier.get("schema") != \
-            EXPANDED_LENS_ROUTE_APPROVAL_VERIFIER_SCHEMA or \
-            verifier.get("algorithm") != _EXPANDED_ROUTE_RSA_ALGORITHM or \
-            verifier.get("exponent") != 65_537 or \
-            not isinstance(verifier.get("modulus"), str) or \
-            not re.fullmatch(r"[89a-f][0-9a-f]{511,1023}",
-                             verifier["modulus"]) or \
-            verifier.get("key_id") != \
-            _expanded_lens_route_approval_key_id(verifier):
-        raise StateError(
-            path, "expanded lens route approval verifier is invalid",
-            "restore the exact control-plane public verifier; private signing "
-            "material must never be placed in the worker workspace")
-    return {
-        "key_id": verifier["key_id"],
-        "algorithm": verifier["algorithm"],
-        "modulus": int(verifier["modulus"], 16),
-        "exponent": verifier["exponent"],
-    }
-
-
-def _expanded_lens_route_error(workspace: str, reason: str) -> StateError:
-    return StateError(
-        workspace, reason,
-        "obtain a fresh exact expanded-route action for the current "
-        "Plan/Evaluate context; split the target if approval is unavailable")
-
-
-def _expanded_lens_route_security_time(workspace: str) -> int:
-    """Return host UTC epoch seconds through a private security-clock seam.
-
-    Signed proof bounds are UTC epochs, so a UTC clock is the authoritative
-    comparison source.  Production entry points expose no time override; tests
-    may replace this private seam.  Callers re-read it under one-use locks so
-    queueing cannot preserve an authorization that expires while waiting.
-    """
-    try:
-        observed = _time.time_ns()
-    except (AttributeError, OSError, OverflowError, ValueError) as exc:
-        raise _expanded_lens_route_error(
-            workspace, "expanded route security clock is unavailable") \
-            from exc
-    if isinstance(observed, bool) or not isinstance(observed, int) or \
-            observed < 0:
-        raise _expanded_lens_route_error(
-            workspace, "expanded route security clock is invalid")
-    return observed // 1_000_000_000
-
-
-def _expanded_lens_route_signed_bytes(value: dict) -> bytes:
-    unsigned = {key: item for key, item in value.items()
-                if key != "signature"}
-    return json.dumps(unsigned, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False).encode("utf-8")
-
-
-def expanded_lens_route_action_fingerprint(action: dict) -> str:
-    """Fingerprint the complete signed capability without trusting it."""
-    try:
-        encoded = json.dumps(
-            action, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False, allow_nan=False).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise ValueError("expanded lens route action is not canonical JSON") \
-            from exc
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _validated_expanded_lens_route_bindings(
+def _validated_expanded_lens_route_request_bindings(
         workspace: str, *, stage: str, target: str,
         context_fingerprint: str, extra_lens_ids: list[str],
-        expected_cost: int, policy_version: str, action_id: str) -> dict:
+        expected_cost: int, policy_version: str, catalog_version: str,
+        action_id: str) -> dict:
+    """Validate worker-owned route facts without granting authority."""
     if stage not in {"plan", "evaluate"}:
-        raise _expanded_lens_route_error(
-            workspace, "expanded routes are limited to Plan and Evaluate")
+        raise ValueError("expanded routes are limited to Plan and Evaluate")
     if not isinstance(target, str) or \
-            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(target) or \
-            os.path.isabs(target) or re.match(r"^[A-Za-z]:[\\/]", target):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route target identity is malformed")
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(target):
+        raise ValueError("expanded route target identity is malformed")
     if not isinstance(context_fingerprint, str) or \
             not re.fullmatch(r"[0-9a-f]{64}", context_fingerprint):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route context fingerprint is malformed")
+        raise ValueError("expanded route context fingerprint is malformed")
     if not isinstance(extra_lens_ids, list) or \
             not 1 <= len(extra_lens_ids) <= 26 or \
+            len(set(extra_lens_ids)) != len(extra_lens_ids) or \
             any(not isinstance(lens, str) or
                 not _EXPANDED_LENS_ID_RE.fullmatch(lens)
-                for lens in extra_lens_ids) or \
-            len(set(extra_lens_ids)) != len(extra_lens_ids):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route extra lens identity is malformed")
+                for lens in extra_lens_ids):
+        raise ValueError("expanded route lens identity is malformed")
     if isinstance(expected_cost, bool) or \
             not isinstance(expected_cost, int) or \
             not 1 <= expected_cost <= 1_000_000_000:
-        raise _expanded_lens_route_error(
-            workspace, "expanded route expected cost is malformed")
+        raise ValueError("expanded route expected cost is malformed")
     if not isinstance(policy_version, str) or \
-            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(policy_version):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route policy version is malformed")
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(policy_version) or \
+            not isinstance(catalog_version, str) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(catalog_version):
+        raise ValueError("expanded route policy/catalog version is malformed")
     if not isinstance(action_id, str) or \
             not _TASK_SLOT_RE.fullmatch(action_id):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route action identity is malformed")
+        raise ValueError("expanded route action identity is malformed")
     return {
+        "workspace": _workspace_identity_fingerprint(workspace),
         "stage": stage,
         "target": target,
         "context_fingerprint": context_fingerprint,
-        "extra_lens_ids": list(extra_lens_ids),
-        "expected_cost": expected_cost,
+        "exact_ordered_lens_ids": list(extra_lens_ids),
+        "estimated_cost": expected_cost,
         "policy_version": policy_version,
+        "catalog_version": catalog_version,
         "action_id": action_id,
     }
 
 
-def _expanded_lens_route_approval_proof_fingerprint(value: dict) -> str:
-    return expanded_lens_route_action_fingerprint(value)
-
-
-def _expanded_lens_route_rsa_signature_valid(
-        verifier: dict, proof: dict) -> bool:
-    """Verify RSA PKCS#1 v1.5 SHA-256 using public material only."""
-    modulus = verifier["modulus"]
-    size = (modulus.bit_length() + 7) // 8
-    try:
-        raw = base64.b64decode(
-            str(proof.get("signature") or ""), validate=True)
-    except (ValueError, TypeError):
-        return False
-    if len(raw) != size:
-        return False
-    encoded_signature = int.from_bytes(raw, "big")
-    if encoded_signature >= modulus:
-        return False
-    decoded = pow(
-        encoded_signature, verifier["exponent"], modulus).to_bytes(size, "big")
-    digest_info = _EXPANDED_ROUTE_RSA_SHA256_PREFIX + hashlib.sha256(
-        _expanded_lens_route_signed_bytes(proof)).digest()
-    padding = size - len(digest_info) - 3
-    if padding < 8:
-        return False
-    expected = b"\x00\x01" + (b"\xff" * padding) + b"\x00" + digest_info
-    return hmac.compare_digest(decoded, expected)
-
-
-def _validated_expanded_lens_route_approval_proof(
-        workspace: str, proof: object, *, bindings: dict,
-        current: int) -> dict:
-    if not isinstance(proof, dict) or \
-            set(proof) != _EXPANDED_LENS_ROUTE_APPROVAL_PROOF_FIELDS or \
-            proof.get("schema") != EXPANDED_LENS_ROUTE_APPROVAL_PROOF_SCHEMA:
-        raise _expanded_lens_route_error(
-            workspace, "expanded route control-plane proof schema is malformed")
-    verifier = _expanded_lens_route_approval_verifier(workspace)
-    if proof.get("key_id") != verifier["key_id"] or \
-            not _expanded_lens_route_rsa_signature_valid(verifier, proof):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route control-plane proof signature is invalid")
-    proof_id = str(proof.get("proof_id") or "")
-    issued_at = proof["issued_at"]
-    expires_at = proof["expires_at"]
-    if isinstance(issued_at, bool) or not isinstance(issued_at, int) or \
-            isinstance(expires_at, bool) or not isinstance(expires_at, int):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route control-plane proof time is malformed")
-    if not _TASK_SLOT_RE.fullmatch(proof_id) or issued_at > current or \
-            expires_at <= current or expires_at <= issued_at or \
-            expires_at - issued_at > \
-            EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS:
-        raise _expanded_lens_route_error(
-            workspace, "expanded route control-plane proof is stale or expired")
-    if proof.get("workspace_fingerprint") != \
-            _workspace_identity_fingerprint(workspace):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route action belongs to another workspace")
-    if any(proof.get(field) != value
-           for field, value in bindings.items()) or \
-            not _EXPANDED_ROUTE_HUMAN_RE.fullmatch(
-                str(proof.get("approved_by") or "")) or \
-            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(
-                str(proof.get("approval_receipt_id") or "")):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route control-plane proof mismatches route")
-    return json.loads(json.dumps(proof))
-
-
-def _expanded_lens_route_approval_consumption_path(
-        workspace: str, proof_id: str) -> str:
-    digest = hashlib.sha256(proof_id.encode("utf-8")).hexdigest()
-    return os.path.join(tp_dir(workspace),
-                        "expanded-lens-route-approvals-consumed",
-                        f"{digest}.json")
-
-
-def issue_expanded_lens_route_action(
+def build_expanded_lens_route_authority_request(
         workspace: str, *, stage: str, target: str,
         context_fingerprint: str, extra_lens_ids: list[str],
-        expected_cost: int, policy_version: str, action_id: str,
-        approval_proof: dict | None = None,
-        ttl_seconds: int = EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS) -> dict:
-    """Issue one exact, short-lived Plan/Evaluate expansion capability.
+        expected_cost: int, policy_version: str, catalog_version: str,
+        action_id: str) -> dict:
+    """Serialize the closed request passed to the orchestrator provider.
 
-    The closed action deliberately carries no contract-clear, scope-change,
-    cap-change, or mandatory-floor authority.  Its only effect is to permit
-    the listed extra lenses for the exact current routing context.
-
-    The action issuer accepts only an independently signed, one-use proof.
-    It exposes no proof signer and trusts neither process environment nor a
-    caller-authored actor/authenticated boolean.
+    This adapter intentionally cannot select or launch a provider, accept a
+    locator, supply time or verification functions, inspect custody, issue an
+    action, or mutate consumption state.
     """
-    bindings = _validated_expanded_lens_route_bindings(
-        workspace, stage=stage, target=target,
-        context_fingerprint=context_fingerprint,
-        extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
-        policy_version=policy_version, action_id=action_id)
-    try:
-        ttl = int(ttl_seconds)
-    except (TypeError, ValueError) as exc:
-        raise _expanded_lens_route_error(
-            workspace, "expanded route action time bounds are malformed") \
-            from exc
-    if isinstance(ttl_seconds, bool) or \
-            not 1 <= ttl <= EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS:
-        raise _expanded_lens_route_error(
-            workspace, "expanded route action TTL is invalid")
-    issued_at = _expanded_lens_route_security_time(workspace)
-    approval = _validated_expanded_lens_route_approval_proof(
-        workspace, approval_proof, bindings=bindings, current=issued_at)
-    if approval["expires_at"] - approval["issued_at"] != ttl:
-        raise _expanded_lens_route_error(
-            workspace, "expanded route proof TTL mismatches requested action")
-    proof_id = approval["proof_id"]
-    proof_path = _expanded_lens_route_approval_consumption_path(
-        workspace, proof_id)
-    with file_lock(proof_path):
-        prior = load_json(
-            proof_path, default=None,
-            what="expanded lens route control-plane proof consumption")
-        if prior is not None:
-            if not isinstance(prior, dict) or \
-                    set(prior) != \
-                    _EXPANDED_LENS_ROUTE_APPROVAL_CONSUMPTION_FIELDS or \
-                    prior.get("schema") != \
-                    EXPANDED_LENS_ROUTE_APPROVAL_CONSUMPTION_SCHEMA:
-                raise StateError(
-                    proof_path, "expanded route proof consumption is invalid")
-            raise StateError(
-                proof_path, "expanded route control-plane proof was already "
-                "used (replay)",
-                "obtain one fresh exact human/control-plane proof")
-        issued_at = _expanded_lens_route_security_time(workspace)
-        approval = _validated_expanded_lens_route_approval_proof(
-            workspace, approval, bindings=bindings, current=issued_at)
-        if approval["expires_at"] - approval["issued_at"] != ttl:
-            raise _expanded_lens_route_error(
-                workspace,
-                "expanded route proof TTL mismatches requested action")
-        atomic_write_json(proof_path, {
-            "schema": EXPANDED_LENS_ROUTE_APPROVAL_CONSUMPTION_SCHEMA,
-            "proof_id": proof_id,
-            "proof_fingerprint":
-                _expanded_lens_route_approval_proof_fingerprint(approval),
-            "action_id": action_id,
-            "consumed_at": issued_at,
-        }, sort_keys=True)
-    # The action is the exact externally signed proof.  No worker-visible
-    # downstream signer exists, and no unsigned wrapper can broaden it.
-    return approval
-
-
-def _verify_expanded_lens_route_action_at(
-        workspace: str, action: dict, *, stage: str, target: str,
-        context_fingerprint: str, extra_lens_ids: list[str],
-        expected_cost: int, policy_version: str, action_id: str,
-        current: int) -> dict:
-    """Verify one exact action at an internally supplied security instant."""
-    expected = _validated_expanded_lens_route_bindings(
-        workspace, stage=stage, target=target,
-        context_fingerprint=context_fingerprint,
-        extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
-        policy_version=policy_version, action_id=action_id)
-    if not isinstance(action, dict) or \
-            set(action) != _EXPANDED_LENS_ROUTE_ACTION_FIELDS or \
-            action.get("schema") != EXPANDED_LENS_ROUTE_ACTION_SCHEMA:
-        raise _expanded_lens_route_error(
-            workspace, "expanded route action schema is malformed")
-    verified = _validated_expanded_lens_route_approval_proof(
-        workspace, action, bindings=expected, current=current)
-    proof_path = _expanded_lens_route_approval_consumption_path(
-        workspace, verified["proof_id"])
-    receipt = load_json(
-        proof_path, default=None,
-        what="expanded lens route control-plane proof consumption")
-    expected_receipt = {
-        "schema": EXPANDED_LENS_ROUTE_APPROVAL_CONSUMPTION_SCHEMA,
-        "proof_id": verified["proof_id"],
-        "proof_fingerprint":
-            _expanded_lens_route_approval_proof_fingerprint(verified),
-        "action_id": action_id,
-    }
-    if not isinstance(receipt, dict) or \
-            set(receipt) != _EXPANDED_LENS_ROUTE_APPROVAL_CONSUMPTION_FIELDS or \
-            any(receipt.get(field) != value
-                for field, value in expected_receipt.items()) or \
-            not isinstance(receipt.get("consumed_at"), int):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route action was not issued by the "
-            "control-plane proof consumer")
-    return verified
-
-
-def verify_expanded_lens_route_action(
-        workspace: str, action: dict, *, stage: str, target: str,
-        context_fingerprint: str, extra_lens_ids: list[str],
-        expected_cost: int, policy_version: str, action_id: str) -> dict:
-    """Verify an action using only the internally owned security clock."""
-    return _verify_expanded_lens_route_action_at(
-        workspace, action, stage=stage, target=target,
-        context_fingerprint=context_fingerprint,
-        extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
-        policy_version=policy_version, action_id=action_id,
-        current=_expanded_lens_route_security_time(workspace))
-
-
-def _expanded_lens_route_consumption_path(
-        workspace: str, action_id: str) -> str:
-    digest = hashlib.sha256(action_id.encode("utf-8")).hexdigest()
-    return os.path.join(tp_dir(workspace), "expanded-lens-route-consumed",
-                        f"{digest}.json")
-
-
-def expanded_lens_route_action_consumed(
-        workspace: str, action_id: str) -> bool:
-    if not isinstance(action_id, str) or \
-            not _TASK_SLOT_RE.fullmatch(action_id):
-        raise _expanded_lens_route_error(
-            workspace, "expanded route action identity is malformed")
-    path = _expanded_lens_route_consumption_path(workspace, action_id)
-    receipt = load_json(
-        path, default=None, what="expanded lens route consumption receipt")
-    if receipt is None:
-        return False
-    if not isinstance(receipt, dict) or \
-            set(receipt) != _EXPANDED_LENS_ROUTE_CONSUMPTION_FIELDS or \
-            receipt.get("schema") != EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA:
-        raise StateError(path, "expanded lens route consumption is invalid")
-    return True
-
-
-def consume_expanded_lens_route_action(
-        workspace: str, action: dict, *, stage: str, target: str,
-        context_fingerprint: str, extra_lens_ids: list[str],
-        expected_cost: int, policy_version: str, action_id: str) -> dict:
-    """Atomically consume one verified action; its action id cannot replay."""
-    verified = verify_expanded_lens_route_action(
-        workspace, action, stage=stage, target=target,
-        context_fingerprint=context_fingerprint,
-        extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
-        policy_version=policy_version, action_id=action_id)
-    path = _expanded_lens_route_consumption_path(workspace, action_id)
-    with file_lock(path):
-        prior = load_json(
-            path, default=None, what="expanded lens route consumption receipt")
-        if prior is not None:
-            raise StateError(
-                path, "expanded lens route action was already consumed (replay)",
-                "split the target or obtain a fresh action id for the current "
-                "route")
-        # The pre-lock check rejects malformed/tampered input early.  This
-        # second check owns the consumption timestamp and revalidates expiry
-        # under the replay lock immediately before receipt creation.
-        current = _expanded_lens_route_security_time(workspace)
-        verified = _verify_expanded_lens_route_action_at(
-            workspace, action, stage=stage, target=target,
+    return {
+        "schema": EXPANDED_LENS_ROUTE_REQUEST_SCHEMA,
+        **_validated_expanded_lens_route_request_bindings(
+            workspace, stage=stage, target=target,
             context_fingerprint=context_fingerprint,
             extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
-            policy_version=policy_version, action_id=action_id,
-            current=current)
-        receipt = {
-            "schema": EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA,
-            "action_id": action_id,
-            "action_fingerprint": expanded_lens_route_action_fingerprint(
-                verified),
-            "workspace_fingerprint": verified["workspace_fingerprint"],
-            "stage": stage,
-            "target": target,
-            "context_fingerprint": context_fingerprint,
-            "extra_lens_ids": list(extra_lens_ids),
-            "expected_cost": expected_cost,
-            "policy_version": policy_version,
-            "approved_by": verified["approved_by"],
-            "approval_receipt_id": verified["approval_receipt_id"],
-            "approval_fingerprint":
-                _expanded_lens_route_approval_proof_fingerprint(verified),
-            "consumed_at": current,
-        }
-        atomic_write_json(path, receipt, sort_keys=True)
-    return receipt
+            policy_version=policy_version, catalog_version=catalog_version,
+            action_id=action_id),
+    }
+
+
+def expanded_lens_route_provider_request_fingerprint(request: dict) -> str:
+    if not isinstance(request, dict) or \
+            set(request) != _EXPANDED_LENS_ROUTE_REQUEST_FIELDS or \
+            request.get("schema") != EXPANDED_LENS_ROUTE_REQUEST_SCHEMA:
+        raise ValueError("expanded route provider request is malformed")
+    return hashlib.sha256(json.dumps(
+        request, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def project_expanded_lens_route_provider_receipt(
+        request: dict, receipt: dict) -> dict:
+    """Project one provider result after trusted-process provenance is checked.
+
+    Structural projection is not signature verification.  The caller must
+    obtain this value from the orchestrator-launched, content-addressed
+    provider process; worker bytes alone never confer authority.
+    """
+    if not isinstance(request, dict) or \
+            set(request) != _EXPANDED_LENS_ROUTE_REQUEST_FIELDS or \
+            request.get("schema") != EXPANDED_LENS_ROUTE_REQUEST_SCHEMA:
+        raise ValueError("expanded route provider request is malformed")
+    if not isinstance(receipt, dict) or \
+            set(receipt) != _EXPANDED_LENS_ROUTE_CONSUMPTION_FIELDS or \
+            receipt.get("schema") != EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA or \
+            receipt.get("provider_protocol_version") != \
+            EXPANDED_LENS_ROUTE_PROVIDER_PROTOCOL or \
+            not isinstance(receipt.get("recovered"), bool):
+        raise ValueError("expanded route provider receipt is malformed")
+    action = receipt.get("action")
+    if not isinstance(action, dict) or \
+            set(action) != _EXPANDED_LENS_ROUTE_ACTION_FIELDS or \
+            action.get("schema") != EXPANDED_LENS_ROUTE_ACTION_SCHEMA or \
+            action.get("provider_protocol_version") != \
+            EXPANDED_LENS_ROUTE_PROVIDER_PROTOCOL:
+        raise ValueError("expanded route provider action is malformed")
+    for field in _EXPANDED_LENS_ROUTE_REQUEST_FIELDS - {"schema"}:
+        if action.get(field) != request.get(field):
+            raise ValueError(
+                f"expanded route provider action {field} mismatches request")
+    for field in (
+            "key_id", "source_sha256", "package_sha256",
+            "approver_key_fingerprint",
+            "approval_receipt_digest", "locator_fingerprint",
+            "action_fingerprint", "seal"):
+        value = (receipt.get(field)
+                 if field in receipt else action.get(field))
+        if not isinstance(value, str) or \
+                not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError(
+                f"expanded route provider receipt {field} is malformed")
+    if action.get("repository_source_path") != \
+            "taskplane/expanded_route_authority_provider.py" or \
+            not isinstance(action.get("repository_commit"), str) or \
+            not re.fullmatch(
+                r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                action["repository_commit"]) or \
+            not isinstance(action.get("approver_identity"), str) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(
+                action["approver_identity"]):
+        raise ValueError(
+            "expanded route provider provenance is malformed")
+    if receipt.get("approval_receipt_digest") != \
+            action.get("approval_receipt_digest"):
+        raise ValueError(
+            "expanded route provider approval digest is inconsistent")
+    action_fingerprint = hashlib.sha256(json.dumps(
+        action, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+    if receipt.get("action_fingerprint") != action_fingerprint:
+        raise ValueError(
+            "expanded route provider action fingerprint is inconsistent")
+    for field in ("issued_at", "expiry", "consumed_at", "estimated_cost"):
+        value = (receipt.get(field)
+                 if field in receipt else action.get(field))
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"expanded route provider receipt {field} is malformed")
+    if action["issued_at"] > receipt["consumed_at"] or \
+            receipt["consumed_at"] >= action["expiry"]:
+        raise ValueError(
+            "expanded route provider receipt time order is invalid")
+    return json.loads(json.dumps(receipt))
 
 
 def _workspace_identity_fingerprint(workspace: str) -> str:
