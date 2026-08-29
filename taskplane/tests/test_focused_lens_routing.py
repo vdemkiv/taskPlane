@@ -232,53 +232,17 @@ def test_authenticated_provider_receipt_unblocks_only_its_exact_plan_route(
             expanded_route_provider_receipt=receipt)
 
 
-def test_review_kernel_dispatches_authenticated_expanded_evaluate_route(
+def test_review_kernel_evaluate_bypasses_router_provider_and_lens_leases(
         tmp_path, monkeypatch):
     workspace = tmp_path / "evaluate-repo"
     source = workspace / "src" / "service.py"
     source.parent.mkdir(parents=True)
     source.write_text("def changed():\n    return 2\n", encoding="utf-8")
-    catalog = lens.load_catalog()
-    mapped = lens.route(
-        ["src/service.py"], task_type="reliability", stage="build",
-        breadth="routed", requirement_text="authenticated route",
-        content_by_file={"src/service.py": source.read_text(encoding="utf-8")})
-    overflow, refused = review._focused_evaluate_route(
-        mapped, catalog=catalog,
-        target={"fingerprint": "a" * 64, "head": "abc123"},
-        requirement={"id": "R-0001", "text": "focused review"},
-        acceptance=["the approved expanded route executes"],
-        design_contract={"schema": "taskplane.design/v1"},
-        diff={"files": ["src/service.py"], "changed_symbols": ["changed"]},
-        impact={"touched": ["src"], "total_impacted": 1, "unknown": []},
-        test_evidence={"summary": "passed"}, unresolved_findings=[],
-        routing_content={"src/service.py": source.read_text(encoding="utf-8")},
-        mandatory_lenses={"architecture", "code-quality", "testability",
-                          "security", "product"})
-    observed = []
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Evaluate must not route or consult authority")
 
-    class ProviderReceipt(dict):
-        pass
-
-    class ProviderClient:
-        def assert_authenticated(self, receipt, request):
-            observed.append((receipt, request))
-
-    monkeypatch.setattr(
-        review.terminal_truth_runtime, "ExpandedRouteProviderClient",
-        ProviderClient)
-    monkeypatch.setattr(
-        review.terminal_truth_runtime, "ExpandedRouteProviderReceipt",
-        ProviderReceipt)
-    monkeypatch.setattr(
-        review, "_focused_evaluate_route",
-        lambda *_args, **_kwargs: (
-            copy.deepcopy(overflow), copy.deepcopy(refused)))
-    client = ProviderClient()
-    receipt = ProviderReceipt({
-        "provider_protocol_version": "provider/v1",
-        "action_fingerprint": "b" * 64,
-    })
+    monkeypatch.setattr(review, "_focused_evaluate_route", forbidden)
+    monkeypatch.setattr(review, "apply_expanded_route_authority", forbidden)
     started = review.start_review(
         str(workspace),
         target={"fingerprint": "a" * 64, "head": "abc123"},
@@ -293,21 +257,18 @@ def test_review_kernel_dispatches_authenticated_expanded_evaluate_route(
         requirement={"id": "R-0001", "text": "focused review"},
         acceptance=["the approved expanded route executes"],
         contracts=["contract:authority.expanded-lens-route"], stage="build",
-        task_type="reliability", router=lambda: copy.deepcopy(mapped),
+        task_type="reliability", router=forbidden,
         routing_content={"src/service.py": source.read_text(encoding="utf-8")},
         design_contract={
             "schema": "taskplane.design/v1",
-            "stage_policy": {"evaluate": {"selection": "focused"}}},
-        expanded_route_provider_client=client,
-        expanded_route_provider_receipt=receipt)
+            "stage_policy": {"evaluate": {"selection": "focused"}}})
 
-    assert len(observed) == 1
     assert started["status"] == "ready"
-    assert len(started["slots"]) == 5
-    assert {lens_id for slot in started["slots"]
-            for lens_id in slot["lens_ids"]} == set(overflow["selected"])
-    assert started["focused_route"]["expanded_route_authority"][
-        "requested_route_fingerprint"] == overflow["route_fingerprint"]
+    assert started["slots"] == []
+    assert started["expected_lenses"] == []
+    assert started["lens_execution_policy"] == "none"
+    assert "focused_route" not in started
+    assert "routing_decision" not in started
 
 
 def test_build_and_fix_stage_adapter_is_closed(tmp_path):

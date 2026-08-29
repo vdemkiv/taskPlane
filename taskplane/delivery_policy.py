@@ -21,11 +21,11 @@ STAGE_LENS_EXECUTION_RECEIPT_SCHEMA = \
 DELIVERY_MODES = frozenset({"build", "review", "design"})
 AUTOMATIC_LENS_MODES = frozenset({"design"})
 # ``EXECUTION_STAGES`` is retained for the v1 zero-lens authorization reader.
-# New delivery decisions use the closed routed/zero split below so Evaluate is
-# never accidentally treated as an editing-time zero-lens stage.
+# New delivery decisions use the closed routed/zero split below. Evaluate is
+# judgment-only and therefore belongs to the zero-lens side with Build/Fix/EM.
 EXECUTION_STAGES = frozenset({"build", "fix", "evaluate", "em"})
-ROUTED_LENS_STAGES = frozenset({"product", "design", "plan", "evaluate"})
-ZERO_LENS_STAGES = frozenset({"build", "fix", "em"})
+ROUTED_LENS_STAGES = frozenset({"product", "design", "plan"})
+ZERO_LENS_STAGES = frozenset({"build", "fix", "evaluate", "em"})
 DELIVERY_STAGES = ROUTED_LENS_STAGES | ZERO_LENS_STAGES
 TERMINAL_OUTCOMES = frozenset({
     "passed", "failed", "cancelled", "interrupted", "handed_off",
@@ -363,8 +363,8 @@ def validate_stage_lens_execution(
 ) -> dict[str, Any]:
     """Validate the routed/zero-lens boundary against native lifecycle data.
 
-    Product, Design, Plan, and Evaluate may contain focused lens starts.
-    Build, Fix, and EM fail closed on any such start. Every stage attempt must
+    Product, Design, and Plan may contain focused lens starts. Build, Fix,
+    Evaluate, and EM fail closed on any such start. Every stage attempt must
     carry matching terminal evidence for success, failure, cancellation,
     interruption, or handoff in both native sources.
     """

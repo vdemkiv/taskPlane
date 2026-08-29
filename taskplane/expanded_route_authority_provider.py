@@ -554,7 +554,7 @@ def _validate_request(value: object) -> dict[str, Any]:
             value.get("schema") != REQUEST_SCHEMA:
         raise ProviderError("request", "expanded route request schema is malformed")
     request = dict(value)
-    if request.get("stage") not in {"plan", "evaluate"}:
+    if request.get("stage") != "plan":
         raise ProviderError("request", "expanded route request stage is invalid")
     for field in ("workspace", "context_fingerprint"):
         if not isinstance(request.get(field), str) or \

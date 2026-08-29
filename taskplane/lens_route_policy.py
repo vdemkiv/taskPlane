@@ -19,8 +19,8 @@ POLICY_VERSION = "focused-routing/v1"
 DISPOSITIONS = frozenset({
     "execute_deep", "execute_light", "covered_by", "not_applicable",
 })
-ROUTED_STAGES = frozenset({"product", "design", "plan", "evaluate"})
-_BOUNDED_STAGES = frozenset({"plan", "evaluate"})
+ROUTED_STAGES = frozenset({"product", "design", "plan"})
+_BOUNDED_STAGES = frozenset({"plan"})
 MAX_ARTIFACT_BYTES = 128 * 1024
 
 
@@ -105,7 +105,7 @@ def _validate_context(context: Any, ids: list[str], catalog_fp: str,
     stage = normalized.get("stage")
     if stage not in ROUTED_STAGES:
         raise LensRoutePolicyError(
-            "context stage must be product, design, plan, or evaluate")
+            "context stage must be product, design, or plan")
     if not isinstance(normalized.get("target"), str) or not normalized["target"]:
         raise LensRoutePolicyError("context target must be a non-empty string")
     if normalized.get("policy_version") != policy_version:

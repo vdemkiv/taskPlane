@@ -5,8 +5,8 @@ loop-engine line ratchet keeps holding and this concern owns its own file.
 
 THE PERFORMANCE REGRESSION THIS CLOSES. Measured over v3 phase 3: agents
 spent 41 percent of shell wall-clock rebuilding, one shell call at a time,
-facts the engine already held — which criteria exist, which lenses routed,
-what the diff touched, which graph nodes are impacted, whether the suite
+facts the engine already held — which criteria exist, what the diff touched,
+which graph nodes are impacted, whether the suite
 passed. At roughly eighteen seconds per shell call (a model turn plus its
 execution), assembling a verdict by hand cost about sixty tool calls per
 evaluator run. This module hands all of it over in one.
@@ -20,9 +20,8 @@ owes is exactly the reasoning it always owed.
 
 WHY THIS MODULE IS DELIBERATELY NOT IN tp.VALIDATOR_SURFACE. The bundle is
 UNTRUSTED INPUT. Criteria and graph dispositions are checked by the gate,
-while routed lens obligations are cited from the immutable decision already
-owned by the ReviewKernel and checked against that same decision. The bundle
-never maps again and therefore cannot drift from a fail-closed kernel.
+while the zero-lens Evaluate policy prevents the bundle from inventing review
+routes or verdict obligations. The bundle never maps lenses.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ import host_capabilities
 import storage as runtime_storage
 
 
-EVIDENCE_JUDGMENT_KEYS = ("status", "verdict", "evidence", "blockers")
+EVIDENCE_JUDGMENT_KEYS = ("status", "verdict", "evidence")
 
 
 def review_dor_evidence(dor: dict) -> dict:
@@ -98,7 +97,6 @@ def _verdict_template(out: dict) -> dict:
         "requirement": str(out.get("req") or ""),
         "verdict": "",
         "criteria": list(out.get("criteria") or []),
-        "lenses": list(out.get("lenses") or []),
         "graph": {
             "dispositions": list(graph.get("dispositions") or []),
             "requirements_checked": [],
@@ -287,30 +285,6 @@ def evidence(ws: str, task_id: "str | None" = None,
     out["criteria"] = [{"criterion": c, "status": "", "evidence": ""}
                        for c in loop._criteria_for(ws, state, task)]
 
-    # --- which lenses owe a verdict. Consume the one live ReviewKernel
-    #     decision. Mapping here would create a second truth and can turn a
-    #     terminal impact_incomplete/zero-slot decision into fresh work.
-    try:
-        binding = loop.review_kernel_binding(state, "evaluate", task)
-        if not binding:
-            raise RuntimeError(
-                "loop state has no exact evaluator ReviewKernel binding")
-        kernel_ws = str(binding.get("workspace") or ws)
-        obligations = _canonical_kernel_obligations(
-            kernel_ws, loop.EVALUATE_ROUTE_STAGE,
-            run_id=binding["run_id"])
-        out["review_kernel"] = obligations["citation"]
-        out["lenses"] = obligations["lenses"]
-        out["lenses_not_applicable"] = obligations["not_applicable"]
-        if obligations["error"]:
-            out["lenses_error"] = obligations["error"]
-    except Exception as e:
-        out["lenses"] = []
-        out["lenses_not_applicable"] = []
-        out["lenses_error"] = (f"{e.__class__.__name__}: {e} — route the "
-                               "ReviewKernel first; do not independently "
-                               "remap or submit without its decision")
-
     # --- graph obligations, when the loop governs the graph
     if state.get("graph_governance"):
         try:
@@ -351,9 +325,9 @@ def evidence(ws: str, task_id: "str | None" = None,
     out["failures"] = []
     out["note"] = ("Judgment slots are empty by design — the engine states "
                    "what must be proven, it never proves it. Fill status/"
-                   "evidence per criterion and verdict/blockers per lens, "
-                   "set verdict to 'pass' only if every one holds, then "
-                   "submit. An unfilled slot is refused at the gate.")
+                   "evidence per criterion, record findings, and set verdict "
+                   "to 'pass' only if every obligation holds. An unfilled "
+                   "slot is refused at the gate.")
 
     out["verdict_template"] = _verdict_template(out)
     if write:
@@ -370,5 +344,5 @@ def evidence(ws: str, task_id: "str | None" = None,
     tp.trace(ws, "evidence_bundle", task=task.get("id"),
              suite_cited=bool((out.get("suite") or {}).get("cited")),
              criteria=len(out.get("criteria") or []),
-             lenses=len(out.get("lenses") or []))
+             lens_worker_start_count=0)
     return out

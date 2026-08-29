@@ -4851,7 +4851,7 @@ def _validated_expanded_lens_route_request_bindings(
         expected_cost: int, policy_version: str, catalog_version: str,
         action_id: str) -> dict:
     """Validate worker-owned route facts without granting authority."""
-    if stage not in {"plan", "evaluate"}:
+    if stage != "plan":
         raise ValueError("expanded routes are limited to Plan and Evaluate")
     if not isinstance(target, str) or \
             not _EXPANDED_ROUTE_TEXT_RE.fullmatch(target):

@@ -25,7 +25,7 @@ def _workspace(path: Path) -> Path:
 
 def _request(workspace: Path, **overrides: object) -> dict:
     values: dict[str, object] = {
-        "stage": "evaluate",
+        "stage": "plan",
         "target": "LR-03@candidate",
         "context_fingerprint": CONTEXT,
         "extra_lens_ids": EXTRA_LENSES,
@@ -78,6 +78,7 @@ def test_request_is_closed_deterministic_and_contains_no_authority_seams(
     [
         {"stage": "build"},
         {"stage": "fix"},
+        {"stage": "evaluate"},
         {"target": ""},
         {"context_fingerprint": "short"},
         {"extra_lens_ids": []},

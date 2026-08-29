@@ -39,7 +39,6 @@ def _value():
         "task": "t1", "requirement": "R-0006", "verdict": "pass",
         "criteria": [{"criterion": "schema output", "status": "met",
                       "evidence": "test:1"}],
-        "lenses": [{"lens": "backend", "verdict": "pass", "blockers": 0}],
         "graph": {
             "dispositions": [{"node": "contract:evaluation-output",
                               "status": "contract-verified",
@@ -106,7 +105,7 @@ def test_contract_rejects_escape_and_path_not_already_allowed(tmp_path):
     (lambda row: row.update(schema="taskplane.evaluator-output/v0"),
      "const_mismatch"),
     (lambda row: row.update(extra="not allowed"), "extra_field"),
-    (lambda row: row["lenses"][0].update(blockers=True), "type_mismatch"),
+    (lambda row: row.update(lenses=[]), "extra_field"),
 ])
 def test_schema_invalid_output_never_passes(tmp_path, mutation, code):
     row = _value()
@@ -159,6 +158,15 @@ def test_native_and_file_transport_admit_byte_identical_canonical_output(
     assert native_result["canonical_bytes"] == file_result["canonical_bytes"]
     assert native_result["sha256"] == file_result["sha256"]
     assert native_result["value"] == file_result["value"] == row
+
+
+def test_evaluator_schema_has_no_lens_route_or_slot_surface():
+    schema = output.evaluator_output_schema()
+    properties = schema["properties"]
+    assert "lenses" not in properties
+    assert "lens_routes" not in properties
+    assert "slots" not in properties
+    assert "dispositions" not in properties
 
 
 @pytest.mark.parametrize("field", [

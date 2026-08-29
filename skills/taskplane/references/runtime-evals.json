@@ -13,7 +13,7 @@
     },
     {
       "id": "graph-before-selective-review",
-      "steps": ["evaluate", "em"],
+      "steps": ["em"],
       "checkpoint": "before_submit",
       "class": "recoverable",
       "rule": "Derive graph quality and complete blast radius before the one selective lens mapping.",
@@ -23,12 +23,22 @@
     },
     {
       "id": "one-shared-review-context",
-      "steps": ["evaluate", "em"],
+      "steps": ["em"],
       "checkpoint": "before_submit",
       "class": "recoverable",
       "rule": "Seal one immutable diff, impact, requirement, and acceptance context before lens dispatch; collect every leased result into one canonical revision.",
       "required_facts": ["shared_review_context", "lens_results_collected"],
       "correction": "Use the persisted ReviewKernel envelope and its leased result slots. Do not let lenses re-read the repository to recreate diff or impact; collect the canonical revision before submitting pass.",
+      "max_corrections": 1
+    },
+    {
+      "id": "zero-lens-evaluate-evidence",
+      "steps": ["evaluate"],
+      "checkpoint": "before_submit",
+      "class": "recoverable",
+      "rule": "Evaluate seals the exact diff, impact, requirement, acceptance criteria, tests, Design conformance, and provenance without any lens route, slot, disposition, retry, lease, or lens-result collection.",
+      "required_facts": ["graph_before_route", "shared_review_context", "output_schema_declared", "output_schema_validated", "output_producer_observed"],
+      "correction": "Return to the existing zero-lens evaluator output contract. Complete the evidence judgment against its sealed context; do not create or collect lens work.",
       "max_corrections": 1
     },
     {

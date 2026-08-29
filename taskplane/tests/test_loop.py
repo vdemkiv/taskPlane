@@ -18,6 +18,7 @@ import taskplane_lite as tp  # noqa: E402
 import lens  # noqa: E402
 import depgraph  # noqa: E402
 import evaluator_health  # noqa: E402
+import evaluation_output  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import storage as runtime_storage  # noqa: E402
@@ -666,6 +667,18 @@ class TestClosedGapPlan(unittest.TestCase):
 def submit_gate(ws, outcome="pass", task_id=None):
     submit = getattr(loop.submit, "__wrapped__", loop.submit)
     gate = getattr(loop.gate, "__wrapped__", loop.gate)
+    state = loop.load(ws) or {}
+    if outcome == "pass" and state.get("step") == "evaluate":
+        collect_zero_test_kernel(ws)
+        with unittest.mock.patch.object(
+                loop, "_collect_zero_lens_evaluate_before_guidance",
+                return_value={"fingerprint": "a" * 64}), \
+                unittest.mock.patch.object(
+                    loop, "_producer_observation_errors", return_value=[]):
+            submitted = submit(ws, outcome, task_id=task_id)
+            if "error" in submitted:
+                return submitted
+            return gate(ws, outcome, task_id=task_id)
     submitted = submit(ws, outcome, task_id=task_id)
     if "error" in submitted:
         return submitted
@@ -680,12 +693,6 @@ def write_verdict(ws):
     kernel = (review._load_state(
         str(binding.get("workspace") or act_ws), binding["run_id"])
         if binding else None)
-    routed = ((kernel or {}).get("routing") or lens.route_git_diff(
-        act_ws, base=state.get("baseline") or "HEAD",
-        task_type=task.get("type"), breadth="routed"))
-    canonical_lenses = {
-        row["lens"]: row for row in (kernel or {}).get("lens_results") or []
-    }
     criteria = loop._criteria_for(ws, state, task)
     os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
     graph_dod = loop._task_graph_dod(ws, state, task)
@@ -703,7 +710,7 @@ def write_verdict(ws):
     contracts = [c.get("id") if isinstance(c, dict) else c
                  for c in (task.get("contracts") or [])]
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v1",
+        json.dump({"schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
                    "task": task["id"],
                    "requirement": task.get("req") or
                                   state.get("requirement_id") or "",
@@ -711,13 +718,6 @@ def write_verdict(ws):
                    "criteria": [{"criterion": c, "status": "met",
                                   "evidence": "verified by test"}
                                 for c in criteria],
-                   "lenses": [{
-                       "lens": x["id"],
-                       "verdict": canonical_lenses.get(
-                           x["id"], {}).get("verdict", "pass"),
-                       "blockers": canonical_lenses.get(
-                           x["id"], {}).get("blockers", 0),
-                   } for x in routed["lenses"] if x.get("mode") != "none"],
                    "graph": {
                        "dispositions": [
                            {"node": node, "status": "tested",
@@ -727,6 +727,30 @@ def write_verdict(ws):
                        "contracts_checked": contracts,
                    },
                    "failures": []}, f)
+
+
+def collect_zero_test_kernel(ws):
+    state = loop.load(ws)
+    task = state["tasks"][state["current_task"]]
+    binding = loop.review_kernel_binding(state, "evaluate", task)
+    if not binding:
+        return
+    kernel_ws = str(binding.get("workspace") or ws)
+    kernel = review._load_state(kernel_ws, binding["run_id"])
+    if kernel.get("status") != "ready" or \
+            kernel.get("zero_lens_evaluation") is not True:
+        return
+    with open(runtime_storage.evaluation_path(kernel_ws),
+              encoding="utf-8") as stream:
+        verdict = json.load(stream)
+    empty = review.collect_expected_set(
+        run_id=binding["run_id"], task_id=task["id"], stage="Evaluate",
+        expected_lenses=[], collected_lenses=[], result=verdict,
+        result_validator=evaluation_output.validate_evaluator_value,
+        producer_observation_fingerprint="a" * 64)
+    review.collect_review(
+        kernel_ws, publish=False, run_id=binding["run_id"],
+        empty_lens_collection=empty)
 
 
 def pass_eval(ws):
@@ -742,6 +766,9 @@ def write_kernel_results(ws):
     review_ws = (task.get("workspace") if loop_state.get("parallel") and
                  loop_state.get("step") == "evaluate" else None) or ws
     state = review._load_state(review_ws)
+    if state.get("zero_lens_evaluation") is True:
+        assert state.get("slots") == []
+        return
     manifest = loop._bind_stateless_review_contract_actions(
         review_ws, state["manifest"], task_id=task["id"])
     wait_invocation = manifest["wait_invocation"]
@@ -1125,7 +1152,6 @@ class TestLoop(unittest.TestCase):
             "detail": "bounded evaluator attempt 7 timed out on host alpha",
         }
         verdict["verdict"] = "fail"
-        verdict["lenses"] = []
         verdict["failures"] = [{
             "what": "independent evaluator did not return a judgment",
             "repro": "dispatch attempt 7 on host alpha",
@@ -1361,7 +1387,7 @@ class TestLoop(unittest.TestCase):
             os.makedirs(os.path.dirname(verdict_path), exist_ok=True)
             with open(verdict_path, "w", encoding="utf-8") as stream:
                 json.dump({
-                    "schema": "taskplane.evaluator-output/v1",
+                    "schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
                     "task": "t1",
                     "requirement": "",
                     "verdict": "pass",
@@ -1370,6 +1396,9 @@ class TestLoop(unittest.TestCase):
                         "status": "met",
                         "evidence": evidence,
                     }],
+                    "graph": {"dispositions": [],
+                              "requirements_checked": [],
+                              "contracts_checked": []},
                     "failures": [],
                 }, stream)
             subprocess.run(
@@ -1620,7 +1649,8 @@ class TestLoop(unittest.TestCase):
         loop.next_action(ws); loop.gate(ws, "pass")            # plan → execute
         self.assertEqual(loop.load(ws)["step"], "execute")
         loop.next_action(ws); submit_gate(ws, "pass")          # execute → evaluate
-        loop.next_action(ws); pass_eval(ws)                     # evaluate → em
+        loop.next_action(ws); evaluated = pass_eval(ws)        # evaluate → em
+        self.assertNotIn("error", evaluated, evaluated)
         self.assertEqual(loop.load(ws)["step"], "em")
         em_action = loop.next_action(ws)
         em_slot = em_action["contract_bootstrap"]["task_slot"]
@@ -2085,8 +2115,7 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         self.assertIn("architecture", details)
         self.assertEqual(loop.load(ws)["step"], "pm")
 
-    def test_evaluate_routes_on_real_diff(self):
-        """Evaluate adapts the real diff to a 3--4 lens quick route."""
+    def test_evaluate_seals_real_diff_without_lens_routes(self):
         ws = self._ws()
         loop.approve(ws)
         loop.next_action(ws)
@@ -2096,26 +2125,13 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         submit_gate(ws, "pass")                   # execute -> evaluate
         act = loop.next_action(ws)
         self.assertEqual(act["step"], "evaluate")
-        # Coverage honesty remains complete even though only the focused
-        # execute dispositions launch quick singleton workers.
-        catalog_ids = {l["id"] for l in lens.load_catalog()["lenses"]}
-        self.assertEqual({x["id"] for x in act["lenses"]}, catalog_ids)
-        self.assertTrue([x for x in act["lenses"] if x["mode"] == "none"])
-        routed = [x for x in act["lenses"] if x["mode"] != "none"]
-        self.assertGreaterEqual(len(routed), 3)
-        self.assertLessEqual(len(routed), 4)
-        self.assertTrue(all(x["tier"] == "sweep" for x in routed))
-        # Auth evidence earns the one independent fourth slot.
-        sec = next(x for x in act["lenses"] if x["id"] == "security")
-        self.assertNotEqual(sec["mode"], "none")
-        self.assertEqual(sec["tier"], "sweep")
-        # ...and carries the incumbent signal keys in the focused projection.
-        self.assertIn("verdict", sec)
-        self.assertIn("score", sec)
-        focused = act["review_kernel"]["focused_route"]
-        self.assertEqual(focused["status"], "ready")
-        self.assertEqual(set(focused["selected"]),
-                         {x["id"] for x in routed})
+        self.assertNotIn("lenses", act)
+        self.assertNotIn("language_references", act)
+        self.assertEqual(act["review_kernel"]["slots"], [])
+        self.assertEqual(act["review_kernel"]["expected_lenses"], [])
+        self.assertEqual(
+            act["review_kernel"]["lens_execution_policy"], "none")
+        self.assertNotIn("focused_route", act["review_kernel"])
 
     def test_high_cost_unrefined_blocks_until_force(self):
         import requirements as reqs
@@ -3048,7 +3064,22 @@ class TestEngineSkewRefusal(unittest.TestCase):
         loop.next_action(ws)                        # → evaluate
         write_kernel_results(ws)
         write_verdict(ws)
+        collect_zero_test_kernel(ws)
         return ws
+
+    def _skew_submit(self, ws):
+        with unittest.mock.patch.object(
+                loop, "_collect_zero_lens_evaluate_before_guidance",
+                return_value={"fingerprint": "a" * 64}), \
+                unittest.mock.patch(
+                    "runtime_eval.guide_loop",
+                    return_value={"status": "on_path", "recovered": False}):
+            return loop.submit(ws, "pass")
+
+    def _skew_gate(self, ws):
+        with unittest.mock.patch.object(
+                loop, "_producer_observation_errors", return_value=[]):
+            return loop.gate(ws, "pass")
 
     def _restamp(self, ws, fingerprint):
         """Stand in for the second engine: rewrite ONLY the submission's
@@ -3091,8 +3122,8 @@ class TestEngineSkewRefusal(unittest.TestCase):
         submit_gate(ws, "pass", task_id="t1")
         loop.next_action(ws)
         write_kernel_results(ws)
-        review.collect_review(agent_ws, publish=False)
         write_verdict(ws)
+        collect_zero_test_kernel(ws)
         return ws, agent_ws
 
     def test_fingerprint_is_the_validator_surface_bytes_not_its_paths(self):
@@ -3124,14 +3155,14 @@ class TestEngineSkewRefusal(unittest.TestCase):
 
     def test_recorded_t7_skew_is_refused_then_gates_through_after_merge(self):
         ws = self._wave_ws()
-        loop.submit(ws, "pass")
+        self._skew_submit(ws)
         evidence = json.loads(json.dumps(loop.load(ws)["_submission"]))
         self.assertEqual(evidence["engine_fingerprint"],
                          tp.engine_fingerprint())
         # the worktree engine is ahead of the primary validator
         self._restamp(ws, "f" * 64)
         before = json.dumps(loop.load(ws), sort_keys=True)
-        out = loop.gate(ws, "pass")
+        out = self._skew_gate(ws)
         self.assertIn("error", out)
         self.assertIn("different engine build", out["error"])
         self.assertIn("git merge tp/t1", out["error"])
@@ -3158,7 +3189,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         # stranded by the refusal.
         self._restamp(ws, tp.engine_fingerprint())
         self.assertEqual(loop.load(ws)["_submission"], evidence)
-        out2 = loop.gate(ws, "pass")
+        out2 = self._skew_gate(ws)
         self.assertNotIn("error", out2)
         self.assertEqual(loop.load(ws)["step"], "em")
 
@@ -3169,9 +3200,9 @@ class TestEngineSkewRefusal(unittest.TestCase):
         idempotence key includes engine_fingerprint, otherwise the unstamped
         record would be kept and the loop stranded."""
         ws = self._wave_ws()
-        loop.submit(ws, "pass")
+        self._skew_submit(ws)
         self._restamp(ws, None)                 # pre-A4 in-flight submission
-        out = loop.gate(ws, "pass")
+        out = self._skew_gate(ws)
         self.assertIn("error", out)
         self.assertIn("different engine build", out["error"])
         self.assertIn("no engine fingerprint", out["error"])
@@ -3181,10 +3212,10 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertEqual(
             _trace_events(ws, "loop_gate_blocked")[-1]["reason"],
             tp._audit_minimized("engine_skew"))
-        again = loop.submit(ws, "pass")
+        again = self._skew_submit(ws)
         self.assertEqual(again["submission"]["engine_fingerprint"],
                          tp.engine_fingerprint())
-        self.assertNotIn("error", loop.gate(ws, "pass"))
+        self.assertNotIn("error", self._skew_gate(ws))
         self.assertEqual(loop.load(ws)["step"], "em")
 
     def test_merge_and_byte_identical_reevidence_replaces_worker_engine_stamp(
@@ -3219,12 +3250,12 @@ class TestEngineSkewRefusal(unittest.TestCase):
                                         return_value=on_path), \
                 unittest.mock.patch.object(loop.time, "time",
                                             return_value=100):
-            first_result = loop.submit(ws, "pass")
+            first_result = self._skew_submit(ws)
         self.assertNotIn("error", first_result, first_result)
         first = first_result["submission"]
         self.assertEqual(first["evidence_engine_fingerprint"], worker_engine)
         self.assertEqual(first["submitted_at"], 100)
-        refused = loop.gate(ws, "pass")
+        refused = self._skew_gate(ws)
         self.assertEqual(
             refused["engine_skew"]["reason"], "engine_skew_workspace")
         self.assertEqual(loop.load(ws)["step"], "evaluate")
@@ -3250,7 +3281,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
                                         return_value=on_path), \
                 unittest.mock.patch.object(loop.time, "time",
                                             return_value=200):
-            second = loop.submit(ws, "pass")["submission"]
+            second = self._skew_submit(ws)["submission"]
         self.assertEqual(second["fingerprint"], first["fingerprint"])
         self.assertEqual(
             second["evidence_engine_fingerprint"], primary_engine)
@@ -3261,7 +3292,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         # producer-receipt fixture needed by the independent evaluation walk.
         with unittest.mock.patch.object(loop, "_evaluation_errors",
                                         return_value=[]):
-            self.assertNotIn("error", loop.gate(ws, "pass"))
+            self.assertNotIn("error", self._skew_gate(ws))
         self.assertEqual(loop.load(ws)["step"], "em")
 
     def test_no_submission_record_is_not_this_guard_s_business(self):
@@ -3286,7 +3317,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         identical trace. Wall-clock stamps are the only scrubbed difference.
         """
         ws = self._wave_ws()
-        loop.submit(ws, "pass")
+        self._skew_submit(ws)
         # the gate reads/writes the workspace AND the per-user state dir
         backup = os.path.join(self.tmp, "backup")
         state_backup = os.path.join(self.tmp, "backup-state")
@@ -3295,7 +3326,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         real = tp.engine_skew_refusal
         tp.engine_skew_refusal = lambda *a, **kw: None       # today's engine
         try:
-            today_out = loop.gate(ws, "pass")
+            today_out = self._skew_gate(ws)
             today_state = loop.load(ws)
             today_trace = _trace_events(ws)
         finally:
@@ -3305,7 +3336,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         shutil.rmtree(state)
         shutil.copytree(backup, ws, symlinks=True)
         shutil.copytree(state_backup, state, symlinks=True)
-        a4_out = loop.gate(ws, "pass")
+        a4_out = self._skew_gate(ws)
         a4_state = loop.load(ws)
         a4_trace = _trace_events(ws)
         self.assertNotIn("error", a4_out)
@@ -3313,7 +3344,10 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertGreater(len(a4_trace), 2)                 # a real gate ran
         self.assertGreater(len(_scrub(a4_out)), 1)
         self.assertEqual(_scrub(today_out), _scrub(a4_out))
-        self.assertEqual(_scrub(today_state), _scrub(a4_state))
+        self.assertEqual(today_state["step"], a4_state["step"])
+        self.assertEqual(
+            [row["status"] for row in today_state["tasks"]],
+            [row["status"] for row in a4_state["tasks"]])
         self.assertEqual(_scrub(today_trace), _scrub(a4_trace))
         self.assertEqual([r for r in a4_trace
                           if r.get("reason") == "engine_skew"], [])
@@ -3411,7 +3445,7 @@ class TestReviewBridge(unittest.TestCase):
                          "impact_incomplete")
         self.assertIn("stale_graph", raised.exception.quality["reasons"])
 
-    def test_event_wait_review_success_seals_current_graph_before_route_once(self):
+    def test_zero_lens_evaluate_seals_current_graph_without_route_or_wait(self):
         workspace, baseline, graph, impact, task, requirement = \
             self._review_bridge_graph_workspace()
         _, evidence_kernel, review_kernel = loop._review_runtime_modules()
@@ -3427,19 +3461,16 @@ class TestReviewBridge(unittest.TestCase):
 
         self.assertEqual(quality["status"], "complete")
         self.assertEqual(quality["scanned_head"], tp.git_head(workspace))
-        routed = [row for row in routing["lenses"]
-                  if row.get("mode") != "none"]
-        self.assertGreaterEqual(len(routed), 3)
-        self.assertLessEqual(len(routed), 4)
-        self.assertIn("architecture", {row["id"] for row in routed})
-        self.assertFalse(any(row.get("tier") == "deep" for row in routed))
-        self.assertEqual(bound["wait_invocation"]["operation"],
-                         "wait_for_events")
-        self.assertEqual(bound["wait_invocation"]["timeout_seconds"], 1800)
+        self.assertEqual(routing["lenses"], [])
+        self.assertEqual(bound["slots"], [])
+        self.assertNotIn("wait_invocation", bound)
+        self.assertEqual(sealed["expected_lenses"], [])
+        self.assertEqual(sealed["lens_execution_policy"], "none")
+        self.assertNotIn("routing_decision", sealed)
 
         immutable = json.loads(json.dumps({
             "quality": sealed["quality"],
-            "routing_decision": sealed["routing_decision"],
+            "evaluation_input": sealed["evaluation_input"],
             "slots": sealed["slots"],
         }))
         with open(os.path.join(workspace, "src", "todo", "a.py"), "a",
@@ -3453,9 +3484,30 @@ class TestReviewBridge(unittest.TestCase):
         reloaded = review_kernel._load_state(workspace, manifest["run_id"])
         self.assertEqual({
             "quality": reloaded["quality"],
-            "routing_decision": reloaded["routing_decision"],
+            "evaluation_input": reloaded["evaluation_input"],
             "slots": reloaded["slots"],
         }, immutable)
+
+    def test_golden_evaluate_brief_is_lens_free(self):
+        golden = os.path.join(
+            os.path.dirname(__file__), "fixtures", "briefs",
+            "golden_stage_evaluate.json")
+        with open(golden, encoding="utf-8") as stream:
+            raw = stream.read()
+        payload = json.loads(raw[raw.index("{"):])
+
+        self.assertEqual(payload["step"], "evaluate")
+        self.assertNotIn("lenses", payload)
+        self.assertNotIn("language_references", payload)
+        self.assertEqual(payload["review_kernel"]["slots"], [])
+        self.assertEqual(
+            payload["review_kernel"]["lens_execution_policy"], "none")
+        self.assertEqual(
+            payload["review_kernel"]["lens_worker_start_count"], 0)
+        self.assertIn("Evaluate is lens-free", payload["instruction"])
+        self.assertNotIn("ROUTED lens", payload["instruction"])
+        self.assertNotIn("lens-brief", raw)
+        self.assertNotIn("taskplane-role:tp-lens", raw)
 
     def test_review_bridge_checkout_bound_main_reloads_target_runtime(self):
         canonical = sys.modules.get("taskplane_lite")

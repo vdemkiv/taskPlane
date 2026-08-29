@@ -142,11 +142,13 @@ class TestTheEngineNeverJudges(_AtEvaluate):
             self.assertEqual(row["status"], "")
             self.assertEqual(row["evidence"], "")
 
-    def test_every_lens_slot_comes_back_empty(self):
+    def test_evaluate_bundle_omits_all_lens_routing_surfaces(self):
         b = self.bundle()
-        for row in b.get("lenses") or []:
-            self.assertEqual(row["verdict"], "")
-            self.assertIsNone(row["blockers"])
+        self.assertNotIn("lenses", b)
+        self.assertNotIn("lenses_not_applicable", b)
+        self.assertNotIn("lenses_error", b)
+        self.assertNotIn("review_kernel", b)
+        self.assertNotIn("lenses", b["verdict_template"])
 
     def test_the_top_level_verdict_comes_back_empty(self):
         self.assertEqual(self.bundle()["verdict"], "")
@@ -173,29 +175,16 @@ class TestTheEngineNeverJudges(_AtEvaluate):
         self.assertEqual(loop.load(self.ws)["step"], "evaluate",
                          "the loop must not advance on engine output alone")
 
-    def test_the_refusal_names_the_unproven_criteria(self):
+    def test_the_refusal_names_the_missing_producer_provenance_first(self):
         self.bundle(write=True)
         result = submit_gate(self.ws, "pass")
         blob = json.dumps(result)
-        self.assertIn("acceptance criterion", blob)
+        self.assertIn("producer", blob)
 
 
 class TestTheBundleMatchesWhatTheGateDemands(_AtEvaluate):
-    def test_the_lens_set_is_exactly_the_gate_s_expected_set(self):
-        """A bundle that briefed a NARROWER lens set than the gate checks
-        would quietly send evaluators into a refusal they cannot see coming
-        — and a wider one would invent obligations. Both are drift; the
-        bundle and the gate must derive from the same route."""
-        state = loop.load(self.ws)
-        task = state["tasks"][state["current_task"]]
-        routing = loop.lens_router.route_git_diff(
-            self.ws, base=state.get("baseline") or "HEAD",
-            task_type=task.get("type"), stage=loop.EVALUATE_ROUTE_STAGE,
-            breadth="routed")
-        expected = {e["id"] for e in routing["lenses"]
-                    if e.get("mode") != "none"}
-        offered = {r["lens"] for r in self.bundle().get("lenses") or []}
-        self.assertEqual(offered, expected)
+    def test_evaluate_has_no_lens_set_for_the_gate_to_demand(self):
+        self.assertNotIn("lenses", self.bundle())
 
     def test_the_criteria_are_exactly_the_gate_s_expected_criteria(self):
         state = loop.load(self.ws)
@@ -204,9 +193,7 @@ class TestTheBundleMatchesWhatTheGateDemands(_AtEvaluate):
         offered = [r["criterion"] for r in self.bundle()["criteria"]]
         self.assertEqual(offered, expected)
 
-    def test_a_filled_bundle_does_pass_the_gate(self):
-        """The complement: once an agent actually discharges the obligation
-        the bundle stated, nothing else is in the way."""
+    def test_a_filled_bundle_still_requires_host_observed_provenance(self):
         bundle = self.bundle()
         b = bundle["verdict_template"]
         for row in b["criteria"]:
@@ -229,7 +216,7 @@ class TestTheBundleMatchesWhatTheGateDemands(_AtEvaluate):
         with open(os.path.join(self.ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
             json.dump(b, f)
         result = submit_gate(self.ws, "pass")
-        self.assertNotIn("error", result)
+        self.assertIn("producer", json.dumps(result))
 
 
 class TestUnavailableModelEvaluationDoesNotOpenAProductFix(_AtEvaluate):
@@ -246,7 +233,6 @@ class TestUnavailableModelEvaluationDoesNotOpenAProductFix(_AtEvaluate):
         for index, row in enumerate(verdict["criteria"]):
             row["status"] = "not-met" if not_met and index == 0 else "met"
             row["evidence"] = "mechanical evidence remains available"
-        verdict["lenses"] = []
         verdict["failures"] = [{
             "what": "native model evaluation was unavailable",
             "repro": "one bounded dispatch attempt",
@@ -318,14 +304,13 @@ class TestWriteIsNonDestructive(_AtEvaluate):
 
 
 class TestDegradationIsLoud(_AtEvaluate):
-    def test_post_kernel_mapper_failure_cannot_replace_canonical_decision(self):
-        """Once persisted, the one governed decision is the only authority."""
+    def test_post_kernel_mapper_failure_is_irrelevant_to_zero_lens_evaluate(self):
         with mock.patch.object(loop.lens_router, "route_git_diff",
                                side_effect=RuntimeError("catalog gone")):
             b = self.bundle()
-        self.assertNotIn("lenses_error", b)
-        self.assertEqual(b["review_kernel"]["status"], "ready")
-        self.assertTrue(b["lenses"])
+        self.assertNotIn("lenses", b)
+        self.assertTrue(b["criteria"])
+        self.assertIn("diff", b)
 
     def test_an_unknown_task_id_is_refused(self):
         self.assertIn("error", self.bundle(task_id="nope"))
@@ -334,17 +319,15 @@ class TestDegradationIsLoud(_AtEvaluate):
         bare = tempfile.mkdtemp()
         self.assertIn("error", loop.evidence(bare))
 
-    def test_bundle_consumes_live_kernel_and_never_reroutes(self):
+    def test_bundle_uses_sealed_evaluation_context_and_never_reroutes(self):
         kernel = review._load_state(self.ws)
-        store = review_evidence.ArtifactStore(self.ws)
-        decision = store.read(kernel["routing_decision"])["dispositions"]
-        expected = {lens_id for lens_id, row in decision.items()
-                    if row["verdict"] != "n/a"}
+        self.assertIn("evaluation_input", kernel)
+        self.assertNotIn("routing_decision", kernel)
         with mock.patch.object(loop.lens_router, "route_git_diff",
                                side_effect=AssertionError("must not remap")):
             bundle = self.bundle()
-        self.assertEqual(bundle["review_kernel"]["run_id"], kernel["run_id"])
-        self.assertEqual({row["lens"] for row in bundle["lenses"]}, expected)
+        self.assertNotIn("lenses", bundle)
+        self.assertEqual(bundle["diff"]["files"], ["src/todo/a.py"])
 
     def test_impact_incomplete_kernel_produces_zero_lens_obligations(self):
         second = os.path.join(self.tmp, "impact-incomplete")
@@ -382,10 +365,9 @@ class TestDegradationIsLoud(_AtEvaluate):
         # there is deliberately no citable run id. Evidence must fail closed
         # on the absent binding instead of inventing a second kernel.
         self.assertNotIn("review_kernel", bundle)
-        self.assertEqual(bundle["lenses"], [])
-        self.assertEqual(bundle["lenses_not_applicable"], [])
-        self.assertIn("no exact evaluator ReviewKernel binding",
-                      bundle["lenses_error"])
+        self.assertNotIn("lenses", bundle)
+        self.assertNotIn("lenses_not_applicable", bundle)
+        self.assertNotIn("lenses_error", bundle)
 
 
 class TestTheSuiteIsCitedNotRerun(_AtEvaluate):
@@ -566,7 +548,7 @@ class TestTheSuiteIsCitedNotRerun(_AtEvaluate):
         with mock.patch.object(tp, "suite_cache_lookup", return_value=hit), \
                 mock.patch.dict(sys.modules, {"regression": regression}):
             errors = tp.dod_check(
-                contract, self.ws, tp.snapshot_ref(self.ws),
+                contract, self.ws, tp.git_head(self.ws),
                 regression_files=["src/todo/a.py"], suite_evidence={})
 
         self.assertEqual(errors, [])

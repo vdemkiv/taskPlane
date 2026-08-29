@@ -112,7 +112,7 @@ def _install(tmp_path: Path) -> dict[str, object]:
 def _request(**overrides: object) -> dict[str, object]:
     values: dict[str, object] = {
         "workspace": "b" * 64,
-        "stage": "evaluate",
+        "stage": "plan",
         "target": "LR-03@candidate",
         "context_fingerprint": "c" * 64,
         "exact_ordered_lens_ids": ["security", "privacy-compliance"],

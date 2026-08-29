@@ -5834,9 +5834,8 @@ def next_action(
         return {"error": "expanded-route authority requires the live provider "
                          "client and receipt together",
                 "step": step, "status": status(ws)}
-    if expanded_authority_supplied and step not in {"plan", "evaluate"}:
-        return {"error": "expanded-route authority is limited to Plan and "
-                         "Evaluate",
+    if expanded_authority_supplied and step != "plan":
+        return {"error": "expanded-route authority is limited to Plan",
                 "step": step, "status": status(ws)}
 
     if step == "retro":
@@ -6249,18 +6248,11 @@ def next_action(
         base_ref = state.get("baseline") or "HEAD"
         try:
             review_delivery_authority = _DELIVERY_MODE_AUTHORITY_UNSET
-            if step in {"evaluate", "em"}:
+            if step == "em":
                 delivery_receipt = _validated_delivery_mode(state)
-                if step == "evaluate" and delivery_receipt is None and str(
-                        state.get("design_fingerprint") or "").strip():
-                    raise delivery_policy.DeliveryPolicyError(
-                        "delivery-mode receipt is required for a "
-                        "Design-governed Evaluate")
                 if delivery_receipt is not None:
                     review_delivery_authority = delivery_receipt
-            retry_context = (review_retry.incremental_context(
-                ws, diff_ws, task, review_kernel_binding(state, "evaluate", task))
-                if step == "evaluate" else None)
+            retry_context = None
             review_kernel, routing = _review_kernel(
                 ws, diff_ws, base=base_ref, step=step, task=task,
                 graph=depgraph.load(graph_ws), impact=imp or {},
@@ -6425,9 +6417,11 @@ def next_action(
                       # against what exists, never in a vacuum.
                       "current_state": kb.current_state(ws),
                       "context": kb.render_context(recalled)},
-        "lenses": routing["lenses"] if routing else None,
-        "language_references": ((routing.get("context") or {}).get(
-            "language_references") if routing else None),
+        **({
+            "lenses": routing["lenses"],
+            "language_references": (routing.get("context") or {}).get(
+                "language_references"),
+        } if routing and step != "evaluate" else {}),
         "review_kernel": review_kernel,
         "runtime_evals": runtime_eval.guidance(step),
         "audit": audit_info,
@@ -6621,28 +6615,19 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
                    "`loop gate`.",
         "evaluate": f"Run the tp-evaluator (read-only) on task "
                     f"{t and t['id']}: START with `tp loop evidence --write` — "
-                    "one call returns the suite result, the diff, and the exact "
-                    "criteria, routed-lens and graph obligations this gate "
-                    "demands, judgment slots empty; do NOT rebuild those by "
-                    "hand. Then do what the engine cannot: prove each criterion "
-                    "against real behavior, apply each ROUTED lens (prompt at "
-                    "lenses/<id>.md) — inline ones yourself, one governed "
-                    "read-only subagent per subagent-mode lens. Pass each "
-                    "slot's contract_bootstrap unchanged: the orchestrator "
-                    "must activate its signed contract before spawning that "
-                    "worker and inject contract_bootstrap.environment into "
-                    "the native child lifecycle. The exact worker start is "
-                    "then host-observed and lease-bound before evidence "
-                    "access. "
-                    "Then disposition "
-                    "graph impact + affected requirements; reject stale Design "
-                    f"evidence. Fill the empty slots in {evaluator_result} "
-                    "(submitted unchanged, it is refused). Then `loop submit "
-                    "pass|fail`; if one bounded model/host attempt is unavailable "
-                    "but bound tests are green and no product/lens defect exists, "
-                    "record structured evaluation unavailability and `loop submit "
-                    "unavailable` instead — it warns without opening FIX. Only "
-                    "the orchestrator calls `loop gate`.",
+                    "one call returns the exact diff, bound-test result, "
+                    "acceptance criteria, dependency impact, affected "
+                    "requirements/contracts, approved Design conformance, and "
+                    "provenance this gate demands. Evaluate is lens-free: do "
+                    "not route, score, start, retry, or collect lens workers. "
+                    "Prove each criterion against real behavior, record "
+                    "findings and one overall judgment in "
+                    f"{evaluator_result}, then `loop submit pass|fail`; if one "
+                    "bounded model/host attempt is unavailable but bound tests "
+                    "are green and no product defect exists, record structured "
+                    "evaluation unavailability and `loop submit unavailable` "
+                    "instead — it warns without opening FIX. Only the "
+                    "orchestrator calls `loop gate`.",
         "fix": f"Run the tp-fixer on task {t and t['id']}: repair the "
                "listed failures + add a regression test. Then `loop submit "
                "pass`; only the orchestrator calls `loop gate`.",
@@ -6896,7 +6881,7 @@ def _validated_reanchor_verdict(task: Mapping, verdict: Mapping,
     task_id = str(task.get("id") or "")
     requirement = str(task.get("req") or "")
     if not isinstance(verdict, Mapping) or verdict.get("schema") != \
-            "taskplane.evaluator-output/v1" or str(
+            evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID or str(
                 verdict.get("task") or "") != task_id or str(
                 verdict.get("requirement") or "") != requirement:
         raise ValueError("reanchor verdict identity is invalid")
@@ -7115,7 +7100,7 @@ def _verify_reanchor_task_evidence(
     except (OSError, ValueError) as exc:
         return None, f"durable evaluator verdict is unavailable: {exc}"
     if not isinstance(verdict, Mapping) or verdict.get("schema") != \
-            "taskplane.evaluator-output/v1":
+            evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID:
         return None, "durable evaluator verdict schema is invalid"
     if str(verdict.get("task") or "") != task_id:
         return None, "durable evaluator verdict names a different task"
@@ -7492,7 +7477,8 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
             read_retained_review_diff(
                 review_ws, store=store, reference=retained_diff)
         empty_collection = None
-        if state.get("delivery_mode_receipt") is not None:
+        if state.get("zero_lens_evaluation") is True or \
+                state.get("delivery_mode_receipt") is not None:
             if state.get("expected_lenses") != [] or state.get("slots") != []:
                 raise review_kernel.ReviewKernelError(
                     "sealed zero-lens Evaluate authority produced lens slots")
@@ -7545,7 +7531,8 @@ def _collect_zero_lens_evaluate_before_guidance(
     kernel_ws = str(binding.get("workspace") or act_ws)
     _, _, review_kernel = _review_runtime_modules()
     kernel = review_kernel._load_state(kernel_ws, binding["run_id"])
-    if kernel.get("delivery_mode_receipt") is None:
+    if kernel.get("zero_lens_evaluation") is not True and \
+            kernel.get("delivery_mode_receipt") is None:
         return None
     if kernel.get("expected_lenses") != [] or kernel.get("slots") != []:
         raise review_kernel.ReviewKernelError(
@@ -7642,7 +7629,8 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
         try:
             evaluator_result = None
             observation_fingerprint = None
-            if kernel.get("delivery_mode_receipt") is not None:
+            if kernel.get("zero_lens_evaluation") is True or \
+                    kernel.get("delivery_mode_receipt") is not None:
                 evaluator_result = evaluation_output.validate_evaluator_value(
                     verdict)
                 submission = state.get("_submission") or {}
@@ -7669,24 +7657,9 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
         except Exception as exc:
             errors.append("evaluation leased slot collection failed: "
                           f"{exc.__class__.__name__}: {exc}")
-    quick_output_sufficient = False
-    if kernel and kernel.get("stage") == EVALUATE_ROUTE_STAGE:
-        try:
-            import review_evidence as _review_evidence
-            quality = _review_evidence.ArtifactStore(kernel_ws).read(
-                kernel["quality"])
-            quick_output_sufficient = \
-                runtime_eval._complete_quick_only_evaluation(
-                    kernel, quality, verdict, _review)
-        except Exception:
-            # The ordinary complete-kernel path remains the fail-closed
-            # fallback when the narrow R-0006 quick-output proof is absent or
-            # malformed.
-            quick_output_sufficient = False
     if (not kernel or kernel.get("status") != "complete" or
-            kernel.get("stage") != EVALUATE_ROUTE_STAGE) and \
-            not quick_output_sufficient:
-        errors.append("evaluation selective review kernel is missing or incomplete")
+            kernel.get("stage") != EVALUATE_ROUTE_STAGE):
+        errors.append("evaluation evidence kernel is missing or incomplete")
     if verdict.get("task") != task.get("id"):
         errors.append("evaluation evidence is for task "
                       f"{verdict.get('task')!r}, expected {task.get('id')!r}")
@@ -7695,61 +7668,15 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
 
     errors.extend(_acceptance_evidence_errors(ws, state, task, verdict))
 
-    # Derive the expected lens set with the SAME stage the evaluate brief
-    # routed with (EVALUATE_ROUTE_STAGE — single-sourced, R-0006 row 1), so
-    # expectation matches dispatch. Route v2 returns EVERY catalog lens for
-    # coverage honesty; only the ROUTED ones (deep + light, mode != "none")
-    # owe the evaluator a verdict row — n/a lenses carry their negative
-    # evidence in the routing itself. On the legacy path no entry has mode
-    # "none", so the filter is a no-op there.
-    # Consume the one decision created after graph quality; never map again
-    # inside the gate on potentially different inputs.
-    routing = ((kernel or {}).get("routing") or {"lenses": []})
-    expected_lenses = {entry["id"] for entry in routing.get("lenses") or []
-                       if entry.get("mode") != "none"}
-    canonical_rows = {str(row.get("lens") or ""): row for row in
-                      ((kernel or {}).get("lens_results") or [])
-                      if isinstance(row, dict)}
+    # Evaluate owns one judgment output. Lens routes, leased lens results,
+    # retry invalidation, and lens verdict conservation are intentionally not
+    # part of this stage after D-0014.
     canonical_blocking = _review.blocking_findings_by_lens(
         ((kernel or {}).get("revision") or {}).get("findings") or [])
     for lens_id, count in sorted(canonical_blocking.items()):
         errors.append(
             f"canonical blocking finding prevents Evaluate pass: {lens_id} "
             f"({count})")
-    if not quick_output_sufficient and set(canonical_rows) != expected_lenses:
-        missing_slots = sorted(expected_lenses - set(canonical_rows))
-        unexpected_slots = sorted(set(canonical_rows) - expected_lenses)
-        if missing_slots:
-            errors.append("leased slot results omit routed lenses: "
-                          + ", ".join(missing_slots))
-        if unexpected_slots:
-            errors.append("leased slot results contain unexpected lenses: "
-                          + ", ".join(unexpected_slots))
-    raw_lenses = verdict.get("lenses") or []
-    if not isinstance(raw_lenses, list):
-        errors.append("evaluation lenses must be a list")
-        raw_lenses = []
-    lens_rows = {str(r.get("lens", "")): r for r in raw_lenses
-                 if isinstance(r, dict)}
-    for lens_id in sorted(expected_lenses):
-        row = lens_rows.get(lens_id)
-        if not row:
-            errors.append(f"routed lens has no verdict: {lens_id}")
-        else:
-            canonical = canonical_rows.get(lens_id)
-            if canonical is None and not quick_output_sufficient:
-                errors.append(f"routed lens lacks a leased slot result: {lens_id}")
-                continue
-            try:
-                blocker_count = int(row.get("blockers") or 0)
-            except (TypeError, ValueError):
-                blocker_count = 1
-            if row.get("verdict") != "pass" or blocker_count > 0:
-                errors.append(f"routed lens did not pass cleanly: {lens_id}")
-            if canonical is not None and (row.get("verdict"), blocker_count) != \
-                    (canonical.get("verdict"), canonical.get("blockers")):
-                errors.append(
-                    f"routed lens verdict contradicts leased result: {lens_id}")
     if verdict.get("failures"):
         errors.append("evaluation contains unresolved failures")
     if state.get("graph_governance"):

@@ -725,10 +725,6 @@ def review_facts(ws: str, step: str, *, run_id: str) -> dict:
                                   ("criterion", "status", "evidence")}
                                  for row in verdict.get("criteria") or []
                                  if isinstance(row, dict)],
-                    "lenses": [{key: row.get(key) for key in
-                                ("lens", "verdict", "blockers")}
-                               for row in verdict.get("lenses") or []
-                               if isinstance(row, dict)],
                     "graph": {
                         "dispositions": [
                             {key: row.get(key) for key in
@@ -751,22 +747,18 @@ def review_facts(ws: str, step: str, *, run_id: str) -> dict:
                 facts["output_schema_validated"] = \
                     facts["output_schema_declared"]
                 if facts["output_schema_validated"] and \
-                        _complete_quick_only_evaluation(
-                            state, quality, verdict, review):
-                    # R-0006's complete quick collection is the governed
-                    # replacement for these deep-era orchestration receipts.
-                    # Every substantive quick finding still makes the strict
-                    # predicate false and therefore remains fail-closed.
+                        state.get("zero_lens_evaluation") is True and \
+                        state.get("status") == "complete":
                     facts["graph_before_route"] = True
-                    facts["lens_results_collected"] = True
                     facts["output_producer_observed"] = True
             except Exception:
                 facts["output_schema_validated"] = False
             # The outer verdict is admissible only after the canonical leased
             # evidence beneath it has an observed producer/write receipt and
             # has been collected into one revision.
-            facts["output_producer_observed"] = facts[
-                "lens_results_collected"]
+            if state.get("zero_lens_evaluation") is not True:
+                facts["output_producer_observed"] = facts[
+                    "lens_results_collected"]
     except Exception:
         pass
     return facts

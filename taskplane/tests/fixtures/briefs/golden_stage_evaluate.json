@@ -26,6 +26,20 @@
       ".eval/**"
     ]
   },
+  "contract_bootstrap": {
+    "activation": "pending_subagent_start_binding",
+    "control_plane_release": {
+      "command": "worker-release",
+      "signed_action": "eyJhY3Rpb25faWQiOiJ3b3JrZXItcmVsZWFzZS02ZjZmZjkwNjYzMjM2ZDYyZGYxMzM4YzEiLCJjb250cmFjdF9pZCI6InRhc2tfYjEyYTg0NjMiLCJpc3N1ZWRfYXQiOjE3ODgwMzA2NTEsImtleV9pZCI6ImE5Yzc3NmMyZTcwODI5ZGRlNzRiOWY4MmNlNDkwZDlkYzU3OTdkODFkOWU2MmM0MzkwNWM5NzQ2NTEwZGRlMjYiLCJzY2hlbWEiOiJ0YXNrcGxhbmUud29ya2VyLWNvbnRyYWN0LXJlbGVhc2UtYWN0aW9uL3YxIiwic2lnbmF0dXJlIjoiMGM1ZDRiYWY2ZjZiMGFhYjFiOWY1NTViYzA4MGIxYWUwNjlhYjYyZjlhNWMwNWU5MDdlYzJkMmI5NjgxMzBjOSIsInNsb3QiOiJ0YXNrX2IxMmE4NDYzIiwic3RhZ2UiOiJldmFsdWF0ZSIsInRhc2siOiJ0MSIsIndvcmtzcGFjZV9maW5nZXJwcmludCI6IjUxMDljYThiZjE3YjRiNzE3YTU4M2M1NDk0OTY3YjUwOGRiNzliOWVhODUyMmE0YWZiMWU0YzY0MTQ2ZTNhZDMifQ",
+      "terminal_receipt_required": true
+    },
+    "environment": {
+      "TASKPLANE_TASK": "task_b12a8463"
+    },
+    "schema": "taskplane.worker-contract-bootstrap/v1",
+    "task_slot": "task_b12a8463",
+    "worker_identity": "tp_step_evaluator_t1_bb4efcad"
+  },
   "dashboard": {
     "delivery": {
       "artifacts": {
@@ -43,8 +57,12 @@
         }
       },
       "gate": {},
-      "inline": null,
-      "mode": "complete-markdown",
+      "inline": {
+        "complete": true,
+        "format": "html",
+        "path": "<WS>/.taskplane/dashboard-delivery/dashboard.inline.html"
+      },
+      "mode": "inline",
       "schema": "taskplane.dashboard-delivery/v1",
       "status": "published"
     },
@@ -244,7 +262,7 @@
     "truncated": false,
     "unknown": []
   },
-  "instruction": "Run the tp-evaluator (read-only) on task t1: START with `tp loop evidence --write` \u2014 one call returns the suite result, the diff, and the exact criteria, routed-lens and graph obligations this gate demands, judgment slots empty; do NOT rebuild those by hand. Then do what the engine cannot: prove each criterion against real behavior, apply each ROUTED lens (prompt at lenses/<id>.md) \u2014 inline ones yourself, one governed read-only subagent per subagent-mode lens. Pass each slot's contract_bootstrap unchanged: the orchestrator must activate its signed contract before spawning that worker and inject contract_bootstrap.environment into the native child lifecycle. The exact worker start is then host-observed and lease-bound before evidence access. Then disposition graph impact + affected requirements; reject stale Design evidence. Fill the empty slots in .eval/verdict.json (submitted unchanged, it is refused). Then `loop submit pass|fail`; if one bounded model/host attempt is unavailable but bound tests are green and no product/lens defect exists, record structured evaluation unavailability and `loop submit unavailable` instead \u2014 it warns without opening FIX. Only the orchestrator calls `loop gate`.",
+  "instruction": "Run the tp-evaluator (read-only) on task t1: START with `tp loop evidence --write` \u2014 one call returns the exact diff, bound-test result, acceptance criteria, dependency impact, affected requirements/contracts, approved Design conformance, and provenance this gate demands. Evaluate is lens-free: do not route, score, start, retry, or collect lens workers. Prove each criterion against real behavior, record findings and one overall judgment in .eval/verdict.json, then `loop submit pass|fail`; if one bounded model/host attempt is unavailable but bound tests are green and no product defect exists, record structured evaluation unavailability and `loop submit unavailable` instead \u2014 it warns without opening FIX. Only the orchestrator calls `loop gate`.",
   "knowledge": {
     "context": "Prior decisions relevant to this work (from the knowledge base):\n  [0001] Plan approved: stage wave fixture (accepted, <DATE>) \u2014 tags: plan-approval\nHonor these unless you have a concrete reason to supersede one.",
     "current_state": null,
@@ -269,665 +287,6 @@
     ],
     "governing_decisions": []
   },
-  "language_references": [
-    {
-      "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
-      "language": "python",
-      "lens": "code-quality",
-      "path": "lenses/references/python-code-quality.md"
-    },
-    {
-      "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
-      "language": "python",
-      "lens": "qa",
-      "path": "lenses/references/python-engineering.md",
-      "section": "QA"
-    },
-    {
-      "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
-      "language": "python",
-      "lens": "testability",
-      "path": "lenses/references/python-engineering.md",
-      "section": "Testability"
-    }
-  ],
-  "lenses": [
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "product",
-      "looks_for": "requirements met, requirement QUALITY (verifiable, singular, unambiguous acceptance criteria), scope gaps/creep, journey completeness incl. non-happy states, existing-user regression, success metrics with baseline + guardrail + decision rule, user-facing naming",
-      "mode": "none",
-      "name": "Product",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 product signals: no spec/requirements files, no acceptance-criteria markers, no product keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 product signals: no spec/requirements files, no acceptance-criteria markers, no product keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [
-        "gitleaks",
-        "semgrep --config auto",
-        "dependency audit",
-        "zizmor (GitHub Actions workflows, when `.github/**` is in the diff)"
-      ],
-      "evidence": [],
-      "id": "security",
-      "looks_for": "secrets (exposure = compromise, rotate not delete), authz gaps incl. object-level/IDOR, injection, SSRF, unsafe input, security misconfiguration, supply-chain & build integrity (deps, lockfiles, CI workflows, install scripts, pinning), fail-open error paths, AI/agent surface risk",
-      "mode": "none",
-      "name": "Security",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "0 security signals: no auth/secrets/enforcement paths, no auth or secret markers, no unsafe-input surface, no boundary contracts in impact, no security keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "0 security signals: no auth/secrets/enforcement paths, no auth or secret markers, no unsafe-input surface, no boundary contracts in impact, no security keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [
-        "lint (repo's configured linter, warnings included)",
-        "typecheck",
-        "jscpd / `dupl` / pylint R0801 \u2014 copy-paste census, diff-scoped",
-        "**suppression delta**: NEW escape hatches introduced by this diff only \u2014"
-      ],
-      "evidence": [
-        "path: code change (src/alpha/m.py)",
-        "automatic bounded sweep selection",
-        "automatic bounded sweep selection"
-      ],
-      "id": "code-quality",
-      "language_references": [
-        {
-          "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
-          "language": "python",
-          "lens": "code-quality",
-          "path": "lenses/references/python-code-quality.md"
-        }
-      ],
-      "looks_for": "logic correctness at boundaries, error handling that swallows or mislabels, names and comments that lie, duplication that is real coupling, dead and unreachable code, unjustified suppressions, speculative generality",
-      "mode": "subagent",
-      "name": "Code quality",
-      "reasons": [
-        "baseline (any code change)",
-        "path: code change (src/alpha/m.py)",
-        "automatic sweep membership (initial verdict light)",
-        "automatic sweep membership (initial verdict sweep)"
-      ],
-      "score": 0.35,
-      "tier": "sweep",
-      "verdict": "sweep"
-    },
-    {
-      "checks": [
-        "coverage \u2014 use ONLY as evidence for check 4: which new branches NO test can reach at all. Do not report a coverage percentage or judge coverage adequacy; that is qa's. [Inozemtseva & Holmes, ICSE 2014: coverage correlates only weakly-to-moderately with suite effectiveness once suite size is controlled \u2014 a number here would be an unsupported quality claim]"
-      ],
-      "evidence": [
-        "path: code change (src/alpha/m.py)",
-        "automatic bounded sweep selection",
-        "automatic bounded sweep selection"
-      ],
-      "id": "testability",
-      "language_references": [
-        {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
-          "language": "python",
-          "lens": "testability",
-          "path": "lenses/references/python-engineering.md",
-          "section": "Testability"
-        }
-      ],
-      "looks_for": "seams and substitutability (clock, network, filesystem, DB, model/LLM client), hidden globals and shared state OUTSIDE the process, non-determinism, parallel-safety, reachability of new branches from a public surface, a pure side-effect-free core that invariants could be stated against",
-      "mode": "subagent",
-      "name": "Testability",
-      "reasons": [
-        "baseline (any code change)",
-        "path: code change (src/alpha/m.py)",
-        "automatic sweep membership (initial verdict light)",
-        "automatic sweep membership (initial verdict sweep)"
-      ],
-      "score": 0.35,
-      "tier": "sweep",
-      "verdict": "sweep"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "design",
-      "looks_for": "UX flow, loading/empty/error/partial/success states, error recoverability, latency-proportional feedback, visual consistency against declared tokens, hierarchy",
-      "mode": "none",
-      "name": "Design & UX",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 design signals: no UI component files, no UI markup, no UX keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 design signals: no UI component files, no UI markup, no UX keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "scalability",
-      "looks_for": "N+1 and uncapped fan-out, unbounded work (no LIMIT, load-everything, unpaginated or depth-degrading pagination), blocking calls on latency-sensitive paths, cache invalidation and stampede, bounds and behaviour at the bound (pools, queues, buffers, in-flight sets), hot-path complexity against realistic growth",
-      "mode": "none",
-      "name": "Scalability & performance",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 scalability signals: no api/db/services paths, no query or client code, no remote calls in loops, no hub module in the graph, no scalability keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 scalability signals: no api/db/services paths, no query or client code, no remote calls in loops, no hub module in the graph, no scalability keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "integrability",
-      "looks_for": "API/data contracts, an explicit breaking-vs-additive taxonomy per contract style (REST/OpenAPI, protobuf/gRPC, GraphQL, Avro/event schemas), versioning, deprecation & sunset signalling with a stated consumer notice period, error semantics to a named standard, documented retryability, unknown-field tolerance on both producer and consumer, automated compatibility gating and contract testing, spec/SDK sync, pagination & naming conventions",
-      "mode": "none",
-      "name": "Integrability",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 integrability signals: no api/schema/contract paths, no contract or schema markers, no boundary contracts in impact"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 integrability signals: no api/schema/contract paths, no contract or schema markers, no boundary contracts in impact"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "data-safety",
-      "looks_for": "expand/contract sequenced across deploys, additive/rollback-safe migrations, nullable/defaulted columns, batched restartable backfill, verified rollback, explicit lock_timeout/statement_timeout, engine- and version-specific rewrite paths, constraints validated over proven-clean data, cascades, replica lag, idempotency on retry",
-      "mode": "none",
-      "name": "Data & migration safety",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 data-safety signals: no migration/schema files, no DDL or backfill markers, no migration keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 data-safety signals: no migration/schema files, no DDL or backfill markers, no migration keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "tech-writer",
-      "looks_for": "documented commands/flags/endpoints/paths/defaults/outputs that the diff has made untrue, capabilities removed or renamed with docs left behind, examples that no longer run, the right documentation TYPE for the change (reference / how-to / explanation / tutorial) and one reader-question per document, prerequisites and destructive-step warnings placed after the step they govern, new documentation nobody can reach, one name per concept, decisions made in the diff and recorded nowhere, changelog entries that describe commits rather than user outcomes",
-      "mode": "none",
-      "name": "Technical writing",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 tech-writer signals: no docs/markdown files, no document structure, no documentation keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 tech-writer signals: no docs/markdown files, no document structure, no documentation keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [
-        "change shape: code changed with no test file",
-        "automatic bounded sweep selection",
-        "automatic bounded sweep selection"
-      ],
-      "id": "qa",
-      "language_references": [
-        {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
-          "language": "python",
-          "lens": "qa",
-          "path": "lenses/references/python-engineering.md",
-          "section": "QA"
-        }
-      ],
-      "looks_for": "test strategy, behaviour coverage (never a coverage %), assertion strength, regression risk, edge/negative cases, flake patterns, rerun/retry used as suppression, tests that encode the implementation rather than the requirement, E2E paths",
-      "mode": "subagent",
-      "name": "QA",
-      "reasons": [
-        "not in stage profile 'build' (engine verdict 'light', score 0.35)",
-        "automatic sweep membership (initial verdict n/a)",
-        "automatic sweep membership (initial verdict sweep)"
-      ],
-      "score": 0.35,
-      "tier": "sweep",
-      "verdict": "sweep"
-    },
-    {
-      "checks": [
-        "terraform validate",
-        "hadolint",
-        "actionlint",
-        "shellcheck (embedded shell in CI steps, entrypoints and Dockerfiles)",
-        "kubeconform (k8s manifest schema)"
-      ],
-      "evidence": [],
-      "id": "devops",
-      "looks_for": "pipeline correctness, build reproducibility, honest cache keys, CI secret flow and federated credentials, environment parity, rollout shape and rollback, release sequencing of schema-with-code, IaC state and version pinning",
-      "mode": "none",
-      "name": "DevOps",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 devops signals: no CI/container/IaC files, no pipeline or build markers, no devops keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 devops signals: no CI/container/IaC files, no pipeline or build markers, no devops keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "dba",
-      "looks_for": "deliberate vs accidental denormalization, key & clustering design, type choice and precision, nullability and defaults, DB-enforced constraints, index column order & leftmost-prefix usability, sargable predicates, dead/redundant indexes and missing ones for queries the same diff introduces, plan evidence at realistic volume, partitioning",
-      "mode": "none",
-      "name": "DBA",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 dba signals: no sql/models/schema files, no DDL or index markers, no query patterns, no ORM models"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 dba signals: no sql/models/schema files, no DDL or index markers, no query patterns, no ORM models"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "sre",
-      "looks_for": "observability of the new path (logs with context, metrics, traces), trace-context propagation and trace/span-id correlation on logs, metric label cardinality, timeouts and deadline propagation, bounded retries with randomized backoff and jitter, retry budgets and single-layer retry, idempotency of anything retried, circuit-breaking and failfast, graceful degradation, liveness-vs-readiness probes, burn-rate alerting when alert/SLO config is in the diff, newly introduced recurring manual operational steps (toil), runbook/rollback notes for new failure modes",
-      "mode": "none",
-      "name": "SRE",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 sre signals: no monitoring/alerts/runbook files, no observability or resilience markers, no SRE keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 sre signals: no monitoring/alerts/runbook files, no observability or resilience markers, no SRE keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "project-management",
-      "looks_for": "dependency order, batch size / independently shippable slices, rollout with an abort criterion, rollback FEASIBILITY (one-way doors named), flag removal tasks, cross-team impact and consumer deprecation windows, risks with owner/trigger/response, delivery readiness",
-      "mode": "none",
-      "name": "Project / delivery",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 project-management signals: no plan/roadmap files, no milestone or rollout structure, no delivery keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 project-management signals: no plan/roadmap files, no milestone or rollout structure, no delivery keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "frontend",
-      "looks_for": "component architecture, state mgmt, async race safety, render/bundle perf, Core Web Vitals impact (LCP/INP/CLS) with a named code cause, browser/device compat against a Baseline target, FE error/loading handling",
-      "mode": "none",
-      "name": "Front-end engineering",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "0 frontend signals: no frontend files, no component markup, no state management, no render/bundle-perf markers"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "0 frontend signals: no frontend files, no component markup, no state management, no render/bundle-perf markers"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "backend",
-      "looks_for": "API design, business-logic correctness, data-access patterns, service boundaries, idempotency, transactions, dual-write/outbox integrity, input validation at the trust boundary, error-response shape consistency",
-      "mode": "none",
-      "name": "Back-end engineering",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "0 backend signals: no api/services/handlers paths, no route handlers, no transaction or idempotency markers, no concurrency primitives"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "0 backend signals: no api/services/handlers paths, no route handlers, no transaction or idempotency markers, no concurrency primitives"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "tradeoffs",
-      "looks_for": "unexamined single-option designs, one-way-door choices taken without deliberation, strawman alternatives, criteria reverse-engineered after the winner was picked, hidden costs of the chosen path, what the rejected option would have bought, missing or unobservable revisit triggers, decisions made in code but never recorded durably, choices that silently contradict or supersede an accepted D-record, trade-off tables that never name the quality attribute being optimised",
-      "mode": "none",
-      "name": "Design trade-offs",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 tradeoffs signals: no adr/design/plan files, no alternatives or decision markers, no trade-off keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 tradeoffs signals: no adr/design/plan files, no alternatives or decision markers, no trade-off keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "solution-design",
-      "looks_for": "unsupported leaps from requirement to component, rationale retrofitted to a decision already made, designs written against a greenfield fantasy rather than the as-built state, quality targets asserted as adjectives instead of numbers, constraints the design never surfaces, acceptance criteria mapped to a \"validation\" nothing can run, rollback that the design's own migrations and contract changes make impossible, scope disproportionate to the requirement, terminology that drifts from the requirement and the graph, knowingly accepted debt left unrecorded",
-      "mode": "none",
-      "name": "Solution design",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 solution-design signals: no design/ files, no design-contract markers, no solution-design keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 solution-design signals: no design/ files, no design-contract markers, no solution-design keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "services-selection",
-      "looks_for": "new dependencies/services that duplicate a capability the as-built stack already provides, additions with no merit case proportionate to blast radius, hand-rolling a solved and security-sensitive problem, lock-in with no exit seam, single-maintainer / single-organisation dependencies on critical paths, archived or deprecated projects, licence class incompatible with this project's own licence and distribution mode, source-available/relicensing exposure, transitive footprint a one-line manifest change hides, additions that make an incumbent dependency redundant without removing it",
-      "mode": "none",
-      "name": "Tool & services selection",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 services-selection signals: no dependency manifests, no dependency additions, no selection keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 services-selection signals: no dependency manifests, no dependency additions, no selection keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "time-to-market",
-      "looks_for": "over-engineering vs the stated goal, deferrable work inside the critical path, ONE-WAY DOORS inside a proposed fast path, the PRICE of deferring (backfill / migration / re-teach cost), named slicing seams (vertical slice, dark launch, branch by abstraction), missing debt records for deliberate cuts",
-      "mode": "none",
-      "name": "Time to market",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 time-to-market signals: no plan/spec files, no scope or phasing markers, no time-to-market keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 time-to-market signals: no plan/spec files, no scope or phasing markers, no time-to-market keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [
-        "floor: architecture promoted to light \u2014 code change (src/alpha/m.py)",
-        "automatic architecture sweep floor",
-        "automatic architecture sweep floor"
-      ],
-      "floor": "floor: architecture promoted to light \u2014 code change (src/alpha/m.py)",
-      "id": "architecture",
-      "looks_for": "component/service decomposition, data flow & coupling measured against the dependency graph, state & consistency, scaling & failure modes, structure introduced without a requirement that needs it",
-      "mode": "subagent",
-      "name": "System design & architecture",
-      "reasons": [
-        "floor: architecture promoted to light \u2014 code change (src/alpha/m.py)",
-        "automatic sweep membership (initial verdict light)",
-        "automatic sweep membership (initial verdict sweep)"
-      ],
-      "score": 0.0,
-      "tier": "sweep",
-      "verdict": "sweep"
-    },
-    {
-      "checks": [
-        "**Target/min SDK extraction** \u2014 `targetSdk`/`targetSdkVersion` and `minSdk` from `build.gradle*` or `gradle.properties`; iOS deployment target + Xcode/SDK version from the project/`.xcconfig`. **Every conditional check below depends on this value; surface it to the LLM step.**",
-        "Android Lint (`NewApi`, deprecated-attribute, edge-to-edge and orientation checks) and Xcode build warnings, if configured in CI.",
-        "Presence check only: does an iOS target ship a `PrivacyInfo.xcprivacy`?"
-      ],
-      "evidence": [],
-      "id": "mobile",
-      "looks_for": "iOS/Android specifics, target-SDK behavior deltas, app lifecycle & process death, offline/sync, battery/network cost, runtime permissions, privacy manifests & data-deletion declarations, store submission floor, adaptive & large-screen behavior, third-party SDK compliance footprint, native perf",
-      "mode": "none",
-      "name": "Mobile engineering",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 mobile signals: no ios/android files, no platform APIs, no lifecycle or permission markers, no offline/battery markers"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 mobile signals: no ios/android files, no platform APIs, no lifecycle or permission markers, no offline/battery markers"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [
-        "axe-core (via axe DevTools / jest-axe / cypress-axe / Playwright `@axe-core/playwright`)",
-        "a11y-lint (eslint-plugin-jsx-a11y, vue/svelte a11y compiler warnings)",
-        "contrast checker"
-      ],
-      "evidence": [],
-      "id": "accessibility",
-      "looks_for": "keyboard operability and order, ARIA role-vs-implementation honesty, accessible-name appropriateness, focus management, announcement timing, non-text contrast, pointer alternatives, accessible authentication, WCAG 2.2 AA",
-      "mode": "none",
-      "name": "Accessibility (a11y)",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 accessibility signals: no UI files, no ARIA/alt/focus markers, no accessibility keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 accessibility signals: no UI files, no ARIA/alt/focus markers, no accessibility keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "privacy-compliance",
-      "looks_for": "jurisdiction scoping, personal data introduced in schema and models, special/sensitive categories, minimisation, pseudonymisation & aggregation as mitigation, PII in logs/analytics/error reports/model prompts, retention as a mechanism, deletion reaching downstream copies, consent AND universal opt-out signals, privacy-protective defaults, transfer mechanism (not just location)",
-      "mode": "none",
-      "name": "Privacy & compliance",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 privacy-compliance signals: no privacy/analytics/consent paths, no PII or consent markers, no privacy keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 privacy-compliance signals: no privacy/analytics/consent paths, no PII or consent markers, no privacy keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "cost-finops",
-      "looks_for": "unbounded metered resources, missing autoscaling and concurrency caps, cost shape of a code path (per-row external calls, unbounded fan-out, model calls in a loop), LLM token and agent-loop bounds, allocation tags on new billable resources, retention and lifecycle on storage that only grows, telemetry volume and label cardinality, egress and cross-region traffic, over-provisioned defaults",
-      "mode": "none",
-      "name": "Cost / FinOps (optional)",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 cost-finops signals: no IaC/k8s files, no provisioning or cost markers, no cost keywords in the requirement"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 cost-finops signals: no IaC/k8s files, no provisioning or cost markers, no cost keywords in the requirement"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    },
-    {
-      "checks": [],
-      "evidence": [],
-      "id": "i18n",
-      "looks_for": "externalized strings incl. backend-generated text, plural/gender selection, sentence assembly by concatenation, locale formatting AND parsing, currency minor units, timezone intent, text expansion, bidi isolation and RTL, collation and grapheme-safe text",
-      "mode": "none",
-      "name": "Localization / i18n (optional)",
-      "negative_evidence": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 i18n signals: no locale files, no i18n imports, no user-facing string literals in scope"
-      ],
-      "reasons": [
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not selected by automatic bounded sweep (4\u20135 lens cap)",
-        "not in stage profile 'build' (engine verdict 'n/a', score 0.0)",
-        "0 i18n signals: no locale files, no i18n imports, no user-facing string literals in scope"
-      ],
-      "score": 0.0,
-      "tier": "n/a",
-      "verdict": "n/a"
-    }
-  ],
   "max_attempts": 2,
   "model": null,
   "model_tier": "standard",
@@ -943,7 +302,7 @@
     "max_attempts": 2,
     "max_bytes": 1048576,
     "output_schema": {
-      "$id": "taskplane.evaluator-output/v1",
+      "$id": "taskplane.evaluator-output/v2",
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
@@ -1073,38 +432,11 @@
           ],
           "type": "object"
         },
-        "lenses": {
-          "items": {
-            "additionalProperties": false,
-            "properties": {
-              "blockers": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "lens": {
-                "type": "string"
-              },
-              "verdict": {
-                "enum": [
-                  "pass",
-                  "fail"
-                ]
-              }
-            },
-            "required": [
-              "lens",
-              "verdict",
-              "blockers"
-            ],
-            "type": "object"
-          },
-          "type": "array"
-        },
         "requirement": {
           "type": "string"
         },
         "schema": {
-          "const": "taskplane.evaluator-output/v1"
+          "const": "taskplane.evaluator-output/v2"
         },
         "task": {
           "type": "string"
@@ -1122,19 +454,18 @@
         "requirement",
         "verdict",
         "criteria",
-        "lenses",
         "graph",
         "failures"
       ],
       "type": "object"
     },
-    "output_schema_id": "taskplane.evaluator-output/v1",
-    "output_schema_sha256": "1fea99f8c8ff4769bb5ee3b54794006a324c916b0fb4befbe7dc53c9f4f9fbc0",
+    "output_schema_id": "taskplane.evaluator-output/v2",
+    "output_schema_sha256": "c3ce09b124af9b5c85d6c59a245f538b5727d7fd17a605c85094974bfd1bea34",
     "producer": "tp-evaluator",
     "result_path": ".eval/verdict.json",
     "schema": "taskplane.evaluation-output-contract/v1",
     "schema_transport": "validated_file",
-    "slot": "t1",
+    "slot": "task_b12a8463",
     "stage": "evaluate",
     "task": "t1",
     "transport": "validated_file",
@@ -1144,7 +475,7 @@
     "write_observation_required": true
   },
   "output_schema": {
-    "$id": "taskplane.evaluator-output/v1",
+    "$id": "taskplane.evaluator-output/v2",
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
     "properties": {
@@ -1274,38 +605,11 @@
         ],
         "type": "object"
       },
-      "lenses": {
-        "items": {
-          "additionalProperties": false,
-          "properties": {
-            "blockers": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "lens": {
-              "type": "string"
-            },
-            "verdict": {
-              "enum": [
-                "pass",
-                "fail"
-              ]
-            }
-          },
-          "required": [
-            "lens",
-            "verdict",
-            "blockers"
-          ],
-          "type": "object"
-        },
-        "type": "array"
-      },
       "requirement": {
         "type": "string"
       },
       "schema": {
-        "const": "taskplane.evaluator-output/v1"
+        "const": "taskplane.evaluator-output/v2"
       },
       "task": {
         "type": "string"
@@ -1323,7 +627,6 @@
       "requirement",
       "verdict",
       "criteria",
-      "lenses",
       "graph",
       "failures"
     ],
@@ -1331,31 +634,25 @@
   },
   "reasoning_effort": null,
   "requirement": null,
-  "resume_identity": "9e05c6799e95e745ddc95e3e9b48c8cab32ff5feede995e17273c89c29404c0e",
+  "resume_identity": "fe334d08b01726c4b46fc8cd020acc0131429a1368f7aa08c7cea872f28696e4",
   "review_kernel": {
-    "collection": {
-      "function": "loop.collect_review_bridge",
-      "release_incomplete_producers": true,
-      "run_id": "<SHA>",
-      "schema": "taskplane.review-collection-bridge/v1"
-    },
     "context_fingerprint": "<SHA>",
     "counters": {
       "artifact_render_bytes": 0,
       "caller_expansion_count": 0,
       "diff_derivation_count": 1,
-      "dispatched_agent_count": 4,
+      "dispatched_agent_count": 0,
       "duplicate_artifact_bytes": 0,
       "duplicate_artifact_count": 0,
       "effective_tokens": null,
-      "emitted_bytes": 10502,
+      "emitted_bytes": 2737,
       "envelope_count": 1,
       "impact_derivation_count": 1,
       "observation_actions": 1,
-      "prompt_view_bytes": 38527,
+      "prompt_view_bytes": 0,
       "repeated_derivation_bytes": 0,
       "top_level_cli_count": 1,
-      "view_count": 4
+      "view_count": 0
     },
     "envelope": {
       "bytes": 0,
@@ -1366,7 +663,16 @@
       "schema": "taskplane.artifact-reference/v1",
       "transport": "artifact-reference"
     },
-    "graph_degraded": false,
+    "evaluation_input": {
+      "bytes": 0,
+      "digest": "<SHA>",
+      "fingerprint": "<SHA>",
+      "kind": "evaluation-input",
+      "relative_path": ".taskplane/review-artifacts-v2/evaluation-input/<SHA>.json",
+      "schema": "taskplane.artifact-reference/v1",
+      "transport": "artifact-reference"
+    },
+    "expected_lenses": [],
     "graph_quality": {
       "bytes": 0,
       "digest": "<SHA>",
@@ -1376,7 +682,9 @@
       "schema": "taskplane.artifact-reference/v1",
       "transport": "artifact-reference"
     },
-    "manifest_bytes": 10502,
+    "lens_execution_policy": "none",
+    "lens_worker_start_count": 0,
+    "manifest_bytes": 2737,
     "review_depth_policy": {
       "complete_quick_output_sufficient": true,
       "deep_slots": [],
@@ -1385,40 +693,12 @@
       "outcome": "quick_output_sufficient",
       "promotion": "correction-required",
       "promotion_attempts": 0,
-      "quick_slots": [
-        "sweep.architecture",
-        "sweep.code-quality",
-        "sweep.qa",
-        "sweep.testability"
-      ],
+      "quick_slots": [],
       "requirement_id": null,
       "schema": "taskplane.review-depth-policy/v1",
       "source": "automatic-bounded-sweep",
       "status": "satisfied"
     },
-    "routing_counts": {
-      "n/a": 22,
-      "sweep": 4
-    },
-    "routing_decision": {
-      "bytes": 0,
-      "digest": "<SHA>",
-      "fingerprint": "<SHA>",
-      "kind": "routing-decision",
-      "relative_path": ".taskplane/review-artifacts-v2/routing-decision/<SHA>.json",
-      "schema": "taskplane.artifact-reference/v1",
-      "transport": "artifact-reference"
-    },
-    "routing_input": {
-      "bytes": 0,
-      "digest": "<SHA>",
-      "fingerprint": "<SHA>",
-      "kind": "routing-input",
-      "relative_path": ".taskplane/review-artifacts-v2/routing-input/<SHA>.json",
-      "schema": "taskplane.artifact-reference/v1",
-      "transport": "artifact-reference"
-    },
-    "routing_mode": "selective",
     "run_id": "<SHA>",
     "schema": "taskplane.review-start-manifest/v2",
     "slot_conservation": {
@@ -1427,572 +707,25 @@
         "slot_ids": []
       },
       "dispatched": {
-        "count": 4,
-        "slot_ids": [
-          "sweep.architecture",
-          "sweep.code-quality",
-          "sweep.qa",
-          "sweep.testability"
-        ]
+        "count": 0,
+        "slot_ids": []
       },
       "prepared": {
-        "count": 4,
-        "slot_ids": [
-          "sweep.architecture",
-          "sweep.code-quality",
-          "sweep.qa",
-          "sweep.testability"
-        ]
+        "count": 0,
+        "slot_ids": []
       },
       "schema": "taskplane.review-slot-conservation/v1",
       "selected": {
-        "count": 4,
-        "slot_ids": [
-          "sweep.architecture",
-          "sweep.code-quality",
-          "sweep.qa",
-          "sweep.testability"
-        ]
+        "count": 0,
+        "slot_ids": []
       },
       "slot_fingerprint": "<SHA>",
-      "status": "dispatched"
+      "status": "empty"
     },
-    "slots": [
-      {
-        "brief": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "lens-brief",
-          "relative_path": ".taskplane/review-artifacts-v2/lens-brief/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "contract_bootstrap": {
-          "action": {
-            "action_id": "<ACTION>",
-            "expires_at": 0,
-            "issued_at": 0,
-            "key_id": "<SHA>",
-            "lease_identity": {
-              "canonical_revision": 1,
-              "context_fingerprint": "<SHA>",
-              "lease_fingerprint": "<SHA>",
-              "lens_ids": [
-                "architecture"
-              ],
-              "schema": "taskplane.slot-lease/v1",
-              "slot_id": "sweep.architecture",
-              "target_fingerprint": "<SHA>",
-              "view_fingerprint": "<SHA>"
-            },
-            "producer_contract": {
-              "read_only": true,
-              "task": "review lens slot sweep.architecture lease <SHA>",
-              "task_slot": "review-<SLOT>",
-              "write_allow": [
-                ".eval/kernel-v2/results/<SHA>.json"
-              ]
-            },
-            "result_path": ".eval/kernel-v2/results/<SHA>.json",
-            "role_marker": "taskplane-role:tp-lens",
-            "run_id": "<SHA>",
-            "schema": "taskplane.review-contract-action/v1",
-            "signature": "<SHA>",
-            "task_id": "t1",
-            "worker_identity": "tp_lens_sweep_94e23878_<LEASE>",
-            "workspace_fingerprint": "<SHA>"
-          },
-          "activation_order": "orchestrator_before_subagent_start",
-          "active_slot_semantics": "derived_cache_not_authority",
-          "authority": "signed_action",
-          "command": "review activate-contract",
-          "command_argv": [
-            "<PYTHON>",
-            "<PLUGIN>/taskplane/tp.py",
-            "review",
-            "activate-contract",
-            "--workspace",
-            "<WS>/.tp-work/t1",
-            "--task-slot",
-            "review-<SLOT>",
-            "--signed-action",
-            "<SIGNED_ACTION>",
-            "--expected-identity",
-            "<EXPECTED_IDENTITY>"
-          ],
-          "environment": {
-            "TASKPLANE_TASK": "review-<SLOT>"
-          },
-          "expected": {
-            "action_id": "<ACTION>",
-            "canonical_revision": 1,
-            "lease_fingerprint": "<SHA>",
-            "lens_ids": [
-              "architecture"
-            ],
-            "role_marker": "taskplane-role:tp-lens",
-            "run_id": "<SHA>",
-            "target_fingerprint": "<SHA>",
-            "task_id": "t1",
-            "worker_identity": "tp_lens_sweep_94e23878_<LEASE>"
-          },
-          "function": "taskplane_lite.activate_review_contract_action",
-          "host_command": "<PYTHON> <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
-          "required_before_evidence": true,
-          "schema": "taskplane.review-contract-bootstrap/v1",
-          "task_slot": "review-<SLOT>",
-          "workspace": "<WS>/.tp-work/t1"
-        },
-        "dispatch_set": {
-          "concurrent": true,
-          "id": "automatic-review-sweep-a12682aedca8",
-          "member_count": 4,
-          "schema": "taskplane.dispatch-set/v1"
-        },
-        "lease": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "lease",
-          "relative_path": ".taskplane/review-artifacts-v2/lease/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "lens_ids": [
-          "architecture"
-        ],
-        "result_path": ".eval/kernel-v2/results/<SHA>.json",
-        "slot_id": "sweep.architecture",
-        "view": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "view",
-          "relative_path": ".taskplane/review-artifacts-v2/view/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "wait_policy": {
-          "minimum_timeout_seconds": 300,
-          "mode": "event",
-          "outstanding_count": 4,
-          "outstanding_set": "automatic-review-sweep-a12682aedca8",
-          "reissue_after": [
-            "completion",
-            "attention"
-          ],
-          "scheduled_polling": false,
-          "schema": "taskplane.wait-policy/v1",
-          "timeout_seconds": 1800
-        }
-      },
-      {
-        "brief": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "lens-brief",
-          "relative_path": ".taskplane/review-artifacts-v2/lens-brief/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "contract_bootstrap": {
-          "action": {
-            "action_id": "<ACTION>",
-            "expires_at": 0,
-            "issued_at": 0,
-            "key_id": "<SHA>",
-            "lease_identity": {
-              "canonical_revision": 1,
-              "context_fingerprint": "<SHA>",
-              "lease_fingerprint": "<SHA>",
-              "lens_ids": [
-                "code-quality"
-              ],
-              "schema": "taskplane.slot-lease/v1",
-              "slot_id": "sweep.code-quality",
-              "target_fingerprint": "<SHA>",
-              "view_fingerprint": "<SHA>"
-            },
-            "producer_contract": {
-              "read_only": true,
-              "task": "review lens slot sweep.code-quality lease <SHA>",
-              "task_slot": "review-<SLOT>",
-              "write_allow": [
-                ".eval/kernel-v2/results/<SHA>.json"
-              ]
-            },
-            "result_path": ".eval/kernel-v2/results/<SHA>.json",
-            "role_marker": "taskplane-role:tp-lens",
-            "run_id": "<SHA>",
-            "schema": "taskplane.review-contract-action/v1",
-            "signature": "<SHA>",
-            "task_id": "t1",
-            "worker_identity": "tp_lens_sweep_94e23878_<LEASE>",
-            "workspace_fingerprint": "<SHA>"
-          },
-          "activation_order": "orchestrator_before_subagent_start",
-          "active_slot_semantics": "derived_cache_not_authority",
-          "authority": "signed_action",
-          "command": "review activate-contract",
-          "command_argv": [
-            "<PYTHON>",
-            "<PLUGIN>/taskplane/tp.py",
-            "review",
-            "activate-contract",
-            "--workspace",
-            "<WS>/.tp-work/t1",
-            "--task-slot",
-            "review-<SLOT>",
-            "--signed-action",
-            "<SIGNED_ACTION>",
-            "--expected-identity",
-            "<EXPECTED_IDENTITY>"
-          ],
-          "environment": {
-            "TASKPLANE_TASK": "review-<SLOT>"
-          },
-          "expected": {
-            "action_id": "<ACTION>",
-            "canonical_revision": 1,
-            "lease_fingerprint": "<SHA>",
-            "lens_ids": [
-              "code-quality"
-            ],
-            "role_marker": "taskplane-role:tp-lens",
-            "run_id": "<SHA>",
-            "target_fingerprint": "<SHA>",
-            "task_id": "t1",
-            "worker_identity": "tp_lens_sweep_94e23878_<LEASE>"
-          },
-          "function": "taskplane_lite.activate_review_contract_action",
-          "host_command": "<PYTHON> <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
-          "required_before_evidence": true,
-          "schema": "taskplane.review-contract-bootstrap/v1",
-          "task_slot": "review-<SLOT>",
-          "workspace": "<WS>/.tp-work/t1"
-        },
-        "dispatch_set": {
-          "concurrent": true,
-          "id": "automatic-review-sweep-a12682aedca8",
-          "member_count": 4,
-          "schema": "taskplane.dispatch-set/v1"
-        },
-        "lease": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "lease",
-          "relative_path": ".taskplane/review-artifacts-v2/lease/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "lens_ids": [
-          "code-quality"
-        ],
-        "result_path": ".eval/kernel-v2/results/<SHA>.json",
-        "slot_id": "sweep.code-quality",
-        "view": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "view",
-          "relative_path": ".taskplane/review-artifacts-v2/view/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "wait_policy": {
-          "minimum_timeout_seconds": 300,
-          "mode": "event",
-          "outstanding_count": 4,
-          "outstanding_set": "automatic-review-sweep-a12682aedca8",
-          "reissue_after": [
-            "completion",
-            "attention"
-          ],
-          "scheduled_polling": false,
-          "schema": "taskplane.wait-policy/v1",
-          "timeout_seconds": 1800
-        }
-      },
-      {
-        "brief": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "lens-brief",
-          "relative_path": ".taskplane/review-artifacts-v2/lens-brief/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "contract_bootstrap": {
-          "action": {
-            "action_id": "<ACTION>",
-            "expires_at": 0,
-            "issued_at": 0,
-            "key_id": "<SHA>",
-            "lease_identity": {
-              "canonical_revision": 1,
-              "context_fingerprint": "<SHA>",
-              "lease_fingerprint": "<SHA>",
-              "lens_ids": [
-                "qa"
-              ],
-              "schema": "taskplane.slot-lease/v1",
-              "slot_id": "sweep.qa",
-              "target_fingerprint": "<SHA>",
-              "view_fingerprint": "<SHA>"
-            },
-            "producer_contract": {
-              "read_only": true,
-              "task": "review lens slot sweep.qa lease <SHA>",
-              "task_slot": "review-<SLOT>",
-              "write_allow": [
-                ".eval/kernel-v2/results/<SHA>.json"
-              ]
-            },
-            "result_path": ".eval/kernel-v2/results/<SHA>.json",
-            "role_marker": "taskplane-role:tp-lens",
-            "run_id": "<SHA>",
-            "schema": "taskplane.review-contract-action/v1",
-            "signature": "<SHA>",
-            "task_id": "t1",
-            "worker_identity": "tp_lens_sweep_94e23878_<LEASE>",
-            "workspace_fingerprint": "<SHA>"
-          },
-          "activation_order": "orchestrator_before_subagent_start",
-          "active_slot_semantics": "derived_cache_not_authority",
-          "authority": "signed_action",
-          "command": "review activate-contract",
-          "command_argv": [
-            "<PYTHON>",
-            "<PLUGIN>/taskplane/tp.py",
-            "review",
-            "activate-contract",
-            "--workspace",
-            "<WS>/.tp-work/t1",
-            "--task-slot",
-            "review-<SLOT>",
-            "--signed-action",
-            "<SIGNED_ACTION>",
-            "--expected-identity",
-            "<EXPECTED_IDENTITY>"
-          ],
-          "environment": {
-            "TASKPLANE_TASK": "review-<SLOT>"
-          },
-          "expected": {
-            "action_id": "<ACTION>",
-            "canonical_revision": 1,
-            "lease_fingerprint": "<SHA>",
-            "lens_ids": [
-              "qa"
-            ],
-            "role_marker": "taskplane-role:tp-lens",
-            "run_id": "<SHA>",
-            "target_fingerprint": "<SHA>",
-            "task_id": "t1",
-            "worker_identity": "tp_lens_sweep_94e23878_<LEASE>"
-          },
-          "function": "taskplane_lite.activate_review_contract_action",
-          "host_command": "<PYTHON> <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
-          "required_before_evidence": true,
-          "schema": "taskplane.review-contract-bootstrap/v1",
-          "task_slot": "review-<SLOT>",
-          "workspace": "<WS>/.tp-work/t1"
-        },
-        "dispatch_set": {
-          "concurrent": true,
-          "id": "automatic-review-sweep-a12682aedca8",
-          "member_count": 4,
-          "schema": "taskplane.dispatch-set/v1"
-        },
-        "lease": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "lease",
-          "relative_path": ".taskplane/review-artifacts-v2/lease/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "lens_ids": [
-          "qa"
-        ],
-        "result_path": ".eval/kernel-v2/results/<SHA>.json",
-        "slot_id": "sweep.qa",
-        "view": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "view",
-          "relative_path": ".taskplane/review-artifacts-v2/view/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "wait_policy": {
-          "minimum_timeout_seconds": 300,
-          "mode": "event",
-          "outstanding_count": 4,
-          "outstanding_set": "automatic-review-sweep-a12682aedca8",
-          "reissue_after": [
-            "completion",
-            "attention"
-          ],
-          "scheduled_polling": false,
-          "schema": "taskplane.wait-policy/v1",
-          "timeout_seconds": 1800
-        }
-      },
-      {
-        "brief": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "lens-brief",
-          "relative_path": ".taskplane/review-artifacts-v2/lens-brief/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "contract_bootstrap": {
-          "action": {
-            "action_id": "<ACTION>",
-            "expires_at": 0,
-            "issued_at": 0,
-            "key_id": "<SHA>",
-            "lease_identity": {
-              "canonical_revision": 1,
-              "context_fingerprint": "<SHA>",
-              "lease_fingerprint": "<SHA>",
-              "lens_ids": [
-                "testability"
-              ],
-              "schema": "taskplane.slot-lease/v1",
-              "slot_id": "sweep.testability",
-              "target_fingerprint": "<SHA>",
-              "view_fingerprint": "<SHA>"
-            },
-            "producer_contract": {
-              "read_only": true,
-              "task": "review lens slot sweep.testability lease <SHA>",
-              "task_slot": "review-<SLOT>",
-              "write_allow": [
-                ".eval/kernel-v2/results/<SHA>.json"
-              ]
-            },
-            "result_path": ".eval/kernel-v2/results/<SHA>.json",
-            "role_marker": "taskplane-role:tp-lens",
-            "run_id": "<SHA>",
-            "schema": "taskplane.review-contract-action/v1",
-            "signature": "<SHA>",
-            "task_id": "t1",
-            "worker_identity": "tp_lens_sweep_94e23878_<LEASE>",
-            "workspace_fingerprint": "<SHA>"
-          },
-          "activation_order": "orchestrator_before_subagent_start",
-          "active_slot_semantics": "derived_cache_not_authority",
-          "authority": "signed_action",
-          "command": "review activate-contract",
-          "command_argv": [
-            "<PYTHON>",
-            "<PLUGIN>/taskplane/tp.py",
-            "review",
-            "activate-contract",
-            "--workspace",
-            "<WS>/.tp-work/t1",
-            "--task-slot",
-            "review-<SLOT>",
-            "--signed-action",
-            "<SIGNED_ACTION>",
-            "--expected-identity",
-            "<EXPECTED_IDENTITY>"
-          ],
-          "environment": {
-            "TASKPLANE_TASK": "review-<SLOT>"
-          },
-          "expected": {
-            "action_id": "<ACTION>",
-            "canonical_revision": 1,
-            "lease_fingerprint": "<SHA>",
-            "lens_ids": [
-              "testability"
-            ],
-            "role_marker": "taskplane-role:tp-lens",
-            "run_id": "<SHA>",
-            "target_fingerprint": "<SHA>",
-            "task_id": "t1",
-            "worker_identity": "tp_lens_sweep_94e23878_<LEASE>"
-          },
-          "function": "taskplane_lite.activate_review_contract_action",
-          "host_command": "<PYTHON> <PLUGIN>/taskplane/tp.py review activate-contract --workspace <WS>/.tp-work/t1 --task-slot review-<SLOT> --signed-action <SIGNED_ACTION> --expected-identity <EXPECTED_IDENTITY>",
-          "required_before_evidence": true,
-          "schema": "taskplane.review-contract-bootstrap/v1",
-          "task_slot": "review-<SLOT>",
-          "workspace": "<WS>/.tp-work/t1"
-        },
-        "dispatch_set": {
-          "concurrent": true,
-          "id": "automatic-review-sweep-a12682aedca8",
-          "member_count": 4,
-          "schema": "taskplane.dispatch-set/v1"
-        },
-        "lease": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "lease",
-          "relative_path": ".taskplane/review-artifacts-v2/lease/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "lens_ids": [
-          "testability"
-        ],
-        "result_path": ".eval/kernel-v2/results/<SHA>.json",
-        "slot_id": "sweep.testability",
-        "view": {
-          "bytes": 0,
-          "digest": "<SHA>",
-          "fingerprint": "<SHA>",
-          "kind": "view",
-          "relative_path": ".taskplane/review-artifacts-v2/view/<SHA>.json",
-          "schema": "taskplane.artifact-reference/v1",
-          "transport": "artifact-reference"
-        },
-        "wait_policy": {
-          "minimum_timeout_seconds": 300,
-          "mode": "event",
-          "outstanding_count": 4,
-          "outstanding_set": "automatic-review-sweep-a12682aedca8",
-          "reissue_after": [
-            "completion",
-            "attention"
-          ],
-          "scheduled_polling": false,
-          "schema": "taskplane.wait-policy/v1",
-          "timeout_seconds": 1800
-        }
-      }
-    ],
+    "slots": [],
     "stage": "build",
     "status": "ready",
-    "target_fingerprint": "<SHA>",
-    "wait_invocation": {
-      "operation": "wait_for_events",
-      "outstanding_members": [
-        "sweep.architecture",
-        "sweep.code-quality",
-        "sweep.qa",
-        "sweep.testability"
-      ],
-      "outstanding_set": "automatic-review-sweep-a12682aedca8",
-      "reissue": false,
-      "scheduled": false,
-      "schema": "taskplane.event-wait-invocation/v1",
-      "timeout_seconds": 1800,
-      "wake": null
-    }
+    "target_fingerprint": "<SHA>"
   },
   "role": "tp-evaluator",
   "role_instructions": "<PLUGIN>/agents/tp-evaluator.md",
@@ -2011,26 +744,17 @@
       {
         "checkpoint": "before_submit",
         "class": "recoverable",
-        "correction": "Return to the canonical ReviewKernel. Repair graph quality or impact first, then consume its single persisted routing decision; do not independently remap lenses.",
-        "id": "graph-before-selective-review",
+        "correction": "Return to the existing zero-lens evaluator output contract. Complete the evidence judgment against its sealed context; do not create or collect lens work.",
+        "id": "zero-lens-evaluate-evidence",
         "max_corrections": 1,
         "required_facts": [
           "graph_before_route",
-          "selective_lens_mapping"
-        ],
-        "rule": "Derive graph quality and complete blast radius before the one selective lens mapping."
-      },
-      {
-        "checkpoint": "before_submit",
-        "class": "recoverable",
-        "correction": "Use the persisted ReviewKernel envelope and its leased result slots. Do not let lenses re-read the repository to recreate diff or impact; collect the canonical revision before submitting pass.",
-        "id": "one-shared-review-context",
-        "max_corrections": 1,
-        "required_facts": [
           "shared_review_context",
-          "lens_results_collected"
+          "output_schema_declared",
+          "output_schema_validated",
+          "output_producer_observed"
         ],
-        "rule": "Seal one immutable diff, impact, requirement, and acceptance context before lens dispatch; collect every leased result into one canonical revision."
+        "rule": "Evaluate seals the exact diff, impact, requirement, acceptance criteria, tests, Design conformance, and provenance without any lens route, slot, disposition, retry, lease, or lens-result collection."
       },
       {
         "checkpoint": "before_submit",

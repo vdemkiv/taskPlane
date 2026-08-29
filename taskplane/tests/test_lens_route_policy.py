@@ -115,12 +115,13 @@ def test_not_applicable_requires_machine_readable_negative_evidence():
         policy.build_route(context(), bad, CATALOG["lenses"])
 
 
-def test_plan_and_evaluate_enforce_three_or_four_nontrivial_lenses():
+def test_plan_enforces_three_or_four_nontrivial_lenses_and_evaluate_is_unroutable():
     selected = ("security", "testability", "architecture")
     assert len(build("plan", selected)["selected"]) == 3
-    assert len(build("evaluate", selected + ("cost-finops",))["selected"]) == 4
     with pytest.raises(policy.LensRoutePolicyError, match="at least 3"):
         build("plan", selected[:2])
+    with pytest.raises(policy.LensRoutePolicyError, match="product, design, or plan"):
+        build("evaluate", selected)
 
 
 def test_more_than_four_mandatory_risks_returns_non_dispatchable_overflow():
@@ -130,7 +131,7 @@ def test_more_than_four_mandatory_risks_returns_non_dispatchable_overflow():
     for row in signal_rows:
         row["mandatory"] = row["id"] in mandatory
     route = policy.build_route(
-        context("evaluate"), signal_rows, CATALOG["lenses"])
+        context("plan"), signal_rows, CATALOG["lenses"])
     assert route["status"] == "expanded_approval_required"
     assert route["dispatchable_selected"] == []
     assert route["overflow"]["mandatory_lenses"] == list(mandatory)
@@ -143,7 +144,7 @@ def test_fifth_independent_positive_risk_is_not_falsely_covered_by_cap():
     for row in signal_rows:
         row["mandatory"] = False
     route = policy.build_route(
-        context("evaluate"), signal_rows, CATALOG["lenses"])
+        context("plan"), signal_rows, CATALOG["lenses"])
 
     assert route["status"] == "expanded_approval_required"
     assert route["dispatchable_selected"] == []

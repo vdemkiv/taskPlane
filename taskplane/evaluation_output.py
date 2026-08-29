@@ -14,7 +14,7 @@ from copy import deepcopy
 import storage as runtime_storage
 
 
-EVALUATOR_OUTPUT_SCHEMA_ID = "taskplane.evaluator-output/v1"
+EVALUATOR_OUTPUT_SCHEMA_ID = "taskplane.evaluator-output/v2"
 LENS_SLOT_OUTPUT_SCHEMA_ID = "taskplane.lens-slot-output/v2"
 WRITE_OBSERVATION_SCHEMA_ID = "taskplane.output-write-observation/v1"
 MAX_OUTPUT_BYTES = 1024 * 1024
@@ -103,10 +103,6 @@ def evaluator_output_schema() -> dict:
         "status": {"enum": ["met", "not-met", "cannot-verify"]},
         "evidence": string,
     }, ["criterion", "status", "evidence"])
-    lens = _object({
-        "lens": string, "verdict": {"enum": ["pass", "fail"]},
-        "blockers": {"type": "integer", "minimum": 0},
-    }, ["lens", "verdict", "blockers"])
     disposition = _object({
         "node": string, "status": string, "evidence": string,
     }, ["node", "status", "evidence"])
@@ -126,13 +122,12 @@ def evaluator_output_schema() -> dict:
             # is mandatory at the loop boundary for ``unavailable``.
             "evaluation": evaluation,
             "criteria": {"type": "array", "items": criterion},
-            "lenses": {"type": "array", "items": lens},
             "graph": graph,
             "failures": {"type": "array", "items": _object({
                 "what": string, "repro": string, "where": string,
             }, ["what", "repro", "where"])},
         }, ["schema", "task", "requirement", "verdict", "criteria",
-            "lenses", "graph", "failures"]),
+            "graph", "failures"]),
     }
 
 
@@ -160,11 +155,6 @@ def validate_evaluator_value(
                 "reason_code=none; omission or outage fallback is forbidden",
             )
     _validate(value, evaluator_output_schema())
-    if expected_lenses is not None and value.get("lenses") != []:
-        raise OutputValidationError(
-            "nonempty_collected_lenses",
-            "zero-lens evaluation requires lenses=[]",
-        )
     return value
 
 

@@ -4148,6 +4148,82 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                          "manifest": manifest})
         return manifest
 
+    # Evaluate is an evaluator-owned judgment stage, not a review fan-out.
+    # D-0014 makes this unconditional: historical Design bytes may still say
+    # ``stage_policy.evaluate.selection=focused``, but runtime must not score
+    # the catalog, construct a route/disposition ledger, consult expanded
+    # authority, create lens leases, or collect lens results.
+    if stage == "build":
+        dor["lens_execution_policy"] = "none"
+        dor["lens_worker_start_count"] = 0
+        routing_input_ref = store.put("evaluation-input", {
+            "schema": "taskplane.evaluation-input/v1",
+            "target": target,
+            "diff": diff,
+            "impact": quality.get("impact") or impact,
+            "graph_quality": _portable_ref(quality_ref),
+            "runnability": runnability,
+            "test_evidence": test_evidence or {},
+            "requirement": requirement or {},
+            "acceptance": list(acceptance or []),
+            "contracts": sorted({str(x) for x in contracts or []}),
+            "design_contract": copy.deepcopy(design_contract or {}),
+            "change": {"type": task_type, "stage": stage, "dor": dor},
+        })
+        envelope_ref = evidence.create_envelope(
+            store, target=target, diff=diff,
+            impact=quality.get("impact") or impact, graph_quality=quality,
+            runnability=runnability, requirement=requirement or {},
+            acceptance=acceptance or [], contracts=contracts or [],
+            change={"type": task_type, "stage": stage, "dor": dor,
+                    "evaluation_input": _portable_ref(routing_input_ref),
+                    "design_contract": copy.deepcopy(design_contract or {})})
+        revision = evidence.next_revision(store)
+        run_id = _run_id(stage, _target_run_fingerprint(target),
+                         envelope_ref["fingerprint"], revision)
+        depth_receipt = _assert_review_depth_manifest(depth_policy, [])
+        conservation = _slot_conservation_record(
+            selected=[], prepared=[], dispatched=[], collected=[])
+        counters.update({"envelope_count": 1, "view_count": 0,
+                         "dispatched_agent_count": 0,
+                         "prompt_view_bytes": 0})
+        manifest = _manifest({
+            "schema": "taskplane.review-start-manifest/v2",
+            "status": "ready", "stage": stage, "run_id": run_id,
+            "lens_execution_policy": "none",
+            "lens_worker_start_count": 0,
+            "target_fingerprint": target.get("fingerprint"),
+            "context_fingerprint": envelope_ref["fingerprint"],
+            "graph_quality": _portable_ref(quality_ref),
+            "evaluation_input": _portable_ref(routing_input_ref),
+            "review_depth_policy": depth_receipt,
+            "envelope": _portable_ref(envelope_ref),
+            "expected_lenses": [], "slots": [],
+            "slot_conservation": conservation,
+            "counters": counters,
+        })
+        _save_state(ws, {
+            "schema": "taskplane.review-run-state/v2",
+            "status": "ready", "run_id": run_id, "stage": stage,
+            "target": target, "quality": quality_ref,
+            "evaluation_input": routing_input_ref,
+            "envelope": envelope_ref, "slots": [], "dispatch_slots": [],
+            "expected_lenses": [], "zero_lens_evaluation": True,
+            "lens_execution_policy": "none",
+            "review_depth_policy": depth_policy,
+            "review_depth_receipt": depth_receipt,
+            "slot_conservation": conservation,
+            "manifest": manifest, "counters": counters,
+        })
+        tp.trace(ws, "evaluation_kernel_started", stage=stage,
+                 run_id=run_id, target_head=target.get("head"),
+                 target_fingerprint=target.get("fingerprint"),
+                 context_fingerprint=envelope_ref["fingerprint"],
+                 graph_quality_status=quality.get("status"),
+                 lens_execution_policy="none", lens_worker_start_count=0,
+                 slots=[])
+        return manifest
+
     route_fn = router or (lambda: lensmod.route(
         files, task_type=task_type, breadth="routed", stage=stage,
         workspace=ws, requirement_text=(requirement or {}).get("text"),
@@ -6358,7 +6434,8 @@ def _collect_review_transaction(
             raise evidence.ProvenanceError(
                 "direct result references cannot establish hook-observed authorship")
         authorized_empty_collection = None
-        if state.get("delivery_mode_receipt") is not None:
+        if state.get("zero_lens_evaluation") is True or \
+                state.get("delivery_mode_receipt") is not None:
             if __package__:
                 from . import delivery_policy
             else:  # pragma: no cover - direct CLI module loading
@@ -6527,7 +6604,10 @@ def _collect_review_transaction(
                 gap_slots=len(collected["gaps"]),
                 findings=len(revision["findings"]), approval_enabled=False)
             return manifest
-        correction_resolution = _resolve_sweep_corrections(store, state, refs)
+        correction_resolution = (
+            {"corrections": [], "rejections": []}
+            if state.get("zero_lens_evaluation") is True else
+            _resolve_sweep_corrections(store, state, refs))
         quick_corrections = correction_resolution.get("corrections") or []
         sweep_rejections = correction_resolution["rejections"]
         depth_receipt = _assert_review_depth_manifest(
@@ -6543,8 +6623,9 @@ def _collect_review_transaction(
                 selected=slot_ids, prepared=slot_ids, dispatched=slot_ids,
                 collected=collected.get("slot_ids") or [])
         else:
-            routed = store.read(state["routing_decision"]).get(
-                "dispositions") or {}
+            routed = ({} if state.get("zero_lens_evaluation") is True else
+                      store.read(state["routing_decision"]).get(
+                          "dispositions") or {})
             if any((row or {}).get("verdict") in {"deep", "sweep", "light"}
                    for row in routed.values()):
                 raise ReviewKernelError(
@@ -6578,7 +6659,8 @@ def _collect_review_transaction(
                 "review", review_id="n" + revision["findings_fingerprint"][:11])
         except Exception:
             pass
-        decision = store.read(state["routing_decision"])["dispositions"]
+        decision = ({} if state.get("zero_lens_evaluation") is True else
+                    store.read(state["routing_decision"])["dispositions"])
         _collection_fault("post_routing")
         identity = evidence.revision_identity(revision)
         dor = ((envelope.get("change") or {}).get("dor") or
@@ -6616,7 +6698,9 @@ def _collect_review_transaction(
                 requirements_validation=requirements_validation)
         portable_validations = [
             _portable_ref(ref) for ref in result_validations]
-        body = {"meta": {**identity, "lens_coverage": decision,
+        body = {"meta": {**identity,
+                         **({} if state.get("zero_lens_evaluation") is True
+                            else {"lens_coverage": decision}),
                          "target": identity["target_fingerprint"],
                          "dor_evidence": dor,
                          "requirements_validation": requirements_validation,

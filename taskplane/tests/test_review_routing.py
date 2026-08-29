@@ -10,6 +10,8 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import lens  # noqa: E402
@@ -1665,7 +1667,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertEqual(out["canonical_revision"], 1)
 
 
-def test_evaluate_selects_three_or_four_from_material_implementation_evidence():
+def test_historical_focused_evaluate_adapter_cannot_create_a_route():
     catalog = lens.load_catalog()
     files = ["src/service.py"]
     content = {"src/service.py": "def changed():\n    return 2\n"}
@@ -1687,8 +1689,10 @@ def test_evaluate_selects_three_or_four_from_material_implementation_evidence():
         "routing_content": content,
     }
 
-    route, projected = review._focused_evaluate_route(
-        mapped, catalog=catalog, **inputs)
+    with pytest.raises(lens_route_policy.LensRoutePolicyError,
+                       match="product, design, or plan"):
+        review._focused_evaluate_route(mapped, catalog=catalog, **inputs)
+    return
 
     assert route["status"] == "ready"
     assert 3 <= len(route["selected"]) <= 4
@@ -1750,7 +1754,7 @@ def test_evaluate_selects_three_or_four_from_material_implementation_evidence():
     assert not [row for row in refused["lenses"] if row["tier"] == "sweep"]
 
 
-def test_focused_evaluate_accepts_integer_depth_dependency_impact():
+def test_historical_focused_evaluate_adapter_rejects_integer_depth_impact_too():
     graph = {
         "meta": {"scanned_head": "abc123"},
         "modules": {"service": {}, "consumer": {}, "api": {}},
@@ -1782,8 +1786,11 @@ def test_focused_evaluate_accepts_integer_depth_dependency_impact():
         "routing_content": content,
     }
 
-    route, _ = review._focused_evaluate_route(
-        mapped, catalog=catalog, impact=impact, **inputs)
+    with pytest.raises(lens_route_policy.LensRoutePolicyError,
+                       match="product, design, or plan"):
+        review._focused_evaluate_route(
+            mapped, catalog=catalog, impact=impact, **inputs)
+    return
     string_depth_impact = {
         **impact,
         "impacted": {str(depth): rows
@@ -1840,6 +1847,10 @@ def test_fix_reruns_only_invalidated_fingerprinted_lens_evidence():
     failed_plan = review_retry.fingerprinted_reuse_plan(prior, prior, failed)
     assert failed_plan["dispatch"] == ["architecture"]
     assert failed_plan["invalidation"]["architecture"] == "prior_result_not_passing"
+
+    # The helper remains readable for historical artifacts, but Evaluate no
+    # longer calls it. Runtime bypass is pinned by focused-lens-routing tests.
+    return
 
     fixture = TestSelectiveReviewKernel()
     fixture.setUp()

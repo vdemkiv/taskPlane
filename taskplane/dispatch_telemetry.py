@@ -110,7 +110,7 @@ _LENS_ROUTE_TOTAL_FIELDS = frozenset({
     "estimated_tokens", "actual_tokens", "runtime_ms",
     "cache_reused_count", "invalidation_count",
 })
-_LENS_ROUTE_STAGES = frozenset({"product", "design", "plan", "evaluate"})
+_LENS_ROUTE_STAGES = frozenset({"product", "design", "plan"})
 _LENS_ROUTE_TERMINAL_ALIASES = {
     "success": "success", "pass": "success", "passed": "success",
     "complete": "success", "completed": "success",

@@ -11,7 +11,7 @@ from taskplane import dispatch_telemetry
 def _route(*, reason: str = "selected:trust-boundary") -> dict:
     return {
         "schema": "taskplane.lens-route-policy/v1",
-        "stage": "evaluate",
+        "stage": "plan",
         "selected": ["security", "architecture"],
         "dispositions": [
             {"lens": "security", "disposition": "execute_deep",
@@ -61,7 +61,7 @@ def test_route_telemetry_is_complete_bounded_and_redacted() -> None:
     )
 
     assert record["schema"] == "taskplane.lens-route-telemetry/v1"
-    assert record["stage"] == "evaluate"
+    assert record["stage"] == "plan"
     assert record["selected_count"] == 2
     assert record["route_fingerprint"] == "a" * 64
     assert record["terminal_status"] == "success"
@@ -109,6 +109,16 @@ def test_route_telemetry_is_complete_bounded_and_redacted() -> None:
     assert all(len(row["reason"].encode("utf-8")) <= 512
                for row in record["lenses"])
     assert len(encoded.encode("utf-8")) <= 128 * 1024
+
+
+def test_evaluate_route_telemetry_is_rejected_before_persistence() -> None:
+    route = _route()
+    route["stage"] = "evaluate"
+    with pytest.raises(dispatch_telemetry.DispatchTelemetryError,
+                       match="stage is invalid"):
+        dispatch_telemetry.build_lens_route_telemetry(
+            route, target="R-0001", terminal_status="success",
+            lens_metrics=_metrics())
 
 
 @pytest.mark.parametrize(
