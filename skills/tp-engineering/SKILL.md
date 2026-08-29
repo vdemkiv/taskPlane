@@ -1,6 +1,6 @@
 ---
 name: tp-engineering
-description: "The engineering persona of taskplane — owns whether the built thing is right and sound. Use for validating completed work: 'review this' (PR/branch/code/work), 'security review', 'architecture review', 'does this match the requirement', 'what depends on X', 'blast radius', 'run the retro', 'sign-off'. Reviews DISPOSITION the full lens catalog — the applicability engine routes each lens deep, light, or n/a-with-evidence, architecture & system design keeps its floor — plus a requirements-vs-implementation walk for the human to sign off. Read-only toward code by enforced contract; it judges — it never implements or fixes."
+description: "The engineering persona of taskplane — owns whether the built thing is right and sound. Use for validating completed work: 'review this' (PR/branch/code/work), 'security review', 'architecture review', 'does this match the requirement', 'what depends on X', 'blast radius', 'run the retro', 'sign-off'. Engineering consumes Evaluate's sealed three-or-four quick lens results and evidenced all-26 disposition ledger, launches no lens workers, and returns missing or insufficient substantive evidence to a newly authorized focused Evaluate route. It also walks requirements against implementation for human sign-off. Read-only toward code by enforced contract; it judges — it never implements or fixes."
 ---
 
 # /tp-engineering — the SOUND seat (impact · all lenses · verdicts)
@@ -133,9 +133,10 @@ not a mechanism, and a refusal is.
 
 **Every review DISPOSITIONS the full catalog — it does not RUN the full
 catalog.** Evaluate records exactly one evidenced row for all 26 dispositions
-and executes exactly three or four quick lenses for a non-trivial target.
-Engineering consumes those results without launching a second sweep. Coverage
-honesty comes from evidence, not from running a lens to avoid the question.
+and executes exactly three or four quick lenses for a non-trivial target. The
+ledger is the coverage record; selected result consumption follows the sealed
+boundary below. Coverage honesty comes from evidence, not from running a lens
+to avoid the question.
 
 Do NOT pass `--all`. It forces every lens to run AND switches the
 applicability engine off (`lens.py`: `breadth != "all"`), which is

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import re
+from typing import cast, TypedDict
 
 import pytest
 
@@ -12,12 +13,33 @@ from taskplane.delivery_policy import ROUTED_LENS_STAGES, ZERO_LENS_STAGES
 ROOT = Path(__file__).resolve().parents[2]
 
 
+class _FlowNode(TypedDict):
+    id: str
+    label: str
+    kind: str
+
+
+class _SkillFlow(TypedDict):
+    nodes: list[_FlowNode]
+    edges: list[list[str]]
+
+
 def _raw(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
 def _normalized(value: str) -> str:
     return re.sub(r"\s+", " ", value.lower()).strip()
+
+
+def _frontmatter_from_text(raw: str) -> str:
+    match = re.match(r"\A---\n(?P<body>.*?)\n---(?:\n|\Z)", raw, re.DOTALL)
+    assert match is not None, "expected one leading YAML frontmatter block"
+    return match.group("body")
+
+
+def _frontmatter(relative: str) -> str:
+    return _frontmatter_from_text(_raw(relative))
 
 
 def _section_from_text(raw: str, heading: str) -> str:
@@ -48,6 +70,26 @@ def _assert_section_contract(
         assert _normalized(clause) in text, (
             f"{relative}#{heading} is missing contract clause: {clause}"
         )
+
+
+def _assert_frontmatter_contract(relative: str, *clauses: str) -> None:
+    text = _normalized(_frontmatter(relative))
+    for clause in clauses:
+        assert _normalized(clause) in text, (
+            f"{relative} frontmatter is missing contract clause: {clause}"
+        )
+
+
+def _assert_owned_frontmatter_clause(raw: str, clause: str) -> None:
+    normalized_clause = _normalized(clause)
+    frontmatter = _normalized(_frontmatter_from_text(raw))
+    document = _normalized(raw)
+    assert frontmatter.count(normalized_clause) == 1, (
+        f"frontmatter must own exactly one contract clause: {clause}"
+    )
+    assert document.count(normalized_clause) == 1, (
+        f"frontmatter clause must not be duplicated or misplaced: {clause}"
+    )
 
 
 def _assert_owned_clause(raw: str, heading: str, clause: str) -> None:
@@ -121,6 +163,12 @@ def test_build_and_fix_agents_never_launch_lens_workers() -> None:
         "product, design, plan, or evaluate",
         "refuse any build or fix brief",
     )
+    _assert_frontmatter_contract(
+        "agents/tp-lens.md",
+        "governed read-only quick lens worker for Product, Design, Plan, or Evaluate",
+        "one-per-selected execution disposition",
+        "Build and Fix never dispatch it",
+    )
     _assert_section_contract(
         "agents/tp-orchestrator.md",
         "Focused routing invariant",
@@ -165,6 +213,13 @@ def test_skill_contracts_carry_the_same_stage_policy() -> None:
         "exactly three or four quick lenses",
         "all 26 dispositions",
         "fingerprint inputs changed",
+    )
+    _assert_frontmatter_contract(
+        "skills/tp-engineering/SKILL.md",
+        "sealed three-or-four quick lens results",
+        "evidenced all-26 disposition ledger",
+        "launches no lens workers",
+        "newly authorized focused Evaluate route",
     )
 
 
@@ -218,6 +273,11 @@ def test_legacy_broad_review_routing_is_not_still_authoritative() -> None:
         governed = _normalized(_section(relative, heading))
         for stale in stale_clauses:
             assert stale not in governed, f"stale clause in {relative}#{heading}"
+    engineering_frontmatter = _normalized(
+        _frontmatter("skills/tp-engineering/SKILL.md")
+    )
+    for stale in ("routes each lens deep", "light, or n/a", "fan-out"):
+        assert stale not in engineering_frontmatter
     _assert_section_contract(
         "agents/tp-engineering.md",
         "Focused routing contract",
@@ -228,8 +288,12 @@ def test_legacy_broad_review_routing_is_not_still_authoritative() -> None:
 
 
 def test_skill_flow_graphs_expose_focused_stage_boundaries() -> None:
-    def flow(relative: str) -> dict:
-        return json.loads((ROOT / relative).read_text(encoding="utf-8"))
+    def flow(relative: str) -> _SkillFlow:
+        payload: object = json.loads(
+            (ROOT / relative).read_text(encoding="utf-8")
+        )
+        assert isinstance(payload, dict)
+        return cast(_SkillFlow, payload)
 
     def labels(relative: str) -> str:
         payload = flow(relative)
@@ -264,6 +328,45 @@ def test_skill_flow_graphs_expose_focused_stage_boundaries() -> None:
     assert ["wave", "collect"] in engineering_flow["edges"]
     assert "evaluate" in ROUTED_LENS_STAGES
     assert "em" in ZERO_LENS_STAGES
+
+
+def test_engineering_frontmatter_has_one_authoritative_quick_route_clause() -> None:
+    clause = (
+        "Engineering consumes Evaluate's sealed three-or-four quick lens "
+        "results and evidenced all-26 disposition ledger, launches no lens "
+        "workers, and returns missing or insufficient substantive evidence "
+        "to a newly authorized focused Evaluate route."
+    )
+    _assert_owned_frontmatter_clause(
+        _raw("skills/tp-engineering/SKILL.md"), clause
+    )
+
+
+def test_frontmatter_binding_rejects_removal_duplication_and_relocation() -> None:
+    raw = _raw("skills/tp-engineering/SKILL.md")
+    clause = (
+        "Engineering consumes Evaluate's sealed three-or-four quick lens "
+        "results and evidenced all-26 disposition ledger, launches no lens "
+        "workers, and returns missing or insufficient substantive evidence "
+        "to a newly authorized focused Evaluate route."
+    )
+    assert raw.count(clause) == 1
+
+    with_removed = raw.replace(clause, "Engineering consumes sealed evidence.")
+    with pytest.raises(AssertionError):
+        _assert_owned_frontmatter_clause(with_removed, clause)
+
+    with_duplicate = raw.replace(clause, f"{clause} {clause}")
+    with pytest.raises(AssertionError):
+        _assert_owned_frontmatter_clause(with_duplicate, clause)
+
+    without_owner = raw.replace(clause, "")
+    relocated = without_owner.replace(
+        "# /tp-engineering",
+        f"{clause}\n\n# /tp-engineering",
+    )
+    with pytest.raises(AssertionError):
+        _assert_owned_frontmatter_clause(relocated, clause)
 
 
 def test_engineering_focused_clause_has_one_authoritative_owner() -> None:
