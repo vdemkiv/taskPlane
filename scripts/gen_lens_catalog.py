@@ -6,6 +6,7 @@ The table + counts + tiers are derived; the prose notes below the table are
 kept in this generator so the whole doc regenerates in one place."""
 import json
 import os
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CAT = os.path.join(ROOT, "lenses", "catalog.json")
@@ -17,15 +18,15 @@ ORDER = ["Product & delivery", "Engineering craft", "Architecture & systems",
          "Experience", "Docs", "Compliance"]
 
 BASELINE_NOTE = {
-    "code-quality": " *(baseline on any code)*",
-    "security": " *(baseline on any code)*",
-    "testability": " *(baseline on any code)*",
-    "architecture": " *(always-on — light pass on any change, full pass when structural)*",
+    "code-quality": " *(signal baseline; not automatic dispatch)*",
+    "security": " *(signal baseline; not automatic dispatch)*",
+    "testability": " *(signal baseline; not automatic dispatch)*",
+    "architecture": " *(mandatory evidenced floor; not automatic dispatch)*",
 }
 OPTIONAL = {"cost-finops", "i18n"}
 
 
-def main():
+def main(*, check=False):
     with open(CAT, encoding="utf-8") as f:
         data = json.load(f)
     lenses = data["lenses"] if isinstance(data, dict) else data
@@ -63,13 +64,13 @@ def main():
             L.append(f"| {gcol} | {x['id']}{opt} | {x['charter']}{note} |")
     L.append("\n*opt* = suggested/optional (off unless its files appear).\n")
 
-    L.append("## Always-on floor: architecture & system design\n")
-    L.append("**Architecture is routed on every code change** — a light pass "
-             "on any diff, a full pass when the change is structurally "
-             "significant. That floor is enforced by the engine "
-             "(`tp lens route --all`), not by memory: component boundaries, "
-             "data flow, contracts, and failure modes get a look even when no "
-             "architecture files changed.\n")
+    L.append("## Mandatory floors remain evidence-based\n")
+    L.append("Architecture and security cannot be silently omitted when "
+             "canonical evidence shows their owned boundary. The focused "
+             "policy applies each floor before it groups overlapping risks "
+             "and caps normal Plan/Evaluate execution at 3–4 quick lenses. "
+             "A floor guarantees an evidenced disposition; it does not "
+             "authorize a Build/Fix worker or an automatic full-catalog run.\n")
 
     # Strategy is a single SUMMONED lens (tp-northstar), not a scheduled
     # "advisory board" tier — the board was removed in v1.0. Only emit this
@@ -85,16 +86,14 @@ def main():
         L.append("")
 
     L.append("## Routing notes\n")
-    L.append("- **Baselines are intentionally only four** — `code-quality`, "
-             "`security`, `testability`, and always-on `architecture` — so a "
-             f"typical change fires ~4–7 lenses, not all {n}. Role lenses fire "
-             "by context (files/task type).")
-    L.append("- **Mode** (`inline` vs governed `subagent`) is per-lens, set by "
-             "`deep_globs` or change size; a wide review fans them out as "
-             "parallel `tp-lens` agents (`tp lens dispatch`).")
-    L.append("- **`tp lens route`** shows exactly which fired and why; "
-             "`--only`/`--skip` override; `--all` returns the full catalog "
-             "(deep + sweep).\n")
+    L.append("- Every routed Product, Design, Plan, and Evaluate stage emits "
+             "one evidenced `execute_deep`, `execute_light`, `covered_by`, or "
+             f"`not_applicable` row for all {n} lenses.")
+    L.append("- Only the two `execute_*` rows dispatch. Normal delivery uses "
+             "focused quick routes; Build and Fix launch zero lens workers.")
+    L.append("- More than four independent mandatory Plan/Evaluate risks "
+             "split scope or require protected exact-target expanded-route "
+             "authority.\n")
 
     L.append("## Adding a lens\n")
     L.append("Append an entry to `lenses/catalog.json` (id, name, group, "
@@ -103,11 +102,25 @@ def main():
              "`python3 scripts/gen_lens_catalog.py` to refresh this doc. The "
              "router picks the lens up automatically.")
 
+    rendered = "\n".join(L) + "\n"
+    if check:
+        try:
+            with open(OUT, encoding="utf-8") as f:
+                current = f.read()
+        except FileNotFoundError:
+            current = ""
+        if current != rendered:
+            raise SystemExit(f"stale generated lens catalog: {OUT}")
+        print(f"current {OUT}: {n} lenses across {len(groups)} groups "
+              f"({len(board)} advisory)")
+        return
     with open(OUT, "w", encoding="utf-8") as f:
-        f.write("\n".join(L) + "\n")
+        f.write(rendered)
     print(f"wrote {OUT}: {n} lenses across {len(groups)} groups "
           f"({len(board)} advisory)")
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] not in ([], ["--check"]):
+        raise SystemExit("usage: gen_lens_catalog.py [--check]")
+    main(check=sys.argv[1:] == ["--check"])
