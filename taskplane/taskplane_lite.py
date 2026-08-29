@@ -4836,6 +4836,8 @@ def activate_review_contract_action(
 
 EXPANDED_LENS_ROUTE_ACTION_SCHEMA = \
     "taskplane.expanded-lens-route-action/v1"
+EXPANDED_LENS_ROUTE_APPROVAL_SCHEMA = \
+    "taskplane.expanded-lens-route-approval-attestation/v1"
 EXPANDED_LENS_ROUTE_AUTHORITY_SCHEMA = \
     "taskplane.expanded-lens-route-authority/v1"
 EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA = \
@@ -4844,16 +4846,38 @@ EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS = 60 * 60
 _EXPANDED_LENS_ROUTE_ACTION_FIELDS = frozenset({
     "schema", "key_id", "action_id", "workspace_fingerprint", "stage",
     "target", "context_fingerprint", "extra_lens_ids", "expected_cost",
-    "policy_version", "issued_at", "expires_at", "signature",
+    "policy_version", "approved_by", "approval_receipt_id",
+    "approval_fingerprint", "issued_at", "expires_at", "signature",
+})
+_EXPANDED_LENS_ROUTE_APPROVAL_FIELDS = frozenset({
+    "schema", "workspace_fingerprint", "stage", "target",
+    "context_fingerprint", "extra_lens_ids", "expected_cost",
+    "policy_version", "action_id", "approved_by", "approval_receipt_id",
+    "authenticated", "decision", "approved_at", "expires_at",
+    "fingerprint",
 })
 _EXPANDED_LENS_ROUTE_CONSUMPTION_FIELDS = frozenset({
     "schema", "key_id", "action_id", "action_fingerprint",
     "workspace_fingerprint", "stage", "target", "context_fingerprint",
-    "extra_lens_ids", "expected_cost", "policy_version", "consumed_at",
-    "signature",
+    "extra_lens_ids", "expected_cost", "policy_version", "approved_by",
+    "approval_receipt_id", "approval_fingerprint", "consumed_at", "signature",
 })
 _EXPANDED_LENS_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _EXPANDED_ROUTE_TEXT_RE = re.compile(r"^[\x21-\x7e]{1,256}$")
+_EXPANDED_ROUTE_HUMAN_RE = re.compile(r"^human:[\x21-\x7e]{1,249}$")
+_EXPANDED_LENS_ROUTE_CONTROL_PLANE_AUTHORITY = object()
+
+
+class _ExpandedLensRouteApprovalAttestation:
+    """Opaque host/control-plane approval; caller-authored JSON is inert."""
+
+    __slots__ = ("_authority", "_receipt")
+
+    def __init__(self, authority: object, receipt: dict):
+        if authority is not _EXPANDED_LENS_ROUTE_CONTROL_PLANE_AUTHORITY:
+            raise TypeError("expanded route approval authority is private")
+        self._authority = authority
+        self._receipt = json.loads(json.dumps(receipt))
 
 
 def _expanded_lens_route_authority_path(workspace: str) -> str:
@@ -4861,10 +4885,46 @@ def _expanded_lens_route_authority_path(workspace: str) -> str:
                         "expanded-lens-route-authority.json")
 
 
+def _expanded_lens_route_private_authority(path: str) -> None:
+    """Require one regular owner-only authority file before reading a secret."""
+    try:
+        details = os.lstat(path)
+    except OSError as exc:
+        raise StateError(
+            path, f"expanded lens route private permissions unavailable ({exc})") \
+            from exc
+    if not stat.S_ISREG(details.st_mode) or \
+            stat.S_IMODE(details.st_mode) != 0o600:
+        raise StateError(
+            path, "expanded lens route private permissions are not mode 0600",
+            "remove the unusable authority and let the slotless control plane "
+            "create a fresh private authority")
+
+
+def _discard_unusable_expanded_lens_route_authority(path: str) -> None:
+    """Remove a failed secret; any fallback tombstone contains no credential."""
+    try:
+        os.remove(path)
+        return
+    except FileNotFoundError:
+        return
+    except OSError:
+        pass
+    try:
+        atomic_write_json(path, {
+            "schema": "taskplane.unusable-expanded-lens-route-authority/v1",
+            "status": "permission-hardening-failed",
+        }, sort_keys=True)
+    finally:
+        safe_remove(path)
+
+
 def _expanded_lens_route_authority(workspace: str, *, create: bool) -> dict:
     """Load the issuer used only for exact expanded-route capabilities."""
     path = _expanded_lens_route_authority_path(workspace)
     with file_lock(path):
+        if os.path.lexists(path):
+            _expanded_lens_route_private_authority(path)
         authority = load_json(
             path, default=None, what="expanded lens route signing authority")
         if authority is None and create:
@@ -4877,8 +4937,20 @@ def _expanded_lens_route_authority(workspace: str, *, create: bool) -> dict:
             atomic_write_json(path, authority, sort_keys=True)
             try:
                 os.chmod(path, 0o600)
-            except OSError:
-                pass
+                _expanded_lens_route_private_authority(path)
+            except (OSError, StateError) as exc:
+                try:
+                    _discard_unusable_expanded_lens_route_authority(path)
+                except OSError:
+                    # Even a cleanup-hostile filesystem cannot make this
+                    # invocation return a credential.  A later load also
+                    # verifies mode before reading any persisted secret.
+                    pass
+                raise StateError(
+                    path, "expanded lens route private permissions could not "
+                    "be established",
+                    "repair the filesystem permission boundary and let the "
+                    "slotless control plane retry") from exc
         if not isinstance(authority, dict) or set(authority) != {
                 "schema", "key_id", "secret"} or authority.get("schema") != \
                 EXPANDED_LENS_ROUTE_AUTHORITY_SCHEMA:
@@ -4977,10 +5049,120 @@ def _validated_expanded_lens_route_bindings(
     }
 
 
+def _expanded_lens_route_approval_fingerprint(value: dict) -> str:
+    material = {key: item for key, item in value.items()
+                if key != "fingerprint"}
+    return hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def control_plane_expanded_lens_route_approval_attestation(
+        workspace: str, *, stage: str, target: str,
+        context_fingerprint: str, extra_lens_ids: list[str],
+        expected_cost: int, policy_version: str, action_id: str,
+        actor: str, receipt_id: str, authenticated: bool,
+        now: int | None = None,
+        ttl_seconds: int = EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS
+        ) -> _ExpandedLensRouteApprovalAttestation:
+    """Mint one opaque exact approval only from the slotless control plane.
+
+    A worker can pass ordinary JSON to the action issuer, but JSON carries no
+    host/control-plane authority.  The orchestrator obtains this opaque value
+    only after its host boundary has authenticated the named human receipt.
+    """
+    if task_slot() is not None:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route approval requires a slotless control plane")
+    bindings = _validated_expanded_lens_route_bindings(
+        workspace, stage=stage, target=target,
+        context_fingerprint=context_fingerprint,
+        extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
+        policy_version=policy_version, action_id=action_id)
+    approved_by = str(actor or "")
+    approval_receipt_id = str(receipt_id or "")
+    if authenticated is not True or \
+            not _EXPANDED_ROUTE_HUMAN_RE.fullmatch(approved_by) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(approval_receipt_id):
+        raise _expanded_lens_route_error(
+            workspace, "expanded route approval is not authenticated human authority")
+    try:
+        approved_at = int(_time.time() if now is None else now)
+        ttl = int(ttl_seconds)
+    except (TypeError, ValueError) as exc:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route approval time bounds are malformed") \
+            from exc
+    if isinstance(ttl_seconds, bool) or \
+            not 1 <= ttl <= EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route approval TTL is invalid")
+    receipt = {
+        "schema": EXPANDED_LENS_ROUTE_APPROVAL_SCHEMA,
+        "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
+        **bindings,
+        "approved_by": approved_by,
+        "approval_receipt_id": approval_receipt_id,
+        "authenticated": True,
+        "decision": "approve",
+        "approved_at": approved_at,
+        "expires_at": approved_at + ttl,
+    }
+    receipt["fingerprint"] = _expanded_lens_route_approval_fingerprint(receipt)
+    return _ExpandedLensRouteApprovalAttestation(
+        _EXPANDED_LENS_ROUTE_CONTROL_PLANE_AUTHORITY, receipt)
+
+
+def _validated_expanded_lens_route_approval(
+        workspace: str, attestation: object, *, bindings: dict,
+        current: int, action_expires_at: int) -> dict:
+    if not isinstance(attestation, _ExpandedLensRouteApprovalAttestation) or \
+            attestation._authority is not \
+            _EXPANDED_LENS_ROUTE_CONTROL_PLANE_AUTHORITY:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action requires an authenticated "
+            "control-plane approval attestation")
+    receipt = json.loads(json.dumps(attestation._receipt))
+    if set(receipt) != _EXPANDED_LENS_ROUTE_APPROVAL_FIELDS or \
+            receipt.get("schema") != EXPANDED_LENS_ROUTE_APPROVAL_SCHEMA or \
+            receipt.get("fingerprint") != \
+            _expanded_lens_route_approval_fingerprint(receipt) or \
+            receipt.get("authenticated") is not True or \
+            receipt.get("decision") != "approve":
+        raise _expanded_lens_route_error(
+            workspace, "expanded route approval attestation is invalid")
+    try:
+        approved_at = int(receipt["approved_at"])
+        expires_at = int(receipt["expires_at"])
+    except (TypeError, ValueError) as exc:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route approval time bounds are malformed") \
+            from exc
+    if approved_at > current or expires_at <= current or \
+            expires_at <= approved_at or action_expires_at > expires_at or \
+            expires_at - approved_at > \
+            EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route approval is stale or expired")
+    expected = {
+        "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
+        **bindings,
+    }
+    if any(receipt.get(field) != value for field, value in expected.items()) or \
+            not _EXPANDED_ROUTE_HUMAN_RE.fullmatch(
+                str(receipt.get("approved_by") or "")) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(
+                str(receipt.get("approval_receipt_id") or "")):
+        raise _expanded_lens_route_error(
+            workspace, "expanded route approval mismatches the requested route")
+    return receipt
+
+
 def issue_expanded_lens_route_action(
         workspace: str, *, stage: str, target: str,
         context_fingerprint: str, extra_lens_ids: list[str],
         expected_cost: int, policy_version: str, action_id: str,
+        approval_attestation: object | None = None,
         now: int | None = None,
         ttl_seconds: int = EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS) -> dict:
     """Issue one exact, short-lived Plan/Evaluate expansion capability.
@@ -4989,6 +5171,10 @@ def issue_expanded_lens_route_action(
     cap-change, or mandatory-floor authority.  Its only effect is to permit
     the listed extra lenses for the exact current routing context.
     """
+    if task_slot() is not None:
+        raise _expanded_lens_route_error(
+            workspace, "expanded route action issuance requires the slotless "
+            "control plane, not a worker")
     bindings = _validated_expanded_lens_route_bindings(
         workspace, stage=stage, target=target,
         context_fingerprint=context_fingerprint,
@@ -5005,14 +5191,21 @@ def issue_expanded_lens_route_action(
             not 1 <= ttl <= EXPANDED_LENS_ROUTE_ACTION_TTL_SECONDS:
         raise _expanded_lens_route_error(
             workspace, "expanded route action TTL is invalid")
+    expires_at = issued_at + ttl
+    approval = _validated_expanded_lens_route_approval(
+        workspace, approval_attestation, bindings=bindings,
+        current=issued_at, action_expires_at=expires_at)
     authority = _expanded_lens_route_authority(workspace, create=True)
     action = {
         "schema": EXPANDED_LENS_ROUTE_ACTION_SCHEMA,
         "key_id": authority["key_id"],
         "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
         **bindings,
+        "approved_by": approval["approved_by"],
+        "approval_receipt_id": approval["approval_receipt_id"],
+        "approval_fingerprint": approval["fingerprint"],
         "issued_at": issued_at,
-        "expires_at": issued_at + ttl,
+        "expires_at": expires_at,
     }
     action["signature"] = _expanded_lens_route_signature(
         authority["secret"], action)
@@ -5103,7 +5296,6 @@ def consume_expanded_lens_route_action(
         context_fingerprint=context_fingerprint,
         extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
         policy_version=policy_version, action_id=action_id, now=now)
-    current = int(_time.time() if now is None else now)
     path = _expanded_lens_route_consumption_path(workspace, action_id)
     with file_lock(path):
         prior = load_json(
@@ -5113,6 +5305,15 @@ def consume_expanded_lens_route_action(
                 path, "expanded lens route action was already consumed (replay)",
                 "split the target or obtain a fresh action id for the current "
                 "route")
+        # The pre-lock check rejects malformed/tampered input early.  This
+        # second check owns the consumption timestamp and revalidates expiry
+        # under the replay lock immediately before receipt creation.
+        current = int(_time.time() if now is None else now)
+        verified = verify_expanded_lens_route_action(
+            workspace, action, stage=stage, target=target,
+            context_fingerprint=context_fingerprint,
+            extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
+            policy_version=policy_version, action_id=action_id, now=current)
         authority = _expanded_lens_route_authority(workspace, create=False)
         receipt = {
             "schema": EXPANDED_LENS_ROUTE_CONSUMPTION_SCHEMA,
@@ -5127,6 +5328,9 @@ def consume_expanded_lens_route_action(
             "extra_lens_ids": list(extra_lens_ids),
             "expected_cost": expected_cost,
             "policy_version": policy_version,
+            "approved_by": verified["approved_by"],
+            "approval_receipt_id": verified["approval_receipt_id"],
+            "approval_fingerprint": verified["approval_fingerprint"],
             "consumed_at": current,
         }
         receipt["signature"] = _expanded_lens_route_signature(
