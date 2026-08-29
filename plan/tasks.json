@@ -6,13 +6,27 @@
   "design_fingerprint": "0a29e35a5b6ba341affbca95e123da35f9a84a4a1831d18fec9ae6c3859e257b",
   "plan_authority": "The root orchestrator may automatically gate approved night-mode intermediate transitions, commit scoped work, and push the isolated delivery branch. It dispatches only the remaining dependency chain through Codex native workers. Build and Fix launch zero lens workers. Evaluate runs a freshly computed focused quick route of exactly three or four lenses for every non-trivial task or wave, except for a closed trivial-target record or an exact authenticated expanded-route capability. No main merge, tag, publication, or release is authorized; final human signoff remains mandatory.",
   "retained_completion": {
-    "integration_head": "539e7ba1d73f99b1f1ed6c9ce05ba97a23beea47",
-    "passed_tasks_without_dispatch_authority": ["LR-01", "LR-02", "LR-04", "LR-05"],
+    "integration_head": "75c58ad07cf51db53ad3f1f81b259a3fc3ae8108",
+    "passed_tasks_without_dispatch_authority": ["LR-01", "LR-02", "LR-03", "LR-04", "LR-05", "LR-06"],
+    "lr07_green_build": {"branch": "tp/LR-07", "commit": "3ce35c6d9e9ca0e5d503212d9e56b85fa1abb91d", "tree": "b8f3a45035ef3a4c9d49301d5a71856bcc6bd45c", "evidence_binding": "engine-retained green Build evidence at the exact commit/tree; pending governed Evaluate", "instruction": "Preserve without redispatch; retain for the later governed Evaluate wave."},
+    "lr08_clean_checkpoint": {"branch": "tp/LR-08", "commit": "65e462cc99fdce9ae190f6d368b5bc180d6e0ad1", "tree": "5a2e28bab5b7e17f85d883ca14331db688c8a94e", "evidence_binding": "clean LR-08 Build checkpoint before generator ownership amendment", "instruction": "Resume in place and perform only the authoritative scripts/gen_lens_catalog.py generator amendment for the generated docs/lens-catalog.md surface."},
     "lr03_branch": ".tp-work/LR-03",
     "lr03_preserved_commits": ["8af3d8e", "03a6c8f", "3736e7c", "000704a", "76dc79d"],
-    "instruction": "Retain the completed task contracts only for Design/module/edge coverage and reanchor evidence. Do not dispatch, recreate, or rerun LR-01, LR-02, LR-04, or LR-05. Amend LR-03 in place from its preserved branch history."
+    "instruction": "Retain completed task contracts only for Design/module/edge coverage and reanchor evidence. Do not dispatch, recreate, or rerun LR-01 through LR-06. Preserve LR-07 Build evidence for Evaluate and resume LR-08 only from its named clean checkpoint."
   },
-  "remaining_dispatch_chain": ["LR-03", "LR-06", ["LR-07", "LR-08"], "LR-09"],
+  "remaining_dispatch_chain": ["LR-08", ["evaluate:LR-07", "evaluate:LR-08"], "LR-09"],
+  "lr08_replan_impact": {
+    "files_argument_count": 5,
+    "touched_modules": ["docs", "plan", "scripts", "taskplane/tests"],
+    "total_impacted": 28,
+    "unknown_modules": [],
+    "graph_fingerprint": "995e6d3d08cbb4aa8fe5f724252419dc83d3e09afbdad53e19aafdc01e00b6e0",
+    "scanned_revision": "539e7ba1d73f99b1f1ed6c9ce05ba97a23beea47",
+    "truncated_by_result_ceiling": false,
+    "depth_truncated": false,
+    "scan_quality": "complete",
+    "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}
+  },
   "impact": {
     "files_argument_count": 25,
     "touched_modules": ["(root)", "agents", "design", "docs", "plan", "skills/taskplane", "skills/tp-build", "skills/tp-design", "skills/tp-engineering", "skills/tp-go", "skills/tp-product", "specs", "taskplane", "taskplane/tests"],
@@ -47,6 +61,12 @@
       {"lens": "testability", "reason": "The requirement depends on deterministic, mutation, fail-closed, lifecycle, and selective-invalidation evidence.", "tasks": ["LR-01", "LR-02", "LR-03", "LR-04", "LR-05", "LR-06", "LR-09"], "acceptance": ["AC-LR1", "AC-LR2", "AC-LR3", "AC-LR4", "AC-LR5", "AC-LR6", "AC-LR7", "AC-LR8", "AC-LR9", "AC-LR10"]},
       {"lens": "architecture", "reason": "One pure policy remains dependency-neutral while the separately executed provider, request adapter, ReviewKernel consumer, custody resource, and stage adapters realize all 29 approved graph edges.", "tasks": ["LR-01", "LR-02", "LR-03", "LR-05", "LR-06", "LR-07", "LR-08", "LR-09"], "acceptance": ["AC-LR1", "AC-LR2", "AC-LR3", "AC-LR4", "AC-LR5", "AC-LR6", "AC-LR7", "AC-LR8", "AC-LR10"]},
       {"lens": "cost-finops", "reason": "Minimum-sufficient execution, the three-or-four bound, route overflow, and reuse determine the promised fan-out and token savings.", "tasks": ["LR-01", "LR-02", "LR-04", "LR-06", "LR-09"], "acceptance": ["AC-LR1", "AC-LR2", "AC-LR3", "AC-LR4", "AC-LR5", "AC-LR7", "AC-LR9", "AC-LR10"]}
+    ],
+    "lens_receipts": [
+      {"lens": "security", "mode": "quick", "depth": "light", "verdict": "pass", "findings": 0, "signed_by": "/root/tp_step_planner_plan_4359db65/plan_lens_security", "result_sha256": "1e937e1b9eb9919342c6b2b2c4a26d1c6706719b1d7124cc91339a7c48c91075", "correction": "Narrowed LR-08 worker scope and bound full branch/commit/tree identities."},
+      {"lens": "testability", "mode": "quick", "depth": "light", "verdict": "pass", "findings": 0, "signed_by": "/root/tp_step_planner_plan_4359db65/plan_lens_testability", "result_sha256": "016e33433dfe6eb82d7578410ccbe028d5cd813f88265b391521e675c5e15e33", "correction": "Added explicit hermetic generator --check to LR-08 and LR-09 command strings."},
+      {"lens": "architecture", "mode": "quick", "depth": "light", "verdict": "pass", "findings": 0, "signed_by": "/root/tp_step_planner_plan_4359db65/plan_lens_architecture", "result_sha256": "6c83928da868c3ff0f93dc1b93c1faadfec2a7aea1102b248950b38e43a6b429"},
+      {"lens": "cost-finops", "mode": "quick", "depth": "light", "verdict": "pass", "findings": 0, "signed_by": "/root/tp_step_planner_plan_4359db65/plan_lens_cost_finops", "result_sha256": "0832f6eb46032fe010c0875c327b80376c57c510427abb6bce43d0072eccd55c"}
     ],
     "dispositions": [
       {"lens": "product", "disposition": "not_applicable", "evidence": "R-0001 and its ten acceptance criteria are already approved; Plan does not reopen product desirability.", "reason": "approved-product-input"},
@@ -149,9 +169,9 @@
     },
     {
       "id": "LR-08", "wave": "parallel-truth", "owner": "canonical-product-and-documentation-truth",
-      "scope": ["specs/spec.md", "design/contract.json", "design/design.md", "design/visual.html", "plan/tasks.json", "plan/plan.md", "docs/routing-and-flows.md", "docs/lenses-and-knowledge.md", "docs/lens-catalog.md", "docs/configuration.md", "docs/onboarding.md", "README.md", "taskplane/tests/test_lens_routing_product_truth.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_lens_routing_product_truth.py", "req": "R-0001", "deps": ["LR-06"], "type": "documentation",
-      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:authority.expanded-lens-route-custody", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": [],
+      "scope": ["scripts/gen_lens_catalog.py", "docs/lens-catalog.md", "taskplane/tests/test_lens_routing_product_truth.py"],
+      "tests": "python3 scripts/gen_lens_catalog.py --check && python3 -m pytest -q taskplane/tests/test_lens_routing_product_truth.py", "req": "R-0001", "deps": ["LR-06"], "type": "documentation",
+      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:authority.expanded-lens-route-custody", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": ["specs", "design", "plan", "(root)"],
       "design_edges": ["specs->contract:review.catalog-disposition:declares", "design->contract:lens.focused-stage-routing:declares", "plan->contract:delivery.stage-lens-execution:declares", "docs->resource:telemetry.lens-route:documents", "(root)->contract:lens.focused-stage-routing:documents"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC-LR6: Product, Design, Plan, and Evaluate each emit exactly one internally consistent evidenced disposition for every catalog lens, and only execute_deep/execute_light launch workers; verify missing, duplicate, unsupported, and unevidenced rows fail closed.", "AC-LR9: Each route records stage, selected count, reasons, estimated/actual tokens, runtime, cache reuse, and invalidation cause with bounded redaction; verify schema completeness and privacy behavior."]
@@ -159,7 +179,7 @@
     {
       "id": "LR-09", "wave": "conformance", "owner": "focused-routing-integration-proof",
       "scope": ["taskplane/tests/test_lens_routing_integration.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_expanded_route_authority_provider.py taskplane/tests/test_expanded_lens_route_authority.py taskplane/tests/test_focused_lens_routing.py taskplane/tests/test_agents_skills_focused_routing.py taskplane/tests/test_lens_routing_product_truth.py taskplane/tests/test_lens_routing_integration.py", "req": "R-0001", "deps": ["LR-07", "LR-08"], "type": "integration",
+      "tests": "python3 scripts/gen_lens_catalog.py --check && python3 -m pytest -q taskplane/tests/test_expanded_route_authority_provider.py taskplane/tests/test_expanded_lens_route_authority.py taskplane/tests/test_focused_lens_routing.py taskplane/tests/test_agents_skills_focused_routing.py taskplane/tests/test_lens_routing_product_truth.py taskplane/tests/test_lens_routing_integration.py", "req": "R-0001", "deps": ["LR-07", "LR-08"], "type": "integration",
       "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:authority.expanded-lens-route-custody", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": [], "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "criteria": ["AC-LR1: Product deterministically executes a minimum-sufficient focused route from goal, requirement, AC, domain, constraints, and product-risk evidence, emits all 26 dispositions, and never launches a normal full-catalog run; verify identical-input and product-risk mutation tests.", "AC-LR2: Design deterministically executes a minimum-sufficient focused route from approved requirement and proposed solution evidence, includes solution-design coverage, and emits findings, design changes, and all 26 dispositions; verify independent interface, trust-boundary, and rollback-risk mutations.", "AC-LR3: Every non-trivial Plan executes exactly three or four selected lenses with rationale and task-to-AC coverage; verify passing 3/4 cases and refusal of 2/5.", "AC-LR4: Every non-trivial task or wave Evaluate executes exactly three or four lenses from actual diff, changed files, dependency impact, test evidence, and unresolved findings; verify material evidence changes alter the route.", "AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval.", "AC-LR6: Product, Design, Plan, and Evaluate each emit exactly one internally consistent evidenced disposition for every catalog lens, and only execute_deep/execute_light launch workers; verify missing, duplicate, unsupported, and unevidenced rows fail closed.", "AC-LR7: A material Fix invalidates and reruns only lens evidence whose canonical fingerprint inputs changed while unchanged evidence is reused without launching a worker; verify single-input, multi-input, and unchanged cases.", "AC-LR8: Equal canonical inputs and policy version produce the same ordered route, dispositions, and fingerprint for all routed stages; verify repeats, key-order variance, relevant-input change, and policy-version change.", "AC-LR9: Each route records stage, selected count, reasons, estimated/actual tokens, runtime, cache reuse, and invalidation cause with bounded redaction; verify schema completeness and privacy behavior.", "AC-LR10: Successful, failed, cancelled, interrupted, and handed-off Build/Fix attempts launch zero lens workers, with lens execution confined to Product, Design, Plan, and Evaluate; verify native-dispatch traces."]

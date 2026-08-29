@@ -6,14 +6,16 @@
 ## Outcome and authority
 
 This Plan preserves integration HEAD
-`539e7ba1d73f99b1f1ed6c9ce05ba97a23beea47`, merged/passed LR-01, LR-02,
-LR-04, and LR-05, and LR-03 commits `8af3d8e`, `03a6c8f`, `3736e7c`,
-`000704a`, and `76dc79d`. Completed tasks remain in `plan/tasks.json` only for
+`75c58ad07cf51db53ad3f1f81b259a3fc3ae8108`, merged/passed LR-01 through
+LR-06, LR-07 green Build commit
+`3ce35c6d9e9ca0e5d503212d9e56b85fa1abb91d` on `tp/LR-07` for later
+Evaluate, and LR-08 clean checkpoint
+`65e462cc99fdce9ae190f6d368b5bc180d6e0ad1` on `tp/LR-08`. Completed tasks remain in `plan/tasks.json` only for
 exact Design, module, edge, contract, and reanchor evidence. They have no new
-dispatch authority and are neither recreated nor rerun. The existing
-`.tp-work/LR-03` branch is amended in place.
+dispatch authority and are neither recreated nor rerun. LR-08 resumes in place
+only to amend the authoritative generator for its generated catalog.
 
-Only `LR-03 → LR-06 → (LR-07 ∥ LR-08) → LR-09` remains executable. The
+Only `LR-08 Build → (LR-07 Evaluate ∥ LR-08 Evaluate) → LR-09` remains. The
 night-mode authorization permits the root orchestrator to apply intermediate
 Taskplane gates automatically, commit scoped work, and push the isolated
 delivery branch. It does not authorize a main merge, tag, publication, or
@@ -43,6 +45,14 @@ evidence produces more than four independent mandatory risks, Evaluate must
 split scope or use the exact protected expanded-route capability; it may not
 silently discard a mandatory lens.
 
+Four native read-only quick lens agents executed concurrently. Security found
+and then verified the least-privilege scope and immutable checkpoint fixes;
+testability found and then verified the explicit generator `--check` seam.
+Architecture and cost-finops remained clean. The four final signed child
+identities and canonical result digests are retained in
+`plan/tasks.json#/plan_route/lens_receipts`; every final verdict is pass, with
+zero deep execution and all 26 dispositions unchanged.
+
 ## Graph and Design coverage
 
 The required single bounded impact call covered 25 paths and reported 19
@@ -60,12 +70,21 @@ contracts/resources, and all 29 exact Design edges. LR-03 adds the new
 declarations, not newly created files. External runtime and custody internals
 stop at their named Design boundaries.
 
+The narrow LR-08 replan used one bounded five-path impact call covering
+`docs/lens-catalog.md`, `scripts/gen_lens_catalog.py`, its product-truth test,
+and both Plan artifacts. It reported 28 impacted modules, no unknowns, no
+truncation, graph fingerprint
+`995e6d3d08cbb4aa8fe5f724252419dc83d3e09afbdad53e19aafdc01e00b6e0`, and
+scanned revision `539e7ba1d73f99b1f1ed6c9ce05ba97a23beea47` under the unchanged depth
+policy.
+
 ## Dependency-aware delivery
 
 ### Preserved completion — no dispatch
 
-LR-01, LR-02, LR-04, and LR-05 remain passed at integration HEAD. Their exact
-task contracts are retained for reanchor and Design coverage only.
+LR-01 through LR-06 remain passed at integration HEAD. Their exact task
+contracts are retained for reanchor and Design coverage only. LR-07's exact
+green Build commit/tree is preserved without redispatch for later Evaluate.
 
 ### LR-03 — protected provider amendment
 
@@ -87,14 +106,20 @@ selector.
 
 ### Parallel truth surfaces
 
-After LR-06, LR-07 and LR-08 run together:
+LR-08 resumes from the exact clean checkpoint above; its mechanically narrowed
+scope contains only `scripts/gen_lens_catalog.py`, generated
+`docs/lens-catalog.md`, and the focused product-truth test. Its one command
+runs the generator's new read-only `--check` seam before pytest. Its only remaining Build work is
+the authoritative `scripts/gen_lens_catalog.py` generator amendment for
+generated `docs/lens-catalog.md`. After that Build passes, LR-07 and LR-08 may
+Evaluate together:
 
 - LR-07 updates agent/skill contracts for request-only protected authority,
   Product/Design minimum sufficiency, Plan/Evaluate 3–4 quick lenses, and zero
   Build/Fix lens workers.
-- LR-08 updates docs/product truth for immutable packaging, custody, fail-
-  closed overflow, reuse, telemetry, rollback, and the separate explicit
-  all-deep audit.
+- LR-08 updates docs/product truth and the authoritative lens-catalog generator
+  for immutable packaging, custody, fail-closed overflow, reuse, telemetry,
+  rollback, and the separate explicit all-deep audit.
 
 Their scopes are disjoint. Approved Design decisions remain immutable; LR-08
 may make only truth-preserving artifact adjustments required by the realized
@@ -104,7 +129,8 @@ implementation and must return to Design if behavior would drift.
 
 LR-09 waits for both truth tasks and runs one remaining-chain command covering
 provider/adapter, focused stages, agent/skill truth, product truth, and
-integration. It verifies all ten acceptance strings, seven contracts/resources,
+integration. Its command begins with the same hermetic generator `--check`.
+It verifies all ten acceptance strings, seven contracts/resources,
 29 edges, protected overflow, and normal-route continuity without reopening
 retained LR-01/LR-02/LR-04/LR-05 selectors. Evaluate then computes a fresh
 three-or-four quick route from actual evidence.
