@@ -36,14 +36,16 @@ expanded-route capability. It may not silently discard a mandatory lens.
 
 ## Graph and Design coverage
 
-The single bounded impact query covered all 23 proposed module surfaces. It
-reported 28 impacted modules, no unknown modules, complete scan quality, and
-graph content fingerprint
-`7fdc2cc45c225323046430570f04d0580d8868b3ed57132a627a636450adf76f` at
-reviewed revision `19358d9cf82f68677cce824c703af14ccfddfbd4`. The result ceiling was reached,
-but dependency depth was not truncated. Every task therefore retains the
-approved typed policy: local depth 3, contract-only boundaries, contract depth
-1, and requirement depth 1.
+The single bounded replan impact query covered all 23 proposed module
+surfaces. It reported 19 impacted modules, no unknown modules, complete scan
+quality, and current graph content fingerprint
+`357ad892013154c667251f14ff9733bd59873367a438ffa3883cc08397929ddf` at
+scanned implementation revision `4031515ece2080897e863c6f9bc096115b370f9e`.
+Neither the result ceiling nor dependency depth was truncated. This is the
+post-LR-02 replan snapshot; the approved Design baseline remains
+`7fdc2cc45c225323046430570f04d0580d8868b3ed57132a627a636450adf76f`.
+Every task retains the approved typed policy: local depth 3, contract-only
+boundaries, contract depth 1, and requirement depth 1.
 
 The task set covers every existing Design module plus new
 `taskplane/lens_route_policy.py`, all six named contracts/resources, and every
@@ -69,8 +71,10 @@ tests own the 26-row conservation and equal-input determinism invariants.
 
 ### Parallel adapters
 
-After LR-01 passes, dispatch LR-02 through LR-05 together. Their production and
-test scopes are pairwise disjoint:
+After LR-01 passes, dispatch LR-02, LR-04, and LR-05 together. Their production
+and test scopes are pairwise disjoint. LR-03 remains scope-disjoint but is now
+dependency-sequenced after LR-02 because its Evaluate path consumes the
+canonical dependency-impact route:
 
 - LR-02 adapts ReviewKernel and Fix-to-Evaluate reuse. It recomputes a three-or-
   four-lens Evaluate route, normalizes the ordinary integer-depth dependency
