@@ -432,13 +432,13 @@ def test_h19_resealed_ci_proof_cannot_change_repository_or_check_identity(
 def test_h22_compatibility_matrix_includes_last_released_generation():
     policy = _policy()
 
-    assert policy["window"]["current"] == "2.17.25"
+    assert policy["window"]["current"] == "2.17.26"
     assert policy["window"]["last_released"] == "2.17.20"
-    assert policy["window"]["candidate_previous"] == "2.17.24"
+    assert policy["window"]["candidate_previous"] == "2.17.25"
     assert {(row["plugin"], row["host"]) for row in policy["release_matrix"]} == {
-        ("2.17.25", "2.17.25"),
-        ("2.17.25", "2.17.20"),
-        ("2.17.20", "2.17.25"),
+        ("2.17.26", "2.17.26"),
+        ("2.17.26", "2.17.20"),
+        ("2.17.20", "2.17.26"),
         ("2.17.20", "2.17.20"),
     }
     producer = policy["release_observation_producer"]
@@ -586,7 +586,7 @@ def test_h26_observed_true_json_without_real_execution_has_no_authority(
     for cell in forged_old_cells["cells"]:
         cell.clear()
         cell.update({
-            "plugin": "2.17.25", "host": "2.17.25",
+            "plugin": "2.17.26", "host": "2.17.26",
             "source_sha": SHA, "observed": True,
         })
     forged_old_cells = _seal(forged_old_cells)

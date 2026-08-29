@@ -355,7 +355,7 @@ def test_release_green_binds_reviewed_prompt_injection_reference_digest():
     }
     receipt = create_release_green(
         source_sha=source_sha,
-        version="2.17.25",
+        version="2.17.26",
         wiring_closure_fingerprint="1" * 64,
         feature_receipt_digests=["2" * 64],
         full_matrix_receipts=["3" * 64],

@@ -86,6 +86,12 @@ NOT_RELEASED = {
                   "R-0013 delivery and was explicitly not released.",
         "superseded_by": "2.17.25",
     },
+    "2.17.25": {
+        "reason": "superseded main-integration candidate that completed "
+                  "R-0013 but preceded the whole-codebase R-0002 EM "
+                  "remediation; it was explicitly not released.",
+        "superseded_by": "2.17.26",
+    },
 }
 
 # Version numbers deliberately skipped — never bumped to, never released.
