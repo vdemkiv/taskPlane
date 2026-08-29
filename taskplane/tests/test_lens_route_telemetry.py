@@ -48,13 +48,16 @@ def test_route_telemetry_is_complete_bounded_and_redacted() -> None:
         "OPENAI_API_KEY=sk-super-private at "
         "/Users/alice/private/raw.diff\n+password = leaked"
     )
+    secret_invalidation_cause = "secret=invalidation-private-value"
     route = _route(reason=secret_reason)
+    metrics = _metrics()
+    metrics["security"]["invalidation_cause"] = secret_invalidation_cause
 
     record = dispatch_telemetry.build_lens_route_telemetry(
         route,
         target=private_target,
         terminal_status="success",
-        lens_metrics=_metrics(),
+        lens_metrics=metrics,
     )
 
     assert record["schema"] == "taskplane.lens-route-telemetry/v1"
@@ -77,7 +80,8 @@ def test_route_telemetry_is_complete_bounded_and_redacted() -> None:
             "actual_tokens": 750,
             "runtime_ms": 25,
             "cache_reused": False,
-            "invalidation_cause": "changed:trust-boundary",
+            "invalidation_cause": record["lenses"][0][
+                "invalidation_cause"],
         },
         {
             "lens": "architecture",
@@ -90,14 +94,16 @@ def test_route_telemetry_is_complete_bounded_and_redacted() -> None:
         },
     ]
     assert record["lenses"][0]["reason"].startswith("redacted-content:")
-    assert record["redactions"] == 1
+    assert record["lenses"][0]["invalidation_cause"].startswith(
+        "redacted-content:")
+    assert record["redactions"] == 2
     assert len(record["target_pseudonym"]) == 64
     assert dispatch_telemetry.validate_lens_route_telemetry(record) == record
 
     encoded = json.dumps(record, sort_keys=True)
     for private in (
         private_target, "alice", "sk-super-private", "password",
-        "raw.diff",
+        "raw.diff", secret_invalidation_cause,
     ):
         assert private not in encoded
     assert all(len(row["reason"].encode("utf-8")) <= 512
@@ -173,6 +179,66 @@ def test_route_telemetry_rejects_tampering_and_unsupported_route_shape() -> None
             route, target="LR-04", terminal_status="success",
             lens_metrics=_metrics(),
         )
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["selected", "disposition", "metrics", "persisted"],
+)
+def test_route_telemetry_rejects_non_string_lens_ids(shape: str) -> None:
+    route = _route()
+    metrics = _metrics()
+    if shape == "selected":
+        route["selected"][0] = 7
+    elif shape == "disposition":
+        route["dispositions"][0]["lens"] = 7
+    elif shape == "metrics":
+        metrics[7] = metrics.pop("security")
+    else:
+        record = dispatch_telemetry.build_lens_route_telemetry(
+            route, target="LR-04", terminal_status="success",
+            lens_metrics=metrics,
+        )
+        record["lenses"][0]["lens"] = 7
+        material = {key: value for key, value in record.items()
+                    if key != "fingerprint"}
+        record["fingerprint"] = dispatch_telemetry.content_fingerprint(
+            material)
+        with pytest.raises(dispatch_telemetry.DispatchTelemetryError,
+                           match="bounded lowercase lens id"):
+            dispatch_telemetry.validate_lens_route_telemetry(record)
+        return
+
+    with pytest.raises(dispatch_telemetry.DispatchTelemetryError,
+                       match=("exactly selected" if shape == "metrics" else
+                              "bounded lowercase lens id")):
+        dispatch_telemetry.build_lens_route_telemetry(
+            route, target="LR-04", terminal_status="success",
+            lens_metrics=metrics,
+        )
+
+
+def test_route_telemetry_reserves_redaction_prefix_for_provenance() -> None:
+    raw_reason = "redacted-content:manual"
+    record = dispatch_telemetry.build_lens_route_telemetry(
+        _route(reason=raw_reason), target="LR-04", terminal_status="success",
+        lens_metrics=_metrics(),
+    )
+
+    assert record["lenses"][0]["reason"] != raw_reason
+    assert record["lenses"][0]["reason"].startswith("redacted-content:")
+    assert record["redactions"] == 1
+    assert dispatch_telemetry.validate_lens_route_telemetry(record) == record
+
+    malformed = copy.deepcopy(record)
+    malformed["lenses"][0]["reason"] = raw_reason
+    material = {key: value for key, value in malformed.items()
+                if key != "fingerprint"}
+    malformed["fingerprint"] = dispatch_telemetry.content_fingerprint(
+        material)
+    with pytest.raises(dispatch_telemetry.DispatchTelemetryError,
+                       match="not privacy-safe"):
+        dispatch_telemetry.validate_lens_route_telemetry(malformed)
 
 
 def test_route_telemetry_rejects_unbounded_usage_and_artifacts() -> None:

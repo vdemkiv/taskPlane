@@ -122,6 +122,7 @@ _LENS_ROUTE_TERMINAL_ALIASES = {
 }
 _LENS_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,127}")
 _REASON_CODE = re.compile(r"[a-z0-9][a-z0-9._:-]*", re.IGNORECASE)
+_REDACTED_REASON_CODE = re.compile(r"redacted-content:[0-9a-f]{64}")
 _PRIVATE_REASON = re.compile(
     r"(?i)(?:\b(?:authorization|password|secret|token|api[_-]?key)\s*[=:]"
     r"|\b(?:sk|gh[opsu]|xox[baprs])-[a-z0-9_-]{8,}"
@@ -469,22 +470,30 @@ def _route_counter(value: object, label: str, maximum: int) -> int:
 
 
 def _lens_id(value: object, label: str = "lens") -> str:
-    normalized = str(value or "").strip()
+    if not isinstance(value, str):
+        raise DispatchTelemetryError(
+            f"{label} must be a bounded lowercase lens id")
+    normalized = value.strip()
     if _LENS_ID.fullmatch(normalized) is None:
         raise DispatchTelemetryError(
             f"{label} must be a bounded lowercase lens id")
     return normalized
 
 
-def _bounded_reason_code(value: object, label: str) -> tuple[str, int]:
+def _bounded_reason_code(
+        value: object, label: str, *, persisted: bool = False,
+) -> tuple[str, int]:
     """Return one reason code without retaining private content."""
     if not isinstance(value, str) or not value.strip():
         raise DispatchTelemetryError(f"{label} must be a non-empty string")
     normalized = value.strip()
+    if persisted and _REDACTED_REASON_CODE.fullmatch(normalized) is not None:
+        return normalized, 0
     encoded = normalized.encode("utf-8")
     safe = len(encoded) <= MAX_LENS_ROUTE_REASON_BYTES and \
         _REASON_CODE.fullmatch(normalized) is not None and \
-        _PRIVATE_REASON.search(normalized) is None
+        _PRIVATE_REASON.search(normalized) is None and \
+        not normalized.lower().startswith("redacted-content:")
     if safe:
         return normalized, 0
     digest = hashlib.sha256(
@@ -713,7 +722,7 @@ def validate_lens_route_telemetry(
                 "lens-route telemetry lens is duplicated")
         seen.add(lens)
         reason, changed = _bounded_reason_code(
-            row.get("reason"), f"lens {lens} reason")
+            row.get("reason"), f"lens {lens} reason", persisted=True)
         if changed or reason != row.get("reason"):
             raise DispatchTelemetryError(
                 "persisted lens-route reason is not privacy-safe")
@@ -722,7 +731,8 @@ def validate_lens_route_telemetry(
             cause = None
         else:
             cause, changed = _bounded_reason_code(
-                cause_value, f"lens {lens} invalidation cause")
+                cause_value, f"lens {lens} invalidation cause",
+                persisted=True)
             if changed or cause != cause_value:
                 raise DispatchTelemetryError(
                     "persisted invalidation cause is not privacy-safe")
@@ -751,9 +761,11 @@ def validate_lens_route_telemetry(
             "runtime_ms": runtime_ms, "cache_reused": reused,
             "invalidation_cause": cause,
         })
-        redaction_count += int(reason.startswith("redacted-content:"))
         redaction_count += int(
-            isinstance(cause, str) and cause.startswith("redacted-content:"))
+            _REDACTED_REASON_CODE.fullmatch(reason) is not None)
+        redaction_count += int(isinstance(cause, str) and
+                               _REDACTED_REASON_CODE.fullmatch(cause)
+                               is not None)
 
     expected_totals = {
         "estimated_tokens": sum(
