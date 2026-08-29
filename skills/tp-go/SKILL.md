@@ -180,11 +180,14 @@ explicit approval in conversation. Never run the loop silently.
    Design bytes, preserves its approved fingerprint, archives the terminal
    loop, and starts at Plan without rerunning or silently dropping Design.
 3. **Dispatch, never impersonate:** call `$TP loop next` once for the current
-   step and dispatch the named role under its already-active contract. On
+   step and dispatch the named role under its prepared child-scoped contract. On
    Codex, follow
    `references/codex-native-dispatch.md`: use the exact `task_name`, model and
    `reasoning_effort`, standalone `role_marker`, and complete
-   `role_instructions` file plus action payload. Follow the emitted
+   `role_instructions` file plus action payload, including the exact
+   `contract_bootstrap.environment`; the native `SubagentStart` hook binds
+   that pending slot to the child without binding it to the orchestrator.
+   Follow the emitted
    `taskplane.wait-policy/v1`: one event wait per outstanding set, unbounded
    when supported or at least 1800 seconds, reissued only after a completion
    or attention wake. Collect the final result. If the action includes

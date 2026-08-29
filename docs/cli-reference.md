@@ -30,7 +30,7 @@ not repeated in the tables.
 | `tp.py command show` | show a durable command |
 | `tp.py command wait` | wait a durable command |
 | `tp.py context` | session-start context summary |
-| `tp.py contracts` | list every active contract slot, including stale ones a union is silently applying |
+| `tp.py contracts` | list every active contract slot, including child ownership and stale lifecycle state |
 | `tp.py dashboard` | render the mission-control view |
 | `tp.py decision` | decision registry — structured ADRs with lifecycle, links and supersede chains |
 | `tp.py decision accept` | move a proposed decision to accepted |
@@ -136,7 +136,7 @@ not repeated in the tables.
 | `tp.py stage terminalize-and-start` | atomically terminalize a predecessor and start its verified successor |
 | `tp.py status` | show project loop status and the active contract |
 | `tp.py subagent-start` | SubagentStart lifecycle trace, bounded contract context, and leased review-child identity binding (stdin event) |
-| `tp.py subagent-stop` | SubagentStop lifecycle trace (stdin event; advisory, never a completion gate) |
+| `tp.py subagent-stop` | SubagentStop lifecycle trace and authenticated exact-child terminal cleanup (stdin event; never a completion gate) |
 | `tp.py summary` | simple human view: progress and decisions, while agents keep the detailed harness |
 | `tp.py target` | what is being reviewed — acquire a pull request, pin the checkout, or check that git and gh are actually available |
 | `tp.py target fetch` | fetch a pull request into this checkout and pin it (git fetch pull/N/head) |
@@ -149,6 +149,7 @@ not repeated in the tables.
 | `tp.py track new` | open a new track |
 | `tp.py track switch` | make another track the active one |
 | `tp.py version` | print the plugin version; --verify cross-checks every derived version surface against the single source (.codex-plugin/plugin.json) — CI-callable, exit 1 on drift |
+| `tp.py worker-release` | authenticated exact-slot terminal cleanup; refuses live or non-terminal worker contracts |
 | `tp.py worktree-cleanup` | replay receipt-scoped post-merge cleanup once; never force-removes or deletes branches |
 | `tp.py yield` | what the harness returns (lens yield and where findings are caught) — advisory, gates nothing |
 | `tp.py yield mark` | record a human verdict on one finding: acted or dismissed |
@@ -278,7 +279,7 @@ session-start context summary
 
 ## `tp.py contracts`
 
-list every active contract slot, including stale ones a union is silently applying
+list every active contract slot, including child ownership and stale lifecycle state
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1751,7 +1752,7 @@ SubagentStart lifecycle trace, bounded contract context, and leased review-child
 
 ## `tp.py subagent-stop`
 
-SubagentStop lifecycle trace (stdin event; advisory, never a completion gate)
+SubagentStop lifecycle trace and authenticated exact-child terminal cleanup (stdin event; never a completion gate)
 
 ## `tp.py summary`
 
@@ -1865,6 +1866,16 @@ print the plugin version; --verify cross-checks every derived version surface ag
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--verify` | flag | cross-check every derived version surface against the single source; exit 1 on drift |
+
+## `tp.py worker-release`
+
+authenticated exact-slot terminal cleanup; refuses live or non-terminal worker contracts
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--signed-action` | SIGNED_ACTION (required) | URL-safe signed exact-slot release action |
+| `--slot` | SLOT (required) | exact worker slot named by its signed action |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py worktree-cleanup`
 

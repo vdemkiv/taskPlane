@@ -108,7 +108,8 @@ role instructions and payload in the delegated message, spawns scope-disjoint
 work concurrently, waits in bounded intervals for every requested result, and
 interrupts/escalates a stalled or mis-scoped agent rather than declaring partial
 work complete.
-Repo-local `SubagentStart`/`SubagentStop` hooks add bounded context and lifecycle traces; the
+Repo-local `SubagentStart`/`SubagentStop` hooks bind exact child contracts and
+terminalize/quarantine them while adding bounded context and lifecycle traces; the
 PreToolUse screen and evidence gates remain authoritative. For a long run you
 may start Goal mode with `/goal`; it changes neither permissions nor gates.
 

@@ -98,10 +98,10 @@ original producers in one batch, wait for the whole repair wave, then collect
 once more. These are metadata repairs, not new reviews.
 
 **Loop exit:** submit, do not clear. `loop submit` binds the report to the
-workspace and graph fingerprints and leaves the contract active until the
-orchestrator validates it. For a standalone review contract only, clear it in
-a finally block. If you abort without submitting, report the active contract
-so the orchestrator can deliberately retry or release it.
+workspace and graph fingerprints; native terminal lifecycle quarantines your
+exact child slot, while the loop remains blocked until the orchestrator
+validates it. A committed gate and SessionStart recovery are fail-safe cleanup
+paths. For a standalone review contract only, clear it in a finally block.
 
 ## Full catalog, human signs off
 

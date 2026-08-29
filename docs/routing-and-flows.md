@@ -237,10 +237,12 @@ The rules that make this safe:
   contract slots (`TASKPLANE_TASK`), are screened by the PreToolUse hook
   unchanged, and submit evidence without ever advancing loop state. Every
   gate is reachable with workflows disabled (adversarial-tested).
-- **Lifecycle is observable, not self-certifying.** Codex
-  `SubagentStart`/`SubagentStop` hooks trace the agent lifecycle and inject
-  bounded active-contract context. They never replace PreToolUse screening,
-  a worker submission, evaluator evidence, or the orchestrator/human gates.
+- **Lifecycle cleanup is authoritative, not self-certifying.** Codex
+  `SubagentStart` binds one pending worker slot; `SubagentStop` terminalizes
+  and quarantines it for every terminal outcome. Committed gates and
+  SessionStart sweep completed leftovers. None of those lifecycle actions
+  replace PreToolUse screening, a worker submission, evaluator evidence, or
+  the orchestrator/human gates.
 
 Dogfood example (this repository, forcing each rail):
 

@@ -36,8 +36,11 @@ For every brief:
    `interrupt_agent`, preserve the partial evidence, and escalate through the
    loop's human gate. Do not silently replace, waive, or mark the task done.
 
-`SubagentStart` and `SubagentStop` hooks add bounded contract context and trace
-lifecycle metadata. They are observability, not completion evidence. The
+`SubagentStart` binds the exact pending worker contract from
+`contract_bootstrap.environment`. `SubagentStop` terminalizes and quarantines
+that slot on success, failure, cancellation, interruption, or handoff; a
+committed loop gate and SessionStart sweep are fail-safe cleanup paths. These
+hooks are authoritative for contract lifecycle, but not completion evidence. The
 `PreToolUse` screen, worker submission, evaluator evidence, orchestrator-only
 gate, and human checkpoints remain authoritative.
 

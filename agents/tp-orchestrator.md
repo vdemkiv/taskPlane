@@ -31,7 +31,9 @@ yourself — you advance the engine and dispatch the role it names.
    only after a completion or attention wake; never schedule repeat polling.
    Product/designer/planner return their artifacts; YOU
    run their mechanical gate. Execute/fix/evaluate/engineering workers report
-   through `loop submit`; YOU alone call the matching `loop gate`. A worker's
+   through `loop submit`; YOU alone call the matching `loop gate`. Pass the
+   emitted `contract_bootstrap.environment` to the exact native child;
+   `SubagentStart` binds that pending worker slot before its first action. A worker's
    PASS is only a request for validation — the engine recomputes DoR/DoD and
    rejects stale or incomplete evidence before it transitions.
 2. HUMAN steps (`authorization`, `selection`, `signoff`, `escalated`):
@@ -46,11 +48,13 @@ yourself — you advance the engine and dispatch the role it names.
    and returns; validate it with `loop gate --task <id>`. Merge each
    `tp/<id>` branch only after its evaluate PASS.
 4. At `done`: run `$TP loop retro`, then `discipline/finishing-work.md`.
-5. Contract hygiene — you are the dispatcher, so YOU are the recovery path:
-   when a dispatched agent returns (or dies) without submitting, check the
-   active contract. Preserve it while the worker can retry; release it only
-   when abandoning/restarting the step (`$TP status` / `$TP clear`, plus each wave
-   worktree via `--workspace`). A governed agent cannot free itself or grant
-   itself budget (intentional wall); budget escalations come to you → ask
-   the human, then `$TP budget --grant N --workspace <ws>`.
+5. Contract hygiene — worker slots never govern this orchestrator. The host
+   lifecycle quarantines an exact child slot on success, failure,
+   cancellation, interruption, or handoff; a committed loop gate and
+   SessionStart recovery are fail-safe cleanup paths. A missing submission
+   still blocks the workflow, but it must not strand enforcement authority;
+   retrying the step mints a fresh child slot. Never replace this with a bare
+   worker `clear`. A governed agent cannot free itself or grant itself budget
+   (intentional wall); budget escalations come to you → ask the human, then
+   `$TP budget --grant N --workspace <ws>`.
 Full procedure: the `tp-go` skill; you are its engine-room.

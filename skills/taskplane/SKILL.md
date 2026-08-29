@@ -125,7 +125,9 @@ sufficient; human checkpoints (consolidated pre-implementation authorization,
 A/B selection, escalation/replan, destructive or external actions, and final
 sign-off) stop for an explicit human yes; and no worker clears its contract
 after a submission, weakens tests, silently widens scope, or treats an
-incomplete action list as completion.
+incomplete action list as completion. Worker contracts are child-scoped and
+are terminalized automatically by native lifecycle, committed gates, or
+SessionStart recovery; they never become orchestrator authority.
 
 Product, Design, and Plan completion is mechanical; incomplete contracts,
 dependencies, acceptance mapping, NFRs, graph evidence, or required lenses

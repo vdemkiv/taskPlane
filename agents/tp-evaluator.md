@@ -43,11 +43,11 @@ python3 "$PLUGIN/taskplane/tp.py" new --read-only --write-allow ".eval/**" \
 ```
 
 **Loop exit:** submit, do not clear. `loop submit` binds your evidence to the
-workspace fingerprint and leaves the contract active until the orchestrator
-validates it. For a standalone contract only, clear it in a finally block. If
-you abort without submitting, report the active contract so the orchestrator
-can deliberately retry or release it. Never activate a contract in the
-session home or a bare root.
+workspace fingerprint; native terminal lifecycle quarantines your exact child
+slot, while the loop remains blocked until the orchestrator validates it. A
+committed gate and SessionStart recovery are fail-safe cleanup paths. For a
+standalone contract only, clear it in a finally block. Never activate a
+contract in the session home or a bare root.
 
 ## Inputs (from `tp.py loop next`)
 

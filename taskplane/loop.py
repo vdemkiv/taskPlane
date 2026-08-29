@@ -3814,8 +3814,10 @@ def _bind_worker_submission(ws: str, state: dict, step: str,
         return contract
     task_name = ((task or {}).get("id") or "engineering-signoff"
                  if step == "em" else (task or {}).get("id"))
+    lifecycle = contract.get("worker_lifecycle") or {}
     return tp.bind_submission_contract(
-        contract, ws, task=str(task_name), stage=step, slot=tp.task_slot(),
+        contract, ws, task=str(task_name), stage=step,
+        slot=lifecycle.get("slot") or tp.task_slot(),
         locator={"type": "loop_submission"},
         validation_rule="loop-submission/v1")
 
@@ -5395,6 +5397,12 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     agent_ws = os.path.realpath(os.path.abspath(agent_ws))
     locator_error = runtime_storage.worker_locator_error(ws, agent_ws, task_id)
     if locator_error: return {"error": locator_error, "task": task_id}
+    dispatch = tp.dispatch_fields(
+        "step", STEP_ROLE["execute"], str(task_id),
+        tp.step_tier("execute", t))
+    contract = tp.prepare_worker_contract(
+        agent_ws, contract, stage="execute", task=str(task_id),
+        task_name=dispatch["task_name"], role_marker=dispatch["role_marker"])
     contract = _bind_worker_submission(
         agent_ws, state, "execute", contract, t)
     snapshot = tp.git_head(agent_ws)
@@ -5418,12 +5426,27 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         if t.get("status") not in ("pending", "running"):
             return {"error": f"task {task_id} is {t.get('status')} — "
                              "not claimable"}
-        tp.activate(agent_ws, contract, snapshot=snapshot)
+        tp.activate(
+            agent_ws, contract, snapshot=snapshot,
+            task_slot_override=contract["task_slot"])
         t["status"] = "running"
         t["workspace"] = agent_ws
     tp.trace(ws, "loop_claim", task=task_id, agent_workspace=agent_ws,
              dor_ready=dor_ready)
     return {"claimed": task_id, "workspace": agent_ws,
+            "contract_bootstrap": {
+                "schema": "taskplane.worker-contract-bootstrap/v1",
+                "task_slot": contract["task_slot"],
+                "worker_identity": dispatch["task_name"],
+                "environment": {"TASKPLANE_TASK": contract["task_slot"]},
+                "activation": "pending_subagent_start_binding",
+                "control_plane_release": {
+                    "command": "worker-release",
+                    "signed_action": tp.encode_worker_release_action(
+                        contract["worker_lifecycle"]["release_action"]),
+                    "terminal_receipt_required": True,
+                },
+            },
             "contract": {"scope": contract["coding"]["scope_paths"],
                          "tests": contract["coding"]["dod"]["test_command"]},
             "dor": {"ready": dor_ready, "blockers": blockers,
@@ -5626,25 +5649,44 @@ def next_action(ws: str, rid: str | None = None) -> dict:
         if step == "evaluate" or any(name in os.environ
                                      for name in capability_vars) else None)
 
+    worker_task = _current_task(state)
+    worker_ref = str((worker_task or {}).get("id") or step)
+    dispatch = tp.dispatch_fields(
+        "step", STEP_ROLE[step], worker_ref,
+        tp.step_tier(step, worker_task),
+        capability_snapshot=capability_snapshot,
+        enforcement_mode=os.environ.get("TASKPLANE_ENFORCE_DISPATCH"))
+    if dispatch.get("dispatch_blocked"):
+        tp.trace(ws, "dispatch_route_resolved", step=step,
+                 task=(worker_task or {}).get("id"), resolution="blocked",
+                 reason=dispatch["dispatch_route"].get("reason"))
+        return {"error": "strict host dispatch route cannot be honored — "
+                         + dispatch["dispatch_route"].get("reason", ""),
+                "step": step, **dispatch}
+
     contract = _step_contract(step, state, act_ws)
     enforcement = ((state.get("enforcement") or {}).get("current"))
     if enforcement:
         contract["enforcement"] = enforcement
+    contract = tp.prepare_worker_contract(
+        act_ws, contract, stage=step, task=worker_ref,
+        task_name=dispatch["task_name"], role_marker=dispatch["role_marker"])
     evaluator_contract = None
     if step == "evaluate":
         evaluator_contract = evaluation_output.create_evaluator_contract(
             workspace=act_ws, task=str(_current_task(state)["id"]),
-            slot=tp.task_slot(), capability_snapshot=capability_snapshot)
+            slot=contract["task_slot"],
+            capability_snapshot=capability_snapshot)
         contract = dict(contract)
         contract["output_contract"] = evaluator_contract
     contract = _bind_worker_submission(
         act_ws, state, step, contract, _current_task(state))
     snapshot = tp.git_head(act_ws)
-    # Governance starts before readiness is evaluated.  A failing DoR must
-    # still leave the attempted step inside its exact contract; recording
-    # readiness first made the audit say work was judged before it was
-    # governed and let host actions race the enforcement boundary.
-    tp.activate(act_ws, contract, snapshot=snapshot)
+    # Readiness is evaluated against the complete child contract in memory.
+    # The slot is activated only after every control-plane precondition has
+    # succeeded, immediately before the native dispatch is returned.  This
+    # keeps a failed preflight from binding worker authority to the root
+    # checkout while still ensuring the child cannot start before its slot.
     dor_ready, blockers, warnings = tp.dor_check(
         contract, act_ws, snapshot)
     if step == "design":
@@ -5931,18 +5973,6 @@ def next_action(ws: str, rid: str | None = None) -> dict:
                          for x in routing.get("lenses") or []],
                  kernel_status=review_kernel.get("status"))
 
-    dispatch = tp.dispatch_fields(
-        "step", STEP_ROLE[step], (task or {}).get("id") or step,
-        tp.step_tier(step, task), capability_snapshot=capability_snapshot,
-        enforcement_mode=os.environ.get("TASKPLANE_ENFORCE_DISPATCH"))
-    if dispatch.get("dispatch_blocked"):
-        tp.trace(ws, "dispatch_route_resolved", step=step,
-                 task=(task or {}).get("id"),
-                 resolution="blocked",
-                 reason=dispatch["dispatch_route"].get("reason"))
-        return {"error": "strict host dispatch route cannot be honored — "
-                         + dispatch["dispatch_route"].get("reason", ""),
-                "step": step, **dispatch}
     model_tier, model = dispatch["model_tier"], dispatch["model"]
     reasoning_effort, task_name = (dispatch["reasoning_effort"],
                                    dispatch["task_name"])
@@ -5968,10 +5998,6 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             "fingerprint": producer_observation_policy.content_fingerprint(
                 dispatch_projection),
         }
-        # The native task name is resolved only after routing. Persist the
-        # exact emitted identity in the already-active contract before the
-        # host can receive the dispatch payload.
-        tp.activate(act_ws, contract, snapshot=snapshot)
     tp.trace(ws, "model_tier", step=step,
              task=(task or {}).get("id"), tier=model_tier, model=model,
              reasoning_effort=reasoning_effort)
@@ -6092,6 +6118,29 @@ def next_action(ws: str, rid: str | None = None) -> dict:
             dispatch=dispatch, wait_policy=dispatch_wait_policy)
         result["wait_invocation"] = event_wait_invocation(
             dispatch_wait_policy, [dispatch_member])
+    lifecycle = contract["worker_lifecycle"]
+    release_action = tp.encode_worker_release_action(
+        lifecycle["release_action"])
+    result["contract_bootstrap"] = {
+        "schema": "taskplane.worker-contract-bootstrap/v1",
+        "task_slot": contract["task_slot"],
+        "worker_identity": task_name,
+        "environment": {"TASKPLANE_TASK": contract["task_slot"]},
+        "activation": "pending_subagent_start_binding",
+        "control_plane_release": {
+            "command": "worker-release",
+            "signed_action": release_action,
+            "terminal_receipt_required": True,
+        },
+    }
+    try:
+        tp.activate(
+            act_ws, contract, snapshot=snapshot,
+            task_slot_override=contract["task_slot"])
+    except Exception as exc:
+        return {"error": "worker contract activation failed closed: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "step": step, "status": status(ws)}
     return result
 
 
@@ -6932,6 +6981,30 @@ def _task_graph_dod(ws: str, state: dict, task: dict) -> dict:
         policy=task.get("impact_policy") or depgraph.impact_policy(task))
 
 
+def _worker_stage_binding(workspace: str, stage: str,
+                          task: Mapping | None) -> dict | None:
+    """Read exact worker lifecycle metadata without binding root authority."""
+    task_ref = str((task or {}).get("id") or stage)
+    return tp.worker_contract_for_stage(
+        workspace, stage=str(stage), task=task_ref)
+
+
+def _worker_stage_contract(workspace: str, stage: str,
+                           task: Mapping | None) -> dict:
+    binding = _worker_stage_binding(workspace, stage, task)
+    if binding is not None:
+        return binding["contract"]
+    return tp.load_active(workspace) or {}
+
+
+def _worker_stage_snapshot(workspace: str, stage: str,
+                           task: Mapping | None) -> str | None:
+    binding = _worker_stage_binding(workspace, stage, task)
+    return tp.snapshot_ref(
+        workspace,
+        task_slot_override=(binding or {}).get("slot"))
+
+
 def _task_dod_errors(ws: str, state: dict, task: dict,
                      snapshot: str | None) -> list:
     contract = tp.build_contract(
@@ -7107,7 +7180,7 @@ def _collect_zero_lens_evaluate_before_guidance(
     if kernel.get("expected_lenses") != [] or kernel.get("slots") != []:
         raise review_kernel.ReviewKernelError(
             "sealed zero-lens Evaluate authority produced lens slots")
-    active_contract = tp.load_active(act_ws) or {}
+    active_contract = _worker_stage_contract(act_ws, step, task)
     material = producer_output_identity(
         act_ws, state, task, step, active_contract=active_contract)
     observation = producer_observation_policy.consume_matching_observation(
@@ -7981,7 +8054,7 @@ def submit(ws: str, outcome: str, note: str = "",
                     "runtime_eval": runtime_guidance,
                 }
 
-    snapshot = tp.snapshot_ref(act_ws)
+    snapshot = _worker_stage_snapshot(act_ws, step, task)
     evidence_paths = runtime_storage.submission_evidence_paths(act_ws, step)
     graph_fingerprint = None
     if state.get("graph_governance") and \
@@ -8090,7 +8163,7 @@ def _producer_observation_errors(
     try:
         material = producer_output_identity(
             act_ws, state, task, step,
-            active_contract=tp.load_active(act_ws) or {})
+            active_contract=_worker_stage_contract(act_ws, step, task))
         producer_observation_policy.validate_consumed_matching_observation(
             (submission or {}).get("producer_observation"), **material,
             clock=clock)
@@ -8213,6 +8286,11 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                              "evaluated", "blockers": attach_errors}
         state = load(ws)
     step = state["step"]
+    # Preserve the same stage/task identity that `next_action` used before
+    # gate validation mutates state (the Plan gate loads tasks, for example).
+    # Recomputing after that load changes `plan` into the first task id and
+    # strands the planner's exact worker slot.
+    gate_worker_task = str((_current_task(state) or {}).get("id") or step)
     submission = None
     reanchor_receipt = None
 
@@ -8269,7 +8347,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         if outcome == "pass":
             with _claimed_execute_suite_binding():
                 dod_errors = _task_dod_errors(
-                    wt or ws, state, wt_precheck, tp.snapshot_ref(wt or ws))
+                    wt or ws, state, wt_precheck,
+                    _worker_stage_snapshot(wt or ws, step, wt_precheck))
             if dod_errors:
                 tp.trace(ws, "loop_gate_blocked", step=step, task=task_id,
                          reason="dod", errors=dod_errors)
@@ -8317,7 +8396,11 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             t.pop("_submission", None)
             if outcome != "pass":
                 t["_build_failed"] = True
-            tp.clear(t.get("workspace") or ws)
+            release_ws = t.get("workspace") or ws
+            released_contracts = tp.release_worker_contracts_for_gate(
+                release_ws, stage=step, task=str(task_id))
+            if not released_contracts:
+                tp.clear(release_ws)  # legacy pre-lifecycle run
             tp.trace(ws, "loop_gate", step=step, task=task_id, outcome=outcome,
                      note=note)
             running = [x["id"] for x in locked["tasks"]
@@ -8465,7 +8548,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
     # agent's assertion, determines whether the state machine advances.
     if outcome == "pass" and step in ("execute", "fix"):
         dod_errors = _task_dod_errors(
-            act_ws, state, task, tp.snapshot_ref(act_ws))
+            act_ws, state, task,
+            _worker_stage_snapshot(act_ws, step, task))
         if dod_errors:
             tp.trace(ws, "loop_gate_blocked", step=step, reason="dod",
                      errors=dod_errors)
@@ -8867,7 +8951,11 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
     # Release the step's contract only AFTER the locked transition committed
     # (v2.3.0): clearing before the lock left the workspace ungoverned during
     # the commit window; a refused gate above leaves it governed for retry.
-    tp.clear(act_ws)
+    release_task = gate_worker_task
+    released_contracts = tp.release_worker_contracts_for_gate(
+        act_ws, stage=step, task=release_task)
+    if not released_contracts:
+        tp.clear(act_ws)  # legacy pre-lifecycle run
     cleanup_result = None
     cleanup_task = (_current_task(state) if isinstance(state, dict) else None)
     if step == "evaluate" and outcome == "pass" and state.get("parallel") \
@@ -9785,10 +9873,17 @@ def replan(ws: str, by: str, reason: str) -> dict:
                 locked.pop("_stage_completion", None)
                 locked.pop("_stage_force_transition", None)
 
+    def release_replanned_contract(workspace: str) -> None:
+        released = tp.sweep_completed_worker_contracts(
+            workspace, loop_state=load(workspace))
+        if not released:
+            tp.clear(workspace)  # legacy pre-lifecycle run
+
     try:
         return loop_recovery.replan(
             ws, by=by, reason=reason, load_state=load,
-            mutate_state=stage_bound_mutate, clear_contract=tp.clear,
+            mutate_state=stage_bound_mutate,
+            clear_contract=release_replanned_contract,
             trace=tp.trace, record_decision=kb.record_decision)
     except Exception as exc:
         return {"error": "stage-native replan transition failed closed: "

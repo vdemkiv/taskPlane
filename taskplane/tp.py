@@ -1595,11 +1595,13 @@ def _subagent_workspace(event: dict) -> str:
 
 
 def _submission_stop_check(event: dict, *, workspace: str | None = None,
-                           loop_state=None) -> dict | None:
+                           loop_state=None,
+                           contract: dict | None = None) -> dict | None:
     """Read-only Stop/SubagentStop submission decision for the active slot."""
     ws = _workspace(workspace) if workspace else _subagent_workspace(event)
     try:
-        contract = tp.load_active(ws)
+        if contract is None:
+            contract = tp.load_active_for_event(ws, event)
     except Exception as exc:
         tp.trace(ws, "submission_stop_checked", status="contract_error",
                  error=type(exc).__name__)
@@ -1616,9 +1618,10 @@ def _submission_stop_check(event: dict, *, workspace: str | None = None,
             loop_state = loop_engine.load(ws)
         except Exception:
             loop_state = None
+    lifecycle = contract.get("worker_lifecycle") or {}
     observed_slot = (event.get("task_slot")
                      if isinstance(event.get("task_slot"), str)
-                     else tp.task_slot())
+                     else lifecycle.get("slot") or tp.task_slot())
     decision = tp.stop_submission_decision(
         ws, contract, observed_slot=observed_slot, loop_state=loop_state)
     tp.trace(ws, "submission_stop_checked", status=decision.get("status"),
@@ -1658,8 +1661,18 @@ def cmd_subagent_start(a) -> int:
     tp.trace(ws, "subagent_start", agent_id=agent_id,
              agent_type=agent_type, turn_id=event.get("turn_id"),
              permission_mode=event.get("permission_mode"))
+    binding = None
     try:
-        contract = tp.load_active(ws)
+        binding = tp.bind_worker_contract_event(ws, event)
+    except Exception as exc:
+        # Unrelated native children have no Taskplane slot to bind.  A child
+        # that claims an emitted Taskplane task but cannot bind will still
+        # fail closed at its first screened action.
+        tp.trace(ws, "worker_contract_bind_skipped", agent_id=agent_id,
+                 agent_type=agent_type, error=type(exc).__name__)
+    try:
+        contract = ((binding or {}).get("contract")
+                    or tp.load_active_for_event(ws, event))
     except Exception as exc:
         contract = None
         tp.trace(ws, "subagent_context_error", agent_id=agent_id,
@@ -1667,8 +1680,10 @@ def cmd_subagent_start(a) -> int:
     if isinstance(contract, dict) and contract:
         try:
             import review as _review
+            lifecycle = contract.get("worker_lifecycle") or {}
             assignment = _review.register_slot_producer(
-                ws, event=event, contract=contract, task_slot=tp.task_slot())
+                ws, event=event, contract=contract,
+                task_slot=lifecycle.get("slot") or tp.task_slot())
             if assignment:
                 tp.trace(ws, "review_slot_producer_bound",
                          agent_id=agent_id,
@@ -1710,6 +1725,12 @@ def cmd_subagent_stop(a) -> int:
              turn_id=event.get("turn_id"),
              has_transcript=bool(event.get("agent_transcript_path")),
              has_message=bool(event.get("last_assistant_message")))
+    try:
+        lifecycle_contract = tp.load_active_for_event(ws, event)
+    except Exception as exc:
+        lifecycle_contract = None
+        tp.trace(ws, "worker_contract_stop_lookup_failed",
+                 agent_id=event.get("agent_id"), error=type(exc).__name__)
     producer_error = None
     try:
         import loop as _loop_runtime
@@ -1728,7 +1749,7 @@ def cmd_subagent_stop(a) -> int:
                     not in {"native", "bridge"}:
                 raise _producer_observation.ProducerObservationError(
                     "producer observation requires a claimed host hook")
-            contract = tp.load_active(ws) or {}
+            contract = lifecycle_contract or {}
             binding = contract.get("submission_contract") or {}
             expected_task = str((task or {}).get("id") or
                                 "engineering-signoff")
@@ -1758,6 +1779,47 @@ def cmd_subagent_stop(a) -> int:
                 "step") if 'state' in locals() else None,
                 error=type(exc).__name__)
     submission = _submission_stop_check(event)
+    worker_scoped = isinstance(lifecycle_contract, dict) and \
+        lifecycle_contract.get("worker_scoped") is True
+    if worker_scoped:
+        raw_outcome = (event.get("outcome") or event.get("status")
+                       or event.get("stop_reason") or event.get("reason")
+                       or "success")
+        if (producer_error or submission and submission.get("block")) and \
+                tp.normalize_worker_terminal_outcome(raw_outcome) == "success":
+            raw_outcome = "failure"
+        submission_status = (
+            "producer_error" if producer_error else
+            str((submission or {}).get("status") or "not_required"))
+        try:
+            released = tp.terminalize_worker_contract(
+                ws, event, outcome=raw_outcome,
+                submission_status=submission_status)
+        except Exception as exc:
+            reason = (
+                "taskplane blocked lifecycle completion because the exact "
+                "worker contract could not be quarantined fail-closed "
+                f"({type(exc).__name__}: {exc}).")
+            print(json.dumps({"decision": "block", "reason": reason,
+                              "hookSpecificOutput": {
+                                  "hookEventName": "SubagentStop",
+                                  "permissionDecision": "deny",
+                                  "permissionDecisionReason": reason}}))
+            return 2
+        if producer_error or submission and submission.get("block"):
+            detail = producer_error or (
+                "required submission status=" +
+                str((submission or {}).get("status") or "missing"))
+            print(json.dumps({
+                "systemMessage": (
+                    "taskplane quarantined the terminal worker contract "
+                    f"{released['slot']} ({detail}); the loop remains "
+                    "blocked for orchestrator recovery and no contract was "
+                    "left bound to the checkout."),
+            }))
+            return 0
+        print("{}")
+        return 0
     if producer_error:
         reason = ("taskplane blocked lifecycle completion: sealed zero-lens "
                   "producer observation failed closed (" + producer_error +
@@ -1943,6 +2005,13 @@ def _is_release_command(command: str) -> bool:
     tokens = tp._shsplit(" ".join(str(command or "").split()))
     if verb == "clear":
         return "--approved-by" in tokens
+    if verb == "worker-release":
+        # This command can only consume one exact signed release action, and
+        # the kernel still refuses it until a matching signed terminal
+        # receipt exists.  Making this narrow retry unmetered cannot let a
+        # live worker shed enforcement; a bare/general clear remains walled.
+        return tokens.count("--slot") == 1 and \
+            tokens.count("--signed-action") == 1
     if verb == "budget":
         return "--grant" in tokens and "--approved-by" in tokens
     if verb == "review":
@@ -1989,9 +2058,10 @@ def cmd_contracts(a) -> int:
         "slots": rows, "count": len(rows),
         "legacy_slot_present": os.path.exists(
             os.path.join(tp.tp_dir(ws), "active_contract.json")),
-        "note": "a slot-less process is governed by the most-restrictive "
-                "union of every slot above; release one with "
-                "`tp clear --slot <slot>` or all with `tp clear --all`",
+        "note": "worker-scoped slots govern only their bound native child; "
+                "a slot-less process unions only legacy/non-worker slots. "
+                "Terminal workers are quarantined automatically; human "
+                "recovery may use approved clear for legacy slots.",
     }, indent=2, default=str))
     return 0
 
@@ -2007,7 +2077,9 @@ def cmd_clear(a) -> int:
     the documented release step got "no active contract to clear" and exit 0
     while its slot file stayed on disk — and because `load_active()` governs a
     slot-less process by the MOST RESTRICTIVE UNION of every active slot, each
-    leaked slot permanently tightened what every later agent could do."""
+    leaked slot permanently tightened what every later agent could do. Native
+    worker slots now use authenticated terminal cleanup instead of this
+    general operator command."""
     ws = _workspace(a.workspace)
     if getattr(a, "all", False):
         d = os.path.join(tp.tp_dir(ws), "active")
@@ -2067,6 +2139,21 @@ def cmd_clear(a) -> int:
     if getattr(a, "approved_by", None):
         tp.trace(ws, "contract_clear_human_approval",
                  approved_by=a.approved_by, slots=[slot or "legacy"])
+    return 0
+
+
+def cmd_worker_release(a) -> int:
+    """Retry one authenticated terminal worker release.
+
+    This is intentionally not an alternate ``clear``: the signed action is
+    bound to one slot/contract/stage/task and remains unusable until the
+    lifecycle hook, committed loop gate, or session-start recovery has
+    written its matching signed terminal receipt.
+    """
+    ws = _workspace(a.workspace)
+    action = tp.decode_worker_release_action(a.signed_action)
+    result = tp.release_worker_contract(ws, a.slot, action=action)
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 
 
@@ -2355,7 +2442,7 @@ def _screen(a) -> int:
         return 0
 
     contract = (_review_authority["contract"] if _review_authority
-                else tp.load_active(ws))
+                else tp.load_active_for_event(ws, event))
     if contract is None:
         # Distinguish "no contract at all" (ungoverned → ABSTAIN) from
         # "contract file present but unreadable/corrupt" (tamper or breakage
@@ -2399,7 +2486,17 @@ def _screen(a) -> int:
     # the no-contract path above).
     orphaned, why = tp.orphan_status(ws, contract)
     if orphaned:
-        tp.clear(ws)
+        if contract.get("worker_scoped") is True:
+            lifecycle = contract.get("worker_lifecycle") or {}
+            slot = str(lifecycle.get("slot") or "")
+            receipt = tp.record_worker_terminal(
+                ws, slot, event=None, outcome="interrupted",
+                submission_status="orphaned", authority="orphan-recovery")
+            tp.release_worker_contract(
+                ws, slot, action=lifecycle.get("release_action"),
+                terminal_receipt=receipt)
+        else:
+            tp.clear(ws)
         tp.trace(ws, "contract_orphan_released",
                  task_id=contract.get("task_id"), reason=why)
         return 0
@@ -4473,6 +4570,24 @@ def cmd_context(a) -> int:
     import requirements as reqmod
     import track as tr
     ws = _workspace(a.workspace)
+    lifecycle_released = []
+    if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
+            "native", "bridge"}:
+        # A new/resumed host session is a safe recovery point only for slots
+        # the durable loop already proves completed.  Live/current workers
+        # remain untouched; terminal or stage-advanced slots are moved to the
+        # private quarantine before context is rendered.
+        try:
+            event = json.load(sys.stdin)
+            event = event if isinstance(event, dict) else {}
+        except Exception:
+            event = {}
+        try:
+            lifecycle_released = tp.sweep_completed_worker_contracts(
+                ws, loop_state=loopmod.load(ws))
+        except Exception as exc:
+            tp.trace(ws, "worker_contract_session_sweep_failed",
+                     error=f"{type(exc).__name__}: {exc}")
     if not os.path.isdir(tp.kb_root(ws)) and \
             not os.path.isdir(tp.tp_dir(ws)):
         # An installed plugin must expose its on-ramp. Using the same report
@@ -4495,6 +4610,10 @@ def cmd_context(a) -> int:
     debt = reqmod.list_debt(ws)
     trk = tr.list_(ws)
     lines = ["[taskplane] governed workspace:"]
+    if lifecycle_released:
+        lines.append("  lifecycle: quarantined "
+                     f"{len(lifecycle_released)} completed worker "
+                     "contract(s)")
     if trk["active"]:
         lines.append(f"  track: {trk['active']} "
                      f"({len(trk['tracks'])} total)")
@@ -7244,7 +7363,7 @@ def main(argv=None) -> int:
                    help="in read-only mode, dirs that ARE writable "
                         "(e.g. .em-review/**) — repeatable")
     cs = sub.add_parser("contracts", help="list every active contract slot, "
-                        "including stale ones a union is silently applying")
+                        "including child ownership and stale lifecycle state")
     cs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cs.set_defaults(fn=cmd_contracts)
 
@@ -7351,7 +7470,8 @@ def main(argv=None) -> int:
         "(stdin event)")
     sas.set_defaults(fn=cmd_subagent_start)
     saz = sub.add_parser("subagent-stop", help="SubagentStop lifecycle trace "
-                         "(stdin event; advisory, never a completion gate)")
+                         "and authenticated exact-child terminal cleanup "
+                         "(stdin event; never a completion gate)")
     saz.set_defaults(fn=cmd_subagent_stop)
 
     rd = sub.add_parser("ready", help="Definition-of-Ready entry gate")
@@ -7382,6 +7502,16 @@ def main(argv=None) -> int:
                          "exhausted budget")
     cl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cl.set_defaults(fn=cmd_clear)
+
+    wrl = sub.add_parser(
+        "worker-release", help="authenticated exact-slot terminal cleanup; "
+        "refuses live or non-terminal worker contracts")
+    wrl.add_argument("--slot", required=True,
+                     help="exact worker slot named by its signed action")
+    wrl.add_argument("--signed-action", required=True,
+                     help="URL-safe signed exact-slot release action")
+    wrl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    wrl.set_defaults(fn=cmd_worker_release)
 
     st = sub.add_parser("status", help="show project loop status and the "
                         "active contract")

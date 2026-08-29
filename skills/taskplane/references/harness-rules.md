@@ -43,6 +43,10 @@ disagree, this file wins — fix the skill.
    `loop submit`, a worker never clears or widens its own contract, never
    weakens a test to pass it, never silently widens scope, and never
    treats an incomplete action list as completion.
+   Each emitted worker contract stays pending until the exact native child
+   starts, never governs the orchestrator, and is terminalized/quarantined on
+   every native terminal outcome. A committed gate and SessionStart sweep are
+   fail-safe cleanup paths; cleanup does not count as completion evidence.
 
 6. **Runtime evals guide; they do not demand a transcript.** Every
    `tp loop submit pass` mechanically runs the same checkpoint exposed by

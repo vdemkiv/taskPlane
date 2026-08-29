@@ -62,7 +62,8 @@ workspace — same contracts, budgets, and hook enforcement as any task.
    the losing branch).
 9. **After the pick.** A winner → the loop moves to the engineering
    review: merge `tp/<winner>`, keep the losing branch as reference until
-   the retro, clear the variant worktree contracts. Hybrid → the loop
+   the retro, and confirm terminal variant worker slots were quarantined by
+   lifecycle/gate cleanup. Hybrid → the loop
    returns to `plan`: write the graft task (winner's branch as base,
    grafted parts named), plan approval and the build/evaluate cycle apply,
    and the loop pauses at `selection` again for the hybrid's confirmation.

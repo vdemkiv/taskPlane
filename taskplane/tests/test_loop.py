@@ -1228,15 +1228,20 @@ class TestLoop(unittest.TestCase):
         self.assertIn("error", result)
         self.assertEqual(loop.load(ws)["tasks"][0]["status"], "unavailable")
 
-    def test_next_activates_contract_gate_clears(self):
+    def test_next_prepares_child_contract_without_binding_orchestrator(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
         act = loop.next_action(ws)
         self.assertEqual(act["role"], "tp-planner")
         self.assertTrue(act["contract"]["read_only"])
-        self.assertIsNotNone(tp.load_active(ws))          # activated
+        slot = act["contract_bootstrap"]["task_slot"]
+        self.assertEqual(tp.list_task_slots(ws), [slot])
+        self.assertIsNone(tp.load_active(ws))  # root/orchestrator is unbound
+        child = tp.load_json(tp.active_contract_path(ws, slot))
+        self.assertTrue(child["worker_scoped"])
+        self.assertEqual(child["worker_lifecycle"]["status"], "pending")
         loop.gate(ws, "pass")
-        self.assertIsNone(tp.load_active(ws))             # cleared
+        self.assertEqual(tp.list_task_slots(ws), [])      # released by gate
 
     def test_plan_gate_fails_closed_on_phantom_plan(self):
         """A planner CLAIMING a plan is nothing: if plan/tasks.json is
@@ -1616,7 +1621,11 @@ class TestLoop(unittest.TestCase):
         loop.next_action(ws); submit_gate(ws, "pass")          # execute → evaluate
         loop.next_action(ws); pass_eval(ws)                     # evaluate → em
         self.assertEqual(loop.load(ws)["step"], "em")
-        loop.next_action(ws); pass_em(ws)                       # em → signoff
+        em_action = loop.next_action(ws)
+        em_slot = em_action["contract_bootstrap"]["task_slot"]
+        self.assertEqual(tp.list_task_slots(ws), [em_slot])
+        pass_em(ws)                                             # em → signoff
+        self.assertEqual(tp.list_task_slots(ws), [])
         self.assertEqual(loop.load(ws)["step"], "signoff")
         approved = loop.approve(ws)                            # → retro
         self.assertEqual(loop.load(ws)["step"], "retro")
@@ -1784,7 +1793,7 @@ class TestLoop(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertIn("every shell command tool is blocked", reason)
 
-    def test_step_contract_is_active_before_definition_of_ready(self):
+    def test_worker_contract_activates_only_after_definition_of_ready(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
         order = []
@@ -1802,7 +1811,9 @@ class TestLoop(unittest.TestCase):
         with unittest.mock.patch.object(loop.tp, "activate", activate), \
                 unittest.mock.patch.object(loop.tp, "dor_check", dor):
             loop.next_action(ws)
-        self.assertEqual(order[:2], ["contract", "dor"])
+        self.assertEqual(order[:2], ["dor", "contract"])
+        self.assertIsNone(tp.load_active(ws))
+        self.assertEqual(len(tp.list_task_slots(ws)), 1)
 
     def test_task_dod_enables_regression_gate(self):
         """The submit/gate reconstruction keeps the same governed DoD."""
@@ -2107,10 +2118,14 @@ class TestParallelExecution(unittest.TestCase):
                         "tp/t1"], cwd=ws)
         out = loop.claim(ws, "t1", agent_ws)
         self.assertEqual(out["claimed"], "t1")
-        # the WORKER's workspace is governed…
-        c = tpl.load_active(agent_ws)
+        # The slot-less worktree/orchestrator remains unbound; the native
+        # child receives the exact slot through contract_bootstrap.
+        self.assertIsNone(tpl.load_active(agent_ws))
+        slot = out["contract_bootstrap"]["task_slot"]
+        c = tpl.load_json(tpl.active_contract_path(agent_ws, slot))
         self.assertEqual(c["coding"]["scope_paths"], ["src/a/**"])
-        # …and the hook blocks it outside its own task scope:
+        # Once the child hook selects that contract, it blocks writes outside
+        # the task scope and admits the declared path.
         allow, _ = tpl.screen_tool(
             c, "Write", {"file_path": os.path.join(agent_ws, "src/b/x.py")},
             agent_ws)
@@ -3291,7 +3306,7 @@ class TestReviewBridge(unittest.TestCase):
     def test_review_bridge_parallel_evaluate_scans_before_kernel_and_route(self):
         source = open(loop.__file__, encoding="utf-8").read()
         start = source.index("# The graph is an input to evaluation")
-        end = source.index("    dispatch = tp.dispatch_fields(", start)
+        end = source.index("    result = {**dispatch,", start)
         flow = source[start:end]
 
         scan = flow.index("depgraph.scan(graph_refresh_ws)")
