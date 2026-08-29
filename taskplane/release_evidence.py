@@ -63,7 +63,7 @@ HISTORICAL_GRAPH_VERIFIER_BLOBS = {
     },
     "taskplane/depgraph.py": {
         "historical": "3a98d31a9dfeea8456a123cef4636cf004e56bee",
-        "current": "285fdba9a1207cdf729079aa6d111283572ff8d8",
+        "current": "13aca2b71e907dc8fafa7351786cfefd39075e30",
     },
 }
 IRREVERSIBLE_RELEASE_ACTIONS = frozenset(
