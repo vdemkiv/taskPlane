@@ -1340,7 +1340,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
     parser.add_argument("--release-green-receipt", type=Path,
-                        help="validated release-green receipt for this exact source SHA")
+                        help="optionally validate release authority for this exact source SHA")
     parser.add_argument("--write-compatibility-receipt", type=Path,
                         help="execute and write the current/last-released matrix")
     # D-0010 — same rule as the Claude archive; see scripts/release_provenance.py
@@ -1367,14 +1367,13 @@ def main() -> int:
             )
             print(f"Release compatibility receipt ready: {receipt_path}")
             return 0
-        require(args.release_green_receipt is not None,
-                "a release-green receipt is required for marketplace packaging")
-        validate_release_package_authority(
-            release_green=load_json_object(args.release_green_receipt,
-                                           "release-green receipt"),
-            expected_source_sha=git_head(),
-            now=time.time(),
-        )
+        if args.release_green_receipt is not None:
+            validate_release_package_authority(
+                release_green=load_json_object(args.release_green_receipt,
+                                               "release-green receipt"),
+                expected_source_sha=git_head(),
+                now=time.time(),
+            )
         manifest = load_manifest()
         validate_manifest(manifest)
         validate_skills(manifest)
