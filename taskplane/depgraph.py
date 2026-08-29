@@ -1182,6 +1182,16 @@ def _read_design_architecture(ws: str) -> dict:
                 "design_edges": [], "singleton_sccs": [],
                 "errors": ["design/contract.json root must be an object"]}
     architecture = contract.get("architecture_decomposition")
+    requirement = str(contract.get("requirement") or "").strip()
+    if "architecture_decomposition" not in contract and requirement not in \
+            _CURRENT_GRAPH_AUTHORITY_FLOORS:
+        # An ordinary Design Contract does not opt into this engine's sealed
+        # repository-architecture authority merely by existing.  Keep the
+        # proof absent unless the dedicated section is supplied; the accepted
+        # design(s) whose graph authority is pinned above still fail closed if
+        # that section is removed.
+        return {"configured": False, "nodes": [], "semantic_edges": [],
+                "design_edges": [], "singleton_sccs": [], "errors": []}
     errors = []
     if not isinstance(architecture, dict):
         return {"configured": True, "nodes": [], "semantic_edges": [],
@@ -1271,7 +1281,6 @@ def _read_design_architecture(ws: str) -> dict:
     if not isinstance(design_edges, list):
         errors.append("current design graph.proposed_edges must be a list")
         design_edges = []
-    requirement = str(contract.get("requirement") or "").strip()
     graph_floor = _CURRENT_GRAPH_AUTHORITY_FLOORS.get(requirement)
     if graph_floor is None:
         errors.append("current design requirement has no approved graph "

@@ -109,6 +109,26 @@ def test_m02_authority_floor_is_opt_in_and_configured_drift_fails(
     assert graph["meta"]["graph_scan_quality"]["producers"] \
         ["architecture-map"] == {"status": "not-requested", "failures": []}
 
+    ordinary_design = tmp_path / "ordinary-design"
+    _write(ordinary_design, "src/app.py", "x = 1\n")
+    _write(ordinary_design, "design/contract.json", json.dumps({
+        "schema": "taskplane.design/v1",
+        "requirement": "R-ordinary",
+        "graph": {"proposed_modules": ["src/app.py"],
+                  "proposed_edges": []},
+    }))
+
+    ordinary_graph = _scan(
+        ordinary_design, tmp_path / "ordinary-design-graph.json")
+    ordinary_proof = depgraph.architecture_map_proof(str(ordinary_design))
+
+    assert ordinary_proof["configured"] is False
+    assert ordinary_proof["status"] == "not-requested"
+    assert ordinary_proof["errors"] == []
+    assert "architecture_map" not in ordinary_graph["meta"]
+    assert ordinary_graph["meta"]["graph_scan_quality"]["producers"] \
+        ["architecture-map"] == {"status": "not-requested", "failures": []}
+
     configured = tmp_path / "configured"
     _architecture_fixture(configured)
     contract_path = configured / "design" / "contract.json"
