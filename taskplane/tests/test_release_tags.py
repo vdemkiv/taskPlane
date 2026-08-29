@@ -412,7 +412,9 @@ class TestDeclaredButNotReleasedCannotRot(unittest.TestCase):
 
     def test_every_nonrelease_carries_a_reason_and_successor(self):
         self.assertEqual(
-            set(gate.NOT_RELEASED), {"2.17.22", "2.17.23", "2.17.24"}
+            set(gate.NOT_RELEASED), {
+                "2.17.22", "2.17.23", "2.17.24", "2.17.25", "2.17.26",
+            }
         )
         for version, info in gate.NOT_RELEASED.items():
             with self.subTest(version):
