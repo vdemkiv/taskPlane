@@ -3,8 +3,8 @@
 This page documents the user-facing surface added by the v3 routing and
 flows streams: intelligent lens routing (R-0001), component decomposition
 (R-0003), the review wave and the governed stage waves with their mandatory
-Task-dispatch fallback (R-0002/R-0004), the audit cadence, and evaluate's
-build-stage routing (R-0006). Every claim below matches the shipped code;
+Task-dispatch fallback (R-0002/R-0004), the audit cadence, and Evaluate's
+direct-evidence judgment (R-0006). Every claim below matches the shipped code;
 each feature carries one honest dogfood example from taskplane's own
 repository. Environment variables are cross-referenced in
 `docs/configuration.md` (the complete table); the lens catalog itself is
@@ -33,58 +33,61 @@ graph/routing readiness, so a precondition or `impact_incomplete` refusal
 cannot leave a misleading active review contract. Full layout and migration:
 [`storage-and-repositories.md`](storage-and-repositories.md).
 
-## Routing v2 — the diff picks the reviewers, with evidence
+## Focused stage routing — complete disclosure, bounded execution
 
-Normal standalone Review, per-task Evaluate, and final engineering review all
-start from the same canonical routing decision inside one canonical review
-context. The context binds one target, one canonical diff, graph quality and
-blast radius, requirements/contracts and DoR/DoD evidence, and runnability.
-All 26 lenses receive a disposition; only `deep` slots plus at most one
-bounded `light` sweep receive briefs. No lens receives permission to derive
-its own diff, graph impact, routing decision, or runnability result.
+Product, Design, Plan, standalone Review, Evaluate, and final engineering
+review derive their evidence from one canonical context. The context binds one
+target, one canonical change, graph quality and blast radius,
+requirements/contracts, DoR/DoD evidence, and runnability. Every routed
+Product, Design, Plan, or standalone Review stage emits exactly one evidenced
+disposition for all 26 catalog lenses:
+`execute_deep`, `execute_light`, `covered_by`, or `not_applicable`. Only the
+two `execute_*` dispositions may launch a worker. Missing, duplicate,
+unsupported, cyclic, or unevidenced rows fail closed before dispatch.
+
+Product and Design choose the minimum-sufficient focused quick route. Every
+non-trivial Plan executes exactly 3–4 quick lenses and records all 26
+dispositions. Build, Fix, Evaluate, and final engineering review launch zero
+lens workers across success, failure, cancellation, interruption, and handoff.
+Evaluate acts only as a direct evidence collector and judge: it creates no lens
+route, slots, workers, disposition ledger, lens verdict, retry/invalidation
+state, or expanded-route authority. Final engineering review consumes that
+direct evidence, adds synthesis and the human sign-off boundary, and launches
+no replacement fan-out. `execute_deep` remains in the versioned schema for
+compatibility and separately authorized audit/calibration work; normal delivery
+is quick-only. D-0014, accepted by `human:vdemkiv`, is the attributed successor
+contract for this lens-free Evaluate boundary.
 
 Graph quality runs first. Sparse module evidence gets at most one bounded
 changed-symbol caller expansion. In standalone PR Review, remaining graph
 uncertainty is recorded and routing continues from the immutable diff with
 architecture/security floors; the graph is enrichment, not a substitute for
 the PR bytes. In governed Evaluate/EM, insufficient impact remains
-`impact_incomplete` with zero lens dispatch. Mapper failure likewise produces
-`mapper_unavailable` and zero lens dispatch. Neither condition recovers through
-`breadth=all`.
+`impact_incomplete` and blocks direct judgment; neither stage invokes a lens
+mapper. For routed stages, mapper failure produces `mapper_unavailable` and
+zero lens dispatch. Neither condition recovers through `breadth=all`.
 
-`tp lens route` selects lenses for a change. Since v2.4.0 the selection is
-a **signal engine** (`taskplane/lens_signals.py`), not a filename glob
-match: each catalog lens is scored against the actual diff — paths,
-content, density, and the dependency graph — and receives one of three
-verdicts:
-
-- `deep` — a governed read-only lens agent reviews the change in depth;
-- `light` — a quick sweep pass;
-- `n/a` — **only with stated negative evidence** (e.g. "0 i18n markers in
-  the diff"). A bare, unevidenced `n/a` is refused; at the final (`em`)
-  review gate, bare `n/a` coverage blocks sign-off.
-
-The routing decision is honest and inspectable: the dashboard coverage map
-and the `HEADLINE:` line report `N deep · M light · K n/a (evidenced)`
-across the full catalog, and the machine-readable `routing_decision`
-object rides on every dispatched brief.
+`tp lens route` uses the signal engine in `taskplane/lens_signals.py` to score
+the actual change: paths, content, density, graph impact, requirements, tests,
+and unresolved findings. `taskplane/lens_route_policy.py` then canonicalizes
+those signals, groups overlapping risks, applies mandatory floors, and produces
+the smallest deterministic route plus the complete disposition ledger. A bare
+`not_applicable` or `covered_by` row is refused.
 
 Guardrails that hold at every granularity:
 
-- **Cap-8, demote-never-drop.** The deep set is hard-capped at 8; overflow
-  is demoted to `light` (with the demotion recorded in the evidence) —
-  never dropped from the review.
-- **Floors after the budget.** `security` may not be `n/a` when the diff
-  touches enforcement/boundary surface; `architecture` runs at least
-  `light` on any code change. Floors are applied *after* budget capping,
-  so a cap can never squeeze them out.
-- **Forced lenses.** `tp lens route --only <ids>` runs the named lenses
-  deep regardless of the engine's verdict — the evidence records the
-  force. The force holds at component granularity too.
-- **Stage profiles.** `lenses/catalog.json` carries `stage_profiles`
-  (design 8 · build 5 · review 26); a stage restricts the *candidate* set
-  only. An unknown or absent stage uses the explicit `fail-open` policy and
-  widens to the full catalog.
+- **Bounded focus.** Non-trivial Plan routes contain 3–4 independent evidenced
+  risks; Product/Design use the minimum sufficient count.
+- **No silent overflow.** More than four independent mandatory Plan risks
+  returns zero dispatch and either deterministic scope splits or an
+  exact `expanded_approval_required` request.
+- **Protected expansion.** An expanded route requires the separately executed,
+  content-addressed provider, external 0600 custody, an exact authenticated
+  approval, and atomic one-use consumption. A worktree cannot mint or consume
+  this authority. Expanded-route authority is Plan-only.
+- **Stage boundaries.** Product, Design, and Plan may execute their selected
+  quick route. Build, Fix, Evaluate, and final engineering review always
+  dispatch zero lenses.
 - **Fail closed before dispatch.** Incomplete graph evidence or an unavailable
   applicability mapper emits no briefs. `breadth=all` is reserved for an
   explicit human request or an isolated calibration/audit, never recovery.
@@ -94,14 +97,10 @@ routed their own diffs; both full-codebase runs settled on 7 deep):
 
 ```bash
 python3 taskplane/tp.py lens route --base main
-# 26 dispositions for N files changed; only deep + light dispatch:
-#   ▸ subagent  security       ← ...
-#   · inline    performance    ← ...
-#   ○ n/a       i18n           ← n/a: 0 i18n markers in the diff
+# 26 evidenced dispositions; only execute_deep/execute_light dispatch.
 ```
 
-The `○ n/a` rows are the coverage honesty: skips stay visible, each with
-its negative evidence.
+Skipped rows remain visible as `covered_by` or evidenced `not_applicable`.
 
 ## Component decomposition — `tp graph scan --decompose`
 
@@ -145,8 +144,8 @@ never disturbs an existing layer.
 Routing consumes the layer as a **capped union**: changed files map to
 touched components, the candidate lens set is the union of their cached
 maps — but cached maps only *propose*; final verdicts are re-evidenced on
-the live diff, and the cap-8 budget and security/architecture floors run
-after assembly. Every routed lens names which component(s) proposed it via
+the live diff, and focused selection plus mandatory floors run after assembly.
+Every routed lens names which component(s) proposed it via
 `component_attribution`, which rides additively on each `contract:lens-brief`
 and into the findings meta. The dashboard graph view renders component
 nodes inside their module grouping.
@@ -277,19 +276,18 @@ byte-frozen extraction are pinned by
 `taskplane/tests/test_audit_sweep.py` and
 `taskplane/tests/test_audit_extraction.py`.
 
-## Evaluate and final engineering review use one selective kernel
+## Evaluate and final engineering review are lens-free judges
 
-The loop's `evaluate` step and final engineering review consume the same
-canonical review context and complete 26-lens disposition. Stage and persona
-change which signals are relevant, not the evidence source: both dispatch
-exactly their mapped deep lenses plus at most one light sweep, retain the
-architecture/security floors, and keep every n/a backed by negative evidence.
-The final engineering review adds synthesis and human sign-off; it does not
-re-read the repository or broaden to all lenses.
+The loop's `evaluate` step collects and judges direct acceptance, diff, graph,
+requirement, contract, and test evidence against one exact target. It launches
+zero lenses and creates no route, slots, workers, 26-row disposition ledger,
+lens verdict, retry/invalidation record, or expanded-route authority. Its
+verdict is direct evaluation evidence, not a synthesis of lens outputs.
 
-The canonical Evaluate routing input records `stage="build"`; final
-engineering review records the review stage. This distinction changes the
-stage profile, never the shared diff, graph impact, or evidence identity.
+Final engineering review consumes the same canonical direct evidence, adds
+engineering synthesis, and stops at human sign-off. It also launches zero lens
+workers and cannot recreate any artifact that lens-free Evaluate intentionally
+does not produce.
 
 ## Review convergence and adjudication memory
 
