@@ -50,6 +50,7 @@ import hashlib
 import io
 import json
 import re
+import runpy
 import shlex
 import time as _time
 import traceback
@@ -619,6 +620,8 @@ runpy.run_path(ENGINE, run_name="__main__")
 
 def _codex_hook_action(command: str) -> str:
     value = str(command or "")
+    if "host-native-check" in value:
+        return "host-native-check"
     if re.search(r'host_native_runtime\.py"?\s+check\s+--host\s+claude(?:\s|$)', value):
         # Host-native capability discovery is context acquisition. Treat it
         # as the same fail-closed class so repo-local Codex hook installation
@@ -640,7 +643,9 @@ def _codex_hook_rows() -> dict:
         for row in rows:
             for hook in row.get("hooks") or []:
                 command = str(hook.get("command") or "")
-                is_host_native_check = "host_native_runtime.py" in command
+                is_host_native_check = (
+                    "host_native_runtime.py" in command
+                    or "host-native-check" in command)
                 _codex_hook_action(command)
                 # Keep the bundled missing-runner fallback. A Codex-managed
                 # worktree contains the tracked hook configuration but not
@@ -655,9 +660,9 @@ def _codex_hook_rows() -> dict:
                         "TASKPLANE_HOOK_PATH=bridge")
                 if is_host_native_check:
                     hook["command"] = hook["command"].replace(
-                        "check --host claude", "check --host codex")
+                        "--host claude", "--host codex")
                     hook["commandWindows"] = hook["commandWindows"].replace(
-                        "check --host claude", "check --host codex")
+                        "--host claude", "--host codex")
     return generated
 
 
@@ -742,15 +747,18 @@ def _install_codex_hooks(ws: str) -> dict:
                          what="Codex hook configuration")
     if not isinstance(prior, dict) or not isinstance(prior.get("hooks"), dict):
         raise RuntimeError("existing .codex/hooks.json is not a hook object")
+    original = json.loads(json.dumps(prior))
     hooks = prior["hooks"]
     for event, rows in _codex_hook_rows().items():
         existing = [row for row in hooks.get(event, [])
                     if _CODEX_HOOK_MARKER not in json.dumps(row)
                     and "host_native_runtime.py" not in json.dumps(row)]
         hooks[event] = existing + rows
-    tp.atomic_write_json(config_path, prior, indent=2, sort_keys=False)
-    _exclude_generated_codex_config(ws, prior)
-
+    # Install the ignored launcher first. A tracked or host-protected hook
+    # configuration may already be correct while this checkout-local bridge
+    # is absent (notably in a newly-created linked worktree). Leaving the
+    # launcher behind if a genuinely required config update is denied makes
+    # the next hook invocation recoverable without weakening that denial.
     runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
     os.makedirs(os.path.dirname(runner_path), exist_ok=True)
     family = _plugin_family_for_engine(os.path.abspath(__file__))
@@ -763,6 +771,9 @@ def _install_codex_hooks(ws: str) -> dict:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+    if prior != original:
+        tp.atomic_write_json(config_path, prior, indent=2, sort_keys=False)
+    _exclude_generated_codex_config(ws, prior)
     return _codex_hooks_report(ws)
 
 
@@ -4566,6 +4577,24 @@ def cmd_track(a) -> int:
     return 1 if isinstance(out, dict) and out.get("error") else 0
 
 
+def cmd_host_native_check(a) -> int:
+    """Run the package-owned host-surface probe through the stable engine.
+
+    Codex may execute a primary checkout's hook configuration from a linked
+    worktree and does not guarantee plugin-root environment variables there.
+    Routing this probe through ``codex-hook.py`` gives every hook action the
+    same validated installation-family resolver.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script = os.path.join(root, "hooks", "host_native_runtime.py")
+    namespace = runpy.run_path(
+        script, run_name="taskplane_host_native_runtime")
+    entrypoint = namespace.get("_main")
+    if not callable(entrypoint):
+        raise RuntimeError("host-native runtime has no entrypoint")
+    return int(entrypoint(["check", "--host", a.host]) or 0)
+
+
 def cmd_context(a) -> int:
     """Compact session context (SessionStart hook): where things stand."""
     import depgraph as dg
@@ -6667,6 +6696,8 @@ def _cli_commands(parser, path=(), help_text=None):
             continue
         helps = {ca.dest: ca.help for ca in action._choices_actions}
         for name in sorted(action.choices):
+            if helps.get(name) == argparse.SUPPRESS:
+                continue
             yield from _cli_commands(action.choices[name], path + (name,),
                                      helps.get(name))
 
@@ -8074,6 +8105,11 @@ def main(argv=None) -> int:
     tcl.add_argument("--status", default="done",
                      help="status to close the track in (default done)")
     tk.set_defaults(fn=cmd_track)
+
+    hnc = sub.add_parser("host-native-check", help=argparse.SUPPRESS)
+    hnc.add_argument("--host", choices=["claude", "codex"], required=True,
+                     help=argparse.SUPPRESS)
+    hnc.set_defaults(fn=cmd_host_native_check)
 
     cx = sub.add_parser("context", help="session-start context summary")
     cx.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)

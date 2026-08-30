@@ -30,10 +30,17 @@ evidence, blockers, and decisions that materially need their judgment. This is
 a user-interface simplification only. Never remove, shorten, or self-waive an
 internal gate to make the interaction look simpler.
 
-On Codex, prefer the stable workspace launcher when it exists:
-`TP='python3 .taskplane/codex-hook.py'`. It resolves the newest valid installed
-taskplane engine on every call. During first setup, or on another host, use
-`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
+On Codex, resolve the stable launcher from the current checkout or its Git
+repository family before using the command notation `$TP` below:
+`TP_LAUNCHER="$(git rev-parse --path-format=absolute --git-common-dir
+2>/dev/null)/../.taskplane/codex-hook.py"`; prefer
+`.taskplane/codex-hook.py` when that current-checkout file exists. Invoke it as
+`python3 "$TP_LAUNCHER"`; it resolves the newest valid installed taskplane
+engine on every call. Only when neither launcher exists, during first setup or
+on another host, use
+`python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. If both host
+variables are unset, stop with the bootstrap error; never collapse it to
+`/taskplane/tp.py`.
 
 ## Approved flow contract
 

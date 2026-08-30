@@ -89,6 +89,9 @@ permissions and sandbox controls enabled.
    portable `.codex/hooks.json` workspace configuration plus an ignored local
    `.taskplane/codex-hook.py` bridge. A new task is required only for this
    one-time initial host hook load, never for checkout/auth/storage recovery.
+   A linked Codex worktree reuses the primary checkout's validated bridge via
+   Git's common directory until onboarding creates its own ignored local copy;
+   it does not depend on plugin-root environment variables being inherited.
 4. Answer any prerequisite prompt in chat. taskplane runs only its stored
    bounded action after approval and resumes the same run.
 5. Choose whether taskplane knowledge stays **private/local** (`personal`) or

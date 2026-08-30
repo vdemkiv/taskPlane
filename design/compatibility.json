@@ -11,7 +11,7 @@
     "migration_change": false,
     "sunset_change": false,
     "released_generation": "2.17.20",
-    "next_generation": "2.18.1",
+    "next_generation": "2.18.2",
     "graph_fingerprint": "a6a3c1e72c0c268648e3727cdcec904f60c41442a1f77bf16231bbdb84cd90a6",
     "graph_counts": {
       "modules": 50,
@@ -45,7 +45,7 @@
     "retired_authority": "No Taskplane scheduler, host capacity, reservation, admission/event queue, replay scheduler, lease, or execution-DAG authority."
   },
   "window": {
-    "current": "2.18.1",
+    "current": "2.18.2",
     "previous": "2.18.0",
     "last_released": "2.17.20",
     "candidate_previous": "2.18.0",
@@ -83,20 +83,20 @@
   },
   "matrix": [
     {
-      "plugin": "2.18.1",
-      "host": "2.18.1",
+      "plugin": "2.18.2",
+      "host": "2.18.2",
       "feature": "new",
       "release": "eligible-with-all-proofs"
     },
     {
-      "plugin": "2.18.1",
+      "plugin": "2.18.2",
       "host": "2.18.0",
       "feature": "legacy-compatible",
       "release": "refuse-missing-N-capability"
     },
     {
       "plugin": "2.18.0",
-      "host": "2.18.1",
+      "host": "2.18.2",
       "feature": "legacy-compatible",
       "release": "refuse-legacy-release-authority"
     },
@@ -109,20 +109,20 @@
   ],
   "release_matrix": [
     {
-      "plugin": "2.18.1",
-      "host": "2.18.1",
+      "plugin": "2.18.2",
+      "host": "2.18.2",
       "feature": "new",
       "release": "eligible-with-all-proofs"
     },
     {
-      "plugin": "2.18.1",
+      "plugin": "2.18.2",
       "host": "2.17.20",
       "feature": "last-released-compatible",
       "release": "eligible-with-observed-production-predecessor"
     },
     {
       "plugin": "2.17.20",
-      "host": "2.18.1",
+      "host": "2.18.2",
       "feature": "last-released-compatible",
       "release": "eligible-with-observed-production-predecessor"
     },

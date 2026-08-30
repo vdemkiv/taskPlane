@@ -554,3 +554,28 @@ def test_storage_repository_family_root_tracks_sibling_worktree(tmp_path):
     assert resolved["worktree"] == str(sibling.resolve())
     assert resolved["launcher"] == str(
         (root / ".taskplane" / "codex-hook.py").resolve())
+
+
+def test_storage_repository_family_tracks_external_linked_worktree(tmp_path):
+    primary = tmp_path / "primary"
+    linked = tmp_path / "codex-worktrees" / "taskplane"
+    primary.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=primary, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Taskplane Test", "-c",
+        "user.email=taskplane@example.invalid", "commit", "-q",
+        "--allow-empty", "-m", "snapshot",
+    ], cwd=primary, check=True)
+    subprocess.run([
+        "git", "worktree", "add", "-q", "--detach", str(linked), "HEAD",
+    ], cwd=primary, check=True)
+    (primary / ".taskplane").mkdir()
+    launcher = primary / ".taskplane" / "codex-hook.py"
+    launcher.write_text("# bridge\n", encoding="utf-8")
+    nested = linked / "src" / "nested"
+    nested.mkdir(parents=True)
+
+    resolved = storage.resolve_repository_family(str(nested))
+
+    assert resolved["worktree"] == str(linked.resolve())
+    assert resolved["launcher"] == str(launcher.resolve())

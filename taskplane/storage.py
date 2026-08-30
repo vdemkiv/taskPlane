@@ -54,13 +54,37 @@ def resolve_repository_family(workspace: str) -> dict:
         if parent == cursor:
             break
         cursor = parent
-    worktree = next((path for path in chain
-                     if os.path.exists(os.path.join(path, ".git"))), current)
+    def git_path(*arguments: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", *arguments], cwd=current, capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        value = result.stdout.strip()
+        return os.path.realpath(value) if result.returncode == 0 and value \
+            else None
+
+    worktree = git_path("rev-parse", "--path-format=absolute",
+                        "--show-toplevel") or next((
+        path for path in chain
+        if os.path.exists(os.path.join(path, ".git"))), current)
     launcher = next((os.path.realpath(os.path.join(path, ".taskplane",
                                                    "codex-hook.py"))
                      for path in chain
                      if os.path.isfile(os.path.join(path, ".taskplane",
                                                     "codex-hook.py"))), None)
+    if launcher is None:
+        # Linked worktrees created by Codex are external siblings, not
+        # descendants of the primary checkout. Git's common directory is the
+        # portable repository-family boundary; its parent is the primary
+        # checkout for a non-bare repository.
+        common = git_path("rev-parse", "--path-format=absolute",
+                          "--git-common-dir")
+        candidate = (os.path.join(os.path.dirname(common), ".taskplane",
+                                  "codex-hook.py") if common else None)
+        if candidate and os.path.isfile(candidate):
+            launcher = os.path.realpath(candidate)
     return {"schema": "taskplane.repository-family/v1",
             "worktree": worktree, "launcher": launcher}
 

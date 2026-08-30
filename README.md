@@ -139,18 +139,19 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
-> the fully verified forward release candidate moves as v2.18.1, which is not released. Historical
+> v2.18.1 is the tagged local predecessor, and the forward release candidate
+> moves as v2.18.2, which is not released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.1 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.18.2 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.18.1** | **Complete local and exact-PR-head-SHA release proof — not released.** Adds the standard-library closed-inventory local CI runner, deterministic exact-once receipts, isolated parallel shards, deadline-safe cleanup, mutation detection, and a blocking PR-head proof that synthetic merge validation cannot substitute. This row claims no main merge, tag, upload, installation, Marketplace publication, or release. |
+| **v2.18.2** | **External-worktree Codex hook bootstrap repair — not released.** Hooks now resolve a validated repository launcher through Git's common directory when a linked worktree has no ignored local bridge, keep host-native checks on that same stable engine, fail with an actionable error when neither a launcher nor plugin root exists, and restore the launcher before any required hook-config rewrite. A local reinstall and generated upload artifact are development actions, not Marketplace publication or a public release. |
+| **v2.18.1** | **Complete local and exact-PR-head-SHA release proof — tagged local predecessor, not publicly released.** Adds the standard-library closed-inventory local CI runner, deterministic exact-once receipts, isolated parallel shards, deadline-safe cleanup, mutation detection, and a blocking PR-head proof that synthetic merge validation cannot substitute. Its tag and local installation do not claim an upload or Marketplace publication. |
 | **v2.18.0** | **Superseded public-metadata correction candidate — not released; compatibility N-1 for v2.18.1.** Removes external orchestration-product comparisons from every public skill and agent discovery description plus public security guidance, while preserving exact external namespaces only in internal collision enforcement and tests. Restores the deleted repository-wide branding regression test so a future merge cannot silently reintroduce the copy. It was never promoted into released truth. |
-| **v2.17.26** | **Superseded R-0002 whole-codebase EM remediation candidate — not released; compatibility N-1 for v2.18.0.** Integrated the completed high-, medium-, and low-priority remediation waves, focused final defect fixes, exact-SHA verification evidence, and final Engineering Manager disposition. It was never promoted into released truth. |
 ## Install
 
 How you install taskplane depends on your **account type**, and the paths are

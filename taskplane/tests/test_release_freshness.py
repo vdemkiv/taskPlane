@@ -77,6 +77,24 @@ class TestGeneratedCliReference(unittest.TestCase):
             cli.cli_reference_markdown(parser)
         self.assertIn("--bare", str(raised.exception))
 
+    def test_generator_omits_internal_suppressed_commands(self):
+        import tp as cli
+
+        parser = argparse.ArgumentParser(prog="fake")
+        sub = parser.add_subparsers(dest="cmd", required=True)
+        public = sub.add_parser("public", help="documented command")
+        public.add_argument("--visible", action="store_true",
+                            help="documented flag")
+        hidden = sub.add_parser("internal", help=argparse.SUPPRESS)
+        hidden.add_argument("--private", help=argparse.SUPPRESS)
+
+        generated = cli.cli_reference_markdown(parser)
+
+        self.assertIn("fake public", generated)
+        self.assertNotIn("internal", generated)
+        self.assertNotIn("private", generated)
+        self.assertNotIn("SUPPRESS", generated)
+
     def test_generator_owns_the_closed_stage_request_contract(self):
         import tp as cli
         import stage_entities
@@ -174,6 +192,7 @@ class TestForwardRepairDocumentation(unittest.TestCase):
             self.assertIn("v2.17.26", prose, path)
             self.assertIn("v2.18.0", prose, path)
             self.assertIn("v2.18.1", prose, path)
+            self.assertIn("v2.18.2", prose, path)
             self.assertIn("not released", prose, path)
             self.assertIn("2757822e", prose, path)
             self.assertIn("inherited limitation", prose, path)

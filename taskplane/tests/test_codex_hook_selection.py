@@ -46,6 +46,8 @@ class TestHookPathManifests(unittest.TestCase):
                             for command in commands))
         self.assertTrue(all('[ -f ".taskplane/codex-hook.py" ]' in command
                             for command in commands))
+        self.assertTrue(all("--git-common-dir" in command
+                            for command in commands))
 
     def test_cached_native_hook_runs_bridge_when_old_plugin_root_is_gone(self):
         manifest = json.loads((ROOT / "hooks" / "hooks.json").read_text(
@@ -76,14 +78,14 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertTrue(all("TASKPLANE_HOOK_PATH=bridge" in command
                             for command in commands))
         governed = [command for command in commands
-                    if "host_native_runtime.py" not in command]
+                    if "host-native-check" not in command]
         native_checks = [command for command in commands
-                         if "host_native_runtime.py" in command]
+                         if "host-native-check" in command]
         self.assertTrue(governed)
         self.assertTrue(all('[ -f ".taskplane/codex-hook.py" ]' in command
                             for command in governed))
         self.assertEqual(len(native_checks), 1)
-        self.assertIn("check --host codex", native_checks[0])
+        self.assertIn("host-native-check --host codex", native_checks[0])
         self.assertTrue(all("PLUGIN_ROOT" in command for command in commands))
 
     def test_repository_hook_uses_plugin_when_worktree_runner_is_missing(self):
@@ -109,6 +111,83 @@ class TestHookPathManifests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), {
                 "argv": ["session-verify"], "path": "bridge"})
+
+    def test_external_linked_worktree_uses_primary_launcher_without_plugin_root(self):
+        """Reproduce the Codex desktop topology from the field incident."""
+        for relative, expected_path in (
+                ("hooks/hooks.json", "native"),
+                (".codex/hooks.json", "bridge")):
+            with self.subTest(manifest=relative), \
+                    tempfile.TemporaryDirectory(
+                        prefix="tp-external-worktree-") as parent:
+                primary = Path(parent, "primary")
+                linked = Path(parent, "codex-worktree")
+                primary.mkdir()
+                subprocess.run(["git", "init", "-q"], cwd=primary,
+                               check=True)
+                subprocess.run([
+                    "git", "-c", "user.name=Taskplane Test", "-c",
+                    "user.email=taskplane@example.invalid", "commit", "-q",
+                    "--allow-empty", "-m", "snapshot",
+                ], cwd=primary, check=True)
+                subprocess.run([
+                    "git", "worktree", "add", "-q", "--detach",
+                    str(linked), "HEAD",
+                ], cwd=primary, check=True)
+                Path(primary, ".taskplane").mkdir()
+                marker = Path(parent, "called.json")
+                Path(primary, ".taskplane", "codex-hook.py").write_text(
+                    "import json, os, sys\n"
+                    "with open(os.environ['TP_MARKER'], 'w', "
+                    "encoding='utf-8') as f:\n"
+                    "    json.dump({'argv': sys.argv[1:], "
+                    "'path': os.environ.get('TASKPLANE_HOOK_PATH')}, f)\n",
+                    encoding="utf-8")
+                manifest = json.loads((ROOT / relative).read_text(
+                    encoding="utf-8"))
+                environment = {**os.environ, "TP_MARKER": str(marker)}
+                environment.pop("PLUGIN_ROOT", None)
+                environment.pop("CLAUDE_PLUGIN_ROOT", None)
+                host = "codex" if expected_path == "bridge" else "claude"
+                cases = (
+                    ("PreToolUse", 0, ["screen"]),
+                    ("SessionStart", 0,
+                     ["host-native-check", "--host", host]),
+                    ("Stop", 0, ["session-verify"]),
+                )
+                for event, row_index, expected_argv in cases:
+                    with self.subTest(manifest=relative, event=event):
+                        command = manifest["hooks"][event][row_index][
+                            "hooks"][0]["command"]
+                        result = subprocess.run(
+                            command, cwd=linked, shell=True, text=True,
+                            capture_output=True, env=environment,
+                            encoding="utf-8", errors="replace")
+
+                        self.assertEqual(
+                            result.returncode, 0, result.stderr)
+                        self.assertEqual(json.loads(marker.read_text(
+                            encoding="utf-8")), {
+                                "argv": expected_argv,
+                                "path": expected_path,
+                            })
+
+    def test_missing_launcher_and_plugin_root_has_bounded_failure(self):
+        manifest = json.loads((ROOT / "hooks" / "hooks.json").read_text(
+            encoding="utf-8"))
+        command = manifest["hooks"]["PreToolUse"][0]["hooks"][0][
+            "command"]
+        with tempfile.TemporaryDirectory(prefix="tp-missing-launcher-") as ws:
+            environment = dict(os.environ)
+            environment.pop("PLUGIN_ROOT", None)
+            environment.pop("CLAUDE_PLUGIN_ROOT", None)
+            result = subprocess.run(
+                command, cwd=ws, shell=True, text=True,
+                capture_output=True, env=environment, encoding="utf-8",
+                errors="replace")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no workspace launcher", result.stderr)
+        self.assertNotIn("/taskplane/tp.py", result.stderr)
 
     def test_primary_skills_prefer_workspace_launcher_for_version_refreshes(self):
         skills = (
@@ -151,11 +230,13 @@ class TestHookPathManifests(unittest.TestCase):
                             for hook in hooks))
         governed_hooks = [
             hook for hook in hooks
-            if "host_native_runtime.py" not in hook.get("command", "")
+            if "host-native-check" not in hook.get("command", "")
         ]
-        self.assertTrue(all('if exist ".taskplane\\codex-hook.py"' in
+        self.assertTrue(all('TASKPLANE_LAUNCHER=.taskplane\\codex-hook.py' in
                             hook.get("commandWindows", "")
                             for hook in governed_hooks))
+        self.assertTrue(all("--git-common-dir" in hook.get("command", "")
+                            for hook in hooks))
         native = json.loads((ROOT / "hooks" / "hooks.json").read_text(
             encoding="utf-8"))
         native_hooks = [
@@ -166,11 +247,55 @@ class TestHookPathManifests(unittest.TestCase):
         ]
         governed_hooks = [
             hook for hook in native_hooks
-            if "host_native_runtime.py" not in hook.get("command", "")
+            if "host-native-check" not in hook.get("command", "")
         ]
-        self.assertTrue(all('if exist ".taskplane\\codex-hook.py"' in
+        self.assertTrue(all('TASKPLANE_LAUNCHER=.taskplane\\codex-hook.py' in
                             hook.get("commandWindows", "")
                             for hook in governed_hooks))
+        self.assertTrue(all("--git-common-dir" in hook.get("command", "")
+                            for hook in native_hooks))
+
+    def test_onboarding_restores_runner_without_rewriting_equivalent_config(self):
+        with tempfile.TemporaryDirectory(prefix="tp-codex-noop-") as ws:
+            Path(ws, ".codex").mkdir()
+            Path(ws, ".codex", "hooks.json").write_text(json.dumps({
+                "hooks": cli._codex_hook_rows(),
+            }), encoding="utf-8")
+            with mock.patch.dict(
+                    os.environ,
+                    {"CODEX_HOME": "/tmp/codex",
+                     "TASKPLANE_MANAGED_HOOK_POLICY": "supported"},
+                    clear=True), \
+                    mock.patch.object(cli, "_install_context",
+                                      return_value="personal"), \
+                    mock.patch.object(
+                        tp, "atomic_write_json",
+                        side_effect=AssertionError(
+                            "equivalent config must not be rewritten")):
+                report = cli._install_codex_hooks(ws)
+            self.assertTrue(report["ok"], report)
+            self.assertTrue(Path(
+                ws, ".taskplane", "codex-hook.py").is_file())
+
+    def test_onboarding_leaves_runner_when_required_config_write_is_denied(self):
+        with tempfile.TemporaryDirectory(prefix="tp-codex-denied-") as ws:
+            Path(ws, ".codex").mkdir()
+            Path(ws, ".codex", "hooks.json").write_text(
+                '{"hooks": {}}\n', encoding="utf-8")
+            with mock.patch.dict(
+                    os.environ,
+                    {"CODEX_HOME": "/tmp/codex",
+                     "TASKPLANE_MANAGED_HOOK_POLICY": "supported"},
+                    clear=True), \
+                    mock.patch.object(cli, "_install_context",
+                                      return_value="personal"), \
+                    mock.patch.object(
+                        tp, "atomic_write_json",
+                        side_effect=PermissionError("protected config")):
+                with self.assertRaises(PermissionError):
+                    cli._install_codex_hooks(ws)
+            self.assertTrue(Path(
+                ws, ".taskplane", "codex-hook.py").is_file())
 
     def test_generated_workspace_hook_config_is_git_local_only(self):
         with tempfile.TemporaryDirectory(prefix="tp-codex-hooks-git-") as ws:

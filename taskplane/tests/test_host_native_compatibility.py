@@ -87,7 +87,7 @@ def test_codex_and_claude_packages_declare_one_canonical_contract(
     assert "hostNative" not in hooks
     commands = [hook["command"] for entry in hooks["hooks"]["SessionStart"]
                 for hook in entry["hooks"]]
-    assert any("host_native_runtime.py\" check --host claude" in command
+    assert any("host-native-check --host claude" in command
                for command in commands)
     codex_manifest = json.loads(
         (ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")

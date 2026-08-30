@@ -51,11 +51,12 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
             hook
             for row in config["hooks"]["SessionStart"]
             for hook in row.get("hooks", [])
-            if "host_native_runtime.py" in hook.get("command", "")
+            if "host-native-check" in hook.get("command", "")
         ]
         self.assertEqual(len(native_checks), 1)
-        self.assertIn("check --host codex", native_checks[0]["command"])
-        self.assertIn("check --host codex",
+        self.assertIn("host-native-check --host codex",
+                      native_checks[0]["command"])
+        self.assertIn("host-native-check --host codex",
                       native_checks[0]["commandWindows"])
         self.assertNotIn("--host claude", json.dumps(native_checks[0]))
         runner = os.path.join(ws, ".taskplane", "codex-hook.py")
@@ -514,9 +515,9 @@ class TestSkillPortability(unittest.TestCase):
         self.assertIn("--design-only", result.stdout)
 
     def test_no_bare_claude_plugin_root_in_skills(self):
-        # Codex does not set CLAUDE_PLUGIN_ROOT; every skill command must use
-        # the ${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}} fallback so the very first
-        # $TP invocation works on both hosts.
+        # The stable Codex launcher does not depend on either variable. The
+        # first-setup/other-host fallback must still accept PLUGIN_ROOT before
+        # the Claude-specific spelling and never hard-code only one host.
         import glob
         root = os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))))
