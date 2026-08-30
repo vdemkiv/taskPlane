@@ -1083,9 +1083,12 @@ def _walk_collect_observed_evaluate(ws, act_ws, state, task, *,
         consume_matching_observation,
         record_codex_subagent_stop,
     )
+    worker = tp_lite.worker_contract_for_stage(
+        act_ws, stage=step, task=str(task["id"]))
+    active_contract = worker.get("contract") if worker else None
     material = loop.producer_output_identity(
         act_ws, state, task, step,
-        active_contract=tp_lite.load_active(act_ws) or {})
+        active_contract=active_contract or {})
     if step == "em":
         return consume_matching_observation(**material)
     import evaluation_output

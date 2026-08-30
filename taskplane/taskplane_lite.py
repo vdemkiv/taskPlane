@@ -223,7 +223,13 @@ def _flush_windows_directory(path: str) -> None:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         if not kernel.FlushFileBuffers(handle):
-            raise ctypes.WinError(ctypes.get_last_error())
+            error = ctypes.get_last_error()
+            if error != 5:  # ERROR_ACCESS_DENIED
+                raise ctypes.WinError(error)
+            # Windows accepts a backup-semantics directory handle but does
+            # not support FlushFileBuffers for directories. The preceding
+            # file fsync and atomic replace remain authoritative; only this
+            # unavailable directory-metadata flush is acknowledged here.
     finally:
         if not kernel.CloseHandle(handle):
             raise ctypes.WinError(ctypes.get_last_error())

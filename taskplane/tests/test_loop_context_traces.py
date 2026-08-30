@@ -485,6 +485,10 @@ def _loop_without_the_recording(tmpdir):
     with mock.patch.object(build_c, "bind_loop_runtime",
                            side_effect=capture_runtime):
         spec.loader.exec_module(mod)
+    # Runtime module loading is rooted at loop.py's shipped directory. The
+    # source-derived control lives in a temporary file only so its recording
+    # call can be removed; it must retain the production module root.
+    mod.__file__ = loop.__file__
     if set(captured) != {"state_loader", "wait_policy_factory",
                          "wait_invocation_factory"}:  # pragma: no cover
         raise AssertionError("control module did not publish loop services")
@@ -577,11 +581,16 @@ class TestRecordingOnly(unittest.TestCase):
         """One next_action: its payload and the event names it appended."""
         before = len(_events(self.ws))
         services = getattr(module, "_test_loop_runtime_services", None)
-        if services is None:
-            payload = module.next_action(self.ws)
-        else:
-            with build_c.scoped_loop_runtime(**services):
+        runtime_bundle = getattr(module, "_REVIEW_RUNTIME_BUNDLE", None)
+        module._REVIEW_RUNTIME_BUNDLE = None
+        try:
+            if services is None:
                 payload = module.next_action(self.ws)
+            else:
+                with build_c.scoped_loop_runtime(**services):
+                    payload = module.next_action(self.ws)
+        finally:
+            module._REVIEW_RUNTIME_BUNDLE = runtime_bundle
         # Live progress is a non-gating read model over the growing audit
         # stream. Its sequence and elapsed sample are expected to advance on
         # repeated observations, so they are not part of this differential's
@@ -605,7 +614,21 @@ class TestRecordingOnly(unittest.TestCase):
                     dashboard.pop("delivery", None)
                     status["dashboard"] = dashboard
                 payload["status"] = status
-        return payload, _events(self.ws)[before:]
+        return self._comparison_projection(payload), _events(self.ws)[before:]
+
+    @classmethod
+    def _comparison_projection(cls, value):
+        """Normalize only freshly signed worker-release transport bytes."""
+        if isinstance(value, dict):
+            return {
+                key: ("<SIGNED-WORKER-RELEASE-ACTION>"
+                      if key == "signed_action"
+                      else cls._comparison_projection(item))
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._comparison_projection(item) for item in value]
+        return value
 
     def _differential(self, step, **state_kw):
         """[control, control, subject] — the control pair FIRST, because a

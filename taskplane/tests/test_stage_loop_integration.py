@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from taskplane import loop
+from taskplane import loop, taskplane_lite
 
 
 def _workspace(tmp_path):
