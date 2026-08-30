@@ -71,6 +71,7 @@ if __package__:
     from . import brief_projection
     from . import delivery_policy
     from . import dispatch_telemetry
+    from . import em_outage
     from . import evaluation_output as evaluation_output
     from . import lens_route_policy
     from . import plan_topology
@@ -81,6 +82,7 @@ else:  # pragma: no cover - direct CLI module loading
     import brief_projection
     import delivery_policy
     import dispatch_telemetry
+    import em_outage
     import lens_route_policy
     import plan_topology
     import producer_observation as producer_observation_policy
@@ -827,6 +829,8 @@ def bind_producer_observation(
 def producer_output_identity(ws: str, state: Mapping[str, object],
                              task: Mapping[str, object] | None, step: str,
                              *, active_contract: Mapping[str, object] | None =
+                             None,
+                             em_output_snapshot: Mapping[str, object] | None =
                              None) -> dict:
     """Derive the one engine-owned output identity a host stop may observe."""
     if step not in {"evaluate", "em"}:
@@ -867,14 +871,19 @@ def producer_output_identity(ws: str, state: Mapping[str, object],
     else:
         paths = [runtime_storage.review_public_path(ws, "findings.json"),
                  runtime_storage.review_public_path(ws, "report.md")]
-        exact = []
-        for path in paths:
-            try:
-                with open(path, "rb") as stream:
-                    exact.append((path, stream.read()))
-            except OSError as exc:
-                raise producer_observation_policy.ProducerObservationError(
-                    "EM result bytes are missing") from exc
+        if em_output_snapshot is None:
+            exact = []
+            for path in paths:
+                try:
+                    with open(path, "rb") as stream:
+                        exact.append((path, stream.read()))
+                except OSError as exc:
+                    raise producer_observation_policy.ProducerObservationError(
+                        "EM result bytes are missing") from exc
+        else:
+            captured = em_outage.output_snapshot_bytes(em_output_snapshot)
+            exact = [(paths[0], captured["findings"]),
+                     (paths[1], captured["report"])]
         output_path = json.dumps(paths, separators=(",", ":"))
         output_bytes = producer_observation_policy.exact_output_bundle(exact)
         output_schema_id = "taskplane.em-output/v1"
@@ -5614,6 +5623,14 @@ def wave(ws: str) -> dict:
                                   "shared_owner": "scope"})
         ready, held = selected, [*held, *remaining]
 
+    for ready_task in ready:
+        if staged_refusal := _staged_dispatch_refusal(ready_task):
+            tp.trace(ws, "loop_staged_dispatch_blocked",
+                     task=ready_task.get("id"), surface="wave",
+                     reason="mandatory_replan_required")
+            return {**staged_refusal, "parallel": True,
+                    "wave": [], "held": held}
+
     wave_wait_policy = (
         event_wait_policy("execute-wave", len(ready)) if ready else None)
     wave_wait_invocation = (
@@ -5780,6 +5797,10 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     if t.get("status") not in ("pending", "running"):
         return {"error": f"task {task_id} is {t.get('status')} — "
                          "not claimable"}
+    if staged_refusal := _staged_dispatch_refusal(t):
+        tp.trace(ws, "loop_staged_dispatch_blocked", task=task_id,
+                 surface="claim", reason="mandatory_replan_required")
+        return staged_refusal
     contract = tp.build_contract(
         f"EXECUTE: {t['id']}", scope=t.get("scope"),
         test_command=t.get("tests"), plan_minted=True, regression_gate=True,
@@ -6017,6 +6038,14 @@ def next_action(
                          f"Re-run the plan step (`loop gate fail`, then "
                          f"re-plan) or start over with `loop init`.",
                 "step": step, "status": status(ws)}
+
+    if step == "execute":
+        current_dispatch_task = _current_task(state)
+        if staged_refusal := _staged_dispatch_refusal(current_dispatch_task):
+            tp.trace(ws, "loop_staged_dispatch_blocked",
+                     task=(current_dispatch_task or {}).get("id"),
+                     surface="next", reason="mandatory_replan_required")
+            return {**staged_refusal, "status": status(ws)}
 
     # Per-task steps run in the task's own workspace when one was claimed.
     act_ws = ws
@@ -7409,6 +7438,44 @@ def _first_unsettled_task_index(state: Mapping) -> int | None:
     return None
 
 
+_STAGED_TASK_DISPATCH_GUARD_SCHEMA = \
+    "taskplane.staged-task-dispatch-guard/v1"
+
+
+def _staged_dispatch_refusal(task: Mapping | None) -> dict | None:
+    """Refuse the exact stage-two release task until Plan re-gates it.
+
+    The first-stage Plan has to remain valid under the incumbent 3,600s
+    engine while EM-OUTAGE is built.  Dependency blocking owns that interval;
+    after this engine is integrated, this marker prevents a status edit or a
+    direct serial/wave/claim call from dispatching REL-2181 before the
+    mandatory same-run replan removes the marker and seals 14,400s authority.
+    """
+    if not isinstance(task, Mapping):
+        return None
+    guard = task.get("staged_dispatch_guard")
+    if guard is None:
+        return None
+    exact = (
+        isinstance(guard, Mapping)
+        and guard.get("schema") == _STAGED_TASK_DISPATCH_GUARD_SCHEMA
+        and guard.get("reason") == "mandatory_replan_required"
+        and str(guard.get("task") or "") == "REL-2181"
+        and str(guard.get("required_predecessor") or "") == "EM-OUTAGE"
+        and str(task.get("id") or "") == "REL-2181"
+    )
+    return {
+        "error": ("mandatory_replan_required: REL-2181 cannot dispatch "
+                  "until the bounded same-run Plan reanchor removes its "
+                  "exact staged-dispatch marker" if exact else
+                  "staged task dispatch guard is malformed — mandatory "
+                  "replan required"),
+        "reason": "mandatory_replan_required",
+        "task": str(task.get("id") or ""),
+        "step": "execute",
+    }
+
+
 def _task_graph_dod(ws: str, state: dict, task: dict) -> dict:
     """As-built dependency proof for one task.
 
@@ -8080,21 +8147,47 @@ def _coverage_disposition(v) -> str:
     return str(v or "")
 
 
-def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
+def _engineering_review_errors(
+        ws: str, state: dict | None = None, *,
+        output_snapshot: Mapping[str, object] | None = None) -> list:
     """Require full-catalog lens evidence before the EM gate can pass."""
     path = runtime_storage.review_public_path(ws, "findings.json")
-    findings, errors = _read_json(path)
-    if errors:
-        return errors
     report_path = runtime_storage.review_public_path(ws, "report.md")
-    try:
-        with open(report_path, encoding="utf-8") as report_file:
-            report_text = report_file.read()
+    captured_findings = None
+    if output_snapshot is None:
+        findings, errors = _read_json(path)
+        if errors:
+            return errors
+        try:
+            with open(report_path, encoding="utf-8") as report_file:
+                report_text = report_file.read()
+            if not report_text.strip():
+                errors.append("engineering narrative report is empty")
+        except OSError:
+            errors.append("engineering narrative report is missing: "
+                          + report_path)
+    else:
+        exact = em_outage.output_snapshot_bytes(output_snapshot)
+        errors = []
+        try:
+            findings = json.loads(exact["findings"].decode("utf-8"))
+            if not isinstance(findings, dict):
+                raise ValueError("findings must be an object")
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            return ["engineering findings result is invalid: " + str(exc)]
+        try:
+            report_text = exact["report"].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            errors.append("engineering narrative report is invalid UTF-8: "
+                          + str(exc))
+            report_text = ""
         if not report_text.strip():
             errors.append("engineering narrative report is empty")
-    except OSError:
-        errors.append("engineering narrative report is missing: "
-                      + report_path)
+        # Router-audit can append deterministic rows to the public alias.
+        # A candidate derived from a protected snapshot must never silently
+        # accept those different bytes.  Fail this attempt and let the next
+        # capture bind the now-current complete document.
+        captured_findings = json.loads(json.dumps(findings))
     meta = findings.get("meta") or {}
     # Real EM/sign-off gates always pass loop state and therefore require the
     # canonical selective kernel. ``state=None`` is the long-standing pure
@@ -8216,6 +8309,10 @@ def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
     # router regressions and block sign-off via the frozen finding_blocks
     # rule (no guardrail change).
     errors.extend(_router_audit_gate(ws, path, findings, meta, rows))
+    if captured_findings is not None and findings != captured_findings:
+        errors.append(
+            "engineering review changed during immutable output validation; "
+            "retry from a new captured snapshot")
     return errors
 
 
@@ -8406,10 +8503,32 @@ def submit(ws: str, outcome: str, note: str = "",
                     _collect_zero_lens_evaluate_before_guidance(
                         ws, act_ws, state, task, step=step))
             except Exception as exc:
+                if step == "em" and isinstance(
+                        exc, producer_observation_policy.
+                        ProducerObservationError):
+                    outage = _record_em_producer_receipt_outage(
+                        ws, state, task, exc)
+                    if not outage.get("error"):
+                        return {
+                            "error": "runtime em producer receipt is "
+                                     "unavailable; the valid aggregate review "
+                                     "was sealed for exact human resolution",
+                            "submitted": False, "transitioned": False,
+                            "reason_code": em_outage.REASON_CODE,
+                            "outage_fingerprint": outage["fingerprint"],
+                            "resolution": "loop resolve pass --by <human> "
+                                          "--accept-producer-receipt-outage "
+                                          "--outage-fingerprint "
+                                          + outage["fingerprint"],
+                            "contract_cleanup": outage.get(
+                                "contract_cleanup"),
+                        }
                 return {
                     "error": f"runtime {step} producer collection failed: "
                              f"{exc.__class__.__name__}: {exc}",
                     "submitted": False, "transitioned": False,
+                    **({"outage": outage} if step == "em" and
+                       'outage' in locals() else {}),
                 }
         runtime_guidance = runtime_eval.guide_loop(ws, task_id=task_id)
         if runtime_guidance.get("error"):
@@ -9387,7 +9506,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             }
 
 
-def _compute_signoff_dod(ws: str, state: dict) -> dict:
+def _compute_signoff_dod(
+        ws: str, state: dict, *,
+        output_snapshot: Mapping[str, object] | None = None) -> dict:
     """Mechanical final DoD over aggregate scope, requirements, tests, graph,
     engineering evidence, and committed knowledge. Human sign-off remains."""
     scopes: list = []
@@ -9456,7 +9577,8 @@ def _compute_signoff_dod(ws: str, state: dict) -> dict:
             notices=task_notices))
         notices.extend(f"task {task.get('id', '?')}: {n}"
                        for n in task_notices)
-    errors.extend(_engineering_review_errors(ws, state))
+    errors.extend(_engineering_review_errors(
+        ws, state, output_snapshot=output_snapshot))
     for problem in kb.lint(ws):
         errors.append("kb_lint: " + (problem.get("file", "?")) + " — "
                       + problem.get("problem", ""))
@@ -9467,7 +9589,10 @@ def _compute_signoff_dod(ws: str, state: dict) -> dict:
             "scope": scopes, "baseline": baseline}
 
 
-def _signoff_evidence_binding(ws: str, state: dict) -> tuple[dict | None, list]:
+def _signoff_evidence_binding(
+        ws: str, state: dict, *,
+        output_snapshot: Mapping[str, object] | None = None
+        ) -> tuple[dict | None, list]:
     """Seal final DoD and review identity at the integrated revision.
 
     Sign-off is a human decision over the EM-reviewed tree, not a fresh review
@@ -9484,14 +9609,22 @@ def _signoff_evidence_binding(ws: str, state: dict) -> tuple[dict | None, list]:
                       "diff; commit the reviewed integration tree first")
     if errors:
         return None, errors
-    dod = _compute_signoff_dod(ws, state)
+    dod = _compute_signoff_dod(
+        ws, state, output_snapshot=output_snapshot)
     if not dod["passed"]:
         return None, list(dod["errors"])
     binding = review_kernel_binding(state, "em", _current_task(state)) or {}
-    findings, _ = _read_json(
-        runtime_storage.review_public_path(ws, "findings.json"))
+    if output_snapshot is None:
+        findings, _ = _read_json(
+            runtime_storage.review_public_path(ws, "findings.json"))
+    else:
+        exact = em_outage.output_snapshot_bytes(output_snapshot)
+        try:
+            findings = json.loads(exact["findings"].decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            return None, ["engineering findings result is invalid"]
     meta = (findings or {}).get("meta") or {}
-    return {
+    evidence = {
         "schema": "taskplane.signoff-evidence/v1",
         "integration_revision": revision,
         "requirement_id": state.get("requirement_id"),
@@ -9505,7 +9638,11 @@ def _signoff_evidence_binding(ws: str, state: dict) -> tuple[dict | None, list]:
         },
         "dod": dod,
         "notices": _dc.design_review_notices(meta),
-    }, []
+    }
+    if output_snapshot is not None:
+        evidence["em_output_snapshot"] = \
+            em_outage.output_snapshot_evidence(output_snapshot)
+    return evidence, []
 
 
 def _signoff_dod(ws: str, state: dict) -> dict:
@@ -9533,6 +9670,373 @@ def _signoff_gate_dod(ws: str, state: dict) -> dict:
         "notices": [], "scope": [], "baseline": state.get("baseline"),
         "legacy_recovery": True,
     }
+
+
+def _em_outage_repository_identity(ws: str) -> dict:
+    """Return only durable repository identity, never caller assertions."""
+    try:
+        locator = runtime_storage.load_workspace_locator(ws)
+    except Exception:
+        locator = None
+    identity = {}
+    if isinstance(locator, Mapping):
+        for key in ("repo_id", "repository_key", "run_id", "worktree_id"):
+            if locator.get(key) not in (None, ""):
+                identity[key] = str(locator[key])
+    git_common = tp._run(["git", "rev-parse", "--git-common-dir"], cwd=ws)
+    if git_common.returncode == 0 and str(git_common.stdout or "").strip():
+        common = str(git_common.stdout).strip()
+        if not os.path.isabs(common):
+            common = os.path.join(ws, common)
+        identity["git_common_dir"] = os.path.realpath(common)
+    return identity
+
+
+def _em_outage_candidate(
+        ws: str, state: dict, *, contract: Mapping[str, object] | None = None,
+        output_snapshot: Mapping[str, object] | None = None
+        ) -> tuple[dict, dict, dict, dict]:
+    """Re-derive the exact valid EM candidate and its terminal DoD."""
+    if state.get("step") != "em":
+        raise em_outage.EmOutageError("loop is not at final engineering review")
+    task = _current_task(state)
+    task_ref = str((task or {}).get("id") or "engineering-signoff")
+    binding = review_kernel_binding(state, "em", task)
+    if not isinstance(binding, Mapping) or not binding.get("run_id"):
+        raise em_outage.EmOutageError("EM ReviewKernel binding is missing")
+    active = dict(contract or _worker_stage_contract(ws, "em", task))
+    lifecycle = active.get("worker_lifecycle") or {}
+    if active.get("worker_scoped") is not True or \
+            lifecycle.get("stage") != "em" or \
+            str(lifecycle.get("task") or "") != task_ref:
+        raise em_outage.EmOutageError("exact EM worker contract is missing")
+    slot = str(lifecycle.get("slot") or active.get("task_slot") or "")
+    expected_worker = str(lifecycle.get("expected_task_name") or "")
+    dispatch = active.get("producer_dispatch") or {}
+    if output_snapshot is None:
+        findings_path = runtime_storage.review_public_path(
+            ws, "findings.json")
+        report_path = runtime_storage.review_public_path(ws, "report.md")
+        snapshot = em_outage.capture_output_snapshot(
+            findings_path, report_path)
+    else:
+        snapshot = em_outage.validate_output_snapshot(output_snapshot)
+    material = producer_output_identity(
+        ws, state, task, "em", active_contract=active,
+        em_output_snapshot=snapshot)
+
+    # All product, mechanical, zero-lens, output, graph, requirement, test,
+    # and final-signoff checks run before an outage can even be represented.
+    signoff_evidence, errors = _signoff_evidence_binding(
+        ws, state, output_snapshot=snapshot)
+    if errors or signoff_evidence is None:
+        raise em_outage.EmOutageError(
+            "EM has non-producer blockers: " + "; ".join(errors))
+    try:
+        import review as _review
+        kernel_ws = str(binding.get("workspace") or ws)
+        kernel = _review._load_state(kernel_ws, str(binding["run_id"]))
+    except Exception as exc:
+        raise em_outage.EmOutageError(
+            "EM ReviewKernel identity is unreadable") from exc
+    if kernel.get("status") != "complete" or kernel.get("stage") != "review" \
+            or kernel.get("expected_lenses") != [] or kernel.get("slots") != []:
+        raise em_outage.EmOutageError(
+            "EM outage recovery requires one complete zero-lens ReviewKernel")
+    kernel_identity = {
+        "binding": dict(binding),
+        "schema": kernel.get("schema"),
+        "run_id": kernel.get("run_id"),
+        "stage": kernel.get("stage"),
+        "status": kernel.get("status"),
+        "expected_lenses": [],
+        "slots": [],
+        "revision": kernel.get("revision"),
+        "delivery_mode_receipt": kernel.get("delivery_mode_receipt"),
+        "zero_lens_evaluation": kernel.get("zero_lens_evaluation"),
+    }
+    hashes = em_outage.output_hashes(snapshot=snapshot)
+    identity = em_outage.outage_identity(
+        repository=_em_outage_repository_identity(ws),
+        store=os.path.realpath(tp.store_root(ws)),
+        worktree=os.path.realpath(ws),
+        run_id=str(binding["run_id"]), slot=slot,
+        expected_worker=expected_worker,
+        output_contract_fingerprint=str(
+            material["output_contract_fingerprint"]),
+        producer_dispatch_fingerprint=str(dispatch.get("fingerprint") or ""),
+        integration_revision=str(material["source_sha"] or ""),
+        outputs=hashes,
+        output_snapshot_fingerprint=str(snapshot["fingerprint"]),
+        review_kernel=kernel_identity,
+        task=task_ref, accepted_drift="D-0014")
+    terminal_contract = {
+        "task_id": active.get("task_id"),
+        "task_slot": active.get("task_slot"),
+        "worker_scoped": active.get("worker_scoped"),
+        "worker_lifecycle": dict(lifecycle),
+        "producer_dispatch": dict(dispatch),
+    }
+    return identity, terminal_contract, signoff_evidence, snapshot
+
+
+def _record_em_producer_receipt_outage(
+        ws: str, state: dict, task: dict | None,
+        failure: Exception) -> dict:
+    """Seal a valid aggregate EM when the sole failure is its host receipt."""
+    del state, task
+    if str(failure).strip() != "missing host producer observation":
+        return {"error": "EM producer failure is not the one allowed outage",
+                "detail": str(failure)}
+    try:
+        with mutate(ws) as locked:
+            if locked is None or locked.get("step") != "em":
+                return {"error": "EM state changed before outage sealing"}
+            identity, terminal_contract, _, snapshot = \
+                _em_outage_candidate(ws, locked)
+            existing = locked.get("engineering_review_outage")
+            if isinstance(existing, Mapping):
+                if existing.get("identity") != identity or \
+                        existing.get("consumed") is True:
+                    return {"error": "a different or consumed EM outage "
+                                     "already exists"}
+            else:
+                locked["engineering_review_outage"] = {
+                    "schema": em_outage.OUTAGE_SCHEMA,
+                    "reason_code": em_outage.REASON_CODE,
+                    "identity": identity,
+                    "output_snapshot": snapshot,
+                    "terminal_contract": terminal_contract,
+                    "consumed": False,
+                }
+    except Exception as exc:
+        return {"error": "EM outage could not be sealed fail-closed: "
+                         f"{exc.__class__.__name__}: {exc}"}
+    try:
+        cleanup = tp.release_worker_contracts_for_gate(
+            ws, stage="em", task=str(identity["task"]),
+            outcome="success",
+            submission_status="producer_receipt_unavailable")
+    except Exception as exc:
+        cleanup = {"status": "quarantine_failed",
+                   "error": f"{exc.__class__.__name__}: {exc}"}
+    tp.trace(ws, "em_producer_receipt_outage_sealed",
+             fingerprint=identity["fingerprint"],
+             reason=em_outage.REASON_CODE,
+             contract_cleanup=bool(cleanup))
+    return {"fingerprint": identity["fingerprint"],
+            "identity": identity, "contract_cleanup": cleanup}
+
+
+def _em_outage_control_plane_identity(ws: str, state: dict) -> dict:
+    """Authenticate the slot-less loop controller against live run identity."""
+    if tp.task_slot() is not None:
+        raise em_outage.EmOutageError(
+            "worker TASKPLANE_TASK context cannot resolve final EM")
+    if tp.load_active(ws) is not None:
+        raise em_outage.EmOutageError(
+            "a worker-scoped or legacy contract cannot act as control plane")
+    run_binding = _stage_read_run_binding(state)
+    repository = _em_outage_repository_identity(ws)
+    material = {
+        "schema": em_outage.CONTROL_PLANE_SCHEMA,
+        "authority": "slotless-loop-control-plane",
+        "repository": repository,
+        "store": os.path.realpath(tp.store_root(ws)),
+        "worktree": os.path.realpath(ws),
+        "run_binding": dict(run_binding) if isinstance(
+            run_binding, Mapping) else None,
+    }
+    material["fingerprint"] = hashlib.sha256(
+        tp.canonical_json_bytes(material)).hexdigest()
+    return material
+
+
+def _prepare_em_outage_audit(
+        transaction: Mapping[str, object],
+        receipt: Mapping[str, object]) -> dict:
+    """Persist or re-use the exact immutable audit from a retained snapshot."""
+    path = str(transaction["path"])
+    prior = transaction.get("prior")
+    expected = transaction.get("expected")
+    if prior is not None and not isinstance(prior, bytes):
+        raise em_outage.EmOutageError("EM outage audit snapshot is invalid")
+    if not isinstance(expected, bytes):
+        raise em_outage.EmOutageError("EM outage audit transaction is invalid")
+    exists_now = os.path.lexists(path)
+    if exists_now != (prior is not None) or (
+            exists_now and em_outage.read_regular_bytes(path) != prior):
+        raise em_outage.EmOutageError(
+            "EM outage audit changed before persistence")
+    if prior is not None:
+        if prior != expected:
+            raise em_outage.EmOutageError(
+                "a different immutable EM outage audit already exists")
+        return dict(transaction)
+    # The durable primitive may replace the name before a directory fsync
+    # fails.  The caller already retained enough exact material to compare and
+    # restore that partial outcome.
+    tp.atomic_write_json(path, dict(receipt), sort_keys=True)
+    if em_outage.read_regular_bytes(path) != expected:
+        raise em_outage.EmOutageError(
+            "EM outage audit did not persist with exact bytes")
+    return dict(transaction)
+
+
+def _restore_em_outage_audit(transaction: Mapping[str, object]) -> None:
+    """Compare-and-restore only the audit written by this resolution attempt."""
+    path = str(transaction["path"])
+    prior = transaction.get("prior")
+    expected = transaction.get("expected")
+    if prior is not None and not isinstance(prior, bytes):
+        raise em_outage.EmOutageError("EM outage audit snapshot is invalid")
+    if not isinstance(expected, bytes):
+        raise em_outage.EmOutageError("EM outage audit transaction is invalid")
+    if not os.path.lexists(path):
+        if prior is not None:
+            tp.atomic_write_bytes(path, prior)
+        return
+    current = em_outage.read_regular_bytes(path)
+    if current == prior:
+        return
+    if current != expected:
+        raise em_outage.EmOutageError(
+            "EM outage audit changed during rollback")
+    if prior is None:
+        tp.safe_remove(path)
+        if os.path.lexists(path):
+            raise em_outage.EmOutageError(
+                "EM outage audit path survived rollback")
+    else:
+        tp.atomic_write_bytes(path, prior)
+        if em_outage.read_regular_bytes(path) != prior:
+            raise em_outage.EmOutageError(
+                "EM outage audit bytes did not roll back exactly")
+
+
+def _em_outage_resolution_persisted(
+        state: Mapping[str, object] | None, receipt: Mapping[str, object],
+        audit_path: str) -> bool:
+    """Recognize a commit that survived a late persistence exception."""
+    if not isinstance(state, Mapping) or state.get("step") != "signoff":
+        return False
+    outage = state.get("engineering_review_outage") or {}
+    evidence = state.get("signoff_evidence") or {}
+    return isinstance(outage, Mapping) and outage.get("consumed") is True \
+        and outage.get("resolution") == receipt \
+        and outage.get("audit_path") == audit_path \
+        and state.get("engineering_review_outage_resolution") == receipt \
+        and isinstance(evidence, Mapping) \
+        and evidence.get("producer_receipt_outage") == receipt
+
+
+def _resolve_em_producer_receipt_outage(
+        ws: str, *, by: str | None, accept: bool,
+        supplied_fingerprint: str | None) -> dict:
+    """CAS-consume one current aggregate outage under the loop-state lock."""
+    actor = str(by or "").strip()
+    supplied = str(supplied_fingerprint or "").strip()
+    if not accept or not actor or not supplied:
+        return {"error": "EM producer-receipt acceptance requires --by, "
+                         "--accept-producer-receipt-outage, and the exact "
+                         "current --outage-fingerprint"}
+    audit_transaction = None
+    audit_path = None
+    receipt = None
+    committed = False
+    try:
+        with mutate(ws) as state:
+            if state is None or state.get("step") != "em":
+                return {"error": "no current final-EM outage to resolve"}
+            state_before = json.loads(json.dumps(state))
+            outage = state.get("engineering_review_outage")
+            if not isinstance(outage, Mapping) or outage.get("consumed") is True:
+                return {"error": "no unconsumed final-EM outage to resolve"}
+            sealed = em_outage.validate_outage_identity(
+                outage.get("identity") or {})
+            if sealed["fingerprint"] != supplied:
+                return {"error": "final-EM outage fingerprint is not the "
+                                 "exact current fingerprint"}
+            terminal_contract = outage.get("terminal_contract")
+            if not isinstance(terminal_contract, Mapping):
+                return {"error": "final-EM terminal contract is missing"}
+            snapshot = em_outage.validate_output_snapshot(
+                outage.get("output_snapshot") or {})
+            if snapshot["fingerprint"] != sealed[
+                    "output_snapshot_fingerprint"]:
+                return {"error": "final-EM output snapshot identity is stale"}
+            current, _, signoff_evidence, consumed_snapshot = \
+                _em_outage_candidate(
+                    ws, state, contract=terminal_contract,
+                    output_snapshot=snapshot)
+            if current != sealed:
+                return {"error": "final-EM outage identity is stale; review "
+                                 "bytes, revision, contract, or kernel changed"}
+            authority = _em_outage_control_plane_identity(ws, state)
+            receipt = em_outage.resolution_receipt(
+                current, actor=actor, control_plane=authority)
+            audit_path = runtime_storage.review_public_path(
+                ws, "em-outage-resolution.json")
+            # Retain the exact previous bytes before touching the immutable
+            # public alias.  If any later transition or singleton persistence
+            # fails, the outer recovery restores this exact path state.
+            expected = json.dumps(
+                receipt, indent=1, sort_keys=True).encode("utf-8")
+            prior = (em_outage.read_regular_bytes(audit_path)
+                     if os.path.lexists(audit_path) else None)
+            audit_transaction = {
+                "path": audit_path, "prior": prior, "expected": expected}
+            audit_transaction = _prepare_em_outage_audit(
+                audit_transaction, receipt)
+            resolved = dict(outage)
+            resolved["consumed"] = True
+            resolved["resolution"] = receipt
+            resolved["audit_path"] = audit_path
+            state["engineering_review_outage"] = resolved
+            evidence = dict(signoff_evidence)
+            evidence["em_output_snapshot"] = \
+                em_outage.output_snapshot_evidence(consumed_snapshot)
+            evidence["producer_receipt_outage"] = receipt
+            evidence["accepted_drift"] = {
+                "id": "D-0014", "accepted_by": "human:vdemkiv"}
+            state["signoff_evidence"] = evidence
+            state["signoff_dod"] = dict(evidence["dod"])
+            state["engineering_review_outage_resolution"] = receipt
+            completion = _stage_loop_gate_completion(
+                ws, state, step="em", outcome="pass",
+                note="exact producer-receipt outage accepted")
+            state["step"] = "signoff"
+            try:
+                stage_transition = _stage_loop_transition(
+                    ws, state, from_step="em", to_step="signoff",
+                    completion=completion)
+            except Exception:
+                state.clear()
+                state.update(state_before)
+                raise
+        committed = True
+    except Exception as exc:
+        recovery_error = None
+        if audit_transaction is not None and not committed:
+            try:
+                durable = _load_raw(ws)
+                if not _em_outage_resolution_persisted(
+                        durable, receipt or {}, str(audit_path or "")):
+                    _restore_em_outage_audit(audit_transaction)
+            except Exception as recovery:
+                recovery_error = recovery
+        detail = f"{exc.__class__.__name__}: {exc}"
+        if recovery_error is not None:
+            detail += ("; audit recovery failed closed: "
+                       f"{recovery_error.__class__.__name__}: "
+                       f"{recovery_error}")
+        return {"error": "final-EM outage resolution failed closed: "
+                         + detail}
+    tp.trace(ws, "em_producer_receipt_outage_resolved",
+             fingerprint=supplied, actor=actor,
+             authority=authority["fingerprint"])
+    return {"step": "signoff", "outage_resolution": receipt,
+            "stage_transition": stage_transition, "status": status(ws)}
 
 
 def _record_design_contracts(ws: str, state: dict, contract: dict | None) -> list:
@@ -10092,6 +10596,12 @@ def resolve(
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
     state = load(ws)
+    if state is not None and state.get("step") == "em" and \
+            isinstance(state.get("engineering_review_outage"), Mapping) and \
+            decision == "pass" and accept_producer_receipt_outage is True:
+        return _resolve_em_producer_receipt_outage(
+            ws, by=by, accept=accept_producer_receipt_outage,
+            supplied_fingerprint=outage_fingerprint)
     if state is None or state["step"] != "escalated":
         return {"error": "nothing escalated to resolve"}
     t = _current_task(state)

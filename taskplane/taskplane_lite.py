@@ -124,6 +124,35 @@ def atomic_write_json(path: str, data, *, indent: int = 1,
             pass
 
 
+def atomic_write_bytes(path: str, data: bytes) -> None:
+    """Durably replace one file with exact caller-owned bytes.
+
+    This is the byte-preserving counterpart of :func:`atomic_write_json` for
+    recovery paths that must restore the exact prior artifact representation,
+    rather than merely an equivalent decoded JSON value.
+    """
+    if not isinstance(data, bytes):
+        raise TypeError("atomic_write_bytes requires bytes")
+    directory = os.path.dirname(path) or "."
+    _durable_makedirs(directory)
+    temporary = os.path.join(
+        directory, f".{os.path.basename(path)}.tmp.{os.getpid()}."
+        f"{secrets.token_hex(8)}")
+    try:
+        with open(temporary, "xb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(directory)
+    finally:
+        try:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        except OSError:
+            pass
+
+
 def _durable_makedirs(path: str) -> None:
     """Create a directory chain without acknowledging volatile ancestors.
 
@@ -2643,18 +2672,22 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
 # --------------------------------------------------------------- DoD
 
 DEFAULT_TEST_TIMEOUT_SECONDS = 600
-MAX_TEST_TIMEOUT_SECONDS = 3600
+DEFAULT_MAX_TEST_TIMEOUT_SECONDS = 3600
+MAX_TEST_TIMEOUT_SECONDS = 14400
 
 
-def validate_test_timeout_seconds(value, *, field: str) -> int:
+def validate_test_timeout_seconds(value, *, field: str,
+                                  plan_minted: bool = False) -> int:
     """Return one strict, bounded suite timeout or fail deterministically."""
+    maximum = (MAX_TEST_TIMEOUT_SECONDS if plan_minted
+               else DEFAULT_MAX_TEST_TIMEOUT_SECONDS)
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(
             f"{field} must be a real integer from 1 to "
-            f"{MAX_TEST_TIMEOUT_SECONDS}")
-    if value <= 0 or value > MAX_TEST_TIMEOUT_SECONDS:
+            f"{maximum}")
+    if value <= 0 or value > maximum:
         raise ValueError(
-            f"{field} must be from 1 to {MAX_TEST_TIMEOUT_SECONDS}")
+            f"{field} must be from 1 to {maximum}")
     return value
 
 
@@ -2676,7 +2709,8 @@ def task_test_timeout_seconds(task: dict) -> int:
     if "aggregate_seconds" not in gate_timeout:
         raise ValueError(f"{field} is required when gate_timeout is present")
     return validate_test_timeout_seconds(
-        gate_timeout.get("aggregate_seconds"), field=field)
+        gate_timeout.get("aggregate_seconds"), field=field,
+        plan_minted=True)
 
 
 def _run(cmd, cwd, shell=False, timeout=600, env=None):
@@ -3328,7 +3362,8 @@ def dod_check(contract: dict, workspace: str,
     try:
         test_timeout_seconds = validate_test_timeout_seconds(
             dod.get("test_timeout_seconds", DEFAULT_TEST_TIMEOUT_SECONDS),
-            field="coding.dod.test_timeout_seconds")
+            field="coding.dod.test_timeout_seconds",
+            plan_minted=bool(coding.get("plan_minted")))
     except ValueError as exc:
         test_timeout_seconds = None
         errors.append(str(exc))
@@ -4576,7 +4611,8 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
         c["coding"]["dod"]["test_timeout_seconds"] = \
             validate_test_timeout_seconds(
                 test_timeout_seconds,
-                field="coding.dod.test_timeout_seconds")
+                field="coding.dod.test_timeout_seconds",
+                plan_minted=bool(plan_minted))
     if plan_minted:
         c["coding"]["plan_minted"] = True
     if read_only:
@@ -6097,8 +6133,15 @@ def sweep_completed_worker_contracts(
 
 def release_worker_contracts_for_gate(
         workspace: str, *, stage: str, task: str,
-        now: int | None = None) -> list[dict]:
-    """Release only the exact worker contract whose gate just committed."""
+        now: int | None = None, outcome: object = "success",
+        submission_status: str = "gated") -> list[dict]:
+    """Release only the exact stage/task worker contract.
+
+    Gates retain the historical defaults.  A terminal EM producer-receipt
+    outage uses the same authenticated lifecycle owner with its explicit
+    status; an already recorded success/failure/cancellation/interruption/
+    handoff receipt is preserved byte-for-byte.
+    """
     released = []
     for slot, contract in _active_worker_contracts(workspace):
         lifecycle = contract.get("worker_lifecycle") or {}
@@ -6108,8 +6151,9 @@ def release_worker_contracts_for_gate(
         receipt = lifecycle.get("terminal")
         if not isinstance(receipt, dict):
             receipt = record_worker_terminal(
-                workspace, slot, event=None, outcome="success",
-                submission_status="gated", now=now, authority="loop-gate")
+                workspace, slot, event=None, outcome=outcome,
+                submission_status=submission_status, now=now,
+                authority="loop-gate")
         released.append(release_worker_contract(
             workspace, slot, action=lifecycle["release_action"],
             terminal_receipt=receipt))

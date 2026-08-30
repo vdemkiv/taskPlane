@@ -3527,7 +3527,7 @@ class TestTaskSuiteTimeoutAuthority(unittest.TestCase):
             for call in invoked.call_args_list), invoked.call_args_list)
 
     def test_invalid_task_timeout_blocks_plan_without_suite_launch(self):
-        invalid = [True, 0, 3601, {"invalid": "shape"}]
+        invalid = [True, 0, 14401, {"invalid": "shape"}]
         for value in invalid:
             with self.subTest(value=value), \
                     unittest.mock.patch.object(
