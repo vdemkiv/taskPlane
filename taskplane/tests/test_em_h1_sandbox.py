@@ -477,18 +477,39 @@ def test_h34_blocked_untracked_copy_is_killed_cleaned_and_persisted(
             raise subprocess.TimeoutExpired([sys.executable, "-c"], timeout)
 
     process = BlockedCopyProcess()
-    original_popen = review.subprocess.Popen
+    original_runner = review._run_validation_sandbox_git
     launched = []
     sent = []
+    copy_attempts = []
 
     def popen(argv, *args, **kwargs):
-        if argv and argv[0] == sys.executable and not launched:
-            launched.append((argv, kwargs))
-            Path(argv[-1]).write_bytes(b"partial")
-            return process
-        return original_popen(argv, *args, **kwargs)
+        assert argv and argv[0] == sys.executable and not launched
+        launched.append((argv, kwargs))
+        Path(argv[-1]).write_bytes(b"partial")
+        return process
+
+    def run_prepare(argv, *, cwd, deadline, phase, input=None, text=False):
+        del cwd, deadline, input
+        if phase == "resolve-head":
+            return subprocess.CompletedProcess(argv, 0, _head + "\n", "")
+        if phase == "clone":
+            Path(argv[-1]).mkdir(parents=True)
+        if phase == "list-untracked":
+            return subprocess.CompletedProcess(
+                argv, 0, b"untracked.bin\0", b"")
+        if phase == "copy-untracked":
+            copy_attempts.append(tuple(argv))
+            if len(copy_attempts) == 1:
+                return original_runner(
+                    argv, cwd=None, deadline=1000.0 + 600.0,
+                    phase=phase)
+            Path(argv[-1]).write_bytes(Path(argv[-2]).read_bytes())
+        empty = "" if text else b""
+        return subprocess.CompletedProcess(argv, 0, empty, empty)
 
     monkeypatch.setattr(review.subprocess, "Popen", popen)
+    monkeypatch.setattr(review, "_run_validation_sandbox_git", run_prepare)
+    monkeypatch.setattr(review.time, "monotonic", lambda: 1000.0)
     _set_review_platform(monkeypatch, "posix")
     monkeypatch.setattr(
         review.shutil, "copy2",

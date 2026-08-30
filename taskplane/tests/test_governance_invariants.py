@@ -40,6 +40,15 @@ def _state(ws, step, tests="true"):
     state = {"goal": "g", "step": step, "tasks": [task],
              "current_task": 0, "parallel": False, "max_fix_cycles": 2,
              "checkpoints": ["em"], "baseline": tp.git_head(ws)}
+    os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
+    with open(os.path.join(ws, "plan", "tasks.json"), "w",
+              encoding="utf-8") as stream:
+        json.dump({"requirement": "governance-invariants-fixture",
+                   "delivery_mode": "build", "automatic_lenses": [],
+                   "plan_authority": "human:test-fixture",
+                   "tasks": [task]}, stream)
+    if step == "evaluate":
+        loop._plan_delivery_mode_from_file(ws, state, apply=True)
     loop.save(ws, state)
     return state
 

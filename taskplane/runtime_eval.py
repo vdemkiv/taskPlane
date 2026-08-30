@@ -759,9 +759,52 @@ def review_facts(ws: str, step: str, *, run_id: str) -> dict:
             if state.get("zero_lens_evaluation") is not True:
                 facts["output_producer_observed"] = facts[
                     "lens_results_collected"]
+        if not facts["selective_lens_mapping"] and \
+                _completed_zero_lens_mapping_is_satisfied(
+                    state, step, facts):
+            # A completed zero-lens delivery owes no selective mapping.  The
+            # fact is satisfied as non-applicable only after the canonical
+            # revision and exact output contract have both been validated.
+            facts["selective_lens_mapping"] = True
     except Exception:
         pass
     return facts
+
+
+def _completed_zero_lens_mapping_is_satisfied(
+        state: dict, step: str, facts: dict) -> bool:
+    """Recognize only a canonical, schema-valid zero-lens completion."""
+    revision = state.get("revision") \
+        if isinstance(state.get("revision"), dict) else {}
+    completeness = revision.get("completeness") \
+        if isinstance(revision.get("completeness"), dict) else {}
+    if not (
+            state.get("status") == "complete"
+            and state.get("expected_lenses") == []
+            and state.get("slots") == []
+            and revision.get("schema") == "taskplane.findings-revision/v2"
+            and revision.get("disposition") == "canonical"
+            and completeness.get("complete") is True
+            and not (revision.get("gaps") or [])
+            and all(facts.get(key) is True for key in (
+                "graph_before_route", "shared_review_context",
+                "lens_results_collected", "output_schema_declared",
+                "output_schema_validated", "output_producer_observed"))):
+        return False
+    if step == "evaluate":
+        return state.get("zero_lens_evaluation") is True and \
+            state.get("lens_execution_policy") == "none"
+    if step != "em":
+        return False
+    try:
+        import delivery_policy
+
+        receipt = delivery_policy.validate_delivery_mode_receipt(
+            state.get("delivery_mode_receipt"))
+    except Exception:
+        return False
+    return receipt.get("mode") == "build" and \
+        receipt.get("automatic_lenses") == []
 
 
 def collect_review_if_ready(ws: str, step: str, *, run_id: str) -> None:

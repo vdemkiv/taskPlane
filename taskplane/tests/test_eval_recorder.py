@@ -1209,7 +1209,10 @@ def _loop_ws(tmp, name):
     _write(os.path.join(ws, "src", "todo", "a.py"), "x = 1\n")
     portable_python = sys.executable.replace("\\", "/")
     portable_test = f'"{portable_python}" -c "pass"'
-    _write(os.path.join(ws, "plan", "tasks.json"), json.dumps({"tasks": [
+    _write(os.path.join(ws, "plan", "tasks.json"), json.dumps({
+        "requirement": "R-0001", "delivery_mode": "build",
+        "automatic_lenses": [], "plan_authority": "human:test-fixture",
+        "tasks": [
         {"id": "t1", "scope": ["src/todo/**"], "tests": portable_test,
          "criteria": ["complete() marks done"]}]}))
     # The pm DoD demands an authored requirement; without one the loop parks

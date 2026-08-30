@@ -62,7 +62,10 @@ class TestGovernanceV2(unittest.TestCase):
                   checkpoints=["em"])
         loop.next_action(self.ws)
         with open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
-            json.dump({"tasks": [task]}, f)
+            json.dump({"requirement": "governance-v2-fixture",
+                       "delivery_mode": "build", "automatic_lenses": [],
+                       "plan_authority": "human:test-fixture",
+                       "tasks": [task]}, f)
         result = loop.gate(self.ws, "pass")
         self.assertNotIn("error", result)
         self.assertEqual(loop.load(self.ws)["step"], "execute")

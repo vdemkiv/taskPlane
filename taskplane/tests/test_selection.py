@@ -48,6 +48,9 @@ def _to_plan_approved(ws, plan=AB_PLAN, parallel=True):
     state["step"] = "plan"
     loop.save(ws, state)
     os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
+    plan = {"requirement": "selection-fixture",
+            "delivery_mode": "build", "automatic_lenses": [],
+            "plan_authority": "human:test-fixture", **plan}
     json.dump(plan, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     loop.gate(ws, "pass")            # plan → plan_approval (+ ab detection)
     loop.approve(ws)                 # → execute

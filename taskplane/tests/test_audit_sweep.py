@@ -43,7 +43,9 @@ def git_ws(tmp, tasks):
     subprocess.run(["git", "config", "user.name", "t"], cwd=ws)
     subprocess.run(["git", "add", "-A"], cwd=ws)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
-    json.dump({"tasks": tasks},
+    json.dump({"requirement": "audit-sweep-fixture",
+               "delivery_mode": "build", "automatic_lenses": [],
+               "plan_authority": "human:test-fixture", "tasks": tasks},
               open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     return ws
 

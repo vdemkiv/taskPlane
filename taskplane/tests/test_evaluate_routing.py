@@ -47,7 +47,10 @@ def _repo(tmp) -> str:
     subprocess.run(["git", "add", "-A"], cwd=ws)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
     with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
-        json.dump({"tasks": [dict(TASK)]}, f)
+        json.dump({"requirement": "evaluate-routing-fixture",
+                   "delivery_mode": "build", "automatic_lenses": [],
+                   "plan_authority": "human:test-fixture",
+                   "tasks": [dict(TASK)]}, f)
     return ws
 
 
@@ -175,10 +178,9 @@ class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
         self.assertEqual(kernel["slots"], [])
         self.assertTrue(kernel["zero_lens_evaluation"])
         delivery = loop.load(ws)["delivery_mode_receipt"]
-        self.assertEqual(
-            act["delivery_dispatch"]["delivery_mode_receipt"],
-            delivery,
-        )
+        self.assertEqual(delivery["mode"], "build")
+        self.assertEqual(delivery["automatic_lenses"], [])
+        self.assertNotIn("delivery_dispatch", act)
 
     def test_evaluate_does_not_reexport_internal_route_decision(self):
         ws = _repo(self.tmp)

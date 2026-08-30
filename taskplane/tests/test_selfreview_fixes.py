@@ -147,7 +147,10 @@ class TestEngine(unittest.TestCase):
         loop.init(self.ws, "g", parallel=True)
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
-        json.dump({"mode": "ab-selection", "tasks": [
+        json.dump({"requirement": "selfreview-ab-fixture",
+                   "delivery_mode": "build", "automatic_lenses": [],
+                   "plan_authority": "human:test-fixture",
+                   "mode": "ab-selection", "tasks": [
             {"id": ids[0], "variant": "A", "scope": ["src/**"],
              "new_modules": ["src"], "tests": "t",
              "criteria": ["variant A is ready for human selection"]},
@@ -164,7 +167,10 @@ class TestEngine(unittest.TestCase):
     def test_nested_ab_after_hybrid_pauses_at_selection(self):
         self._ab_to_selection()
         loop.select(self.ws, "hybrid")
-        json.dump({"mode": "ab-selection", "tasks": [
+        json.dump({"requirement": "selfreview-ab-fixture",
+                   "delivery_mode": "build", "automatic_lenses": [],
+                   "plan_authority": "human:test-fixture",
+                   "mode": "ab-selection", "tasks": [
             {"id": "ga", "variant": "A", "scope": ["src/**"],
              "new_modules": ["src"], "tests": "t",
              "criteria": ["grafted variant A passes review"]},

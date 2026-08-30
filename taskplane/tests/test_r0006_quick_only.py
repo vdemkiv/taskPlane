@@ -457,8 +457,15 @@ def test_clean_quick_output_completes_without_any_deep_artifact(tmp_path):
 
 def test_clean_zero_lens_output_satisfies_runtime_receipts(tmp_path):
     workspace = str(tmp_path / "runtime-receipts")
+    args = _start_args(
+        {"id": "R-0006"}, changed_symbols=["service.changed"])
+    args["graph"]["meta"].update({
+        "scanned_head": args["target"]["head"], "stale": False,
+        "module_confidence": "high",
+    })
+    args["impact"].update({"unknown": [], "truncated": False})
     opened = review.start_review(
-        workspace, **_start_args({"id": "R-0006"}))
+        workspace, **args)
     _write_quick_output(workspace, opened["run_id"], [])
     verdict = _write_green_evaluator_output(
         workspace, review._load_state(workspace, opened["run_id"]))
@@ -468,12 +475,24 @@ def test_clean_zero_lens_output_satisfies_runtime_receipts(tmp_path):
         producer_observation_fingerprint="b" * 64)
     state = review._load_state(workspace, opened["run_id"])
     quality = review_evidence.ArtifactStore(workspace).read(state["quality"])
-    assert quality["status"] == "impact_incomplete"
+    assert quality["status"] == "complete"
     facts = runtime_eval.review_facts(
         workspace, "evaluate", run_id=opened["run_id"])
 
     assert all(facts[key] for key in runtime_eval.REVIEW_FACTS)
     assert runtime_eval.assess("evaluate", facts)["status"] == "on_path"
+
+    review._save_state(workspace, dict(state, status="ready"))
+    incomplete = runtime_eval.review_facts(
+        workspace, "evaluate", run_id=opened["run_id"])
+    assert incomplete["selective_lens_mapping"] is False
+
+    legacy = dict(state)
+    legacy.pop("zero_lens_evaluation")
+    review._save_state(workspace, legacy)
+    missing_mapping = runtime_eval.review_facts(
+        workspace, "evaluate", run_id=opened["run_id"])
+    assert missing_mapping["selective_lens_mapping"] is False
 
 
 def test_schema_validated_evaluator_is_the_quick_output_without_slot_result(
