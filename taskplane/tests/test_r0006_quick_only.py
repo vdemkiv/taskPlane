@@ -437,7 +437,7 @@ def test_clean_quick_output_completes_without_any_deep_artifact(tmp_path):
     verdict = _write_green_evaluator_output(
         workspace, review._load_state(workspace, opened["run_id"]))
 
-    collected = review.collect_review(
+    collected = loop.collect_review_bridge(
         workspace, publish=False, run_id=opened["run_id"],
         evaluator_result=verdict,
         producer_observation_fingerprint="a" * 64)
@@ -459,7 +459,7 @@ def test_clean_quick_output_satisfies_legacy_runtime_receipts(tmp_path):
     _write_quick_output(workspace, opened["run_id"], [])
     verdict = _write_green_evaluator_output(
         workspace, review._load_state(workspace, opened["run_id"]))
-    review.collect_review(
+    loop.collect_review_bridge(
         workspace, publish=False, run_id=opened["run_id"],
         evaluator_result=verdict,
         producer_observation_fingerprint="b" * 64)
@@ -483,7 +483,7 @@ def test_schema_validated_evaluator_is_the_quick_output_without_slot_result(
 
     state = review._load_state(workspace, opened["run_id"])
     verdict = _write_green_evaluator_output(workspace, state)
-    collected = review.collect_review(
+    collected = loop.collect_review_bridge(
         workspace, publish=False, run_id=opened["run_id"],
         evaluator_result=verdict,
         producer_observation_fingerprint="c" * 64)
@@ -509,9 +509,11 @@ def test_zero_lens_collection_refuses_unobserved_evaluator(tmp_path):
         workspace, **_start_args({"id": "R-0006"}))
     state = review._load_state(workspace, opened["run_id"])
     verdict = _write_green_evaluator_output(workspace, state)
-    with pytest.raises(review.ReviewKernelError,
-                       match="validated producer result and observation"):
-        review.collect_review(
+    with pytest.raises(
+        review.ReviewKernelError,
+        match="schema-valid producer result and validated observation",
+    ):
+        loop.collect_review_bridge(
             workspace, publish=False, run_id=opened["run_id"],
             evaluator_result=verdict)
     assert state["status"] == "ready"
@@ -526,7 +528,7 @@ def test_schema_validated_quick_output_also_satisfies_evaluate_gate(
         workspace, **_start_args({"id": "R-0006"}))
     kernel = review._load_state(workspace, opened["run_id"])
     verdict = _write_green_evaluator_output(workspace, kernel)
-    review.collect_review(
+    loop.collect_review_bridge(
         workspace, publish=False, run_id=opened["run_id"],
         evaluator_result=verdict,
         producer_observation_fingerprint="d" * 64)
@@ -615,7 +617,7 @@ def test_evaluate_collection_cannot_synthesize_quick_regression(tmp_path):
         workspace, **_start_args({"id": "R-0006"}))
     state = review._load_state(workspace, opened["run_id"])
     verdict = _write_green_evaluator_output(workspace, state)
-    collected = review.collect_review(
+    collected = loop.collect_review_bridge(
         workspace, publish=False, run_id=opened["run_id"],
         evaluator_result=verdict,
         producer_observation_fingerprint="e" * 64)

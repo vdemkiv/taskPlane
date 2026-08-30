@@ -117,9 +117,11 @@ def pass_eval(ws):
                              "requirements_checked": [],
                              "contracts_checked": []},
                    "failures": []}, f)
+    worker = tp.worker_contract_for_stage(
+        act_ws, stage="evaluate", task=str(task["id"]))
     material = loop.producer_output_identity(
         act_ws, state, task, "evaluate",
-        active_contract=tp.load_active(act_ws) or {})
+        active_contract=(worker or {}).get("contract") or {})
     event = {
         "hook_event_name": "SubagentStop",
         "session_id": "audit-eval-session",
@@ -148,8 +150,11 @@ def pass_em(ws, coverage=None, findings_rows=None):
         findings=findings_rows or [],
         report="# Engineering review\n\nAll required evidence passed.\n")
     task = loop._current_task(state)
+    worker = tp.worker_contract_for_stage(
+        ws, stage="em", task=str(task["id"]))
     material = loop.producer_output_identity(
-        ws, state, task, "em", active_contract=tp.load_active(ws) or {})
+        ws, state, task, "em",
+        active_contract=(worker or {}).get("contract") or {})
     event = {
         "hook_event_name": "SubagentStop",
         "session_id": "audit-em-session", "turn_id": "audit-em-turn",

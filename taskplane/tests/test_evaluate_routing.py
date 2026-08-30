@@ -112,8 +112,11 @@ def _pass_eval(ws, brief):
     _routed(brief)
     _write_kernel_results(ws)
     _write_verdict(ws, task["id"], loop._criteria_for(ws, state, task), [])
+    worker = tp.worker_contract_for_stage(
+        ws, stage="evaluate", task=str(task["id"]))
     material = loop.producer_output_identity(
-        ws, state, task, "evaluate", active_contract=tp.load_active(ws) or {})
+        ws, state, task, "evaluate",
+        active_contract=(worker or {}).get("contract") or {})
     event = {
         "hook_event_name": "SubagentStop",
         "session_id": "evaluate-routing-session",
@@ -156,7 +159,7 @@ class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
         act = _to_evaluate(ws, {"src/app/feature.py":
                                 "def f():\n    return 1\n"})
         self.assertNotIn("lenses", act)
-        self.assertEqual(act["output_schema"],
+        self.assertEqual(act["output_schema"]["$id"],
                          "taskplane.evaluator-output/v2")
         kernel = review._load_state(ws)
         self.assertEqual(kernel["stage"], loop.EVALUATE_ROUTE_STAGE)
@@ -171,7 +174,7 @@ class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
                                 "    return 1\n"})
         self.assertNotIn("lenses", act)
         kernel = review._load_state(ws)
-        self.assertEqual(kernel["routing"]["lenses"], [])
+        self.assertNotIn("routing", kernel)
 
 
 class TestEmUsesSelectiveKernel(unittest.TestCase):

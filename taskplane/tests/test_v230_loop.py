@@ -433,9 +433,11 @@ class TestGateStalenessInsideLock(unittest.TestCase):
         ws = git_ws([TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=[])
         loop.next_action(ws)                        # activates plan contract
-        self.assertIsNotNone(tp.load_active(ws))
+        self.assertIsNotNone(tp.worker_contract_for_stage(
+            ws, stage="plan", task="plan"))
         loop.gate(ws, "pass")
-        self.assertIsNone(tp.load_active(ws))       # released on transition
+        self.assertIsNone(tp.worker_contract_for_stage(
+            ws, stage="plan", task="plan"))       # released on transition
 
 
 class TestClaimLockShrink(unittest.TestCase):

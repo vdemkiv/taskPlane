@@ -94,9 +94,11 @@ def _pass_eval(ws):
                              "requirements_checked": [],
                              "contracts_checked": []},
                    "failures": []}, f)
+    worker = tp.worker_contract_for_stage(
+        act_ws, stage="evaluate", task=str(task["id"]))
     material = loop.producer_output_identity(
         act_ws, state, task, "evaluate",
-        active_contract=tp.load_active(act_ws) or {})
+        active_contract=(worker or {}).get("contract") or {})
     event = {"hook_event_name": "SubagentStop",
              "session_id": "selection-evaluate-session",
              "turn_id": "selection-evaluate-turn",

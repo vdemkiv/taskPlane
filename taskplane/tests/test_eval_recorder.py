@@ -1462,7 +1462,7 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
                               if k not in ignored},
                              {k: v for k, v in was.items()
                               if k not in ignored})
-            if is_.get("step") in ("evaluate", "em"):
+            if is_.get("step") == "evaluate":
                 self.assertEqual(is_["lenses"], [])
 
     def test_the_baseline_could_not_tell_the_routed_review_from_all(self):

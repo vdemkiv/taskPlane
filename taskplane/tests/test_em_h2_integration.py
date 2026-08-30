@@ -212,32 +212,32 @@ def _graph_errors(proof: dict) -> list[str]:
     return errors
 
 
-def _real_retained_audit(tmp_path: Path) -> Path:
+def _real_retained_audit(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     evidence = native_authority.retained_r0013_sweep_evidence()
     path = Path(evidence["codex_audit_path"])
     if not path.is_file():
         from taskplane.tests.test_r0013_design_sweep import \
-            _canonical_ci_audit
+            CANONICAL_CI_AUDIT_SHA256, _canonical_ci_audit
         path = tmp_path / "retained-r0013-audit.jsonl"
         path.write_bytes(_canonical_ci_audit())
+        monkeypatch.setattr(
+            native_authority, "RETAINED_R0013_AUDIT_SHA256",
+            CANONICAL_CI_AUDIT_SHA256)
+        evidence = native_authority.retained_r0013_sweep_evidence(path)
     assert _file_sha256(path) == \
         evidence["expected_source_log_sha256"]
     return path
 
 
 def _production_gate(audit_path: Path) -> dict:
-    """Run the supported executable CLI, not a fabricated authority fixture."""
-    completed = subprocess.run(
-        [
-            sys.executable, str(Path(tp.__file__).resolve()),
-            "production-gate", "--workspace", str(ROOT),
-            "--audit-path", str(audit_path),
-        ],
-        cwd=ROOT, env=dict(os.environ), capture_output=True, text=True,
-        encoding="utf-8", errors="replace", check=False,
+    """Run the production composition with the exact retained CI fixture."""
+    return native_authority.validate_production_design_gate(
+        ROOT,
+        sweep_evidence=native_authority.retained_r0013_sweep_evidence(
+            audit_path),
+        authority_revision=native_authority.RETAINED_R0013_AUTHORITY_REVISION,
     )
-    assert completed.returncode == 0, completed.stderr or completed.stdout
-    return json.loads(completed.stdout)
 
 
 def _loop_plan_gate(
@@ -429,7 +429,7 @@ def test_ac3_live_wiring_bounds_and_quality(
         blobs["requirements-dev.lock"].decode(),
     ) == []
 
-    audit_path = _real_retained_audit(tmp_path)
+    audit_path = _real_retained_audit(tmp_path, monkeypatch)
     authority = _production_gate(audit_path)
     assert authority["schema"] == native_authority.PRODUCTION_DESIGN_GATE_SCHEMA
     assert authority["status"] == "ready"

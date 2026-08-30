@@ -245,6 +245,7 @@ def test_h28_review_scans_only_selected_session_with_byte_cap(
     run_id = "run-1"
     receipt_id = "approval-1"
     session_id = "01a0483d-ba00-7000-8000-000000000001"
+    codex_root.mkdir()
     (codex_root / "session_index.jsonl").write_text(json.dumps({
         "id": session_id, "updated_at": "2026-08-28T12:00:00Z",
     }) + "\n", encoding="utf-8")

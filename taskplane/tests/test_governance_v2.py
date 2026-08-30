@@ -69,7 +69,7 @@ class TestGovernanceV2(unittest.TestCase):
 
     def test_worker_submission_never_self_transitions_and_stale_work_blocks(self):
         self._plan_to_execute()
-        action = loop.next_action(self.ws)
+        loop.next_action(self.ws)
         path = os.path.join(self.ws, "src", "core", "a.py")
         with open(path, "a", encoding="utf-8") as f:
             f.write("VALUE_2 = 2\n")
@@ -80,8 +80,8 @@ class TestGovernanceV2(unittest.TestCase):
         self.assertTrue(submitted["submitted"])
         self.assertFalse(submitted["transitioned"])
         self.assertEqual(loop.load(self.ws)["step"], "execute")
-        self.assertIsNotNone(tp.load_active(
-            self.ws, task_slot=action["task_slot"]))
+        self.assertIsNotNone(tp.worker_contract_for_stage(
+            self.ws, stage="execute", task="t1"))
 
         with open(path, "a", encoding="utf-8") as f:
             f.write("VALUE_3 = 3\n")
@@ -93,10 +93,10 @@ class TestGovernanceV2(unittest.TestCase):
 
     def test_evaluator_submission_is_bound_to_graph_revision(self):
         self._plan_to_execute()
-        action = loop.next_action(self.ws)
+        loop.next_action(self.ws)
         loop.submit(self.ws, "pass")
         loop.gate(self.ws, "pass")
-        action = loop.next_action(self.ws)
+        loop.next_action(self.ws)
         evidence_dir = os.path.join(self.ws, ".eval")
         os.makedirs(evidence_dir, exist_ok=True)
         with open(os.path.join(evidence_dir, "verdict.json"), "w", encoding="utf-8") as f:
@@ -111,11 +111,11 @@ class TestGovernanceV2(unittest.TestCase):
                           "contracts_checked": []}, "failures": []}, f)
         state = loop.load(self.ws)
         task = state["tasks"][state["current_task"]]
+        worker = tp.worker_contract_for_stage(
+            self.ws, stage="evaluate", task=str(task["id"]))
         material = loop.producer_output_identity(
             self.ws, state, task, "evaluate",
-            active_contract=tp.load_active(
-                self.ws, task_slot=action["task_slot"])
-            or {})
+            active_contract=(worker or {}).get("contract") or {})
         event = {"hook_event_name": "SubagentStop",
                  "session_id": "governance-v2-session",
                  "turn_id": "governance-v2-turn",
@@ -137,14 +137,14 @@ class TestGovernanceV2(unittest.TestCase):
 
     def test_rejected_plan_keeps_its_contract_active(self):
         loop.init(self.ws, "g", spec_path="specs/spec.md")
-        action = loop.next_action(self.ws)
-        self.assertIsNotNone(tp.load_active(
-            self.ws, task_slot=action["task_slot"]))
+        loop.next_action(self.ws)
+        self.assertIsNotNone(tp.worker_contract_for_stage(
+            self.ws, stage="plan", task="plan"))
         rejected = loop.gate(self.ws, "fail")
         self.assertIn("rejected", rejected["error"])
         self.assertEqual(loop.load(self.ws)["step"], "plan")
-        self.assertIsNotNone(tp.load_active(
-            self.ws, task_slot=action["task_slot"]))
+        self.assertIsNotNone(tp.worker_contract_for_stage(
+            self.ws, stage="plan", task="plan"))
 
     def test_requirement_contracts_cannot_be_erased_by_plan(self):
         base = requirements.record_requirement(
