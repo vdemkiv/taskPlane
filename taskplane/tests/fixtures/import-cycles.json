@@ -2,7 +2,7 @@
   "package": "taskplane",
   "sccs": [
     {
-      "edge_count": 50,
+      "edge_count": 49,
       "internal_edges": [
         [
           "taskplane.audit",
@@ -53,10 +53,6 @@
           "taskplane.runtime_eval"
         ],
         [
-          "taskplane.governed_commands",
-          "taskplane.loop"
-        ],
-        [
           "taskplane.lens",
           "taskplane.lens_signals"
         ],
@@ -87,10 +83,6 @@
         [
           "taskplane.loop",
           "taskplane.evidence"
-        ],
-        [
-          "taskplane.loop",
-          "taskplane.governed_commands"
         ],
         [
           "taskplane.loop",
@@ -170,6 +162,10 @@
         ],
         [
           "taskplane.review",
+          "taskplane.review_retry"
+        ],
+        [
+          "taskplane.review",
           "taskplane.runtime_eval"
         ],
         [
@@ -205,14 +201,13 @@
           "taskplane.loop"
         ]
       ],
-      "member_count": 18,
+      "member_count": 17,
       "members": [
         "taskplane.audit",
         "taskplane.dashboard",
         "taskplane.defect_claim",
         "taskplane.design_contract",
         "taskplane.evidence",
-        "taskplane.governed_commands",
         "taskplane.lens",
         "taskplane.lens_signals",
         "taskplane.loop",
@@ -226,7 +221,7 @@
         "taskplane.runtime_eval",
         "taskplane.views"
       ],
-      "physical_loc": 31368
+      "physical_loc": 31482
     },
     {
       "edge_count": 13,
@@ -294,9 +289,9 @@
         "taskplane.stage_handoff",
         "taskplane.taskplane_lite"
       ],
-      "physical_loc": 15822
+      "physical_loc": 16627
     }
   ],
   "schema": "taskplane.import-cycle-ratchet/v1",
-  "source_revision": "bdfd522bbcce19ca71d107569c441a183ac74025"
+  "source_revision": "337dc7de7be978e62695227e37cb19a796d7b3cf"
 }

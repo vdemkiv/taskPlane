@@ -31,7 +31,7 @@ HISTORY_RESOLUTIONS_RELATIVE = Path(
 WORKFLOW_RELATIVE = Path(".github/workflows/ci.yml")
 MODULE_RELATIVE = Path("taskplane/import_cycles.py")
 WORKFLOW_SHA256 = \
-    "23a7f87fe42cf153318bd703f1f93ddc3f9479e4262177de49568cc69aa50c15"
+    "9f477b02afa5101b7f10de5fc36b39b0ba05fda7f5454b07f94a2f0d2d718c22"
 SEALED_WORKFLOW_SHA256 = \
     "e61df03fbec44633d945490f9df0c7c2f56e074b5f2da2915343035377bfb505"
 TRUSTED_WORKFLOW_PREDECESSOR_SHA256S = frozenset({
@@ -39,6 +39,8 @@ TRUSTED_WORKFLOW_PREDECESSOR_SHA256S = frozenset({
     "bacbceab1fcd8fa45803b37824f6b6b901bd6b224f389508fcf42d596dd9282e",
     "85436df4f422037a99cace6634cbef8cee2c36a5c76366dd9815153ea4d17c19",
     "417463d582eabf317cd2cdcbaa1c9f2e67cf397fa0c23e4bc4e59d6ffe41e0e7",
+    "23a7f87fe42cf153318bd703f1f93ddc3f9479e4262177de49568cc69aa50c15",
+    "9f736826cfe9fb44abe64462fe604114fc9055d62baff69994d331e89ed5f5bb",
 })
 SEALED_SCANNER_SHA256 = \
     "fdb1e859898e05323afa2ae77a0189cba164edebb9644edc02daeac8168aace5"
@@ -50,23 +52,27 @@ TRUSTED_SCANNER_PREDECESSOR_SHA256S = frozenset({
     "c89eddc3d2ed09846b63495a31f927e8678db2052ffe47bca7795636b1d787b0",
     "1728a688ffb8a6e09f7410c9d6ba3da88ec8bfc0590b377cdf5fe7b7d8792752",
     "77a9adf2e9876ba56867bac07676290706df6b59fbc2b56ffb3c5dfd71865d91",
+    "e48c475b598a32b33c489c5087416cf40229d0b5e1c8263db85d04708801cd7b",
 })
 # Exact, one-time policy growth accepted for the reviewed R-0002 remediation
 # integration. A receipt binds the complete pre-rebaseline violation span and
-# the exact measured policy whose source revision is the final failing commit.
+# the exact measured policy and the exact repair offset after that source.
 # The repair commit itself is discovered from first-parent history, so no
 # commit is asked to contain its own (impossible) Git id. Any other bound
-# raise, source revision, affected module, or historical observation remains a
-# refusal.
+# raise, source revision, repair position, affected module, or historical
+# observation remains a refusal.
 TRUSTED_POLICY_REBASELINES = ({
     "policy_sha256":
         "55ab2022bdcde4c6a1c363e2b46064ac1e4d583d0c9a900a495c7a83867c5735",
     "introduced_revision": "95901f238ca3e72066fb493d3cb8456a4054ef0e",
     "source_revision": "bdfd522bbcce19ca71d107569c441a183ac74025",
-    "commit_count": 41,
-    "violation_codes": ("new-cyclic-member", "physical-loc-growth"),
+    "commit_count": 50,
+    "repair_commit_offset": 10,
+    "violation_codes": (
+        "new-cyclic-member", "new-scc", "physical-loc-growth"),
     "affected_modules": (
-        "taskplane.audit", "taskplane.collision", "taskplane.dashboard",
+        "taskplane.audit", "taskplane.checkpoint", "taskplane.collision",
+        "taskplane.dashboard",
         "taskplane.defect_claim", "taskplane.depgraph",
         "taskplane.design_contract", "taskplane.evidence",
         "taskplane.governed_commands", "taskplane.lens",
@@ -80,8 +86,31 @@ TRUSTED_POLICY_REBASELINES = ({
         "taskplane.views",
     ),
     "history_sha256":
-        "3ff6ca8ab663d1595513da1c379160790c4abdf416fad37e9461d2e32596f8c0",
-},)
+        "c2d601bc8a3a80ce871c39d59088016d7c785e55fde0559be289ac4375bfe1ba",
+}, {
+    "policy_sha256":
+        "8a6261fc8e1918cceaf7ae25d2239f2c0155d38a167f766b71ecf1d7299c0ddd",
+    "introduced_revision": "aa4cf3ddc549fa7afd99ad528fe3c4f6a4498b66",
+    "source_revision": "337dc7de7be978e62695227e37cb19a796d7b3cf",
+    "commit_count": 34,
+    "repair_commit_offset": 1,
+    "violation_codes": ("new-internal-edge", "physical-loc-growth"),
+    "affected_modules": (
+        "taskplane.audit", "taskplane.collision", "taskplane.dashboard",
+        "taskplane.defect_claim", "taskplane.depgraph",
+        "taskplane.design_contract", "taskplane.evidence",
+        "taskplane.lens", "taskplane.lens_signals", "taskplane.loop",
+        "taskplane.loop_status", "taskplane.regression",
+        "taskplane.requirements", "taskplane.retro", "taskplane.review",
+        "taskplane.review_evidence", "taskplane.review_progression",
+        "taskplane.review_repair", "taskplane.review_retry",
+        "taskplane.runtime_eval", "taskplane.stage_entities",
+        "taskplane.stage_handoff", "taskplane.taskplane_lite",
+        "taskplane.views",
+    ),
+    "history_sha256":
+        "d8995bbcadb9ee889a7e76ae67dcda4b58e4adba0da8cbf9319dc7f2f57af878",
+})
 RATCHET_JOB_ID = "wave3-contracts"
 RATCHET_CHECK_NAME = "R-0006 graph + CLI contracts"
 RATCHET_STEP_NAME = "Import-cycle inventory, bounds, and activation order"
@@ -891,12 +920,19 @@ def _workflow_ratchet_error(source: str) -> str | None:
     if len(step_starts) < 3:
         return "ratchet job must begin with checkout, setup-python, and proof"
     step_ends = step_starts[1:] + [job_end]
-    checkout_error = _exact_with_step(
-        rows, step_starts[0], step_ends[0], action=CHECKOUT_ACTION,
-        inputs=(("fetch-depth", "0"), ("persist-credentials", "false")),
+    checkout_inputs = (
+        (("fetch-depth", "0"), ("persist-credentials", "false")),
+        (("ref", "${{ github.event.pull_request.head.sha || github.sha }}"),
+         ("fetch-depth", "0"), ("persist-credentials", "false")),
     )
-    if checkout_error is not None:
-        return f"checkout step is not trusted: {checkout_error}"
+    checkout_errors = [
+        _exact_with_step(
+            rows, step_starts[0], step_ends[0], action=CHECKOUT_ACTION,
+            inputs=inputs)
+        for inputs in checkout_inputs
+    ]
+    if all(error is not None for error in checkout_errors):
+        return f"checkout step is not trusted: {checkout_errors[0]}"
     setup_error = _exact_with_step(
         rows, step_starts[1], step_ends[1], action=SETUP_PYTHON_ACTION,
         inputs=(("python-version", "3.12"),),
@@ -1202,8 +1238,14 @@ def verify_history(root: Path, policy_path: Path) -> dict:
 
     resolutions = _load_history_resolutions(root, protected_commits)
     resolution_for_commit = {}
+    resolution_repair_for_commit = {}
     resolution_observations = [[] for _ in resolutions]
     for resolution_index, resolution in enumerate(resolutions):
+        repaired = resolution["repaired_revision"]
+        if repaired in resolution_repair_for_commit:
+            raise CycleHistoryError(
+                f"multiple history resolutions repair at revision {repaired}")
+        resolution_repair_for_commit[repaired] = resolution_index
         for commit in protected_commits[
                 resolution["_start"]:resolution["_end"]]:
             resolution_for_commit[commit] = resolution_index
@@ -1212,10 +1254,11 @@ def verify_history(root: Path, policy_path: Path) -> dict:
     rebaseline_for_commit = {}
     rebaseline_observations = [[] for _ in TRUSTED_POLICY_REBASELINES]
     rebaseline_repairs = [None for _ in TRUSTED_POLICY_REBASELINES]
+    rebaseline_expected_repairs = [None for _ in TRUSTED_POLICY_REBASELINES]
     rebaseline_keys = {
         "policy_sha256", "introduced_revision", "source_revision",
-        "commit_count", "violation_codes", "affected_modules",
-        "history_sha256",
+        "commit_count", "repair_commit_offset", "violation_codes",
+        "affected_modules", "history_sha256",
     }
     for rebaseline_index, rebaseline in enumerate(
             TRUSTED_POLICY_REBASELINES):
@@ -1227,11 +1270,19 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         if introduced not in positions or source_revision not in positions:
             continue
         start = positions[introduced]
-        end = positions[source_revision]
-        if start > end or rebaseline["commit_count"] != end - start + 1:
+        source = positions[source_revision]
+        offset = rebaseline["repair_commit_offset"]
+        if isinstance(offset, bool) or not isinstance(offset, int) or \
+                offset < 1:
+            raise CycleHistoryError(
+                f"{label} repair_commit_offset must be a positive integer")
+        end = source + offset
+        if start >= end or end >= len(protected_commits) or \
+                rebaseline["commit_count"] != end - start:
             raise CycleHistoryError(
                 f"{label} does not bind its exact first-parent span")
-        for commit in protected_commits[start:end + 1]:
+        rebaseline_expected_repairs[rebaseline_index] = protected_commits[end]
+        for commit in protected_commits[start:end]:
             if commit in resolution_for_commit or commit in rebaseline_for_commit:
                 raise CycleHistoryError(
                     f"{label} overlaps another historical resolution")
@@ -1305,12 +1356,27 @@ def verify_history(root: Path, policy_path: Path) -> dict:
                 if receipt["policy_sha256"] == candidate_digest
                 and receipt["source_revision"] == candidate["source_revision"]
             ), None)
-            if monotonic["status"] != "pass" and rebaseline_index is None:
+            resolution_repair_index = resolution_repair_for_commit.get(commit)
+            resolution_repair_matches = False
+            if resolution_repair_index is not None and \
+                    monotonic["status"] != "pass":
+                resolution = resolutions[resolution_repair_index]
+                codes = sorted({row["code"]
+                                for row in monotonic["violations"]})
+                modules = sorted({module
+                                  for row in monotonic["violations"]
+                                  for module in row["affected_modules"]})
+                resolution_repair_matches = \
+                    codes == resolution["violation_codes"] and \
+                    modules == resolution["affected_modules"]
+            if monotonic["status"] != "pass" and rebaseline_index is None \
+                    and not resolution_repair_matches:
                 raise CycleHistoryError(
                     f"policy growth at revision {commit}: " +
                     format_failures(monotonic))
             policy_parent = git_revision(root, f"{commit}^")
-            if candidate["source_revision"] != policy_parent:
+            if candidate["source_revision"] != policy_parent and \
+                    rebaseline_index is None:
                 raise CycleHistoryError(
                     f"cycle policy at revision {commit} must measure its parent: "
                     f"policy={candidate['source_revision']} parent={policy_parent}")
@@ -1321,6 +1387,10 @@ def verify_history(root: Path, policy_path: Path) -> dict:
                     f"cycle policy at revision {commit} is not exact for its "
                     "source_revision")
             if rebaseline_index is not None:
+                if commit != rebaseline_expected_repairs[rebaseline_index]:
+                    raise CycleHistoryError(
+                        "trusted policy rebaseline was repaired at the wrong "
+                        f"revision {commit}")
                 if rebaseline_repairs[rebaseline_index] is not None:
                     raise CycleHistoryError(
                         "trusted policy rebaseline was applied more than once")
@@ -1398,8 +1468,8 @@ def verify_history(root: Path, policy_path: Path) -> dict:
         label = rebaseline["introduced_revision"]
         if repair is None or len(observations) != rebaseline["commit_count"] \
                 or not observations or observations[0]["revision"] != label \
-                or observations[-1]["revision"] != \
-                rebaseline["source_revision"] or any(
+                or observations[-1]["revision"] != git_revision(
+                    root, f"{repair}^") or any(
                     not row["violations"] for row in observations):
             raise CycleHistoryError(
                 f"trusted policy rebaseline {label} does not cover one exact "

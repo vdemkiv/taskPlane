@@ -215,7 +215,7 @@ launch direct argv through the durable command runtime
 
 Positional arguments:
 
-- `argv` (optional) — direct command argv after --
+- `argv` (required) — direct command argv after --
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -671,7 +671,7 @@ launch direct argv through the durable command runtime
 
 Positional arguments:
 
-- `argv` (optional) — direct command argv after --
+- `argv` (required) — direct command argv after --
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -768,7 +768,7 @@ start an Evaluate-Loop for a goal
 
 Positional arguments:
 
-- `goal` (optional; zero or more)
+- `goal` (required; zero or more)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1247,7 +1247,7 @@ run one argv-only dynamic check inside the registered validation sandbox and rec
 
 Positional arguments:
 
-- `command` (optional) — command argv after --; no shell interpretation
+- `command` (required) — command argv after --; no shell interpretation
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1851,7 +1851,7 @@ open a new track
 Positional arguments:
 
 - `name` (required)
-- `goal` (optional; zero or more)
+- `goal` (required; zero or more)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
