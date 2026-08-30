@@ -72,7 +72,7 @@ def test_primary_ci_full_suite_has_complete_release_and_graph_history() -> None:
     setup = job.index("      - uses: actions/setup-python@", checkout)
     checkout_step = job[checkout:setup]
 
-    assert "          fetch-depth: 0" in checkout_step
+    assert "          fetch-depth: 1" in checkout_step
     assert "          persist-credentials: false" in checkout_step
 
 

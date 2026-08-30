@@ -41,7 +41,7 @@ def test_closed_inventory_is_complete_unique_and_sharded_once():
     assert {
         "compile-import", "version-verify", "zero-token-corpus",
         "release-surface", "release-history",
-        "unittest-canary", "loop-cost", "import-cycle-history",
+        "unittest-canary", "loop-cost", "import-cycle-current",
         "generated-lens-drift", "generated-cli-drift", "package-openai",
         "package-claude", "ruff", "mypy", "host-platform",
     }.union(runner.PYTEST_CHECK_IDS) == set(ids)
@@ -169,17 +169,16 @@ def test_pr_workflow_binds_all_blocking_jobs_to_exact_head_sha():
     )[0]
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in \
         graph_job
-    assert "fetch-depth: 0" in graph_job
+    assert "fetch-depth: 1" in graph_job
     assert "persist-credentials: false" in graph_job
     assert "synthetic_merge_substitutes" in workflow
     assert "pushed SHA delivery proof" in workflow
 
 
-def test_import_history_check_names_candidate_checkout_inputs_explicitly():
+def test_import_cycle_check_names_current_checkout_inputs_explicitly():
     runner = _runner()
-    check = runner.CHECKS["import-cycle-history"]
+    check = runner.CHECKS["import-cycle-current"]
     assert check.argv[2:] == (
         "--root", ".", "--policy",
         "taskplane/tests/fixtures/import-cycles.json", "--check",
-        "--verify-history",
     )

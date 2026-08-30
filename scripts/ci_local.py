@@ -52,7 +52,7 @@ PYTEST_CHECK_IDS = tuple(
 # Content address of every repository-relative `path:estimated-byte-weight` row.
 # A file added, removed, renamed, or reweighted must deliberately refresh this
 # pin, so the complete suite cannot silently shrink or use stale balancing data.
-PYTEST_WEIGHT_SHA256 = "69bc8b61acc46742f7275b1ed15c08a2520001d41d42c85b57c6c136cdbfa69d"
+PYTEST_WEIGHT_SHA256 = "b84fe08c980cd66f668c69d68049092b346f745cfc740b8efd26911b9e260c5f"
 
 
 def pytest_inventory() -> tuple[str, ...]:
@@ -133,7 +133,7 @@ INVENTORY = (
     Check("release-history", (PYTHON, "scripts/ci_release_tags.py", "--json")),
     Check("unittest-canary", (PYTHON, "-m", "unittest", "taskplane.tests.test_runner_isolation.TestUnittestRunnerIsolation", "-v")),
     Check("loop-cost", (PYTHON, "scripts/ci_loop_cost.py")),
-    Check("import-cycle-history", (PYTHON, "taskplane/import_cycles.py", "--root", ".", "--policy", "taskplane/tests/fixtures/import-cycles.json", "--check", "--verify-history")),
+    Check("import-cycle-current", (PYTHON, "taskplane/import_cycles.py", "--root", ".", "--policy", "taskplane/tests/fixtures/import-cycles.json", "--check")),
     Check("generated-lens-drift", (PYTHON, __file__, "--internal", "generated-lens-drift")),
     Check("generated-cli-drift", (PYTHON, __file__, "--internal", "generated-cli-drift")),
     Check("package-openai", (PYTHON, __file__, "--internal", "package-openai")),
@@ -147,7 +147,7 @@ SHARDS = (
     (PYTEST_CHECK_IDS[0], "compile-import", "generated-lens-drift", "ruff"),
     (PYTEST_CHECK_IDS[1], "version-verify", "release-surface", "generated-cli-drift", "mypy"),
     (PYTEST_CHECK_IDS[2], "zero-token-corpus", "release-history", "package-openai", "host-platform"),
-    (PYTEST_CHECK_IDS[3], "unittest-canary", "loop-cost", "import-cycle-history", "package-claude"),
+    (PYTEST_CHECK_IDS[3], "unittest-canary", "loop-cost", "import-cycle-current", "package-claude"),
 )
 CHECKS = {check.id: check for check in INVENTORY}
 

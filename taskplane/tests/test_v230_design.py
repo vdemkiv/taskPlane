@@ -71,12 +71,13 @@ class _DesignEnv(unittest.TestCase):
         graph_fp = graph_fp or self._graph_fp()
         acceptance_tests = {
             "design is approved before planning": [
-                "taskplane/tests/test_r0001_design_wiring.py::"
-                "test_present_acceptance_map_cannot_omit_tests_from_every_row",
+                "taskplane/tests/test_design_workflow.py::"
+                "DesignWorkflowTest::"
+                "test_design_gate_without_exact_acceptance_tests_records_no_authority",
             ],
             "the proposed graph stays separate": [
-                "taskplane/tests/test_r0001_design_wiring.py::"
-                "test_checkpoint_refuses_named_missing_test_file",
+                "taskplane/tests/test_design_workflow.py::"
+                "DesignWorkflowTest::test_design_gate_rejects_graph_mutation",
             ],
         }
         return {

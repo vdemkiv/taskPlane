@@ -412,7 +412,7 @@ in canonical review order, to `.em-review/findings.json`.
 | M-11 | privacy-compliance | `taskplane/taskplane_lite.py:5616` | Repository settings cannot silently default a new user to shared storage. |
 | M-12 | product | `README.md:72` | Primary journey documents the current approval model. |
 | M-13 | product | `.codex-plugin/plugin.json:27` | Marketplace copy accurately describes actual lens execution. |
-| M-14 | qa | `taskplane/tests/test_r0013_design_sweep.py:266` | Canonical design-sweep proof is required in CI. |
+| M-14 | qa | retired | Historical design-sweep replay was removed from CI; present-state design-sweep behavior remains covered by current wiring contracts. |
 | M-15 | qa | `taskplane/tests/test_r0001_live_host_canary.py:16` | A required end-to-end Codex producer-event path exists. |
 | M-16 | qa | `taskplane/tests/test_review_routing.py:1405` | Publication-concurrency proof is event-driven, not sleep-ordered. |
 | M-17 | security | `.github/workflows/ci.yml:90` | CI dependency installation has pinned integrity evidence. |

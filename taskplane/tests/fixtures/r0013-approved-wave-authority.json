@@ -30,7 +30,7 @@
         "owner": "design-sweep-owner",
         "exclusive_files": [
           "taskplane/design_sweep.py",
-          "taskplane/tests/test_r0013_design_sweep.py"
+          "taskplane/tests/test_em_h2_wiring.py"
         ]
       },
       {
@@ -301,9 +301,9 @@
       "id": "t02-ac2-design-sweep-readiness",
       "scope": [
         "taskplane/design_sweep.py",
-        "taskplane/tests/test_r0013_design_sweep.py"
+        "taskplane/tests/test_em_h2_wiring.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0013_design_sweep.py",
+      "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_wiring.py",
       "req": "R-0013",
       "deps": [],
       "type": "reliability",
