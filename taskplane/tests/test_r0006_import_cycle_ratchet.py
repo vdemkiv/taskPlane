@@ -439,6 +439,7 @@ def test_trusted_scanner_predecessor_receipts_are_exactly_closed() -> None:
         "1728a688ffb8a6e09f7410c9d6ba3da88ec8bfc0590b377cdf5fe7b7d8792752",
         "77a9adf2e9876ba56867bac07676290706df6b59fbc2b56ffb3c5dfd71865d91",
         "e48c475b598a32b33c489c5087416cf40229d0b5e1c8263db85d04708801cd7b",
+        "f12241619871e1588c88f76a2a756c1fb0e3f9f36aeeb0a225a3f9eb5637ff64",
     })
     assert cycles.TRUSTED_WORKFLOW_PREDECESSOR_SHA256S == frozenset({
         "ad14a00ec79956f401d3c9151fe106c4997959f2a0762061c3a31eb9765b0b45",
@@ -447,6 +448,7 @@ def test_trusted_scanner_predecessor_receipts_are_exactly_closed() -> None:
         "417463d582eabf317cd2cdcbaa1c9f2e67cf397fa0c23e4bc4e59d6ffe41e0e7",
         "23a7f87fe42cf153318bd703f1f93ddc3f9479e4262177de49568cc69aa50c15",
         "9f736826cfe9fb44abe64462fe604114fc9055d62baff69994d331e89ed5f5bb",
+        "9f477b02afa5101b7f10de5fc36b39b0ba05fda7f5454b07f94a2f0d2d718c22",
     })
     assert cycles.TRUSTED_POLICY_REBASELINES == ({
         "policy_sha256":
@@ -497,6 +499,21 @@ def test_trusted_scanner_predecessor_receipts_are_exactly_closed() -> None:
         ),
         "history_sha256":
             "d8995bbcadb9ee889a7e76ae67dcda4b58e4adba0da8cbf9319dc7f2f57af878",
+    }, {
+        "policy_sha256":
+            "d58cfb97af469ec73334bc25230c83820e43e862fae80ed6d4e1d091dc66408d",
+        "introduced_revision": "4f4c951acbc991a96f229f1be07483588b449aa9",
+        "source_revision": "717e3209a1c5556bf71e3af40d5cec75572821fe",
+        "commit_count": 3,
+        "repair_commit_offset": 1,
+        "violation_codes": ("physical-loc-growth",),
+        "affected_modules": (
+            "taskplane.collision", "taskplane.depgraph", "taskplane.regression",
+            "taskplane.review_evidence", "taskplane.stage_entities",
+            "taskplane.stage_handoff", "taskplane.taskplane_lite",
+        ),
+        "history_sha256":
+            "10c645f1fbf1fbfeecbbbd5ea387859e44292743cee37e90d75c139e4d03dfe3",
     })
 
 
@@ -600,6 +617,8 @@ def test_history_proof_allows_only_the_exact_versioned_workflow_transitions(
          "23a7f87fe42cf153318bd703f1f93ddc3f9479e4262177de49568cc69aa50c15"),
         ("960a5b7488c63745e9d22360a867ebef0ccfeb4a",
          "9f736826cfe9fb44abe64462fe604114fc9055d62baff69994d331e89ed5f5bb"),
+        ("f69f8c0b5e77f139700a66fbb271c6b372bcaffb",
+         "9f477b02afa5101b7f10de5fc36b39b0ba05fda7f5454b07f94a2f0d2d718c22"),
     )
     workflows = []
     for revision, expected_digest in versioned_history:

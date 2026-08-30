@@ -31,7 +31,7 @@ HISTORY_RESOLUTIONS_RELATIVE = Path(
 WORKFLOW_RELATIVE = Path(".github/workflows/ci.yml")
 MODULE_RELATIVE = Path("taskplane/import_cycles.py")
 WORKFLOW_SHA256 = \
-    "9f477b02afa5101b7f10de5fc36b39b0ba05fda7f5454b07f94a2f0d2d718c22"
+    "ca7b18fcc128980b9b1c25bb636ffb1a0b37952d6f2f6cde4e362f62e6483085"
 SEALED_WORKFLOW_SHA256 = \
     "e61df03fbec44633d945490f9df0c7c2f56e074b5f2da2915343035377bfb505"
 TRUSTED_WORKFLOW_PREDECESSOR_SHA256S = frozenset({
@@ -41,6 +41,7 @@ TRUSTED_WORKFLOW_PREDECESSOR_SHA256S = frozenset({
     "417463d582eabf317cd2cdcbaa1c9f2e67cf397fa0c23e4bc4e59d6ffe41e0e7",
     "23a7f87fe42cf153318bd703f1f93ddc3f9479e4262177de49568cc69aa50c15",
     "9f736826cfe9fb44abe64462fe604114fc9055d62baff69994d331e89ed5f5bb",
+    "9f477b02afa5101b7f10de5fc36b39b0ba05fda7f5454b07f94a2f0d2d718c22",
 })
 SEALED_SCANNER_SHA256 = \
     "fdb1e859898e05323afa2ae77a0189cba164edebb9644edc02daeac8168aace5"
@@ -53,6 +54,7 @@ TRUSTED_SCANNER_PREDECESSOR_SHA256S = frozenset({
     "1728a688ffb8a6e09f7410c9d6ba3da88ec8bfc0590b377cdf5fe7b7d8792752",
     "77a9adf2e9876ba56867bac07676290706df6b59fbc2b56ffb3c5dfd71865d91",
     "e48c475b598a32b33c489c5087416cf40229d0b5e1c8263db85d04708801cd7b",
+    "f12241619871e1588c88f76a2a756c1fb0e3f9f36aeeb0a225a3f9eb5637ff64",
 })
 # Exact, one-time policy growth accepted for the reviewed R-0002 remediation
 # integration. A receipt binds the complete pre-rebaseline violation span and
@@ -110,6 +112,21 @@ TRUSTED_POLICY_REBASELINES = ({
     ),
     "history_sha256":
         "d8995bbcadb9ee889a7e76ae67dcda4b58e4adba0da8cbf9319dc7f2f57af878",
+}, {
+    "policy_sha256":
+        "d58cfb97af469ec73334bc25230c83820e43e862fae80ed6d4e1d091dc66408d",
+    "introduced_revision": "4f4c951acbc991a96f229f1be07483588b449aa9",
+    "source_revision": "717e3209a1c5556bf71e3af40d5cec75572821fe",
+    "commit_count": 3,
+    "repair_commit_offset": 1,
+    "violation_codes": ("physical-loc-growth",),
+    "affected_modules": (
+        "taskplane.collision", "taskplane.depgraph", "taskplane.regression",
+        "taskplane.review_evidence", "taskplane.stage_entities",
+        "taskplane.stage_handoff", "taskplane.taskplane_lite",
+    ),
+    "history_sha256":
+        "10c645f1fbf1fbfeecbbbd5ea387859e44292743cee37e90d75c139e4d03dfe3",
 })
 RATCHET_JOB_ID = "wave3-contracts"
 RATCHET_CHECK_NAME = "R-0006 graph + CLI contracts"
