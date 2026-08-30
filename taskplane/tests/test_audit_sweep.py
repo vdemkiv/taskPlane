@@ -59,7 +59,17 @@ def submit_gate(ws, outcome="pass", task_id=None):
     return loop.gate(ws, outcome, task_id=task_id)
 
 
-def pass_eval(ws):
+def _action_contract(workspace, action, *, stage, task):
+    slot = action["contract_bootstrap"]["task_slot"]
+    contract = tp.load_active(workspace, task_slot=slot)
+    lifecycle = (contract or {}).get("worker_lifecycle") or {}
+    if lifecycle.get("stage") != stage or \
+            str(lifecycle.get("task") or "") != str(task):
+        raise AssertionError("action worker contract is not stage/task exact")
+    return contract
+
+
+def pass_eval(ws, action):
     state = loop.load(ws)
     task = state["tasks"][state["current_task"]]
     act_ws = task.get("workspace") or ws
@@ -117,11 +127,11 @@ def pass_eval(ws):
                              "requirements_checked": [],
                              "contracts_checked": []},
                    "failures": []}, f)
-    worker = tp.worker_contract_for_stage(
-        act_ws, stage="evaluate", task=str(task["id"]))
+    contract = _action_contract(
+        act_ws, action, stage="evaluate", task=task["id"])
     material = loop.producer_output_identity(
         act_ws, state, task, "evaluate",
-        active_contract=(worker or {}).get("contract") or {})
+        active_contract=contract)
     event = {
         "hook_event_name": "SubagentStop",
         "session_id": "audit-eval-session",
@@ -137,7 +147,7 @@ def pass_eval(ws):
     return submit_gate(ws, "pass")
 
 
-def pass_em(ws, coverage=None, findings_rows=None):
+def pass_em(ws, action, coverage=None, findings_rows=None):
     if coverage is None:
         coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
     state = loop.load(ws)
@@ -150,11 +160,9 @@ def pass_em(ws, coverage=None, findings_rows=None):
         findings=findings_rows or [],
         report="# Engineering review\n\nAll required evidence passed.\n")
     task = loop._current_task(state)
-    worker = tp.worker_contract_for_stage(
-        ws, stage="em", task=str(task["id"]))
+    contract = _action_contract(ws, action, stage="em", task=task["id"])
     material = loop.producer_output_identity(
-        ws, state, task, "em",
-        active_contract=(worker or {}).get("contract") or {})
+        ws, state, task, "em", active_contract=contract)
     event = {
         "hook_event_name": "SubagentStop",
         "session_id": "audit-em-session", "turn_id": "audit-em-turn",
@@ -175,7 +183,8 @@ def loop_to_em(tmp):
     loop.init(ws, "g", spec_path="s", checkpoints=["em"])
     loop.next_action(ws); loop.gate(ws, "pass")           # plan → execute
     loop.next_action(ws); submit_gate(ws, "pass")         # execute → evaluate
-    loop.next_action(ws); pass_eval(ws)                   # evaluate → em
+    action = loop.next_action(ws)
+    pass_eval(ws, action)                                 # evaluate → em
     assert loop.load(ws)["step"] == "em"
     return ws
 
@@ -468,8 +477,8 @@ class TestEmPayloadAndCounterWiring(AuditBase):
     def test_completed_em_review_increments_the_counter(self):
         ws = loop_to_em(self.tmp)
         self.assertEqual(loop.audit_counter(ws), 0)
-        loop.next_action(ws)
-        out = pass_em(ws)
+        action = loop.next_action(ws)
+        out = pass_em(ws, action)
         self.assertNotIn("error", out)
         self.assertEqual(loop.load(ws)["step"], "signoff")
         self.assertEqual(loop.audit_counter(ws), 1)

@@ -96,7 +96,7 @@ class TestGovernanceV2(unittest.TestCase):
         loop.next_action(self.ws)
         loop.submit(self.ws, "pass")
         loop.gate(self.ws, "pass")
-        loop.next_action(self.ws)
+        action = loop.next_action(self.ws)
         evidence_dir = os.path.join(self.ws, ".eval")
         os.makedirs(evidence_dir, exist_ok=True)
         with open(os.path.join(evidence_dir, "verdict.json"), "w", encoding="utf-8") as f:
@@ -111,11 +111,14 @@ class TestGovernanceV2(unittest.TestCase):
                           "contracts_checked": []}, "failures": []}, f)
         state = loop.load(self.ws)
         task = state["tasks"][state["current_task"]]
-        worker = tp.worker_contract_for_stage(
-            self.ws, stage="evaluate", task=str(task["id"]))
+        slot = action["contract_bootstrap"]["task_slot"]
+        contract = tp.load_active(self.ws, task_slot=slot)
+        lifecycle = (contract or {}).get("worker_lifecycle") or {}
+        self.assertEqual(lifecycle.get("stage"), "evaluate")
+        self.assertEqual(str(lifecycle.get("task") or ""), str(task["id"]))
         material = loop.producer_output_identity(
             self.ws, state, task, "evaluate",
-            active_contract=(worker or {}).get("contract") or {})
+            active_contract=contract)
         event = {"hook_event_name": "SubagentStop",
                  "session_id": "governance-v2-session",
                  "turn_id": "governance-v2-turn",

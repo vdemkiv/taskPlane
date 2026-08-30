@@ -94,11 +94,14 @@ def _pass_eval(ws):
                              "requirements_checked": [],
                              "contracts_checked": []},
                    "failures": []}, f)
-    worker = tp.worker_contract_for_stage(
-        act_ws, stage="evaluate", task=str(task["id"]))
+    slot = brief["contract_bootstrap"]["task_slot"]
+    contract = tp.load_active(act_ws, task_slot=slot)
+    lifecycle = (contract or {}).get("worker_lifecycle") or {}
+    assert lifecycle.get("stage") == "evaluate"
+    assert str(lifecycle.get("task") or "") == str(task["id"])
     material = loop.producer_output_identity(
         act_ws, state, task, "evaluate",
-        active_contract=(worker or {}).get("contract") or {})
+        active_contract=contract)
     event = {"hook_event_name": "SubagentStop",
              "session_id": "selection-evaluate-session",
              "turn_id": "selection-evaluate-turn",

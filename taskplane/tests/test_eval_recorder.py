@@ -1207,8 +1207,10 @@ def _loop_ws(tmp, name):
     shutil.rmtree(ws, True)
     os.makedirs(os.path.join(ws, "src", "todo"))
     _write(os.path.join(ws, "src", "todo", "a.py"), "x = 1\n")
+    portable_python = sys.executable.replace("\\", "/")
+    portable_test = f'"{portable_python}" -c "pass"'
     _write(os.path.join(ws, "plan", "tasks.json"), json.dumps({"tasks": [
-        {"id": "t1", "scope": ["src/todo/**"], "tests": "true",
+        {"id": "t1", "scope": ["src/todo/**"], "tests": portable_test,
          "criteria": ["complete() marks done"]}]}))
     # The pm DoD demands an authored requirement; without one the loop parks
     # at pm and the transcript below exercises exactly one routing branch.

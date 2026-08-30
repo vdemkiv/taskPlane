@@ -13,6 +13,25 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 import review  # noqa: E402
 
 
+def _posix_signal_fixture(monkeypatch):
+    """Provide POSIX-only signal identities on non-POSIX test hosts."""
+    terminate = int(signal.SIGTERM)
+    hard_kill = int(getattr(signal, "SIGKILL", 9))
+    monkeypatch.setattr(
+        review.signal, "SIGKILL", hard_kill, raising=False)
+    return {terminate: "SIGTERM", hard_kill: "SIGKILL"}, hard_kill
+
+
+def _bind_short_validation_kernel(tmp_path, monkeypatch):
+    """Keep Windows Git clone fixtures below the legacy path-length bound."""
+    base = tmp_path
+    if os.name == "nt":
+        base = tmp_path.parent / f"k-{tmp_path.name[-8:]}"
+    kernel = base / "k"
+    monkeypatch.setattr(review, "_kernel_root", lambda _ws: str(kernel))
+    return kernel
+
+
 class _StuckProcess:
     pid = 4312
     returncode = None
@@ -145,9 +164,10 @@ def test_h34_cleanup_shares_the_aggregate_deadline_and_fails_closed(
         review, "_VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS",
         operation_budget)
     if platform_name == "posix":
+        signal_names, _hard_kill = _posix_signal_fixture(monkeypatch)
         monkeypatch.setattr(
             review.os, "killpg",
-            lambda _pid, sig: process.actions.append(signal.Signals(sig).name),
+            lambda _pid, sig: process.actions.append(signal_names[int(sig)]),
             raising=False)
     else:
         def create_job(selected):
@@ -304,12 +324,13 @@ def test_h34_cleanup_without_reap_time_fails_closed_without_overrun(
             raise AssertionError("cleanup waited after its deadline")
 
     process = ExhaustedProcess()
+    signal_names, _hard_kill = _posix_signal_fixture(monkeypatch)
     monkeypatch.setattr(review.os, "name", "posix")
     monkeypatch.setattr(
         review.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(
         review.os, "killpg",
-        lambda _pid, sig: process.actions.append(signal.Signals(sig).name),
+        lambda _pid, sig: process.actions.append(signal_names[int(sig)]),
         raising=False)
     monkeypatch.setattr(review.time, "monotonic", clock)
 
@@ -326,6 +347,8 @@ def test_h34_cleanup_without_reap_time_fails_closed_without_overrun(
 
 
 def test_h34_process_tree_termination_escalates_to_group_kill(monkeypatch):
+    _signal_names, hard_kill = _posix_signal_fixture(monkeypatch)
+
     class Process:
         pid = 991
         returncode = None
@@ -338,7 +361,7 @@ def test_h34_process_tree_termination_escalates_to_group_kill(monkeypatch):
             self.wait_calls += 1
             if self.wait_calls == 1:
                 raise subprocess.TimeoutExpired(["git"], timeout)
-            self.returncode = -signal.SIGKILL
+            self.returncode = -hard_kill
 
     sent = []
     monkeypatch.setattr(review.os, "name", "posix")
@@ -350,7 +373,7 @@ def test_h34_process_tree_termination_escalates_to_group_kill(monkeypatch):
     review._terminate_validation_sandbox_process_tree(
         Process(), shared_deadline=deadline, operation_deadline=deadline)
 
-    assert sent == [(991, signal.SIGTERM), (991, signal.SIGKILL)]
+    assert sent == [(991, signal.SIGTERM), (991, hard_kill)]
 
 
 def _git_review_state(ws: Path) -> tuple[dict, str]:
@@ -419,6 +442,7 @@ def test_h34_prepare_timeout_is_cleaned_persisted_and_retryable(
 
 def test_h34_blocked_untracked_copy_is_killed_cleaned_and_persisted(
         tmp_path, monkeypatch):
+    _bind_short_validation_kernel(tmp_path, monkeypatch)
     ws = tmp_path / "repo"
     ws.mkdir()
     state, _head = _git_review_state(ws)
@@ -481,6 +505,7 @@ def test_h34_blocked_untracked_copy_is_killed_cleaned_and_persisted(
 
 def test_h34_sandbox_prepare_has_process_and_total_deadlines(
         tmp_path, monkeypatch):
+    _bind_short_validation_kernel(tmp_path, monkeypatch)
     ws = tmp_path / "repo"
     ws.mkdir()
     state, _head = _git_review_state(ws)

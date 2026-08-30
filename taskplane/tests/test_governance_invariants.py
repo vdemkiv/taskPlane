@@ -44,7 +44,7 @@ def _state(ws, step, tests="true"):
     return state
 
 
-def _write_eval(ws):
+def _write_eval(ws, active_contract):
     state = loop.load(ws)
     bundle = loop.evidence(ws)
     verdict = bundle["verdict_template"]
@@ -57,11 +57,8 @@ def _write_eval(ws):
     with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
         json.dump(verdict, f)
     task = state["tasks"][state["current_task"]]
-    worker = tp.worker_contract_for_stage(
-        ws, stage="evaluate", task=str(task["id"]))
     material = loop.producer_output_identity(
-        ws, state, task, "evaluate",
-        active_contract=(worker or {}).get("contract") or {})
+        ws, state, task, "evaluate", active_contract=active_contract)
     event = {"hook_event_name": "SubagentStop",
              "session_id": "governance-evaluate-session",
              "turn_id": "governance-evaluate-turn",
@@ -129,11 +126,16 @@ class TestGovernanceInvariants(unittest.TestCase):
     def test_evaluate_requires_complete_evidence(self):
         ws = _repo()
         _state(ws, "evaluate")
-        loop.next_action(ws)
+        action = loop.next_action(ws)
+        slot = action["contract_bootstrap"]["task_slot"]
+        active_contract = tp.load_active(ws, task_slot=slot)
+        lifecycle = (active_contract or {}).get("worker_lifecycle") or {}
+        self.assertEqual(lifecycle.get("stage"), "evaluate")
+        self.assertEqual(str(lifecycle.get("task") or ""), "t1")
         out = loop.gate(ws, "pass")
         self.assertIn("evaluation evidence failed", out["error"])
         self.assertEqual(loop.load(ws)["step"], "evaluate")
-        _write_eval(ws)
+        _write_eval(ws, active_contract)
         out = loop.gate(ws, "pass")
         self.assertEqual(out["step"], "em")
 

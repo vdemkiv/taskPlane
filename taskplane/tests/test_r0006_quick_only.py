@@ -55,7 +55,10 @@ def _routing():
 
 def _start_args(requirement, *, changed_symbols=None):
     return {
-        "target": {"fingerprint": "target-r0006", "head": "abc123"},
+        "target": {
+            "fingerprint": "target-r0006", "head": "abc123",
+            "task": "t02-wave1-quick-only-review-policy",
+        },
         "graph": {
             "meta": {
                 "scanned_head": "",

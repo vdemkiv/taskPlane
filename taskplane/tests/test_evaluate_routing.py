@@ -112,11 +112,14 @@ def _pass_eval(ws, brief):
     _routed(brief)
     _write_kernel_results(ws)
     _write_verdict(ws, task["id"], loop._criteria_for(ws, state, task), [])
-    worker = tp.worker_contract_for_stage(
-        ws, stage="evaluate", task=str(task["id"]))
+    slot = brief["contract_bootstrap"]["task_slot"]
+    contract = tp.load_active(ws, task_slot=slot)
+    lifecycle = (contract or {}).get("worker_lifecycle") or {}
+    assert lifecycle.get("stage") == "evaluate"
+    assert str(lifecycle.get("task") or "") == str(task["id"])
     material = loop.producer_output_identity(
         ws, state, task, "evaluate",
-        active_contract=(worker or {}).get("contract") or {})
+        active_contract=contract)
     event = {
         "hook_event_name": "SubagentStop",
         "session_id": "evaluate-routing-session",
@@ -166,7 +169,11 @@ class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
         self.assertEqual(kernel["expected_lenses"], [])
         self.assertEqual(kernel["slots"], [])
         self.assertTrue(kernel["zero_lens_evaluation"])
-        self.assertIsNotNone(kernel["delivery_mode_receipt"])
+        delivery = loop.load(ws)["delivery_mode_receipt"]
+        self.assertEqual(
+            act["delivery_dispatch"]["delivery_mode_receipt"],
+            delivery,
+        )
 
     def test_evaluate_does_not_reexport_internal_route_decision(self):
         ws = _repo(self.tmp)
