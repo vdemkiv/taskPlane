@@ -345,6 +345,9 @@ def resolution_receipt(identity: Mapping[str, object], *, actor: str,
     authority = dict(control_plane)
     if authority.get("schema") != CONTROL_PLANE_SCHEMA:
         raise EmOutageError("control-plane identity is invalid")
+    outputs = outage.get("outputs")
+    if not isinstance(outputs, Mapping):
+        raise EmOutageError("EM outage identity outputs are invalid")
     material = {
         "schema": RESOLUTION_SCHEMA,
         "outage_fingerprint": outage["fingerprint"],
@@ -352,7 +355,7 @@ def resolution_receipt(identity: Mapping[str, object], *, actor: str,
         "actor": _closed_text(actor, "actor", maximum=512),
         "control_plane": authority,
         "integration_revision": outage["integration_revision"],
-        "outputs": dict(outage["outputs"]),
+        "outputs": dict(outputs),
         "output_contract_fingerprint": outage[
             "output_contract_fingerprint"],
         "producer_dispatch_fingerprint": outage[
