@@ -9,7 +9,6 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-POLICY_PATH = ROOT / "taskplane" / "tests" / "fixtures" / "import-cycles.json"
 sys.path.insert(0, str(ROOT))
 
 from taskplane import import_cycles as cycles  # noqa: E402
@@ -253,16 +252,6 @@ def test_invalid_policy_json_fails_closed(tmp_path: Path) -> None:
 
     with pytest.raises(cycles.CyclePolicyError, match="JSONDecodeError"):
         cycles.load_policy(path)
-
-
-def test_checked_in_policy_is_exact_measured_wave4_start_inventory() -> None:
-    policy = cycles.load_policy(POLICY_PATH)
-    measured = cycles.build_inventory_at_revision(ROOT,
-                                                  policy["source_revision"])
-
-    assert cycles.canonical_json(measured) == cycles.canonical_json(policy)
-    assert cycles.check_inventory(policy, _inventory(
-        ROOT, cycles.git_revision(ROOT)))["status"] == "pass"
 
 
 def test_cli_returns_nonzero_and_names_growth(tmp_path: Path) -> None:

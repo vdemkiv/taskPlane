@@ -66,7 +66,7 @@ def test_primary_ci_matrix_is_exactly_the_supported_cpython_range() -> None:
             "              taskplane/tests/test_r0006_python_matrix.py") == 1
 
 
-def test_primary_ci_full_suite_has_complete_release_and_graph_history() -> None:
+def test_primary_ci_full_suite_uses_shallow_current_tree_checkout() -> None:
     job = _primary_test_job(WORKFLOW.read_text(encoding="utf-8"))
     checkout = job.index("      - uses: actions/checkout@")
     setup = job.index("      - uses: actions/setup-python@", checkout)
