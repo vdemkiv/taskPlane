@@ -22,6 +22,28 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def retained_r0002_candidate(tmp_path_factory):
+    global ROOT
+    original = ROOT
+    original_repository_root = remediation_trace._REPOSITORY_ROOT
+    original_priced_debt_spec = remediation_trace._PRICED_DEBT_SPEC
+    workspace = tmp_path_factory.mktemp("m2-r0002") / "repository"
+    subprocess.run(["git", "clone", "--quiet", "--no-hardlinks",
+                    str(original), str(workspace)], check=True)
+    subprocess.run(["git", "checkout", "-q", "86c7f74"], cwd=workspace,
+                   check=True)
+    ROOT = workspace
+    remediation_trace._REPOSITORY_ROOT = workspace
+    remediation_trace._PRICED_DEBT_SPEC = workspace / "specs" / "spec.md"
+    try:
+        yield
+    finally:
+        ROOT = original
+        remediation_trace._REPOSITORY_ROOT = original_repository_root
+        remediation_trace._PRICED_DEBT_SPEC = original_priced_debt_spec
 sys.path.insert(0, str(ROOT / "taskplane"))
 
 from taskplane import dashboard, remediation_trace, text_runtime  # noqa: E402

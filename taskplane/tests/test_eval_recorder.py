@@ -1207,8 +1207,13 @@ def _loop_ws(tmp, name):
     shutil.rmtree(ws, True)
     os.makedirs(os.path.join(ws, "src", "todo"))
     _write(os.path.join(ws, "src", "todo", "a.py"), "x = 1\n")
-    _write(os.path.join(ws, "plan", "tasks.json"), json.dumps({"tasks": [
-        {"id": "t1", "scope": ["src/todo/**"], "tests": "true",
+    portable_python = sys.executable.replace("\\", "/")
+    portable_test = f'"{portable_python}" -c "pass"'
+    _write(os.path.join(ws, "plan", "tasks.json"), json.dumps({
+        "requirement": "R-0001", "delivery_mode": "build",
+        "automatic_lenses": [], "plan_authority": "human:test-fixture",
+        "tasks": [
+        {"id": "t1", "scope": ["src/todo/**"], "tests": portable_test,
          "criteria": ["complete() marks done"]}]}))
     # The pm DoD demands an authored requirement; without one the loop parks
     # at pm and the transcript below exercises exactly one routing branch.
@@ -1324,40 +1329,30 @@ class TestTheLoopRecordsTheBreadthOnTheRouteItTraced(unittest.TestCase):
                 self.assertIsInstance(row.get("engine_ran"), bool)
 
     def test_the_working_steps_record_a_routed_breadth(self):
-        working = [r for r in self.routes if r.get("step") != "em"]
+        working = [r for r in self.routes
+                   if r.get("step") in {"pm", "design", "plan"}]
         self.assertTrue(working)
         self.assertEqual({r["requested_breadth"] for r in working},
                          {"routed"})
 
-    def test_the_final_review_records_selective_breadth(self):
-        """R-0005: final EM maps the catalog once but dispatches selectively.
-
-        The route record describes the request, not the number of mapping
-        entries; a complete 26-lens decision is therefore still ``routed``.
-        """
+    def test_the_final_review_does_not_invent_a_lens_route(self):
+        """Final Engineering has delivery authority, not a lens route."""
         em = [r for r in self.routes if r.get("step") == "em"]
-        self.assertEqual([r["requested_breadth"] for r in em], ["routed"])
-        self.assertEqual([r["engine_ran"] for r in em], [True])
-        self.assertEqual([r["kernel_status"] for r in em], ["ready"])
+        self.assertEqual(em, [])
 
-    def test_the_evaluate_route_records_that_the_engine_chose(self):
-        """The one step that runs route v2 — and the exact case the routed
-        set could not distinguish from `--all`."""
+    def test_the_evaluate_delivery_does_not_invent_a_lens_route(self):
+        """D-0014 bypasses the lens engine without route telemetry."""
         ev = [r for r in self.routes if r.get("step") == "evaluate"]
-        self.assertTrue(ev)
-        self.assertEqual({r["engine_ran"] for r in ev}, {True})
-        self.assertEqual({r["requested_breadth"] for r in ev}, {"routed"})
+        self.assertEqual(ev, [])
 
     def test_the_recorder_reads_those_routes_without_inferring(self):
-        """End of the wire: the loop's own rows, through the real recorder,
-        with the real catalog. The evaluate row names all 26 lenses."""
-        biggest = max(self.routes, key=lambda r: len(r.get("lenses") or []))
-        self.assertEqual(len(biggest["lenses"]), len(CATALOG_IDS),
-                         "premise: a routed step names the whole catalog")
-        rows = eval_record.synthesize_trace([dict(biggest)],
-                                            known_lenses=set(CATALOG_IDS))
-        self.assertEqual(rows[0]["breadth"], "routed")
-        self.assertIn("recorded", rows[0]["breadth_source"])
+        """The recorder must not infer delivery rows the loop did not emit."""
+        delivery = [r for r in self.routes
+                    if r.get("step") in {"evaluate", "em"}]
+        self.assertEqual(delivery, [])
+        rows = eval_record.synthesize_trace(
+            [dict(row) for row in delivery], known_lenses=set(CATALOG_IDS))
+        self.assertEqual(rows, [])
 
 
 PRE_INSTRUMENTATION_LOOP_BLOB = "dfb95b871361ed097d156e4785158cb7c86505a4"
@@ -1446,13 +1441,15 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
         added = {"requested_breadth", "engine_ran", "kernel_status"}
         for name in ("control_a", "current"):
             self.assertTrue(self.runs[name]["routes"])
-        base = self.runs["control_a"]["routes"]
-        now = self.runs["current"]["routes"]
+        base = [row for row in self.runs["control_a"]["routes"]
+                if row.get("step") not in {"evaluate", "em"}]
+        now = [row for row in self.runs["current"]["routes"]
+               if row.get("step") not in {"evaluate", "em"}]
+        self.assertFalse([row for row in self.runs["current"]["routes"]
+                          if row.get("step") in {"evaluate", "em"}])
         self.assertEqual(len(base), len(now))
         for was, is_ in zip(base, now):
             expected = {"requested_breadth", "engine_ran"}
-            if is_.get("step") in ("evaluate", "em"):
-                expected.add("kernel_status")
             self.assertEqual(set(was) & added, set())
             self.assertEqual(set(is_) - set(was), expected)
             # R-0005 deliberately changes the routed dispositions while
@@ -1462,8 +1459,6 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
                               if k not in ignored},
                              {k: v for k, v in was.items()
                               if k not in ignored})
-            if is_.get("step") in ("evaluate", "em"):
-                self.assertEqual(len(is_["lenses"]), len(CATALOG_IDS))
 
     def test_the_baseline_could_not_tell_the_routed_review_from_all(self):
         """The regression this locks: over the PREVIOUS revision's own trace,

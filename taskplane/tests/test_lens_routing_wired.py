@@ -215,8 +215,8 @@ class TestTheSkillDoesNotSpendAll(unittest.TestCase):
 
     def test_the_skill_explains_that_all_disables_the_engine(self):
         text = "\n".join(self._lines("skills/tp-engineering/SKILL.md"))
-        self.assertIn("Do NOT pass `--all`", text)
-        self.assertIn("n/a", text)
+        self.assertIn("zero lens workers", text)
+        self.assertIn("direct evidence judgment", text)
 
     def test_the_skill_no_longer_claims_every_lens_runs(self):
         """The old sentence — 'Every review applies the full catalog —

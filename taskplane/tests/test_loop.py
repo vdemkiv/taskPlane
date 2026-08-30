@@ -1,5 +1,6 @@
 import json
 import hashlib
+import contextlib
 import os
 import shutil
 import subprocess
@@ -17,12 +18,14 @@ import taskplane_lite as tp  # noqa: E402
 import lens  # noqa: E402
 import depgraph  # noqa: E402
 import evaluator_health  # noqa: E402
+import evaluation_output  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import storage as runtime_storage  # noqa: E402
 import run_store  # noqa: E402
 import checkpoint  # noqa: E402
 import build_c  # noqa: E402
+from tests import run_lr10_parallel as lr10_runner  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -665,6 +668,18 @@ class TestClosedGapPlan(unittest.TestCase):
 def submit_gate(ws, outcome="pass", task_id=None):
     submit = getattr(loop.submit, "__wrapped__", loop.submit)
     gate = getattr(loop.gate, "__wrapped__", loop.gate)
+    state = loop.load(ws) or {}
+    if outcome == "pass" and state.get("step") == "evaluate":
+        collect_zero_test_kernel(ws)
+        with unittest.mock.patch.object(
+                loop, "_collect_zero_lens_evaluate_before_guidance",
+                return_value={"fingerprint": "a" * 64}), \
+                unittest.mock.patch.object(
+                    loop, "_producer_observation_errors", return_value=[]):
+            submitted = submit(ws, outcome, task_id=task_id)
+            if "error" in submitted:
+                return submitted
+            return gate(ws, outcome, task_id=task_id)
     submitted = submit(ws, outcome, task_id=task_id)
     if "error" in submitted:
         return submitted
@@ -679,12 +694,6 @@ def write_verdict(ws):
     kernel = (review._load_state(
         str(binding.get("workspace") or act_ws), binding["run_id"])
         if binding else None)
-    routed = ((kernel or {}).get("routing") or lens.route_git_diff(
-        act_ws, base=state.get("baseline") or "HEAD",
-        task_type=task.get("type"), breadth="routed"))
-    canonical_lenses = {
-        row["lens"]: row for row in (kernel or {}).get("lens_results") or []
-    }
     criteria = loop._criteria_for(ws, state, task)
     os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
     graph_dod = loop._task_graph_dod(ws, state, task)
@@ -702,7 +711,7 @@ def write_verdict(ws):
     contracts = [c.get("id") if isinstance(c, dict) else c
                  for c in (task.get("contracts") or [])]
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v1",
+        json.dump({"schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
                    "task": task["id"],
                    "requirement": task.get("req") or
                                   state.get("requirement_id") or "",
@@ -710,13 +719,6 @@ def write_verdict(ws):
                    "criteria": [{"criterion": c, "status": "met",
                                   "evidence": "verified by test"}
                                 for c in criteria],
-                   "lenses": [{
-                       "lens": x["id"],
-                       "verdict": canonical_lenses.get(
-                           x["id"], {}).get("verdict", "pass"),
-                       "blockers": canonical_lenses.get(
-                           x["id"], {}).get("blockers", 0),
-                   } for x in routed["lenses"] if x.get("mode") != "none"],
                    "graph": {
                        "dispositions": [
                            {"node": node, "status": "tested",
@@ -726,6 +728,30 @@ def write_verdict(ws):
                        "contracts_checked": contracts,
                    },
                    "failures": []}, f)
+
+
+def collect_zero_test_kernel(ws):
+    state = loop.load(ws)
+    task = state["tasks"][state["current_task"]]
+    binding = loop.review_kernel_binding(state, "evaluate", task)
+    if not binding:
+        return
+    kernel_ws = str(binding.get("workspace") or ws)
+    kernel = review._load_state(kernel_ws, binding["run_id"])
+    if kernel.get("status") != "ready" or \
+            kernel.get("zero_lens_evaluation") is not True:
+        return
+    with open(runtime_storage.evaluation_path(kernel_ws),
+              encoding="utf-8") as stream:
+        verdict = json.load(stream)
+    empty = review.collect_expected_set(
+        run_id=binding["run_id"], task_id=task["id"], stage="Evaluate",
+        expected_lenses=[], collected_lenses=[], result=verdict,
+        result_validator=evaluation_output.validate_evaluator_value,
+        producer_observation_fingerprint="a" * 64)
+    review.collect_review(
+        kernel_ws, publish=False, run_id=binding["run_id"],
+        empty_lens_collection=empty)
 
 
 def pass_eval(ws):
@@ -741,6 +767,9 @@ def write_kernel_results(ws):
     review_ws = (task.get("workspace") if loop_state.get("parallel") and
                  loop_state.get("step") == "evaluate" else None) or ws
     state = review._load_state(review_ws)
+    if state.get("zero_lens_evaluation") is True:
+        assert state.get("slots") == []
+        return
     manifest = loop._bind_stateless_review_contract_actions(
         review_ws, state["manifest"], task_id=task["id"])
     wait_invocation = manifest["wait_invocation"]
@@ -1124,7 +1153,6 @@ class TestLoop(unittest.TestCase):
             "detail": "bounded evaluator attempt 7 timed out on host alpha",
         }
         verdict["verdict"] = "fail"
-        verdict["lenses"] = []
         verdict["failures"] = [{
             "what": "independent evaluator did not return a judgment",
             "repro": "dispatch attempt 7 on host alpha",
@@ -1180,6 +1208,45 @@ class TestLoop(unittest.TestCase):
             task["evaluation"]["outage_identity"]["evaluation"],
             verdict["evaluation"])
 
+    def test_worker_dispatch_identity_is_stable_once_then_rotates(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="specs/spec.md")
+        state = loop.load(ws)
+
+        first_ref, first_sequence = loop._reserve_worker_dispatch_ref(
+            ws, state, stage="evaluate", task="t1", worker_workspace=ws)
+        second_ref, second_sequence = loop._reserve_worker_dispatch_ref(
+            ws, state, stage="evaluate", task="t1", worker_workspace=ws)
+
+        self.assertEqual((first_ref, first_sequence), ("t1", 1))
+        self.assertEqual((second_ref, second_sequence),
+                         ("t1-attempt-2", 2))
+        self.assertNotEqual(
+            tp.dispatch_task_name("step", "tp-evaluator", first_ref),
+            tp.dispatch_task_name("step", "tp-evaluator", second_ref))
+        self.assertEqual(
+            loop.load(ws)["worker_dispatch_sequences"]["evaluate:t1"], 2)
+
+    def test_unavailable_retry_emits_fresh_exact_worker_identity(self):
+        ws, _, _ = self._gate_evaluator_unavailable()
+        self.assertEqual(loop.resolve(ws, "retry")["step"], "evaluate")
+
+        action = loop.next_action(ws)
+
+        self.assertEqual(
+            loop.load(ws)["worker_dispatch_sequences"]["evaluate:t1"], 2)
+        self.assertEqual(
+            action["task_name"],
+            action["contract_bootstrap"]["worker_identity"])
+        self.assertEqual(
+            action["task_name"],
+            tp.dispatch_task_name(
+                "step", "tp-evaluator", "t1-attempt-2"))
+        lifecycle = tp.load_json(tp.active_contract_path(
+            ws, action["contract_bootstrap"]["task_slot"]))[
+                "worker_lifecycle"]
+        self.assertEqual(lifecycle["expected_task_name"], action["task_name"])
+
     def test_human_can_accept_met_criteria_during_orchestration_outage(self):
         ws, _, _ = self._gate_evaluator_unavailable()
         state = loop.load(ws)
@@ -1207,6 +1274,56 @@ class TestLoop(unittest.TestCase):
         self.assertTrue(os.path.isfile(runtime_storage.evaluation_path(
             ws, "reanchor-authority.json")))
 
+    def test_human_can_accept_exact_producer_receipt_outage_once(self):
+        ws, _, _ = self._gate_evaluator_unavailable()
+        state = loop.load(ws)
+        task = state["tasks"][0]
+        task["evaluation"]["reason_code"] = "producer_receipt_unavailable"
+        task["evaluation"]["outage_identity"]["evaluation"][
+            "reason_code"] = "producer_receipt_unavailable"
+        verdict_path = os.path.join(ws, ".eval", "verdict.json")
+        with open(verdict_path, encoding="utf-8") as stream:
+            verdict = json.load(stream)
+        verdict["evaluation"]["reason_code"] = \
+            "producer_receipt_unavailable"
+        task["evaluation"]["outage_identity"] = \
+            evaluator_health.outage_identity(
+                task=verdict["task"], requirement=verdict["requirement"],
+                evaluation=verdict["evaluation"],
+                failures=verdict["failures"])
+        with open(verdict_path, "w", encoding="utf-8") as stream:
+            json.dump(verdict, stream)
+        loop.save(ws, state)
+        fingerprint = task["evaluation"]["outage_identity"]["fingerprint"]
+
+        refused = loop.resolve(
+            ws, "pass", by="human:vdemkiv",
+            accept_producer_receipt_outage=True,
+            outage_fingerprint="0" * 64)
+        self.assertIn("error", refused)
+        accepted = loop.resolve(
+            ws, "pass", by="human:vdemkiv",
+            accept_producer_receipt_outage=True,
+            outage_fingerprint=fingerprint)
+
+        self.assertNotIn("error", accepted)
+        task = loop.load(ws)["tasks"][0]
+        self.assertEqual(task["status"], "passed")
+        self.assertEqual(task["human_resolution"]["actor"],
+                         "human:vdemkiv")
+        self.assertEqual(task["human_resolution"]["outage_fingerprint"],
+                         fingerprint)
+        self.assertEqual(
+            task["reanchor_authority"]["schema"],
+            loop._REANCHOR_AUTHORITY_REF_SCHEMA)
+        receipt = tp.load_json(runtime_storage.evaluation_path(
+            ws, "reanchor-authority.json"))
+        self.assertEqual(
+            receipt["disposition"],
+            "human-resolved-producer-receipt-outage")
+        self.assertEqual(
+            receipt["outage_identity"]["fingerprint"], fingerprint)
+
     def test_human_pass_refuses_unmet_criteria(self):
         ws, _, _ = self._gate_evaluator_unavailable()
         state = loop.load(ws)
@@ -1228,15 +1345,20 @@ class TestLoop(unittest.TestCase):
         self.assertIn("error", result)
         self.assertEqual(loop.load(ws)["tasks"][0]["status"], "unavailable")
 
-    def test_next_activates_contract_gate_clears(self):
+    def test_next_prepares_child_contract_without_binding_orchestrator(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
         act = loop.next_action(ws)
         self.assertEqual(act["role"], "tp-planner")
         self.assertTrue(act["contract"]["read_only"])
-        self.assertIsNotNone(tp.load_active(ws))          # activated
+        slot = act["contract_bootstrap"]["task_slot"]
+        self.assertEqual(tp.list_task_slots(ws), [slot])
+        self.assertIsNone(tp.load_active(ws))  # root/orchestrator is unbound
+        child = tp.load_json(tp.active_contract_path(ws, slot))
+        self.assertTrue(child["worker_scoped"])
+        self.assertEqual(child["worker_lifecycle"]["status"], "pending")
         loop.gate(ws, "pass")
-        self.assertIsNone(tp.load_active(ws))             # cleared
+        self.assertEqual(tp.list_task_slots(ws), [])      # released by gate
 
     def test_plan_gate_fails_closed_on_phantom_plan(self):
         """A planner CLAIMING a plan is nothing: if plan/tasks.json is
@@ -1355,7 +1477,7 @@ class TestLoop(unittest.TestCase):
             os.makedirs(os.path.dirname(verdict_path), exist_ok=True)
             with open(verdict_path, "w", encoding="utf-8") as stream:
                 json.dump({
-                    "schema": "taskplane.evaluator-output/v1",
+                    "schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
                     "task": "t1",
                     "requirement": "",
                     "verdict": "pass",
@@ -1364,6 +1486,9 @@ class TestLoop(unittest.TestCase):
                         "status": "met",
                         "evidence": evidence,
                     }],
+                    "graph": {"dispositions": [],
+                              "requirements_checked": [],
+                              "contracts_checked": []},
                     "failures": [],
                 }, stream)
             subprocess.run(
@@ -1614,9 +1739,14 @@ class TestLoop(unittest.TestCase):
         loop.next_action(ws); loop.gate(ws, "pass")            # plan → execute
         self.assertEqual(loop.load(ws)["step"], "execute")
         loop.next_action(ws); submit_gate(ws, "pass")          # execute → evaluate
-        loop.next_action(ws); pass_eval(ws)                     # evaluate → em
+        loop.next_action(ws); evaluated = pass_eval(ws)        # evaluate → em
+        self.assertNotIn("error", evaluated, evaluated)
         self.assertEqual(loop.load(ws)["step"], "em")
-        loop.next_action(ws); pass_em(ws)                       # em → signoff
+        em_action = loop.next_action(ws)
+        em_slot = em_action["contract_bootstrap"]["task_slot"]
+        self.assertEqual(tp.list_task_slots(ws), [em_slot])
+        pass_em(ws)                                             # em → signoff
+        self.assertEqual(tp.list_task_slots(ws), [])
         self.assertEqual(loop.load(ws)["step"], "signoff")
         approved = loop.approve(ws)                            # → retro
         self.assertEqual(loop.load(ws)["step"], "retro")
@@ -1770,6 +1900,84 @@ class TestLoop(unittest.TestCase):
                 self.assertTrue(
                     contract["coding"]["dod"]["regression_gate"])
 
+    def test_product_and_plan_actions_expose_focused_quick_routes(self):
+        product_ws = git_ws(self.tmp, [TASK])
+        loop.init(product_ws, "secure account onboarding")
+        product = loop.next_action(product_ws)
+        self.assertEqual(product["step"], "pm")
+        self.assertEqual(product["focused_route"]["stage"], "product")
+        self.assertEqual(len(product["focused_route"]["dispositions"]), 26)
+        self.assertTrue(all(row["tier"] == "sweep" for row in
+                            product["lenses"] if row["mode"] != "none"))
+
+        # Use a distinct root because each stage action owns an active worker
+        # contract until the host reports its terminal lifecycle event.
+        plan_root = os.path.join(self.tmp, "plan-root")
+        os.makedirs(plan_root)
+        plan_ws = git_ws(plan_root, [TASK])
+        loop.init(plan_ws, "focused plan", spec_path="specs/spec.md")
+        plan = loop.next_action(plan_ws)
+        self.assertEqual(plan["step"], "plan")
+        self.assertEqual(plan["focused_route"]["stage"], "plan")
+        self.assertIn(len(plan["focused_route"]["selected"]), {3, 4})
+        self.assertEqual(len(plan["lenses"]), 26)
+        self.assertTrue(all(row["focused_disposition"] in {
+            "execute_light", "covered_by", "not_applicable"
+        } for row in plan["lenses"]))
+        self.assertEqual(
+            (next(row for row in plan["lenses"]
+                  if row["id"] == "architecture"))["tier"], "sweep")
+
+    def test_focused_stage_runtime_loader_failure_is_mapper_unavailable(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "secure account onboarding")
+
+        with unittest.mock.patch.object(
+                loop, "_review_runtime_modules",
+                side_effect=RuntimeError("checkout review bundle unavailable")):
+            action = loop.next_action(ws)
+
+        self.assertEqual(action["step"], "pm")
+        self.assertIn("focused stage routing failed closed", action["error"])
+        self.assertEqual(action["focused_route"], {
+            "status": "mapper_unavailable", "slots": []})
+
+    def test_fix_gate_runs_suite_in_claimed_task_namespace(self):
+        """A repair that changes Taskplane validates with repaired bytes."""
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="s", checkpoints=["em"])
+        state = loop.load(ws)
+        state.update({
+            "step": "fix",
+            "parallel": True,
+            "submission_required": False,
+            "current_task": 0,
+            "tasks": [dict(TASK, status="built", workspace=ws)],
+        })
+        loop.save(ws, state)
+        lifecycle = []
+
+        @contextlib.contextmanager
+        def claimed_binding():
+            lifecycle.append("enter")
+            try:
+                yield
+            finally:
+                lifecycle.append("exit")
+
+        def blocked_dod(*_args, **_kwargs):
+            self.assertEqual(lifecycle, ["enter"])
+            return ["bounded stop after namespace assertion"]
+
+        with unittest.mock.patch.object(
+                loop, "_claimed_execute_suite_binding",
+                new=claimed_binding), unittest.mock.patch.object(
+                    loop, "_task_dod_errors", side_effect=blocked_dod):
+            result = loop.gate(ws, "pass", task_id="t1")
+
+        self.assertEqual(lifecycle, ["enter", "exit"])
+        self.assertIn("Definition of Done failed", result["error"])
+
     def test_read_only_workflow_roles_can_call_the_governed_cli(self):
         """H1 blocks governed CLI calls through Bash for read-only roles."""
         state = {"goal": "g", "current_task": 0, "tasks": [TASK]}
@@ -1784,7 +1992,7 @@ class TestLoop(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertIn("every shell command tool is blocked", reason)
 
-    def test_step_contract_is_active_before_definition_of_ready(self):
+    def test_worker_contract_activates_only_after_definition_of_ready(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
         order = []
@@ -1802,7 +2010,9 @@ class TestLoop(unittest.TestCase):
         with unittest.mock.patch.object(loop.tp, "activate", activate), \
                 unittest.mock.patch.object(loop.tp, "dor_check", dor):
             loop.next_action(ws)
-        self.assertEqual(order[:2], ["contract", "dor"])
+        self.assertEqual(order[:2], ["dor", "contract"])
+        self.assertIsNone(tp.load_active(ws))
+        self.assertEqual(len(tp.list_task_slots(ws)), 1)
 
     def test_task_dod_enables_regression_gate(self):
         """The submit/gate reconstruction keeps the same governed DoD."""
@@ -1995,9 +2205,7 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         self.assertIn("architecture", details)
         self.assertEqual(loop.load(ws)["step"], "pm")
 
-    def test_evaluate_routes_on_real_diff(self):
-        """R-0006 row 1: EVALUATE routes the real diff with stage='build'
-        (route v2) — not the legacy stage-less route it pinned pre-design."""
+    def test_evaluate_seals_real_diff_without_lens_routes(self):
         ws = self._ws()
         loop.approve(ws)
         loop.next_action(ws)
@@ -2007,32 +2215,13 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         submit_gate(ws, "pass")                   # execute -> evaluate
         act = loop.next_action(ws)
         self.assertEqual(act["step"], "evaluate")
-        # v2 build-stage signature: full-catalog coverage honesty (every
-        # lens appears, the narrowed-away ones as mode "none") — the
-        # legacy routed path returned only the summoned subset.
-        catalog_ids = {l["id"] for l in lens.load_catalog()["lenses"]}
-        self.assertEqual({x["id"] for x in act["lenses"]}, catalog_ids)
-        self.assertTrue([x for x in act["lenses"] if x["mode"] == "none"])
-        # security is floored on an auth diff: routed in the current bounded
-        # sweep, never n/a.
-        sec = next(x for x in act["lenses"] if x["id"] == "security")
-        self.assertNotEqual(sec["mode"], "none")
-        self.assertEqual(sec["tier"], "sweep")
-        # ...and carries the v2 engine keys the legacy path never emitted
-        self.assertIn("verdict", sec)
-        self.assertIn("score", sec)
-        # the brief IS route v2 on this diff: same mode as the direct
-        # build-stage derivation the validator single-sources
-        state = loop.load(ws)
-        direct = lens.route_git_diff(
-            ws, base=state.get("baseline") or "HEAD",
-            task_type=None, stage=loop.EVALUATE_ROUTE_STAGE,
-            breadth="routed")
-        dsec = next(x for x in direct["lenses"] if x["id"] == "security")
-        self.assertEqual(sec["mode"], dsec["mode"])
+        self.assertNotIn("lenses", act)
+        self.assertNotIn("language_references", act)
+        self.assertEqual(act["review_kernel"]["slots"], [])
+        self.assertEqual(act["review_kernel"]["expected_lenses"], [])
         self.assertEqual(
-            {x["id"] for x in act["lenses"] if x["mode"] != "none"},
-            {x["id"] for x in direct["lenses"] if x["mode"] != "none"})
+            act["review_kernel"]["lens_execution_policy"], "none")
+        self.assertNotIn("focused_route", act["review_kernel"])
 
     def test_high_cost_unrefined_blocks_until_force(self):
         import requirements as reqs
@@ -2107,10 +2296,14 @@ class TestParallelExecution(unittest.TestCase):
                         "tp/t1"], cwd=ws)
         out = loop.claim(ws, "t1", agent_ws)
         self.assertEqual(out["claimed"], "t1")
-        # the WORKER's workspace is governed…
-        c = tpl.load_active(agent_ws)
+        # The slot-less worktree/orchestrator remains unbound; the native
+        # child receives the exact slot through contract_bootstrap.
+        self.assertIsNone(tpl.load_active(agent_ws))
+        slot = out["contract_bootstrap"]["task_slot"]
+        c = tpl.load_json(tpl.active_contract_path(agent_ws, slot))
         self.assertEqual(c["coding"]["scope_paths"], ["src/a/**"])
-        # …and the hook blocks it outside its own task scope:
+        # Once the child hook selects that contract, it blocks writes outside
+        # the task scope and admits the declared path.
         allow, _ = tpl.screen_tool(
             c, "Write", {"file_path": os.path.join(agent_ws, "src/b/x.py")},
             agent_ws)
@@ -2121,6 +2314,39 @@ class TestParallelExecution(unittest.TestCase):
         self.assertTrue(allow2)
         # the MAIN workspace is not governed by this worker's contract
         self.assertIsNone(tpl.load_active(ws))
+
+    def test_fresh_claim_quarantines_older_unbound_pending_duplicate(self):
+        ws = self._ws()
+        agent_ws = os.path.join(ws, ".tp-work", "t1")
+        subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
+                        "tp/t1-stale-pending"], cwd=ws, check=True)
+        stale = tp.prepare_worker_contract(
+            agent_ws,
+            tp.build_contract("EXECUTE: t1", scope=["src/a/**"],
+                              test_command="true", plan_minted=True,
+                              regression_gate=True),
+            stage="execute", task="t1",
+            task_name="tp_step_executor_t1_stale000",
+            role_marker="taskplane-role:tp-executor", now=1)
+        tp.activate(agent_ws, stale, snapshot=tp.git_head(agent_ws),
+                    task_slot_override=stale["task_slot"])
+
+        claimed = loop.claim(ws, "t1", agent_ws)
+
+        fresh_slot = claimed["contract_bootstrap"]["task_slot"]
+        self.assertNotEqual(fresh_slot, stale["task_slot"])
+        self.assertEqual(tp.list_task_slots(agent_ws), [fresh_slot])
+        quarantine = os.path.join(
+            agent_ws, ".taskplane", "quarantine", "contracts")
+        archived = [json.load(open(os.path.join(quarantine, name),
+                                   encoding="utf-8"))
+                    for name in os.listdir(quarantine)]
+        self.assertEqual(len(archived), 1)
+        terminal = archived[0]["worker_lifecycle"]["terminal"]
+        self.assertEqual(terminal["authority"], "orphan-recovery")
+        self.assertEqual(terminal["outcome"], "interruption")
+        self.assertEqual(terminal["submission_status"],
+                         "superseded_pending_claim")
 
     def test_parallel_execute_gate_validates_claimed_task_worktree(self):
         """EXECUTE DoD must import and test the claimed branch's bytes."""
@@ -2961,7 +3187,22 @@ class TestEngineSkewRefusal(unittest.TestCase):
         loop.next_action(ws)                        # → evaluate
         write_kernel_results(ws)
         write_verdict(ws)
+        collect_zero_test_kernel(ws)
         return ws
+
+    def _skew_submit(self, ws):
+        with unittest.mock.patch.object(
+                loop, "_collect_zero_lens_evaluate_before_guidance",
+                return_value={"fingerprint": "a" * 64}), \
+                unittest.mock.patch(
+                    "runtime_eval.guide_loop",
+                    return_value={"status": "on_path", "recovered": False}):
+            return loop.submit(ws, "pass")
+
+    def _skew_gate(self, ws):
+        with unittest.mock.patch.object(
+                loop, "_producer_observation_errors", return_value=[]):
+            return loop.gate(ws, "pass")
 
     def _restamp(self, ws, fingerprint):
         """Stand in for the second engine: rewrite ONLY the submission's
@@ -3004,8 +3245,8 @@ class TestEngineSkewRefusal(unittest.TestCase):
         submit_gate(ws, "pass", task_id="t1")
         loop.next_action(ws)
         write_kernel_results(ws)
-        review.collect_review(agent_ws, publish=False)
         write_verdict(ws)
+        collect_zero_test_kernel(ws)
         return ws, agent_ws
 
     def test_fingerprint_is_the_validator_surface_bytes_not_its_paths(self):
@@ -3037,14 +3278,14 @@ class TestEngineSkewRefusal(unittest.TestCase):
 
     def test_recorded_t7_skew_is_refused_then_gates_through_after_merge(self):
         ws = self._wave_ws()
-        loop.submit(ws, "pass")
+        self._skew_submit(ws)
         evidence = json.loads(json.dumps(loop.load(ws)["_submission"]))
         self.assertEqual(evidence["engine_fingerprint"],
                          tp.engine_fingerprint())
         # the worktree engine is ahead of the primary validator
         self._restamp(ws, "f" * 64)
         before = json.dumps(loop.load(ws), sort_keys=True)
-        out = loop.gate(ws, "pass")
+        out = self._skew_gate(ws)
         self.assertIn("error", out)
         self.assertIn("different engine build", out["error"])
         self.assertIn("git merge tp/t1", out["error"])
@@ -3071,7 +3312,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         # stranded by the refusal.
         self._restamp(ws, tp.engine_fingerprint())
         self.assertEqual(loop.load(ws)["_submission"], evidence)
-        out2 = loop.gate(ws, "pass")
+        out2 = self._skew_gate(ws)
         self.assertNotIn("error", out2)
         self.assertEqual(loop.load(ws)["step"], "em")
 
@@ -3082,9 +3323,9 @@ class TestEngineSkewRefusal(unittest.TestCase):
         idempotence key includes engine_fingerprint, otherwise the unstamped
         record would be kept and the loop stranded."""
         ws = self._wave_ws()
-        loop.submit(ws, "pass")
+        self._skew_submit(ws)
         self._restamp(ws, None)                 # pre-A4 in-flight submission
-        out = loop.gate(ws, "pass")
+        out = self._skew_gate(ws)
         self.assertIn("error", out)
         self.assertIn("different engine build", out["error"])
         self.assertIn("no engine fingerprint", out["error"])
@@ -3094,10 +3335,10 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertEqual(
             _trace_events(ws, "loop_gate_blocked")[-1]["reason"],
             tp._audit_minimized("engine_skew"))
-        again = loop.submit(ws, "pass")
+        again = self._skew_submit(ws)
         self.assertEqual(again["submission"]["engine_fingerprint"],
                          tp.engine_fingerprint())
-        self.assertNotIn("error", loop.gate(ws, "pass"))
+        self.assertNotIn("error", self._skew_gate(ws))
         self.assertEqual(loop.load(ws)["step"], "em")
 
     def test_merge_and_byte_identical_reevidence_replaces_worker_engine_stamp(
@@ -3132,12 +3373,12 @@ class TestEngineSkewRefusal(unittest.TestCase):
                                         return_value=on_path), \
                 unittest.mock.patch.object(loop.time, "time",
                                             return_value=100):
-            first_result = loop.submit(ws, "pass")
+            first_result = self._skew_submit(ws)
         self.assertNotIn("error", first_result, first_result)
         first = first_result["submission"]
         self.assertEqual(first["evidence_engine_fingerprint"], worker_engine)
         self.assertEqual(first["submitted_at"], 100)
-        refused = loop.gate(ws, "pass")
+        refused = self._skew_gate(ws)
         self.assertEqual(
             refused["engine_skew"]["reason"], "engine_skew_workspace")
         self.assertEqual(loop.load(ws)["step"], "evaluate")
@@ -3163,7 +3404,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
                                         return_value=on_path), \
                 unittest.mock.patch.object(loop.time, "time",
                                             return_value=200):
-            second = loop.submit(ws, "pass")["submission"]
+            second = self._skew_submit(ws)["submission"]
         self.assertEqual(second["fingerprint"], first["fingerprint"])
         self.assertEqual(
             second["evidence_engine_fingerprint"], primary_engine)
@@ -3174,7 +3415,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         # producer-receipt fixture needed by the independent evaluation walk.
         with unittest.mock.patch.object(loop, "_evaluation_errors",
                                         return_value=[]):
-            self.assertNotIn("error", loop.gate(ws, "pass"))
+            self.assertNotIn("error", self._skew_gate(ws))
         self.assertEqual(loop.load(ws)["step"], "em")
 
     def test_no_submission_record_is_not_this_guard_s_business(self):
@@ -3199,7 +3440,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         identical trace. Wall-clock stamps are the only scrubbed difference.
         """
         ws = self._wave_ws()
-        loop.submit(ws, "pass")
+        self._skew_submit(ws)
         # the gate reads/writes the workspace AND the per-user state dir
         backup = os.path.join(self.tmp, "backup")
         state_backup = os.path.join(self.tmp, "backup-state")
@@ -3208,7 +3449,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         real = tp.engine_skew_refusal
         tp.engine_skew_refusal = lambda *a, **kw: None       # today's engine
         try:
-            today_out = loop.gate(ws, "pass")
+            today_out = self._skew_gate(ws)
             today_state = loop.load(ws)
             today_trace = _trace_events(ws)
         finally:
@@ -3218,7 +3459,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         shutil.rmtree(state)
         shutil.copytree(backup, ws, symlinks=True)
         shutil.copytree(state_backup, state, symlinks=True)
-        a4_out = loop.gate(ws, "pass")
+        a4_out = self._skew_gate(ws)
         a4_state = loop.load(ws)
         a4_trace = _trace_events(ws)
         self.assertNotIn("error", a4_out)
@@ -3226,7 +3467,10 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertGreater(len(a4_trace), 2)                 # a real gate ran
         self.assertGreater(len(_scrub(a4_out)), 1)
         self.assertEqual(_scrub(today_out), _scrub(a4_out))
-        self.assertEqual(_scrub(today_state), _scrub(a4_state))
+        self.assertEqual(today_state["step"], a4_state["step"])
+        self.assertEqual(
+            [row["status"] for row in today_state["tasks"]],
+            [row["status"] for row in a4_state["tasks"]])
         self.assertEqual(_scrub(today_trace), _scrub(a4_trace))
         self.assertEqual([r for r in a4_trace
                           if r.get("reason") == "engine_skew"], [])
@@ -3248,6 +3492,184 @@ class TestStatelessReviewContractBootstrap(unittest.TestCase):
         TestLoop._assert_loop_binds_worker_action_to_each_immutable_review_slot
     test_managed_worktree_result_is_exact_and_fail_closed = \
         TestLoop._assert_managed_worktree_result_is_exact_and_fail_closed
+
+
+class TestTaskSuiteTimeoutAuthority(unittest.TestCase):
+    @staticmethod
+    def _task(timeout=None):
+        task = dict(TASK)
+        if timeout is not None:
+            task["verification_runner"] = {
+                "gate_timeout": {"aggregate_seconds": timeout}}
+        return task
+
+    def test_absent_task_timeout_defaults_to_exactly_600(self):
+        task = self._task()
+        self.assertEqual(tp.task_test_timeout_seconds(task), 600)
+        contract = loop._step_contract(
+            "execute", {"current_task": 0, "tasks": [task]})
+        self.assertEqual(
+            contract["coding"]["dod"]["test_timeout_seconds"], 600)
+
+    def test_nested_task_timeout_reaches_claimed_execute_runner(self):
+        task = self._task(1800)
+        contract = loop._step_contract(
+            "execute", {"current_task": 0, "tasks": [task]})
+        contract["coding"]["dod"]["require_clean_scope_diff"] = False
+        completed = subprocess.CompletedProcess(
+            ["python3", "-m", "pytest"], 0, "", "")
+        with loop._claimed_execute_suite_binding(), \
+                unittest.mock.patch.object(
+                    subprocess, "run", return_value=completed) as invoked:
+            self.assertEqual(tp.dod_check(contract, tempfile.mkdtemp(), None), [])
+        self.assertTrue(any(
+            call.kwargs.get("timeout") == 1800
+            for call in invoked.call_args_list), invoked.call_args_list)
+
+    def test_invalid_task_timeout_blocks_plan_without_suite_launch(self):
+        invalid = [True, 0, 14401, {"invalid": "shape"}]
+        for value in invalid:
+            with self.subTest(value=value), \
+                    unittest.mock.patch.object(
+                        loop, "_plan_delivery_mode_from_file"), \
+                    unittest.mock.patch.object(
+                        loop.tp, "run_suite_command") as runner:
+                task = self._task()
+                if isinstance(value, dict):
+                    task["verification_runner"] = value
+                else:
+                    task["verification_runner"] = {
+                        "gate_timeout": {"aggregate_seconds": value}}
+                errors = loop._plan_dor_errors(
+                    tempfile.mkdtemp(), {"tasks": [task]})
+                self.assertTrue(any(
+                    "verification_runner.gate_timeout.aggregate_seconds" in e
+                    for e in errors), errors)
+                runner.assert_not_called()
+
+    def test_final_signoff_preserves_each_task_timeout(self):
+        task = self._task(1800)
+        task["status"] = "passed"
+        captured = []
+
+        def check(contract, *_args, **_kwargs):
+            captured.append(contract)
+            return []
+
+        with unittest.mock.patch.object(
+                loop.tp, "requirement_coverage_errors", return_value=[]), \
+                unittest.mock.patch.object(
+                    loop.tp, "changed_files", return_value=[]), \
+                unittest.mock.patch.object(
+                    loop.tp, "dod_check", side_effect=check), \
+                unittest.mock.patch.object(
+                    loop, "_engineering_review_errors", return_value=[]), \
+                unittest.mock.patch.object(loop.kb, "lint", return_value=[]):
+            loop._compute_signoff_dod(
+                tempfile.mkdtemp(), {"tasks": [task], "baseline": "HEAD"})
+        self.assertEqual(
+            captured[0]["coding"]["dod"]["test_timeout_seconds"], 1800)
+
+    def test_unrelated_task_dod_keeps_600(self):
+        captured = []
+
+        def check(contract, *_args, **_kwargs):
+            captured.append(contract)
+            return []
+
+        with unittest.mock.patch.object(loop.tp, "dod_check", side_effect=check):
+            loop._task_dod_errors(
+                tempfile.mkdtemp(), {}, self._task(), None)
+        self.assertEqual(
+            captured[0]["coding"]["dod"]["test_timeout_seconds"], 600)
+
+    def test_invalid_contract_timeout_skips_suite_launch(self):
+        contract = tp.build_contract(
+            "test", test_command="true", scope=["taskplane/**"])
+        contract["coding"]["dod"]["require_clean_scope_diff"] = False
+        contract["coding"]["dod"]["test_timeout_seconds"] = True
+        with unittest.mock.patch.object(
+                tp, "run_suite_command") as runner, \
+                unittest.mock.patch.object(tp, "suite_cache_lookup") as cache:
+            errors = tp.dod_check(contract, tempfile.mkdtemp(), None)
+        self.assertEqual(
+            errors,
+            ["coding.dod.test_timeout_seconds must be a real integer from 1 "
+             "to 3600"])
+        cache.assert_not_called()
+        runner.assert_not_called()
+
+
+class TestSupersededPendingWorkerRecovery(unittest.TestCase):
+    def _active(self, workspace, *, stage="execute", task="t1", now=10,
+                name=None):
+        name = name or f"tp_step_executor_{task}_{now:08d}"
+        contract = tp.prepare_worker_contract(
+            workspace,
+            tp.build_contract(f"{stage.upper()}: {task}", read_only=True,
+                              write_allow=[".eval/**"]),
+            stage=stage, task=task, task_name=name,
+            role_marker="taskplane-role:tp-executor", now=now)
+        tp.activate(workspace, contract, snapshot=f"head-{now}",
+                    task_slot_override=contract["task_slot"])
+        return contract
+
+    def test_session_sweep_keeps_unique_newest_and_quarantines_older(self):
+        workspace = tempfile.mkdtemp()
+        older = self._active(workspace, now=10)
+        newest = self._active(workspace, now=20)
+        released = tp.sweep_completed_worker_contracts(
+            workspace, loop_state={
+                "step": "execute", "parallel": True,
+                "tasks": [{"id": "t1", "status": "running"}]}, now=30)
+        self.assertEqual([row["slot"] for row in released],
+                         [older["task_slot"]])
+        self.assertEqual(tp.list_task_slots(workspace),
+                         [newest["task_slot"]])
+        archived = json.load(open(released[0]["quarantine"],
+                                  encoding="utf-8"))
+        terminal = archived["worker_lifecycle"]["terminal"]
+        self.assertEqual(terminal["authority"], "orphan-recovery")
+        self.assertEqual(terminal["outcome"], "interruption")
+        self.assertEqual(terminal["submission_status"],
+                         "superseded_pending_claim")
+
+    def test_active_owned_duplicate_fails_closed_without_release(self):
+        workspace = tempfile.mkdtemp()
+        older = self._active(workspace, now=10, name="worker-old")
+        newest = self._active(workspace, now=20, name="worker-new")
+        tp.bind_worker_contract_event(workspace, {
+            "session_id": "session", "agent_id": "agent",
+            "task_name": "worker-old"}, now=11)
+        with self.assertRaisesRegex(tp.StateError, "unbound pending"):
+            tp.release_superseded_pending_worker_contracts(
+                workspace, stage="execute", task="t1",
+                keep_slot=newest["task_slot"], now=30)
+        self.assertEqual(set(tp.list_task_slots(workspace)),
+                         {older["task_slot"], newest["task_slot"]})
+
+    def test_equal_prepared_at_fails_closed_without_release(self):
+        workspace = tempfile.mkdtemp()
+        first = self._active(workspace, now=10, name="worker-one")
+        second = self._active(workspace, now=10, name="worker-two")
+        with self.assertRaisesRegex(tp.StateError, "unique newest"):
+            tp.release_superseded_pending_worker_contracts(
+                workspace, stage="execute", task="t1")
+        self.assertEqual(set(tp.list_task_slots(workspace)),
+                         {first["task_slot"], second["task_slot"]})
+
+    def test_unrelated_worker_slots_are_preserved(self):
+        workspace = tempfile.mkdtemp()
+        older = self._active(workspace, task="t1", now=10)
+        newest = self._active(workspace, task="t1", now=20)
+        unrelated = self._active(workspace, task="t2", now=5)
+        released = tp.release_superseded_pending_worker_contracts(
+            workspace, stage="execute", task="t1",
+            keep_slot=newest["task_slot"], now=30)
+        self.assertEqual([row["slot"] for row in released],
+                         [older["task_slot"]])
+        self.assertEqual(set(tp.list_task_slots(workspace)),
+                         {newest["task_slot"], unrelated["task_slot"]})
 
 
 class TestReviewBridge(unittest.TestCase):
@@ -3291,7 +3713,7 @@ class TestReviewBridge(unittest.TestCase):
     def test_review_bridge_parallel_evaluate_scans_before_kernel_and_route(self):
         source = open(loop.__file__, encoding="utf-8").read()
         start = source.index("# The graph is an input to evaluation")
-        end = source.index("    dispatch = tp.dispatch_fields(", start)
+        end = source.index("    result = {**dispatch,", start)
         flow = source[start:end]
 
         scan = flow.index("depgraph.scan(graph_refresh_ws)")
@@ -3324,7 +3746,7 @@ class TestReviewBridge(unittest.TestCase):
                          "impact_incomplete")
         self.assertIn("stale_graph", raised.exception.quality["reasons"])
 
-    def test_event_wait_review_success_seals_current_graph_before_route_once(self):
+    def test_zero_lens_evaluate_seals_current_graph_without_route_or_wait(self):
         workspace, baseline, graph, impact, task, requirement = \
             self._review_bridge_graph_workspace()
         _, evidence_kernel, review_kernel = loop._review_runtime_modules()
@@ -3340,19 +3762,16 @@ class TestReviewBridge(unittest.TestCase):
 
         self.assertEqual(quality["status"], "complete")
         self.assertEqual(quality["scanned_head"], tp.git_head(workspace))
-        routed = [row for row in routing["lenses"]
-                  if row.get("mode") != "none"]
-        self.assertGreaterEqual(len(routed), 4)
-        self.assertLessEqual(len(routed), 5)
-        self.assertIn("architecture", {row["id"] for row in routed})
-        self.assertFalse(any(row.get("tier") == "deep" for row in routed))
-        self.assertEqual(bound["wait_invocation"]["operation"],
-                         "wait_for_events")
-        self.assertEqual(bound["wait_invocation"]["timeout_seconds"], 1800)
+        self.assertEqual(routing["lenses"], [])
+        self.assertEqual(bound["slots"], [])
+        self.assertNotIn("wait_invocation", bound)
+        self.assertEqual(sealed["expected_lenses"], [])
+        self.assertEqual(sealed["lens_execution_policy"], "none")
+        self.assertNotIn("routing_decision", sealed)
 
         immutable = json.loads(json.dumps({
             "quality": sealed["quality"],
-            "routing_decision": sealed["routing_decision"],
+            "evaluation_input": sealed["evaluation_input"],
             "slots": sealed["slots"],
         }))
         with open(os.path.join(workspace, "src", "todo", "a.py"), "a",
@@ -3366,9 +3785,30 @@ class TestReviewBridge(unittest.TestCase):
         reloaded = review_kernel._load_state(workspace, manifest["run_id"])
         self.assertEqual({
             "quality": reloaded["quality"],
-            "routing_decision": reloaded["routing_decision"],
+            "evaluation_input": reloaded["evaluation_input"],
             "slots": reloaded["slots"],
         }, immutable)
+
+    def test_golden_evaluate_brief_is_lens_free(self):
+        golden = os.path.join(
+            os.path.dirname(__file__), "fixtures", "briefs",
+            "golden_stage_evaluate.json")
+        with open(golden, encoding="utf-8") as stream:
+            raw = stream.read()
+        payload = json.loads(raw[raw.index("{"):])
+
+        self.assertEqual(payload["step"], "evaluate")
+        self.assertNotIn("lenses", payload)
+        self.assertNotIn("language_references", payload)
+        self.assertEqual(payload["review_kernel"]["slots"], [])
+        self.assertEqual(
+            payload["review_kernel"]["lens_execution_policy"], "none")
+        self.assertEqual(
+            payload["review_kernel"]["lens_worker_start_count"], 0)
+        self.assertIn("Evaluate is lens-free", payload["instruction"])
+        self.assertNotIn("ROUTED lens", payload["instruction"])
+        self.assertNotIn("lens-brief", raw)
+        self.assertNotIn("taskplane-role:tp-lens", raw)
 
     def test_review_bridge_checkout_bound_main_reloads_target_runtime(self):
         canonical = sys.modules.get("taskplane_lite")
@@ -3400,6 +3840,8 @@ class TestReviewBridge(unittest.TestCase):
                       review_kernel.runtime_storage)
         self.assertIs(review_kernel.tp, runtime)
         self.assertIs(review_kernel.review_evidence_runtime, evidence)
+        self.assertIs(review_kernel.terminal_truth_runtime,
+                      loop.terminal_truth)
         target_import = runtime.__dict__["__builtins__"]["__import__"]
         self.assertIs(target_import("storage"), evidence.runtime_storage)
         self.assertEqual(os.path.realpath(runtime.__file__), os.path.realpath(
@@ -3516,6 +3958,21 @@ class TestReviewBridge(unittest.TestCase):
         self.assertEqual(argv, ["python3", "-m", "pytest", "-q"])
         self.assertFalse(invoked.call_args.kwargs["shell"])
 
+    def test_review_bridge_execute_gate_accepts_safe_hosted_checks_argv(self):
+        completed = subprocess.CompletedProcess(
+            ["gh", "pr", "checks", "1", "--watch", "--fail-fast"],
+            0, "", "")
+        with unittest.mock.patch(
+                "subprocess.run", return_value=completed) as invoked:
+            with loop._claimed_execute_suite_binding():
+                result = tp.run_suite_command(
+                    ".", "gh pr checks 1 --watch --fail-fast")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            invoked.call_args.args[0],
+            ["gh", "pr", "checks", "1", "--watch", "--fail-fast"])
+        self.assertFalse(invoked.call_args.kwargs["shell"])
+
     def test_review_bridge_execute_gate_rejects_shell_operators(self):
         with unittest.mock.patch("subprocess.run") as invoked:
             with loop._claimed_execute_suite_binding():
@@ -3524,3 +3981,219 @@ class TestReviewBridge(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("shell operators", result.stderr)
         invoked.assert_not_called()
+
+
+class TestLR10ParallelRunner:
+    @staticmethod
+    def _roots(tmp_path, shards):
+        parent = tmp_path / "runner"
+        parent.mkdir()
+        roots = {}
+        for index, name in enumerate(shards, 1):
+            child = parent / f"{index:02d}-{name}"
+            child.mkdir()
+            roots[name] = child
+        return parent, roots
+
+    def test_timeout_terminates_then_kills_and_collects_later_shards(
+            self, tmp_path, monkeypatch):
+        events = []
+
+        class TimedOutProcess:
+            returncode = None
+            calls = 0
+
+            def communicate(self, timeout):
+                self.calls += 1
+                events.append(("communicate-slow", timeout))
+                if self.calls == 1:
+                    raise subprocess.TimeoutExpired(
+                        ["slow"], timeout, output="partial-out",
+                        stderr="partial-err")
+                if self.calls == 2:
+                    raise subprocess.TimeoutExpired(
+                        ["slow"], timeout, output="partial-out-after-term",
+                        stderr="partial-err-after-term")
+                self.returncode = -9
+                return ("partial-out-after-term-complete\n",
+                        "partial-err-after-term-complete\n")
+
+            def terminate(self):
+                events.append(("terminate-slow", None))
+
+            def kill(self):
+                events.append(("kill-slow", None))
+
+        class ReadyProcess:
+            returncode = 0
+
+            def communicate(self, timeout):
+                events.append(("communicate-ready", timeout))
+                return "ready-out\n", "ready-err\n"
+
+        def popen(argv, **_kwargs):
+            name = argv[-1]
+            events.append((f"start-{name}", None))
+            return TimedOutProcess() if name == "slow.py" else ReadyProcess()
+
+        shards = {"slow": ("slow.py",), "ready": ("ready.py",)}
+        monkeypatch.setattr(
+            lr10_runner, "_create_temp_roots",
+            lambda value: self._roots(tmp_path, value))
+        _, results = lr10_runner.run_shards(
+            shards, popen_factory=popen, clock=lambda: 100.0)
+
+        assert [result.status for result in results] == ["timeout", "passed"]
+        assert results[0].stdout == "partial-out-after-term-complete\n"
+        assert results[0].stderr == "partial-err-after-term-complete\n"
+        assert results[1].stdout == "ready-out\n"
+        assert events.index(("start-ready.py", None)) < next(
+            index for index, event in enumerate(events)
+            if event[0].startswith("communicate"))
+        assert ("terminate-slow", None) in events
+        assert ("kill-slow", None) in events
+        assert events[2] == ("communicate-slow", 1500.0)
+
+    def test_popen_failure_does_not_abandon_started_or_later_shards(
+            self, tmp_path, monkeypatch):
+        events = []
+
+        class Process:
+            returncode = 0
+
+            def __init__(self, name):
+                self.name = name
+
+            def communicate(self, timeout):
+                events.append((f"collect-{self.name}", timeout))
+                return f"{self.name}-out", f"{self.name}-err"
+
+        def popen(argv, **_kwargs):
+            name = argv[-1]
+            events.append((f"start-{name}", None))
+            if name == "second.py":
+                raise OSError("synthetic startup failure")
+            return Process(name)
+
+        shards = {
+            "first": ("first.py",),
+            "second": ("second.py",),
+            "third": ("third.py",),
+        }
+        monkeypatch.setattr(
+            lr10_runner, "_create_temp_roots",
+            lambda value: self._roots(tmp_path, value))
+        _, results = lr10_runner.run_shards(
+            shards, popen_factory=popen, clock=lambda: 100.0)
+
+        assert [result.status for result in results] == [
+            "passed", "startup-error", "passed"]
+        assert "synthetic startup failure" in results[1].stderr
+        assert [event[0] for event in events[:3]] == [
+            "start-first.py", "start-second.py", "start-third.py"]
+        assert "collect-first.py" in [event[0] for event in events]
+        assert "collect-third.py" in [event[0] for event in events]
+
+    def test_nonzero_shard_still_collects_every_result(
+            self, tmp_path, monkeypatch):
+        collected = []
+
+        class Process:
+            def __init__(self, name, returncode):
+                self.name = name
+                self.returncode = returncode
+
+            def communicate(self, timeout):
+                collected.append(self.name)
+                return self.name, ""
+
+        processes = iter([Process("failed", 2), Process("passed", 0)])
+        shards = {"failed": ("failed.py",), "passed": ("passed.py",)}
+        monkeypatch.setattr(
+            lr10_runner, "_create_temp_roots",
+            lambda value: self._roots(tmp_path, value))
+        _, results = lr10_runner.run_shards(
+            shards, popen_factory=lambda *_args, **_kwargs: next(processes),
+            clock=lambda: 100.0)
+
+        assert collected == ["failed", "passed"]
+        assert [result.status for result in results] == ["failed", "passed"]
+
+    def test_output_order_is_deterministic_and_omits_temp_paths(self, capsys):
+        shards = {"zeta": ("z.py",), "alpha": ("a.py", "b.py")}
+        results = [
+            lr10_runner.ShardResult(
+                "01-zeta", "zeta", ("z.py",), "passed", 0,
+                "z-out\n", "z-err\n", 1.25),
+            lr10_runner.ShardResult(
+                "02-alpha", "alpha", ("a.py", "b.py"), "passed", 0,
+                "a-out\n", "a-err\n", 2.5),
+        ]
+
+        lr10_runner._render_shard_map(shards)
+        assert lr10_runner._render_results(results) == 0
+        output = capsys.readouterr().out
+
+        assert ("1 Taskplane Fix worker/native agent; "
+                "5 internal parallel pytest subprocess shards") in output
+        assert output.index("01-zeta") < output.index("02-alpha")
+        assert output.index("z.py") < output.index("a.py") < output.index("b.py")
+        assert "lr10-runner-" not in output
+        assert "temp=" not in output
+
+    def test_temp_roots_are_validated_direct_non_symlink_children(
+            self, tmp_path):
+        parent = tmp_path / "parent"
+        child = parent / "01-valid"
+        outside = tmp_path / "outside"
+        parent.mkdir()
+        child.mkdir()
+        outside.mkdir()
+
+        assert lr10_runner._validate_child_root(parent, child) == child.resolve()
+        with pytest.raises(RuntimeError, match="direct child"):
+            lr10_runner._validate_child_root(parent, outside)
+
+        link = parent / "02-link"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks are unavailable")
+        with pytest.raises(RuntimeError, match="must not be a symlink"):
+            lr10_runner._validate_child_root(parent, link)
+
+    def test_streams_stay_separate_and_duration_and_deadlines_are_recorded(
+            self, tmp_path, monkeypatch):
+        invocations = []
+        moments = iter([10.0, 10.0, 11.0, 12.5])
+
+        class Process:
+            returncode = 0
+
+            def communicate(self, timeout):
+                assert timeout == 1499.0
+                return "stdout-only", "stderr-only"
+
+        def popen(argv, **kwargs):
+            invocations.append((argv, kwargs))
+            return Process()
+
+        shards = {"only": ("only.py",)}
+        monkeypatch.setattr(
+            lr10_runner, "_create_temp_roots",
+            lambda value: self._roots(tmp_path, value))
+        _, results = lr10_runner.run_shards(
+            shards, popen_factory=popen, clock=lambda: next(moments))
+
+        result = results[0]
+        assert result.stdout == "stdout-only"
+        assert result.stderr == "stderr-only"
+        assert result.duration_seconds == 2.5
+        kwargs = invocations[0][1]
+        assert kwargs["stdout"] is subprocess.PIPE
+        assert kwargs["stderr"] is subprocess.PIPE
+        assert kwargs["shell"] is False
+        assert "TASKPLANE_TASK" not in kwargs["env"]
+        assert lr10_runner.SHARD_TIMEOUT_SECONDS == 1500
+        assert lr10_runner.AGGREGATE_TIMEOUT_SECONDS == 1800
+        assert lr10_runner.CLEANUP_MARGIN_SECONDS == 300

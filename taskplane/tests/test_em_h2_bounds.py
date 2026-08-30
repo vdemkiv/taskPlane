@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import datetime
 import inspect
 import json
 import os
@@ -56,6 +57,15 @@ def _screen(ledger: dict) -> dict:
         outstanding_set_fingerprint="b" * 64,
         preserved_context_fingerprint="c" * 64,
     )
+
+
+def _codex_rollout_path(root, session_id):
+    first, second, *_ = session_id.split("-")
+    instant = datetime.datetime.fromtimestamp(int(first + second, 16) / 1000)
+    return (root / "sessions" / instant.strftime("%Y") /
+            instant.strftime("%m") / instant.strftime("%d") /
+            (f"rollout-{instant.strftime('%Y-%m-%dT%H-%M-%S')}-"
+             f"{session_id}.jsonl"))
 
 
 def test_h13_standalone_review_has_finite_default_token_ceiling(
@@ -231,25 +241,24 @@ def test_h27_caller_cannot_lower_checkpoint_totals_and_redigest(
 def test_h28_review_scans_only_selected_session_with_byte_cap(
         tmp_path, monkeypatch) -> None:
     codex_root = tmp_path / "codex"
-    sessions = codex_root / "sessions" / "2026" / "08" / "28"
-    sessions.mkdir(parents=True)
     action_id = "action-1"
     run_id = "run-1"
     receipt_id = "approval-1"
     session_id = "01a0483d-ba00-7000-8000-000000000001"
+    codex_root.mkdir()
     (codex_root / "session_index.jsonl").write_text(json.dumps({
         "id": session_id, "updated_at": "2026-08-28T12:00:00Z",
     }) + "\n", encoding="utf-8")
     prompt = review._review_action_prompt(run_id, action_id, "dynamic")
-    selected = sessions / (
-        "rollout-2026-08-28T08-00-00-" + session_id + ".jsonl")
+    selected = _codex_rollout_path(codex_root, session_id)
+    selected.parent.mkdir(parents=True)
     selected.write_text(json.dumps({
         "type": "response_item", "payload": {
             "type": "message", "id": receipt_id, "role": "user",
             "content": [{"type": "input_text", "text": prompt}],
         },
     }) + "\n", encoding="utf-8")
-    unrelated = sessions / "rollout-newer-unrelated.jsonl"
+    unrelated = selected.parent / "rollout-newer-unrelated.jsonl"
     unrelated.write_text("not-json\n", encoding="utf-8")
     now = time.time_ns()
     os.utime(selected, ns=(now - 10, now - 10))
@@ -274,7 +283,7 @@ def test_h28_review_scans_only_selected_session_with_byte_cap(
     assert reads == [str(selected)]
 
     monkeypatch.setattr(review, "MAX_HOST_TRANSCRIPT_BYTES", 256)
-    bounded = sessions / "rollout-bounded-session.jsonl"
+    bounded = selected.parent / "rollout-bounded-session.jsonl"
     row = json.dumps({"tail": True}).encode() + b"\n"
     bounded.write_bytes((b"old\n" * 300) + row)
     assert review._host_review_records(str(bounded))[-1] == {"tail": True}
@@ -284,8 +293,7 @@ def test_h28_exact_session_lookup_never_walks_unmatched_history(
         tmp_path, monkeypatch) -> None:
     codex_root = tmp_path / "codex"
     session_id = "01a0483d-ba00-7000-8000-000000000001"
-    selected = (codex_root / "sessions" / "2026" / "08" / "28" /
-                ("rollout-2026-08-28T08-00-00-" + session_id + ".jsonl"))
+    selected = _codex_rollout_path(codex_root, session_id)
     selected.parent.mkdir(parents=True)
     selected.write_text("{}\n", encoding="utf-8")
     for index in range(100):

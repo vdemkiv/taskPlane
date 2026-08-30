@@ -5,11 +5,45 @@ import subprocess
 from pathlib import Path
 
 import evidence
+import evaluation_output
 import loop
 import runtime_eval
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _workflow_brief(name, member):
+    brief = {"id": member, "prompt": member,
+             "resume_identity": f"handle-{member}"}
+    if name == "evaluate":
+        output_schema = evaluation_output.evaluator_output_schema()
+        output_contract = {
+            "output_schema": output_schema,
+            "max_attempts": evaluation_output.MAX_ATTEMPTS,
+        }
+        brief.update({
+            "output_schema": output_schema,
+            "output_contract": output_contract,
+            "max_attempts": output_contract["max_attempts"],
+        })
+    return brief
+
+
+def _evaluator_receipt(member):
+    return {
+        "schema": "taskplane.evaluator-output/v2",
+        "task": member,
+        "requirement": "",
+        "verdict": "pass",
+        "criteria": [],
+        "graph": {
+            "dispositions": [],
+            "requirements_checked": [],
+            "contracts_checked": [],
+        },
+        "failures": [],
+    }
 
 
 def _run_workflow(name, args, order=None):
@@ -27,7 +61,10 @@ const agent = async (_prompt, options) => {
   const member = options.label.split(':').slice(1).join(':');
   return name === 'execute'
     ? {task: member, outcome: 'pass', note: 'ok'}
-    : {schema: 'taskplane.evaluator-output/v1', task: member, verdict: 'pass'};
+    : {schema: 'taskplane.evaluator-output/v2', task: member,
+       requirement: '', verdict: 'pass', criteria: [],
+       graph: {dispositions: [], requirements_checked: [], contracts_checked: []},
+       failures: []};
 };
 const parallel = async (runs) => {
   const sequence = order.length ? order : runs.map((_run, index) => index);
@@ -87,14 +124,8 @@ def test_attention_pauses_until_matching_explicit_resume():
 
 
 def test_production_workflows_aggregate_every_completion_order():
-    evaluator_schema = {
-        "$id": "taskplane.evaluator-output/v1",
-        "additionalProperties": False,
-    }
     for name in ("execute", "evaluate"):
-        briefs = [{"id": member, "prompt": member,
-                   "resume_identity": f"handle-{member}",
-                   "output_schema": evaluator_schema}
+        briefs = [_workflow_brief(name, member)
                   for member in ("a", "b", "c")]
         for ordering in itertools.permutations(range(3)):
             run = _run_workflow(name, {"briefs": briefs}, ordering)
@@ -107,19 +138,11 @@ def test_production_workflows_aggregate_every_completion_order():
 
 
 def test_production_workflows_resume_without_relaunch_and_surface_attention():
-    evaluator_schema = {
-        "$id": "taskplane.evaluator-output/v1",
-        "additionalProperties": False,
-    }
     for name in ("execute", "evaluate"):
-        briefs = [{"id": member, "prompt": member,
-                   "resume_identity": f"handle-{member}",
-                   "output_schema": evaluator_schema}
-                  for member in ("a", "b")]
+        briefs = [_workflow_brief(name, member) for member in ("a", "b")]
         prior_receipt = ({"task": "a", "outcome": "pass", "note": "ok"}
                          if name == "execute" else
-                         {"schema": "taskplane.evaluator-output/v1",
-                          "task": "a", "verdict": "pass"})
+                         _evaluator_receipt("a"))
         wave = loop.command_wave_create(
             f"{name}-wave", ["a", "b"],
             handles={"a": "handle-a", "b": "handle-b"})

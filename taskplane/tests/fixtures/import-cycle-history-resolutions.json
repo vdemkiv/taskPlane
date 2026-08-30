@@ -62,6 +62,85 @@
       "violation_codes": [
         "physical-loc-growth"
       ]
+    },
+    {
+      "affected_modules": [
+        "taskplane.audit",
+        "taskplane.dashboard",
+        "taskplane.defect_claim",
+        "taskplane.design_contract",
+        "taskplane.evidence",
+        "taskplane.lens",
+        "taskplane.lens_signals",
+        "taskplane.loop",
+        "taskplane.loop_status",
+        "taskplane.requirements",
+        "taskplane.retro",
+        "taskplane.review",
+        "taskplane.review_progression",
+        "taskplane.review_repair",
+        "taskplane.review_retry",
+        "taskplane.runtime_eval",
+        "taskplane.views"
+      ],
+      "commit_count": 10,
+      "history_sha256": "d1f0444bb636262845c489b512c586ce69f8c5cfe9695bc2d8b212401e357f6a",
+      "introduced_revision": "feadacd4ac0e6bf485c7f93f64afb9fc90aa21c7",
+      "reason": "The zero-lens producer evidence integration temporarily exceeded the protected SCC physical-line ceiling without adding a member or edge. Revision 106af463 refreshed the exact measured policy after the bounded integration; this receipt binds all ten failing revisions and authorizes no future growth.",
+      "repaired_revision": "106af4631ab5b5c041055b9b9b918d78a18ae50b",
+      "violation_codes": [
+        "physical-loc-growth"
+      ]
+    },
+    {
+      "affected_modules": [
+        "taskplane.checkpoint",
+        "taskplane.collision",
+        "taskplane.depgraph",
+        "taskplane.regression",
+        "taskplane.review_evidence",
+        "taskplane.stage_entities",
+        "taskplane.stage_handoff",
+        "taskplane.taskplane_lite"
+      ],
+      "commit_count": 8,
+      "history_sha256": "85303e390806a8f9c95760fc8d8c779bc7fcfc69ebbceba1f5e4edb111fbe224",
+      "introduced_revision": "16aef49311534a820b22c56c4faae8c39428e04e",
+      "reason": "The delayed integrity-baseline refresh landed while the checkpoint adapter cycle and second protected SCC line growth were still present. Revision 375c0e95 removed the checkpoint cycle and restored both enforced bounds; this receipt binds only the eight continuous failing revisions and permits no recurrence.",
+      "repaired_revision": "375c0e95cff63c38671320817dc3cd8cefd6813f",
+      "violation_codes": [
+        "new-cyclic-member",
+        "physical-loc-growth"
+      ]
+    },
+    {
+      "affected_modules": [
+        "taskplane.audit",
+        "taskplane.dashboard",
+        "taskplane.defect_claim",
+        "taskplane.design_contract",
+        "taskplane.evidence",
+        "taskplane.lens",
+        "taskplane.lens_signals",
+        "taskplane.loop",
+        "taskplane.loop_status",
+        "taskplane.requirements",
+        "taskplane.retro",
+        "taskplane.review",
+        "taskplane.review_progression",
+        "taskplane.review_repair",
+        "taskplane.review_retry",
+        "taskplane.runtime_eval",
+        "taskplane.views"
+      ],
+      "commit_count": 1,
+      "history_sha256": "32ed0e0a60622c86aaeebd04e115914e4108215c99ee996a49bd81aedb4aafaf",
+      "introduced_revision": "e88308974c172cb9f2c26ae46b1130c85a92c9e8",
+      "reason": "The runtime-guidance implementation temporarily added physical lines without changing protected SCC membership or edges. Revision 69c5b937 compacted it back to the exact ceiling; this receipt covers only e8830897 and authorizes no future growth.",
+      "repaired_revision": "69c5b937de4c5dc8ccb21eaa74df0c526fb18b27",
+      "violation_codes": [
+        "physical-loc-growth"
+      ]
     }
   ],
   "schema": "taskplane.import-cycle-history-resolutions/v1"

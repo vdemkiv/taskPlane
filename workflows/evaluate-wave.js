@@ -112,14 +112,19 @@ export default async function evaluateWave({ args, agent, parallel, phase }) {
     !PAUSED.has(commandWave.members[String(b.id)]));
   const runs = pending.map((b) => () => (async () => {
     const output_contract = b.output_contract || {};
-    const output_schema = b.output_schema || output_contract.output_schema;
+    const output_schema = output_contract.output_schema;
     if (!output_schema || typeof output_schema !== 'object' ||
-        output_schema['$id'] !== 'taskplane.evaluator-output/v1' ||
+        output_schema['$id'] !== 'taskplane.evaluator-output/v2' ||
         output_schema.additionalProperties !== false) {
       throw new Error('evaluate brief lacks the canonical evaluator schema');
     }
     const resume_identity = b.resume_identity;
-    const max_attempts = b.max_attempts || output_contract.max_attempts || 2;
+    const max_attempts = b.max_attempts;
+    if (typeof resume_identity !== 'string' || !resume_identity ||
+        !Number.isInteger(max_attempts) || max_attempts < 1 ||
+        max_attempts !== output_contract.max_attempts) {
+      throw new Error('evaluate brief lacks canonical retry identity');
+    }
     try {
       const receipt = await agent(b.prompt, {
         label: 'eval:' + b.id, phase: 'Evaluate', schema: output_schema,

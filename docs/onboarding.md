@@ -108,7 +108,8 @@ role instructions and payload in the delegated message, spawns scope-disjoint
 work concurrently, waits in bounded intervals for every requested result, and
 interrupts/escalates a stalled or mis-scoped agent rather than declaring partial
 work complete.
-Repo-local `SubagentStart`/`SubagentStop` hooks add bounded context and lifecycle traces; the
+Repo-local `SubagentStart`/`SubagentStop` hooks bind exact child contracts and
+terminalize/quarantine them while adding bounded context and lifecycle traces; the
 PreToolUse screen and evidence gates remain authoritative. For a long run you
 may start Goal mode with `/goal`; it changes neither permissions nor gates.
 
@@ -143,6 +144,14 @@ commit `.taskplane-kb/`). `tp share status` shows your current mode and
 unpublished count.
 
 ## Models (cost routing)
+
+Lens routing is stage-owned, not a setup choice. Product and Design choose a
+minimum-sufficient focused quick route; non-trivial Plan and Evaluate execute
+exactly 3–4 quick lenses; Build and Fix launch zero lens workers. Every routed
+stage still publishes all 26 evidenced dispositions. Overflow splits scope or
+requires protected exact-target expanded-route authority. A Fix invalidates
+only changed fingerprint inputs, so the next Evaluate reuses unchanged sealed
+evidence. Route telemetry is bounded and redacted.
 
 Every loop step, task, and lens brief carries a capability tier —
 `cheap` / `standard` / `deep` — and taskplane resolves it to a model at

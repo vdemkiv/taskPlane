@@ -641,12 +641,22 @@ def lint(ws: str) -> list:
     # in-repo plan/specs. The lint still matters even though the KB no longer
     # ships: it keeps prompt data and pricing/commercial strategy out of a
     # store that may later be exported or shared with a team.
-    roots = [tp.kb_root(ws), os.path.join(ws, "plan"), os.path.join(ws, "specs")]
+    knowledge_root = tp.kb_root(ws)
+    roots = [knowledge_root, os.path.join(ws, "plan"), os.path.join(ws, "specs")]
     for root in roots:
         if not os.path.isdir(root):
             continue
         for dirpath, dirs, files in os.walk(root):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
+            # The external store colocates machine-owned loop state below
+            # knowledge/state.  It can legitimately contain sealed binary
+            # evidence (for example an EM outage snapshot encoded as base64),
+            # while this lint governs curated, exportable knowledge only.
+            # Never interpret control-plane state as authored KB prose.
+            if os.path.realpath(root) == os.path.realpath(knowledge_root) \
+                    and os.path.realpath(dirpath) == \
+                    os.path.realpath(knowledge_root):
+                dirs[:] = [d for d in dirs if d != "state"]
             for fn in files:
                 if not fn.endswith((".md", ".json")):
                     continue

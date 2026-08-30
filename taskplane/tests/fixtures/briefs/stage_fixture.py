@@ -79,10 +79,34 @@ TASKS = [
 _ZERO_KEYS = ("updated_at", "scanned_at", "submitted_at")
 _SHA_KEYS = ("scanned_head", "content_fingerprint", "snapshot",
              "fingerprint", "baseline", "run_id", "evidence_id",
-             "revision", "scanned_revision", "target_commit")
+             "revision", "scanned_revision", "target_commit",
+             "resume_identity")
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _HEX64_RE = re.compile(r"\b[0-9a-f]{64}\b")
 _REVIEW_SLOT_RE = re.compile(r"\breview-[0-9a-f]{20}\b")
+_TASK_SLOT_RE = re.compile(r"\btask_[0-9a-f]{8}\b")
+_WORKER_ATTEMPT_RE = re.compile(
+    r"\b(tp_step_[A-Za-z0-9_]+_attempt_)\d+_[0-9a-f]{8}\b")
+_WORKER_SUFFIX_RE = re.compile(
+    r"\b(tp_step_[A-Za-z0-9_]+)_[0-9a-f]{8}\b")
+
+
+def _scrub_worker_bootstrap(value: dict) -> dict:
+    """Normalize transport identities while retaining worker authority shape."""
+    out = json.loads(json.dumps(value))
+    release = out.get("control_plane_release") or {}
+    if "signed_action" in release:
+        release["signed_action"] = "<SIGNED_RELEASE_ACTION>"
+    environment = out.get("environment") or {}
+    if "TASKPLANE_TASK" in environment:
+        environment["TASKPLANE_TASK"] = "task_<SLOT>"
+    out["task_slot"] = _TASK_SLOT_RE.sub(
+        "task_<SLOT>", str(out.get("task_slot") or ""))
+    out["worker_identity"] = _WORKER_ATTEMPT_RE.sub(
+        r"\1<N>_<ATTEMPT>", str(out.get("worker_identity") or ""))
+    out["worker_identity"] = _WORKER_SUFFIX_RE.sub(
+        r"\1_<WORKER>", out["worker_identity"])
+    return out
 
 
 def _scrub_review_bootstrap(value: dict) -> dict:
@@ -278,6 +302,9 @@ def scrub(payload, ws: str, store: "str | None" = None):
                     "taskplane.review-contract-bootstrap/v1":
                 obj = _scrub_review_bootstrap(obj)
             elif obj.get("schema") == \
+                    "taskplane.worker-contract-bootstrap/v1":
+                obj = _scrub_worker_bootstrap(obj)
+            elif obj.get("schema") == \
                     "taskplane.native-agent-dispatch-intent-telemetry/v1":
                 obj = dict(obj)
                 obj["intent_id"] = "<INTENT>"
@@ -313,6 +340,9 @@ def scrub(payload, ws: str, store: "str | None" = None):
         if isinstance(obj, str):
             for real, token in subs:
                 obj = obj.replace(real, token)
+            obj = _TASK_SLOT_RE.sub("task_<SLOT>", obj)
+            obj = _WORKER_ATTEMPT_RE.sub(r"\1<N>_<ATTEMPT>", obj)
+            obj = _WORKER_SUFFIX_RE.sub(r"\1_<WORKER>", obj)
             return _DATE_RE.sub("<DATE>", obj)
         return obj
 
@@ -340,6 +370,10 @@ def assert_deterministic(body: str, name: str) -> None:
             (r'intent-[0-9a-f]{32}', "dispatch intent id"),
             (r'review-[0-9a-f]{20}', "review slot id"),
             (r'review-action-[0-9a-f]{24}', "review action id"),
+            (r'task_[0-9a-f]{8}', "worker task slot"),
+            (r'tp_step_[A-Za-z0-9_]+_[0-9a-f]{8}', "worker suffix"),
+            (r'"signed_action": "(?!<SIGNED_RELEASE_ACTION>)',
+             "signed release action"),
             (r'"observed_at": "(?!<TIME>)', "enforcement timestamp")):
         assert not re.search(pattern, body), \
             f"{name}: nondeterministic {label} leaked"

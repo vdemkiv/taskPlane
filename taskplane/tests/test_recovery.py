@@ -258,14 +258,16 @@ class TestEngineReleasesOnGate(unittest.TestCase):
         os.makedirs(os.path.join(ws, 'specs'), exist_ok=True)
         open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loopmod.next_action(ws)                  # activates step contract
-        cpath = os.path.join(tpl.tp_dir(ws), "active_contract.json")
-        self.assertTrue(os.path.exists(cpath))
+        self.assertIsNotNone(tpl.worker_contract_for_stage(
+            ws, stage="pm", task="pm"))
         out = loopmod.gate(ws, "fail")
         self.assertIn("error", out)              # stays at pm, governed
         self.assertEqual(loopmod.load(ws)["step"], "pm")
-        self.assertTrue(os.path.exists(cpath))   # retry stays under contract
+        self.assertIsNotNone(tpl.worker_contract_for_stage(
+            ws, stage="pm", task="pm"))  # retry stays governed
         loopmod.gate(ws, "pass")
-        self.assertFalse(os.path.exists(cpath))  # advancing gate releases
+        self.assertIsNone(tpl.worker_contract_for_stage(
+            ws, stage="pm", task="pm"))   # advancing gate releases
 
 
 class TestBareRootRefusal(unittest.TestCase):

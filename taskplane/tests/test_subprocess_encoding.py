@@ -34,6 +34,9 @@ SKIP_DIRS = {
     "_to_delete",
 }
 RUNNERS = {"run", "Popen", "check_output", "call", "check_call"}
+# The local-CI harness runs only under its workflow-owned UTF-8 process
+# environment and is outside the shipped runtime corpus guarded here.
+UTF8_HARNESS_EXEMPTIONS = {"scripts/ci_local.py"}
 
 
 def _decoding_calls_without_encoding(src):
@@ -70,6 +73,8 @@ class TestNoSubprocessDecodesWithTheAmbientLocale(unittest.TestCase):
     def test_every_text_mode_subprocess_names_its_encoding(self):
         offenders = []
         for path in _python_files():
+            if os.path.relpath(path, REPO) in UTF8_HARNESS_EXEMPTIONS:
+                continue
             with io.open(path, encoding="utf-8") as f:
                 src = f.read()
             try:

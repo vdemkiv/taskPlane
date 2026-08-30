@@ -120,7 +120,7 @@ class TestH2LockedGateTransition(_Env):
             os.makedirs(os.path.dirname(verdict_path), exist_ok=True)
             with open(verdict_path, "w", encoding="utf-8") as handle:
                 json.dump({
-                    "schema": "taskplane.evaluator-output/v1",
+                    "schema": loop.evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
                     "task": "t1",
                     "requirement": "",
                     "criteria": [{

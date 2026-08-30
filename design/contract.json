@@ -1,617 +1,592 @@
 {
   "schema": "taskplane.design/v1",
-  "requirement": "R-0002",
-  "title": "Severity-gated remediation of all 72 deep-EM findings",
-  "summary": "Stabilize durability and authority in H1, execute pairwise-disjoint H2 and H3 lanes with low companions, enforce an independent exact-SHA high closure gate, then execute concurrent M1 and M2 lanes with the remaining low companions before one final integration and full-suite evaluation.",
+  "requirement": "R-0001",
+  "title": "Focused dynamic lens routing with fingerprinted selective reuse",
+  "summary": "Add one dependency-neutral deterministic routing policy over the incumbent 26-lens signal engine; adapt Product, Design, Plan, and Evaluate to stage-specific focused routes; preserve complete dispositions, fail-closed overflow through a protected content-addressed provider, per-lens evidence reuse, and zero lens workers in Build, Fix, and EM.",
   "current_state": {
-    "summary": "At reviewed SHA 00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085, Taskplane is a stdlib-first Python plugin with file-backed governance, immutable/CAS evidence primitives, a server-rendered dashboard, graph/review subsystems, CI, packaging, and repository documentation. The deep EM review found 72 open obligations: several durability and authority abstractions exist but are incompletely composed or ordered; multiple production validators are unwired; review/preview/repository work has unbounded paths; the dashboard and graph overstate interaction/state semantics; privacy and compatibility claims diverge from behavior; CI lacks reproducible Python quality controls; and global test/runtime seams are not isolated.",
-    "reviewed_revision": "00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085",
-    "canonical_findings": {
-      "path": ".em-review/findings.json",
-      "total": 72,
-      "high": 34,
-      "medium": 28,
-      "low": 10,
-      "status": "open"
-    },
-    "graph": {
-      "baseline_fingerprint": "42b140d0b8125932f316693a7efb2c24f71853f5a3aea822bf7c9558cf6aca0b",
-      "modules": 59,
-      "edges": 200,
-      "quality": "complete",
-      "scanned_revision": "00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085"
-    },
+    "summary": "The incumbent signal engine scores all 26 lenses as deep/light/n/a with an eight-deep cap and security/architecture floors. Product and Plan still use legacy strategy routing, Design forces only solution-design, automatic Review/Evaluate projects four or five sweep lenses, retry membership follows prior failures rather than canonical per-lens input changes, and the sealed zero-lens delivery mode currently suppresses Evaluate and EM together with Build/Fix. Canonical finding 6ea9aff0107f4bb6 additionally proves that worktree-side expanded-route issuance, clock, RSA verification, and consumption are not protected from worker monkeypatching. Existing ReviewKernel evidence, leases, native dispatch, storage, and telemetry are retained, while authority moves outside the worker checkout and interpreter.",
     "sources": [
       "specs/spec.md",
-      ".em-review/findings.json",
-      "components.yaml",
-      "taskplane/terminal_truth.py",
-      "taskplane/delivery_ports.py",
-      "taskplane/run_store.py",
-      "taskplane/producer_observation.py",
-      "taskplane/taskplane_lite.py",
-      "taskplane/dashboard.py",
-      "taskplane/depgraph.py",
+      "docs/token-efficiency-lens-routing-amendment.md",
+      "docs/token-efficiency-lens-routing-amendment.json",
+      "lenses/catalog.json",
       "taskplane/graph_primitives.py",
-      "taskplane/native_authority.py",
-      "taskplane/design_sweep.py",
-      "taskplane/preview_runtime.py",
-      "taskplane/review.py",
-      "taskplane/tp.py",
-      "taskplane/command_runtime.py",
-      "taskplane/loop.py",
-      "taskplane/dispatch_telemetry.py",
       "taskplane/lens.py",
-      "taskplane/repository.py",
-      "taskplane/build_c.py",
-      "taskplane/tests/__init__.py",
-      ".github/workflows/ci.yml",
-      "scripts/package_openai.py",
-      "design/compatibility.json",
-      "PRIVACY.md",
-      "README.md",
-      "CONTRIBUTING.md",
-      "docs/loop-design.md",
-      "docs/onboarding.md",
-      "docs/cli-reference.md",
-      ".codex-plugin/plugin.json",
-      "skills/tp-help/SKILL.md",
-      "exports/terminal/r0013/106af4631ab5b5c041055b9b9b918d78a18ae50b.json",
-      "exports/terminal/r0013/.native-usage-receipt.json"
+      "taskplane/lens_signals.py",
+      "taskplane/loop.py",
+      "taskplane/review.py",
+      "taskplane/review_retry.py",
+      "taskplane/delivery_policy.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/terminal_truth.py",
+      "components.yaml",
+      "taskplane/dispatch_telemetry.py",
+      "pyproject.toml",
+      ".github/workflows/ci.yml"
     ]
   },
   "alternatives": [
     {
-      "id": "contract-first-severity-train",
-      "name": "Contract-first severity train",
-      "description": "Stabilize shared durability, authority, compatibility, and timeout contracts in H1; fan out H2/H3 and then M1/M2 by exclusive file/interface owner; join each branch; enforce an independent high gate; finish with one exact-SHA integration evaluation.",
+      "id": "shared-policy-adapters",
+      "name": "Shared pure policy with incumbent adapters",
+      "description": "Introduce one standard-library-only pure routing-policy module and keep current signal scoring, stage lifecycle, ReviewKernel provenance, signing, storage, and telemetry as consuming adapters.",
       "tradeoffs": {
         "gains": [
-          "Preserves the high-first Product priority and fail-closed medium eligibility",
-          "Maximizes safe native parallelism without duplicate file or interface ownership",
-          "Reuses incumbent modules and introduces only three acceptance-traceable support modules",
-          "Keeps compatibility and rollback additive"
+          "One deterministic disposition, cap, overflow, and fingerprint contract serves every routed stage",
+          "Reuses mature graph floors, scoped evidence views, leases, atomic collection, and native lifecycle enforcement",
+          "Keeps stage-specific evidence ownership explicit without copying an earlier route forward"
         ],
         "costs": [
-          "Shared integration joins remain serial",
-          "Broad modules such as dashboard.py and taskplane_lite.py require one owner per wave",
-          "The exact 72-row map and gate add deliberate validation overhead"
+          "Requires a versioned compatibility reader for prior deep/light/n/a route history",
+          "Touches several stage adapters and gates even though the policy core is one module",
+          "Requires conservative per-lens relevance declarations before evidence may be reused"
         ],
-        "revisit_when": "Two consecutive releases show the same broad-file owner is still the dominant critical-path bottleneck after this remediation."
+        "revisit_when": "A second independent router consumer needs non-Python execution or stage adapters cannot express their context without importing ReviewKernel internals."
       }
     },
     {
-      "id": "lens-owned-train",
-      "name": "Lens-owned remediation train",
-      "description": "Assign one Build task to each of the 26 review lenses and integrate lens results in severity order.",
+      "id": "stage-local-policies",
+      "name": "Independent policy in each stage",
+      "description": "Patch Product, Design, Plan, and Evaluate separately, keeping selection and evidence rules next to each stage gate.",
       "tradeoffs": {
         "gains": [
-          "Mirrors review authorship",
-          "Simplifies per-lens reporting"
+          "Small initial change in each individual stage",
+          "No new shared policy module"
         ],
         "costs": [
-          "Creates concurrent ownership conflicts in dashboard.py, taskplane_lite.py, CI, docs, and shared contracts",
-          "Duplicates root fixes for corroborating findings",
-          "Lens order does not express implementation dependencies"
+          "Duplicates canonicalization, disposition validation, cap behavior, privacy, and fingerprint logic",
+          "Makes equal-input determinism across stages difficult to prove",
+          "Allows mandatory-risk and covered-by semantics to drift between gates"
         ],
-        "revisit_when": "A future canonical review includes a proven file/interface ownership partition instead of lens ownership."
+        "revisit_when": "The requirement is narrowed to one routed stage and cross-stage determinism is explicitly removed."
       }
     },
     {
-      "id": "monolithic-remediation",
-      "name": "Monolithic remediation branch",
-      "description": "Fix all 72 findings in one task and validate only after the entire change is complete.",
+      "id": "router-kernel-rewrite",
+      "name": "Replace the signal engine and ReviewKernel",
+      "description": "Create a new router, evidence store, dispatcher, retry engine, and result collector around the new disposition vocabulary.",
       "tradeoffs": {
         "gains": [
-          "No intermediate integration protocol",
-          "One final branch"
+          "No legacy route vocabulary inside the new implementation",
+          "A single greenfield data model from context through collection"
         ],
         "costs": [
-          "No useful parallelism",
-          "High closure waits behind documentation and low-risk changes",
-          "Rollback and diagnosis are all-or-nothing"
+          "Discards incumbent graph floors, scoped views, host-observed leases, collection atomicity, and provenance",
+          "Creates a broad migration and regression surface unrelated to the requirement",
+          "Delays focused routing behind a full review-system replacement"
         ],
-        "revisit_when": "A future remediation inventory is local, reversible, and has one root cause."
-      }
-    },
-    {
-      "id": "high-only-deferral",
-      "name": "High-only correction with medium/low deferral",
-      "description": "Close the 34 high findings and convert medium/low findings into backlog.",
-      "tradeoffs": {
-        "gains": [
-          "Shortest high-only path"
-        ],
-        "costs": [
-          "Contradicts R-0002 and explicit human scope",
-          "Leaves known production, privacy, quality, and documentation defects",
-          "Creates the forbidden low-only tail or silent deferral"
-        ],
-        "revisit_when": "Only after a new attributed Product scope decision."
+        "revisit_when": "ReviewKernel provenance or storage is separately approved for replacement and a migration plan preserves every canonical evidence receipt."
       }
     }
   ],
-  "selected_approach": "contract-first-severity-train",
-  "decision": "Select contract-first-severity-train. H1 is the only prerequisite foundation. After H1-I, H2 and H3 use exclusive owners and may execute together; where a graph file serves both branches, one named HX-GRAPH owner carries both obligations. HG-EVAL independently closes exactly 34 highs at one SHA. Only then do M1 and M2 execute, with MX-DOCS-ARCH owning the one cross-branch documentation/architecture surface. All low findings are attached to their earliest related owner and never form a tail. Taskplane emits dependency/scope intent only; Codex native subagents own dispatch, lifecycle, concurrency, and one event-driven wait per ready set.",
-  "quality_targets": [
-    {"id": "inventory", "target": "Exactly 72 unique rows: 34 high, 28 medium, 10 low; zero missing or extra ids", "measurement": "Machine compare design/plan trace with .em-review/findings.json"},
-    {"id": "high-gate", "target": "Exactly 34 independently evaluated closed high rows at one clean SHA; zero suppressed, downgraded, missing, or self-attested Build rows", "measurement": "Mutation-tested contract:review.high-closure-gate"},
-    {"id": "durability", "target": "Every fault point yields predecessor or one complete successor after restart; zero partial authoritative states", "measurement": "Focused crash/restart matrices for H1-A, H1-B, and H1-C"},
-    {"id": "review-budget", "target": "Standalone default token ceiling 25000000; selected transcript bytes at most 67108864", "measurement": "Budget-screen and bounded-transcript selectors"},
-    {"id": "preview-bound", "target": "At most 100000 entries and 2147483648 regular-file bytes per preview inventory", "measurement": "Boundary and over-limit preview selectors"},
-    {"id": "timeout", "target": "Repository operation deadline 600 seconds, at most 3 routine attempts; sandbox subprocess deadline 120 seconds and total preparation deadline 600 seconds", "measurement": "Injected clock/process timeout selectors"},
-    {"id": "accessibility", "target": "WCAG AA metadata contrast at least 4.5:1; complete keyboard/ARIA/state behavior; zero infinite motion when reduced motion is requested", "measurement": "DOM/interaction/contrast focused checks"},
-    {"id": "python-quality", "target": "Python 3.10+ floor and 3.14 validation target; strict type and lint gates; zero unexplained bare suppressions; stdlib-only runtime", "measurement": "CI config assertions, type/lint run, clean-wheel inspection"},
-    {"id": "final", "target": "All 72 focused selectors plus applicable static/accessibility/docs checks pass; full taskplane/tests suite runs once at exact clean candidate SHA", "measurement": "resource:review.exact-candidate-evidence"}
+  "authority_alternatives": [
+    {
+      "id": "content-addressed-control-plane-provider",
+      "name": "New packaged content-addressed control-plane provider",
+      "selected": true,
+      "description": "Package taskplane/expanded_route_authority_provider.py as an immutable content-addressed object and have the orchestrator execute it in a separate trusted process from an external protected locator and 0600 authority store.",
+      "gains": [
+        "Removes issuance, real time, exact RSA verification, and one-use consumption from both the worker checkout and interpreter",
+        "Reuses the proven durably-protected-issuer custody and atomic-recovery pattern without sharing terminal-finalization authority",
+        "Keeps normal routes and rollback independent from the exceptional-route provider"
+      ],
+      "costs": [
+        "Adds one packaged provider module, content manifest, external locator, custody store, and recovery path",
+        "Requires orchestrator installation and permission checks before expanded routes can execute"
+      ],
+      "revisit_when": "A general authenticated host control-plane service already exists and can preserve this exact source, custody, binding, and atomic-consume contract with a smaller operational surface."
+    },
+    {
+      "id": "extend-terminal-authority-provider",
+      "name": "Extend the existing terminal authority provider",
+      "selected": false,
+      "description": "Add expanded-route approval and consumption to taskplane/terminal_truth.py and its durably-protected issuer.",
+      "gains": [
+        "Reuses existing root-private custody, lock, immutable write, recovery, and receipt patterns directly",
+        "Adds no second protected provider lifecycle"
+      ],
+      "costs": [
+        "Couples independent route approval and terminal-finalization subjects, keys, recovery, revocation, and blast radius",
+        "Makes route-provider rollback capable of disturbing terminal truth"
+      ],
+      "revisit_when": "Terminal and expanded-route authorities acquire one approved subject, key lifecycle, revocation policy, and failure domain."
+    },
+    {
+      "id": "separate-host-service",
+      "name": "Separate host service",
+      "selected": false,
+      "description": "Move expanded-route authority to an authenticated local daemon or remote host service.",
+      "gains": [
+        "Strong process and deployment boundary",
+        "Potential reuse by multiple repositories and runtimes"
+      ],
+      "costs": [
+        "Adds service authentication, availability, deployment, upgrade, and recovery surfaces",
+        "Introduces a network or daemon dependency for a narrow local exceptional action"
+      ],
+      "revisit_when": "Multiple independent control-plane actions require a shared continuously available host authority."
+    }
   ],
+  "selected_approach": "shared-policy-adapters",
+  "decision": "Select the shared pure policy because the approved behavior is one cross-stage invariant while context and execution remain stage-owned. For canonical finding 6ea9aff0107f4bb6, select the new packaged content-addressed control-plane provider: it is the smallest authority boundary that follows the graph's selected durably-protected-issuer custody precedent while removing authority from the worker checkout and interpreter without coupling it to terminal finalization or adding a host service. Incumbent adapters retain proven scoring, dispatch, and evidence collection; taskplane_lite becomes request-only.",
   "modules": {
     "existing": [
-      ".codex-plugin",
-      ".github/workflows",
-      "design",
-      "docs",
-      "exports/terminal",
-      "scripts",
-      "skills/tp-help",
+      "taskplane/graph_primitives.py",
+      "taskplane/lens.py",
+      "taskplane/lens_signals.py",
+      "taskplane/loop.py",
+      "taskplane/review.py",
+      "taskplane/review_retry.py",
+      "taskplane/delivery_policy.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/terminal_truth.py",
+      "taskplane/dispatch_telemetry.py",
+      "agents",
+      "skills/taskplane",
+      "skills/tp-product",
+      "skills/tp-design",
+      "skills/tp-go",
+      "skills/tp-build",
+      "skills/tp-engineering",
       "specs",
-      "taskplane",
+      "design",
+      "plan",
+      "docs",
+      "(root)",
       "taskplane/tests"
     ],
     "new": [
-      "taskplane/remediation_trace.py",
-      "taskplane/glob_match.py",
-      "taskplane/text_runtime.py"
+      "taskplane/lens_route_policy.py",
+      "taskplane/expanded_route_authority_provider.py"
     ]
   },
   "contracts": [
-    {"relation": "changes", "id": "contract:quality.review-remediation", "description": "One immutable finding map, enforceable code-quality and boundedness rules, production reachability, deterministic tests, and exact closure evidence."},
-    {"relation": "changes", "id": "contract:runtime.durable-state-and-authority", "description": "Prepare/durable-commit ordering, exclusive successors, restart recovery, non-authoritative partial migration, and root authority."},
-    {"relation": "changes", "id": "contract:delivery.production-wiring", "description": "Supported composition roots and bounded live entry points for reviewed validators, previews, review, and repository operations."},
-    {"relation": "changes", "id": "contract:dashboard.accessible-truthful-actions", "description": "Keyboard/ARIA semantics, truthful asynchronous and fallback actions, honest states, reduced motion, contrast, and accessible text."},
-    {"relation": "changes", "id": "contract:privacy.retention-and-disclosure", "description": "Sanitized durable commands/audit, bounded raw diffs, minimized shared metadata, safe defaults, and accurate disclosures."},
-    {"relation": "changes", "id": "contract:release.compatibility-and-authority", "description": "Current and last-released compatibility, explicit packaging authority, and exact-SHA immutable terminal evidence."},
-    {"relation": "changes", "id": "contract:ci.reproducible-python-quality", "description": "Hash-locked CI dependencies, least checkout privilege, lint, strict typing, mandatory proofs, and dev-only assets."},
-    {"relation": "provides", "id": "contract:review.high-closure-gate", "description": "Independent fail-closed eligibility for medium work after exactly 34 high results close at one SHA."},
-    {"relation": "provides", "id": "contract:i18n.locale-and-grapheme", "description": "Locale/plural formatting, deterministic fallback, grapheme-safe visible truncation, and full accessible text."},
-    {"relation": "provides", "id": "contract:runtime.scoped-dependency-binding", "description": "Context-scoped nested and concurrent-safe dependency bindings with deterministic restoration."},
-    {"relation": "provides", "id": "contract:docs.generated-truth", "description": "Generated CLI/help/navigation/onboarding content remains aligned with supported behavior."},
-    {"relation": "provides", "id": "resource:review.finding-traceability", "description": "The exact immutable 72-row finding-to-owner-to-selector map."},
-    {"relation": "provides", "id": "resource:review.exact-candidate-evidence", "description": "Focused, integration, high-gate, and final results bound to one exact clean candidate SHA."}
+    {
+      "relation": "changes",
+      "id": "contract:lens.focused-stage-routing",
+      "description": "One policy version deterministically converts a validated stage context and 26 scored catalog rows into the smallest sufficient ordered focused route."
+    },
+    {
+      "relation": "changes",
+      "id": "contract:review.catalog-disposition",
+      "description": "Every Product, Design, Plan, and Evaluate route has exactly one evidenced execute_deep, execute_light, covered_by, or not_applicable disposition for each of the 26 catalog lenses."
+    },
+    {
+      "relation": "changes",
+      "id": "contract:delivery.stage-lens-execution",
+      "description": "Only Product, Design, Plan, and Evaluate may execute selected lenses; Build, Fix, and EM prove zero lens-worker starts across every terminal lifecycle outcome."
+    },
+    {
+      "relation": "changes",
+      "id": "contract:authority.expanded-lens-route",
+      "description": "A separately executed protected provider may issue and atomically consume one exact Plan/Evaluate route above four lenses after validating immutable provider source, external custody, real time, and an exact RSA approval receipt; the worktree adapter is request-only."
+    },
+    {
+      "relation": "provides",
+      "id": "resource:authority.expanded-lens-route-custody",
+      "description": "An external orchestrator-owned 0700 provider root holds a 0600 content-addressed locator, issuer key, approver-key manifest, receipt journal, and atomic one-use consumption state, with no symlink, relocation, worktree, or environment fallback."
+    },
+    {
+      "relation": "provides",
+      "id": "resource:review.route-fingerprint",
+      "description": "Immutable route and per-lens canonical input fingerprints bind selection, evidence reuse, invalidation, policy version, and catalog version."
+    },
+    {
+      "relation": "provides",
+      "id": "resource:telemetry.lens-route",
+      "description": "Bounded redacted records expose stage, selected count and reasons, estimated/actual tokens, runtime, cache reuse, invalidation, terminal status, and route fingerprint."
+    }
   ],
-  "module_owners": [
-    {"id": "H1-A", "wave": "H1", "owner": "terminal-and-cas", "scope": ["taskplane/terminal_truth.py", "taskplane/delivery_ports.py", "taskplane/tests/test_em_h1_terminal.py"], "depends_on": [], "findings": ["H-03", "H-04", "H-05", "H-06"]},
-    {"id": "H1-B", "wave": "H1", "owner": "journal-and-observation", "scope": ["taskplane/run_store.py", "taskplane/producer_observation.py", "taskplane/tests/test_em_h1_journal.py"], "depends_on": [], "findings": ["H-07", "H-08"]},
-    {"id": "H1-C", "wave": "H1", "owner": "durable-store-and-readonly", "scope": ["taskplane/taskplane_lite.py", "taskplane/tests/test_em_h1_store.py"], "depends_on": [], "findings": ["H-14", "H-15", "H-30"]},
-    {"id": "H1-D", "wave": "H1", "owner": "release-compatibility", "scope": ["scripts/package_openai.py", "design/compatibility.json", "taskplane/tests/test_em_h1_release.py"], "depends_on": [], "findings": ["H-19", "H-22", "H-26"]},
-    {"id": "H1-E", "wave": "H1", "owner": "validation-sandbox-deadline", "scope": ["taskplane/review.py", "taskplane/tests/test_em_h1_sandbox.py"], "depends_on": [], "findings": ["H-34"]},
-    {"id": "H1-I", "wave": "H1", "owner": "foundation-integration", "scope": ["taskplane/remediation_trace.py", "taskplane/tests/test_em_h1_integration.py"], "depends_on": ["H1-A", "H1-B", "H1-C", "H1-D", "H1-E"], "findings": []},
-    {"id": "H2-A", "wave": "H2", "owner": "python-quality-ci", "scope": [".github/workflows/ci.yml", "pyproject.toml", "requirements-dev.lock", "taskplane/tests/test_em_h2_quality.py"], "depends_on": ["H1-I"], "findings": ["H-09"]},
-    {"id": "H2-B", "wave": "H2", "owner": "production-roots-and-preview", "scope": ["taskplane/native_authority.py", "taskplane/design_sweep.py", "taskplane/preview_runtime.py", "taskplane/tests/test_em_h2_wiring.py"], "depends_on": ["H1-I"], "findings": ["H-10", "H-11", "H-12", "H-29"]},
-    {"id": "H2-C", "wave": "H2", "owner": "review-and-budget-bounds", "scope": ["taskplane/tp.py", "taskplane/review.py", "taskplane/dispatch_telemetry.py", "taskplane/tests/test_em_h2_bounds.py"], "depends_on": ["H1-I"], "findings": ["H-13", "H-27", "H-28", "H-33"]},
-    {"id": "HX-GRAPH", "wave": "H2+H3", "owner": "graph-interaction-and-routing", "scope": ["components.yaml", "taskplane/depgraph.py", "taskplane/graph_primitives.py", "taskplane/lens.py", "taskplane/glob_match.py", "taskplane/tests/test_em_hx_graph.py"], "depends_on": ["H1-I"], "findings": ["H-02", "H-31", "L-02"]},
-    {"id": "H2-I", "wave": "H2", "owner": "production-bounds-integration", "scope": ["taskplane/tests/test_em_h2_integration.py"], "depends_on": ["H2-A", "H2-B", "H2-C", "HX-GRAPH"], "findings": []},
-    {"id": "H3-A", "wave": "H3", "owner": "dashboard-controls", "scope": ["taskplane/dashboard.py", "taskplane/tests/test_em_h3_dashboard.py"], "depends_on": ["H1-I"], "findings": ["H-01", "H-16", "H-17", "H-18", "H-20", "H-21", "L-01"]},
-    {"id": "H3-C", "wave": "H3", "owner": "privacy-and-retention", "scope": ["taskplane/command_runtime.py", "taskplane/loop.py", "taskplane/taskplane_lite.py", "taskplane/tests/test_em_h3_privacy.py"], "depends_on": ["H1-I"], "findings": ["H-23", "H-24", "H-25", "L-04"]},
-    {"id": "H3-D", "wave": "H3", "owner": "exact-sha-terminal-export", "scope": ["exports/terminal/r0013/**", "taskplane/tests/test_em_h3_terminal_export.py"], "depends_on": ["H1-A", "H1-D"], "findings": ["H-32"]},
-    {"id": "H3-I", "wave": "H3", "owner": "human-truth-integration", "scope": ["taskplane/tests/test_em_h3_integration.py"], "depends_on": ["H3-A", "H3-C", "H3-D", "HX-GRAPH"], "findings": []},
-    {"id": "HG-EVAL", "wave": "HIGH-GATE", "owner": "independent-high-evaluator", "scope": [".em-review/remediation/high-gate/**"], "depends_on": ["H2-I", "H3-I"], "findings": ["H-01", "H-02", "H-03", "H-04", "H-05", "H-06", "H-07", "H-08", "H-09", "H-10", "H-11", "H-12", "H-13", "H-14", "H-15", "H-16", "H-17", "H-18", "H-19", "H-20", "H-21", "H-22", "H-23", "H-24", "H-25", "H-26", "H-27", "H-28", "H-29", "H-30", "H-31", "H-32", "H-33", "H-34"]},
-    {"id": "M1-A", "wave": "M1", "owner": "scanner-and-design-decisions", "scope": ["components.yaml", "taskplane/depgraph.py", "taskplane/tests/test_em_m1_architecture.py"], "depends_on": ["HG-EVAL"], "findings": ["M-02", "M-26"]},
-    {"id": "MX-DOCS-ARCH", "wave": "M1+M2", "owner": "loop-design-decisions", "scope": ["docs/loop-design.md", "taskplane/tests/test_em_mx_loop_docs.py"], "depends_on": ["HG-EVAL"], "findings": ["M-22", "M-27", "M-28"]},
-    {"id": "M1-B", "wave": "M1", "owner": "typing-and-cost-failclosed", "scope": ["taskplane/dispatch_telemetry.py", "taskplane/lens.py", "taskplane/tests/test_em_m1_typing_cost.py"], "depends_on": ["HG-EVAL"], "findings": ["M-03", "M-04"]},
-    {"id": "M1-C", "wave": "M1", "owner": "ci-dependencies-and-assets", "scope": [".github/workflows/ci.yml", "requirements-dev.lock", "CONTRIBUTING.md", "taskplane/tests/test_em_m1_ci_dependencies.py"], "depends_on": ["HG-EVAL"], "findings": ["M-06", "M-07", "M-17", "M-18", "L-06"]},
-    {"id": "M1-D", "wave": "M1", "owner": "mandatory-production-proofs", "scope": ["taskplane/tests/test_r0013_design_sweep.py", "taskplane/tests/test_r0001_live_host_canary.py", "taskplane/tests/test_em_m1_proof_paths.py"], "depends_on": ["HG-EVAL"], "findings": ["M-14", "M-15"]},
-    {"id": "M1-E", "wave": "M1", "owner": "repository-retry", "scope": ["taskplane/repository.py", "taskplane/tests/test_em_m1_repository.py"], "depends_on": ["HG-EVAL"], "findings": ["M-19"]},
-    {"id": "M1-F", "wave": "M1", "owner": "scoped-test-runtime", "scope": ["taskplane/tests/__init__.py", "taskplane/build_c.py", "taskplane/tests/test_em_m1_test_isolation.py"], "depends_on": ["HG-EVAL"], "findings": ["M-24", "L-10"]},
-    {"id": "M1-I", "wave": "M1", "owner": "engineering-foundation-integration", "scope": ["taskplane/tests/test_em_m1_integration.py"], "depends_on": ["M1-A", "MX-DOCS-ARCH", "M1-B", "M1-C", "M1-D", "M1-E", "M1-F"], "findings": []},
-    {"id": "M2-A", "wave": "M2", "owner": "dashboard-locale-and-state", "scope": ["taskplane/dashboard.py", "taskplane/text_runtime.py", "taskplane/locales/**", "taskplane/tests/test_em_m2_dashboard.py"], "depends_on": ["HG-EVAL"], "findings": ["M-01", "M-05", "M-08", "M-09", "L-03"]},
-    {"id": "M2-B", "wave": "M2", "owner": "privacy-default-and-notice", "scope": ["PRIVACY.md", "taskplane/taskplane_lite.py", "taskplane/tests/test_em_m2_privacy.py"], "depends_on": ["HG-EVAL"], "findings": ["M-10", "M-11", "M-20"]},
-    {"id": "M2-C", "wave": "M2", "owner": "product-docs-and-help", "scope": ["README.md", ".codex-plugin/plugin.json", "skills/tp-help/SKILL.md", "docs/onboarding.md", "docs/cli-reference.md", "taskplane/tests/test_em_m2_docs.py"], "depends_on": ["HG-EVAL"], "findings": ["M-12", "M-13", "M-21", "M-23", "L-05", "L-07", "L-08", "L-09"]},
-    {"id": "M2-D", "wave": "M2", "owner": "deterministic-concurrency-proof", "scope": ["taskplane/tests/test_review_routing.py", "taskplane/tests/test_em_m2_concurrency.py"], "depends_on": ["HG-EVAL"], "findings": ["M-16"]},
-    {"id": "M2-E", "wave": "M2", "owner": "priced-debt-trace", "scope": ["taskplane/remediation_trace.py", "taskplane/tests/test_em_m2_debt.py"], "depends_on": ["HG-EVAL"], "findings": ["M-25"]},
-    {"id": "M2-I", "wave": "M2", "owner": "user-truth-integration", "scope": ["taskplane/tests/test_em_m2_integration.py"], "depends_on": ["M2-A", "M2-B", "M2-C", "M2-D", "M2-E", "MX-DOCS-ARCH"], "findings": []},
-    {"id": "FINAL-I", "wave": "FINAL", "owner": "remediation-integration", "scope": ["taskplane/remediation_trace.py", "taskplane/tests/test_em_remediation_integration.py", ".em-review/remediation/**"], "depends_on": ["M1-I", "M2-I"], "findings": []},
-    {"id": "FINAL-EVAL", "wave": "FINAL", "owner": "independent-final-evaluator", "scope": [".em-review/remediation/final/**"], "depends_on": ["FINAL-I"], "findings": ["H-01", "H-02", "H-03", "H-04", "H-05", "H-06", "H-07", "H-08", "H-09", "H-10", "H-11", "H-12", "H-13", "H-14", "H-15", "H-16", "H-17", "H-18", "H-19", "H-20", "H-21", "H-22", "H-23", "H-24", "H-25", "H-26", "H-27", "H-28", "H-29", "H-30", "H-31", "H-32", "H-33", "H-34", "M-01", "M-02", "M-03", "M-04", "M-05", "M-06", "M-07", "M-08", "M-09", "M-10", "M-11", "M-12", "M-13", "M-14", "M-15", "M-16", "M-17", "M-18", "M-19", "M-20", "M-21", "M-22", "M-23", "M-24", "M-25", "M-26", "M-27", "M-28", "L-01", "L-02", "L-03", "L-04", "L-05", "L-06", "L-07", "L-08", "L-09", "L-10"]}
-  ],
-  "native_execution": {
-    "scheduler": "Codex native subagents only",
-    "taskplane_authority": "dependency classification, scoped contract emission, evidence validation, and orchestrator gates only",
-    "ready_set_rule": "Dispatch every ready pairwise-disjoint lane concurrently with exact emitted identities.",
-    "wait_rule": "Issue one event-driven wait for the full outstanding ready set; reissue only after completion or attributed attention, never on a schedule.",
-    "lens_worker_count": 0,
-    "low_tail_allowed": false,
-    "overlap_rule": "Any shared file, fixture, schema, public contract, composition root, or integration path has one named owner or an explicit dependency before dispatch."
+  "expanded_route_authority": {
+    "schema": "taskplane.expanded-route-authority-provider/v1",
+    "finding": "6ea9aff0107f4bb6",
+    "provider_module": "taskplane/expanded_route_authority_provider.py",
+    "packaged_source": "providers/expanded-route/<source-sha256>/expanded_route_authority_provider.py",
+    "execution_owner": "orchestrator control plane in a separate trusted Python process",
+    "worker_adapter": "taskplane/taskplane_lite.py serializes a closed request and consumes a provider-sealed decision; it cannot choose the provider, supply time or verification functions, mint authority, inspect custody, or declare consumption",
+    "source_binding": [
+      "repository source path",
+      "repository commit",
+      "source SHA-256",
+      "package SHA-256",
+      "provider protocol version"
+    ],
+    "external_locator": {
+      "resource": "resource:authority.expanded-lens-route-custody",
+      "location": "orchestrator-configured absolute path outside the worker-controlled checkout",
+      "directory_mode": "0700",
+      "object_mode": "0600",
+      "objects": [
+        "content-addressed provider locator and manifest",
+        "issuer key",
+        "approved RSA public-key manifest",
+        "approval receipt journal",
+        "issued-action journal",
+        "atomic one-use consumption state"
+      ],
+      "validation": "Open without following symlinks; require orchestrator ownership, exact modes, resolved-root containment, immutable source/commit/digest match, and an unrelocated configured root. Missing, altered, relocated, ownership-invalid, mode-invalid, or symlinked locator, package, or custody object fails closed with no worktree or environment fallback."
+    },
+    "exclusive_responsibilities": [
+      "issue taskplane.expanded-lens-route-action/v1 only after exact approval validation",
+      "read production time from the provider process real system clock",
+      "verify the approval receipt using exact RSA-PSS/SHA-256 parameters",
+      "atomically consume each action once before returning a provider-sealed consumption receipt"
+    ],
+    "rsa_verification": {
+      "scheme": "RSA-PSS",
+      "hash": "SHA-256",
+      "mgf": "MGF1-SHA-256",
+      "salt_length_bytes": 32,
+      "modulus_bits": 3072,
+      "public_exponent": 65537,
+      "signature_length": "exactly the modulus length",
+      "message": "canonical UTF-8 JSON bytes of the closed approval receipt payload",
+      "key_selection": "exact approved key fingerprint from the protected approver-key manifest"
+    },
+    "issued_action_seal": "HMAC-SHA-256 over canonical UTF-8 JSON of every binding field using the provider issuer key held only in 0600 external custody; verification and compare-and-swap consumption occur only inside the provider process",
+    "binding_fields": [
+      "repository_source_path",
+      "repository_commit",
+      "source_sha256",
+      "package_sha256",
+      "workspace",
+      "stage",
+      "target",
+      "context_fingerprint",
+      "exact_ordered_lens_ids",
+      "estimated_cost",
+      "policy_version",
+      "catalog_version",
+      "action_id",
+      "expiry",
+      "approver_identity",
+      "approver_key_fingerprint",
+      "approval_receipt_digest"
+    ],
+    "atomic_consume": "Under an external authority lock, compare unused state, append the consume receipt, fsync the record, atomically rename the updated head, fsync the containing directory, and only then return success; concurrent consumers can produce at most one success.",
+    "clock": {
+      "production": "The production provider constructor and command expose no clock parameter and read real time only inside the trusted provider process.",
+      "tests": "Deterministic clock injection exists only in a non-exported trusted-provider test fixture using a temporary external provider root; production construction rejects it."
+    },
+    "regressions": [
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_worker_monkeypatch_cannot_replace_provider_source_clock_or_rsa",
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_missing_altered_relocated_or_symlinked_locator_and_custody_fail_closed",
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_exact_source_workspace_route_cost_policy_action_expiry_approver_and_receipt_binding",
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_atomic_one_use_consume_allows_one_concurrent_success",
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_restart_recovers_issuer_receipts_and_consumed_actions",
+      "taskplane/tests/test_expanded_route_authority_provider.py::test_clock_injection_is_available_only_to_trusted_provider_tests"
+    ]
   },
-  "high_closure_gate": {
-    "module": "taskplane/remediation_trace.py",
-    "contract": "contract:review.high-closure-gate",
-    "required_ids": ["H-01", "H-02", "H-03", "H-04", "H-05", "H-06", "H-07", "H-08", "H-09", "H-10", "H-11", "H-12", "H-13", "H-14", "H-15", "H-16", "H-17", "H-18", "H-19", "H-20", "H-21", "H-22", "H-23", "H-24", "H-25", "H-26", "H-27", "H-28", "H-29", "H-30", "H-31", "H-32", "H-33", "H-34"],
-    "rule": "Exactly 34 unique closed rows, one exact clean candidate SHA, passing focused selector fingerprints, independent evaluator identity distinct from Build owners, and zero missing/open/suppressed/downgraded/self-attested result.",
-    "negative_evidence": "Remove, duplicate, downgrade, suppress, change SHA, or mark one row self-attested; each mutation must refuse medium eligibility.",
-    "medium_eligibility": ["M1-A", "MX-DOCS-ARCH", "M1-B", "M1-C", "M1-D", "M1-E", "M1-F", "M2-A", "M2-B", "M2-C", "M2-D", "M2-E"]
+  "route_schema": {
+    "context_schema": "taskplane.lens-route-context/v1",
+    "decision_schema": "taskplane.lens-route-policy/v1",
+    "policy_version": "focused-routing/v1",
+    "dispositions": [
+      "execute_deep",
+      "execute_light",
+      "covered_by",
+      "not_applicable"
+    ],
+    "closed_invariants": [
+      "exactly one disposition for every catalog lens in catalog order",
+      "only execute_deep and execute_light rows appear in selected",
+      "covered_by targets one selected lens and coverage edges are acyclic",
+      "not_applicable carries machine-readable negative evidence",
+      "mandatory risk floors are applied before cap or deduplication",
+      "equal canonical context, catalog, and policy version produce byte-identical decision material"
+    ]
   },
-  "finding_map": [
-    {"id":"H-01","severity":"high","lens":"accessibility","source":"taskplane/dashboard.py:4846","title":"Dashboard tabs declare the ARIA tab pattern without its keyboard model","owner":"dashboard-controls","boundaries":["contract:dashboard.accessible-truthful-actions"],"wave":"H3","task":"H3-A","dependency_class":"after-H1;shared-dashboard-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_dashboard.py::test_h01_tabs_follow_aria_keyboard_model"},
-    {"id":"H-02","severity":"high","lens":"accessibility","source":"taskplane/depgraph.py:2083","title":"Dependency-graph nodes are exposed as buttons but cannot be activated from the keyboard","owner":"graph-interaction-and-routing","boundaries":["contract:dashboard.accessible-truthful-actions"],"wave":"H3","task":"HX-GRAPH","dependency_class":"after-H1;cross-H2-H3-shared-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_hx_graph.py::test_h02_nodes_activate_with_enter_and_space"},
-    {"id":"H-03","severity":"high","lens":"architecture","source":"taskplane/terminal_truth.py:366","title":"Terminal truth has no production composition root","owner":"terminal-and-cas","boundaries":["contract:runtime.durable-state-and-authority","contract:delivery.production-wiring"],"wave":"H1","task":"H1-A","dependency_class":"foundation-leaf","depends_on":[],"evidence":"taskplane/tests/test_em_h1_terminal.py::test_h03_supported_terminal_composition_root"},
-    {"id":"H-04","severity":"high","lens":"architecture","source":"taskplane/terminal_truth.py:397","title":"A process restart permanently loses terminal-finalization authority","owner":"terminal-and-cas","boundaries":["contract:runtime.durable-state-and-authority"],"wave":"H1","task":"H1-A","dependency_class":"foundation-leaf;shared-terminal-owner","depends_on":[],"evidence":"taskplane/tests/test_em_h1_terminal.py::test_h04_restart_reacquires_exact_terminal_authority"},
-    {"id":"H-05","severity":"high","lens":"architecture","source":"taskplane/terminal_truth.py:580","title":"Immutable evidence is written directly to its final path","owner":"terminal-and-cas","boundaries":["contract:runtime.durable-state-and-authority"],"wave":"H1","task":"H1-A","dependency_class":"foundation-leaf;shared-terminal-owner","depends_on":[],"evidence":"taskplane/tests/test_em_h1_terminal.py::test_h05_immutable_publish_is_atomic_and_durable"},
-    {"id":"H-06","severity":"high","lens":"backend","source":"taskplane/delivery_ports.py:496","title":"Evidence-store CAS admits two successors for one predecessor","owner":"terminal-and-cas","boundaries":["contract:runtime.durable-state-and-authority"],"wave":"H1","task":"H1-A","dependency_class":"foundation-leaf;shared-CAS-owner","depends_on":[],"evidence":"taskplane/tests/test_em_h1_terminal.py::test_h06_only_one_successor_wins_per_predecessor"},
-    {"id":"H-07","severity":"high","lens":"backend","source":"taskplane/run_store.py:797","title":"Stage commits can permanently omit their run-journal event","owner":"journal-and-observation","boundaries":["contract:runtime.durable-state-and-authority"],"wave":"H1","task":"H1-B","dependency_class":"foundation-leaf","depends_on":[],"evidence":"taskplane/tests/test_em_h1_journal.py::test_h07_stage_and_journal_reconcile_atomically"},
-    {"id":"H-08","severity":"high","lens":"backend","source":"taskplane/producer_observation.py:705","title":"Producer authority is consumed before any durable observation intent","owner":"journal-and-observation","boundaries":["contract:runtime.durable-state-and-authority"],"wave":"H1","task":"H1-B","dependency_class":"foundation-leaf;shared-observation-owner","depends_on":[],"evidence":"taskplane/tests/test_em_h1_journal.py::test_h08_durable_intent_precedes_authority_consumption"},
-    {"id":"H-09","severity":"high","lens":"code-quality","source":".github/workflows/ci.yml:98","title":"Python CI has no lint or strict type-check gate","owner":"python-quality-ci","boundaries":["contract:ci.reproducible-python-quality","contract:quality.review-remediation"],"wave":"H2","task":"H2-A","dependency_class":"after-H1;pairwise-disjoint-CI-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h2_quality.py::test_h09_ci_enforces_lint_and_strict_types"},
-    {"id":"H-10","severity":"high","lens":"code-quality","source":"taskplane/native_authority.py:537","title":"Native authority validator is shipped but never wired into production","owner":"production-roots-and-preview","boundaries":["contract:delivery.production-wiring"],"wave":"H2","task":"H2-B","dependency_class":"after-H1;shared-production-root-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h2_wiring.py::test_h10_native_authority_validator_is_reachable_from_supported_flow"},
-    {"id":"H-11","severity":"high","lens":"code-quality","source":"taskplane/design_sweep.py:446","title":"Design sweep validator is a dead production surface","owner":"production-roots-and-preview","boundaries":["contract:delivery.production-wiring"],"wave":"H2","task":"H2-B","dependency_class":"after-H1;shared-production-root-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h2_wiring.py::test_h11_design_sweep_validator_is_reachable_or_removed"},
-    {"id":"H-12","severity":"high","lens":"code-quality","source":"taskplane/preview_runtime.py:487","title":"Working preview production entry points are never wired into a live flow","owner":"production-roots-and-preview","boundaries":["contract:delivery.production-wiring"],"wave":"H2","task":"H2-B","dependency_class":"after-H1;shared-production-root-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h2_wiring.py::test_h12_preview_entrypoints_execute_from_supported_flow"},
-    {"id":"H-13","severity":"high","lens":"cost-finops","source":"taskplane/tp.py:5447","title":"Standalone reviews have no enforced token ceiling by default","owner":"review-and-budget-bounds","boundaries":["contract:quality.review-remediation"],"wave":"H2","task":"H2-C","dependency_class":"after-H1;shared-review-bound-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h2_bounds.py::test_h13_standalone_review_has_finite_default_token_ceiling"},
-    {"id":"H-14","severity":"high","lens":"data-safety","source":"taskplane/taskplane_lite.py:99","title":"Critical state writes are acknowledged before they are durable","owner":"durable-store-and-readonly","boundaries":["contract:runtime.durable-state-and-authority"],"wave":"H1","task":"H1-C","dependency_class":"foundation-leaf;shared-runtime-store-owner","depends_on":[],"evidence":"taskplane/tests/test_em_h1_store.py::test_h14_critical_write_fsyncs_before_acknowledgement"},
-    {"id":"H-15","severity":"high","lens":"data-safety","source":"taskplane/taskplane_lite.py:5775","title":"Interrupted cross-filesystem KB migration makes a partial copy authoritative","owner":"durable-store-and-readonly","boundaries":["contract:runtime.durable-state-and-authority"],"wave":"H1","task":"H1-C","dependency_class":"foundation-leaf;shared-runtime-store-owner","depends_on":[],"evidence":"taskplane/tests/test_em_h1_store.py::test_h15_interrupted_migration_keeps_legacy_authoritative"},
-    {"id":"H-16","severity":"high","lens":"design","source":"taskplane/dashboard.py:5237","title":"Fallback dashboard actions are inert","owner":"dashboard-controls","boundaries":["contract:dashboard.accessible-truthful-actions"],"wave":"H3","task":"H3-A","dependency_class":"after-H1;shared-dashboard-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_dashboard.py::test_h16_fallback_action_is_functional_or_truthfully_absent"},
-    {"id":"H-17","severity":"high","lens":"design","source":"taskplane/dashboard.py:5205","title":"The fallback dashboard drops the workflow evidence it is meant to present","owner":"dashboard-controls","boundaries":["contract:dashboard.accessible-truthful-actions"],"wave":"H3","task":"H3-A","dependency_class":"after-H1;shared-dashboard-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_dashboard.py::test_h17_fallback_retains_required_workflow_evidence"},
-    {"id":"H-18","severity":"high","lens":"design","source":"taskplane/dashboard.py:4619","title":"Gate actions claim success before the chat bridge confirms delivery","owner":"dashboard-controls","boundaries":["contract:dashboard.accessible-truthful-actions"],"wave":"H3","task":"H3-A","dependency_class":"after-H1;shared-dashboard-owner;root-fix-with-H-21","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_dashboard.py::test_h18_gate_action_waits_for_bridge_confirmation"},
-    {"id":"H-19","severity":"high","lens":"devops","source":"scripts/package_openai.py:573","title":"Marketplace packaging bypasses the release-authority gate","owner":"release-compatibility","boundaries":["contract:release.compatibility-and-authority"],"wave":"H1","task":"H1-D","dependency_class":"foundation-leaf;shared-release-owner","depends_on":[],"evidence":"taskplane/tests/test_em_h1_release.py::test_h19_packaging_requires_release_authority"},
-    {"id":"H-20","severity":"high","lens":"frontend","source":"taskplane/dashboard.py:5238","title":"Host-native dashboard actions and composer are rendered without behavior","owner":"dashboard-controls","boundaries":["contract:dashboard.accessible-truthful-actions"],"wave":"H3","task":"H3-A","dependency_class":"after-H1;shared-dashboard-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_dashboard.py::test_h20_host_native_actions_render_only_with_behavior"},
-    {"id":"H-21","severity":"high","lens":"frontend","source":"taskplane/dashboard.py:4621","title":"Gate controls claim success before the asynchronous chat bridge succeeds","owner":"dashboard-controls","boundaries":["contract:dashboard.accessible-truthful-actions"],"wave":"H3","task":"H3-A","dependency_class":"after-H1;shared-dashboard-owner;root-fix-with-H-18","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_dashboard.py::test_h21_async_gate_exposes_pending_success_and_failure"},
-    {"id":"H-22","severity":"high","lens":"integrability","source":"design/compatibility.json:47","title":"Release compatibility gate skips the last released generation","owner":"release-compatibility","boundaries":["contract:release.compatibility-and-authority"],"wave":"H1","task":"H1-D","dependency_class":"foundation-leaf;shared-release-owner;root-fix-with-H-26","depends_on":[],"evidence":"taskplane/tests/test_em_h1_release.py::test_h22_compatibility_matrix_includes_last_released_generation"},
-    {"id":"H-23","severity":"high","lens":"privacy-compliance","source":"taskplane/command_runtime.py:693","title":"Durable command logs retain personal data verbatim","owner":"privacy-and-retention","boundaries":["contract:privacy.retention-and-disclosure"],"wave":"H3","task":"H3-C","dependency_class":"after-H1;shared-privacy-contract-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_privacy.py::test_h23_durable_command_artifacts_are_minimized_and_sanitized"},
-    {"id":"H-24","severity":"high","lens":"privacy-compliance","source":"taskplane/loop.py:4145","title":"Canonical review artifacts keep raw diffs indefinitely","owner":"privacy-and-retention","boundaries":["contract:privacy.retention-and-disclosure"],"wave":"H3","task":"H3-C","dependency_class":"after-H1;shared-privacy-contract-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_privacy.py::test_h24_raw_diff_retention_is_bounded_and_enforced"},
-    {"id":"H-25","severity":"high","lens":"privacy-compliance","source":"taskplane/taskplane_lite.py:6080","title":"Append-only audit traces accept unsanitized identity and free-text fields","owner":"privacy-and-retention","boundaries":["contract:privacy.retention-and-disclosure"],"wave":"H3","task":"H3-C","dependency_class":"after-H1;shared-privacy-contract-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_privacy.py::test_h25_audit_identity_and_free_text_are_sanitized"},
-    {"id":"H-26","severity":"high","lens":"project-management","source":"design/compatibility.json:47","title":"Release gate skips the last released production generation","owner":"release-compatibility","boundaries":["contract:release.compatibility-and-authority"],"wave":"H1","task":"H1-D","dependency_class":"foundation-leaf;shared-release-owner;root-fix-with-H-22","depends_on":[],"evidence":"taskplane/tests/test_em_h1_release.py::test_h26_release_gate_refuses_without_N_minus_1_evidence"},
-    {"id":"H-27","severity":"high","lens":"scalability","source":"taskplane/tp.py:2363","title":"Every screened action reparses the growing transcript twice","owner":"review-and-budget-bounds","boundaries":["contract:quality.review-remediation"],"wave":"H2","task":"H2-C","dependency_class":"after-H1;shared-review-bound-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h2_bounds.py::test_h27_screening_reuses_one_bounded_transcript_projection"},
-    {"id":"H-28","severity":"high","lens":"scalability","source":"taskplane/review.py:698","title":"Review actions scan every historical host transcript","owner":"review-and-budget-bounds","boundaries":["contract:quality.review-remediation"],"wave":"H2","task":"H2-C","dependency_class":"after-H1;shared-review-bound-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h2_bounds.py::test_h28_review_scans_only_selected_session_with_byte_cap"},
-    {"id":"H-29","severity":"high","lens":"scalability","source":"taskplane/preview_runtime.py:217","title":"Preview startup materializes and hashes an unbounded workspace","owner":"production-roots-and-preview","boundaries":["contract:delivery.production-wiring"],"wave":"H2","task":"H2-B","dependency_class":"after-H1;shared-preview-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h2_wiring.py::test_h29_preview_refuses_entry_and_byte_limit_overrun"},
-    {"id":"H-30","severity":"high","lens":"security","source":"taskplane/taskplane_lite.py:349","title":"Read-only contracts allow opaque build and test launchers to mutate reviewed source","owner":"durable-store-and-readonly","boundaries":["contract:runtime.durable-state-and-authority","contract:quality.review-remediation"],"wave":"H1","task":"H1-C","dependency_class":"foundation-leaf;shared-runtime-store-owner","depends_on":[],"evidence":"taskplane/tests/test_em_h1_store.py::test_h30_readonly_denies_every_command_tool"},
-    {"id":"H-31","severity":"high","lens":"solution-design","source":"components.yaml:13","title":"The accepted architecture map has no executable graph consumer","owner":"graph-interaction-and-routing","boundaries":["contract:delivery.production-wiring","contract:quality.review-remediation"],"wave":"H2","task":"HX-GRAPH","dependency_class":"after-H1;cross-H2-H3-shared-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_hx_graph.py::test_h31_scanner_consumes_accepted_architecture_map"},
-    {"id":"H-32","severity":"high","lens":"solution-design","source":"exports/terminal/r0013/106af4631ab5b5c041055b9b9b918d78a18ae50b.json:1","title":"The exact-SHA terminal bundle no longer describes the main-integration candidate","owner":"exact-sha-terminal-export","boundaries":["contract:release.compatibility-and-authority","resource:review.exact-candidate-evidence"],"wave":"H3","task":"H3-D","dependency_class":"after-H1-terminal-and-release-contracts","depends_on":["H1-A","H1-D"],"evidence":"taskplane/tests/test_em_h3_terminal_export.py::test_h32_terminal_export_matches_current_candidate_sha"},
-    {"id":"H-33","severity":"high","lens":"solution-design","source":"exports/terminal/r0013/.native-usage-receipt.json:46","title":"The design declares native token budgets enforceable on a host that exposes no token totals","owner":"review-and-budget-bounds","boundaries":["contract:quality.review-remediation"],"wave":"H2","task":"H2-C","dependency_class":"after-H1;shared-review-bound-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h2_bounds.py::test_h33_missing_host_usage_is_explicit_and_never_claims_enforcement"},
-    {"id":"H-34","severity":"high","lens":"sre","source":"taskplane/review.py:1174","title":"Validation-sandbox preparation can block forever","owner":"validation-sandbox-deadline","boundaries":["contract:delivery.production-wiring"],"wave":"H1","task":"H1-E","dependency_class":"foundation-leaf","depends_on":[],"evidence":"taskplane/tests/test_em_h1_sandbox.py::test_h34_sandbox_prepare_has_process_and_total_deadlines"},
-    {"id":"M-01","severity":"medium","lens":"accessibility","source":"taskplane/dashboard.py:487","title":"Mission-control status indicators pulse indefinitely with no reduced-motion or pause path","owner":"dashboard-locale-and-state","boundaries":["contract:dashboard.accessible-truthful-actions"],"wave":"M2","task":"M2-A","dependency_class":"after-high-gate;shared-dashboard-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_dashboard.py::test_m01_reduced_motion_disables_infinite_status_pulse"},
-    {"id":"M-02","severity":"medium","lens":"architecture","source":"design/contract.json:756","title":"The accepted architecture decomposition is not an input to any scanner","owner":"scanner-and-design-decisions","boundaries":["contract:quality.review-remediation"],"wave":"M1","task":"M1-A","dependency_class":"after-high-gate;shared-design-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_architecture.py::test_m02_decomposition_is_scanner_input"},
-    {"id":"M-03","severity":"medium","lens":"code-quality","source":"taskplane/dispatch_telemetry.py:20","title":"New bare type-ignore suppressions hide the compatibility import boundary","owner":"typing-and-cost-failclosed","boundaries":["contract:ci.reproducible-python-quality","contract:quality.review-remediation"],"wave":"M1","task":"M1-B","dependency_class":"after-high-gate;pairwise-disjoint-typing-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_typing_cost.py::test_m03_compatibility_import_has_explicit_types_and_no_bare_ignore"},
-    {"id":"M-04","severity":"medium","lens":"cost-finops","source":"taskplane/lens.py:318","title":"A routing import failure disables the deep-agent cost cap","owner":"typing-and-cost-failclosed","boundaries":["contract:quality.review-remediation"],"wave":"M1","task":"M1-B","dependency_class":"after-high-gate;shared-cost-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_typing_cost.py::test_m04_routing_import_failure_fails_closed_on_deep_cap"},
-    {"id":"M-05","severity":"medium","lens":"design","source":"taskplane/dashboard.py:5225","title":"Every component state is visually presented as success","owner":"dashboard-locale-and-state","boundaries":["contract:dashboard.accessible-truthful-actions"],"wave":"M2","task":"M2-A","dependency_class":"after-high-gate;shared-dashboard-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_dashboard.py::test_m05_component_visual_state_matches_semantic_state"},
-    {"id":"M-06","severity":"medium","lens":"devops","source":".github/workflows/ci.yml:437","title":"Pull-request jobs retain checkout credentials they never use","owner":"ci-dependencies-and-assets","boundaries":["contract:ci.reproducible-python-quality"],"wave":"M1","task":"M1-C","dependency_class":"after-high-gate;shared-CI-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_ci_dependencies.py::test_m06_readonly_PR_jobs_disable_persist_credentials"},
-    {"id":"M-07","severity":"medium","lens":"devops","source":".github/workflows/ci.yml:90","title":"CI resolves an unlocked test dependency on every run","owner":"ci-dependencies-and-assets","boundaries":["contract:ci.reproducible-python-quality"],"wave":"M1","task":"M1-C","dependency_class":"after-high-gate;shared-CI-owner;root-fix-with-M-17-M-18","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_ci_dependencies.py::test_m07_CI_uses_reviewed_hash_locked_dev_dependencies"},
-    {"id":"M-08","severity":"medium","lens":"i18n","source":"taskplane/dashboard.py:192","title":"Dashboard copy has no locale-backed translation path","owner":"dashboard-locale-and-state","boundaries":["contract:i18n.locale-and-grapheme"],"wave":"M2","task":"M2-A","dependency_class":"after-high-gate;shared-dashboard-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_dashboard.py::test_m08_dashboard_uses_locale_catalog_with_deterministic_fallback"},
-    {"id":"M-09","severity":"medium","lens":"i18n","source":"taskplane/dashboard.py:197","title":"Plural evaluator can express only English one/other rules","owner":"dashboard-locale-and-state","boundaries":["contract:i18n.locale-and-grapheme"],"wave":"M2","task":"M2-A","dependency_class":"after-high-gate;shared-dashboard-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_dashboard.py::test_m09_plural_rules_support_locale_categories_beyond_one_other"},
-    {"id":"M-10","severity":"medium","lens":"privacy-compliance","source":"PRIVACY.md:58","title":"Privacy notice denies data collection and third-party network use that the code performs","owner":"privacy-default-and-notice","boundaries":["contract:privacy.retention-and-disclosure"],"wave":"M2","task":"M2-B","dependency_class":"after-high-gate;shared-privacy-doc-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_privacy.py::test_m10_privacy_notice_matches_actual_collection_and_network_paths"},
-    {"id":"M-11","severity":"medium","lens":"privacy-compliance","source":"taskplane/taskplane_lite.py:5616","title":"A repository-controlled setting defaults a new user to shared storage","owner":"privacy-default-and-notice","boundaries":["contract:privacy.retention-and-disclosure"],"wave":"M2","task":"M2-B","dependency_class":"after-high-gate;shared-privacy-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_privacy.py::test_m11_new_user_storage_defaults_private_despite_repository_setting"},
-    {"id":"M-12","severity":"medium","lens":"product","source":"README.md:72","title":"Primary journey describes approval checkpoints the current flow has consolidated","owner":"product-docs-and-help","boundaries":["contract:docs.generated-truth"],"wave":"M2","task":"M2-C","dependency_class":"after-high-gate;shared-product-doc-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_docs.py::test_m12_primary_journey_matches_current_approval_flow"},
-    {"id":"M-13","severity":"medium","lens":"product","source":".codex-plugin/plugin.json:27","title":"Marketplace copy implies an actively executed full 26-lens review","owner":"product-docs-and-help","boundaries":["contract:docs.generated-truth"],"wave":"M2","task":"M2-C","dependency_class":"after-high-gate;shared-product-doc-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_docs.py::test_m13_marketplace_copy_describes_routed_review_truthfully"},
-    {"id":"M-14","severity":"medium","lens":"qa","source":"taskplane/tests/test_r0013_design_sweep.py:266","title":"Canonical design-sweep proof is optional in CI","owner":"mandatory-production-proofs","boundaries":["contract:ci.reproducible-python-quality"],"wave":"M1","task":"M1-D","dependency_class":"after-high-gate;shared-proof-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_proof_paths.py::test_m14_design_sweep_proof_is_required_in_CI"},
-    {"id":"M-15","severity":"medium","lens":"qa","source":"taskplane/tests/test_r0001_live_host_canary.py:16","title":"No required end-to-end Codex producer-event path","owner":"mandatory-production-proofs","boundaries":["contract:ci.reproducible-python-quality","contract:delivery.production-wiring"],"wave":"M1","task":"M1-D","dependency_class":"after-high-gate;shared-proof-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_proof_paths.py::test_m15_live_Codex_producer_event_path_is_required"},
-    {"id":"M-16","severity":"medium","lens":"qa","source":"taskplane/tests/test_review_routing.py:1405","title":"Publication-concurrency test orders threads with a fixed sleep","owner":"deterministic-concurrency-proof","boundaries":["contract:quality.review-remediation"],"wave":"M2","task":"M2-D","dependency_class":"after-high-gate;pairwise-disjoint-test-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_concurrency.py::test_m16_publication_concurrency_uses_events_not_sleep"},
-    {"id":"M-17","severity":"medium","lens":"security","source":".github/workflows/ci.yml:90","title":"CI repeatedly installs a moving pytest release without integrity hashes","owner":"ci-dependencies-and-assets","boundaries":["contract:ci.reproducible-python-quality"],"wave":"M1","task":"M1-C","dependency_class":"after-high-gate;shared-CI-owner;root-fix-with-M-07-M-18","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_ci_dependencies.py::test_m17_pytest_is_version_and_hash_locked"},
-    {"id":"M-18","severity":"medium","lens":"services-selection","source":".github/workflows/ci.yml:90","title":"CI resolves an unsealed pytest dependency tree on every run","owner":"ci-dependencies-and-assets","boundaries":["contract:ci.reproducible-python-quality"],"wave":"M1","task":"M1-C","dependency_class":"after-high-gate;shared-CI-owner;root-fix-with-M-07-M-17","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_ci_dependencies.py::test_m18_transitive_test_dependency_tree_is_sealed"},
-    {"id":"M-19","severity":"medium","lens":"sre","source":"taskplane/repository.py:758","title":"Repository acquisition retries immediately and at two layers","owner":"repository-retry","boundaries":["contract:delivery.production-wiring"],"wave":"M1","task":"M1-E","dependency_class":"after-high-gate;pairwise-disjoint-repository-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_repository.py::test_m19_one_retry_owner_applies_bounded_backoff_and_deadline"},
-    {"id":"M-20","severity":"medium","lens":"tech-writer","source":"PRIVACY.md:59","title":"The no-network privacy promise no longer matches remote repository acquisition","owner":"privacy-default-and-notice","boundaries":["contract:privacy.retention-and-disclosure","contract:docs.generated-truth"],"wave":"M2","task":"M2-B","dependency_class":"after-high-gate;shared-privacy-doc-owner;root-fix-with-M-10","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_privacy.py::test_m20_remote_acquisition_network_disclosure_is_accurate"},
-    {"id":"M-21","severity":"medium","lens":"tech-writer","source":"README.md:248","title":"The public prerequisite says Python 3 although the CLI requires Python 3.10+","owner":"product-docs-and-help","boundaries":["contract:docs.generated-truth","contract:ci.reproducible-python-quality"],"wave":"M2","task":"M2-C","dependency_class":"after-high-gate;shared-product-doc-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_docs.py::test_m21_public_python_floor_is_3_10_or_newer"},
-    {"id":"M-22","severity":"medium","lens":"tech-writer","source":"docs/loop-design.md:124","title":"The loop command synopsis omits the supported `unavailable` outcome","owner":"loop-design-decisions","boundaries":["contract:docs.generated-truth"],"wave":"M2","task":"MX-DOCS-ARCH","dependency_class":"after-high-gate;cross-M1-M2-shared-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_mx_loop_docs.py::test_m22_loop_synopsis_includes_unavailable_outcome"},
-    {"id":"M-23","severity":"medium","lens":"tech-writer","source":"docs/onboarding.md:24","title":"Onboarding presents `tp init` as scaffolding but omits its legacy-KB migration side effect","owner":"product-docs-and-help","boundaries":["contract:docs.generated-truth"],"wave":"M2","task":"M2-C","dependency_class":"after-high-gate;shared-product-doc-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_docs.py::test_m23_onboarding_discloses_legacy_KB_migration"},
-    {"id":"M-24","severity":"medium","lens":"testability","source":"taskplane/tests/__init__.py:34","title":"Importing the test package permanently rewires process-wide runner state","owner":"scoped-test-runtime","boundaries":["contract:runtime.scoped-dependency-binding","contract:quality.review-remediation"],"wave":"M1","task":"M1-F","dependency_class":"after-high-gate;shared-test-runtime-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_test_isolation.py::test_m24_test_package_import_has_no_process_global_side_effect"},
-    {"id":"M-25","severity":"medium","lens":"time-to-market","source":"specs/spec.md:218","title":"Deferred P1/P2 work is not linked to priced debt records","owner":"priced-debt-trace","boundaries":["contract:quality.review-remediation","resource:review.finding-traceability"],"wave":"M2","task":"M2-E","dependency_class":"after-high-gate;pairwise-disjoint-debt-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_debt.py::test_m25_deferred_items_link_to_priced_governed_debt"},
-    {"id":"M-26","severity":"medium","lens":"tradeoffs","source":"design/contract.json:727","title":"The terminal capability choice hides the recoverability it spends","owner":"scanner-and-design-decisions","boundaries":["contract:release.compatibility-and-authority","contract:runtime.durable-state-and-authority"],"wave":"M1","task":"M1-A","dependency_class":"after-high-gate;shared-design-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_architecture.py::test_m26_terminal_capability_records_recoverability_tradeoff"},
-    {"id":"M-27","severity":"medium","lens":"tradeoffs","source":"docs/loop-design.md:157","title":"The one-way stage migration has no alternatives or revisit trigger","owner":"loop-design-decisions","boundaries":["contract:docs.generated-truth","contract:runtime.durable-state-and-authority"],"wave":"M1","task":"MX-DOCS-ARCH","dependency_class":"after-high-gate;cross-M1-M2-shared-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_mx_loop_docs.py::test_m27_stage_migration_records_alternatives_and_revisit_trigger"},
-    {"id":"M-28","severity":"medium","lens":"tradeoffs","source":"docs/loop-design.md:224","title":"Loop-engine ownership is locked in prose but absent from the decision registry","owner":"loop-design-decisions","boundaries":["contract:docs.generated-truth","contract:delivery.production-wiring"],"wave":"M1","task":"MX-DOCS-ARCH","dependency_class":"after-high-gate;cross-M1-M2-shared-owner","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_mx_loop_docs.py::test_m28_loop_engine_ownership_is_in_decision_registry"},
-    {"id":"L-01","severity":"low","lens":"accessibility","source":"taskplane/dashboard.py:560","title":"Small step metadata text misses WCAG AA contrast","owner":"dashboard-controls","boundaries":["contract:dashboard.accessible-truthful-actions"],"wave":"H3","task":"H3-A","dependency_class":"low-companion;shared-owner-with-H3-dashboard;never-delays-high-gate","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_dashboard.py::test_l01_small_metadata_contrast_is_at_least_4_5_to_1","low_companion":{"wave":"H3","mode":"shared-owner","with":["H-01","H-16","H-17","H-18","H-20","H-21"]}},
-    {"id":"L-02","severity":"low","lens":"code-quality","source":"taskplane/graph_primitives.py:467","title":"Glob matching logic is deliberately duplicated across routing layers","owner":"graph-interaction-and-routing","boundaries":["contract:quality.review-remediation"],"wave":"H2","task":"HX-GRAPH","dependency_class":"low-companion;shared-owner-with-H2-graph;dependency-neutral-module","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_hx_graph.py::test_l02_both_routing_layers_consume_one_neutral_glob_matcher_with_parity","low_companion":{"wave":"H2","mode":"shared-owner","with":["H-31"]}},
-    {"id":"L-03","severity":"low","lens":"i18n","source":"taskplane/dashboard.py:1560","title":"Visible finding text is truncated inside grapheme clusters","owner":"dashboard-locale-and-state","boundaries":["contract:i18n.locale-and-grapheme","contract:dashboard.accessible-truthful-actions"],"wave":"M2","task":"M2-A","dependency_class":"low-companion;shared-owner-with-M2-dashboard","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_dashboard.py::test_l03_visible_truncation_is_grapheme_safe_and_accessible_text_is_full","low_companion":{"wave":"M2","mode":"shared-owner","with":["M-08","M-09"]}},
-    {"id":"L-04","severity":"low","lens":"privacy-compliance","source":"taskplane/taskplane_lite.py:5753","title":"Shared store metadata exposes workstation identity without minimisation","owner":"privacy-and-retention","boundaries":["contract:privacy.retention-and-disclosure"],"wave":"H3","task":"H3-C","dependency_class":"low-companion;shared-owner-with-H3-privacy;never-delays-disjoint-high-owner","depends_on":["H1-I"],"evidence":"taskplane/tests/test_em_h3_privacy.py::test_l04_shared_metadata_omits_private_paths_and_raw_workstation_identity","low_companion":{"wave":"H3","mode":"shared-owner","with":["H-25"]}},
-    {"id":"L-05","severity":"low","lens":"product","source":"skills/tp-help/SKILL.md:45","title":"The built-in tour presents v2.16 as the current release story","owner":"product-docs-and-help","boundaries":["contract:docs.generated-truth"],"wave":"M2","task":"M2-C","dependency_class":"low-companion;shared-owner-with-M2-product-docs","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_docs.py::test_l05_builtin_tour_is_version_neutral_or_release_derived","low_companion":{"wave":"M2","mode":"shared-owner","with":["M-12","M-13"]}},
-    {"id":"L-06","severity":"low","lens":"services-selection","source":"CONTRIBUTING.md:12","title":"The declared sole development dependency omits Pillow","owner":"ci-dependencies-and-assets","boundaries":["contract:ci.reproducible-python-quality"],"wave":"M1","task":"M1-C","dependency_class":"low-companion;shared-owner-with-M1-dev-dependencies","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_ci_dependencies.py::test_l06_Pillow_is_pinned_dev_only_and_assets_regenerate_reproducibly","low_companion":{"wave":"M1","mode":"shared-owner","with":["M-07","M-17","M-18"]}},
-    {"id":"L-07","severity":"low","lens":"tech-writer","source":"docs/cli-reference.md:836","title":"The generated CLI reference drops allowed values for positional enums","owner":"product-docs-and-help","boundaries":["contract:docs.generated-truth"],"wave":"M2","task":"M2-C","dependency_class":"low-companion;shared-owner-with-M2-generated-docs","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_docs.py::test_l07_generated_positional_enum_choices_are_documented","low_companion":{"wave":"M2","mode":"shared-owner","with":["M-21","M-23"]}},
-    {"id":"L-08","severity":"low","lens":"tech-writer","source":"README.md:358","title":"The complete generated CLI reference is not reachable from the documentation index","owner":"product-docs-and-help","boundaries":["contract:docs.generated-truth"],"wave":"M2","task":"M2-C","dependency_class":"low-companion;shared-owner-with-M2-doc-navigation","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_docs.py::test_l08_primary_docs_link_generated_CLI_reference","low_companion":{"wave":"M2","mode":"shared-owner","with":["M-12","M-21"]}},
-    {"id":"L-09","severity":"low","lens":"tech-writer","source":"docs/onboarding.md:166","title":"The context-storage instructions contradict onboarding's four-document model","owner":"product-docs-and-help","boundaries":["contract:docs.generated-truth"],"wave":"M2","task":"M2-C","dependency_class":"low-companion;shared-owner-with-M2-onboarding","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m2_docs.py::test_l09_onboarding_uses_one_consistent_four_document_model","low_companion":{"wave":"M2","mode":"shared-owner","with":["M-23"]}},
-    {"id":"L-10","severity":"low","lens":"testability","source":"taskplane/build_c.py:68","title":"Runtime dependency seams are mutable process singletons without scoped restoration","owner":"scoped-test-runtime","boundaries":["contract:runtime.scoped-dependency-binding"],"wave":"M1","task":"M1-F","dependency_class":"low-companion;shared-owner-with-M1-test-runtime","depends_on":["HG-EVAL"],"evidence":"taskplane/tests/test_em_m1_test_isolation.py::test_l10_nested_and_parallel_runtime_bindings_restore_safely","low_companion":{"wave":"M1","mode":"shared-owner","with":["M-24"]}}
-  ],
-  "architecture_decomposition": {
-    "schema": "taskplane.design-architecture-map/v1",
-    "content_fingerprint": "2ce2f31148d4078d64f62de89b8eff9a902693b68395773f53b5371623030ebc",
-    "decision_record": "D-R0013-native-adapter-quarantine",
-    "scanner_input": "design/contract.json#/architecture_decomposition",
-    "scanner_rule": "The strict decomposed scan must realize every node below from tracked path globs and compare its semantic edges with graph.proposed_edges. Aggregate baseline node taskplane remains baseline inventory only and cannot prove file-owner SCC isolation.",
-    "nodes": [
-      {
-        "id": "ext:codex-native-orchestration",
-        "kind": "external-host",
-        "path_globs": []
-      },
-      {
-        "id": "component:taskplane-governance-adapters",
-        "kind": "existing",
-        "path_globs": [
-          "taskplane/loop.py",
-          "taskplane/tp.py",
-          "taskplane/build_c.py",
-          "taskplane/plan_topology.py",
-          "taskplane/command_runtime.py"
-        ]
-      },
-      {
-        "id": "component:native-authority-validator",
-        "kind": "new",
-        "path_globs": [
-          "taskplane/native_authority.py"
-        ]
-      },
-      {
-        "id": "component:design-sweep-validator",
-        "kind": "new",
-        "path_globs": [
-          "taskplane/design_sweep.py"
-        ]
-      },
-      {
-        "id": "component:terminal-truth-coordinator",
-        "kind": "new",
-        "path_globs": [
-          "taskplane/terminal_truth.py"
-        ]
-      },
-      {
-        "id": "surface:git-head",
-        "kind": "producer",
-        "path_globs": [
-          "taskplane/repository.py"
-        ]
-      },
-      {
-        "id": "surface:governed-progress",
-        "kind": "producer",
-        "path_globs": [
-          "taskplane/progress.py"
-        ]
-      },
-      {
-        "id": "surface:run-journal",
-        "kind": "producer",
-        "path_globs": [
-          "taskplane/loop.py"
-        ]
-      },
-      {
-        "id": "surface:tasks-and-gates",
-        "kind": "producer",
-        "path_globs": [
-          "taskplane/loop.py",
-          "taskplane/checkpoint.py"
-        ]
-      },
-      {
-        "id": "surface:public-report",
-        "kind": "producer",
-        "path_globs": [
-          "taskplane/views.py"
-        ]
-      },
-      {
-        "id": "surface:repository-verification-report",
-        "kind": "producer",
-        "path_globs": [
-          "taskplane/repository.py"
-        ]
-      },
-      {
-        "id": "surface:release-evidence",
-        "kind": "producer",
-        "path_globs": [
-          "taskplane/release_evidence.py"
-        ]
-      },
-      {
-        "id": "surface:exports-terminal-evidence",
-        "kind": "producer",
-        "path_globs": [
-          "exports/**/terminal/**"
-        ]
-      },
-      {
-        "id": "component:r0013-contract-tests",
-        "kind": "test",
-        "path_globs": [
-          "taskplane/tests/test_r0013_*.py"
-        ]
-      }
+  "stage_policy": {
+    "product": {
+      "selection": "minimum_sufficient",
+      "numeric_cap": null,
+      "execution_depth": "quick-only",
+      "inputs": [
+        "goal",
+        "requirement",
+        "acceptance",
+        "domain",
+        "constraints",
+        "product_risk"
+      ]
+    },
+    "design": {
+      "selection": "minimum_sufficient",
+      "numeric_cap": null,
+      "execution_depth": "quick-only",
+      "mandatory": [
+        "solution-design"
+      ],
+      "inputs": [
+        "approved_requirement",
+        "acceptance",
+        "proposed_components",
+        "interfaces",
+        "data_boundaries",
+        "trust_boundaries",
+        "migration_risk",
+        "rollback_risk"
+      ]
+    },
+    "plan": {
+      "selection": "focused",
+      "non_trivial_minimum": 3,
+      "non_trivial_maximum": 4,
+      "execution_depth": "quick-only",
+      "inputs": [
+        "approved_product",
+        "approved_design",
+        "dependency_graph",
+        "task_scopes",
+        "ownership",
+        "selectors",
+        "validation_strategy"
+      ]
+    },
+    "build": {
+      "selection": "none",
+      "lens_worker_count": 0,
+      "execution_depth": "none"
+    },
+    "fix": {
+      "selection": "none",
+      "lens_worker_count": 0,
+      "execution_depth": "none"
+    },
+    "evaluate": {
+      "selection": "focused",
+      "non_trivial_minimum": 3,
+      "non_trivial_maximum": 4,
+      "execution_depth": "quick-only",
+      "inputs": [
+        "acceptance",
+        "specification",
+        "design_contract",
+        "actual_diff",
+        "changed_files",
+        "dependency_impact",
+        "test_evidence",
+        "unresolved_findings"
+      ]
+    },
+    "em": {
+      "selection": "none",
+      "lens_worker_count": 0,
+      "execution_depth": "none",
+      "source": "canonical Evaluate evidence"
+    }
+  },
+  "approval_policy": {
+    "intermediate_human_gates": 0,
+    "human_approval": "final delivery sign-off only after EM synthesis",
+    "orchestrator_only": "Only the root orchestrator may gate or approve Design, Plan, Build, Evaluate, Fix, or EM transitions."
+  },
+  "graph": {
+    "baseline_fingerprint": "84060cc51be9c6769a356be30edf699f880c3bb7fe54495e28950eaf86543e0b",
+    "proposed_modules": [
+      "taskplane/graph_primitives.py",
+      "taskplane/lens.py",
+      "taskplane/lens_signals.py",
+      "taskplane/loop.py",
+      "taskplane/review.py",
+      "taskplane/review_retry.py",
+      "taskplane/delivery_policy.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/terminal_truth.py",
+      "taskplane/dispatch_telemetry.py",
+      "agents",
+      "skills/taskplane",
+      "skills/tp-product",
+      "skills/tp-design",
+      "skills/tp-go",
+      "skills/tp-build",
+      "skills/tp-engineering",
+      "specs",
+      "design",
+      "plan",
+      "docs",
+      "(root)",
+      "taskplane/tests",
+      "taskplane/lens_route_policy.py",
+      "taskplane/expanded_route_authority_provider.py",
+      "resource:authority.expanded-lens-route-custody",
+      "ext:orchestrator-control-plane-runtime"
     ],
-    "required_properties": [
-      "native-authority, design-sweep, and terminal-truth owners are singleton SCCs",
-      "no new owner imports or invokes a host transport or transition adapter",
-      "governance adapters reach Codex only through contract:delivery.codex-native-dispatch",
-      "all eight surface producers reach the coordinator through contract:delivery.exact-sha-terminal-truth",
-      "tests observe every node and every declared production edge"
-    ],
-    "required_singleton_sccs": [
-      "component:native-authority-validator",
-      "component:design-sweep-validator",
-      "component:terminal-truth-coordinator"
-    ],
-    "semantic_edges": [
+    "proposed_edges": [
+      {
+        "from": "taskplane/graph_primitives.py",
+        "to": "taskplane/lens_route_policy.py",
+        "kind": "provides-signals",
+        "reason": "The incumbent dependency-neutral detector supplies complete scored rows and mandatory risk-floor evidence to the pure selector."
+      },
+      {
+        "from": "taskplane/lens.py",
+        "to": "taskplane/lens_route_policy.py",
+        "kind": "consumes",
+        "reason": "The catalog adapter projects existing scores into the canonical context and converts selected dispositions into dispatch briefs."
+      },
+      {
+        "from": "taskplane/lens_route_policy.py",
+        "to": "contract:lens.focused-stage-routing",
+        "kind": "provides",
+        "reason": "The pure policy owns deterministic stage selection, count rules, risk deduplication, and overflow refusal."
+      },
+      {
+        "from": "taskplane/lens_route_policy.py",
+        "to": "contract:review.catalog-disposition",
+        "kind": "provides",
+        "reason": "The pure policy validates the exact 26-row closed disposition ledger and selected-set conservation."
+      },
+      {
+        "from": "taskplane/loop.py",
+        "to": "contract:lens.focused-stage-routing",
+        "kind": "consumes",
+        "reason": "Product, Design, and Plan stage adapters build fresh stage-specific contexts and mechanically gate their artifacts."
+      },
+      {
+        "from": "taskplane/review.py",
+        "to": "contract:lens.focused-stage-routing",
+        "kind": "consumes",
+        "reason": "ReviewKernel builds Evaluate context from the actual diff, impact, tests, and findings before minting any slot."
+      },
+      {
+        "from": "taskplane/loop.py",
+        "to": "contract:delivery.stage-lens-execution",
+        "kind": "enforces",
+        "reason": "Loop dispatch confines lens execution to routed decision stages and emits zero-lens Build/Fix/EM authority."
+      },
+      {
+        "from": "taskplane/delivery_policy.py",
+        "to": "contract:delivery.stage-lens-execution",
+        "kind": "validates",
+        "reason": "Closed native lifecycle observations prove zero Taskplane lens starts for Build, Fix, and EM without suppressing Evaluate."
+      },
+      {
+        "from": "taskplane/taskplane_lite.py",
+        "to": "contract:authority.expanded-lens-route",
+        "kind": "requests",
+        "reason": "The worktree adapter may serialize a closed request and consume a provider-sealed decision, but cannot issue, verify, time, locate, or consume authority."
+      },
+      {
+        "from": "taskplane/terminal_truth.py",
+        "to": "resource:authority.expanded-lens-route-custody",
+        "kind": "provides-precedent",
+        "reason": "The graph-selected durably-protected-issuer demonstrates root-private key custody, authority locking, atomic immutable writes, directory fsync, and explicit restart recovery; the new provider follows this pattern with separate keys and lifecycle."
+      },
+      {
+        "from": "taskplane/expanded_route_authority_provider.py",
+        "to": "resource:authority.expanded-lens-route-custody",
+        "kind": "owns",
+        "reason": "The packaged provider exclusively validates the external content-addressed locator, 0600 keys/manifests/journals, real clock, exact RSA receipt, and atomic one-use state."
+      },
+      {
+        "from": "ext:orchestrator-control-plane-runtime",
+        "to": "taskplane/expanded_route_authority_provider.py",
+        "kind": "executes-verified-package",
+        "reason": "The orchestrator executes only the exact immutable packaged object in a separate trusted interpreter after source, commit, digest, location, ownership, mode, and no-symlink validation."
+      },
+      {
+        "from": "taskplane/expanded_route_authority_provider.py",
+        "to": "contract:authority.expanded-lens-route",
+        "kind": "provides",
+        "reason": "Only the protected provider may issue, validate authoritative time, perform exact RSA-PSS verification, atomically consume once, and seal the dispatch receipt."
+      },
+      {
+        "from": "taskplane/review.py",
+        "to": "contract:authority.expanded-lens-route",
+        "kind": "consumes",
+        "reason": "ReviewKernel permits an expanded dispatch only when the provider-sealed consumption receipt binds its exact current route and context fingerprint."
+      },
+      {
+        "from": "taskplane/review.py",
+        "to": "resource:review.route-fingerprint",
+        "kind": "provides",
+        "reason": "ReviewKernel seals route input, route decision, per-lens input fingerprints, reused results, leases, and new results as one conserved evidence set."
+      },
+      {
+        "from": "taskplane/review_retry.py",
+        "to": "resource:review.route-fingerprint",
+        "kind": "consumes",
+        "reason": "Fix-to-Evaluate comparison reuses only sealed passing evidence with an equal canonical per-lens input fingerprint."
+      },
+      {
+        "from": "taskplane/dispatch_telemetry.py",
+        "to": "resource:telemetry.lens-route",
+        "kind": "provides",
+        "reason": "The existing immutable usage ledger gains a closed bounded stage-route record for cost, runtime, reuse, invalidation, and terminal state."
+      },
+      {
+        "from": "specs",
+        "to": "contract:review.catalog-disposition",
+        "kind": "declares",
+        "reason": "Product authority records the complete routed-stage transparency and acceptance contract."
+      },
       {
         "from": "design",
-        "to": "contract:design.codex-native-capability-inventory",
-        "kind": "provides",
-        "reason": "Design authors the complete native capability/responsibility map."
-      },
-      {
-        "from": "contract:design.codex-native-capability-inventory",
-        "to": "taskplane/native_authority.py",
-        "kind": "validated-by",
-        "reason": "Pure validator enforces row completeness and semantic authority boundaries."
-      },
-      {
-        "from": "taskplane/native_authority.py",
-        "to": "plan",
-        "kind": "blocks",
-        "reason": "Plan cannot proceed with missing mapping or duplicate native authority."
-      },
-      {
-        "from": "lenses",
-        "to": "contract:design.quick-concurrent-all-lens-sweep",
-        "kind": "catalog-input",
-        "reason": "Exact catalog fingerprint defines the 26 Design-only obligations."
-      },
-      {
-        "from": "contract:design.quick-concurrent-all-lens-sweep",
-        "to": "taskplane/design_sweep.py",
-        "kind": "validated-by",
-        "reason": "Collector validates one quick native result and disposition per catalog id."
-      },
-      {
-        "from": "taskplane/design_sweep.py",
-        "to": "design",
-        "kind": "evidence",
-        "reason": "The single sweep receipt becomes final Design input after disposition."
-      },
-      {
-        "from": "taskplane",
-        "to": "contract:delivery.execution-zero-lens",
-        "kind": "changes",
-        "reason": "Execution adapters carry explicit empty lens expectations."
-      },
-      {
-        "from": "contract:delivery.execution-zero-lens",
-        "to": "taskplane/tests",
-        "kind": "verified-by",
-        "reason": "Real native traces prove zero execution lens starts and empty success."
+        "to": "contract:lens.focused-stage-routing",
+        "kind": "declares",
+        "reason": "The Design Contract fixes the stage policies, boundaries, route schema, and rollout before implementation."
       },
       {
         "from": "plan",
-        "to": "contract:delivery.acceptance-wave-ceiling",
-        "kind": "changes",
-        "reason": "Plan seals seven outcomes and the exhaustive 21-pair map."
+        "to": "contract:delivery.stage-lens-execution",
+        "kind": "declares",
+        "reason": "Plan maps the approved stage rules and every designed edge to dependency-aware implementation and validation tasks."
       },
       {
-        "from": "contract:delivery.acceptance-wave-ceiling",
-        "to": "taskplane",
-        "kind": "consumed-by",
-        "reason": "Ready-set and Plan gates refuse ceiling/pair violations."
+        "from": "taskplane/tests",
+        "to": "contract:review.catalog-disposition",
+        "kind": "verifies",
+        "reason": "Unit and mutation tests reject missing, duplicate, unsupported, cyclic, and unevidenced dispositions."
       },
       {
-        "from": "taskplane",
-        "to": "contract:delivery.codex-native-dispatch",
-        "kind": "intent",
-        "reason": "Taskplane emits non-authoritative deterministic native dispatch intent only."
+        "from": "taskplane/tests",
+        "to": "contract:authority.expanded-lens-route",
+        "kind": "verifies",
+        "reason": "Provider tests reject binding mutation, tampering, replay, expiry, concurrent double-consume, stage/target mismatch, worktree clock/RSA/source monkeypatches, and any attempt to weaken mandatory floors."
       },
       {
-        "from": "contract:delivery.codex-native-dispatch",
-        "to": "ext:codex-native-orchestration",
-        "kind": "transported-by",
-        "reason": "Codex exclusively owns spawn, capacity, admission and lifecycle."
+        "from": "taskplane/tests",
+        "to": "resource:authority.expanded-lens-route-custody",
+        "kind": "verifies",
+        "reason": "Custody tests reject missing, altered, relocated, ownership/mode-invalid, and symlinked locators or objects, prove restart recovery, and confine deterministic clock injection to trusted provider tests."
       },
       {
-        "from": "ext:codex-native-orchestration",
-        "to": "contract:delivery.event-driven-wait",
-        "kind": "completion-attention",
-        "reason": "Native completion/attention drives the outstanding-set wait."
+        "from": "taskplane/tests",
+        "to": "resource:review.route-fingerprint",
+        "kind": "verifies",
+        "reason": "Determinism and selective-invalidation tests mutate one, multiple, unchanged, and policy-version inputs."
       },
       {
-        "from": "contract:delivery.event-driven-wait",
-        "to": "taskplane",
-        "kind": "observed-by",
-        "reason": "Taskplane validates membership/idempotency but owns no event queue."
+        "from": "taskplane/tests",
+        "to": "resource:telemetry.lens-route",
+        "kind": "verifies",
+        "reason": "Schema, bound, redaction, token, runtime, reuse, and invalidation telemetry tests prove complete privacy-safe records."
       },
       {
-        "from": "taskplane",
-        "to": "contract:delivery.bounded-stage-handoff",
-        "kind": "changes",
-        "reason": "Brief and telemetry adapters produce a closed under-4000-token delta and finite usage."
+        "from": "agents",
+        "to": "contract:delivery.stage-lens-execution",
+        "kind": "consumes",
+        "reason": "Role contracts explain which stages apply focused quick lenses and forbid Build/Fix nested lens execution."
       },
       {
-        "from": "contract:delivery.bounded-stage-handoff",
-        "to": "ext:codex-native-orchestration",
-        "kind": "handoff",
-        "reason": "Codex native tasks receive only the bounded delta."
+        "from": "skills/taskplane",
+        "to": "contract:delivery.stage-lens-execution",
+        "kind": "consumes",
+        "reason": "The facade and harness route stage work without prompting users to select lenses."
       },
       {
-        "from": "taskplane",
-        "to": "contract:delivery.exact-sha-terminal-truth",
-        "kind": "changes",
-        "reason": "Finalizer consumes all terminal surface projections and P0 evidence."
+        "from": "docs",
+        "to": "resource:telemetry.lens-route",
+        "kind": "documents",
+        "reason": "Routing, catalog, state, configuration, and onboarding docs describe focused execution, overflow, reuse, and observability truthfully."
       },
       {
-        "from": "contract:delivery.exact-sha-terminal-truth",
-        "to": "taskplane/terminal_truth.py",
-        "kind": "coordinated-by",
-        "reason": "One immutable bundle and CAS head own logical terminal publication."
-      },
-      {
-        "from": "taskplane/terminal_truth.py",
-        "to": "exports",
-        "kind": "projects",
-        "reason": "Finalizer writes a redacted checkout-resident aggregate projection."
-      },
-      {
-        "from": "exports",
-        "to": "resource:exports.exact-sha-terminal-truth",
-        "kind": "provides",
-        "reason": "Exports projection is the named repository-checkout resource."
-      },
-      {
-        "from": "resource:exports.exact-sha-terminal-truth",
-        "to": "contract:delivery.exact-sha-terminal-truth",
-        "kind": "bound-by",
-        "reason": "Resource gains authority only through the full terminal bundle digest set."
-      },
-      {
-        "from": "taskplane/native_authority.py",
-        "to": "taskplane",
-        "kind": "consumed-by",
-        "reason": "Design/Plan/architecture and dispatch adapters consume pure refusal rules."
-      },
-      {
-        "from": "taskplane/design_sweep.py",
-        "to": "taskplane",
-        "kind": "consumed-by",
-        "reason": "Design gate consumes the one sweep receipt; execution paths do not."
-      },
-      {
-        "from": "taskplane/terminal_truth.py",
-        "to": "taskplane",
-        "kind": "consumed-by",
-        "reason": "Existing progress/report/repository/release surfaces resolve terminal status through one bundle."
+        "from": "(root)",
+        "to": "contract:lens.focused-stage-routing",
+        "kind": "documents",
+        "reason": "README product truth states the normal focused routes, 3–4 Plan/Evaluate bound, and separate explicit all-deep audit."
       }
-    ]
-  },
-  "graph": {
-    "baseline_fingerprint": "42b140d0b8125932f316693a7efb2c24f71853f5a3aea822bf7c9558cf6aca0b",
-    "proposed_modules": [
-      ".codex-plugin",
-      ".github/workflows",
-      "design",
-      "docs",
-      "exports/terminal",
-      "scripts",
-      "skills/tp-help",
-      "specs",
-      "taskplane",
-      "taskplane/tests",
-      "taskplane/remediation_trace.py",
-      "taskplane/glob_match.py",
-      "taskplane/text_runtime.py"
-    ],
-    "proposed_edges": [
-      {"from": "taskplane", "to": "contract:runtime.durable-state-and-authority", "kind": "provides", "reason": "Runtime stores, evidence, journals, migration, and terminal authority realize one durable commit/recovery boundary."},
-      {"from": "taskplane", "to": "contract:delivery.production-wiring", "kind": "provides", "reason": "Supported CLI/loop composition roots consume reviewed validators and bounded preview/review/repository services."},
-      {"from": "taskplane", "to": "contract:dashboard.accessible-truthful-actions", "kind": "provides", "reason": "Dashboard and dependency graph render the accessible and truthful host/fallback interaction contract."},
-      {"from": "taskplane", "to": "contract:privacy.retention-and-disclosure", "kind": "provides", "reason": "Command, review, audit, and store metadata producers apply minimization and retention policy."},
-      {"from": "scripts", "to": "contract:release.compatibility-and-authority", "kind": "consumes", "reason": "Packaging requires current/N-1 compatibility and release-authority evidence."},
-      {"from": "design", "to": "contract:release.compatibility-and-authority", "kind": "provides", "reason": "The versioned compatibility matrix declares the accepted generation window and cutover."},
-      {"from": ".github/workflows", "to": "contract:ci.reproducible-python-quality", "kind": "provides", "reason": "CI enforces locked dependencies, lint, strict typing, mandatory proofs, least privilege, and final suite policy."},
-      {"from": "taskplane/tests", "to": "contract:ci.reproducible-python-quality", "kind": "consumes", "reason": "Focused and integrated selectors execute under the canonical CI boundary."},
-      {"from": "taskplane/remediation_trace.py", "to": "resource:review.finding-traceability", "kind": "consumes", "reason": "The validator machine-checks the immutable Design/Plan 72-row map against the canonical review."},
-      {"from": "taskplane/remediation_trace.py", "to": "contract:review.high-closure-gate", "kind": "provides", "reason": "The validator issues medium eligibility only after exact-SHA independent high closure."},
-      {"from": "contract:review.high-closure-gate", "to": "resource:review.exact-candidate-evidence", "kind": "produces", "reason": "The high gate emits the immutable independent high result set."},
-      {"from": "taskplane/glob_match.py", "to": "contract:quality.review-remediation", "kind": "provides", "reason": "One dependency-neutral matcher serves graph and lens routing without cross-router imports."},
-      {"from": "taskplane", "to": "taskplane/glob_match.py", "kind": "uses", "reason": "Graph and lens routing consume the shared primitive through stable local APIs."},
-      {"from": "taskplane/text_runtime.py", "to": "contract:i18n.locale-and-grapheme", "kind": "provides", "reason": "The text boundary owns locale/plural behavior and grapheme-safe visible truncation."},
-      {"from": "taskplane", "to": "taskplane/text_runtime.py", "kind": "uses", "reason": "Dashboard rendering consumes locale and truncation services without import-time global state."},
-      {"from": "taskplane", "to": "contract:runtime.scoped-dependency-binding", "kind": "provides", "reason": "Build/runtime services use context-scoped bindings with nested and concurrent restoration."},
-      {"from": "docs", "to": "contract:docs.generated-truth", "kind": "provides", "reason": "Primary docs, CLI reference, onboarding, and loop design expose one supported terminology set."},
-      {"from": "skills/tp-help", "to": "contract:docs.generated-truth", "kind": "provides", "reason": "The built-in tour derives current/version-neutral behavior from supported product data."},
-      {"from": ".codex-plugin", "to": "contract:docs.generated-truth", "kind": "provides", "reason": "Marketplace copy describes actual routed review behavior without implying automatic full sweeps."},
-      {"from": "specs", "to": "resource:review.finding-traceability", "kind": "provides", "reason": "Product authority defines the exact 72 obligations and low companion waves."},
-      {"from": "resource:review.finding-traceability", "to": "resource:review.exact-candidate-evidence", "kind": "requires", "reason": "Every final result preserves one canonical finding id and selector."},
-      {"from": "exports/terminal", "to": "contract:release.compatibility-and-authority", "kind": "provides", "reason": "Immutable terminal export binds the current candidate SHA and compatibility evidence."},
-      {"from": "taskplane/tests", "to": "resource:review.exact-candidate-evidence", "kind": "produces", "reason": "Focused, integration, mutation, accessibility, static, and final-suite results produce the candidate evidence set."}
     ],
     "depth_policy": {
       "local_depth": 3,
@@ -620,128 +595,504 @@
       "requirement_depth": 1
     },
     "dor": [
-      {"check": "Baseline graph is current and complete", "evidence": "Fingerprint 42b140d0b8125932f316693a7efb2c24f71853f5a3aea822bf7c9558cf6aca0b at reviewed SHA 00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085."},
-      {"check": "Every declared existing/new module is in proposed_modules", "evidence": "Mechanical set comparison of modules and graph.proposed_modules."},
-      {"check": "All 72 canonical rows have owner, boundary, lane, dependency class, and executable selector", "evidence": "Machine comparison of finding_map with .em-review/findings.json."},
-      {"check": "Low companions are in H2, H3, M1, or M2 with explicit shared/disjoint ownership", "evidence": "L-01 through L-10 low_companion records; no low-only lane exists."},
-      {"check": "Owner scopes are disjoint inside each native ready set", "evidence": "Plan scope-pair classifier, with HX-GRAPH and MX-DOCS-ARCH as explicit shared owners."},
-      {"check": "No blocking Product or Design question remains", "evidence": "R-0002 open_questions and Design open_questions are empty."}
+      {
+        "check": "The requirement is R-0001 with ten exact acceptance criteria and no blocking open questions.",
+        "evidence": "specs/spec.md and the requirement record supplied in the Design action payload"
+      },
+      {
+        "check": "The as-built dependency graph is current and remains unchanged during Design.",
+        "evidence": "amendment baseline fingerprint 84060cc51be9c6769a356be30edf699f880c3bb7fe54495e28950eaf86543e0b; prior approved Design baseline 7fdc2cc45c225323046430570f04d0580d8868b3ed57132a627a636450adf76f remains historical evidence"
+      },
+      {
+        "check": "Incumbent scoring, stage, ReviewKernel, authority, retry, and telemetry boundaries are grounded in repository sources.",
+        "evidence": "current_state.sources, components.yaml selected durably-protected-issuer decision, taskplane/terminal_truth.py custody implementation, and design/design.md As-built constraints"
+      },
+      {
+        "check": "Python runtime, packaging, synchronization, and trust-boundary constraints are explicit.",
+        "evidence": "pyproject.toml, README.md runtime floor, .github/workflows/ci.yml Python 3.14 quality job, and design/design.md Python/runtime boundaries"
+      }
     ],
     "dod": [
-      {"check": "Realized modules, edges, and contracts match the approved proposal", "evidence": "Final EM meta.design lists every module, edge, and contract with verdict conformant and drift []."},
-      {"check": "The high gate is fail-closed", "evidence": "HG-EVAL positive result plus missing/duplicate/downgrade/suppress/SHA/self-attestation mutation matrix."},
-      {"check": "All 72 findings close without trace loss", "evidence": "Final remediation_trace comparison and exact-candidate evidence resource."},
-      {"check": "Python package/import graph remains acyclic and stdlib-only at runtime", "evidence": "Strict type/lint, SCC/import scan, clean-wheel install, and dependency inspection."},
-      {"check": "Compatibility and rollback remain possible", "evidence": "Current/N-1 matrix, crash/restart/migration fault tests, and immutable successor terminal evidence."},
-      {"check": "Final candidate is green", "evidence": "All focused/applicable checks followed by one python3 -m pytest taskplane/tests -q run at exact clean candidate SHA."}
+      {
+        "check": "The realized graph contains the pure policy and every declared consuming, authority, evidence, telemetry, documentation, and test edge with no undeclared cross-boundary expansion.",
+        "evidence": "strict graph scan plus final Design conformance review against all proposed edge identities"
+      },
+      {
+        "check": "Product/Design are minimum sufficient, Plan/Evaluate are exactly three or four for non-trivial targets, Build/Fix/EM are zero-lens, and all 26 dispositions remain complete.",
+        "evidence": "focused stage-routing integration tests and native dispatch lifecycle trace tests"
+      },
+      {
+        "check": "Fingerprint reuse is conservative, overflow is fail-closed, and expanded authority is exact-target and tamper-evident.",
+        "evidence": "single/multi/unchanged invalidation mutation matrix plus protected-provider source/custody/binding/RSA/replay/expiry/concurrent-consume/worker-monkeypatch matrix"
+      },
+      {
+        "check": "The Python implementation remains synchronous, dependency-free, CPython 3.10 compatible, Python 3.14 lint/type checked, clean-package importable, and graph verified; expanded authority executes only from the verified immutable package with external 0600 custody and production real time.",
+        "evidence": "compatibility matrix, Python 3.14 ruff/mypy job, packaged-plugin and content-addressed-provider import smoke, custody/recovery/monkeypatch/race/cancellation/failure lifecycle tests, and strict graph verification"
+      }
     ]
   },
   "acceptance_map": [
-    {"criterion": "AC1: Design and Plan machine-match exactly 72 obligations (34 high, 28 medium, 10 low) to .em-review/findings.json; every H, M, and L id has owner, boundary, dependency classification, task, and evidence, and every low id names its companion wave plus disjointness or shared owner; any mismatch blocks approval.", "design_element": "taskplane/remediation_trace.py, resource:review.finding-traceability, and finding_map", "validation": "Run taskplane/tests/test_em_remediation_integration.py::test_ac1_exact_72_row_design_plan_inventory and mutate one id, severity, owner, task, boundary, selector, and low companion field; every mutation must fail.", "tests": ["taskplane/tests/test_em_remediation_integration.py::test_ac1_exact_72_row_design_plan_inventory"]},
-    {"criterion": "AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence.", "design_element": "contract:runtime.durable-state-and-authority, contract:release.compatibility-and-authority, H1-A through H1-E, and H1-I", "validation": "Run the exact H1 selectors in finding_map plus taskplane/tests/test_em_h1_integration.py::test_ac2_h1_contracts_close_at_one_sha; fault and timeout injections must fail before the fixes and pass after.", "tests": ["taskplane/tests/test_em_h1_integration.py::test_ac2_h1_contracts_close_at_one_sha"]},
-    {"criterion": "AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence.", "design_element": "contract:quality.review-remediation, contract:delivery.production-wiring, taskplane/glob_match.py, H2-A through H2-C, HX-GRAPH, and H2-I", "validation": "Run exact H2/L-02 finding_map selectors and taskplane/tests/test_em_h2_integration.py::test_ac3_live_wiring_bounds_and_quality; sever each production edge and overrun each bound to prove failure.", "tests": ["taskplane/tests/test_em_h2_integration.py::test_ac3_live_wiring_bounds_and_quality"]},
-    {"criterion": "AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths.", "design_element": "contract:dashboard.accessible-truthful-actions, contract:privacy.retention-and-disclosure, contract:release.compatibility-and-authority, H3-A, HX-GRAPH, H3-C, H3-D, and H3-I", "validation": "Run exact H3/L-01/L-04 selectors and taskplane/tests/test_em_h3_integration.py::test_ac4_human_privacy_and_terminal_truth; include keyboard, rejected bridge, retention expiry, identity leak, and stale-SHA negative cases.", "tests": ["taskplane/tests/test_em_h3_integration.py::test_ac4_human_privacy_and_terminal_truth"]},
-    {"criterion": "AC5: Before any medium-only Build, an independent evaluator proves H-01 through H-34 closed at one candidate SHA; injecting any missing, open, suppressed, downgraded, or self-attested high result blocks medium eligibility.", "design_element": "taskplane/remediation_trace.py and contract:review.high-closure-gate", "validation": "Run taskplane/tests/test_em_remediation_integration.py::test_ac5_high_gate_is_independent_exact_sha_and_fail_closed and its mutation matrix before Plan reports any M1/M2 task ready.", "tests": ["taskplane/tests/test_em_remediation_integration.py::test_ac5_high_gate_is_independent_exact_sha_and_fail_closed"]},
-    {"criterion": "AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely.", "design_element": "contract:ci.reproducible-python-quality, contract:runtime.scoped-dependency-binding, M1-A, MX-DOCS-ARCH, M1-B through M1-F, and M1-I", "validation": "After HG-EVAL, run exact M1/L-06/L-10 finding_map selectors and taskplane/tests/test_em_m1_integration.py::test_ac6_engineering_foundations_close; include hash, import, nested, concurrent, retry, and mandatory-CI negatives.", "tests": ["taskplane/tests/test_em_m1_integration.py::test_ac6_engineering_foundations_close"]},
-    {"criterion": "AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model.", "design_element": "contract:i18n.locale-and-grapheme, contract:privacy.retention-and-disclosure, contract:docs.generated-truth, M2-A through M2-E, MX-DOCS-ARCH, and M2-I", "validation": "After HG-EVAL, run exact M2/L-03/L-05/L-07/L-08/L-09 selectors and taskplane/tests/test_em_m2_integration.py::test_ac7_user_facing_truth_closes; include locale fallback, grapheme, no-network, navigation, and no-sleep assertions.", "tests": ["taskplane/tests/test_em_m2_integration.py::test_ac7_user_facing_truth_closes"]},
-    {"criterion": "AC8: At one clean exact candidate SHA, an independent evaluator proves all 72 trace rows closed, runs all focused and applicable quality checks, then runs python3 -m pytest taskplane/tests -q once with zero new failures, no unresolved finding, no silently deleted row, and no low-only tail.", "design_element": "resource:review.exact-candidate-evidence, FINAL-I, and FINAL-EVAL", "validation": "Run taskplane/tests/test_em_remediation_integration.py::test_ac8_exact_candidate_final_evidence, all finding_map selectors and applicable lint/type/accessibility/docs checks, then record exactly one python3 -m pytest taskplane/tests -q invocation at the same clean SHA.", "tests": ["taskplane/tests/test_em_remediation_integration.py::test_ac8_exact_candidate_final_evidence"]}
+    {
+      "criterion": "AC-LR1: Product deterministically executes a minimum-sufficient focused route from goal, requirement, AC, domain, constraints, and product-risk evidence, emits all 26 dispositions, and never launches a normal full-catalog run; verify identical-input and product-risk mutation tests.",
+      "design_element": "contract:lens.focused-stage-routing; taskplane/lens_route_policy.py; Product context adapter in taskplane/loop.py",
+      "validation": "Run the Product identical-context determinism test, mutate product-risk evidence one field at a time, and assert complete 26-row dispositions with no breadth=all or full-catalog dispatch.",
+      "tests": [
+        "taskplane/tests/test_focused_lens_routing.py::test_product_minimum_sufficient_is_deterministic_and_risk_sensitive"
+      ]
+    },
+    {
+      "criterion": "AC-LR2: Design deterministically executes a minimum-sufficient focused route from approved requirement and proposed solution evidence, includes solution-design coverage, and emits findings, design changes, and all 26 dispositions; verify independent interface, trust-boundary, and rollback-risk mutations.",
+      "design_element": "contract:lens.focused-stage-routing; Design context adapter and Design Contract route evidence",
+      "validation": "Run the Design route test with independent interface, trust-boundary, and rollback-risk mutations; assert solution-design remains selected and every mutation changes only attributable decision evidence.",
+      "tests": [
+        "taskplane/tests/test_focused_lens_routing.py::test_design_route_mutates_for_interface_trust_and_rollback_risk"
+      ]
+    },
+    {
+      "criterion": "AC-LR3: Every non-trivial Plan executes exactly three or four selected lenses with rationale and task-to-AC coverage; verify passing 3/4 cases and refusal of 2/5.",
+      "design_element": "contract:lens.focused-stage-routing; Plan route gate in taskplane/loop.py; plan/tasks.json route coverage",
+      "validation": "Run Plan fixtures with exactly three and four independent risks, then mutate selected counts to two and five and require the mechanical gate to refuse both.",
+      "tests": [
+        "taskplane/tests/test_focused_lens_routing.py::test_non_trivial_plan_accepts_three_or_four_and_refuses_two_or_five"
+      ]
+    },
+    {
+      "criterion": "AC-LR4: Every non-trivial task or wave Evaluate executes exactly three or four lenses from actual diff, changed files, dependency impact, test evidence, and unresolved findings; verify material evidence changes alter the route.",
+      "design_element": "taskplane/review.py Evaluate adapter; contract:lens.focused-stage-routing; ReviewKernel slot conservation",
+      "validation": "Start ReviewKernel on frozen task and wave fixtures, assert three/four singleton selected slots, then independently mutate diff, impact, tests, and unresolved findings and verify attributable route-fingerprint changes.",
+      "tests": [
+        "taskplane/tests/test_review_routing.py::test_evaluate_selects_three_or_four_from_material_implementation_evidence"
+      ]
+    },
+    {
+      "criterion": "AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval.",
+      "design_element": "contract:authority.expanded-lens-route; resource:authority.expanded-lens-route-custody; overflow result in taskplane/lens_route_policy.py; request-only taskplane/taskplane_lite.py; protected taskplane/expanded_route_authority_provider.py",
+      "validation": "Inject five independent mandatory risks, prove zero dispatch and deterministic split/refusal, then verify only the separately executed provider can validate exact RSA approval, issue and atomically consume the exact route/cost action. Mutate source, commit, digest, workspace, stage, target, context, lenses, cost, policy, action, expiry, approver, receipt, locator, custody, clock, and worktree helpers; every mutation or replay must fail with zero dispatch.",
+      "tests": [
+        "taskplane/tests/test_focused_lens_routing.py::test_overflow_splits_or_requires_exact_signed_expansion",
+        "taskplane/tests/test_expanded_route_authority_provider.py::test_worker_monkeypatch_cannot_replace_provider_source_clock_or_rsa",
+        "taskplane/tests/test_expanded_route_authority_provider.py::test_missing_altered_relocated_or_symlinked_locator_and_custody_fail_closed",
+        "taskplane/tests/test_expanded_route_authority_provider.py::test_atomic_one_use_consume_allows_one_concurrent_success"
+      ]
+    },
+    {
+      "criterion": "AC-LR6: Product, Design, Plan, and Evaluate each emit exactly one internally consistent evidenced disposition for every catalog lens, and only execute_deep/execute_light launch workers; verify missing, duplicate, unsupported, and unevidenced rows fail closed.",
+      "design_element": "contract:review.catalog-disposition; taskplane/lens_route_policy.py closed decision validator",
+      "validation": "Run the 26-row conservation test for all four stages and a mutation matrix covering missing, duplicate, unknown, unsupported, unevidenced, covered-by-cycle, and selected-set mismatches before dispatch.",
+      "tests": [
+        "taskplane/tests/test_focused_lens_routing.py::test_complete_catalog_disposition_is_closed_and_fail_closed"
+      ]
+    },
+    {
+      "criterion": "AC-LR7: A material Fix invalidates and reruns only lens evidence whose canonical fingerprint inputs changed while unchanged evidence is reused without launching a worker; verify single-input, multi-input, and unchanged cases.",
+      "design_element": "resource:review.route-fingerprint; taskplane/review_retry.py per-lens comparison; taskplane/review.py reused/new evidence conservation",
+      "validation": "Run single-input, multiple-input, and unchanged Fix fixtures; assert exact invalidated lenses receive leases, matching sealed pass evidence is reused, and unchanged input launches zero duplicate lens workers.",
+      "tests": [
+        "taskplane/tests/test_review_routing.py::test_fix_reruns_only_invalidated_fingerprinted_lens_evidence"
+      ]
+    },
+    {
+      "criterion": "AC-LR8: Equal canonical inputs and policy version produce the same ordered route, dispositions, and fingerprint for all routed stages; verify repeats, key-order variance, relevant-input change, and policy-version change.",
+      "design_element": "taskplane/lens_route_policy.py canonical serializer; resource:review.route-fingerprint",
+      "validation": "Repeat Product/Design/Plan/Evaluate contexts with permuted mapping keys and stable semantic lists, then mutate one relevant input and policy version; assert equal bytes for equivalent contexts and different route fingerprints for material changes.",
+      "tests": [
+        "taskplane/tests/test_focused_lens_routing.py::test_canonical_route_order_and_fingerprint_are_deterministic"
+      ]
+    },
+    {
+      "criterion": "AC-LR9: Each route records stage, selected count, reasons, estimated/actual tokens, runtime, cache reuse, and invalidation cause with bounded redaction; verify schema completeness and privacy behavior.",
+      "design_element": "resource:telemetry.lens-route; taskplane/dispatch_telemetry.py closed route telemetry record",
+      "validation": "Validate complete terminal telemetry for pass/fail/cancel/interruption/handoff, enforce 512-byte reasons and 128-KiB artifact bounds, and inject secrets, absolute paths, workstation identity, and raw diff text to prove redaction/refusal.",
+      "tests": [
+        "taskplane/tests/test_lens_route_telemetry.py::test_route_telemetry_is_complete_bounded_and_redacted"
+      ]
+    },
+    {
+      "criterion": "AC-LR10: Successful, failed, cancelled, interrupted, and handed-off Build/Fix attempts launch zero lens workers, with lens execution confined to Product, Design, Plan, and Evaluate; verify native-dispatch traces.",
+      "design_element": "contract:delivery.stage-lens-execution; taskplane/delivery_policy.py zero-lens lifecycle validator; taskplane/loop.py stage dispatch",
+      "validation": "Replay native start/terminal traces for successful, failed, cancelled, interrupted, and handed-off Build/Fix attempts and assert zero tp-lens starts; prove Evaluate focused slots remain allowed and EM remains synthesis-only.",
+      "tests": [
+        "taskplane/tests/test_delivery_policy.py::test_build_and_fix_all_terminal_paths_prove_zero_lens_starts"
+      ]
+    }
+  ],
+  "quality_targets": [
+    {
+      "target": "Pure selection latency",
+      "measure": "p95 over the frozen 26-row corpus",
+      "threshold": "less than 50 ms"
+    },
+    {
+      "target": "End-to-end context assembly latency",
+      "measure": "p95 over repository Product/Design/Plan/Evaluate fixtures",
+      "threshold": "less than 500 ms"
+    },
+    {
+      "target": "Route artifact size",
+      "measure": "canonical UTF-8 bytes",
+      "threshold": "at most 131072 bytes"
+    },
+    {
+      "target": "Reason disclosure",
+      "measure": "each persisted human-readable reason",
+      "threshold": "at most 512 UTF-8 bytes and no absolute/private content"
+    },
+    {
+      "target": "Execution fan-out",
+      "measure": "native lens worker starts per non-trivial target",
+      "threshold": "Product/Design minimum sufficient; Plan/Evaluate 3 or 4 absent signed expansion; Build/Fix/EM exactly 0"
+    }
   ],
   "risks": [
-    {"risk": "A broad owner becomes a hidden merge bottleneck", "mitigation": "One owner per broad file per wave, leaf-only scopes, integration joins, and automatic pairwise overlap refusal", "owner": "Plan orchestrator"},
-    {"risk": "A low companion delays a blocking high lane", "mitigation": "Low work shares its related owner or has disjoint scope; high-gate eligibility ignores incomplete disjoint low-only concerns while final closure still requires them", "owner": "H2/H3 integration owners"},
-    {"risk": "Durability fixes create a one-way state change", "mitigation": "Versioned expand/contract readers, prepare/commit markers, fault injection, current/N-1 matrix, and predecessor/successor recovery", "owner": "H1-I"},
-    {"risk": "Production wiring creates import cycles", "mitigation": "Composition roots depend inward on protocols; new glob/text/trace modules remain dependency-neutral; strict import/SCC checks gate joins", "owner": "H2-I"},
-    {"risk": "Bound defaults reject legitimate large repositories", "mitigation": "Typed refusal reports measured limit and an explicit human-authorized bounded override; no silent unlimited fallback", "owner": "H2-B and M1-E"},
-    {"risk": "Dashboard fixes diverge between host and fallback surfaces", "mitigation": "One shared projection/interaction contract and parity fixtures cover host bridge present/absent, success, and rejection", "owner": "H3-A and M2-A"},
-    {"risk": "Privacy minimization breaks private store discovery", "mitigation": "Keep exact path only in private locator; shared metadata uses repository identity plus pseudonymous workspace key; migration tests cover both", "owner": "H3-C"},
-    {"risk": "Strict typing expands beyond bounded remediation", "mitigation": "Gate the production package incrementally but require every touched module strict; record any legacy exclusions explicitly and do not use bare ignores", "owner": "H2-A and M1-B"},
-    {"risk": "Documentation tasks conflict on shared pages", "mitigation": "MX-DOCS-ARCH exclusively owns loop-design.md; M2-C owns the remaining documentation set", "owner": "MX-DOCS-ARCH and M2-C"},
-    {"risk": "Final evaluation reruns the expensive full suite repeatedly", "mitigation": "Focused selectors belong to tasks; full taskplane/tests executes exactly once only after FINAL-I is green", "owner": "FINAL-EVAL"}
+    {
+      "risk": "Stage adapters supply semantically different context for the same evidence and break determinism.",
+      "mitigation": "Use one closed context schema, canonical serializer, shared policy version, catalog fingerprint, cross-stage fixtures, and key-order mutation tests.",
+      "owner": "routing-policy owner"
+    },
+    {
+      "risk": "Risk deduplication marks two independent mandatory concerns as covered and silently narrows review.",
+      "mitigation": "Require explicit risk-group evidence, selected covering lens, acyclic coverage, mandatory-floor application before deduplication, and five-risk overflow mutation tests.",
+      "owner": "routing-policy owner"
+    },
+    {
+      "risk": "Evidence from before a Fix is reused against materially changed inputs.",
+      "mitigation": "Bind reuse to per-lens canonical input fingerprints, policy/catalog version, sealed passing result, and host provenance; default every uncertainty to invalidated.",
+      "owner": "ReviewKernel owner"
+    },
+    {
+      "risk": "A worker replaces provider source, clock, RSA verification, locator, issuance, or consumption and turns expanded-route authority into a generic or replayable bypass.",
+      "mitigation": "Execute only the exact content-addressed packaged provider in a separate orchestrator process; validate external 0600 custody without symlinks or fallback; bind source/commit/digests, workspace, stage, target, context, exact lenses/cost/policy/action/expiry/approver/receipt; use provider-owned real time, exact RSA-PSS verification, and atomic one-use consumption.",
+      "owner": "protected expanded-route provider owner"
+    },
+    {
+      "risk": "The protected provider or external custody is unavailable, invalid, or rolled back during overflow.",
+      "mitigation": "Fail closed with zero expanded dispatch and preserve normal routes; require a deterministic split or a repaired/reinstalled exact provider. Never fall back to worktree authority or alter immutable receipts/consumed state.",
+      "owner": "orchestrator control-plane owner"
+    },
+    {
+      "risk": "The existing zero-lens delivery authority continues to suppress Evaluate.",
+      "mitigation": "Separate Build/Fix/EM zero-lens validation from Evaluate routing and add positive Evaluate-dispatch plus negative Build/Fix/EM lifecycle tests.",
+      "owner": "loop delivery-policy owner"
+    },
+    {
+      "risk": "Route evidence or telemetry leaks raw prompts, diffs, secrets, workstation identity, or absolute paths.",
+      "mitigation": "Persist bounded reason codes, repository-relative paths, pseudonymous targets, content hashes, closed schemas, and explicit privacy mutation tests.",
+      "owner": "telemetry and storage owner"
+    },
+    {
+      "risk": "Legacy route history is mistaken for current dispatch or reuse authority.",
+      "mitigation": "Keep a one-generation read-only renderer that cannot authorize dispatch/reuse and require focused-routing/v1 for every new gate.",
+      "owner": "compatibility owner"
+    }
   ],
   "failure_modes": [
-    {"mode": "Crash after intent or immutable bytes but before authoritative head", "detection": "durable-intent/reconcile signal", "recovery": "The owning H1 coordinator reconciles idempotently on the next startup and exposes only the predecessor or one complete successor."},
-    {"mode": "Two writers attempt successors for one predecessor", "detection": "CAS-lineage signal", "recovery": "The persistence owner rejects the competing commit under a process/file lock and requires operator inspection of immutable receipts."},
-    {"mode": "Knowledge migration stops during cross-filesystem copy", "detection": "copy-complete/locator signal", "recovery": "Startup keeps the legacy store authoritative; the H1-C migrator resumes verified copies or removes the incomplete destination before atomic locator switch."},
-    {"mode": "Dashboard host bridge rejects or is absent", "detection": "dashboard action-delivery signal", "recovery": "H3-A restores enabled/error state, preserves the exact action text, and renders a truthful copy-to-chat fallback only when no bridge exists."},
-    {"mode": "Review, preview, repository, or sandbox operation exceeds its bound", "detection": "bounded-operation signal", "recovery": "The named operation owner cancels or terminates the child, records a typed timeout/refusal, and returns control within its absolute deadline."},
-    {"mode": "Locale catalog or plural rule is missing or malformed", "detection": "locale-fallback signal", "recovery": "M2-A selects deterministic English fallback, records the locale error, and retains full accessible text."},
-    {"mode": "CI dependency lock or hash does not match", "detection": "dependency-integrity signal", "recovery": "M1-C stops before tests; a maintainer regenerates the reviewed dev lock rather than resolving a moving dependency tree."},
-    {"mode": "High or final finding evidence is missing, duplicated, altered, or bound to another SHA", "detection": "remediation-cardinality signal", "recovery": "HG-EVAL or FINAL-EVAL refuses eligibility/completion, names the exact ids, and reruns only their focused owner/evaluator path."},
-    {"mode": "A production validator is severed from its composition root", "detection": "production-reachability signal", "recovery": "H2-I blocks the join; restore the supported edge or remove the validator and every public claim through a new Design decision."},
-    {"mode": "Nested or concurrent runtime binding leaks state", "detection": "scoped-binding restoration signal", "recovery": "M1-F tears down the context-local binding in finally/LIFO order and fails the task before integration."},
-    {"mode": "Terminal export describes a stale candidate", "detection": "exact-SHA terminal signal", "recovery": "H3-D/FINAL-I leave immutable history intact and create a successor bundle/export at the actual candidate SHA."}
+    {
+      "mode": "A stage context, disposition ledger, or selected set violates its closed schema.",
+      "detection": "lens_route_validation_failure",
+      "recovery": "The owning stage adapter emits routing_policy_unavailable, dispatches zero lens workers, and the stage owner corrects the named context or ledger before retrying the same target."
+    },
+    {
+      "mode": "Plan or Evaluate has more than four independent mandatory risks.",
+      "detection": "lens_route_overflow",
+      "recovery": "The planner/evaluator splits the target along the deterministic disjoint scopes, or the human supplies one exact signed expanded-route capability before dispatch."
+    },
+    {
+      "mode": "A Fix changes one or more canonical inputs for previously selected lens evidence.",
+      "detection": "lens_route_invalidation",
+      "recovery": "ReviewKernel reuses only equal sealed pass fingerprints, mints new leases for every invalidated or newly selected lens, and refuses completion until their results collect."
+    },
+    {
+      "mode": "An expanded-route action is tampered, replayed, expired, or bound to another target/context.",
+      "detection": "expanded_route_authority_rejection",
+      "recovery": "The protected provider rejects it with zero dispatch and preserves its consumption journal; the orchestrator requests a new exact action only if the human still authorizes the same current route."
+    },
+    {
+      "mode": "The provider source, commit, digest, external locator, ownership, mode, custody, or resolved location is missing, altered, relocated, or symlinked.",
+      "detection": "expanded_route_provider_custody_rejection",
+      "recovery": "Disable expanded dispatch. The orchestrator repairs or reinstalls the exact immutable provider/custody under the configured protected root and reruns validation; it never imports worktree source or accepts an environment fallback."
+    },
+    {
+      "mode": "A worker monkeypatches its clock, RSA helper, provider locator, issuance helper, or consume helper.",
+      "detection": "expanded_route_worker_boundary_probe",
+      "recovery": "The separately executed provider remains authoritative and returns only its sealed result. Record the rejected/probed request without sensitive material; no worker-supplied callable or time value crosses the request schema."
+    },
+    {
+      "mode": "Two processes attempt to consume the same valid expanded-route action.",
+      "detection": "expanded_route_replay_rejection",
+      "recovery": "The provider authority lock and durable compare-and-swap permit one sealed success; all other consumers fail closed and ReviewKernel accepts only the unique consumption receipt."
+    },
+    {
+      "mode": "A Taskplane lens worker starts during Build, Fix, or EM.",
+      "detection": "build_fix_lens_start_violation",
+      "recovery": "The loop blocks the stage gate, terminalizes the offending child contract, preserves the native trace, and reruns only after the stage dispatch is corrected."
+    },
+    {
+      "mode": "Immutable route or telemetry persistence fails before the stage pointer is updated.",
+      "detection": "route_artifact_write_failure",
+      "recovery": "The storage owner leaves the previous pointer authoritative, removes or quarantines the incomplete temporary object, and retries the atomic write without dispatching from partial evidence."
+    },
+    {
+      "mode": "Estimated or actual lens usage is absent, non-finite, negative, or exceeds its schema bound.",
+      "detection": "lens_route_usage",
+      "recovery": "The telemetry owner marks the route incomplete, blocks terminal route accounting, and reconstructs usage only from the sealed native receipt; it never guesses a value."
+    }
   ],
   "observability": {
     "signals": [
-      "durable-intent/reconcile signal",
-      "CAS-lineage signal",
-      "copy-complete/locator signal",
-      "dashboard action-delivery signal",
-      "bounded-operation signal",
-      "locale-fallback signal",
-      "dependency-integrity signal",
-      "remediation-cardinality signal",
-      "production-reachability signal",
-      "scoped-binding restoration signal",
-      "exact-SHA terminal signal"
+      "lens_route_validation_failure",
+      "lens_route_overflow",
+      "lens_route_invalidation",
+      "lens_route_dispatch_count",
+      "lens_route_usage",
+      "expanded_route_authority_rejection",
+      "expanded_route_provider_source_rejection",
+      "expanded_route_provider_custody_rejection",
+      "expanded_route_rsa_rejection",
+      "expanded_route_replay_rejection",
+      "expanded_route_worker_boundary_probe",
+      "expanded_route_provider_issuance",
+      "build_fix_lens_start_violation",
+      "route_artifact_write_failure"
     ],
     "alerts": [
-      "Block H1-I on any incomplete intent, split successor, non-durable acknowledgement, or incomplete migration authority.",
-      "Block H2-I on an unwired production surface, unbounded operation, disabled limit, or missing quality gate.",
-      "Block H3-I on false action/state semantics, accessibility failure, unbounded personal data, identity leakage, or stale terminal SHA.",
-      "Block medium eligibility when HG-EVAL cardinality, independence, SHA, status, or selector integrity fails.",
-      "Block M1-I on moving dependencies, missing mandatory proof, import-time mutation, retry duplication, or unsafe binding restoration.",
-      "Block M2-I on locale/grapheme, privacy/product claim, generated-doc, navigation, onboarding, concurrency, or debt-trace mismatch.",
-      "Block completion when FINAL-EVAL finds any trace/graph drift or the single final suite fails."
-    ],
-    "privacy": "Persist bounded typed status, counts, ids, fingerprints, SHA, durations, and redacted error classes. Do not persist raw commands, diffs, prompts, absolute private paths, workstation identity, secrets, credentials, or free-text personal data outside the explicit private locator or bounded encrypted/local evidence policy."
+      "Block the current stage immediately when lens_route_validation_failure or route_artifact_write_failure is emitted.",
+      "Require human-visible overflow handling when lens_route_overflow is emitted and no deterministic split is available.",
+      "Block Build/Fix/EM completion on any build_fix_lens_start_violation.",
+      "Surface repeated expanded_route_authority_rejection after two attempts for the same target fingerprint without weakening validation.",
+      "Block expanded dispatch immediately on any provider source, custody, RSA, or replay rejection; do not substitute worktree code, time, verification, or state.",
+      "Alert on any expanded_route_worker_boundary_probe and on more than one expanded_route_provider_issuance for the same action id.",
+      "Fail the cost/reuse ratchet when lens_route_dispatch_count exceeds four without a valid expanded-route receipt or when unchanged evidence launches a worker."
+    ]
   },
   "rollout": {
-    "strategy": "Use native task branches and merge-on-green per declared owner. H1 leaf tasks run first and H1-I stabilizes versioned durable/authority contracts. H2 and H3 leaves then run concurrently with HX-GRAPH as the single shared graph owner, followed by H2-I/H3-I and independent HG-EVAL. Only after the high gate passes do M1/M2 leaves run concurrently, with MX-DOCS-ARCH as the single shared loop-design owner. FINAL-I reconciles trace, graph, compatibility, and exact-SHA surfaces; FINAL-EVAL runs all focused/applicable checks and the full suite once. No Taskplane lens workers, scheduler, polling, push, tag, release, publication, or main mutation is part of this rollout.",
-    "rollback": "Before each join, discard only the failing owner branch and keep prior green contracts. Persistence changes retain dual-read/additive schemas and never make partial migration authoritative. After a terminal CAS, never rewrite immutable evidence: disable the candidate, restore the last green reader/writer path, and append a successor at a new SHA. Dashboard/docs/CI/wiring removals restore the last supported surface and its matching claims. Packaging remains ineligible without current/N-1 compatibility and explicit release authority."
+    "strategy": "Preserve completed LR-01, LR-02, LR-04, LR-05, and LR-03 commits/evidence; replan only LR-03 and blocked downstream work for canonical finding 6ea9aff0107f4bb6. Package expanded_route_authority_provider.py as an immutable content-addressed provider; install its external protected locator/custody; make taskplane_lite request-only; run source/custody/RSA/binding/replay/race/restart/worker-monkeypatch tests; then continue quick-only Product/Design, 3–4 quick Plan/Evaluate, zero-lens Build/Fix, clean-package smoke, strict graph verification, and final-only human sign-off.",
+    "rollback": "Disable or remove only the external provider locator while retaining immutable approval, issuance, and consumption records. Normal routes of at most four lenses continue; overflow must split or fail closed. Never restore worktree-side issuance, time, RSA verification, or consumption. Before release the provider code may be reverted; after artifacts exist, preserve their readers and history without rewriting evidence."
   },
-  "compatibility_and_migration": {
-    "mode": "expand-contract",
-    "generation_window": ["current", "last-released"],
-    "steps": [
-      "Readers accept current and new versioned durable/evidence shapes.",
-      "Writers emit prepared, durable, reconciled new shapes while old readers remain supported.",
-      "Crash/restart/migration fault matrices prove predecessor-or-one-successor semantics.",
-      "Current/last-released mixed matrix and production reachability selectors pass.",
-      "Only an explicitly authorized later release may retire legacy writes."
-    ],
-    "knowledge_store": "Copy to a non-authoritative destination with manifest and content verification, fsync files/directories, write copy-complete marker, then atomically switch the private locator; interruption leaves legacy authoritative.",
-    "terminal_evidence": "Immutable bundles and exports are append-only exact-SHA objects; stale artifacts remain historical and cannot be rewritten into current authority."
-  },
-  "python_design": {
-    "supported_floor": "3.10+",
-    "validation_target": "3.14",
-    "execution_model": "Synchronous ownership by default; existing asynchronous host/event paths must propagate cancellation and surface pending/success/failure without unowned background tasks.",
-    "protocols": ["persistence clock/fault injector", "subprocess runner/deadline", "locale/plural formatter", "remediation evidence reader", "context-scoped runtime services"],
-    "trust_boundaries": ["JSON artifacts", "environment variables", "filesystem state", "Git/subprocess output", "host bridge result", "locale resources"],
-    "shared_state": "Protect cross-thread/process state with locks, immutable values, and context-local bindings; do not rely on the GIL, and run concurrent restoration/CAS tests compatible with free-threaded execution.",
-    "packaging": "Runtime remains stdlib-only. Development dependencies are hash-locked separately; Pillow is development/asset-generation only. Verify clean-wheel installation, public import surface, package resources, Python floor, and import graph.",
-    "dod": ["strict type checking", "lint", "cancellation/timeout tests", "fault/restart tests", "nested/concurrent binding tests", "clean-wheel installation", "import/package graph verification"]
+  "technical_debt": [
+    {
+      "title": "Remove legacy deep/light/n/a history reader",
+      "reason": "One compatibility generation must render prior immutable review history without treating it as current authority.",
+      "follow_up": "Remove after two consecutive released versions report zero legacy route reads; the reader must never authorize dispatch or evidence reuse.",
+      "files": [
+        "taskplane/lens.py",
+        "taskplane/review.py"
+      ]
+    }
+  ],
+  "python_runtime": {
+    "execution_model": "synchronous pure policy plus a synchronous protected provider command executed by the orchestrator in a separate trusted process; existing stage owners retain cancellation, interruption, handoff, and child lifecycle control",
+    "mutable_shared_state": "none in lens_route_policy.py; expanded provider issuance and one-use state are external and serialized by an authority lock with durable atomic transitions, never by worker globals or GIL behavior",
+    "free_threaded": "safe by construction for the pure policy; provider correctness depends on filesystem authority locking and durable compare-and-swap rather than GIL serialization; no extension modules are introduced",
+    "runtime_dependencies": [],
+    "development_dependencies": [],
+    "supported_floor": "CPython 3.10 syntax/runtime compatibility",
+    "quality_interpreter": "Python 3.14 ruff and strict mypy",
+    "packaging": "existing Taskplane plugin/package namespace includes lens_route_policy.py and expanded_route_authority_provider.py; installation copies the latter to providers/expanded-route/<source-sha256>/expanded_route_authority_provider.py with an immutable manifest binding source path, commit, source digest, package digest, and protocol version; authority executes only that verified object with no network or worktree fallback"
   },
   "visualization": {
     "required": true,
-    "kind": "dependency-graph",
+    "kind": "state-transition",
     "path": "design/visual.html",
-    "reason": "The high-first gate, two concurrent branch pairs, cross-branch shared owners, and low-companion placement are material execution decisions that prose alone makes difficult to verify."
+    "reason": "The stage execution boundary, overflow refusal, and Fix-to-Evaluate selective-reuse transition are easier to verify together as one state flow than as separate prose rules."
   },
-  "references_applied": [
-    {"lens": "solution-design", "path": "lenses/solution-design.md", "application": "Checked as-built grounding, real alternatives, numeric quality targets, executable acceptance mapping, signal-linked failures, additive rollback, proportional modules, buildable ownership, terminology, and honest self-attestation."},
-    {"lens": "solution-design", "language": "python", "path": "lenses/references/python-solution-design.md", "content_sha256": "9ad8935fadef92c06bfbd4338750debdd612a8391a54ba0ba026424edf7db4b7", "application": "Specified synchronous/async ownership, cancellation, consuming-boundary protocols, trust-boundary validation, no import-time service locators, Python packaging/dependency policy, free-threaded shared-state controls, strict types, clean-wheel, and graph verification."}
-  ],
+  "design_route": {
+    "schema": "taskplane.lens-route-policy/v1",
+    "stage": "design",
+    "target": "R-0001 authority amendment for finding 6ea9aff0107f4bb6",
+    "policy_version": "focused-routing/v1",
+    "execution_depth": "quick-only",
+    "producer": "tp_step_designer_design_28973ea6",
+    "self_attested": true,
+    "selected": [
+      "solution-design"
+    ],
+    "selected_count": 1,
+    "context_fingerprint": "84060cc51be9c6769a356be30edf699f880c3bb7fe54495e28950eaf86543e0b",
+    "route_fingerprint": "737068a55c9a94b346a062dfc115d1e0bd0ff68dd6809b244759642b38357271",
+    "dispositions": [
+      {
+        "lens": "product",
+        "disposition": "not_applicable",
+        "reason": "The approved R-0001 WHAT and acceptance criteria are unchanged by this authority-boundary amendment.",
+        "evidence": "Narrow scope is canonical finding 6ea9aff0107f4bb6; no requirement or acceptance mutation."
+      },
+      {
+        "lens": "security",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The selected sweep directly resolves the worker-controlled trust boundary, custody, signature, replay, and fail-closed behavior.",
+        "evidence": "expanded_route_authority and authority-specific graph edges, risks, failure modes, and regressions."
+      },
+      {
+        "lens": "code-quality",
+        "disposition": "not_applicable",
+        "reason": "No implementation code is authored in Design and module-level coding details remain Build-owned.",
+        "evidence": "Design changes are confined to design/** and define contracts rather than code style."
+      },
+      {
+        "lens": "testability",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The selected sweep defines runnable trust-boundary, mutation, race, restart, and test-clock regressions.",
+        "evidence": "expanded_route_authority.regressions names six runnable selectors and closed assertions."
+      },
+      {
+        "lens": "design",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The solution-design sweep owns the narrow Design artifact, alternatives, contracts, boundaries, and rollback.",
+        "evidence": "design/design.md authority alternatives and selected architecture sections."
+      },
+      {
+        "lens": "scalability",
+        "disposition": "not_applicable",
+        "reason": "The action is exceptional local control-plane authorization, not a throughput-scaled service.",
+        "evidence": "Separate host service is rejected; provider handles one bounded 26-lens route action."
+      },
+      {
+        "lens": "integrability",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Provider/consumer and packaging edges are part of the selected solution boundary.",
+        "evidence": "Graph names orchestrator execution, request adapter, ReviewKernel consumer, provider, custody, and test edges."
+      },
+      {
+        "lens": "data-safety",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Atomic one-use state, immutable receipts, fsync, custody modes, and rollback preservation are designed explicitly.",
+        "evidence": "expanded_route_authority.atomic_consume, external_locator, and rollout.rollback."
+      },
+      {
+        "lens": "tech-writer",
+        "disposition": "not_applicable",
+        "reason": "User-facing documentation wording is downstream Build scope, while this artifact already names the exact contract.",
+        "evidence": "No docs/** mutation is permitted in this Design task."
+      },
+      {
+        "lens": "qa",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The solution sweep includes executable positive, negative, mutation, concurrency, recovery, and packaging validation.",
+        "evidence": "AC-LR5 validation and expanded_route_authority.regressions."
+      },
+      {
+        "lens": "devops",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Installation, external locator permissions, immutable package selection, recovery, and rollback are architecture inputs here.",
+        "evidence": "expanded_route_authority.packaged_source/external_locator and rollout strategy."
+      },
+      {
+        "lens": "dba",
+        "disposition": "not_applicable",
+        "reason": "No database or schema is introduced; state is a small protected filesystem journal.",
+        "evidence": "Provider custody uses atomic local files under an authority lock."
+      },
+      {
+        "lens": "sre",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Availability, fail-closed recovery, signals, alerts, restart, and rollback are designed in the selected sweep.",
+        "evidence": "Provider failure modes, observability, restart regression, and provider-specific rollback."
+      },
+      {
+        "lens": "project-management",
+        "disposition": "not_applicable",
+        "reason": "Task sequencing and estimates belong to the subsequent Plan; Design preserves completed work and scopes replan to LR-03/downstream.",
+        "evidence": "Rollout states preservation and replan boundary without authoring Plan artifacts."
+      },
+      {
+        "lens": "frontend",
+        "disposition": "not_applicable",
+        "reason": "The provider, adapter, and custody boundary have no frontend surface.",
+        "evidence": "All named components are Python control-plane, storage, or orchestration resources."
+      },
+      {
+        "lens": "backend",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The synchronous provider command, closed request, receipt, and filesystem transaction are central solution interfaces.",
+        "evidence": "expanded_route_authority execution, binding, and atomic-consume contracts."
+      },
+      {
+        "lens": "tradeoffs",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The selected sweep compares the three required placements and records gain, cost, and revisit triggers.",
+        "evidence": "authority_alternatives A/B/C."
+      },
+      {
+        "lens": "solution-design",
+        "disposition": "execute_light",
+        "reason": "A minimum-sufficient quick sweep is required to settle the protected provider boundary for the canonical finding.",
+        "evidence": "Self-attested quick review of exact Python reference, current graph precedent, provider options, contracts, edges, failures, rollback, observability, and regressions."
+      },
+      {
+        "lens": "services-selection",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The solution sweep explicitly rejects a separate host service and selects a local packaged provider.",
+        "evidence": "authority_alternatives compares packaged provider, terminal-provider extension, and host service."
+      },
+      {
+        "lens": "time-to-market",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The selected provider is the smallest sound change and preserves completed evidence while replanning only invalidated work.",
+        "evidence": "Decision and rollout preserve completed commits/evidence and isolate LR-03/downstream."
+      },
+      {
+        "lens": "architecture",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Trust boundary, provider/consumer graph, custody precedent, packaging, lifecycle, and rollback are explicitly architectural.",
+        "evidence": "expanded_route_authority plus seven authority-specific graph edges."
+      },
+      {
+        "lens": "mobile",
+        "disposition": "not_applicable",
+        "reason": "No mobile runtime, UI, or platform contract is affected.",
+        "evidence": "Scope is local Python control-plane authority."
+      },
+      {
+        "lens": "accessibility",
+        "disposition": "not_applicable",
+        "reason": "No end-user interaction or presentation component changes.",
+        "evidence": "The visualization explains architecture but is not a shipped interactive feature."
+      },
+      {
+        "lens": "privacy-compliance",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "The closed binding and observability contracts limit persisted content to identifiers, digests, bounded reasons, and protected receipts.",
+        "evidence": "Binding fields and existing bounded/redacted telemetry contract exclude raw prompts, diffs, and secrets."
+      },
+      {
+        "lens": "cost-finops",
+        "disposition": "covered_by",
+        "covered_by": "solution-design",
+        "reason": "Exact estimated cost is bound into approval and consumption; provider overhead remains a local exceptional action.",
+        "evidence": "estimated_cost is a mandatory binding field and AC-LR5 mutation target."
+      },
+      {
+        "lens": "i18n",
+        "disposition": "not_applicable",
+        "reason": "No localized user-facing strings or locale-sensitive data are introduced.",
+        "evidence": "Provider protocol uses canonical machine JSON and bounded reason codes."
+      }
+    ]
+  },
   "lens_evidence": [
     {
       "lens": "solution-design",
       "verdict": "pass",
       "blockers": 0,
-      "evidence": "Grounded the design in exact reviewed sources and graph; compared four material approaches; mapped 8 acceptance criteria and all 72 findings to modules/contracts, exclusive owners, dependencies, and executable selectors; set numeric durability/budget/timeout/accessibility/Python targets; linked every failure detection to an observability signal and bounded recovery; preserved current/N-1 expand-contract rollback; limited new modules to traceability, neutral glob matching, and locale/text boundaries; and left no implementation decision open.",
+      "evidence": "Quick-only self-attested sweep checked the exact R-0001 criteria and canonical finding 6ea9aff0107f4bb6 against incumbent signal, loop, ReviewKernel, terminal-capability custody precedent, delivery-policy, telemetry, packaging, Python 3.14, and graph boundaries; compared the required packaged-provider, terminal-provider extension, and host-service placements; selected the smallest sound option; and made provider source/custody, request-only adaptation, exact RSA verification, real time, atomic one-use consumption, worker-monkeypatch regressions, overflow, reuse, zero-lens stages, rollback, observability, and clean-package verification implementable without unresolved invention.",
       "produced_by": "tp_step_designer_design_28973ea6",
-      "content_fingerprint": "de677423e08f7ae8786f158dceadd4c7c05492745501cab217cfeff1d0cd4d4c",
-      "self_attested": true
+      "content_fingerprint": "90142ad22472e2f66dbe3ef5c9eea04bc73a84695099549c56373ec3d92fa99f",
+      "self_attested": true,
+      "tier": "quick"
     }
   ],
   "open_questions": []

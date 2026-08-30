@@ -55,7 +55,10 @@ def _routing():
 
 def _start_args(requirement, *, changed_symbols=None):
     return {
-        "target": {"fingerprint": "target-r0006", "head": "abc123"},
+        "target": {
+            "fingerprint": "target-r0006", "head": "abc123",
+            "task": "t02-wave1-quick-only-review-policy",
+        },
         "graph": {
             "meta": {
                 "scanned_head": "",
@@ -193,7 +196,7 @@ def test_quick_only_clears_stage_review_deep_slot_metadata():
 
 @pytest.mark.parametrize("changed_symbols", [[], [
     f"service.symbol_{index}" for index in range(19)]])
-def test_sparse_or_stale_graph_still_dispatches_governed_quick_only(
+def test_sparse_or_stale_graph_still_produces_zero_lens_evaluate(
         tmp_path, changed_symbols):
     quick = review.start_review(
         str(tmp_path / ("quick-" + str(len(changed_symbols)))),
@@ -202,37 +205,24 @@ def test_sparse_or_stale_graph_still_dispatches_governed_quick_only(
         str(tmp_path / "ordinary"), **_start_args({"id": "R-0007"}))
 
     assert quick["status"] == "ready"
-    assert quick["graph_degraded"] is True
-    assert quick["review_depth_policy"]["depth"] == "quick-only"
-    assert 4 <= len(quick["slots"]) <= 5
-    assert all(slot["slot_id"].startswith("sweep.")
-               for slot in quick["slots"])
-    assert quick["routing_counts"]["sweep"] == len(quick["slots"])
+    assert quick["expected_lenses"] == []
+    assert quick["slots"] == []
+    assert quick["lens_execution_policy"] == "none"
     assert ordinary["status"] == "ready"
-    assert 4 <= len(ordinary["slots"]) <= 5
+    assert ordinary["expected_lenses"] == []
+    assert ordinary["slots"] == []
 
 
-def test_incremental_retry_override_is_finally_demoted_to_quick(tmp_path):
+def test_incremental_retry_override_cannot_reacquire_evaluate_lenses(tmp_path):
     workspace = str(tmp_path / "retry")
     opened = review.start_review(
         workspace, **_start_args({"id": "R-0006"}),
         retry_lenses=["security"], retry_source_run_id="prior-run")
     state = review._load_state(workspace, opened["run_id"])
-    security = next(row for row in state["routing"]["lenses"]
-                    if row["id"] == "security")
-
-    assert opened["routing_counts"]["sweep"] == len(opened["slots"])
-    assert all(slot["slot_id"].startswith("sweep.")
-               for slot in opened["slots"])
-    assert security["verdict"] == security["tier"] == "sweep"
-    assert security["mode"] == "subagent"
-    routed_ids = {row["id"] for row in state["routing"]["lenses"]
-                  if row["mode"] != "none"}
-    leased_ids = {lens_id for slot in opened["slots"]
-                  for lens_id in slot["lens_ids"]}
-    assert routed_ids == leased_ids
-    assert "security" in leased_ids
-    assert 4 <= len(leased_ids) <= 5
+    assert opened["expected_lenses"] == []
+    assert opened["slots"] == []
+    assert state["zero_lens_evaluation"] is True
+    assert "routing" not in state
 
 
 def test_substantive_quick_finding_requests_correction_without_promotion():
@@ -357,6 +347,10 @@ def test_quick_only_cross_domain_regression_bypasses_promotion_charter(
 
 def _write_quick_output(workspace, run_id, findings):
     state = review._load_state(workspace, run_id)
+    if state.get("zero_lens_evaluation") is True:
+        assert state["slots"] == []
+        assert findings == []
+        return
     assert 4 <= len(state["slots"]) <= 5
     assert all(slot["slot_id"].startswith("sweep.")
                for slot in state["slots"])
@@ -414,7 +408,7 @@ def _write_quick_output(workspace, run_id, findings):
 
 def _write_green_evaluator_output(workspace, state):
     verdict = {
-        "schema": "taskplane.evaluator-output/v1",
+        "schema": "taskplane.evaluator-output/v2",
         "task": "t02-wave1-quick-only-review-policy",
         "requirement": "R-0006",
         "verdict": "pass",
@@ -425,9 +419,6 @@ def _write_green_evaluator_output(workspace, state):
             "criterion": "quick output is sufficient", "status": "met",
             "evidence": "canonical light-sweep result is complete",
         }],
-        "lenses": [{
-            "lens": lens_id, "verdict": "pass", "blockers": 0,
-        } for slot in state["slots"] for lens_id in slot["lens_ids"]],
         "graph": {
             "dispositions": [], "requirements_checked": ["R-0006"],
             "contracts_checked": ["contract:review.collection"],
@@ -438,6 +429,7 @@ def _write_green_evaluator_output(workspace, state):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as stream:
         json.dump(verdict, stream, sort_keys=True)
+    return verdict
 
 
 def test_clean_quick_output_completes_without_any_deep_artifact(tmp_path):
@@ -445,9 +437,13 @@ def test_clean_quick_output_completes_without_any_deep_artifact(tmp_path):
     opened = review.start_review(
         workspace, **_start_args({"id": "R-0006"}))
     _write_quick_output(workspace, opened["run_id"], [])
+    verdict = _write_green_evaluator_output(
+        workspace, review._load_state(workspace, opened["run_id"]))
 
-    collected = review.collect_review(
-        workspace, publish=False, run_id=opened["run_id"])
+    collected = loop.collect_review_bridge(
+        workspace, publish=False, run_id=opened["run_id"],
+        evaluator_result=verdict,
+        producer_observation_fingerprint="a" * 64)
     state = review._load_state(workspace, opened["run_id"])
 
     assert collected["status"] == "complete", json.dumps(
@@ -456,29 +452,47 @@ def test_clean_quick_output_completes_without_any_deep_artifact(tmp_path):
         "quick_output_sufficient"
     assert collected["review_depth_policy"]["deep_slots"] == []
     assert "adaptive_wave" not in state
-    assert all(slot["slot_id"].startswith("sweep.")
-               for slot in state["slots"])
+    assert state["slots"] == []
 
 
-def test_clean_quick_output_satisfies_legacy_runtime_receipts(tmp_path):
+def test_clean_zero_lens_output_satisfies_runtime_receipts(tmp_path):
     workspace = str(tmp_path / "runtime-receipts")
+    args = _start_args(
+        {"id": "R-0006"}, changed_symbols=["service.changed"])
+    args["graph"]["meta"].update({
+        "scanned_head": args["target"]["head"], "stale": False,
+        "module_confidence": "high",
+    })
+    args["impact"].update({"unknown": [], "truncated": False})
     opened = review.start_review(
-        workspace, **_start_args({"id": "R-0006"}))
+        workspace, **args)
     _write_quick_output(workspace, opened["run_id"], [])
-    review.collect_review(
-        workspace, publish=False, run_id=opened["run_id"])
+    verdict = _write_green_evaluator_output(
+        workspace, review._load_state(workspace, opened["run_id"]))
+    loop.collect_review_bridge(
+        workspace, publish=False, run_id=opened["run_id"],
+        evaluator_result=verdict,
+        producer_observation_fingerprint="b" * 64)
     state = review._load_state(workspace, opened["run_id"])
     quality = review_evidence.ArtifactStore(workspace).read(state["quality"])
-    assert quality["status"] == "impact_incomplete"
-    _write_green_evaluator_output(workspace, state)
-
+    assert quality["status"] == "complete"
     facts = runtime_eval.review_facts(
         workspace, "evaluate", run_id=opened["run_id"])
 
-    assert facts["graph_before_route"] is False
-    assert all(facts[key] for key in runtime_eval.REVIEW_FACTS
-               if key != "graph_before_route")
-    assert runtime_eval.assess("evaluate", facts)["status"] != "on_path"
+    assert all(facts[key] for key in runtime_eval.REVIEW_FACTS)
+    assert runtime_eval.assess("evaluate", facts)["status"] == "on_path"
+
+    review._save_state(workspace, dict(state, status="ready"))
+    incomplete = runtime_eval.review_facts(
+        workspace, "evaluate", run_id=opened["run_id"])
+    assert incomplete["selective_lens_mapping"] is False
+
+    legacy = dict(state)
+    legacy.pop("zero_lens_evaluation")
+    review._save_state(workspace, legacy)
+    missing_mapping = runtime_eval.review_facts(
+        workspace, "evaluate", run_id=opened["run_id"])
+    assert missing_mapping["selective_lens_mapping"] is False
 
 
 def test_schema_validated_evaluator_is_the_quick_output_without_slot_result(
@@ -487,30 +501,44 @@ def test_schema_validated_evaluator_is_the_quick_output_without_slot_result(
     opened = review.start_review(
         workspace, **_start_args({"id": "R-0006"}))
 
-    # Match the live workflow: the legacy collection probe records its one
-    # absent lens-slot producer, while the evaluator authors the complete,
-    # schema-validated quick judgment itself.
-    review.collect_review(
-        workspace, publish=False, run_id=opened["run_id"])
     state = review._load_state(workspace, opened["run_id"])
-    assert state["status"] == "ready"
-    assert state["provisional_revision"]["completeness"]["missing"] == \
-        len(state["slots"])
-    assert "revision" not in state
-    assert "lens_results" not in state
-    _write_green_evaluator_output(workspace, state)
+    verdict = _write_green_evaluator_output(workspace, state)
+    collected = loop.collect_review_bridge(
+        workspace, publish=False, run_id=opened["run_id"],
+        evaluator_result=verdict,
+        producer_observation_fingerprint="c" * 64)
+    state = review._load_state(workspace, opened["run_id"])
+    assert collected["status"] == "complete"
+    assert state["slots"] == []
+    assert state["expected_lenses"] == []
+    assert state["zero_lens_evaluation"] is True
+    assert state["revision"]["findings"] == []
 
     facts = runtime_eval.review_facts(
         workspace, "evaluate", run_id=opened["run_id"])
 
-    assert facts["shared_review_context"] is True
-    assert facts["selective_lens_mapping"] is True
     assert facts["output_schema_declared"] is True
     assert facts["output_schema_validated"] is True
-    assert facts["graph_before_route"] is False
-    assert facts["lens_results_collected"] is False
-    assert facts["output_producer_observed"] is False
-    assert runtime_eval.assess("evaluate", facts)["status"] != "on_path"
+    assert facts["lens_results_collected"] is True
+    assert facts["output_producer_observed"] is True
+
+
+def test_zero_lens_collection_refuses_unobserved_evaluator(tmp_path):
+    workspace = str(tmp_path / "unobserved-evaluator")
+    opened = review.start_review(
+        workspace, **_start_args({"id": "R-0006"}))
+    state = review._load_state(workspace, opened["run_id"])
+    verdict = _write_green_evaluator_output(workspace, state)
+    with pytest.raises(
+        review.ReviewKernelError,
+        match="schema-valid producer result and validated observation",
+    ):
+        loop.collect_review_bridge(
+            workspace, publish=False, run_id=opened["run_id"],
+            evaluator_result=verdict)
+    assert state["status"] == "ready"
+    assert "revision" not in state
+    assert "lens_results" not in state
 
 
 def test_schema_validated_quick_output_also_satisfies_evaluate_gate(
@@ -518,10 +546,12 @@ def test_schema_validated_quick_output_also_satisfies_evaluate_gate(
     workspace = str(tmp_path / "evaluator-quick-gate")
     opened = review.start_review(
         workspace, **_start_args({"id": "R-0006"}))
-    review.collect_review(
-        workspace, publish=False, run_id=opened["run_id"])
     kernel = review._load_state(workspace, opened["run_id"])
-    _write_green_evaluator_output(workspace, kernel)
+    verdict = _write_green_evaluator_output(workspace, kernel)
+    loop.collect_review_bridge(
+        workspace, publish=False, run_id=opened["run_id"],
+        evaluator_result=verdict,
+        producer_observation_fingerprint="d" * 64)
     task = {
         "id": "t02-wave1-quick-only-review-policy",
         "req": "R-0006",
@@ -535,7 +565,7 @@ def test_schema_validated_quick_output_also_satisfies_evaluate_gate(
     monkeypatch.setattr(loop, "_design_current_errors", lambda *_args: [])
 
     errors = loop._evaluation_errors(workspace, state, task)
-    assert "evaluation selective review kernel is missing or incomplete" in errors
+    assert errors == []
 
 
 def test_evaluate_gate_still_rejects_substantive_quick_output(
@@ -543,14 +573,13 @@ def test_evaluate_gate_still_rejects_substantive_quick_output(
     workspace = str(tmp_path / "evaluator-quick-gate-blocker")
     opened = review.start_review(
         workspace, **_start_args({"id": "R-0006"}))
-    review.collect_review(
-        workspace, publish=False, run_id=opened["run_id"])
     kernel = review._load_state(workspace, opened["run_id"])
     _write_green_evaluator_output(workspace, kernel)
     path = runtime_storage.evaluation_path(workspace)
     with open(path, encoding="utf-8") as stream:
         verdict = json.load(stream)
-    verdict["lenses"][0].update({"verdict": "fail", "blockers": 1})
+    verdict["lenses"] = [{"lens": "security", "verdict": "fail",
+                          "blockers": 1}]
     with open(path, "w", encoding="utf-8") as stream:
         json.dump(verdict, stream, sort_keys=True)
     task = {
@@ -567,10 +596,7 @@ def test_evaluate_gate_still_rejects_substantive_quick_output(
 
     errors = loop._evaluation_errors(workspace, state, task)
 
-    assert "evaluation selective review kernel is missing or incomplete" in \
-        errors
-    assert any("routed lens lacks a leased slot result" in error
-               for error in errors), errors
+    assert any("contains lenses" in error for error in errors), errors
 
 
 def test_evaluator_quick_output_fails_closed_on_lens_or_provisional_blocker(
@@ -578,102 +604,44 @@ def test_evaluator_quick_output_fails_closed_on_lens_or_provisional_blocker(
     workspace = str(tmp_path / "evaluator-quick-negative")
     opened = review.start_review(
         workspace, **_start_args({"id": "R-0006"}))
-    review.collect_review(
-        workspace, publish=False, run_id=opened["run_id"])
     state = review._load_state(workspace, opened["run_id"])
     _write_green_evaluator_output(workspace, state)
     path = runtime_storage.evaluation_path(workspace)
     with open(path, encoding="utf-8") as stream:
         verdict = json.load(stream)
-    verdict["lenses"][0].update({"verdict": "fail", "blockers": 1})
+    verdict["lenses"] = [{"lens": "security", "verdict": "fail",
+                          "blockers": 1}]
     with open(path, "w", encoding="utf-8") as stream:
         json.dump(verdict, stream, sort_keys=True)
 
-    failing_lens = runtime_eval.review_facts(
-        workspace, "evaluate", run_id=opened["run_id"])
-    assert runtime_eval.assess("evaluate", failing_lens)["status"] != \
-        "on_path"
-
-    verdict["lenses"][0].update({"verdict": "pass", "blockers": 0})
-    with open(path, "w", encoding="utf-8") as stream:
-        json.dump(verdict, stream, sort_keys=True)
-    state["provisional_revision"]["findings"] = [{
-        "lens": verdict["lenses"][0]["lens"], "severity": "high",
-        "class": "regression", "file": "src/service.py",
-    }]
-    review._save_state(workspace, state)
-
-    substantive_finding = runtime_eval.review_facts(
-        workspace, "evaluate", run_id=opened["run_id"])
-    assert runtime_eval.assess(
-        "evaluate", substantive_finding)["status"] != "on_path"
+    with pytest.raises(loop.evaluation_output.OutputValidationError,
+                       match="contains lenses"):
+        loop.evaluation_output.validate_evaluator_value(verdict)
 
 
-def test_quick_runtime_receipt_override_rejects_blockers_and_other_requirements(
+def test_zero_lens_evaluate_has_no_runtime_finding_override(
         tmp_path):
     workspace = str(tmp_path / "runtime-negative")
     opened = review.start_review(
         workspace, **_start_args({"id": "R-0006"}))
-    finding = {
-        "lens": "code-quality", "kind": "defect", "severity": "high",
-        "class": "regression", "file": "src/service.py", "line": 1,
-        "title": "Changed service bypasses its guard",
-        "scenario": "The changed path reaches the handler without a guard.",
-        "fix": "Restore the guard.",
-        "claim": {
-            "trigger": "invoke the changed path",
-            "outcome": "the handler runs without its guard",
-            "repro": "call the changed service and inspect the guard",
-        },
-    }
-    _write_quick_output(workspace, opened["run_id"], [finding])
-    review.collect_review(
-        workspace, publish=False, run_id=opened["run_id"])
     state = review._load_state(workspace, opened["run_id"])
-    quality = review_evidence.ArtifactStore(workspace).read(state["quality"])
-    _write_green_evaluator_output(workspace, state)
-    with open(runtime_storage.evaluation_path(workspace), encoding="utf-8") \
-            as stream:
-        verdict = json.load(stream)
-
-    assert not runtime_eval._complete_quick_only_evaluation(
-        state, quality, verdict, review)
-    ordinary = dict(state)
-    ordinary["review_depth_policy"] = review.review_depth_policy({
-        "id": "R-0007"})
-    assert not runtime_eval._complete_quick_only_evaluation(
-        ordinary, quality, verdict, review)
+    assert state["slots"] == []
+    assert state["expected_lenses"] == []
+    assert state["zero_lens_evaluation"] is True
 
 
-def test_quick_regression_collects_canonically_then_remains_gate_blocking(tmp_path):
+def test_evaluate_collection_cannot_synthesize_quick_regression(tmp_path):
     workspace = str(tmp_path / "blocking")
     opened = review.start_review(
         workspace, **_start_args({"id": "R-0006"}))
-    finding = {
-        "lens": "code-quality", "kind": "defect", "severity": "low",
-        "class": "regression", "file": "src/service.py", "line": 1,
-        "title": "Changed service returns the wrong value",
-        "scenario": "Calling changed() returns an incompatible value.",
-        "fix": "Restore the promised value and cover the regression.",
-        "claim": {
-            "trigger": "call changed() with the supported input",
-            "outcome": "the service returns an incompatible value",
-            "repro": "invoke changed() and compare the returned value",
-        },
-    }
-    _write_quick_output(workspace, opened["run_id"], [finding])
-
-    collected = review.collect_review(
-        workspace, publish=False, run_id=opened["run_id"])
+    state = review._load_state(workspace, opened["run_id"])
+    verdict = _write_green_evaluator_output(workspace, state)
+    collected = loop.collect_review_bridge(
+        workspace, publish=False, run_id=opened["run_id"],
+        evaluator_result=verdict,
+        producer_observation_fingerprint="e" * 64)
     state = review._load_state(workspace, opened["run_id"])
 
-    assert collected["status"] == "complete", json.dumps(
-        collected, indent=2, sort_keys=True)
-    assert collected["review_depth_policy"]["outcome"] == \
-        "correction_required"
-    assert collected["quick_corrections"][0]["lens"] == "code-quality"
-    assert review.blocking_findings_by_lens(state["revision"]["findings"]) == {
-        "code-quality": 1}
-    assert "adaptive_wave" not in state
-    assert all(slot["slot_id"].startswith("sweep.")
-               for slot in state["slots"])
+    assert collected["status"] == "complete"
+    assert state["revision"]["findings"] == []
+    assert state["slots"] == []

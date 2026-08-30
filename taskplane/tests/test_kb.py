@@ -129,6 +129,17 @@ class TestNoPromptDataLint(unittest.TestCase):
         problems = kb.lint(self.ws)
         self.assertTrue(any("exceeds" in p["problem"] for p in problems))
 
+    def test_machine_owned_state_is_not_linted_as_knowledge(self):
+        import json as j
+        import os as o
+        state = o.path.join(kb.kb_dir(self.ws), "state")
+        o.makedirs(state, exist_ok=True)
+        with open(o.path.join(state, "loop.json"), "w", encoding="utf-8") as f:
+            j.dump({"output_snapshot": {
+                "content_base64": "x" * 5000,
+            }}, f)
+        self.assertEqual(kb.lint(self.ws), [])
+
 
 class TestStateInExternalStore(unittest.TestCase):
     def test_loop_and_tracks_live_under_external_state(self):

@@ -66,7 +66,7 @@ def _expected_origin(stage):
 
 def _evaluator_result(**overrides):
     result = {
-        "schema": "taskplane.evaluator-output/v1",
+        "schema": "taskplane.evaluator-output/v2",
         "task": "task-a",
         "requirement": "R-0013",
         "verdict": "pass",
@@ -74,7 +74,6 @@ def _evaluator_result(**overrides):
             "status": "complete", "reason_code": "none", "detail": "",
         },
         "criteria": [],
-        "lenses": [],
         "graph": {
             "dispositions": [],
             "requirements_checked": ["R-0013"],
@@ -315,7 +314,7 @@ def test_empty_expected_collection_is_valid_success():
         task_id="task-a",
         stage="Evaluate",
         expected_lenses=[],
-        collected_lenses=validated["lenses"],
+        collected_lenses=[],
         result=validated,
         result_validator=lambda value: validate_evaluator_value(
             value, expected_lenses=[]),
@@ -357,7 +356,7 @@ def test_nonempty_malformed_or_outage_fallback_refuses_before_dispatch_or_gate()
     malformed = _evaluator_result(lenses=[{
         "lens": "security", "verdict": "pass", "blockers": 0,
     }])
-    with pytest.raises(OutputValidationError, match=r"requires lenses=\[\]"):
+    with pytest.raises(OutputValidationError, match="contains lenses"):
         validate_evaluator_value(malformed, expected_lenses=[])
 
     outage = _evaluator_result(evaluation={

@@ -25,3 +25,19 @@ terminal_capability_custody:
   - alternative: durably-protected-issuer | gain: local restart recoverability with root-bound authority | cost: protected secret at rest and permission operations
   - revisit_when: first finalizer process replacement or failed restart canary
   - evidence: taskplane/terminal_truth.py
+
+# R-0001 / finding 6ea9aff0107f4bb6: expanded-route approval is a separate
+# subject and failure domain from terminal finalization. The graph therefore
+# records the custody placement independently even though it follows the same
+# protected-root, immutable-write, fsync, lock, and restart-recovery pattern.
+expanded_route_authority_custody:
+  - schema: taskplane.expanded-route-authority-custody-decision/v1
+  - decision_record: D-R0001-expanded-route-authority-custody
+  - selected: content-addressed-control-plane-provider
+  - gain: worker-independent source, clock, RSA, issuance, and one-use authority
+  - cost: separate protected provider installation and 0600 custody lifecycle
+  - alternative: extend-terminal-authority-provider | gain: reuse one issuer lifecycle | cost: couples route approval to terminal-finalization blast radius
+  - alternative: separate-host-service | gain: strong service boundary | cost: deployment, authentication, and availability overhead
+  - alternative: content-addressed-control-plane-provider | gain: local restart recovery with immutable source binding | cost: protected locator and permission operations
+  - revisit_when: a general authenticated host control-plane service preserves the same source, custody, RSA, time, and atomic-consume contract
+  - evidence: taskplane/expanded_route_authority_provider.py

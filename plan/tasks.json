@@ -1,291 +1,205 @@
 {
   "schema": "taskplane.plan/v1",
-  "requirement": "R-0002",
+  "requirement": "R-0001",
   "delivery_mode": "build",
   "automatic_lenses": [],
-  "design_fingerprint": "ac5709a4a381d44556318207d8f9a34c98d9bdd69ff1fe74d7408a9f9505d8fe",
-  "plan_authority": "Codex native subagents execute every ready pairwise-disjoint Build set in parallel. Taskplane classifies dependencies, emits scoped contracts, validates evidence, and holds orchestrator and human gates; it supplies zero Build, Fix, Evaluate, or execution-time EM lens workers.",
-  "impact": {"files_argument_count": 4, "touched_modules": ["taskplane", "taskplane/tests"], "total_impacted": 30, "unknown_modules": [], "graph_fingerprint": "f5e97aa40e7a3566039da309b849050fb96446ea142412bf1c32f140164e8fca", "scanned_revision": "00cd4f2c8183e57b6eae3f0cb6b0c580e00fe085", "truncated_by_result_ceiling": true, "depth_truncated": false},
+  "design_fingerprint": "0a29e35a5b6ba341affbca95e123da35f9a84a4a1831d18fec9ae6c3859e257b",
+  "accepted_drift": {"id": "D-0014", "accepted_by": "human:vdemkiv", "decision": "Zero-lens Evaluate", "supersedes_only": "the Evaluate execution surface of approved R-0001 Design fingerprint 0a29e35a5b6ba341affbca95e123da35f9a84a4a1831d18fec9ae6c3859e257b", "evaluate_contract": "Evaluate performs no lens routing, creates no ReviewKernel lens slots, launches zero Taskplane lens workers, emits no all-26 disposition ledger and no lens-verdict output; it judges only the exact diff, bound tests, acceptance criteria, dependency graph/impact, affected requirements/contracts, approved Design conformance, and provenance.", "unchanged": "Product and Design remain minimum-sufficient quick; Plan remains exactly three or four quick lenses with all 26 dispositions and Plan-only overflow authority; Build, Fix, Evaluate, and EM remain zero-lens.", "historical_design_immutable": true, "final_em_obligation": "surface accepted_drift with accepted_by human:vdemkiv"},
+  "plan_authority": "The root orchestrator may automatically gate approved night-mode intermediate transitions, commit scoped work, and push the isolated delivery branch. It dispatches only the remaining dependency chain through Codex native workers. Product and Design run minimum-sufficient quick routes; this non-trivial Plan runs exactly four quick lenses with all 26 dispositions and owns the only expanded-route authority. Build, Fix, Evaluate, and EM launch zero Taskplane lens workers. Evaluate is an evidence collector and judge only. For the bounded self-hosting bootstrap, after LR-10 Build passes its declared suite the root integrates that exact commit into the isolated integration branch before LR-10 Evaluate, then the updated engine must prove an empty ReviewKernel slot set and zero lens starts. No main merge, tag, publication, or release is authorized; final human signoff remains mandatory and final EM must surface accepted drift D-0014 attributed to human:vdemkiv.",
+  "retained_completion": {
+    "integration_head": "75c58ad07cf51db53ad3f1f81b259a3fc3ae8108",
+    "passed_tasks_without_dispatch_authority": ["LR-01", "LR-02", "LR-03", "LR-04", "LR-05", "LR-06"],
+    "lr07_green_build": {"branch": "tp/LR-07", "commit": "b23100d2547643b8addcad11610e80b850e77a9a", "tree": "9d38678d9fbe27e7b5b8cb3ded60e78ff03aad80", "evidence_binding": "immutable passed LR-07 product-work base at the exact commit/tree", "instruction": "Preserve every existing change; amend only the zero-lens Evaluate role/skill truth after LR-10 without discarding or rebuilding the passed base."},
+    "lr08_clean_checkpoint": {"branch": "tp/LR-08", "commit": "7d2bcfecd1b1bb3751a62b179f31811dbf8ad103", "tree": "91c260ffb9042a7170e8c9779f36d06e576d4b38", "evidence_binding": "immutable passed LR-08 generator/catalog regression base at the exact commit/tree", "instruction": "Preserve every existing change; amend only zero-lens Evaluate product/documentation truth after LR-10 without discarding or rebuilding the passed base."},
+    "lr03_branch": ".tp-work/LR-03",
+    "lr03_preserved_commits": ["8af3d8e", "03a6c8f", "3736e7c", "000704a", "76dc79d"],
+    "instruction": "Retain completed task contracts only for Design/module/edge coverage and reanchor evidence. Do not dispatch, recreate, or rerun LR-01 through LR-06. Preserve LR-07 and LR-08 exact branch bases; amend only accepted-drift truth after LR-10, never discard or rebuild their passed product work."
+  },
+  "remaining_dispatch_chain": ["LR-10", "bootstrap:integrate-exact-lr10-commit", "evaluate:LR-10-zero-lens", ["LR-07", "LR-08"], ["evaluate:LR-07-zero-lens", "evaluate:LR-08-zero-lens"], "LR-09", "evaluate:LR-09-zero-lens", "EM:accepted_drift-D-0014"],
+  "lr08_replan_impact": {
+    "files_argument_count": 5,
+    "touched_modules": ["docs", "plan", "scripts", "taskplane/tests"],
+    "total_impacted": 28,
+    "unknown_modules": [],
+    "graph_fingerprint": "995e6d3d08cbb4aa8fe5f724252419dc83d3e09afbdad53e19aafdc01e00b6e0",
+    "scanned_revision": "539e7ba1d73f99b1f1ed6c9ce05ba97a23beea47",
+    "truncated_by_result_ceiling": false,
+    "depth_truncated": false,
+    "scan_quality": "complete",
+    "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}
+  },
+  "impact": {
+    "files_argument_count": 30,
+    "touched_modules": ["(root)", "agents", "docs", "skills/taskplane", "skills/tp-engineering", "skills/tp-go", "taskplane", "taskplane/tests"],
+    "total_impacted": 25,
+    "unknown_modules": [],
+    "graph_fingerprint": "455a46dc0842e2fb45c3a5ff13ad9dc679c49859206e2d8bb7d43f20b838eee6",
+    "scan_quality_fingerprint": "9e73c6918145b13c8320ce0bdfa7861798fa511c85f8fc9a27bdff359fe73168",
+    "scanned_revision": "3b0054a8f26262a4b363fdf577d0edabc38db7e9",
+    "truncated_by_result_ceiling": false,
+    "depth_truncated": false,
+    "scan_quality": "complete"
+  },
   "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-  "traceability": {
-    "canonical_source": "design/contract.json#/finding_map",
-    "canonical_review": ".em-review/findings.json",
-    "inventory": {"total": 72, "high": 34, "medium": 28, "low": 10},
-    "ownership_rule": "Each finding appears exactly once in a Build owner's findings list. HG-EVAL independently evaluates all 34 highs and FINAL-EVAL independently evaluates all 72 without taking Build ownership.",
-    "low_companions": {"H2": {"L-02": "HX-GRAPH"}, "H3": {"L-01": "H3-A", "L-04": "H3-C"}, "M1": {"L-06": "M1-C", "L-10": "M1-F"}, "M2": {"L-03": "M2-A", "L-05": "M2-C", "L-07": "M2-C", "L-08": "M2-C", "L-09": "M2-C"}}
+  "delivery_policy": {
+    "product": "minimum-sufficient focused quick route",
+    "design": "minimum-sufficient focused quick route with solution-design coverage",
+    "plan": "exactly four focused quick lenses for this non-trivial plan",
+    "build_lens_workers": 0,
+    "fix_lens_workers": 0,
+    "evaluate": "zero Taskplane lens workers; evidence collector and judge only over exact diff, bound tests, acceptance criteria, graph impact, affected requirements/contracts, approved Design conformance, and provenance",
+    "em_lens_workers": 0
+  },
+  "plan_route": {
+    "schema": "taskplane.lens-route-policy/v1",
+    "stage": "plan",
+    "target": "R-0001",
+    "policy_version": "focused-routing/v1",
+    "execution_mode": "quick-only",
+    "selected": ["security", "testability", "architecture", "cost-finops"],
+    "selected_count": 4,
+    "coverage": [
+      {"lens": "security", "reason": "The self-hosting bootstrap must bind the exact LR-10 commit before zero-lens Evaluate, while expanded-route authority becomes Plan-only without weakening protected provider custody.", "tasks": ["LR-03", "LR-04", "LR-10", "LR-09"], "acceptance": ["AC-LR5", "AC-LR9", "AC-LR10"]},
+      {"lens": "testability", "reason": "Decision D-0014 requires executable proof of an empty ReviewKernel slot set, zero Evaluate lens starts, lens-free output/evidence schemas, direct evidence judging, and bootstrap under the updated engine.", "tasks": ["LR-05", "LR-10", "LR-07", "LR-08", "LR-09"], "acceptance": ["AC-LR3", "AC-LR4", "AC-LR5", "AC-LR6", "AC-LR7", "AC-LR8", "AC-LR9", "AC-LR10"]},
+      {"lens": "architecture", "reason": "Accepted drift D-0014 changes only Evaluate execution: Product/Design/Plan retain focused routing, Plan alone retains expansion, and Evaluate becomes an evidence-only zero-slot boundary with a bounded self-hosting bootstrap.", "tasks": ["LR-01", "LR-02", "LR-03", "LR-04", "LR-05", "LR-06", "LR-10", "LR-07", "LR-08", "LR-09"], "acceptance": ["AC-LR1", "AC-LR2", "AC-LR3", "AC-LR4", "AC-LR5", "AC-LR6", "AC-LR7", "AC-LR8", "AC-LR9", "AC-LR10"]},
+      {"lens": "cost-finops", "reason": "Evaluate must eliminate all lens fan-out and retry/provider work while preserving only bounded evidence collection and judging; Product/Design/Plan keep their existing quick-route bounds.", "tasks": ["LR-01", "LR-04", "LR-05", "LR-10", "LR-09"], "acceptance": ["AC-LR1", "AC-LR2", "AC-LR3", "AC-LR4", "AC-LR5", "AC-LR7", "AC-LR9", "AC-LR10"]}
+    ],
+    "lens_receipts": [
+      {"lens": "security", "mode": "quick", "depth": "light", "verdict": "pass", "findings": 0, "signed_by": "/root/tp_step_planner_plan_4359db65/plan_lens_security", "result_sha256": "d6f3f3a6ce6435d154a11bdd47d06f5fe510bb6f748f28edfecb12c4dd1977ab", "canonical_input_sha256": "37d853ea8340f314e0672f48e8e193b0deb5e29ff496faf14c1930d3c99739ca", "canonical_basis": "source a41ae4c39f625ceb3ded9cdfbccf4b0344786f6626e4cf691fa456c64f9c3635 + plan/tasks.json excluding lens_receipts + plan/plan.md 94a7ebf8a4cead94ff60d16c2f64c042f863ed24bc80c3693e15ab46ccc477c5", "evidence_action": "rerun", "correction": "Verified exact-commit bootstrap binding, zero Evaluate authority paths, Plan-only expansion, preserved bases, and unchanged release prohibitions."},
+      {"lens": "testability", "mode": "quick", "depth": "light", "verdict": "pass", "findings": 0, "signed_by": "/root/tp_step_planner_plan_4359db65/plan_lens_testability", "result_sha256": "b010a8e92602d87a391fe15d167bc71ee0be110138d3929979a1d4047a7a0cf5", "canonical_input_sha256": "ff3349d0f56699dbef10a029f2ef85cb713ae66fdb5f140b7b9075d258f1103f", "canonical_basis": "source a41ae4c39f625ceb3ded9cdfbccf4b0344786f6626e4cf691fa456c64f9c3635 + plan/tasks.json excluding lens_receipts + plan/plan.md 94a7ebf8a4cead94ff60d16c2f64c042f863ed24bc80c3693e15ab46ccc477c5", "evidence_action": "rerun", "correction": "Verified argv-safe task commands, zero-slot and zero-start lifecycle coverage, lens-free outputs, direct evidence judgment, preserved AC strings, and executable bootstrap proof."},
+      {"lens": "architecture", "mode": "quick", "depth": "light", "verdict": "pass", "findings": 0, "signed_by": "/root/tp_step_planner_plan_4359db65/plan_lens_architecture", "result_sha256": "1c070c5fb6c0525560efd97a5da721b66804a0ffda0e0ea13e62271b925b05ba", "canonical_input_sha256": "bfde13195cc508f432c435bc83d30f490b2263a2a44d6b6ba05b671527812be7", "canonical_basis": "source a41ae4c39f625ceb3ded9cdfbccf4b0344786f6626e4cf691fa456c64f9c3635 + plan/tasks.json excluding lens_receipts + plan/plan.md 94a7ebf8a4cead94ff60d16c2f64c042f863ed24bc80c3693e15ab46ccc477c5", "evidence_action": "rerun", "correction": "Verified one new runtime task, historical Design preservation, exact dependency/bootstrap topology, preserved branch bases, and final EM drift attribution."},
+      {"lens": "cost-finops", "mode": "quick", "depth": "light", "verdict": "pass", "findings": 0, "signed_by": "/root/tp_step_planner_plan_4359db65/plan_lens_cost_finops", "result_sha256": "1b9c0647d9275ce620ddd81cce2281d4387009f50bdbe4a8212b5004fd279b56", "canonical_input_sha256": "1545dc8d9cba530dffd7391430e9d23bd5570e2abf89dc9461b800ffc6b43d18", "canonical_basis": "source a41ae4c39f625ceb3ded9cdfbccf4b0344786f6626e4cf691fa456c64f9c3635 + plan/tasks.json excluding lens_receipts + plan/plan.md 94a7ebf8a4cead94ff60d16c2f64c042f863ed24bc80c3693e15ab46ccc477c5", "evidence_action": "rerun", "correction": "Verified exactly four quick Plan workers, zero deep, zero Evaluate fan-out, bounded evidence collection, and the minimum safe dependency graph."}
+    ],
+    "dispositions": [
+      {"lens": "product", "disposition": "not_applicable", "evidence": "R-0001 and its ten acceptance criteria are already approved; Plan does not reopen product desirability.", "reason": "approved-product-input"},
+      {"lens": "security", "disposition": "execute_light", "evidence": "Plan-only expansion authority, protected custody, exact-commit self-hosting integration, and fail-closed zero-slot enforcement cross independent trust boundaries.", "reason": "bootstrap-and-authority-boundary"},
+      {"lens": "code-quality", "disposition": "covered_by", "covered_by": "testability", "evidence": "The pure-module and adapter quality risks are exercised through deterministic and mutation-focused tests.", "reason": "same-implementation-proof"},
+      {"lens": "testability", "disposition": "execute_light", "evidence": "D-0014 requires direct regressions for zero Evaluate routing, slots, starts, retries, authority, lens outputs, and self-hosting behavior while retaining exact historical AC strings.", "reason": "accepted-drift-proof-owner"},
+      {"lens": "design", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The approved Design remains immutable; architecture owns the explicitly attributed D-0014 departure limited to Evaluate execution.", "reason": "accepted-drift-architecture-coverage"},
+      {"lens": "scalability", "disposition": "not_applicable", "evidence": "The selector operates over a fixed 26-row catalog with explicit latency and artifact bounds; no distributed scale surface is introduced.", "reason": "fixed-bounded-input"},
+      {"lens": "integrability", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The exact-commit bootstrap, zero-slot Evaluate boundary, truth amendments, and final conformance join cover integration without a separate risk group.", "reason": "bootstrap-topology-coverage"},
+      {"lens": "data-safety", "disposition": "covered_by", "covered_by": "security", "evidence": "Immutable receipts, external 0600 custody, durable atomic one-use consumption, and fail-closed reuse are security-owned boundary proofs.", "reason": "authority-integrity-coverage"},
+      {"lens": "tech-writer", "disposition": "covered_by", "covered_by": "architecture", "evidence": "LR-07 and LR-08 amend current role, skill, catalog, and documentation truth from preserved branch bases after the runtime contract freezes.", "reason": "architecture-truth-source"},
+      {"lens": "qa", "disposition": "covered_by", "covered_by": "testability", "evidence": "The zero-slot lifecycle matrix, lens-free output assertions, evidence-judge matrix, and final integration selector supply QA proof.", "reason": "testability-proof-coverage"},
+      {"lens": "devops", "disposition": "covered_by", "covered_by": "architecture", "evidence": "Architecture owns the bounded exact-commit integration bootstrap required before the updated engine evaluates LR-10; release, main merge, tags, and publication remain excluded.", "reason": "self-hosting-bootstrap-boundary"},
+      {"lens": "dba", "disposition": "not_applicable", "evidence": "No database, schema migration, or query surface is introduced.", "reason": "no-database-surface"},
+      {"lens": "sre", "disposition": "covered_by", "covered_by": "architecture", "evidence": "Fail-closed zero-slot Evaluate, bootstrap verification, provider removal from Evaluate, and recovery behavior are architecture-owned lifecycle constraints.", "reason": "zero-lens-lifecycle-coverage"},
+      {"lens": "project-management", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The serial LR-10 bootstrap precedes parallel preserved-base LR-07/LR-08 truth amendments and their zero-lens Evaluate, followed by LR-09 conformance and EM drift attribution.", "reason": "dependency-graph-coverage"},
+      {"lens": "frontend", "disposition": "not_applicable", "evidence": "No frontend behavior or interactive UI is changed.", "reason": "no-frontend-surface"},
+      {"lens": "backend", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The Evaluate early zero-slot path, lens-free evidence/output contracts, loop gate, runtime guidance, and Plan-only expansion boundary are architecture-owned runtime surfaces.", "reason": "architecture-owns-runtime-boundary"},
+      {"lens": "tradeoffs", "disposition": "covered_by", "covered_by": "architecture", "evidence": "Human decision D-0014 explicitly accepts the loss of Evaluate lens verdicts in exchange for zero Taskplane lens execution; Product, Design, and Plan routing remain unchanged.", "reason": "accepted-human-tradeoff"},
+      {"lens": "solution-design", "disposition": "covered_by", "covered_by": "architecture", "evidence": "Architecture bounds accepted drift to Evaluate execution and preserves the approved module/contract topology as historical evidence.", "reason": "bounded-accepted-drift"},
+      {"lens": "services-selection", "disposition": "covered_by", "covered_by": "architecture", "evidence": "The approved architecture explicitly selected a local content-addressed provider and rejected extending terminal authority or adding a host service; no vendor or network dependency is introduced.", "reason": "approved-provider-placement"},
+      {"lens": "time-to-market", "disposition": "covered_by", "covered_by": "cost-finops", "evidence": "One focused runtime task, one required self-hosting integration, parallel truth amendments, and one conformance join are the minimum delivery graph.", "reason": "delivery-efficiency-coverage"},
+      {"lens": "architecture", "disposition": "execute_light", "evidence": "D-0014 crosses policy, ReviewKernel, evaluation output/evidence, loop/runtime guidance, truth surfaces, bootstrap sequencing, and final conformance while preserving historical Design edges.", "reason": "accepted-drift-runtime-topology"},
+      {"lens": "mobile", "disposition": "not_applicable", "evidence": "No mobile runtime or presentation surface is changed.", "reason": "no-mobile-surface"},
+      {"lens": "accessibility", "disposition": "not_applicable", "evidence": "No interactive or rendered UI behavior is introduced; documentation remains plain semantic text.", "reason": "no-interactive-surface"},
+      {"lens": "privacy-compliance", "disposition": "covered_by", "covered_by": "security", "evidence": "Lens-free Evaluate output narrows persisted evidence; existing bounded redaction and private-path refusal remain security-owned.", "reason": "security-owns-privacy-boundary"},
+      {"lens": "cost-finops", "disposition": "execute_light", "evidence": "Evaluate must have exactly zero lens fan-out, token use, leases, retries, and expansion-provider work while evidence collection stays bounded.", "reason": "zero-evaluate-fanout-invariant"},
+      {"lens": "i18n", "disposition": "not_applicable", "evidence": "No locale-sensitive user text, formatting, pluralization, or translation contract is changed.", "reason": "no-locale-surface"}
+    ]
   },
   "tasks": [
     {
-      "id": "H1-A", "wave": "H1", "owner": "terminal-and-cas",
-      "scope": ["taskplane/loop.py", "taskplane/terminal_truth.py", "taskplane/delivery_ports.py", "taskplane/tests/test_em_h1_terminal.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_terminal.py",
-      "req": "R-0002", "deps": [], "type": "reliability",
-      "contracts": ["contract:runtime.durable-state-and-authority", "contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
+      "id": "LR-01", "wave": "foundation", "owner": "routing-policy-core",
+      "scope": ["taskplane/lens_route_policy.py", "taskplane/graph_primitives.py", "taskplane/lens.py", "taskplane/lens_signals.py", "taskplane/tests/test_lens_route_policy.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_lens_route_policy.py", "req": "R-0001", "deps": [], "type": "architecture",
+      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "resource:review.route-fingerprint"],
+      "new_modules": ["taskplane/lens_route_policy.py", "taskplane/graph_primitives.py", "taskplane/lens.py", "taskplane/lens_signals.py"],
+      "design_edges": ["taskplane/graph_primitives.py->taskplane/lens_route_policy.py:provides-signals", "taskplane/lens.py->taskplane/lens_route_policy.py:consumes", "taskplane/lens_route_policy.py->contract:lens.focused-stage-routing:provides", "taskplane/lens_route_policy.py->contract:review.catalog-disposition:provides", "taskplane/tests->contract:review.catalog-disposition:verifies"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "findings": ["H-03", "H-04", "H-05", "H-06"],
-      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
+      "criteria": ["AC-LR6: Product, Design, Plan, and Evaluate each emit exactly one internally consistent evidenced disposition for every catalog lens, and only execute_deep/execute_light launch workers; verify missing, duplicate, unsupported, and unevidenced rows fail closed.", "AC-LR8: Equal canonical inputs and policy version produce the same ordered route, dispositions, and fingerprint for all routed stages; verify repeats, key-order variance, relevant-input change, and policy-version change."]
     },
     {
-      "id": "H1-B", "wave": "H1", "owner": "journal-and-observation",
-      "scope": ["taskplane/run_store.py", "taskplane/producer_observation.py", "taskplane/tests/test_em_h1_journal.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_journal.py",
-      "req": "R-0002", "deps": [], "type": "reliability",
-      "contracts": ["contract:runtime.durable-state-and-authority"], "new_modules": [], "design_edges": [],
+      "id": "LR-02", "wave": "parallel-adapters", "owner": "evaluate-and-reuse",
+      "gap": "Review adapter must normalize ordinary dependency-impact maps with integer depth keys before strict canonical route fingerprinting.",
+      "scope": ["taskplane/review.py", "taskplane/review_retry.py", "taskplane/tests/test_review_routing.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_review_routing.py", "req": "R-0001", "deps": ["LR-01"], "type": "reliability",
+      "contracts": ["contract:lens.focused-stage-routing", "resource:review.route-fingerprint"], "new_modules": ["taskplane/review.py", "taskplane/review_retry.py"],
+      "design_edges": ["taskplane/review.py->contract:lens.focused-stage-routing:consumes", "taskplane/review.py->resource:review.route-fingerprint:provides", "taskplane/review_retry.py->resource:review.route-fingerprint:consumes", "taskplane/tests->resource:review.route-fingerprint:verifies"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "findings": ["H-07", "H-08"],
-      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
+      "criteria": ["AC-LR4: Every non-trivial task or wave Evaluate executes exactly three or four lenses from actual diff, changed files, dependency impact, test evidence, and unresolved findings; verify material evidence changes alter the route.", "AC-LR7: A material Fix invalidates and reruns only lens evidence whose canonical fingerprint inputs changed while unchanged evidence is reused without launching a worker; verify single-input, multi-input, and unchanged cases."]
     },
     {
-      "id": "H1-C", "wave": "H1", "owner": "durable-store-and-readonly",
-      "scope": ["taskplane/taskplane_lite.py", "taskplane/tests/test_em_h1_store.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_store.py",
-      "req": "R-0002", "deps": [], "type": "security",
-      "contracts": ["contract:runtime.durable-state-and-authority", "contract:quality.review-remediation"], "new_modules": [], "design_edges": [],
+      "id": "LR-03", "wave": "authority-amendment", "owner": "expanded-route-authority",
+      "finding": "6ea9aff0107f4bb6",
+      "preserve_commits": ["8af3d8e", "03a6c8f", "3736e7c", "000704a", "76dc79d"],
+      "amend_in_place": ".tp-work/LR-03",
+      "scope": ["taskplane/expanded_route_authority_provider.py", "taskplane/taskplane_lite.py", "taskplane/terminal_truth.py", "taskplane/tests/test_expanded_route_authority_provider.py", "taskplane/tests/test_expanded_lens_route_authority.py", "components.yaml", "pyproject.toml"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_expanded_route_authority_provider.py taskplane/tests/test_expanded_lens_route_authority.py", "req": "R-0001", "deps": ["LR-01", "LR-02"], "type": "security",
+      "contracts": ["contract:authority.expanded-lens-route", "resource:authority.expanded-lens-route-custody"], "new_modules": ["taskplane/expanded_route_authority_provider.py", "taskplane/taskplane_lite.py", "taskplane/terminal_truth.py", "resource:authority.expanded-lens-route-custody", "ext:orchestrator-control-plane-runtime"],
+      "design_edges": ["taskplane/taskplane_lite.py->contract:authority.expanded-lens-route:requests", "taskplane/terminal_truth.py->resource:authority.expanded-lens-route-custody:provides-precedent", "taskplane/expanded_route_authority_provider.py->resource:authority.expanded-lens-route-custody:owns", "ext:orchestrator-control-plane-runtime->taskplane/expanded_route_authority_provider.py:executes-verified-package", "taskplane/expanded_route_authority_provider.py->contract:authority.expanded-lens-route:provides", "taskplane/tests->contract:authority.expanded-lens-route:verifies", "taskplane/tests->resource:authority.expanded-lens-route-custody:verifies"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "findings": ["H-14", "H-15", "H-30"],
-      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
+      "regression_selectors": ["taskplane/tests/test_expanded_route_authority_provider.py::test_worker_monkeypatch_cannot_replace_provider_source_clock_or_rsa", "taskplane/tests/test_expanded_route_authority_provider.py::test_missing_altered_relocated_or_symlinked_locator_and_custody_fail_closed", "taskplane/tests/test_expanded_route_authority_provider.py::test_exact_source_workspace_route_cost_policy_action_expiry_approver_and_receipt_binding", "taskplane/tests/test_expanded_route_authority_provider.py::test_atomic_one_use_consume_allows_one_concurrent_success", "taskplane/tests/test_expanded_route_authority_provider.py::test_restart_recovers_issuer_receipts_and_consumed_actions", "taskplane/tests/test_expanded_route_authority_provider.py::test_clock_injection_is_available_only_to_trusted_provider_tests"],
+      "criteria": ["AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval."]
     },
     {
-      "id": "H1-D", "wave": "H1", "owner": "release-compatibility",
-      "scope": ["scripts/package_openai.py", "design/compatibility.json", "taskplane/tests/test_em_h1_release.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_release.py",
-      "req": "R-0002", "deps": [], "type": "reliability",
-      "contracts": ["contract:release.compatibility-and-authority"], "new_modules": [],
-      "design_edges": ["scripts->contract:release.compatibility-and-authority:consumes", "design->contract:release.compatibility-and-authority:provides"],
+      "id": "LR-04", "wave": "parallel-adapters", "owner": "route-telemetry",
+      "scope": ["taskplane/dispatch_telemetry.py", "taskplane/tests/test_lens_route_telemetry.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_lens_route_telemetry.py", "req": "R-0001", "deps": ["LR-01"], "type": "observability",
+      "contracts": ["resource:telemetry.lens-route"], "new_modules": ["taskplane/dispatch_telemetry.py"],
+      "design_edges": ["taskplane/dispatch_telemetry.py->resource:telemetry.lens-route:provides", "taskplane/tests->resource:telemetry.lens-route:verifies"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "findings": ["H-19", "H-22", "H-26"],
-      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
+      "criteria": ["AC-LR9: Each route records stage, selected count, reasons, estimated/actual tokens, runtime, cache reuse, and invalidation cause with bounded redaction; verify schema completeness and privacy behavior."]
     },
     {
-      "id": "H1-E", "wave": "H1", "owner": "validation-sandbox-deadline",
-      "scope": ["taskplane/review.py", "taskplane/tests/test_em_h1_sandbox.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_sandbox.py",
-      "req": "R-0002", "deps": [], "type": "reliability",
-      "contracts": ["contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
+      "id": "LR-05", "wave": "parallel-adapters", "owner": "zero-lens-delivery-boundary",
+      "scope": ["taskplane/delivery_policy.py", "taskplane/tests/test_delivery_policy.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_delivery_policy.py", "req": "R-0001", "deps": ["LR-01"], "type": "reliability",
+      "contracts": ["contract:delivery.stage-lens-execution"], "new_modules": ["taskplane/delivery_policy.py"],
+      "design_edges": ["taskplane/delivery_policy.py->contract:delivery.stage-lens-execution:validates"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "findings": ["H-34"],
-      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
+      "criteria": ["AC-LR10: Successful, failed, cancelled, interrupted, and handed-off Build/Fix attempts launch zero lens workers, with lens execution confined to Product, Design, Plan, and Evaluate; verify native-dispatch traces."]
     },
     {
-      "id": "H1-I", "wave": "H1", "owner": "foundation-integration",
-      "scope": ["taskplane/remediation_trace.py", "taskplane/tests/test_em_h1_integration.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_h1_integration.py::test_ac2_h1_contracts_close_at_one_sha",
-      "req": "R-0002", "deps": ["H1-A", "H1-B", "H1-C", "H1-D", "H1-E"], "type": "integration",
-      "contracts": ["contract:runtime.durable-state-and-authority", "contract:release.compatibility-and-authority", "contract:quality.review-remediation", "resource:review.finding-traceability"],
-      "new_modules": ["taskplane/remediation_trace.py"], "design_edges": ["taskplane->contract:runtime.durable-state-and-authority:provides"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
-      "criteria": ["AC2: Every H1 id H-03 through H-08 plus H-14, H-15, H-19, H-22, H-26, H-30, and H-34 passes focused production-boundary positive and applicable adversarial atomicity, durability, authority, mutation, compatibility, and timeout evidence."]
-    },
-    {
-      "id": "H2-A", "wave": "H2", "owner": "python-quality-ci",
-      "scope": [".github/workflows/ci.yml", "pyproject.toml", "requirements-dev.lock", "taskplane/tests/test_em_h2_quality.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_quality.py",
-      "req": "R-0002", "deps": ["H1-I"], "type": "quality",
-      "contracts": ["contract:ci.reproducible-python-quality", "contract:quality.review-remediation"], "new_modules": [],
-      "design_edges": [".github/workflows->contract:ci.reproducible-python-quality:provides", "taskplane/tests->contract:ci.reproducible-python-quality:consumes"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-09"],
-      "criteria": ["AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence."]
-    },
-    {
-      "id": "H2-B", "wave": "H2", "owner": "production-roots-and-preview",
-      "scope": ["taskplane/native_authority.py", "taskplane/design_sweep.py", "taskplane/preview_runtime.py", "taskplane/tests/test_em_h2_wiring.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_wiring.py",
-      "req": "R-0002", "deps": ["H1-I"], "type": "architecture", "contracts": ["contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-10", "H-11", "H-12", "H-29"],
-      "criteria": ["AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence."]
-    },
-    {
-      "id": "H2-C", "wave": "H2", "owner": "review-and-budget-bounds",
-      "scope": ["taskplane/tp.py", "taskplane/review.py", "taskplane/dispatch_telemetry.py", "taskplane/tests/test_em_h2_bounds.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_bounds.py",
-      "req": "R-0002", "deps": ["H1-I"], "type": "performance", "contracts": ["contract:quality.review-remediation"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-13", "H-27", "H-28", "H-33"],
-      "criteria": ["AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence."]
-    },
-    {
-      "id": "HX-GRAPH", "wave": "H2+H3", "owner": "graph-interaction-and-routing",
-      "scope": ["components.yaml", "taskplane/depgraph.py", "taskplane/graph_primitives.py", "taskplane/lens.py", "taskplane/glob_match.py", "taskplane/tests/test_em_hx_graph.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_hx_graph.py",
-      "req": "R-0002", "deps": ["H1-I"], "type": "architecture",
-      "contracts": ["contract:dashboard.accessible-truthful-actions", "contract:delivery.production-wiring", "contract:quality.review-remediation"],
-      "new_modules": ["taskplane/glob_match.py"], "design_edges": ["taskplane/glob_match.py->contract:quality.review-remediation:provides", "taskplane->taskplane/glob_match.py:uses"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-02", "H-31", "L-02"],
-      "criteria": ["AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence.", "AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths."]
-    },
-    {
-      "id": "H2-I", "wave": "H2", "owner": "production-bounds-integration",
-      "scope": ["taskplane/tests/test_em_h2_integration.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_integration.py::test_ac3_live_wiring_bounds_and_quality",
-      "req": "R-0002", "deps": ["H2-A", "H2-B", "H2-C", "HX-GRAPH"], "type": "integration",
-      "contracts": ["contract:quality.review-remediation", "contract:delivery.production-wiring", "contract:ci.reproducible-python-quality"], "new_modules": [],
-      "design_edges": ["taskplane->contract:delivery.production-wiring:provides"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
-      "criteria": ["AC3: Every H2 id H-09 through H-13 plus H-27 through H-29, H-31, and H-33 closes with enforceable quality, reachability, boundedness, architecture-map, and telemetry proofs; L-02 proves both routing layers consume one dependency-neutral glob matcher with parity evidence."]
-    },
-    {
-      "id": "H3-A", "wave": "H3", "owner": "dashboard-controls",
-      "scope": ["taskplane/dashboard.py", "taskplane/tests/test_em_h3_dashboard.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h3_dashboard.py",
-      "req": "R-0002", "deps": ["H1-I"], "type": "accessibility", "contracts": ["contract:dashboard.accessible-truthful-actions"], "new_modules": [], "design_edges": [],
+      "id": "LR-06", "wave": "stage-integration", "owner": "product-design-plan-loop-adapters",
+      "scope": ["taskplane/loop.py", "taskplane/review.py", "taskplane/tests/test_focused_lens_routing.py", "taskplane/tests/test_loop.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_focused_lens_routing.py taskplane/tests/test_loop.py", "req": "R-0001", "deps": ["LR-02", "LR-03", "LR-04", "LR-05"], "type": "integration",
+      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": ["taskplane/loop.py"],
+      "design_edges": ["taskplane/loop.py->contract:lens.focused-stage-routing:consumes", "taskplane/loop.py->contract:delivery.stage-lens-execution:enforces", "taskplane/review.py->contract:authority.expanded-lens-route:consumes"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "findings": ["H-01", "H-16", "H-17", "H-18", "H-20", "H-21", "L-01"],
-      "criteria": ["AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths."]
+      "criteria": ["AC-LR1: Product deterministically executes a minimum-sufficient focused route from goal, requirement, AC, domain, constraints, and product-risk evidence, emits all 26 dispositions, and never launches a normal full-catalog run; verify identical-input and product-risk mutation tests.", "AC-LR2: Design deterministically executes a minimum-sufficient focused route from approved requirement and proposed solution evidence, includes solution-design coverage, and emits findings, design changes, and all 26 dispositions; verify independent interface, trust-boundary, and rollback-risk mutations.", "AC-LR3: Every non-trivial Plan executes exactly three or four selected lenses with rationale and task-to-AC coverage; verify passing 3/4 cases and refusal of 2/5.", "AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval."]
     },
     {
-      "id": "H3-C", "wave": "H3", "owner": "privacy-and-retention",
-      "scope": ["taskplane/command_runtime.py", "taskplane/loop.py", "taskplane/taskplane_lite.py", "taskplane/tests/test_em_h3_privacy.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h3_privacy.py",
-      "req": "R-0002", "deps": ["H1-I"], "type": "security", "contracts": ["contract:privacy.retention-and-disclosure"], "new_modules": [],
-      "design_edges": ["taskplane->contract:privacy.retention-and-disclosure:provides"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-23", "H-24", "H-25", "L-04"],
-      "criteria": ["AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths."]
+      "id": "LR-10", "wave": "zero-lens-evaluate-bootstrap", "owner": "zero-lens-evaluate-runtime-and-contract",
+      "scope": ["taskplane/delivery_policy.py", "taskplane/lens_route_policy.py", "taskplane/dispatch_telemetry.py", "taskplane/expanded_route_authority_provider.py", "taskplane/taskplane_lite.py", "taskplane/review.py", "taskplane/review_retry.py", "taskplane/evaluation_output.py", "taskplane/evidence.py", "taskplane/loop.py", "taskplane/runtime_eval.py", "skills/taskplane/references/runtime-evals.json", "taskplane/tests/fixtures/briefs/golden_stage_evaluate.json", "taskplane/tests/test_delivery_policy.py", "taskplane/tests/test_lens_route_policy.py", "taskplane/tests/test_lens_route_telemetry.py", "taskplane/tests/test_expanded_route_authority_provider.py", "taskplane/tests/test_expanded_lens_route_authority.py", "taskplane/tests/test_review_routing.py", "taskplane/tests/test_evaluation_output_contract.py", "taskplane/tests/test_evidence_bundle.py", "taskplane/tests/test_runtime_eval_guidance.py", "taskplane/tests/test_focused_lens_routing.py", "taskplane/tests/test_loop.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_delivery_policy.py taskplane/tests/test_lens_route_policy.py taskplane/tests/test_lens_route_telemetry.py taskplane/tests/test_expanded_route_authority_provider.py taskplane/tests/test_expanded_lens_route_authority.py taskplane/tests/test_review_routing.py taskplane/tests/test_evaluation_output_contract.py taskplane/tests/test_evidence_bundle.py taskplane/tests/test_runtime_eval_guidance.py taskplane/tests/test_focused_lens_routing.py taskplane/tests/test_loop.py", "req": "R-0001", "deps": ["LR-06"], "type": "integration",
+      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:authority.expanded-lens-route-custody", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "bootstrap": {"exception": "The installed pre-D-0014 engine still routes Evaluate. After LR-10 Build passes this exact declared suite, root integrates that exact LR-10 commit into the isolated integration branch before requesting LR-10 Evaluate. The updated engine must then emit ReviewKernel slots=[] and prove zero Taskplane lens starts before any later Evaluate.", "forbidden": ["running pre-bootstrap Evaluate lens slots", "using expanded-route authority for Evaluate", "evaluating from an unbound or different commit", "main merge", "tag", "publish", "release"], "verification": ["exact LR-10 commit integrated", "declared suite green at that commit", "Evaluate route absent", "ReviewKernel slots empty", "native lens starts zero", "direct diff/tests/criteria/graph/design/provenance judgment present"]},
+      "accepted_drift_dod": ["Evaluate is classified ZERO by delivery policy and cannot be promoted to routed by approved historical stage_policy.evaluate.selection.", "Evaluate bypasses catalog scoring, route/disposition construction, retry/invalidation, expanded-route provider/adapter, lens lease creation, and lens result collection.", "Evaluation output/evidence schemas omit lens routes, slots, dispositions, and lens verdicts while retaining exact diff, bound tests, acceptance criteria, dependency impact, affected requirements/contracts, approved Design conformance, provenance, findings, and overall judgment.", "Loop gates, runtime guidance, golden Evaluate briefs, cancellation/failure/interruption/handoff traces, and telemetry prove zero Evaluate lens starts without weakening evidence judgment.", "Expanded-route issuance and consumption are Plan-only; Product/Design remain minimum-sufficient quick and Plan remains exactly three or four quick lenses with all 26 dispositions."],
+      "criteria": ["AC-LR4: Every non-trivial task or wave Evaluate executes exactly three or four lenses from actual diff, changed files, dependency impact, test evidence, and unresolved findings; verify material evidence changes alter the route.", "AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval.", "AC-LR6: Product, Design, Plan, and Evaluate each emit exactly one internally consistent evidenced disposition for every catalog lens, and only execute_deep/execute_light launch workers; verify missing, duplicate, unsupported, and unevidenced rows fail closed.", "AC-LR7: A material Fix invalidates and reruns only lens evidence whose canonical fingerprint inputs changed while unchanged evidence is reused without launching a worker; verify single-input, multi-input, and unchanged cases.", "AC-LR8: Equal canonical inputs and policy version produce the same ordered route, dispositions, and fingerprint for all routed stages; verify repeats, key-order variance, relevant-input change, and policy-version change.", "AC-LR9: Each route records stage, selected count, reasons, estimated/actual tokens, runtime, cache reuse, and invalidation cause with bounded redaction; verify schema completeness and privacy behavior.", "AC-LR10: Successful, failed, cancelled, interrupted, and handed-off Build/Fix attempts launch zero lens workers, with lens execution confined to Product, Design, Plan, and Evaluate; verify native-dispatch traces."]
     },
     {
-      "id": "H3-D", "wave": "H3", "owner": "exact-sha-terminal-export",
-      "scope": ["exports/terminal/r0013/**", "taskplane/tests/test_em_h3_terminal_export.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h3_terminal_export.py",
-      "req": "R-0002", "deps": ["H1-A", "H1-D"], "type": "reliability", "contracts": ["contract:release.compatibility-and-authority", "resource:review.exact-candidate-evidence"], "new_modules": [],
-      "design_edges": ["exports/terminal->contract:release.compatibility-and-authority:provides"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["H-32"],
-      "criteria": ["AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths."]
+      "id": "LR-07", "wave": "parallel-truth", "owner": "agents-and-skill-contracts",
+      "scope": ["agents/**", "skills/taskplane/**", "skills/tp-product/**", "skills/tp-design/**", "skills/tp-go/**", "skills/tp-build/**", "skills/tp-engineering/**", "taskplane/tests/test_agents_skills_focused_routing.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_agents_skills_focused_routing.py", "req": "R-0001", "deps": ["LR-10"], "type": "documentation",
+      "contracts": ["contract:delivery.stage-lens-execution"], "new_modules": [],
+      "design_edges": ["agents->contract:delivery.stage-lens-execution:consumes", "skills/taskplane->contract:delivery.stage-lens-execution:consumes"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "preserved_base": {"branch": "tp/LR-07", "commit": "b23100d2547643b8addcad11610e80b850e77a9a", "tree": "9d38678d9fbe27e7b5b8cb3ded60e78ff03aad80", "instruction": "Amend in place after LR-10; preserve and do not rebuild existing product work."},
+      "accepted_drift_dod": ["Evaluator, lens, engineering, and orchestrator roles plus Taskplane facade/go/engineering skills say Evaluate launches zero Taskplane lens workers and judges direct evidence only.", "No role or skill claims Evaluate emits a 26-row disposition ledger, lens slots, lens verdicts, retry lenses, or expanded-route authority.", "Product/Design minimum-sufficient quick, Plan exactly three or four quick with all 26 dispositions, and Build/Fix/EM zero-lens remain explicit."],
+      "criteria": ["AC-LR1: Product deterministically executes a minimum-sufficient focused route from goal, requirement, AC, domain, constraints, and product-risk evidence, emits all 26 dispositions, and never launches a normal full-catalog run; verify identical-input and product-risk mutation tests.", "AC-LR2: Design deterministically executes a minimum-sufficient focused route from approved requirement and proposed solution evidence, includes solution-design coverage, and emits findings, design changes, and all 26 dispositions; verify independent interface, trust-boundary, and rollback-risk mutations.", "AC-LR3: Every non-trivial Plan executes exactly three or four selected lenses with rationale and task-to-AC coverage; verify passing 3/4 cases and refusal of 2/5.", "AC-LR4: Every non-trivial task or wave Evaluate executes exactly three or four lenses from actual diff, changed files, dependency impact, test evidence, and unresolved findings; verify material evidence changes alter the route.", "AC-LR10: Successful, failed, cancelled, interrupted, and handed-off Build/Fix attempts launch zero lens workers, with lens execution confined to Product, Design, Plan, and Evaluate; verify native-dispatch traces."]
     },
     {
-      "id": "H3-I", "wave": "H3", "owner": "human-truth-integration",
-      "scope": ["taskplane/tests/test_em_h3_integration.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h3_integration.py::test_ac4_human_privacy_and_terminal_truth",
-      "req": "R-0002", "deps": ["H3-A", "H3-C", "H3-D", "HX-GRAPH"], "type": "integration",
-      "contracts": ["contract:dashboard.accessible-truthful-actions", "contract:privacy.retention-and-disclosure", "contract:release.compatibility-and-authority", "resource:review.exact-candidate-evidence"], "new_modules": [],
-      "design_edges": ["taskplane->contract:dashboard.accessible-truthful-actions:provides"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
-      "criteria": ["AC4: Every H3 id H-01, H-02, H-16 through H-18, H-20, H-21, H-23 through H-25, and H-32 closes with keyboard, ARIA, truthful state/action, retention, and exact-SHA evidence; L-01 proves WCAG AA metadata contrast and L-04 proves shared metadata omits or pseudonymizes workstation identity and absolute private paths."]
+      "id": "LR-08", "wave": "parallel-truth", "owner": "canonical-product-and-documentation-truth",
+      "scope": ["scripts/gen_lens_catalog.py", "docs/lens-catalog.md", "docs/routing-and-flows.md", "docs/lenses-and-knowledge.md", "README.md", "taskplane/tests/test_lens_routing_product_truth.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_lens_routing_product_truth.py", "req": "R-0001", "deps": ["LR-10"], "type": "documentation",
+      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:authority.expanded-lens-route-custody", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": ["specs", "design", "plan", "(root)"],
+      "design_edges": ["specs->contract:review.catalog-disposition:declares", "design->contract:lens.focused-stage-routing:declares", "plan->contract:delivery.stage-lens-execution:declares", "docs->resource:telemetry.lens-route:documents", "(root)->contract:lens.focused-stage-routing:documents"],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "preserved_base": {"branch": "tp/LR-08", "commit": "7d2bcfecd1b1bb3751a62b179f31811dbf8ad103", "tree": "91c260ffb9042a7170e8c9779f36d06e576d4b38", "instruction": "Amend in place after LR-10; preserve generator/check work and do not rebuild the passed base."},
+      "accepted_drift_dod": ["Generated catalog, routing docs, knowledge docs, README, and product-truth tests describe Evaluate as zero-lens evidence judgment with no lens ledger or lens verdict output.", "Expanded-route authority is Plan-only; Product/Design minimum-sufficient quick and Plan exactly three or four quick with all 26 dispositions remain truthful.", "Historical specs and approved Design artifacts remain unchanged and current truth attributes D-0014 to human:vdemkiv."],
+      "criteria": ["AC-LR6: Product, Design, Plan, and Evaluate each emit exactly one internally consistent evidenced disposition for every catalog lens, and only execute_deep/execute_light launch workers; verify missing, duplicate, unsupported, and unevidenced rows fail closed.", "AC-LR9: Each route records stage, selected count, reasons, estimated/actual tokens, runtime, cache reuse, and invalidation cause with bounded redaction; verify schema completeness and privacy behavior."]
     },
     {
-      "id": "HG-EVAL", "wave": "HIGH-GATE", "owner": "independent-high-evaluator",
-      "scope": [".em-review/remediation/high-gate/**"], "tests": "python3 -m pytest -q taskplane/tests/test_em_h2_integration.py taskplane/tests/test_em_h3_integration.py && python3 -m taskplane.remediation_trace verify-high --findings .em-review/findings.json --results .em-review/remediation/high-gate/results.json --candidate-sha HEAD --require-independent",
-      "req": "R-0002", "deps": ["H2-I", "H3-I"], "type": "evaluation",
-      "contracts": ["contract:review.high-closure-gate", "resource:review.finding-traceability", "resource:review.exact-candidate-evidence"], "new_modules": [".em-review/remediation"],
-      "design_edges": ["taskplane/remediation_trace.py->contract:review.high-closure-gate:provides", "contract:review.high-closure-gate->resource:review.exact-candidate-evidence:produces"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
-      "evaluates": ["H-01", "H-02", "H-03", "H-04", "H-05", "H-06", "H-07", "H-08", "H-09", "H-10", "H-11", "H-12", "H-13", "H-14", "H-15", "H-16", "H-17", "H-18", "H-19", "H-20", "H-21", "H-22", "H-23", "H-24", "H-25", "H-26", "H-27", "H-28", "H-29", "H-30", "H-31", "H-32", "H-33", "H-34"],
-      "criteria": ["AC5: Before any medium-only Build, an independent evaluator proves H-01 through H-34 closed at one candidate SHA; injecting any missing, open, suppressed, downgraded, or self-attested high result blocks medium eligibility."]
-    },
-    {
-      "id": "M1-A", "wave": "M1", "owner": "scanner-and-design-decisions",
-      "scope": ["components.yaml", "taskplane/depgraph.py", "taskplane/tests/test_em_m1_architecture.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_architecture.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "architecture", "contracts": ["contract:quality.review-remediation", "contract:release.compatibility-and-authority", "contract:runtime.durable-state-and-authority"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-02", "M-26"],
-      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
-    },
-    {
-      "id": "MX-DOCS-ARCH", "wave": "M1+M2", "owner": "loop-design-decisions",
-      "scope": ["docs/loop-design.md", "taskplane/tests/test_em_mx_loop_docs.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_mx_loop_docs.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "documentation", "contracts": ["contract:docs.generated-truth", "contract:runtime.durable-state-and-authority", "contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-22", "M-27", "M-28"],
-      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely.", "AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
-    },
-    {
-      "id": "M1-B", "wave": "M1", "owner": "typing-and-cost-failclosed",
-      "scope": ["taskplane/dispatch_telemetry.py", "taskplane/lens.py", "taskplane/tests/test_em_m1_typing_cost.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_typing_cost.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "quality", "contracts": ["contract:ci.reproducible-python-quality", "contract:quality.review-remediation"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-03", "M-04"],
-      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
-    },
-    {
-      "id": "M1-C", "wave": "M1", "owner": "ci-dependencies-and-assets",
-      "scope": [".github/workflows/ci.yml", "requirements-dev.lock", "CONTRIBUTING.md", "taskplane/tests/test_em_m1_ci_dependencies.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_ci_dependencies.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "security", "contracts": ["contract:ci.reproducible-python-quality"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-06", "M-07", "M-17", "M-18", "L-06"],
-      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
-    },
-    {
-      "id": "M1-D", "wave": "M1", "owner": "mandatory-production-proofs",
-      "scope": ["taskplane/tests/test_r0013_design_sweep.py", "taskplane/tests/test_r0001_live_host_canary.py", "taskplane/tests/test_em_m1_proof_paths.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_proof_paths.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "quality", "contracts": ["contract:ci.reproducible-python-quality", "contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-14", "M-15"],
-      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
-    },
-    {
-      "id": "M1-E", "wave": "M1", "owner": "repository-retry",
-      "scope": ["taskplane/repository.py", "taskplane/tests/test_em_m1_repository.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_repository.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "reliability", "contracts": ["contract:delivery.production-wiring"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-19"],
-      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
-    },
-    {
-      "id": "M1-F", "wave": "M1", "owner": "scoped-test-runtime",
-      "scope": ["taskplane/tests/__init__.py", "taskplane/build_c.py", "taskplane/tests/test_em_m1_test_isolation.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_test_isolation.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "testability", "contracts": ["contract:runtime.scoped-dependency-binding", "contract:quality.review-remediation"], "new_modules": [],
-      "design_edges": ["taskplane->contract:runtime.scoped-dependency-binding:provides"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-24", "L-10"],
-      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
-    },
-    {
-      "id": "M1-I", "wave": "M1", "owner": "engineering-foundation-integration",
-      "scope": ["taskplane/tests/test_em_m1_integration.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m1_integration.py::test_ac6_engineering_foundations_close",
-      "req": "R-0002", "deps": ["M1-A", "MX-DOCS-ARCH", "M1-B", "M1-C", "M1-D", "M1-E", "M1-F"], "type": "integration",
-      "contracts": ["contract:quality.review-remediation", "contract:delivery.production-wiring", "contract:ci.reproducible-python-quality", "contract:runtime.scoped-dependency-binding", "contract:docs.generated-truth"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
-      "criteria": ["AC6: Every M1 id M-02 through M-04, M-06, M-07, M-14, M-15, M-17 through M-19, M-24, and M-26 through M-28 passes focused real-boundary evidence; L-06 proves development-only Pillow pinning and reproducible asset regeneration, and L-10 proves nested and parallel runtime dependency bindings restore safely."]
-    },
-    {
-      "id": "M2-A", "wave": "M2", "owner": "dashboard-locale-and-state",
-      "scope": ["taskplane/dashboard.py", "taskplane/text_runtime.py", "taskplane/locales/**", "taskplane/tests/test_em_m2_dashboard.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_dashboard.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "accessibility", "contracts": ["contract:dashboard.accessible-truthful-actions", "contract:i18n.locale-and-grapheme"],
-      "new_modules": ["taskplane/text_runtime.py", "taskplane/locales"], "design_edges": ["taskplane/text_runtime.py->contract:i18n.locale-and-grapheme:provides", "taskplane->taskplane/text_runtime.py:uses"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-01", "M-05", "M-08", "M-09", "L-03"],
-      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
-    },
-    {
-      "id": "M2-B", "wave": "M2", "owner": "privacy-default-and-notice",
-      "scope": ["PRIVACY.md", "taskplane/taskplane_lite.py", "taskplane/tests/test_em_m2_privacy.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_privacy.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "security", "contracts": ["contract:privacy.retention-and-disclosure", "contract:docs.generated-truth"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-10", "M-11", "M-20"],
-      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
-    },
-    {
-      "id": "M2-C", "wave": "M2", "owner": "product-docs-and-help",
-      "scope": ["README.md", ".codex-plugin/plugin.json", "skills/tp-help/SKILL.md", "docs/onboarding.md", "docs/cli-reference.md", "taskplane/tests/test_em_m2_docs.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_docs.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "documentation", "contracts": ["contract:docs.generated-truth", "contract:ci.reproducible-python-quality"], "new_modules": [],
-      "design_edges": ["docs->contract:docs.generated-truth:provides", "skills/tp-help->contract:docs.generated-truth:provides", ".codex-plugin->contract:docs.generated-truth:provides"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-12", "M-13", "M-21", "M-23", "L-05", "L-07", "L-08", "L-09"],
-      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
-    },
-    {
-      "id": "M2-D", "wave": "M2", "owner": "deterministic-concurrency-proof",
-      "scope": ["taskplane/tests/test_review_routing.py", "taskplane/tests/test_em_m2_concurrency.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_concurrency.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "testability", "contracts": ["contract:quality.review-remediation"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-16"],
-      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
-    },
-    {
-      "id": "M2-E", "wave": "M2", "owner": "priced-debt-trace",
-      "scope": ["taskplane/remediation_trace.py", "taskplane/tests/test_em_m2_debt.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_debt.py",
-      "req": "R-0002", "deps": ["HG-EVAL"], "type": "quality", "contracts": ["contract:quality.review-remediation", "resource:review.finding-traceability"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": ["M-25"],
-      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
-    },
-    {
-      "id": "M2-I", "wave": "M2", "owner": "user-truth-integration",
-      "scope": ["taskplane/tests/test_em_m2_integration.py"], "tests": "python3 -m pytest -q taskplane/tests/test_em_m2_integration.py::test_ac7_user_facing_truth_closes",
-      "req": "R-0002", "deps": ["M2-A", "M2-B", "M2-C", "M2-D", "M2-E", "MX-DOCS-ARCH"], "type": "integration",
-      "contracts": ["contract:dashboard.accessible-truthful-actions", "contract:i18n.locale-and-grapheme", "contract:privacy.retention-and-disclosure", "contract:docs.generated-truth", "contract:quality.review-remediation", "resource:review.finding-traceability"], "new_modules": [], "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
-      "criteria": ["AC7: Every M2 id M-01, M-05, M-08 through M-13, M-16, M-20 through M-23, and M-25 passes focused evidence; L-03 proves grapheme-safe visible truncation with full accessible text, L-05 current/version-neutral help, L-07 positional enum choices, L-08 CLI reference navigation, and L-09 a consistent four-document onboarding model."]
-    },
-    {
-      "id": "FINAL-I", "wave": "FINAL", "owner": "remediation-integration",
-      "scope": ["taskplane/remediation_trace.py", "taskplane/tests/test_em_remediation_integration.py", ".em-review/remediation/**", "specs/spec.md"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_em_remediation_integration.py::test_ac1_exact_72_row_design_plan_inventory taskplane/tests/test_em_remediation_integration.py::test_ac8_exact_candidate_final_evidence",
-      "req": "R-0002", "deps": ["M1-I", "M2-I"], "type": "integration",
-      "contracts": ["contract:quality.review-remediation", "contract:release.compatibility-and-authority", "contract:review.high-closure-gate", "resource:review.finding-traceability", "resource:review.exact-candidate-evidence"], "new_modules": [".em-review/remediation"],
-      "design_edges": ["taskplane/remediation_trace.py->resource:review.finding-traceability:consumes", "specs->resource:review.finding-traceability:provides", "resource:review.finding-traceability->resource:review.exact-candidate-evidence:requires"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
-      "criteria": ["AC1: Design and Plan machine-match exactly 72 obligations (34 high, 28 medium, 10 low) to .em-review/findings.json; every H, M, and L id has owner, boundary, dependency classification, task, and evidence, and every low id names its companion wave plus disjointness or shared owner; any mismatch blocks approval.", "AC8: At one clean exact candidate SHA, an independent evaluator proves all 72 trace rows closed, runs all focused and applicable quality checks, then runs python3 -m pytest taskplane/tests -q once with zero new failures, no unresolved finding, no silently deleted row, and no low-only tail."]
-    },
-    {
-      "id": "FINAL-EVAL", "wave": "FINAL", "owner": "independent-final-evaluator",
-      "scope": [".em-review/remediation/final/**"], "tests": "python3 -m pytest taskplane/tests -q",
-      "req": "R-0002", "deps": ["FINAL-I"], "type": "evaluation",
-      "contracts": ["contract:quality.review-remediation", "contract:runtime.durable-state-and-authority", "contract:delivery.production-wiring", "contract:dashboard.accessible-truthful-actions", "contract:privacy.retention-and-disclosure", "contract:release.compatibility-and-authority", "contract:ci.reproducible-python-quality", "contract:review.high-closure-gate", "contract:i18n.locale-and-grapheme", "contract:runtime.scoped-dependency-binding", "contract:docs.generated-truth", "resource:review.finding-traceability", "resource:review.exact-candidate-evidence"], "new_modules": [".em-review/remediation"],
-      "design_edges": ["taskplane/tests->resource:review.exact-candidate-evidence:produces"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}, "findings": [],
-      "evaluates": ["H-01", "H-02", "H-03", "H-04", "H-05", "H-06", "H-07", "H-08", "H-09", "H-10", "H-11", "H-12", "H-13", "H-14", "H-15", "H-16", "H-17", "H-18", "H-19", "H-20", "H-21", "H-22", "H-23", "H-24", "H-25", "H-26", "H-27", "H-28", "H-29", "H-30", "H-31", "H-32", "H-33", "H-34", "M-01", "M-02", "M-03", "M-04", "M-05", "M-06", "M-07", "M-08", "M-09", "M-10", "M-11", "M-12", "M-13", "M-14", "M-15", "M-16", "M-17", "M-18", "M-19", "M-20", "M-21", "M-22", "M-23", "M-24", "M-25", "M-26", "M-27", "M-28", "L-01", "L-02", "L-03", "L-04", "L-05", "L-06", "L-07", "L-08", "L-09", "L-10"],
-      "criteria": ["AC8: At one clean exact candidate SHA, an independent evaluator proves all 72 trace rows closed, runs all focused and applicable quality checks, then runs python3 -m pytest taskplane/tests -q once with zero new failures, no unresolved finding, no silently deleted row, and no low-only tail."]
+      "id": "LR-09", "wave": "conformance", "owner": "focused-routing-integration-proof",
+      "scope": ["taskplane/tests/test_lens_routing_integration.py"],
+      "tests": "python3 -m pytest -q taskplane/tests/test_delivery_policy.py taskplane/tests/test_lens_route_policy.py taskplane/tests/test_lens_route_telemetry.py taskplane/tests/test_expanded_route_authority_provider.py taskplane/tests/test_expanded_lens_route_authority.py taskplane/tests/test_review_routing.py taskplane/tests/test_evaluation_output_contract.py taskplane/tests/test_evidence_bundle.py taskplane/tests/test_runtime_eval_guidance.py taskplane/tests/test_focused_lens_routing.py taskplane/tests/test_loop.py taskplane/tests/test_agents_skills_focused_routing.py taskplane/tests/test_lens_routing_product_truth.py taskplane/tests/test_lens_routing_integration.py", "req": "R-0001", "deps": ["LR-07", "LR-08"], "type": "integration",
+      "contracts": ["contract:lens.focused-stage-routing", "contract:review.catalog-disposition", "contract:delivery.stage-lens-execution", "contract:authority.expanded-lens-route", "resource:authority.expanded-lens-route-custody", "resource:review.route-fingerprint", "resource:telemetry.lens-route"], "new_modules": [], "design_edges": [],
+      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "accepted_drift_dod": ["Final conformance proves Product/Design minimum-sufficient quick, Plan exactly three or four quick with all 26 dispositions and Plan-only expansion, and Build/Fix/Evaluate/EM zero lens starts.", "Every Evaluate lifecycle outcome emits no lens route, no disposition ledger, no slots, no leases, no retry/invalidation, no expanded-authority call, and no lens verdict output.", "Evaluate still fails closed on invalid exact diff, bound tests, acceptance criteria, graph impact, affected requirements/contracts, approved Design conformance, provenance, findings, or overall judgment.", "The exact LR-10 bootstrap commit is present before any zero-lens Evaluate evidence and final EM is required to report accepted_drift D-0014 with accepted_by human:vdemkiv."],
+      "criteria": ["AC-LR1: Product deterministically executes a minimum-sufficient focused route from goal, requirement, AC, domain, constraints, and product-risk evidence, emits all 26 dispositions, and never launches a normal full-catalog run; verify identical-input and product-risk mutation tests.", "AC-LR2: Design deterministically executes a minimum-sufficient focused route from approved requirement and proposed solution evidence, includes solution-design coverage, and emits findings, design changes, and all 26 dispositions; verify independent interface, trust-boundary, and rollback-risk mutations.", "AC-LR3: Every non-trivial Plan executes exactly three or four selected lenses with rationale and task-to-AC coverage; verify passing 3/4 cases and refusal of 2/5.", "AC-LR4: Every non-trivial task or wave Evaluate executes exactly three or four lenses from actual diff, changed files, dependency impact, test evidence, and unresolved findings; verify material evidence changes alter the route.", "AC-LR5: Plan/Evaluate with more than four independent mandatory risks splits scope or refuses pending authenticated expanded-route approval listing extra lenses and cost; verify no silent drop and reject tampered approval.", "AC-LR6: Product, Design, Plan, and Evaluate each emit exactly one internally consistent evidenced disposition for every catalog lens, and only execute_deep/execute_light launch workers; verify missing, duplicate, unsupported, and unevidenced rows fail closed.", "AC-LR7: A material Fix invalidates and reruns only lens evidence whose canonical fingerprint inputs changed while unchanged evidence is reused without launching a worker; verify single-input, multi-input, and unchanged cases.", "AC-LR8: Equal canonical inputs and policy version produce the same ordered route, dispositions, and fingerprint for all routed stages; verify repeats, key-order variance, relevant-input change, and policy-version change.", "AC-LR9: Each route records stage, selected count, reasons, estimated/actual tokens, runtime, cache reuse, and invalidation cause with bounded redaction; verify schema completeness and privacy behavior.", "AC-LR10: Successful, failed, cancelled, interrupted, and handed-off Build/Fix attempts launch zero lens workers, with lens execution confined to Product, Design, Plan, and Evaluate; verify native-dispatch traces."]
     }
   ]
 }

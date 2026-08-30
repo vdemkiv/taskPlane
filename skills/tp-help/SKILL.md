@@ -167,8 +167,9 @@ Human gates always stay conversation-level.
 `task_name`, the taskplane role, optional model, and tier-derived reasoning
 effort. Independent briefs run concurrently; Codex waits for every requested
 result before synthesis and can interrupt a stalled or mis-scoped agent.
-`SubagentStart`/`SubagentStop` trace lifecycle, while PreToolUse and the evidence
-gates remain the enforcement boundary. For long runs the user may start
+`SubagentStart`/`SubagentStop` bind and terminalize exact child contracts while
+tracing lifecycle; PreToolUse and the evidence gates remain the enforcement
+boundary. For long runs the user may start
 `/goal`; it keeps the work running but grants no extra authority and skips no
 taskplane gate.
 

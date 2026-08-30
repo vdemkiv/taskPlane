@@ -211,7 +211,7 @@ def test_all_stage_workflows_declare_strict_versioned_output_schemas():
         source = _source(name)
         if name == "evaluate-wave.js":
             assert "output_contract.output_schema" in source
-            assert "taskplane.evaluator-output/v1" in source
+            assert "taskplane.evaluator-output/v2" in source
             assert "output_schema.additionalProperties !== false" in source
         else:
             assert "'$schema': 'https://json-schema.org/draft/2020-12/schema'" \

@@ -9,8 +9,9 @@ so it runs anywhere the plugin does.
 ## How the hook works
 
 `hooks/hooks.json` registers `PreToolUse → tp.py screen`. On every
-Write/Edit/MultiEdit/NotebookEdit/Bash the screener loads the workspace's
-active contract (`.taskplane/active_contract.json`) and returns
+Write/Edit/MultiEdit/NotebookEdit/Bash the screener loads the process's active
+contract (legacy `.taskplane/active_contract.json` or the exact child slot in
+`.taskplane/active/`) and returns
 `{"decision":"approve"}`, `{"decision":"block","reason":…}`, or — when no
 contract governs the cwd — **no decision at all** (it abstains).
 
@@ -24,7 +25,11 @@ orphaned contract (dead owner PID, or — if never budget-exhausted — idle pas
 the TTL) auto-releases first, then abstains. A budget-exhausted contract is a
 human gate and is **never** auto-released: the human clears or grants it from
 outside the workspace. That's how a single global hook governs any role
-without interfering with the rest of the orchestrator.
+without interfering with the rest of the orchestrator. Native loop workers
+use child-scoped pending slots: `SubagentStart` binds one exact child and
+`SubagentStop` terminalizes/quarantines it on every terminal outcome. A
+committed gate and SessionStart recovery sweep are fail-safe cleanup paths;
+worker slots never become slot-less orchestrator authority.
 
 ## `tp.py` commands
 

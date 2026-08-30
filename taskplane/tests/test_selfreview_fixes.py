@@ -1,6 +1,7 @@
 """Regression tests for the v0.8.6 self-review fixes — each asserts the
 finding's failure mode is gone. Reproduce-then-pass."""
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import depgraph  # noqa: E402
 import dashboard  # noqa: E402
 import lens  # noqa: E402
 import requirements as reqs  # noqa: E402
+import producer_observation  # noqa: E402
 from taskplane.tests.review_kernel_support import (  # noqa: E402
     complete_evaluate_slots,
 )
@@ -56,24 +58,46 @@ def _pass_eval(ws):
     act_ws = task.get("workspace") if state.get("parallel") else ws
     complete_evaluate_slots(
         act_ws, session_id="selfreview-" + task["id"])
-    routed = [row for row in brief["lenses"] if row.get("mode") != "none"]
     os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w",
               encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v1",
+        json.dump({"schema": "taskplane.evaluator-output/v2",
                    "task": task["id"],
                    "requirement": task.get("req") or
                                   state.get("requirement_id") or "",
                    "verdict": "pass",
+                   "evaluation": {"status": "complete",
+                                  "reason_code": "none", "detail": ""},
                    "criteria": [{"criterion": c, "status": "met",
                                   "evidence": "verified"}
                                 for c in loop._criteria_for(ws, state, task)],
-                   "lenses": [{"lens": row["id"], "verdict": "pass",
-                               "blockers": 0} for row in routed],
                    "graph": {"dispositions": [],
                              "requirements_checked": [],
                              "contracts_checked": []},
                    "failures": []}, f)
+    slot = brief["contract_bootstrap"]["task_slot"]
+    binding = tl.worker_contract_for_stage(
+        act_ws, stage="evaluate", task=str(task["id"]))
+    assert binding is not None
+    assert binding["slot"] == slot
+    assert tl.load_active(act_ws) is None
+    contract = binding["contract"]
+    lifecycle = (contract or {}).get("worker_lifecycle") or {}
+    assert lifecycle.get("stage") == "evaluate"
+    assert str(lifecycle.get("task") or "") == str(task["id"])
+    material = loop.producer_output_identity(
+        act_ws, state, task, "evaluate",
+        active_contract=contract)
+    event = {"hook_event_name": "SubagentStop",
+             "session_id": "selfreview-evaluate-session",
+             "turn_id": "selfreview-evaluate-turn",
+             "agent_id": "selfreview-evaluator",
+             "agent_type": material["producer_dispatch"]["task_name"],
+             "task_name": material["producer_dispatch"]["task_name"]}
+    claim = hashlib.sha256(tl.hook_event_identity(
+        act_ws, "subagent-stop", event).encode("utf-8")).hexdigest()
+    producer_observation.record_codex_subagent_stop(
+        event=event, hook_claim_id=claim, **material)
     with mock.patch("runtime_eval.guide_loop",
                     return_value={"status": "on_path", "recovered": False}):
         loop.submit(ws, "pass")
@@ -123,7 +147,10 @@ class TestEngine(unittest.TestCase):
         loop.init(self.ws, "g", parallel=True)
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
         os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
-        json.dump({"mode": "ab-selection", "tasks": [
+        json.dump({"requirement": "selfreview-ab-fixture",
+                   "delivery_mode": "build", "automatic_lenses": [],
+                   "plan_authority": "human:test-fixture",
+                   "mode": "ab-selection", "tasks": [
             {"id": ids[0], "variant": "A", "scope": ["src/**"],
              "new_modules": ["src"], "tests": "t",
              "criteria": ["variant A is ready for human selection"]},
@@ -140,7 +167,10 @@ class TestEngine(unittest.TestCase):
     def test_nested_ab_after_hybrid_pauses_at_selection(self):
         self._ab_to_selection()
         loop.select(self.ws, "hybrid")
-        json.dump({"mode": "ab-selection", "tasks": [
+        json.dump({"requirement": "selfreview-ab-fixture",
+                   "delivery_mode": "build", "automatic_lenses": [],
+                   "plan_authority": "human:test-fixture",
+                   "mode": "ab-selection", "tasks": [
             {"id": "ga", "variant": "A", "scope": ["src/**"],
              "new_modules": ["src"], "tests": "t",
              "criteria": ["grafted variant A passes review"]},

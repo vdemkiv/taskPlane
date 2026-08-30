@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -13,6 +14,15 @@ import depgraph  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
+R0002_AUTHORITY_REVISION = "fe5df7b"
+
+
+def _accepted_r0002_contract() -> dict:
+    payload = subprocess.run(
+        ["git", "show", f"{R0002_AUTHORITY_REVISION}:design/contract.json"],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+        encoding="utf-8").stdout
+    return json.loads(payload)
 
 
 def _write(root: Path, relative: str, text: str) -> None:
@@ -23,8 +33,7 @@ def _write(root: Path, relative: str, text: str) -> None:
 
 def _architecture_fixture(root: Path, *, terminal_source: str = "x = 1\n") \
         -> None:
-    accepted = json.loads(
-        (ROOT / "design/contract.json").read_text(encoding="utf-8"))
+    accepted = _accepted_r0002_contract()
     contract = {
         "requirement": accepted["requirement"],
         "contracts": accepted["contracts"],
@@ -69,7 +78,9 @@ def _scan(root: Path, graph_path: Path) -> dict:
 
 
 def test_m02_decomposition_is_scanner_input(tmp_path: Path) -> None:
-    graph = _scan(ROOT, tmp_path / "root-graph.json")
+    accepted = tmp_path / "accepted-r0002"
+    _architecture_fixture(accepted)
+    graph = _scan(accepted, tmp_path / "root-graph.json")
     proof = graph["meta"]["architecture_map"]
 
     assert proof["complete"] is True

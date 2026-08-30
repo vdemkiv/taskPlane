@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from taskplane import loop
+from taskplane import loop, taskplane_lite
 
 
 def _workspace(tmp_path):
@@ -245,6 +245,9 @@ def test_pristine_new_run_next_bootstraps_once_before_public_dispatch(
     from taskplane.tests.test_stage_cross_host import (
         _real_pristine_run, _record_bootstrap_requirement)
 
+    worker_clock = iter(range(1_800_000_000, 1_800_001_000))
+    monkeypatch.setattr(
+        taskplane_lite._time, "time", lambda: next(worker_clock))
     observed = []
     real_dispatch = loop._stage_dispatch
 

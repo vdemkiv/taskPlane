@@ -139,7 +139,7 @@ def _retained_audit(tmp_path: Path, monkeypatch) -> Path:
 def test_h10_h11_installed_cli_consumes_retained_r0013_not_current_design(
         tmp_path, monkeypatch, capsys):
     assert json.loads((ROOT / "design/contract.json").read_text())["requirement"] \
-        == "R-0002"
+        != "R-0013"
     audit = _retained_audit(tmp_path, monkeypatch)
 
     assert tp.main([

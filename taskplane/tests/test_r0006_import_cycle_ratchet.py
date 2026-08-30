@@ -377,6 +377,52 @@ def test_checked_in_policy_is_exact_measured_wave4_start_inventory() -> None:
         ROOT, cycles.git_revision(ROOT)))["status"] == "pass"
 
 
+def test_checked_in_history_resolves_exact_feadacd4_physical_loc_growth(
+        ) -> None:
+    revision = "feadacd4ac0e6bf485c7f93f64afb9fc90aa21c7"
+    repaired = "106af4631ab5b5c041055b9b9b918d78a18ae50b"
+    ledger = json.loads((ROOT / cycles.HISTORY_RESOLUTIONS_RELATIVE).read_text(
+        encoding="utf-8"))
+    resolution = next(
+        row for row in ledger["resolutions"]
+        if row["introduced_revision"] == revision)
+
+    policy = json.loads(cycles._show_optional(
+        ROOT, revision, cycles.POLICY_RELATIVE))
+    measured = cycles.build_inventory_at_revision(ROOT, revision)
+    result = cycles.check_inventory(policy, measured)
+    violation = next(
+        row for row in result["violations"]
+        if row["code"] == "physical-loc-growth")
+
+    assert resolution["repaired_revision"] == repaired
+    assert resolution["commit_count"] == 10
+    assert resolution["violation_codes"] == ["physical-loc-growth"]
+    assert violation["measured"]["physical_loc"] == 28195
+    assert violation["bounds"]["physical_loc"] == 28001
+
+    previous_policy = json.loads(cycles._show_optional(
+        ROOT, f"{repaired}^", cycles.POLICY_RELATIVE))
+    repaired_policy = json.loads(cycles._show_optional(
+        ROOT, repaired, cycles.POLICY_RELATIVE))
+    repair_growth = cycles.check_inventory(previous_policy, repaired_policy)
+    assert sorted({row["code"] for row in repair_growth["violations"]}) == \
+        resolution["violation_codes"]
+    assert sorted({module for row in repair_growth["violations"]
+                   for module in row["affected_modules"]}) == \
+        resolution["affected_modules"]
+
+    post_refresh = next(
+        row for row in ledger["resolutions"]
+        if row["introduced_revision"] ==
+        "16aef49311534a820b22c56c4faae8c39428e04e")
+    assert post_refresh["repaired_revision"] == \
+        "375c0e95cff63c38671320817dc3cd8cefd6813f"
+    assert post_refresh["commit_count"] == 8
+    assert post_refresh["violation_codes"] == [
+        "new-cyclic-member", "physical-loc-growth"]
+
+
 def test_target_cut_edge_set_is_exactly_closed() -> None:
     assert cycles.TARGET_CUT_EDGES == (
         ("taskplane.lens", "taskplane.review"),
@@ -392,22 +438,30 @@ def test_trusted_scanner_predecessor_receipts_are_exactly_closed() -> None:
         "c89eddc3d2ed09846b63495a31f927e8678db2052ffe47bca7795636b1d787b0",
         "1728a688ffb8a6e09f7410c9d6ba3da88ec8bfc0590b377cdf5fe7b7d8792752",
         "77a9adf2e9876ba56867bac07676290706df6b59fbc2b56ffb3c5dfd71865d91",
+        "e48c475b598a32b33c489c5087416cf40229d0b5e1c8263db85d04708801cd7b",
+        "f12241619871e1588c88f76a2a756c1fb0e3f9f36aeeb0a225a3f9eb5637ff64",
     })
     assert cycles.TRUSTED_WORKFLOW_PREDECESSOR_SHA256S == frozenset({
         "ad14a00ec79956f401d3c9151fe106c4997959f2a0762061c3a31eb9765b0b45",
         "bacbceab1fcd8fa45803b37824f6b6b901bd6b224f389508fcf42d596dd9282e",
         "85436df4f422037a99cace6634cbef8cee2c36a5c76366dd9815153ea4d17c19",
         "417463d582eabf317cd2cdcbaa1c9f2e67cf397fa0c23e4bc4e59d6ffe41e0e7",
+        "23a7f87fe42cf153318bd703f1f93ddc3f9479e4262177de49568cc69aa50c15",
+        "9f736826cfe9fb44abe64462fe604114fc9055d62baff69994d331e89ed5f5bb",
+        "9f477b02afa5101b7f10de5fc36b39b0ba05fda7f5454b07f94a2f0d2d718c22",
     })
     assert cycles.TRUSTED_POLICY_REBASELINES == ({
         "policy_sha256":
             "55ab2022bdcde4c6a1c363e2b46064ac1e4d583d0c9a900a495c7a83867c5735",
         "introduced_revision": "95901f238ca3e72066fb493d3cb8456a4054ef0e",
         "source_revision": "bdfd522bbcce19ca71d107569c441a183ac74025",
-        "commit_count": 41,
-        "violation_codes": ("new-cyclic-member", "physical-loc-growth"),
+        "commit_count": 50,
+        "repair_commit_offset": 10,
+        "violation_codes": (
+            "new-cyclic-member", "new-scc", "physical-loc-growth"),
         "affected_modules": (
-            "taskplane.audit", "taskplane.collision", "taskplane.dashboard",
+            "taskplane.audit", "taskplane.checkpoint", "taskplane.collision",
+            "taskplane.dashboard",
             "taskplane.defect_claim", "taskplane.depgraph",
             "taskplane.design_contract", "taskplane.evidence",
             "taskplane.governed_commands", "taskplane.lens",
@@ -421,8 +475,46 @@ def test_trusted_scanner_predecessor_receipts_are_exactly_closed() -> None:
             "taskplane.views",
         ),
         "history_sha256":
-            "3ff6ca8ab663d1595513da1c379160790c4abdf416fad37e9461d2e32596f8c0",
-    },)
+            "c2d601bc8a3a80ce871c39d59088016d7c785e55fde0559be289ac4375bfe1ba",
+    }, {
+        "policy_sha256":
+            "8a6261fc8e1918cceaf7ae25d2239f2c0155d38a167f766b71ecf1d7299c0ddd",
+        "introduced_revision": "aa4cf3ddc549fa7afd99ad528fe3c4f6a4498b66",
+        "source_revision": "337dc7de7be978e62695227e37cb19a796d7b3cf",
+        "commit_count": 34,
+        "repair_commit_offset": 1,
+        "violation_codes": ("new-internal-edge", "physical-loc-growth"),
+        "affected_modules": (
+            "taskplane.audit", "taskplane.collision", "taskplane.dashboard",
+            "taskplane.defect_claim", "taskplane.depgraph",
+            "taskplane.design_contract", "taskplane.evidence",
+            "taskplane.lens", "taskplane.lens_signals", "taskplane.loop",
+            "taskplane.loop_status", "taskplane.regression",
+            "taskplane.requirements", "taskplane.retro", "taskplane.review",
+            "taskplane.review_evidence", "taskplane.review_progression",
+            "taskplane.review_repair", "taskplane.review_retry",
+            "taskplane.runtime_eval", "taskplane.stage_entities",
+            "taskplane.stage_handoff", "taskplane.taskplane_lite",
+            "taskplane.views",
+        ),
+        "history_sha256":
+            "d8995bbcadb9ee889a7e76ae67dcda4b58e4adba0da8cbf9319dc7f2f57af878",
+    }, {
+        "policy_sha256":
+            "d58cfb97af469ec73334bc25230c83820e43e862fae80ed6d4e1d091dc66408d",
+        "introduced_revision": "4f4c951acbc991a96f229f1be07483588b449aa9",
+        "source_revision": "717e3209a1c5556bf71e3af40d5cec75572821fe",
+        "commit_count": 3,
+        "repair_commit_offset": 1,
+        "violation_codes": ("physical-loc-growth",),
+        "affected_modules": (
+            "taskplane.collision", "taskplane.depgraph", "taskplane.regression",
+            "taskplane.review_evidence", "taskplane.stage_entities",
+            "taskplane.stage_handoff", "taskplane.taskplane_lite",
+        ),
+        "history_sha256":
+            "10c645f1fbf1fbfeecbbbd5ea387859e44292743cee37e90d75c139e4d03dfe3",
+    })
 
 
 def test_history_proof_finds_activation_before_all_five_cuts(
@@ -521,6 +613,12 @@ def test_history_proof_allows_only_the_exact_versioned_workflow_transitions(
          "85436df4f422037a99cace6634cbef8cee2c36a5c76366dd9815153ea4d17c19"),
         ("d02fa847731cbfb37caf5143924f862786d30c24",
          "417463d582eabf317cd2cdcbaa1c9f2e67cf397fa0c23e4bc4e59d6ffe41e0e7"),
+        ("8908c503d26b274a5f8997bfb1321c513025f2af",
+         "23a7f87fe42cf153318bd703f1f93ddc3f9479e4262177de49568cc69aa50c15"),
+        ("960a5b7488c63745e9d22360a867ebef0ccfeb4a",
+         "9f736826cfe9fb44abe64462fe604114fc9055d62baff69994d331e89ed5f5bb"),
+        ("f69f8c0b5e77f139700a66fbb271c6b372bcaffb",
+         "9f477b02afa5101b7f10de5fc36b39b0ba05fda7f5454b07f94a2f0d2d718c22"),
     )
     workflows = []
     for revision, expected_digest in versioned_history:

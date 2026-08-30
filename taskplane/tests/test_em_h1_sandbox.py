@@ -13,6 +13,51 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 import review  # noqa: E402
 
 
+class _OsProxy:
+    """Test-local platform seam that never mutates process-wide ``os.name``."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def __getattr__(self, attribute):
+        return getattr(os, attribute)
+
+
+class _SubprocessProxy:
+    """Module-local process seam that leaves shared ``subprocess`` intact."""
+
+    def __init__(self, popen):
+        self.Popen = popen
+
+    def __getattr__(self, attribute):
+        return getattr(subprocess, attribute)
+
+
+def _set_review_platform(monkeypatch, name):
+    proxy = _OsProxy(name)
+    monkeypatch.setattr(review, "os", proxy)
+    return proxy
+
+
+def _posix_signal_fixture(monkeypatch):
+    """Provide POSIX-only signal identities on non-POSIX test hosts."""
+    terminate = int(signal.SIGTERM)
+    hard_kill = int(getattr(signal, "SIGKILL", 9))
+    monkeypatch.setattr(
+        review.signal, "SIGKILL", hard_kill, raising=False)
+    return {terminate: "SIGTERM", hard_kill: "SIGKILL"}, hard_kill
+
+
+def _bind_short_validation_kernel(tmp_path, monkeypatch):
+    """Keep Windows Git clone fixtures below the legacy path-length bound."""
+    base = tmp_path
+    if os.name == "nt":
+        base = tmp_path.parent / f"k-{tmp_path.name[-8:]}"
+    kernel = base / "k"
+    monkeypatch.setattr(review, "_kernel_root", lambda _ws: str(kernel))
+    return kernel
+
+
 class _StuckProcess:
     pid = 4312
     returncode = None
@@ -46,6 +91,7 @@ def test_h34_git_process_uses_process_and_total_deadlines(
         review, "_terminate_validation_sandbox_process_tree",
         lambda selected, **_deadlines: terminated.append(selected))
     monkeypatch.setattr(review.time, "monotonic", lambda: 100.0)
+    _set_review_platform(monkeypatch, "posix")
 
     with pytest.raises(review._ValidationSandboxTimeout) as raised:
         review._run_validation_sandbox_git(
@@ -73,6 +119,7 @@ def test_h34_cancellation_terminates_the_complete_process_tree(monkeypatch):
         review, "_terminate_validation_sandbox_process_tree",
         lambda selected, **_deadlines: terminated.append(selected))
     monkeypatch.setattr(review.time, "monotonic", lambda: 20.0)
+    _set_review_platform(monkeypatch, "posix")
 
     with pytest.raises(KeyboardInterrupt):
         review._run_validation_sandbox_git(
@@ -136,16 +183,18 @@ def test_h34_cleanup_shares_the_aggregate_deadline_and_fails_closed(
         def close(self):
             process.actions.append("job-close")
 
-    monkeypatch.setattr(review.os, "name", platform_name)
+    _set_review_platform(monkeypatch, platform_name)
     monkeypatch.setattr(
         review.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(
         review, "_VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS",
         operation_budget)
     if platform_name == "posix":
+        signal_names, _hard_kill = _posix_signal_fixture(monkeypatch)
         monkeypatch.setattr(
             review.os, "killpg",
-            lambda _pid, sig: process.actions.append(signal.Signals(sig).name))
+            lambda _pid, sig: process.actions.append(signal_names[int(sig)]),
+            raising=False)
     else:
         def create_job(selected):
             assert selected is process
@@ -200,7 +249,7 @@ def test_h34_windows_launch_owns_and_closes_a_kill_on_close_job(monkeypatch):
         def close(self):
             actions.append("close")
 
-    monkeypatch.setattr(review.os, "name", "nt")
+    _set_review_platform(monkeypatch, "nt")
     monkeypatch.setattr(
         review.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200,
         raising=False)
@@ -249,7 +298,7 @@ def test_h34_windows_job_assignment_failure_aborts_suspended_child(
     process = Process()
     launched = []
     resumed = []
-    monkeypatch.setattr(review.os, "name", "nt")
+    _set_review_platform(monkeypatch, "nt")
     monkeypatch.setattr(
         review.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200,
         raising=False)
@@ -301,12 +350,14 @@ def test_h34_cleanup_without_reap_time_fails_closed_without_overrun(
             raise AssertionError("cleanup waited after its deadline")
 
     process = ExhaustedProcess()
-    monkeypatch.setattr(review.os, "name", "posix")
+    signal_names, _hard_kill = _posix_signal_fixture(monkeypatch)
+    _set_review_platform(monkeypatch, "posix")
     monkeypatch.setattr(
         review.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(
         review.os, "killpg",
-        lambda _pid, sig: process.actions.append(signal.Signals(sig).name))
+        lambda _pid, sig: process.actions.append(signal_names[int(sig)]),
+        raising=False)
     monkeypatch.setattr(review.time, "monotonic", clock)
 
     with pytest.raises(review._ValidationSandboxTimeout) as raised:
@@ -322,6 +373,8 @@ def test_h34_cleanup_without_reap_time_fails_closed_without_overrun(
 
 
 def test_h34_process_tree_termination_escalates_to_group_kill(monkeypatch):
+    _signal_names, hard_kill = _posix_signal_fixture(monkeypatch)
+
     class Process:
         pid = 991
         returncode = None
@@ -334,16 +387,19 @@ def test_h34_process_tree_termination_escalates_to_group_kill(monkeypatch):
             self.wait_calls += 1
             if self.wait_calls == 1:
                 raise subprocess.TimeoutExpired(["git"], timeout)
-            self.returncode = -signal.SIGKILL
+            self.returncode = -hard_kill
 
     sent = []
-    monkeypatch.setattr(review.os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+    _set_review_platform(monkeypatch, "posix")
+    monkeypatch.setattr(
+        review.os, "killpg", lambda pid, sig: sent.append((pid, sig)),
+        raising=False)
 
     deadline = review.time.monotonic() + 10.0
     review._terminate_validation_sandbox_process_tree(
         Process(), shared_deadline=deadline, operation_deadline=deadline)
 
-    assert sent == [(991, signal.SIGTERM), (991, signal.SIGKILL)]
+    assert sent == [(991, signal.SIGTERM), (991, hard_kill)]
 
 
 def _git_review_state(ws: Path) -> tuple[dict, str]:
@@ -412,6 +468,7 @@ def test_h34_prepare_timeout_is_cleaned_persisted_and_retryable(
 
 def test_h34_blocked_untracked_copy_is_killed_cleaned_and_persisted(
         tmp_path, monkeypatch):
+    _bind_short_validation_kernel(tmp_path, monkeypatch)
     ws = tmp_path / "repo"
     ws.mkdir()
     state, _head = _git_review_state(ws)
@@ -430,24 +487,47 @@ def test_h34_blocked_untracked_copy_is_killed_cleaned_and_persisted(
             raise subprocess.TimeoutExpired([sys.executable, "-c"], timeout)
 
     process = BlockedCopyProcess()
-    original_popen = review.subprocess.Popen
+    original_runner = review._run_validation_sandbox_git
     launched = []
     sent = []
+    copy_attempts = []
 
     def popen(argv, *args, **kwargs):
-        if argv and argv[0] == sys.executable and not launched:
-            launched.append((argv, kwargs))
-            Path(argv[-1]).write_bytes(b"partial")
-            return process
-        return original_popen(argv, *args, **kwargs)
+        assert argv and argv[0] == sys.executable and not launched
+        launched.append((argv, kwargs))
+        Path(argv[-1]).write_bytes(b"partial")
+        return process
 
-    monkeypatch.setattr(review.subprocess, "Popen", popen)
+    def run_prepare(argv, *, cwd, deadline, phase, input=None, text=False):
+        del cwd, deadline, input
+        if phase == "resolve-head":
+            return subprocess.CompletedProcess(argv, 0, _head + "\n", "")
+        if phase == "clone":
+            Path(argv[-1]).mkdir(parents=True)
+        if phase == "list-untracked":
+            return subprocess.CompletedProcess(
+                argv, 0, b"untracked.bin\0", b"")
+        if phase == "copy-untracked":
+            copy_attempts.append(tuple(argv))
+            if len(copy_attempts) == 1:
+                return original_runner(
+                    argv, cwd=None, deadline=1000.0 + 600.0,
+                    phase=phase)
+            Path(argv[-1]).write_bytes(Path(argv[-2]).read_bytes())
+        empty = "" if text else b""
+        return subprocess.CompletedProcess(argv, 0, empty, empty)
+
+    monkeypatch.setattr(review, "subprocess", _SubprocessProxy(popen))
+    monkeypatch.setattr(review, "_run_validation_sandbox_git", run_prepare)
+    monkeypatch.setattr(review.time, "monotonic", lambda: 1000.0)
+    _set_review_platform(monkeypatch, "posix")
     monkeypatch.setattr(
         review.shutil, "copy2",
         lambda *_args, **_kwargs: pytest.fail(
             "untracked copy ran synchronously in the preparation process"))
     monkeypatch.setattr(
-        review.os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+        review.os, "killpg", lambda pid, sig: sent.append((pid, sig)),
+        raising=False)
 
     with pytest.raises(review.ReviewKernelError, match="timed out.*copy-untracked"):
         review.prepare_review_validation_sandbox(
@@ -472,6 +552,7 @@ def test_h34_blocked_untracked_copy_is_killed_cleaned_and_persisted(
 
 def test_h34_sandbox_prepare_has_process_and_total_deadlines(
         tmp_path, monkeypatch):
+    _bind_short_validation_kernel(tmp_path, monkeypatch)
     ws = tmp_path / "repo"
     ws.mkdir()
     state, _head = _git_review_state(ws)

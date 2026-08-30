@@ -17,9 +17,10 @@ agent-generated changes. Requirements, dependencies, contracts, implementation,
 and review stay connected from Definition of Ready through Definition of Done.
 A complete 26-lens disposition makes architecture, solution design, security,
 data, operability, UX, and other technical consequences explicit for engineers,
-EMs, PMs, and nontechnical decision-makers. Evidence-selected deep reviewers
-and at most one light sweep execute; every remaining lens is disclosed with its
-recorded light or n/a rationale rather than silently omitted.
+EMs, PMs, and nontechnical decision-makers. Only evidence-selected
+`execute_deep` and `execute_light` rows dispatch; every remaining lens is
+disclosed as evidenced `covered_by` or `not_applicable` rather than silently
+omitted. Normal delivery is quick-only.
 
 **Simple for the user; strict for the agents.** State the goal, review the
 evidence, and make only the decisions that require human judgment. taskplane
@@ -83,19 +84,21 @@ explicit.
   budget, denied commands, read-only for reviewers — screened by the PreToolUse
   hook before each tool call. Literal scope overrides carry provenance: only the
   human-approved plan's `plan_minted` mark authorizes them, never a CLI flag. [docs/state-spec.md](docs/state-spec.md).
-- **26 lenses with intelligent routing v2.** The lens catalog (generated:
-  [docs/lens-catalog.md](docs/lens-catalog.md)) is routed per stage profile (design
-  8 · build 5 · review 26) by a signal engine that scores each lens against the
-  actual diff and returns `deep` / `light` / `n/a` — every `n/a` carries
-  machine-checkable negative evidence, the cap-8 budget demotes (never drops),
-  security floors hold on enforcement diffs, and engine failure fails open to the
-  full catalog. [docs/routing-and-flows.md](docs/routing-and-flows.md).
+- **26 lenses with focused stage routing.** Product and Design execute the
+  minimum-sufficient focused quick route; every non-trivial Plan executes
+  exactly 3–4 quick lenses. Each routed Product, Design, and Plan stage records
+  one evidenced disposition for all 26 lenses. Build, Fix, Evaluate, and final
+  engineering review launch zero lens workers. Evaluate is only a direct
+  evidence collector and judge: it creates no lens route, slots, workers,
+  disposition ledger, lens verdict, retry/invalidation state, or expanded-route
+  authority. This successor contract is D-0014, accepted by `human:vdemkiv`.
+  [docs/routing-and-flows.md](docs/routing-and-flows.md).
 - **Graph decomposition.** `tp graph scan --decompose` derives a component layer
   inside the dependency graph (directory convention + import cohesion + AST
   clustering; floors overridable via `components.yaml`) with fingerprint-cached
-  per-component lens maps. Reviews route the capped union of touched components'
-  maps, `component_attribution` names which component proposed each routed lens, and
-  the fail-open ladder only ever widens (component → module → full catalog). Same doc.
+  per-component lens maps. Reviews re-evidence the union of touched components'
+  proposals, `component_attribution` names which component proposed each routed
+  lens, and incomplete routing evidence stops with zero dispatch. Same doc.
 - **Governed flows.** The review wave and the execute/evaluate/fix waves each
   dispatch as one journaled, resumable Dynamic Workflow on Claude; the Task-dispatch
   path stays mandatory and byte-identical everywhere — it is the only Codex path —
@@ -123,8 +126,8 @@ explicit.
 
 The moving parts: an enforcement kernel (contracts + lifecycle hook +
 orchestrator-only gates + audit trace), the loop engine, the Design Contract phase,
-a 26-lens catalog with exactly 4–5 relevant light-sweep agents selected for automatic review, the requirements/decisions/debt
-knowledge base, a deterministic dependency graph with a zero-token blast-radius map,
+a 26-lens catalog with complete dispositions and focused quick execution, the
+requirements/decisions/debt knowledge base, a deterministic dependency graph with a zero-token blast-radius map,
 and portable `cheap`/`standard`/`deep` model tiers routed per step, task, and lens —
 mapped to models by env config, verifiable with `tp loop verify-dispatch`.
 
@@ -135,19 +138,19 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
-> v2.17.22, v2.17.23, v2.17.24, v2.17.25, and v2.17.26 candidates are superseded; the public-metadata
-> regression correction moves forward as v2.18.0, which is not released. Historical
+> v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
+> the fully verified forward release candidate moves as v2.18.1, which is not released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.0 to `main` is not a tag, upload,
+> Preparing, validating, or pushing v2.18.1 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.18.0** | **Public metadata is product-only again, with a merge-regression guard — not released.** Removes external orchestration-product comparisons from every public skill and agent discovery description plus public security guidance, while preserving exact external namespaces only in internal collision enforcement and tests. Restores the deleted repository-wide branding regression test so a future merge cannot silently reintroduce the copy. This row claims no tag, upload, installation, Marketplace publication, or release. |
+| **v2.18.1** | **Complete local and exact-PR-head-SHA release proof — not released.** Adds the standard-library closed-inventory local CI runner, deterministic exact-once receipts, isolated parallel shards, deadline-safe cleanup, mutation detection, and a blocking PR-head proof that synthetic merge validation cannot substitute. This row claims no main merge, tag, upload, installation, Marketplace publication, or release. |
+| **v2.18.0** | **Superseded public-metadata correction candidate — not released; compatibility N-1 for v2.18.1.** Removes external orchestration-product comparisons from every public skill and agent discovery description plus public security guidance, while preserving exact external namespaces only in internal collision enforcement and tests. Restores the deleted repository-wide branding regression test so a future merge cannot silently reintroduce the copy. It was never promoted into released truth. |
 | **v2.17.26** | **Superseded R-0002 whole-codebase EM remediation candidate — not released; compatibility N-1 for v2.18.0.** Integrated the completed high-, medium-, and low-priority remediation waves, focused final defect fixes, exact-SHA verification evidence, and final Engineering Manager disposition. It was never promoted into released truth. |
-| **v2.17.25** | **Superseded R-0013 main-integration candidate — not released; compatibility N-1 for v2.17.26.** Completed Codex-native delivery authority, concurrent Design-only sweep validation, zero-lens Build/Fix/Evaluate/EM execution, sealed native dispatch and budget evidence, bounded acceptance waves, real-checkout wiring closure, and atomic eight-surface exact-SHA terminal truth. It was never promoted into released truth. |
 ## Install
 
 How you install taskplane depends on your **account type**, and the paths are
@@ -376,8 +379,8 @@ taskplane/
   Slack channels via Claude Tag (beta), with the `tp-tag` skill.
 - [docs/routing-and-flows.md](docs/routing-and-flows.md) — routing v2, component
   decomposition, the review and stage waves with their mandatory byte-identical
-  Task fallback, the audit cadence, and evaluate's build-stage routing — each
-  with a dogfood example from this repository.
+  Task fallback, the audit cadence, and Evaluate's direct-evidence judgment —
+  each with a dogfood example from this repository.
 - [docs/configuration.md](docs/configuration.md) — every environment variable.
 - [docs/loop-design.md](docs/loop-design.md) · [docs/authority-matrix.md](docs/authority-matrix.md) ·
   [docs/state-spec.md](docs/state-spec.md) — engine design, who may do what at

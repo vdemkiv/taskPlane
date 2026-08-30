@@ -234,7 +234,7 @@ class TestSchemaPins:
     def test_evaluate_consumes_the_canonical_evaluator_contract(self):
         src = _js("evaluate-wave")
         for token in ("output_contract.output_schema", "resume_identity",
-                      "max_attempts", "taskplane.evaluator-output/v1"):
+                      "max_attempts", "taskplane.evaluator-output/v2"):
             assert token in src
         assert "typeof output_schema !== 'object'" in src
 
@@ -1051,17 +1051,16 @@ def _walk_pass_eval(ws):
     contracts = [c.get("id") if isinstance(c, dict) else c
                  for c in (task.get("contracts") or [])]
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v1",
+        json.dump({"schema": "taskplane.evaluator-output/v2",
                    "task": task["id"],
                    "requirement": task.get("req") or
                                   state.get("requirement_id") or "",
                    "verdict": "pass",
+                   "evaluation": {"status": "complete",
+                                  "reason_code": "none", "detail": ""},
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}
                                 for c in criteria],
-                   "lenses": [{"lens": lens_id, "verdict": "pass",
-                               "blockers": 0}
-                              for lens_id in routed_lenses],
                    "graph": {"dispositions": [
                        {"node": n, "status": "tested",
                         "evidence": "covered by declared task tests"}
@@ -1084,9 +1083,12 @@ def _walk_collect_observed_evaluate(ws, act_ws, state, task, *,
         consume_matching_observation,
         record_codex_subagent_stop,
     )
+    worker = tp_lite.worker_contract_for_stage(
+        act_ws, stage=step, task=str(task["id"]))
+    active_contract = worker.get("contract") if worker else None
     material = loop.producer_output_identity(
         act_ws, state, task, step,
-        active_contract=tp_lite.load_active(act_ws) or {})
+        active_contract=active_contract or {})
     if step == "em":
         return consume_matching_observation(**material)
     import evaluation_output
@@ -1159,9 +1161,13 @@ def _walk_pass_em(ws, state):
     with open(findings_path, "w", encoding="utf-8") as f:
         json.dump({"meta": meta, "findings": findings["findings"]}, f)
     from producer_observation import record_codex_subagent_stop
+    current = loop.load(ws)
+    task = loop._current_task(current)
+    worker = tp_lite.worker_contract_for_stage(
+        ws, stage="em", task=str(task["id"]))
     material = loop.producer_output_identity(
-        ws, loop.load(ws), loop._current_task(loop.load(ws)), "em",
-        active_contract=tp_lite.load_active(ws) or {})
+        ws, current, task, "em",
+        active_contract=(worker or {}).get("contract") or {})
     event = {"hook_event_name": "SubagentStop",
              "session_id": "stage-wave-compat-session",
              "turn_id": "em-turn", "agent_id": "em-agent",

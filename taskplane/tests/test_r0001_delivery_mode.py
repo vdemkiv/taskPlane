@@ -48,12 +48,13 @@ def _build_receipt(**plan_overrides):
 
 def _evaluator_result(**overrides):
     result = {
-        "schema": "taskplane.evaluator-output/v1",
+        "schema": "taskplane.evaluator-output/v2",
         "task": "task-a",
         "requirement": "R-0001",
         "verdict": "pass",
+        "evaluation": {"status": "complete", "reason_code": "none",
+                       "detail": ""},
         "criteria": [],
-        "lenses": [],
         "graph": {
             "dispositions": [],
             "requirements_checked": ["R-0001"],
@@ -316,14 +317,8 @@ def test_empty_expected_lenses_emits_successful_collection_receipt(tmp_path):
     assert opened["slot_conservation"]["status"] == "empty"
     assert started["expected_lenses"] == []
     assert started["slots"] == []
-    assert all(
-        row["mode"] == "none" and row["tier"] == "n/a"
-        and row["negative_evidence"]
-        for row in started["routing"]["lenses"]
-    )
-    assert len(started["routing"]["lenses"]) == len(
-        lens.load_catalog()["lenses"]
-    )
+    assert "routing" not in started
+    assert started["zero_lens_evaluation"] is True
     assert collected["status"] == "complete"
     assert completed["empty_lens_collection"] == receipt
     assert receipt["schema"] == "taskplane.empty-lens-collection/v1"
@@ -366,7 +361,7 @@ def test_public_loop_submit_refuses_recorded_producer_double(tmp_path):
             {"step": "evaluate", "task": "task-a"},
             recorded,
             output_bytes=b"{}\n",
-            output_schema_id="taskplane.evaluator-output/v1",
+            output_schema_id="taskplane.evaluator-output/v2",
             output_contract_fingerprint="d" * 64,
         )
 

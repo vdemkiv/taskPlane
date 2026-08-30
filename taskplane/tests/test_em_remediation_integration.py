@@ -32,29 +32,41 @@ EXCEPTION_IDS = {
 }
 
 
-def _head() -> str:
+def _head(workspace: Path) -> str:
     return subprocess.run(
-        ["/usr/bin/git", "rev-parse", "HEAD"], cwd=ROOT,
+        ["/usr/bin/git", "rev-parse", "HEAD"], cwd=workspace,
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         check=True,
     ).stdout.strip()
 
 
-def _status() -> str:
+def _status(workspace: Path) -> str:
     return subprocess.run(
         ["/usr/bin/git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        cwd=workspace, capture_output=True, text=True, encoding="utf-8",
         errors="replace", check=True,
     ).stdout.strip()
 
 
-def test_ac1_exact_72_row_design_plan_inventory() -> None:
-    candidate = _head()
-    assert _status() == ""
+@pytest.fixture
+def retained_r0002_workspace(tmp_path: Path) -> Path:
+    workspace = tmp_path / "retained-r0002"
+    subprocess.run(["git", "clone", "--quiet", "--no-hardlinks",
+                    str(ROOT), str(workspace)], check=True)
+    subprocess.run(["git", "checkout", "-q", "86c7f74"], cwd=workspace,
+                   check=True)
+    return workspace
+
+
+def test_ac1_exact_72_row_design_plan_inventory(
+        retained_r0002_workspace: Path) -> None:
+    workspace = retained_r0002_workspace
+    candidate = _head(workspace)
+    assert _status(workspace) == ""
 
     inventory = remediation_trace.build_final_inventory(
-        str(ROOT), candidate_sha=candidate)
-    assert remediation_trace.verify_final_inventory(str(ROOT), inventory) == \
+        str(workspace), candidate_sha=candidate)
+    assert remediation_trace.verify_final_inventory(str(workspace), inventory) == \
         inventory
     assert inventory["candidate_sha"] == candidate
     assert inventory["counts"] == {
@@ -94,22 +106,24 @@ def test_ac1_exact_72_row_design_plan_inventory() -> None:
         forged = copy.deepcopy(inventory)
         mutation(forged)
         with pytest.raises(remediation_trace.RemediationTraceError):
-            remediation_trace.verify_final_inventory(str(ROOT), forged)
-    assert _head() == candidate
-    assert _status() == ""
+            remediation_trace.verify_final_inventory(str(workspace), forged)
+    assert _head(workspace) == candidate
+    assert _status(workspace) == ""
 
 
-def test_ac8_exact_candidate_final_evidence() -> None:
-    candidate = _head()
-    assert _status() == ""
+def test_ac8_exact_candidate_final_evidence(
+        retained_r0002_workspace: Path) -> None:
+    workspace = retained_r0002_workspace
+    candidate = _head(workspace)
+    assert _status(workspace) == ""
 
     evidence = remediation_trace.build_final_integration_evidence(
-        str(ROOT), candidate_sha=candidate)
+        str(workspace), candidate_sha=candidate)
     assert remediation_trace.verify_final_integration_evidence(
-        str(ROOT), evidence) == evidence
+        str(workspace), evidence) == evidence
     assert evidence["candidate_sha"] == candidate
     assert evidence["candidate_tree"] == subprocess.run(
-        ["/usr/bin/git", "rev-parse", "HEAD^{tree}"], cwd=ROOT,
+        ["/usr/bin/git", "rev-parse", "HEAD^{tree}"], cwd=workspace,
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         check=True,
     ).stdout.strip()
@@ -171,6 +185,6 @@ def test_ac8_exact_candidate_final_evidence() -> None:
         mutation(forged)
         with pytest.raises(remediation_trace.RemediationTraceError):
             remediation_trace.verify_final_integration_evidence(
-                str(ROOT), forged)
-    assert _head() == candidate
-    assert _status() == ""
+                str(workspace), forged)
+    assert _head(workspace) == candidate
+    assert _status(workspace) == ""

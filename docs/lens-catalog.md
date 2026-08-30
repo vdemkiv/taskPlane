@@ -11,16 +11,16 @@
 | **Product & delivery** | product | user value, requirement quality and satisfaction, scope fidelity, journey completeness |
 |  | project-management | scope, sequencing, dependencies, risk, rollout readiness — as properties of the PLAN |
 |  | time-to-market | delivery speed as a first-class criterion: the fastest credible path, deferrals that are recorded AND priced, and reversible-now over perfect-later — so the cost of being wrong stays low |
-| **Engineering craft** | code-quality | cross-cutting craft: clarity, correctness, maintainability *(baseline on any code)* |
+| **Engineering craft** | code-quality | cross-cutting craft: clarity, correctness, maintainability *(signal baseline; not automatic dispatch)* |
 |  | frontend | FE implementation: components, state, async correctness, render/load path (Core Web Vitals), bundle, compat |
 |  | backend | service logic, data access, boundaries, transactions |
 |  | mobile | native/mobile: platform contract, offline, lifecycle, store shippability |
 | **Architecture & systems** | tradeoffs | every significant design choice names >=2 real alternatives with an explicit trade-off table: gained / given up / revisit-when; the chosen option is recorded as a proposed decision (D-record) in the registry |
 |  | solution-design | soundness, proportionality and implementability of a PROPOSED design before any code exists — requirement/constraint → decision → modules/contracts → validation → failure/rollout traceability |
 |  | services-selection | whether a chosen dependency, library, service or vendor earns its place at all — incumbent capability vs new dependency, build vs buy, managed vs self-hosted, maturity, licence, operational load, lock-in and exit cost |
-|  | architecture | component boundaries, data flow, contracts, scaling & failure modes *(always-on — light pass on any change, full pass when structural)* |
-| **Quality & verification** | security | confidentiality, integrity, authz, safe inputs, supply chain & build integrity *(baseline on any code)* |
-|  | testability | CAN the production code be tested — seams, determinism, isolation, hermeticity *(baseline on any code)* |
+|  | architecture | component boundaries, data flow, contracts, scaling & failure modes *(mandatory evidenced floor; not automatic dispatch)* |
+| **Quality & verification** | security | confidentiality, integrity, authz, safe inputs, supply chain & build integrity *(signal baseline; not automatic dispatch)* |
+|  | testability | CAN the production code be tested — seams, determinism, isolation, hermeticity *(signal baseline; not automatic dispatch)* |
 |  | qa | IS the change tested well and safe to ship |
 | **Data** | data-safety | changing stored data without corrupting it, and shipping that change without an outage |
 |  | dba | schema design, indexing, query efficiency, data modeling |
@@ -37,15 +37,15 @@
 
 *opt* = suggested/optional (off unless its files appear).
 
-## Always-on floor: architecture & system design
+## Mandatory floors remain evidence-based
 
-**Architecture is routed on every code change** — a light pass on any diff, a full pass when the change is structurally significant. That floor is enforced by the engine (`tp lens route --all`), not by memory: component boundaries, data flow, contracts, and failure modes get a look even when no architecture files changed.
+Architecture and security cannot be silently omitted when canonical evidence shows their owned boundary. The focused policy applies each floor before it groups overlapping risks and caps normal Plan execution at 3–4 quick lenses. A floor guarantees an evidenced disposition; it does not authorize a Build/Fix/Evaluate/final-EM worker or an automatic full-catalog run.
 
 ## Routing notes
 
-- **Baselines are intentionally only four** — `code-quality`, `security`, `testability`, and always-on `architecture` — so a typical change fires ~4–7 lenses, not all 26. Role lenses fire by context (files/task type).
-- **Mode** (`inline` vs governed `subagent`) is per-lens, set by `deep_globs` or change size; a wide review fans them out as parallel `tp-lens` agents (`tp lens dispatch`).
-- **`tp lens route`** shows exactly which fired and why; `--only`/`--skip` override; `--all` returns the full catalog (deep + sweep).
+- Every routed Product, Design, and Plan stage emits one evidenced `execute_deep`, `execute_light`, `covered_by`, or `not_applicable` row for all 26 lenses.
+- Only the two `execute_*` rows dispatch. Normal delivery uses focused quick routes. Build, Fix, Evaluate, and final engineering review launch zero lens workers; Evaluate is a direct evidence collector and judge and creates no lens artifacts.
+- More than four independent mandatory Plan risks split scope or require protected exact-target expanded-route authority. That authority is Plan-only.
 
 ## Adding a lens
 

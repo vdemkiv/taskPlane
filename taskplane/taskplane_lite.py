@@ -124,6 +124,35 @@ def atomic_write_json(path: str, data, *, indent: int = 1,
             pass
 
 
+def atomic_write_bytes(path: str, data: bytes) -> None:
+    """Durably replace one file with exact caller-owned bytes.
+
+    This is the byte-preserving counterpart of :func:`atomic_write_json` for
+    recovery paths that must restore the exact prior artifact representation,
+    rather than merely an equivalent decoded JSON value.
+    """
+    if not isinstance(data, bytes):
+        raise TypeError("atomic_write_bytes requires bytes")
+    directory = os.path.dirname(path) or "."
+    _durable_makedirs(directory)
+    temporary = os.path.join(
+        directory, f".{os.path.basename(path)}.tmp.{os.getpid()}."
+        f"{secrets.token_hex(8)}")
+    try:
+        with open(temporary, "xb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(directory)
+    finally:
+        try:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        except OSError:
+            pass
+
+
 def _durable_makedirs(path: str) -> None:
     """Create a directory chain without acknowledging volatile ancestors.
 
@@ -177,6 +206,35 @@ def _durable_directory_identity(path: str) -> tuple[int, int]:
     return int(value.st_dev), int(value.st_ino)
 
 
+def _flush_windows_directory(path: str) -> None:
+    """Flush one directory through the native backup-semantics handle."""
+    import ctypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.restype = ctypes.c_void_p
+    kernel.CreateFileW.argtypes = (
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
+    kernel.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
+    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handle = kernel.CreateFileW(
+        str(path), 0x80000000, 0x00000007, None, 3, 0x02000000, None)
+    invalid = ctypes.c_void_p(-1).value
+    if handle == invalid:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not kernel.FlushFileBuffers(handle):
+            error = ctypes.get_last_error()
+            if error != 5:  # ERROR_ACCESS_DENIED
+                raise ctypes.WinError(error)
+            # Windows accepts a backup-semantics directory handle but does
+            # not support FlushFileBuffers for directories. The preceding
+            # file fsync and atomic replace remain authoritative; only this
+            # unavailable directory-metadata flush is acknowledged here.
+    finally:
+        if not kernel.CloseHandle(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
 def _fsync_directory(path: str) -> None:
     """Persist a directory entry update before its caller acknowledges it."""
     flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -186,30 +244,19 @@ def _fsync_directory(path: str) -> None:
     except OSError:
         if os.name != "nt":
             raise
-        # Windows refuses opening directories through os.open. Use the
-        # documented backup-semantics handle and flush it instead of silently
-        # weakening durability on a supported host.
-        import ctypes
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.CreateFileW.restype = ctypes.c_void_p
-        kernel.CreateFileW.argtypes = (
-            ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
-            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
-        kernel.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
-        kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
-        handle = kernel.CreateFileW(
-            str(path), 0x80000000, 0x00000007, None, 3, 0x02000000, None)
-        invalid = ctypes.c_void_p(-1).value
-        if handle == invalid:
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            if not kernel.FlushFileBuffers(handle):
-                raise ctypes.WinError(ctypes.get_last_error())
-        finally:
-            kernel.CloseHandle(handle)
+        # Windows may refuse opening directories through os.open.
+        _flush_windows_directory(path)
         return
     try:
-        os.fsync(fd)
+        try:
+            os.fsync(fd)
+        except PermissionError:
+            if os.name != "nt":
+                raise
+            # CPython can open the directory descriptor on Windows while the
+            # CRT still rejects fsync on it. FlushFileBuffers is the durable
+            # native fallback; the error remains fatal if that flush fails.
+            _flush_windows_directory(path)
     finally:
         os.close(fd)
 
@@ -2642,6 +2689,48 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
 
 # --------------------------------------------------------------- DoD
 
+DEFAULT_TEST_TIMEOUT_SECONDS = 600
+DEFAULT_MAX_TEST_TIMEOUT_SECONDS = 3600
+MAX_TEST_TIMEOUT_SECONDS = 14400
+
+
+def validate_test_timeout_seconds(value, *, field: str,
+                                  plan_minted: bool = False) -> int:
+    """Return one strict, bounded suite timeout or fail deterministically."""
+    maximum = (MAX_TEST_TIMEOUT_SECONDS if plan_minted
+               else DEFAULT_MAX_TEST_TIMEOUT_SECONDS)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{field} must be a real integer from 1 to "
+            f"{maximum}")
+    if value <= 0 or value > maximum:
+        raise ValueError(
+            f"{field} must be from 1 to {maximum}")
+    return value
+
+
+def task_test_timeout_seconds(task: dict) -> int:
+    """Derive the approved aggregate test timeout from one plan task."""
+    field = "verification_runner.gate_timeout.aggregate_seconds"
+    if not isinstance(task, dict):
+        raise ValueError(f"{field} task container must be an object")
+    if "verification_runner" not in task:
+        return DEFAULT_TEST_TIMEOUT_SECONDS
+    runner = task.get("verification_runner")
+    if not isinstance(runner, dict):
+        raise ValueError(f"{field} parent containers must be objects")
+    if "gate_timeout" not in runner:
+        raise ValueError(f"{field} is required when verification_runner is present")
+    gate_timeout = runner.get("gate_timeout")
+    if not isinstance(gate_timeout, dict):
+        raise ValueError(f"{field} parent containers must be objects")
+    if "aggregate_seconds" not in gate_timeout:
+        raise ValueError(f"{field} is required when gate_timeout is present")
+    return validate_test_timeout_seconds(
+        gate_timeout.get("aggregate_seconds"), field=field,
+        plan_minted=True)
+
+
 def _run(cmd, cwd, shell=False, timeout=600, env=None):
     # env=None inherits the parent environment (subprocess default) — every
     # pre-existing caller is unchanged; dod_check passes a sanitized copy
@@ -3288,6 +3377,14 @@ def dod_check(contract: dict, workspace: str,
     errors: list = []
     coding = contract.get("coding") or {}
     dod = coding.get("dod") or {}
+    try:
+        test_timeout_seconds = validate_test_timeout_seconds(
+            dod.get("test_timeout_seconds", DEFAULT_TEST_TIMEOUT_SECONDS),
+            field="coding.dod.test_timeout_seconds",
+            plan_minted=bool(coding.get("plan_minted")))
+    except ValueError as exc:
+        test_timeout_seconds = None
+        errors.append(str(exc))
 
     if dod.get("require_clean_scope_diff", True) and coding.get("scope_paths"):
         if not snapshot_ref:
@@ -3319,7 +3416,7 @@ def dod_check(contract: dict, workspace: str,
     tc = dod.get("test_command")
     declared_suite_passed = False
     suite_launch_failed = False
-    if tc:
+    if tc and test_timeout_seconds is not None:
         # A3 (R-0007): strip the wave slot from the CHILD env only — a gate
         # run under TASKPLANE_TASK=<slot> must not leak the slot into the
         # DoD test subprocess (slot-sensitive tests would resolve the
@@ -3363,7 +3460,9 @@ def dod_check(contract: dict, workspace: str,
         else:
             _t0 = _time.time()
             try:
-                proc = run_suite_command(workspace, tc, env=env)
+                proc = run_suite_command(
+                    workspace, tc, env=env,
+                    timeout=test_timeout_seconds)
             except (OSError, subprocess.SubprocessError,
                     TypeError, ValueError) as exc:
                 suite_launch_failed = True
@@ -4480,7 +4579,8 @@ def contract_projection(contract: dict | None) -> dict:
 def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
                    tools=None, test_command=None, deny_extra=None,
                    max_actions=None, regression_gate=False,
-                   plan_minted=False) -> dict:
+                   plan_minted=False,
+                   test_timeout_seconds: int | None = None) -> dict:
     """Build a contract dict — shared by tp.py new and the loop engine so a
     step's contract is exactly what the hook will enforce. Every contract
     carries an ACTION BUDGET (max_actions): the hook counts each governed
@@ -4525,6 +4625,12 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
                     "regression_gate": bool(regression_gate)},
         },
     }
+    if test_timeout_seconds is not None:
+        c["coding"]["dod"]["test_timeout_seconds"] = \
+            validate_test_timeout_seconds(
+                test_timeout_seconds,
+                field="coding.dod.test_timeout_seconds",
+                plan_minted=bool(plan_minted))
     if plan_minted:
         c["coding"]["plan_minted"] = True
     if read_only:
@@ -4832,6 +4938,95 @@ def activate_review_contract_action(
     })
     return activate(workspace, contract, snapshot="auto",
                     task_slot_override=slot)
+
+
+EXPANDED_LENS_ROUTE_REQUEST_SCHEMA = \
+    "taskplane.expanded-lens-route-provider-request/v1"
+_EXPANDED_LENS_ROUTE_REQUEST_FIELDS = frozenset({
+    "schema", "workspace", "stage", "target", "context_fingerprint",
+    "exact_ordered_lens_ids", "estimated_cost", "policy_version",
+    "catalog_version", "action_id",
+})
+_EXPANDED_LENS_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+_EXPANDED_ROUTE_TEXT_RE = re.compile(r"^[\x21-\x7e]{1,256}$")
+
+
+def _validated_expanded_lens_route_request_bindings(
+        workspace: str, *, stage: str, target: str,
+        context_fingerprint: str, extra_lens_ids: list[str],
+        expected_cost: int, policy_version: str, catalog_version: str,
+        action_id: str) -> dict:
+    """Validate worker-owned route facts without granting authority."""
+    if stage != "plan":
+        raise ValueError("expanded routes are limited to Plan and Evaluate")
+    if not isinstance(target, str) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(target):
+        raise ValueError("expanded route target identity is malformed")
+    if not isinstance(context_fingerprint, str) or \
+            not re.fullmatch(r"[0-9a-f]{64}", context_fingerprint):
+        raise ValueError("expanded route context fingerprint is malformed")
+    if not isinstance(extra_lens_ids, list) or \
+            not 1 <= len(extra_lens_ids) <= 26 or \
+            len(set(extra_lens_ids)) != len(extra_lens_ids) or \
+            any(not isinstance(lens, str) or
+                not _EXPANDED_LENS_ID_RE.fullmatch(lens)
+                for lens in extra_lens_ids):
+        raise ValueError("expanded route lens identity is malformed")
+    if isinstance(expected_cost, bool) or \
+            not isinstance(expected_cost, int) or \
+            not 1 <= expected_cost <= 1_000_000_000:
+        raise ValueError("expanded route expected cost is malformed")
+    if not isinstance(policy_version, str) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(policy_version) or \
+            not isinstance(catalog_version, str) or \
+            not _EXPANDED_ROUTE_TEXT_RE.fullmatch(catalog_version):
+        raise ValueError("expanded route policy/catalog version is malformed")
+    if not isinstance(action_id, str) or \
+            not _TASK_SLOT_RE.fullmatch(action_id):
+        raise ValueError("expanded route action identity is malformed")
+    return {
+        "workspace": _workspace_identity_fingerprint(workspace),
+        "stage": stage,
+        "target": target,
+        "context_fingerprint": context_fingerprint,
+        "exact_ordered_lens_ids": list(extra_lens_ids),
+        "estimated_cost": expected_cost,
+        "policy_version": policy_version,
+        "catalog_version": catalog_version,
+        "action_id": action_id,
+    }
+
+
+def build_expanded_lens_route_authority_request(
+        workspace: str, *, stage: str, target: str,
+        context_fingerprint: str, extra_lens_ids: list[str],
+        expected_cost: int, policy_version: str, catalog_version: str,
+        action_id: str) -> dict:
+    """Serialize the closed request passed to the orchestrator provider.
+
+    This adapter intentionally cannot select or launch a provider, accept a
+    locator, supply time or verification functions, inspect custody, issue an
+    action, or mutate consumption state.
+    """
+    return {
+        "schema": EXPANDED_LENS_ROUTE_REQUEST_SCHEMA,
+        **_validated_expanded_lens_route_request_bindings(
+            workspace, stage=stage, target=target,
+            context_fingerprint=context_fingerprint,
+            extra_lens_ids=extra_lens_ids, expected_cost=expected_cost,
+            policy_version=policy_version, catalog_version=catalog_version,
+            action_id=action_id),
+    }
+
+
+def expanded_lens_route_provider_request_fingerprint(request: dict) -> str:
+    if not isinstance(request, dict) or \
+            set(request) != _EXPANDED_LENS_ROUTE_REQUEST_FIELDS or \
+            request.get("schema") != EXPANDED_LENS_ROUTE_REQUEST_SCHEMA:
+        raise ValueError("expanded route provider request is malformed")
+    return hashlib.sha256(json.dumps(
+        request, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
 
 
 def _workspace_identity_fingerprint(workspace: str) -> str:
@@ -5266,6 +5461,739 @@ def budget_status(contract: dict, used_actions: int,
 #     The screener's catch-all turns the StateError into a block.
 
 _TASK_SLOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+WORKER_CONTRACT_LIFECYCLE_SCHEMA = \
+    "taskplane.worker-contract-lifecycle/v1"
+WORKER_RELEASE_ACTION_SCHEMA = "taskplane.worker-contract-release-action/v1"
+WORKER_TERMINAL_RECEIPT_SCHEMA = \
+    "taskplane.worker-contract-terminal-receipt/v1"
+WORKER_CONTRACT_AUTHORITY_SCHEMA = \
+    "taskplane.worker-contract-authority/v1"
+_WORKER_RELEASE_FIELDS = frozenset({
+    "schema", "key_id", "action_id", "workspace_fingerprint", "slot",
+    "contract_id", "stage", "task", "issued_at", "signature",
+})
+_WORKER_TERMINAL_FIELDS = frozenset({
+    "schema", "key_id", "receipt_id", "release_action_id",
+    "workspace_fingerprint", "slot", "contract_id", "stage", "task",
+    "owner", "outcome", "submission_status", "terminal_at", "authority",
+    "signature",
+})
+
+
+def _worker_contract_authority_path(workspace: str) -> str:
+    return os.path.join(tp_dir(workspace), "worker-contract-authority.json")
+
+
+def _worker_contract_authority(workspace: str, *, create: bool) -> dict:
+    """Load the local issuer used only for exact worker lifecycle actions."""
+    path = _worker_contract_authority_path(workspace)
+    with file_lock(path):
+        authority = load_json(path, default=None,
+                              what="worker contract authority")
+        if authority is None and create:
+            secret = secrets.token_bytes(32)
+            authority = {
+                "schema": WORKER_CONTRACT_AUTHORITY_SCHEMA,
+                "key_id": hashlib.sha256(secret).hexdigest(),
+                "secret": base64.b64encode(secret).decode("ascii"),
+            }
+            atomic_write_json(path, authority, sort_keys=True)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        if not isinstance(authority, dict) or set(authority) != {
+                "schema", "key_id", "secret"} or authority.get(
+                    "schema") != WORKER_CONTRACT_AUTHORITY_SCHEMA:
+            raise StateError(path, "worker contract authority is invalid")
+        try:
+            secret = base64.b64decode(
+                str(authority.get("secret") or ""), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise StateError(
+                path, "worker contract authority is invalid") from exc
+        if len(secret) != 32 or authority.get("key_id") != \
+                hashlib.sha256(secret).hexdigest():
+            raise StateError(path, "worker contract authority is invalid")
+        return {"key_id": authority["key_id"], "secret": secret}
+
+
+def _worker_signed_bytes(value: dict) -> bytes:
+    unsigned = {key: item for key, item in value.items()
+                if key != "signature"}
+    return json.dumps(unsigned, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def _worker_signature(secret: bytes, value: dict) -> str:
+    return hmac.new(secret, _worker_signed_bytes(value),
+                    hashlib.sha256).hexdigest()
+
+
+def _worker_lifecycle_error(workspace: str, reason: str) -> StateError:
+    return StateError(
+        _worker_contract_authority_path(workspace), reason,
+        "retain the contract and let the authenticated lifecycle hook, "
+        "loop gate, or session-start recovery release its exact slot")
+
+
+def _worker_release_action(workspace: str, *, slot: str, contract_id: str,
+                           stage: str, task: str,
+                           now: int | None = None) -> dict:
+    authority = _worker_contract_authority(workspace, create=True)
+    issued_at = int(_time.time() if now is None else now)
+    material = json.dumps({
+        "workspace": _workspace_identity_fingerprint(workspace),
+        "slot": slot, "contract_id": contract_id,
+        "stage": stage, "task": task, "issued_at": issued_at,
+    }, sort_keys=True, separators=(",", ":"))
+    action = {
+        "schema": WORKER_RELEASE_ACTION_SCHEMA,
+        "key_id": authority["key_id"],
+        "action_id": "worker-release-" + hashlib.sha256(
+            material.encode("utf-8")).hexdigest()[:24],
+        "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
+        "slot": slot, "contract_id": contract_id,
+        "stage": stage, "task": task, "issued_at": issued_at,
+    }
+    action["signature"] = _worker_signature(authority["secret"], action)
+    return action
+
+
+def prepare_worker_contract(
+        workspace: str, contract: dict, *, stage: str, task: str,
+        task_name: str, role_marker: str, now: int | None = None) -> dict:
+    """Make a contract child-scoped before it becomes an active slot.
+
+    The slot is an enforcement cache.  A slot-less orchestrator never
+    inherits it; SubagentStart binds the exact native child before the
+    child's first screened action.
+    """
+    if not isinstance(contract, dict):
+        raise ValueError("worker lifecycle needs a contract object")
+    stage = str(stage or "").strip()
+    task = str(task or "").strip()
+    task_name = str(task_name or "").strip()
+    role_marker = str(role_marker or "").strip()
+    slot = str(contract.get("task_id") or "").strip()
+    if not stage or not task or not task_name or not role_marker or \
+            not _TASK_SLOT_RE.fullmatch(slot):
+        raise ValueError("worker lifecycle identity is incomplete or invalid")
+    prepared_at = int(_time.time() if now is None else now)
+    out = json.loads(json.dumps(contract))
+    out["task_slot"] = slot
+    out["worker_scoped"] = True
+    out["worker_lifecycle"] = {
+        "schema": WORKER_CONTRACT_LIFECYCLE_SCHEMA,
+        "status": "pending", "slot": slot,
+        "stage": stage, "task": task,
+        "expected_task_name": task_name,
+        "expected_role_marker": role_marker,
+        "prepared_at": prepared_at,
+        "owner": None, "terminal": None,
+        "release_action": _worker_release_action(
+            workspace, slot=slot, contract_id=str(out["task_id"]),
+            stage=stage, task=task, now=prepared_at),
+    }
+    return out
+
+
+def _worker_event_owner(event: dict) -> dict:
+    event = event if isinstance(event, dict) else {}
+    return {
+        "session_id": _bounded_hook_identity(
+            event.get("session_id") or event.get("thread_id")
+            or os.environ.get("CODEX_THREAD_ID")
+            or os.environ.get("CLAUDE_SESSION_ID"), 160).strip(),
+        "agent_id": _bounded_hook_identity(
+            event.get("agent_id") or event.get("child_id"), 160).strip(),
+        "task_name": _bounded_hook_identity(
+            event.get("task_name") or event.get("agent_type"), 160).strip(),
+    }
+
+
+def _active_worker_contracts(workspace: str) -> list[tuple[str, dict]]:
+    rows = []
+    for slot in list_task_slots(workspace):
+        contract = load_json(
+            active_contract_path(workspace, slot),
+            what=f"active worker contract (slot {slot})")
+        if isinstance(contract, dict) and contract.get("worker_scoped") is True:
+            rows.append((slot, contract))
+    return rows
+
+
+def worker_contract_for_stage(workspace: str, *, stage: str,
+                              task: str) -> dict | None:
+    """Resolve one worker slot for control-plane evidence and cleanup.
+
+    This is deliberately not an enforcement lookup: callers get an exact
+    stage/task binding, never the union returned by :func:`load_active`, so a
+    slot-less orchestrator can read a child's snapshot or output contract
+    without becoming governed by that child's least-privilege contract.
+    """
+    stage = str(stage or "").strip()
+    task = str(task or "").strip()
+    if not stage or not task:
+        raise _worker_lifecycle_error(
+            workspace, "worker stage/task identity is incomplete")
+    matches = []
+    for slot, contract in _active_worker_contracts(workspace):
+        lifecycle = contract.get("worker_lifecycle") or {}
+        if lifecycle.get("schema") != WORKER_CONTRACT_LIFECYCLE_SCHEMA:
+            raise _worker_lifecycle_error(
+                workspace, f"worker slot {slot} lifecycle is malformed")
+        if lifecycle.get("stage") == stage and \
+                str(lifecycle.get("task") or "") == task:
+            matches.append((slot, contract))
+    if len(matches) > 1:
+        raise _worker_lifecycle_error(
+            workspace, "stage/task identifies more than one worker slot")
+    if not matches:
+        return None
+    slot, contract = matches[0]
+    return {"slot": slot, "contract": contract}
+
+
+def release_superseded_pending_worker_contracts(
+        workspace: str, *, stage: str, task: str,
+        keep_slot: str | None = None,
+        now: int | None = None) -> list[dict]:
+    """Quarantine stale duplicates only when one pending claim is newest.
+
+    This is deliberately narrower than a clear operation. Every same-stage,
+    same-task candidate is validated before any terminal receipt is minted,
+    and unrelated worker slots are never considered for release.
+    """
+    stage = str(stage or "").strip()
+    task = str(task or "").strip()
+    explicit = str(keep_slot or "").strip()
+    if not stage or not task:
+        raise _worker_lifecycle_error(
+            workspace, "worker stage/task identity is incomplete")
+    if explicit and not _TASK_SLOT_RE.fullmatch(explicit):
+        raise _worker_lifecycle_error(
+            workspace, "explicit keeper slot is invalid")
+
+    matches = []
+    for slot, contract in _active_worker_contracts(workspace):
+        lifecycle = contract.get("worker_lifecycle") or {}
+        if lifecycle.get("stage") == stage and str(
+                lifecycle.get("task") or "") == task:
+            matches.append((slot, contract))
+    if not matches:
+        if explicit:
+            raise _worker_lifecycle_error(
+                workspace, "explicit keeper does not identify a candidate")
+        return []
+
+    prepared = []
+    for slot, contract in matches:
+        lifecycle = contract.get("worker_lifecycle") or {}
+        stamp = lifecycle.get("prepared_at")
+        if lifecycle.get("schema") != WORKER_CONTRACT_LIFECYCLE_SCHEMA:
+            raise _worker_lifecycle_error(
+                workspace, f"worker slot {slot} lifecycle is malformed")
+        if lifecycle.get("slot") != slot or \
+                lifecycle.get("status") != "pending" or \
+                lifecycle.get("owner") is not None or \
+                lifecycle.get("terminal") is not None:
+            raise _worker_lifecycle_error(
+                workspace, "superseded recovery requires every competing "
+                "worker to be unbound pending")
+        if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0:
+            raise _worker_lifecycle_error(
+                workspace, "worker prepared_at is invalid")
+        action = lifecycle.get("release_action")
+        _verify_worker_release_action(workspace, slot, action, contract)
+        prepared.append((stamp, slot, contract))
+
+    newest_at = max(row[0] for row in prepared)
+    newest = [row for row in prepared if row[0] == newest_at]
+    if len(newest) != 1:
+        raise _worker_lifecycle_error(
+            workspace, "superseded recovery has no unique newest slot")
+    keeper = newest[0][1]
+    if explicit and explicit != keeper:
+        raise _worker_lifecycle_error(
+            workspace, "explicit keeper is not the unique newest slot")
+    if len(prepared) == 1:
+        return []
+
+    released = []
+    for _, slot, contract in sorted(prepared):
+        if slot == keeper:
+            continue
+        lifecycle = contract["worker_lifecycle"]
+        receipt = record_worker_terminal(
+            workspace, slot, event=None, outcome="interruption",
+            submission_status="superseded_pending_claim", now=now,
+            authority="orphan-recovery")
+        released.append(release_worker_contract(
+            workspace, slot, action=lifecycle["release_action"],
+            terminal_receipt=receipt))
+    trace(workspace, "worker_contract_duplicates_recovered",
+          stage=stage, task=task, keeper=keeper,
+          released=[row["slot"] for row in released],
+          authority="orphan-recovery")
+    return released
+
+
+def bind_worker_contract_event(workspace: str, event: dict, *,
+                               now: int | None = None) -> dict:
+    """Bind one pending worker slot to one exact native child start."""
+    owner = _worker_event_owner(event)
+    if not all(owner.values()):
+        raise _worker_lifecycle_error(
+            workspace, "worker start identity is incomplete")
+    candidates = []
+    for slot, contract in _active_worker_contracts(workspace):
+        lifecycle = contract.get("worker_lifecycle") or {}
+        if lifecycle.get("schema") != WORKER_CONTRACT_LIFECYCLE_SCHEMA:
+            raise _worker_lifecycle_error(
+                workspace, f"worker slot {slot} lifecycle is malformed")
+        if lifecycle.get("expected_task_name") == owner["task_name"]:
+            candidates.append((slot, contract))
+    if len(candidates) != 1:
+        raise _worker_lifecycle_error(
+            workspace, "worker start does not identify exactly one pending slot")
+    slot, contract = candidates[0]
+    lifecycle = contract["worker_lifecycle"]
+    if lifecycle.get("status") == "active":
+        if lifecycle.get("owner") != owner:
+            raise _worker_lifecycle_error(
+                workspace, "worker slot is already owned by another child")
+        return {"slot": slot, "contract": contract, "replay": True}
+    if lifecycle.get("status") != "pending" or lifecycle.get("owner") is not None:
+        raise _worker_lifecycle_error(
+            workspace, "worker slot is not pending child activation")
+    lifecycle["status"] = "active"
+    lifecycle["owner"] = owner
+    lifecycle["started_at"] = int(_time.time() if now is None else now)
+    atomic_write_json(active_contract_path(workspace, slot), contract, indent=2)
+    trace(workspace, "worker_contract_bound", slot=slot,
+          task_id=contract.get("task_id"), stage=lifecycle.get("stage"),
+          task=lifecycle.get("task"), agent_id=owner["agent_id"],
+          session_id=owner["session_id"], task_name=owner["task_name"])
+    return {"slot": slot, "contract": contract, "replay": False}
+
+
+def _worker_contract_for_event(workspace: str, event: dict) \
+        -> tuple[str, dict] | None:
+    owner = _worker_event_owner(event)
+    if not owner["agent_id"] and not owner["task_name"]:
+        return None
+    matches = []
+    expected = False
+    for slot, contract in _active_worker_contracts(workspace):
+        lifecycle = contract.get("worker_lifecycle") or {}
+        if lifecycle.get("expected_task_name") == owner["task_name"]:
+            expected = True
+        bound = lifecycle.get("owner")
+        if lifecycle.get("status") == "active" and isinstance(bound, dict) \
+                and all(bound.get(key) == owner.get(key)
+                        for key in ("session_id", "agent_id", "task_name")):
+            matches.append((slot, contract))
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise _worker_lifecycle_error(
+            workspace, "native child owns more than one worker slot")
+    if expected:
+        raise _worker_lifecycle_error(
+            workspace, "worker action arrived before its SubagentStart binding")
+    return None
+
+
+def load_active_for_event(workspace: str, event: dict) -> dict | None:
+    """Load the exact child slot, or the orchestrator's non-worker state."""
+    if task_slot() is not None:
+        return load_active(workspace)
+    binding = _worker_contract_for_event(workspace, event)
+    if binding is not None:
+        return binding[1]
+    return load_active(workspace)
+
+
+def normalize_worker_terminal_outcome(value: object) -> str:
+    text = str(value or "success").strip().lower()
+    if "handoff" in text or "transfer" in text:
+        return "handoff"
+    if "cancel" in text:
+        return "cancellation"
+    if "interrupt" in text or "abort" in text or "killed" in text:
+        return "interruption"
+    if "fail" in text or "error" in text or "exception" in text:
+        return "failure"
+    return "success"
+
+
+def _worker_terminal_path(workspace: str, slot: str) -> str:
+    return os.path.join(tp_dir(workspace), "worker-terminals", f"{slot}.json")
+
+
+def record_worker_terminal(
+        workspace: str, slot: str, *, event: dict | None, outcome: object,
+        submission_status: str, now: int | None = None,
+        authority: str = "host-lifecycle") -> dict:
+    """Record an authenticated terminal proof without releasing the slot."""
+    path = active_contract_path(workspace, slot)
+    contract = load_json(path, what="active worker contract")
+    lifecycle = contract.get("worker_lifecycle") or {}
+    action = lifecycle.get("release_action")
+    if contract.get("worker_scoped") is not True or \
+            lifecycle.get("schema") != WORKER_CONTRACT_LIFECYCLE_SCHEMA or \
+            not isinstance(action, dict):
+        raise _worker_lifecycle_error(workspace, "worker contract is malformed")
+    owner = lifecycle.get("owner")
+    if authority == "host-lifecycle":
+        observed = _worker_event_owner(event or {})
+        if lifecycle.get("status") != "active" or not isinstance(owner, dict) \
+                or observed != owner:
+            raise _worker_lifecycle_error(
+                workspace, "terminal event does not match worker owner")
+    elif authority not in {"loop-gate", "session-start", "orphan-recovery"}:
+        raise _worker_lifecycle_error(
+            workspace, "worker terminal authority is unsupported")
+    terminal_at = int(_time.time() if now is None else now)
+    normalized = normalize_worker_terminal_outcome(outcome)
+    authority_key = _worker_contract_authority(workspace, create=False)
+    owner_projection = dict(owner) if isinstance(owner, dict) else None
+    material = json.dumps({
+        "action": action.get("action_id"), "slot": slot,
+        "contract": contract.get("task_id"), "outcome": normalized,
+        "submission": str(submission_status), "terminal_at": terminal_at,
+        "authority": authority,
+    }, sort_keys=True, separators=(",", ":"))
+    receipt = {
+        "schema": WORKER_TERMINAL_RECEIPT_SCHEMA,
+        "key_id": authority_key["key_id"],
+        "receipt_id": "worker-terminal-" + hashlib.sha256(
+            material.encode("utf-8")).hexdigest()[:24],
+        "release_action_id": action.get("action_id"),
+        "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
+        "slot": slot, "contract_id": contract.get("task_id"),
+        "stage": lifecycle.get("stage"), "task": lifecycle.get("task"),
+        "owner": owner_projection, "outcome": normalized,
+        "submission_status": str(submission_status or "unknown"),
+        "terminal_at": terminal_at, "authority": authority,
+    }
+    receipt["signature"] = _worker_signature(
+        authority_key["secret"], receipt)
+    terminal_path = _worker_terminal_path(workspace, slot)
+    os.makedirs(os.path.dirname(terminal_path), exist_ok=True)
+    atomic_write_json(terminal_path, receipt, sort_keys=True)
+    lifecycle["status"] = "terminal"
+    lifecycle["terminal"] = receipt
+    atomic_write_json(path, contract, indent=2)
+    trace(workspace, "worker_contract_terminal", slot=slot,
+          task_id=contract.get("task_id"), outcome=normalized,
+          submission_status=receipt["submission_status"],
+          authority=authority, receipt_id=receipt["receipt_id"])
+    return receipt
+
+
+def _verify_worker_release_action(workspace: str, slot: str,
+                                  action: dict, contract: dict) -> None:
+    if not isinstance(action, dict) or set(action) != _WORKER_RELEASE_FIELDS or \
+            action.get("schema") != WORKER_RELEASE_ACTION_SCHEMA:
+        raise _worker_lifecycle_error(
+            workspace, "worker release action schema is malformed")
+    authority = _worker_contract_authority(workspace, create=False)
+    if action.get("key_id") != authority["key_id"] or \
+            not hmac.compare_digest(
+                str(action.get("signature") or ""),
+                _worker_signature(authority["secret"], action)):
+        raise _worker_lifecycle_error(
+            workspace, "worker release action signature is invalid")
+    lifecycle = contract.get("worker_lifecycle") or {}
+    expected = {
+        "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
+        "slot": slot, "contract_id": contract.get("task_id"),
+        "stage": lifecycle.get("stage"), "task": lifecycle.get("task"),
+    }
+    for field, value in expected.items():
+        if action.get(field) != value:
+            raise _worker_lifecycle_error(
+                workspace, f"worker release action {field} mismatches slot")
+    if action != lifecycle.get("release_action"):
+        raise _worker_lifecycle_error(
+            workspace, "worker release action differs from contract authority")
+
+
+def _verify_worker_terminal_receipt(workspace: str, slot: str,
+                                    receipt: dict, contract: dict,
+                                    action: dict) -> None:
+    if not isinstance(receipt, dict) or set(receipt) != \
+            _WORKER_TERMINAL_FIELDS or receipt.get(
+                "schema") != WORKER_TERMINAL_RECEIPT_SCHEMA:
+        raise _worker_lifecycle_error(
+            workspace, "worker terminal receipt schema is malformed")
+    authority = _worker_contract_authority(workspace, create=False)
+    if receipt.get("key_id") != authority["key_id"] or \
+            not hmac.compare_digest(
+                str(receipt.get("signature") or ""),
+                _worker_signature(authority["secret"], receipt)):
+        raise _worker_lifecycle_error(
+            workspace, "worker terminal receipt signature is invalid")
+    lifecycle = contract.get("worker_lifecycle") or {}
+    expected = {
+        "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
+        "slot": slot, "contract_id": contract.get("task_id"),
+        "stage": lifecycle.get("stage"), "task": lifecycle.get("task"),
+        "release_action_id": action.get("action_id"),
+    }
+    for field, value in expected.items():
+        if receipt.get(field) != value:
+            raise _worker_lifecycle_error(
+                workspace, f"worker terminal receipt {field} mismatches slot")
+
+
+def release_worker_contract(
+        workspace: str, slot: str, *, action: dict,
+        terminal_receipt: dict | None = None) -> dict:
+    """Authenticated exact-slot release; never a general clear primitive."""
+    if not _TASK_SLOT_RE.fullmatch(str(slot or "")):
+        raise _worker_lifecycle_error(workspace, "worker release slot is invalid")
+    active_path = active_contract_path(workspace, slot)
+    contract = load_json(active_path, default=None,
+                         what="active worker contract")
+    if not isinstance(contract, dict):
+        raise _worker_lifecycle_error(
+            workspace, "active worker contract is unavailable")
+    _verify_worker_release_action(workspace, slot, action, contract)
+    receipt = terminal_receipt
+    if receipt is None:
+        receipt = load_json(_worker_terminal_path(workspace, slot), default=None,
+                            what="worker terminal receipt")
+    if not isinstance(receipt, dict):
+        raise _worker_lifecycle_error(
+            workspace, "worker terminal receipt is required before release")
+    _verify_worker_terminal_receipt(
+        workspace, slot, receipt, contract, action)
+    lifecycle = contract["worker_lifecycle"]
+    lifecycle["status"] = "released"
+    lifecycle["terminal"] = receipt
+    lifecycle["released_at"] = int(_time.time())
+    quarantine = os.path.join(tp_dir(workspace), "quarantine", "contracts")
+    os.makedirs(quarantine, exist_ok=True)
+    archive = os.path.join(
+        quarantine, f"{slot}-{receipt['receipt_id'].split('-')[-1]}.json")
+    atomic_write_json(archive, contract, sort_keys=True)
+    safe_remove(active_path)
+    with _contextlib.suppress(OSError):
+        safe_remove(_snapshot_path(workspace, slot))
+    trace(workspace, "worker_contract_released", slot=slot,
+          task_id=contract.get("task_id"), outcome=receipt.get("outcome"),
+          authority=receipt.get("authority"), quarantine=archive)
+    return {"released": True, "slot": slot,
+            "outcome": receipt["outcome"], "quarantine": archive,
+            "receipt_id": receipt["receipt_id"]}
+
+
+def terminalize_worker_contract(
+        workspace: str, event: dict, *, outcome: object,
+        submission_status: str, now: int | None = None) -> dict:
+    binding = _worker_contract_for_event(workspace, event)
+    if binding is None:
+        raise _worker_lifecycle_error(
+            workspace, "terminal event has no bound worker contract")
+    slot, contract = binding
+    receipt = record_worker_terminal(
+        workspace, slot, event=event, outcome=outcome,
+        submission_status=submission_status, now=now)
+    return release_worker_contract(
+        workspace, slot,
+        action=contract["worker_lifecycle"]["release_action"],
+        terminal_receipt=receipt)
+
+
+def _worker_loop_completed(contract: dict, state: dict | None) -> bool:
+    lifecycle = contract.get("worker_lifecycle") or {}
+    if lifecycle.get("status") == "terminal":
+        return True
+    if not isinstance(state, dict):
+        return False
+    stage = lifecycle.get("stage")
+    task = str(lifecycle.get("task") or "")
+    step = state.get("step")
+    if stage in {"pm", "design", "plan", "em"}:
+        return step != stage
+    tasks = [row for row in state.get("tasks") or [] if isinstance(row, dict)]
+    target = next((row for row in tasks if str(row.get("id")) == task), None)
+    if stage == "execute" and state.get("parallel"):
+        return target is None or target.get("status") not in {"pending", "running"}
+    current = None
+    index = state.get("current_task", 0)
+    if isinstance(index, int) and 0 <= index < len(tasks):
+        current = tasks[index]
+    return step != stage or str((current or {}).get("id") or "") != task
+
+
+def _legacy_loop_worker_identity(contract: dict) -> tuple[str, str] | None:
+    """Recognize the exact pre-lifecycle loop contract shapes.
+
+    Old `loop next` calls activated these in the legacy root slot. They have
+    no signed child lifecycle metadata, so migration recovery is intentionally
+    limited to the canonical stage labels minted by `_step_contract`.
+    """
+    label = str(contract.get("task") or "").strip()
+    prefixes = {
+        "PM: ": "pm", "DESIGN: ": "design", "PLAN: ": "plan",
+        "EXECUTE: ": "execute", "FIX: ": "fix",
+        "EVALUATE: ": "evaluate",
+    }
+    if label == "EM review":
+        return "em", "em"
+    for prefix, stage in prefixes.items():
+        if not label.startswith(prefix):
+            continue
+        suffix = label[len(prefix):].strip()
+        if not suffix:
+            return None
+        task = suffix if stage in {"execute", "fix", "evaluate"} else stage
+        return stage, task
+    return None
+
+
+def _legacy_loop_worker_completed(contract: dict,
+                                  state: dict | None) -> bool:
+    identity = _legacy_loop_worker_identity(contract)
+    if identity is None or not isinstance(state, dict):
+        return False
+    stage, task = identity
+    projected = {
+        "worker_lifecycle": {"stage": stage, "task": task,
+                             "status": "legacy"},
+    }
+    return _worker_loop_completed(projected, state)
+
+
+def _quarantine_legacy_loop_worker_contract(
+        workspace: str, contract: dict, *, now: int | None = None) -> dict:
+    """Migrate one loop-proven completed pre-lifecycle root contract."""
+    identity = _legacy_loop_worker_identity(contract)
+    if identity is None:
+        raise _worker_lifecycle_error(
+            workspace, "legacy contract is not a recognized loop worker")
+    stage, task = identity
+    terminal_at = int(_time.time() if now is None else now)
+    archived = json.loads(json.dumps(contract))
+    archived["legacy_worker_recovery"] = {
+        "schema": "taskplane.legacy-worker-contract-recovery/v1",
+        "stage": stage, "task": task, "outcome": "completed",
+        "authority": "session-start", "terminal_at": terminal_at,
+    }
+    quarantine = os.path.join(tp_dir(workspace), "quarantine", "contracts")
+    os.makedirs(quarantine, exist_ok=True)
+    contract_id = re.sub(
+        r"[^A-Za-z0-9._-]+", "_",
+        str(contract.get("task_id") or "legacy"))[:64] or "legacy"
+    archive = os.path.join(
+        quarantine, f"{contract_id}-legacy-{terminal_at}.json")
+    atomic_write_json(archive, archived, sort_keys=True)
+    safe_remove(os.path.join(tp_dir(workspace), "active_contract.json"))
+    with _contextlib.suppress(OSError):
+        safe_remove(os.path.join(tp_dir(workspace), "snapshot"))
+    trace(workspace, "legacy_worker_contract_quarantined",
+          task_id=contract.get("task_id"), stage=stage, task=task,
+          authority="session-start", quarantine=archive)
+    return {"released": True, "legacy": True,
+            "slot": None, "outcome": "completed", "quarantine": archive}
+
+
+def sweep_completed_worker_contracts(
+        workspace: str, *, loop_state: dict | None,
+        now: int | None = None) -> list[dict]:
+    """Session-start fail-safe: release only loop-proven completed workers."""
+    released = []
+    identities = {}
+    # Preflight every worker lifecycle before recovering any group. One
+    # malformed or ambiguous slot must leave the entire active set untouched.
+    for slot, contract in _active_worker_contracts(workspace):
+        lifecycle = contract.get("worker_lifecycle") or {}
+        if lifecycle.get("schema") != WORKER_CONTRACT_LIFECYCLE_SCHEMA:
+            raise _worker_lifecycle_error(
+                workspace, f"worker slot {slot} lifecycle is malformed")
+        stage = str(lifecycle.get("stage") or "").strip()
+        task = str(lifecycle.get("task") or "").strip()
+        if not stage or not task:
+            raise _worker_lifecycle_error(
+                workspace, f"worker slot {slot} lifecycle is malformed")
+        identities.setdefault((stage, task), []).append(slot)
+    for (stage, task), slots in sorted(identities.items()):
+        if len(slots) > 1:
+            released.extend(release_superseded_pending_worker_contracts(
+                workspace, stage=stage, task=task, now=now))
+    for slot, contract in _active_worker_contracts(workspace):
+        if not _worker_loop_completed(contract, loop_state):
+            continue
+        lifecycle = contract["worker_lifecycle"]
+        receipt = lifecycle.get("terminal")
+        if not isinstance(receipt, dict):
+            receipt = record_worker_terminal(
+                workspace, slot, event=None, outcome="success",
+                submission_status="loop_advanced", now=now,
+                authority="session-start")
+        released.append(release_worker_contract(
+            workspace, slot, action=lifecycle["release_action"],
+            terminal_receipt=receipt))
+    legacy_path = os.path.join(tp_dir(workspace), "active_contract.json")
+    if os.path.exists(legacy_path):
+        legacy = load_json(legacy_path, what="legacy active contract")
+        if isinstance(legacy, dict) and \
+                _legacy_loop_worker_completed(legacy, loop_state):
+            released.append(_quarantine_legacy_loop_worker_contract(
+                workspace, legacy, now=now))
+    return released
+
+
+def release_worker_contracts_for_gate(
+        workspace: str, *, stage: str, task: str,
+        now: int | None = None, outcome: object = "success",
+        submission_status: str = "gated") -> list[dict]:
+    """Release only the exact stage/task worker contract.
+
+    Gates retain the historical defaults.  A terminal EM producer-receipt
+    outage uses the same authenticated lifecycle owner with its explicit
+    status; an already recorded success/failure/cancellation/interruption/
+    handoff receipt is preserved byte-for-byte.
+    """
+    released = []
+    for slot, contract in _active_worker_contracts(workspace):
+        lifecycle = contract.get("worker_lifecycle") or {}
+        if lifecycle.get("stage") != stage or str(
+                lifecycle.get("task") or "") != str(task or ""):
+            continue
+        receipt = lifecycle.get("terminal")
+        if not isinstance(receipt, dict):
+            receipt = record_worker_terminal(
+                workspace, slot, event=None, outcome=outcome,
+                submission_status=submission_status, now=now,
+                authority="loop-gate")
+        released.append(release_worker_contract(
+            workspace, slot, action=lifecycle["release_action"],
+            terminal_receipt=receipt))
+    return released
+
+
+def encode_worker_release_action(action: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(
+        action, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def decode_worker_release_action(value: str) -> dict:
+    try:
+        raw = str(value or "")
+        action = json.loads(base64.urlsafe_b64decode(
+            raw + "=" * (-len(raw) % 4)).decode("utf-8"))
+    except (ValueError, TypeError, UnicodeDecodeError) as exc:
+        raise ValueError("signed worker release action is malformed") from exc
+    if not isinstance(action, dict):
+        raise ValueError("signed worker release action is malformed")
+    return action
 
 
 def task_slot() -> str | None:
@@ -5704,8 +6632,19 @@ def clear(workspace: str) -> None:
               slot=slot)
 
 
-def snapshot_ref(workspace: str) -> str | None:
-    p = _snapshot_path(workspace)
+def snapshot_ref(workspace: str, *, task_slot_override: str | None = None) \
+        -> str | None:
+    """Read this process's snapshot, or one exact orchestrator-owned slot.
+
+    ``task_slot_override`` is a control-plane address only. It does not set
+    ``TASKPLANE_TASK`` and therefore cannot make a child contract govern the
+    caller.
+    """
+    if task_slot_override is not None and not _TASK_SLOT_RE.fullmatch(
+            str(task_slot_override)):
+        raise StateError("TASKPLANE_TASK",
+                         f"invalid task slot {task_slot_override!r}")
+    p = _snapshot_path(workspace, task_slot_override)
     if os.path.exists(p):
         with open(p, encoding="utf-8") as f:
             return f.read().strip() or None
@@ -7071,13 +8010,13 @@ def load_active(workspace: str) -> dict | None:
     nothing). The screener's fail-closed boundary turns the raise into a
     block.
 
-    TASKPLANE_TASK unset: the legacy single slot when no per-task slots are
-    active (unchanged: None on missing/corrupt; the CLI screener detects the
-    corrupt-legacy-file case itself and blocks). When per-task contracts ARE
-    active, the process is governed by their MOST RESTRICTIVE UNION (plus
-    the legacy slot if present) — never left ungoverned, never governed by
-    one slot picked arbitrarily. A corrupt slot raises StateError (fail
-    closed) rather than being silently dropped from the union."""
+    TASKPLANE_TASK unset: worker-scoped slots are excluded because they are
+    owned by exact native children; older/non-worker per-task slots retain
+    the MOST RESTRICTIVE UNION behavior (plus the legacy slot). A corrupt
+    slot raises StateError (fail closed) rather than being silently dropped
+    from the union. Control-plane code that needs a worker's evidence uses
+    ``worker_contract_for_stage`` and an exact snapshot override; it does not
+    turn that worker contract into root authority."""
     slot = task_slot()                       # may raise (ill-formed value)
     path = active_contract_path(workspace, slot)
     if slot is not None:
@@ -7115,7 +8054,12 @@ def load_active(workspace: str) -> dict | None:
         # a torn sibling contract must not quietly weaken the union.
         c = load_json(active_contract_path(workspace, s),
                       what=f"active contract (slot {s})")
-        if isinstance(c, dict):
+        # Worker-scoped slots are owned by a verified native child and are
+        # selected through ``load_active_for_event``.  Folding them into a
+        # slot-less union binds their least-privilege contract to the root
+        # orchestrator — the lifecycle leak this boundary exists to prevent.
+        # Older/non-worker slots retain the conservative union semantics.
+        if isinstance(c, dict) and c.get("worker_scoped") is not True:
             members.append(c)
     if not members:
         return legacy

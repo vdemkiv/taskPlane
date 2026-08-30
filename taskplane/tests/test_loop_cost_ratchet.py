@@ -46,9 +46,10 @@ class TestTheHarnessMeasuresTheRealLoop(unittest.TestCase):
         fiction the pin was: `gates` came from `gates += 1` in the driver
         plus a `+ 1` in the return statement, so this test could only ever
         confirm the driver's arithmetic back to itself. The engine emits
-        THREE `loop_gate` events for one task. Both now read the trace.
+        D-0014's consolidated zero-lens judgment now emits TWO `loop_gate`
+        events for one task. Both values read the trace.
         """
-        self.assertEqual(self.got["gates"], 3)
+        self.assertEqual(self.got["gates"], 2)
         self.assertEqual(self.got["gates"], ci_loop_cost.PINS["gates"])
 
     def test_every_measured_key_has_a_pin(self):

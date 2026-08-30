@@ -165,7 +165,8 @@ class R0005_WorkflowGuidanceIsOneSemanticContract(unittest.TestCase):
         for rel in ("skills/tp-engineering/SKILL.md", "skills/tp-go/SKILL.md",
                     "skills/tp-build/SKILL.md", "skills/tp-help/SKILL.md"):
             text = self._read(rel)
-            self.assertIn("canonical review context", text, rel)
+            self.assertRegex(text, r"canonical (?:review|evidence) context",
+                             rel)
             self.assertIn("DoR", text, rel)
             self.assertIn("DoD", text, rel)
 
@@ -182,7 +183,7 @@ class R0005_WorkflowGuidanceIsOneSemanticContract(unittest.TestCase):
         self.assertIn("impact_incomplete", text)
         self.assertIn("zero lens dispatch", text)
         self.assertIn("final engineering review", text)
-        self.assertIn("same canonical routing decision", text)
+        self.assertIn("same canonical direct evidence", text)
         self.assertNotIn("keeps its full-catalog mandate", text)
         self.assertNotIn("Any engine failure falls back", text)
 

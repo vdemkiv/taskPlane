@@ -19,6 +19,7 @@ import json
 import os
 
 import glob_match
+import lens_route_policy
 import taskplane_lite as tp
 from path_roles import change_adds_no_test as _adds_no_test
 
@@ -243,6 +244,16 @@ def load_catalog(root: str | None = None) -> dict:
     if root is None:
         _CATALOG_CACHE = cat
     return cat
+
+
+def focused_route(context: dict, verdict_map: dict,
+                  catalog: dict | None = None) -> dict:
+    """Adapt incumbent 26-lens signal evidence to the pure focused policy."""
+    cat = catalog or load_catalog()
+    ids = [row["id"] for row in cat.get("lenses") or []]
+    import graph_primitives
+    rows = graph_primitives.focused_signal_rows(verdict_map, ids)
+    return lens_route_policy.build_route(context, rows, cat["lenses"])
 
 
 def _match(path: str, glob: str) -> bool:

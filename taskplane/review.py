@@ -37,7 +37,7 @@ import tempfile
 import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 try:  # pwd is unavailable on Windows.
     import pwd
@@ -47,6 +47,7 @@ except ImportError:  # pragma: no cover - Windows host
 import storage as runtime_storage
 import taskplane_lite as tp
 import review_evidence as review_evidence_runtime
+import terminal_truth as terminal_truth_runtime
 
 # This value crosses host boundaries inside immutable briefs. Keep the
 # reference POSIX-shaped; ``context_dir`` joins it to the native workspace.
@@ -2440,6 +2441,434 @@ def changed_content_from_patch(patch: str) -> dict[str, str]:
             for path, lines in sorted(rows.items())}
 
 
+_FOCUSED_RISK_GROUPS = {
+    "security": "trust-and-data", "privacy-compliance": "trust-and-data",
+    "data-safety": "trust-and-data",
+    "architecture": "system-soundness", "solution-design": "system-soundness",
+    "integrability": "system-soundness", "scalability": "system-soundness",
+    "performance": "system-soundness", "reliability": "system-soundness",
+    "sre": "system-soundness", "devops": "system-soundness",
+    "dba": "system-soundness", "services-selection": "system-soundness",
+    "tradeoffs": "system-soundness",
+    "testability": "verification", "qa": "verification",
+    "code-quality": "implementation-correctness", "backend": "implementation-correctness",
+    "frontend": "implementation-correctness", "mobile": "implementation-correctness",
+    "product": "product-outcome", "design": "product-outcome",
+    "accessibility": "product-outcome", "i18n": "product-outcome",
+    "tech-writer": "product-outcome", "project-management": "product-outcome",
+    "time-to-market": "product-outcome", "cost-finops": "product-outcome",
+}
+
+
+def project_focused_route(
+        routing: Mapping[str, object], focused: Mapping[str, object],
+        catalog: Mapping[str, object]) -> dict[str, object]:
+    """Project one closed focused decision onto the incumbent lens shape.
+
+    The policy artifact remains the authority.  This compatibility projection
+    is what existing dispatch, lease, and collection code consumes: selected
+    rows are quick singleton sweeps and every other catalog row is explicitly
+    non-dispatching with evidence.  A non-ready overflow route therefore
+    cannot accidentally leak workers through an older positive signal.
+    """
+    mapped = {str(row.get("id") or ""): row
+              for row in routing.get("lenses") or [] if isinstance(row, dict)}
+    disposition = {row["lens"]: row for row in focused["dispositions"]}
+    dispatchable = set(focused["dispatchable_selected"])
+    projected = copy.deepcopy(dict(routing))
+    projected_rows = []
+    for definition in catalog.get("lenses") or []:
+        lens_id = str(definition.get("id") or "")
+        source = copy.deepcopy(mapped.get(lens_id) or definition)
+        row = disposition[lens_id]
+        source["focused_disposition"] = row["disposition"]
+        if lens_id in dispatchable:
+            source["tier"] = source["verdict"] = "sweep"
+            source["mode"] = "subagent"
+            source["evidence"] = list(row.get("evidence") or [])
+            source["reasons"] = [str(row.get("reason"))]
+            source.pop("negative_evidence", None)
+        else:
+            source["tier"] = source["verdict"] = "n/a"
+            source["mode"] = "none"
+            negative = list(row.get("negative_evidence") or [])
+            if row.get("disposition") == "covered_by":
+                negative = ["covered by selected lens " +
+                            str(row["covered_by"])]
+            if focused["status"] != "ready" and row.get("disposition") in {
+                    "execute_deep", "execute_light"}:
+                negative = ["focused route is not dispatchable: " +
+                            str(focused["status"])]
+            source["negative_evidence"] = negative or [
+                "focused policy did not select this lens"]
+            source["reasons"] = list(source["negative_evidence"])
+            source.pop("evidence", None)
+        projected_rows.append(source)
+    projected["lenses"] = projected_rows
+    projected.setdefault("context", {}).update({
+        "focused_route_status": focused["status"],
+        "focused_route_fingerprint": focused["route_fingerprint"],
+        "focused_selected_count": len(focused["selected"]),
+        "execution_mode": "quick-only",
+    })
+    return projected
+
+
+def expanded_route_authority_request(
+        ws: str, focused: Mapping[str, object]
+        ) -> dict[str, object] | None:
+    """Return the exact request for a non-dispatchable Plan/Evaluate route.
+
+    This is deliberately request-only.  The protected control-plane provider
+    authenticates and atomically consumes approval outside the worker
+    checkout; ReviewKernel cannot mint or validate its own authority.
+    """
+    if focused.get("status") != "expanded_approval_required":
+        return None
+    stage = str(focused.get("stage") or "")
+    if stage not in {"plan", "evaluate"}:
+        raise ReviewKernelError("expanded route requested for unsupported stage")
+    overflow = focused.get("overflow") or {}
+    additional = [str(lens_id) for lens_id in
+                  overflow.get("additional_lenses") or []]
+    if not additional:
+        raise ReviewKernelError("expanded route has no additional lenses")
+    context_fp = str(focused.get("context_fingerprint") or "")
+    return tp.build_expanded_lens_route_authority_request(
+        ws, stage=stage, target=str(focused.get("target") or ""),
+        context_fingerprint=context_fp, extra_lens_ids=additional,
+        expected_cost=600 * len(additional),
+        policy_version=str(focused.get("policy_version") or ""),
+        catalog_version=str(focused.get("catalog_fingerprint") or ""),
+        action_id=f"expanded-{stage}-{context_fp[:16]}")
+
+
+def apply_expanded_route_authority(
+        ws: str, focused: Mapping[str, object],
+        catalog: Mapping[str, object], *,
+        provider_client: terminal_truth_runtime.ExpandedRouteProviderClient |
+        None = None,
+        provider_receipt: terminal_truth_runtime.ExpandedRouteProviderReceipt |
+        None = None,
+        ) -> tuple[dict[str, object], dict[str, object] | None]:
+    """Authenticate and bind one exceptional Plan/Evaluate route.
+
+    The worktree remains request-only: it cannot construct either live type.
+    The protected orchestrator client authenticates the provider receipt
+    against the request regenerated from the *current* route.  Only that
+    exact live pair can turn the closed overflow decision into a dispatchable
+    route, whose new fingerprint binds the original refused route and the
+    authenticated request/consumption identities.
+    """
+    if __package__:
+        from . import lens_route_policy
+    else:  # pragma: no cover - direct CLI module loading
+        import lens_route_policy
+
+    definitions = list(catalog.get("lenses") or [])
+    route = copy.deepcopy(dict(focused))
+    lens_route_policy.validate_route(route, definitions)
+    request = expanded_route_authority_request(ws, route)
+    supplied = provider_client is not None or provider_receipt is not None
+    if request is None:
+        if supplied:
+            raise ReviewKernelError(
+                "expanded-route authority supplied for a non-overflow route")
+        return route, None
+    if not supplied:
+        return route, request
+    if not isinstance(
+            provider_client,
+            terminal_truth_runtime.ExpandedRouteProviderClient) or \
+            not isinstance(
+                provider_receipt,
+                terminal_truth_runtime.ExpandedRouteProviderReceipt):
+        raise ReviewKernelError(
+            "live expanded-route provider client and receipt are required")
+    try:
+        provider_client.assert_authenticated(provider_receipt, request)
+    except terminal_truth_runtime.TerminalTruthError as exc:
+        raise ReviewKernelError(
+            "expanded-route provider receipt is not authenticated") from exc
+
+    requested_route_fingerprint = str(route.get("route_fingerprint") or "")
+    consumption = dict(provider_receipt)
+    route["status"] = "ready"
+    route["dispatchable_selected"] = list(route.get("selected") or [])
+    route["expanded_route_authority"] = {
+        "schema": "taskplane.expanded-lens-route-review-authority/v1",
+        "requested_route_fingerprint": requested_route_fingerprint,
+        "request_fingerprint":
+            tp.expanded_lens_route_provider_request_fingerprint(request),
+        "consumption_receipt_fingerprint":
+            lens_route_policy.fingerprint(consumption),
+        "provider_protocol_version": str(
+            consumption.get("provider_protocol_version") or ""),
+        "action_fingerprint": str(
+            consumption.get("action_fingerprint") or ""),
+    }
+    route.pop("route_fingerprint", None)
+    route["route_fingerprint"] = lens_route_policy.fingerprint(route)
+    lens_route_policy.validate_route(route, definitions)
+    return route, request
+
+
+def _dependency_impact_for_routing_fingerprint(impact: dict) -> dict:
+    """Adapt depgraph integer depth keys to the policy's JSON boundary."""
+    normalized = copy.deepcopy(impact or {})
+    by_depth = normalized.get("impacted")
+    if not isinstance(by_depth, dict):
+        return normalized
+    normalized_depths = {}
+    for depth, rows in by_depth.items():
+        key = str(depth) if isinstance(depth, int) and not isinstance(
+            depth, bool) else depth
+        if key in normalized_depths:
+            raise ReviewKernelError(
+                "dependency impact depth keys collide after normalization: "
+                f"{key}")
+        normalized_depths[key] = rows
+    normalized["impacted"] = normalized_depths
+    return normalized
+
+
+def _focused_evaluate_route(
+        routing: dict, *, catalog: dict, target: dict,
+        requirement: dict | None, acceptance: Iterable | None,
+        design_contract: dict | None, diff: dict, impact: dict,
+        test_evidence: dict, unresolved_findings: Iterable | None,
+        routing_content: dict | None = None,
+        mandatory_lenses: Iterable | None = None) -> tuple[dict, dict]:
+    """Adapt incumbent signals to focused-routing/v1 for Evaluate.
+
+    The policy receives hashes and bounded structural evidence only.  Every
+    selected producer remains a quick singleton sweep; ``execute_deep`` is
+    never emitted from this adapter.
+    """
+    if __package__:
+        from . import lens_route_policy
+    else:  # pragma: no cover - direct CLI module loading
+        import lens_route_policy
+
+    definitions = list(catalog.get("lenses") or [])
+    catalog_fp = lens_route_policy.catalog_fingerprint(definitions)
+    files = sorted({str(path) for path in diff.get("files") or []})
+    content = routing_content if isinstance(routing_content, dict) else {}
+    changed_files = [{
+        "path": path,
+        "content_fingerprint": lens_route_policy.fingerprint(
+            str(content.get(path) or "")),
+    } for path in files]
+    semantic_diff = {
+        "files": changed_files,
+        "changed_symbols": sorted({str(symbol) for symbol in
+                                   diff.get("changed_symbols") or []}),
+    }
+    unresolved = [copy.deepcopy(row) for row in unresolved_findings or []
+                  if isinstance(row, dict)]
+    material = {
+        "acceptance": lens_route_policy.fingerprint(list(acceptance or [])),
+        "specification": lens_route_policy.fingerprint(requirement or {}),
+        "design_contract": lens_route_policy.fingerprint(design_contract or {}),
+        # Transport artifact identities may include run/target ids. Reuse is
+        # bound to the semantic diff bytes and symbols, never that envelope.
+        "actual_diff": lens_route_policy.fingerprint(semantic_diff),
+        "changed_files": lens_route_policy.fingerprint(changed_files),
+        "dependency_impact": lens_route_policy.fingerprint(
+            _dependency_impact_for_routing_fingerprint(impact)),
+        "test_evidence": lens_route_policy.fingerprint(test_evidence or {}),
+        "unresolved_findings": lens_route_policy.fingerprint(unresolved),
+    }
+    context = {
+        "schema": lens_route_policy.CONTEXT_SCHEMA,
+        "stage": "evaluate",
+        "target": str(target.get("fingerprint") or "unknown-target"),
+        "policy_version": lens_route_policy.POLICY_VERSION,
+        "catalog_fingerprint": catalog_fp,
+        "execution_mode": "quick-only",
+        "evidence_fingerprints": material,
+        "mandatory_lenses": sorted({str(lens_id) for lens_id in
+                                    mandatory_lenses or [] if str(lens_id)}),
+    }
+    mapped = {str(row.get("id") or ""): row
+              for row in routing.get("lenses") or [] if isinstance(row, dict)}
+    mandatory_floors = ({"architecture", "code-quality", "testability"} |
+                        set(context["mandatory_lenses"]))
+    # Incumbent scoring is intentionally generous; focused execution is not.
+    # Admit the three ordinary Evaluate floors, every explicit mandatory
+    # risk, then at most one highest-scoring independent group. A genuine
+    # five-mandatory-risk target is preserved as overflow by the policy, while
+    # five merely positive/overlapping incumbent signals never manufacture a
+    # needless approval boundary.
+    admitted = set(mandatory_floors)
+    represented = {_FOCUSED_RISK_GROUPS.get(lens_id, lens_id)
+                   for lens_id in admitted}
+    candidates = sorted((
+        (str(source.get("id") or lens_id), source)
+        for lens_id, source in mapped.items()
+        if str(source.get("verdict") or source.get("tier") or "n/a") != "n/a"
+        and lens_id not in admitted
+    ), key=lambda item: (-float(item[1].get("score") or 0), item[0]))
+    for lens_id, _source in candidates:
+        group = _FOCUSED_RISK_GROUPS.get(lens_id, lens_id)
+        if len(admitted) >= 4 or group in represented:
+            continue
+        admitted.add(lens_id)
+        represented.add(group)
+    signal_rows = []
+    for definition in definitions:
+        lens_id = str(definition.get("id") or "")
+        source = mapped.get(lens_id) or {}
+        raw_verdict = str(source.get("verdict") or source.get("tier") or "n/a")
+        positive = lens_id in admitted
+        evidence_rows = [str(value) for value in
+                         source.get("evidence") or source.get("reasons") or []
+                         if str(value)]
+        if positive and not evidence_rows:
+            evidence_rows = [
+                "evaluate quick floor: implementation diff requires " + lens_id]
+        negative_rows = [str(value) for value in
+                         source.get("negative_evidence") or
+                         source.get("reasons") or [] if str(value)]
+        if not positive and not negative_rows:
+            negative_rows = ["no applicable Evaluate signal for " + lens_id]
+        per_lens_findings = [row for row in unresolved
+                             if str(row.get("lens") or "") in {lens_id, "all"}]
+        relevant = {
+            "acceptance": material["acceptance"],
+            "specification": material["specification"],
+            "design_contract": material["design_contract"],
+            "actual_diff": material["actual_diff"],
+            "changed_files": material["changed_files"],
+            "unresolved_findings": lens_route_policy.fingerprint(
+                per_lens_findings),
+        }
+        group = _FOCUSED_RISK_GROUPS.get(lens_id, lens_id)
+        if group in {"system-soundness", "trust-and-data"}:
+            relevant["dependency_impact"] = material["dependency_impact"]
+        if lens_id in {"code-quality", "testability", "qa"}:
+            relevant["test_evidence"] = material["test_evidence"]
+        signal_rows.append({
+            "id": lens_id,
+            "verdict": "light" if positive else "n/a",
+            "score": float(source.get("score") or 0),
+            "evidence": evidence_rows if positive else [],
+            "negative_evidence": [] if positive else negative_rows,
+            "risk_group": group,
+            "mandatory": lens_id in set(context["mandatory_lenses"]) |
+                         {"architecture"},
+            "fingerprint_inputs": relevant,
+        })
+    focused = lens_route_policy.build_route(context, signal_rows, definitions)
+    return focused, project_focused_route(routing, focused, catalog)
+
+
+def _focused_prior_reuse(ws: str, store, source_run_id: str | None,
+                         current_route: dict) -> tuple[dict, list[dict]]:
+    """Return a conservative reuse plan and the sealed evidence it cites."""
+    if __package__:
+        from . import review_evidence as evidence
+        from . import review_retry
+    else:  # pragma: no cover - direct CLI module loading
+        import review_evidence as evidence
+        import review_retry
+    selected = list(current_route.get("dispatchable_selected") or [])
+    fresh = {
+        "schema": "taskplane.lens-evidence-reuse-plan/v1",
+        "policy_version": current_route.get("policy_version"),
+        "catalog_fingerprint": current_route.get("catalog_fingerprint"),
+        "reused": [], "dispatch": selected,
+        "invalidation": {lens_id: "no_eligible_prior_evidence"
+                         for lens_id in selected},
+        "reuse_evidence": {},
+    }
+    if not source_run_id or current_route.get("status") != "ready":
+        return fresh, []
+    try:
+        prior = _load_state(ws, source_run_id)
+        if prior.get("status") != "complete":
+            return fresh, []
+        evidence.sealed_current_revision(store, prior.get("revision") or {})
+        decision = store.read(prior["routing_decision"])
+        prior_route = decision.get("focused_route")
+        if not isinstance(prior_route, dict):
+            return fresh, []
+        validations = {}
+        for ref in prior.get("result_validations") or []:
+            row = store.read(ref)
+            validations[str(row.get("slot_id") or "")] = row
+        results = {str(row.get("lens") or ""): copy.deepcopy(row)
+                   for row in prior.get("lens_results") or []
+                   if isinstance(row, dict) and str(row.get("lens") or "")}
+        prior_reused = {str(row.get("lens") or ""): copy.deepcopy(row)
+                        for row in prior.get("reused_lens_evidence") or []
+                        if isinstance(row, dict) and str(row.get("lens") or "")}
+        normalized_results = []
+        evidence_by_lens = {}
+        prior_findings = list((prior.get("revision") or {}).get("findings") or [])
+        for lens_id, result in results.items():
+            slot_id = next((str(slot.get("slot_id") or "")
+                            for slot in prior.get("slots") or []
+                            if lens_id in (slot.get("lens_ids") or [])), "")
+            validation = validations.get(slot_id) or {}
+            inherited = prior_reused.get(lens_id) or {}
+            result_fingerprint = str(
+                validation.get("result_fingerprint") or
+                inherited.get("result_fingerprint") or "")
+            host_verified = (
+                validation.get("trust") == "host-observed" and
+                (validation.get("host_provenance") or {}).get("status") ==
+                "observed") or inherited.get("host_provenance") == "verified"
+            normalized = dict(
+                result, sealed=True,
+                host_provenance="verified" if host_verified else "invalid",
+                result_fingerprint=result_fingerprint)
+            normalized_results.append(normalized)
+            evidence_by_lens[lens_id] = {
+                "lens": lens_id,
+                "lens_result": copy.deepcopy(result),
+                "result_fingerprint": result_fingerprint,
+                "host_provenance": normalized["host_provenance"],
+                "findings": [copy.deepcopy(row) for row in prior_findings
+                             if str((row or {}).get("lens") or "") == lens_id],
+            }
+        plan = review_retry.fingerprinted_reuse_plan(
+            prior_route, current_route, normalized_results)
+        reused = [evidence_by_lens[lens_id] for lens_id in plan["reused"]
+                  if lens_id in evidence_by_lens]
+        if len(reused) != len(plan["reused"]):
+            return fresh, []
+        return plan, reused
+    except Exception:
+        # Reuse is an optimization. Any stale, legacy, ambiguous, or malformed
+        # source fails toward fresh workers without weakening the route.
+        return fresh, []
+
+
+def _project_focused_reuse(routing: dict, reuse_plan: dict) -> dict:
+    """Suppress workers only for lenses with sealed fingerprint equality."""
+    reused = set(reuse_plan.get("reused") or [])
+    if not reused:
+        return routing
+    projected = copy.deepcopy(routing)
+    evidence_by_lens = reuse_plan.get("reuse_evidence") or {}
+    for row in projected.get("lenses") or []:
+        lens_id = str(row.get("id") or "")
+        if lens_id not in reused:
+            continue
+        proof = evidence_by_lens.get(lens_id) or {}
+        row["tier"] = row["verdict"] = "n/a"
+        row["mode"] = "none"
+        row["negative_evidence"] = [
+            "reused sealed passing evidence with equal lens input fingerprint",
+            "result fingerprint: " + str(proof.get("result_fingerprint") or ""),
+        ]
+        row["reasons"] = list(row["negative_evidence"])
+        row.pop("evidence", None)
+    projected.setdefault("context", {})["reused_lenses"] = sorted(reused)
+    return projected
+
+
 def _routing_decision(routing: dict, catalog: dict) -> dict:
     """Validate one complete catalog mapping and preserve its evidence."""
     expected = [str(row.get("id")) for row in catalog.get("lenses") or []]
@@ -3569,6 +3998,7 @@ def publish_production_review(root: str, state: dict, revision: dict, *,
 
 def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  diff: dict, runnability: dict | None = None,
+                 test_evidence: Mapping[str, object] | None = None,
                  requirement: dict | None = None,
                  acceptance: Iterable | None = None,
                  contracts: Iterable | None = None, stage: str = "review",
@@ -3576,8 +4006,16 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                  caller_expander: Callable | None = None,
                  router: Callable | None = None,
                  routing_content: dict | None = None,
+                 design_contract: dict | None = None,
+                 unresolved_findings: Iterable | None = None,
                  retry_lenses: Iterable[str] | None = None,
                  retry_source_run_id: str | None = None,
+                 expanded_route_provider_client:
+                 terminal_truth_runtime.ExpandedRouteProviderClient |
+                 None = None,
+                 expanded_route_provider_receipt:
+                 terminal_truth_runtime.ExpandedRouteProviderReceipt |
+                 None = None,
                  delivery_mode_receipt: object =
                  _DELIVERY_MODE_AUTHORITY_UNSET) -> dict:
     """Run the normal Review/Evaluate/final-EM evidence kernel once.
@@ -3710,10 +4148,91 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                          "manifest": manifest})
         return manifest
 
+    # Evaluate is an evaluator-owned judgment stage, not a review fan-out.
+    # D-0014 makes this unconditional: historical Design bytes may still say
+    # ``stage_policy.evaluate.selection=focused``, but runtime must not score
+    # the catalog, construct a route/disposition ledger, consult expanded
+    # authority, create lens leases, or collect lens results.
+    if stage == "build":
+        dor["lens_execution_policy"] = "none"
+        dor["lens_worker_start_count"] = 0
+        routing_input_ref = store.put("evaluation-input", {
+            "schema": "taskplane.evaluation-input/v1",
+            "target": target,
+            "diff": diff,
+            "impact": quality.get("impact") or impact,
+            "graph_quality": _portable_ref(quality_ref),
+            "runnability": runnability,
+            "test_evidence": test_evidence or {},
+            "requirement": requirement or {},
+            "acceptance": list(acceptance or []),
+            "contracts": sorted({str(x) for x in contracts or []}),
+            "design_contract": copy.deepcopy(design_contract or {}),
+            "change": {"type": task_type, "stage": stage, "dor": dor},
+        })
+        envelope_ref = evidence.create_envelope(
+            store, target=target, diff=diff,
+            impact=quality.get("impact") or impact, graph_quality=quality,
+            runnability=runnability, requirement=requirement or {},
+            acceptance=acceptance or [], contracts=contracts or [],
+            change={"type": task_type, "stage": stage, "dor": dor,
+                    "evaluation_input": _portable_ref(routing_input_ref),
+                    "design_contract": copy.deepcopy(design_contract or {})})
+        revision = evidence.next_revision(store)
+        run_id = _run_id(stage, _target_run_fingerprint(target),
+                         envelope_ref["fingerprint"], revision)
+        depth_receipt = _assert_review_depth_manifest(depth_policy, [])
+        conservation = _slot_conservation_record(
+            selected=[], prepared=[], dispatched=[], collected=[])
+        counters.update({"envelope_count": 1, "view_count": 0,
+                         "dispatched_agent_count": 0,
+                         "prompt_view_bytes": 0})
+        manifest = _manifest({
+            "schema": "taskplane.review-start-manifest/v2",
+            "status": "ready", "stage": stage, "run_id": run_id,
+            "lens_execution_policy": "none",
+            "lens_worker_start_count": 0,
+            "target_fingerprint": target.get("fingerprint"),
+            "context_fingerprint": envelope_ref["fingerprint"],
+            "graph_quality": _portable_ref(quality_ref),
+            "evaluation_input": _portable_ref(routing_input_ref),
+            "review_depth_policy": depth_receipt,
+            "envelope": _portable_ref(envelope_ref),
+            "expected_lenses": [], "slots": [],
+            "slot_conservation": conservation,
+            "counters": counters,
+        })
+        _save_state(ws, {
+            "schema": "taskplane.review-run-state/v2",
+            "status": "ready", "run_id": run_id, "stage": stage,
+            "target": target, "quality": quality_ref,
+            "evaluation_input": routing_input_ref,
+            "envelope": envelope_ref, "slots": [], "dispatch_slots": [],
+            "expected_lenses": [], "zero_lens_evaluation": True,
+            "lens_execution_policy": "none",
+            "review_depth_policy": depth_policy,
+            "review_depth_receipt": depth_receipt,
+            "slot_conservation": conservation,
+            "manifest": manifest, "counters": counters,
+        })
+        tp.trace(ws, "evaluation_kernel_started", stage=stage,
+                 run_id=run_id, target_head=target.get("head"),
+                 target_fingerprint=target.get("fingerprint"),
+                 context_fingerprint=envelope_ref["fingerprint"],
+                 graph_quality_status=quality.get("status"),
+                 lens_execution_policy="none", lens_worker_start_count=0,
+                 slots=[])
+        return manifest
+
     route_fn = router or (lambda: lensmod.route(
         files, task_type=task_type, breadth="routed", stage=stage,
         workspace=ws, requirement_text=(requirement or {}).get("text"),
         content_by_file=routing_content))
+    focused_route = None
+    expanded_route_request = None
+    reuse_plan = None
+    reused_lens_evidence = []
+    zero_lens_authority = delivery_authority if stage == "review" else None
     try:
         routing = route_fn()
         routing.setdefault("context", {})["review_depth_policy"] = \
@@ -3754,9 +4273,71 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
                 "lenses": sorted(retry),
                 "reuse": "sealed-pass-dispositions",
             }
-        if delivery_authority is not None:
+        if stage == "build":
+            if design_contract is None:
+                design_contract = tp.load_json(
+                    os.path.join(ws, "design", "contract.json"), default={},
+                    what="approved Design Contract")
+            focused_enabled = (
+                delivery_authority is None or (
+                    isinstance(design_contract, dict) and
+                    design_contract.get("schema") == "taskplane.design/v1" and
+                    ((design_contract.get("stage_policy") or {}).get(
+                        "evaluate") or {}).get("selection") == "focused"))
+            if not focused_enabled:
+                # A sealed pre-focused delivery remains replayable. New
+                # Design-governed runs carry the versioned focused stage
+                # policy and may never inherit this compatibility zero route.
+                zero_lens_authority = delivery_authority
+                routing = _zero_automatic_lens_route(
+                    routing, zero_lens_authority)
+            else:
+                if unresolved_findings is None and retry_source_run_id:
+                    try:
+                        prior_state = _load_state(ws, retry_source_run_id)
+                        unresolved_findings = list(
+                            (prior_state.get("revision") or {}).get("findings") or [])
+                    except Exception:
+                        unresolved_findings = []
+                incumbent_routing = routing
+                focused_route, routing = _focused_evaluate_route(
+                    incumbent_routing, catalog=catalog, target=target,
+                    requirement=requirement, acceptance=acceptance,
+                    design_contract=design_contract, diff=diff,
+                    impact=quality.get("impact") or impact,
+                    test_evidence=test_evidence or runnability or {},
+                    unresolved_findings=unresolved_findings,
+                    routing_content=routing_content,
+                    mandatory_lenses=(set(requested) |
+                                      ({"architecture", "security"}
+                                       if graph_degraded else set())))
+                focused_route, expanded_route_request = \
+                    apply_expanded_route_authority(
+                        ws, focused_route, catalog,
+                        provider_client=expanded_route_provider_client,
+                        provider_receipt=expanded_route_provider_receipt)
+                if focused_route.get("status") == "ready" and \
+                        focused_route.get("expanded_route_authority"):
+                    routing = project_focused_route(
+                        incumbent_routing, focused_route, catalog)
+                reuse_plan, reused_lens_evidence = _focused_prior_reuse(
+                    ws, store, retry_source_run_id, focused_route)
+                routing = _project_focused_reuse(routing, reuse_plan)
+                dor["focused_route"] = {
+                    "schema": focused_route["schema"],
+                    "status": focused_route["status"],
+                    "policy_version": focused_route["policy_version"],
+                    "route_fingerprint": focused_route["route_fingerprint"],
+                    "selected": list(focused_route["selected"]),
+                    "reused": list(reuse_plan["reused"]),
+                    "invalidated": copy.deepcopy(reuse_plan["invalidation"]),
+                    **({"expanded_route_authority": copy.deepcopy(
+                        focused_route["expanded_route_authority"])}
+                       if focused_route.get("expanded_route_authority") else {}),
+                }
+        elif zero_lens_authority is not None:
             routing = _zero_automatic_lens_route(
-                routing, delivery_authority)
+                routing, zero_lens_authority)
         else:
             routing = lensmod.automatic_sweep_route(
                 routing, pinned_lenses=membership_pins)
@@ -3792,16 +4373,60 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     decision_ref = store.put("routing-decision", {
         "schema": "taskplane.routing-decision/v2", "stage": stage,
         "routing_mode": "selective", "dispositions": decision,
+        **({"focused_route": focused_route} if focused_route else {}),
+        **({"expanded_route_request": expanded_route_request}
+           if expanded_route_request else {}),
+        **({"reuse_plan": reuse_plan} if reuse_plan else {}),
         "review_depth_policy": copy.deepcopy(depth_policy)})
     routing_input_ref = store.put("routing-input", {
         "schema": "taskplane.routing-input/v2", "target": target,
         "diff": diff, "impact": quality.get("impact") or impact,
         "graph_quality": _portable_ref(quality_ref),
-        "runnability": runnability, "requirement": requirement or {},
+        "runnability": runnability, "test_evidence": test_evidence or {},
+        "requirement": requirement or {},
         "acceptance": list(acceptance or []),
         "contracts": sorted({str(x) for x in contracts or []}),
         "change": {"type": task_type, "stage": stage, "dor": dor,
                    "review_depth_policy": copy.deepcopy(depth_policy)}})
+    if focused_route and focused_route.get("status") != "ready":
+        run_id = _run_id(
+            stage, _target_run_fingerprint(target),
+            str(focused_route.get("context_fingerprint") or ""), 0)
+        manifest = _manifest({
+            "schema": "taskplane.review-start-manifest/v2",
+            "status": focused_route["status"], "stage": stage,
+            "run_id": run_id,
+            "target_fingerprint": target.get("fingerprint"),
+            "graph_quality": _portable_ref(quality_ref),
+            "routing_input": _portable_ref(routing_input_ref),
+            "routing_decision": _portable_ref(decision_ref),
+            "review_depth_policy": copy.deepcopy(depth_policy),
+            "routing_mode": "focused", "slots": [],
+            "focused_route": {
+                "status": focused_route["status"],
+                "route_fingerprint": focused_route["route_fingerprint"],
+                "selected": list(focused_route["selected"]),
+                "selected_count": len(focused_route["selected"]),
+                "overflow": copy.deepcopy(focused_route.get("overflow") or {}),
+            },
+            **({"expanded_route_request": expanded_route_request}
+               if expanded_route_request else {}),
+            "reason": str((focused_route.get("overflow") or {}).get(
+                "requires") or "focused route is not dispatchable"),
+            "counters": counters,
+        })
+        _save_state(ws, {
+            "schema": "taskplane.review-run-state/v2",
+            "run_id": run_id, "status": focused_route["status"],
+            "stage": stage, "target": target, "routing": routing,
+            "routing_decision": decision_ref,
+            "routing_input": routing_input_ref, "quality": quality_ref,
+            "focused_route": focused_route, "reuse_plan": reuse_plan,
+            **({"expanded_route_request": expanded_route_request}
+               if expanded_route_request else {}),
+            "review_depth_policy": depth_policy, "manifest": manifest,
+        })
+        return manifest
     settled_rows = yield_meter.settled_findings(ws, files=files, limit=200)
     settled_ref = store.put("settled-findings", {
         "schema": "taskplane.settled-findings/v1",
@@ -3843,7 +4468,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     expected_lenses = sorted(
         lens_id for lens_id, row in decision.items()
         if row["verdict"] != "n/a")
-    if delivery_authority is not None:
+    if zero_lens_authority is not None:
         slot_conservation = _slot_conservation_record(
             selected=[], prepared=[], dispatched=[], collected=[])
     else:
@@ -3900,9 +4525,20 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "review_depth_policy": depth_receipt,
         "envelope": _portable_ref(envelope_ref), "routing_counts": counts,
         "slot_conservation": slot_conservation,
-        **({"delivery_mode_receipt": copy.deepcopy(delivery_authority),
+        **({"delivery_mode_receipt": copy.deepcopy(zero_lens_authority),
             "expected_lenses": expected_lenses}
-           if delivery_authority is not None else {}),
+           if zero_lens_authority is not None else {}),
+        **({"focused_route": {
+                "status": focused_route["status"],
+                "route_fingerprint": focused_route["route_fingerprint"],
+                "selected": list(focused_route["selected"]),
+                "selected_count": len(focused_route["selected"]),
+                "reused": list((reuse_plan or {}).get("reused") or []),
+                "dispatched": list((reuse_plan or {}).get("dispatch") or []),
+                **({"expanded_route_authority": copy.deepcopy(
+                    focused_route["expanded_route_authority"])}
+                   if focused_route.get("expanded_route_authority") else {}),
+            }} if focused_route else {}),
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
         **({"review_session": {"schema": review_session["schema"],
@@ -3927,9 +4563,13 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         "dispatch_slots": slots,
         "manifest": manifest, "counters": counters,
         "slot_conservation": slot_conservation,
-        **({"delivery_mode_receipt": copy.deepcopy(delivery_authority),
+        **({"delivery_mode_receipt": copy.deepcopy(zero_lens_authority),
             "expected_lenses": expected_lenses}
-           if delivery_authority is not None else {}),
+           if zero_lens_authority is not None else {}),
+        **({"focused_route": focused_route} if focused_route else {}),
+        **({"reuse_plan": reuse_plan,
+            "reused_lens_evidence": reused_lens_evidence}
+           if reuse_plan else {}),
         **({"review_execution": execution_preflight}
            if execution_preflight else {}),
         **({"review_session": review_session} if review_session else {}),
@@ -5716,6 +6356,54 @@ def _persist_review_publication_failure(
     return manifest
 
 
+def _merge_reused_lens_collection(state: dict, collected: dict,
+                                  envelope: dict) -> tuple[dict, list[dict]]:
+    """Conserve reused passing evidence beside newly collected slot results."""
+    reused = [copy.deepcopy(row) for row in
+              state.get("reused_lens_evidence") or []
+              if isinstance(row, dict)]
+    if not reused:
+        return collected, []
+    synthetic, summaries = [], []
+    for row in reused:
+        lens_id = str(row.get("lens") or "")
+        summary = copy.deepcopy(row.get("lens_result") or {})
+        if not lens_id or summary.get("lens") != lens_id or \
+                summary.get("verdict") != "pass" or int(
+                    summary.get("blockers") or 0) != 0 or \
+                row.get("host_provenance") != "verified" or not str(
+                    row.get("result_fingerprint") or ""):
+            raise ReviewKernelError("reused lens evidence is incomplete")
+        summaries.append(summary)
+        synthetic.append({
+            "slot_id": "reused." + lens_id,
+            "lens_results": [summary],
+            "findings": list(row.get("findings") or []),
+            "notes": [],
+            "result_fingerprint": row["result_fingerprint"],
+            "source": "sealed-prior-evaluate",
+        })
+    merged = copy.deepcopy(collected)
+    merged["results"] = list(merged.get("results") or []) + synthetic
+    merged["result_fingerprints"] = list(
+        merged.get("result_fingerprints") or []) + [
+            row["result_fingerprint"] for row in reused]
+    merged["slot_ids"] = list(merged.get("slot_ids") or []) + [
+        row["slot_id"] for row in synthetic]
+    selected = list((state.get("focused_route") or {}).get("selected") or [])
+    if len(merged["slot_ids"]) != len(selected):
+        raise ReviewKernelError(
+            "focused route reuse/new-result conservation failed")
+    merged["status"] = "complete"
+    merged["target_fingerprint"] = envelope["target_fingerprint"]
+    merged["context_fingerprint"] = envelope["context_fingerprint"]
+    merged["completeness"] = {
+        "expected": len(selected), "collected": len(selected),
+        "missing": 0, "complete": True,
+    }
+    return merged, summaries
+
+
 def _collect_review_transaction(
         ws: str, *, result_refs: Iterable[dict] | None,
         publish: bool, run_id: str,
@@ -5746,7 +6434,8 @@ def _collect_review_transaction(
             raise evidence.ProvenanceError(
                 "direct result references cannot establish hook-observed authorship")
         authorized_empty_collection = None
-        if state.get("delivery_mode_receipt") is not None:
+        if state.get("zero_lens_evaluation") is True or \
+                state.get("delivery_mode_receipt") is not None:
             if __package__:
                 from . import delivery_policy
             else:  # pragma: no cover - direct CLI module loading
@@ -5915,7 +6604,10 @@ def _collect_review_transaction(
                 gap_slots=len(collected["gaps"]),
                 findings=len(revision["findings"]), approval_enabled=False)
             return manifest
-        correction_resolution = _resolve_sweep_corrections(store, state, refs)
+        correction_resolution = (
+            {"corrections": [], "rejections": []}
+            if state.get("zero_lens_evaluation") is True else
+            _resolve_sweep_corrections(store, state, refs))
         quick_corrections = correction_resolution.get("corrections") or []
         sweep_rejections = correction_resolution["rejections"]
         depth_receipt = _assert_review_depth_manifest(
@@ -5931,8 +6623,9 @@ def _collect_review_transaction(
                 selected=slot_ids, prepared=slot_ids, dispatched=slot_ids,
                 collected=collected.get("slot_ids") or [])
         else:
-            routed = store.read(state["routing_decision"]).get(
-                "dispositions") or {}
+            routed = ({} if state.get("zero_lens_evaluation") is True else
+                      store.read(state["routing_decision"]).get(
+                          "dispositions") or {})
             if any((row or {}).get("verdict") in {"deep", "sweep", "light"}
                    for row in routed.values()):
                 raise ReviewKernelError(
@@ -5949,6 +6642,9 @@ def _collect_review_transaction(
             }
             conservation = _slot_conservation_record(
                 selected=[], prepared=[], dispatched=[], collected=[])
+        collected, reused_summaries = _merge_reused_lens_collection(
+            state, collected, envelope)
+        lens_results.extend(reused_summaries)
         _collection_fault("post_results")
         revision, prior = _revision_record(
             store, state["envelope"], collected,
@@ -5963,7 +6659,8 @@ def _collect_review_transaction(
                 "review", review_id="n" + revision["findings_fingerprint"][:11])
         except Exception:
             pass
-        decision = store.read(state["routing_decision"])["dispositions"]
+        decision = ({} if state.get("zero_lens_evaluation") is True else
+                    store.read(state["routing_decision"])["dispositions"])
         _collection_fault("post_routing")
         identity = evidence.revision_identity(revision)
         dor = ((envelope.get("change") or {}).get("dor") or
@@ -6001,7 +6698,9 @@ def _collect_review_transaction(
                 requirements_validation=requirements_validation)
         portable_validations = [
             _portable_ref(ref) for ref in result_validations]
-        body = {"meta": {**identity, "lens_coverage": decision,
+        body = {"meta": {**identity,
+                         **({} if state.get("zero_lens_evaluation") is True
+                            else {"lens_coverage": decision}),
                          "target": identity["target_fingerprint"],
                          "dor_evidence": dor,
                          "requirements_validation": requirements_validation,

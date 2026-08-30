@@ -20,6 +20,22 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def retained_r0002_candidate(tmp_path_factory):
+    global ROOT
+    original = ROOT
+    workspace = tmp_path_factory.mktemp("h3-r0002") / "repository"
+    subprocess.run(["git", "clone", "--quiet", "--no-hardlinks",
+                    str(original), str(workspace)], check=True)
+    subprocess.run(["git", "checkout", "-q", "86c7f74"], cwd=workspace,
+                   check=True)
+    ROOT = workspace
+    try:
+        yield
+    finally:
+        ROOT = original
 sys.path.insert(0, str(ROOT / "taskplane"))
 
 from taskplane import dashboard, terminal_truth  # noqa: E402

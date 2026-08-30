@@ -23,6 +23,17 @@ the task's product scope. Read the requirement, project context, approved
 design when present, and one bounded graph-impact result, then write the two
 plan artifacts and return. This is a planning judgment, not a framework audit.
 
+## Focused routing contract
+
+For every non-trivial Plan, execute exactly three or four quick lenses chosen
+deterministically from the approved Product and Design artifacts, dependency
+graph, task scopes, ownership, selectors, and validation strategy. Record each
+selection's rationale, task-to-acceptance-criterion coverage, and one evidenced
+row for all 26 dispositions. If more than four independent mandatory risks
+remain, split the scope; if it cannot be split, refuse pending an authenticated
+expanded-route approval that names the extra lenses and cost. Never silently
+drop a mandatory risk or treat the ledger as a full-catalog execution request.
+
 1. Read the spec/requirement (the action payload carries the R-record and
    recalled KB decisions — honor settled calls), the context docs
    (`knowledge/context/*.md`), and the dependency graph with exactly one

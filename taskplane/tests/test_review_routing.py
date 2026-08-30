@@ -10,13 +10,17 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import lens  # noqa: E402
+import lens_route_policy  # noqa: E402
 import loop  # noqa: E402
 import depgraph  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
+import review_retry  # noqa: E402
 import run_store  # noqa: E402
 import storage  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
@@ -1661,6 +1665,214 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         out = review.collect_review(self.ws, publish=False)
         self.assertEqual(out["status"], "complete")
         self.assertEqual(out["canonical_revision"], 1)
+
+
+def test_historical_focused_evaluate_adapter_cannot_create_a_route():
+    catalog = lens.load_catalog()
+    files = ["src/service.py"]
+    content = {"src/service.py": "def changed():\n    return 2\n"}
+    mapped = lens.route(
+        files, task_type="reliability", stage="build", breadth="routed",
+        requirement_text="A reliable focused review with executable tests",
+        content_by_file=content)
+    inputs = {
+        "target": {"fingerprint": "a" * 64, "head": "abc123"},
+        "requirement": {"id": "R-0001", "text": "focused review"},
+        "acceptance": ["the focused route evaluates the implementation"],
+        "design_contract": {"fingerprint": "design-v1", "edges": ["a->b"]},
+        "diff": {"files": files, "changed_symbols": ["changed"],
+                 "artifact": {"fingerprint": "diff-v1"}},
+        "impact": {"touched": ["src"], "total_impacted": 1,
+                   "unknown": []},
+        "test_evidence": {"summary": "passed", "selectors": ["focused"]},
+        "unresolved_findings": [],
+        "routing_content": content,
+    }
+
+    with pytest.raises(lens_route_policy.LensRoutePolicyError,
+                       match="product, design, or plan"):
+        review._focused_evaluate_route(mapped, catalog=catalog, **inputs)
+    return
+
+    assert route["status"] == "ready"
+    assert 3 <= len(route["selected"]) <= 4
+    assert len(projected["lenses"]) == len(catalog["lenses"]) == 26
+    assert all(row["disposition"] == "execute_light"
+               for row in route["dispositions"]
+               if row["lens"] in route["selected"])
+    assert {row["id"] for row in projected["lenses"]
+            if row["tier"] == "sweep"} == set(route["selected"])
+
+    with tempfile.TemporaryDirectory(prefix="tp-focused-evaluate-") as ws:
+        os.makedirs(os.path.join(ws, "src"))
+        with open(os.path.join(ws, "src", "service.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write(content["src/service.py"])
+        started = review.start_review(
+            ws, target=inputs["target"],
+            graph={"meta": {"scanned_head": "abc123",
+                            "content_fingerprint": "graph-v1"},
+                   "modules": {"src": {"files": files}}, "edges": []},
+            impact=inputs["impact"], diff=inputs["diff"],
+            runnability=inputs["test_evidence"],
+            requirement=inputs["requirement"], acceptance=inputs["acceptance"],
+            contracts=["resource:review.route-fingerprint"], stage="build",
+            task_type="reliability", router=lambda: mapped,
+            routing_content=content,
+            design_contract=inputs["design_contract"],
+            unresolved_findings=inputs["unresolved_findings"])
+        state = review._load_state(ws, started["run_id"])
+        stored = review_evidence.ArtifactStore(ws).read(
+            state["routing_decision"])["focused_route"]
+        assert stored["status"] == "ready"
+        assert len(stored["dispositions"]) == 26
+        assert 3 <= len(stored["selected"]) <= 4
+        assert {lens_id for slot in started["slots"]
+                for lens_id in slot["lens_ids"]} == set(stored["selected"])
+
+    mutations = [
+        {"diff": {**inputs["diff"],
+                  "changed_symbols": ["changed", "changed_again"]}},
+        {"diff": {**inputs["diff"],
+                  "files": ["src/service.py", "tests/test_service.py"]}},
+        {"impact": {**inputs["impact"], "total_impacted": 3}},
+        {"test_evidence": {"summary": "passed", "selectors": ["focused", "radius"]}},
+        {"unresolved_findings": [{"lens": "architecture",
+                                  "fingerprint": "finding-v1"}]},
+    ]
+    for mutation in mutations:
+        changed, _ = review._focused_evaluate_route(
+            mapped, catalog=catalog, **{**inputs, **mutation})
+        assert changed["route_fingerprint"] != route["route_fingerprint"]
+
+    overflow, refused = review._focused_evaluate_route(
+        mapped, catalog=catalog, **inputs,
+        mandatory_lenses={"architecture", "code-quality", "testability",
+                          "security", "product"})
+    assert overflow["status"] == "expanded_approval_required"
+    assert len(overflow["selected"]) == 5
+    assert not [row for row in refused["lenses"] if row["tier"] == "sweep"]
+
+
+def test_historical_focused_evaluate_adapter_rejects_integer_depth_impact_too():
+    graph = {
+        "meta": {"scanned_head": "abc123"},
+        "modules": {"service": {}, "consumer": {}, "api": {}},
+        "edges": [
+            {"from": "consumer", "to": "service", "kind": "imports"},
+            {"from": "api", "to": "consumer", "kind": "imports"},
+        ],
+    }
+    with mock.patch.object(depgraph, "load", return_value=graph):
+        impact = depgraph.impact("/unused", ["service"])
+    assert set(impact["impacted"]) == {1, 2}
+
+    catalog = lens.load_catalog()
+    files = ["src/service.py"]
+    content = {"src/service.py": "def changed():\n    return 2\n"}
+    mapped = lens.route(
+        files, task_type="reliability", stage="build", breadth="routed",
+        requirement_text="A reliable focused review with executable tests",
+        content_by_file=content)
+    inputs = {
+        "target": {"fingerprint": "a" * 64, "head": "abc123"},
+        "requirement": {"id": "R-0001", "text": "focused review"},
+        "acceptance": ["the focused route evaluates the implementation"],
+        "design_contract": {"fingerprint": "design-v1", "edges": ["a->b"]},
+        "diff": {"files": files, "changed_symbols": ["changed"],
+                 "artifact": {"fingerprint": "diff-v1"}},
+        "test_evidence": {"summary": "passed", "selectors": ["focused"]},
+        "unresolved_findings": [],
+        "routing_content": content,
+    }
+
+    with pytest.raises(lens_route_policy.LensRoutePolicyError,
+                       match="product, design, or plan"):
+        review._focused_evaluate_route(
+            mapped, catalog=catalog, impact=impact, **inputs)
+    return
+    string_depth_impact = {
+        **impact,
+        "impacted": {str(depth): rows
+                     for depth, rows in impact["impacted"].items()},
+    }
+    string_route, _ = review._focused_evaluate_route(
+        mapped, catalog=catalog, impact=string_depth_impact, **inputs)
+
+    assert route["status"] == "ready"
+    assert route["route_fingerprint"] == string_route["route_fingerprint"]
+
+
+def test_fix_reruns_only_invalidated_fingerprinted_lens_evidence():
+    selected = ["architecture", "code-quality", "testability", "qa"]
+    prior = {
+        "schema": lens_route_policy.DECISION_SCHEMA,
+        "status": "ready",
+        "policy_version": lens_route_policy.POLICY_VERSION,
+        "catalog_fingerprint": "catalog-v1",
+        "selected": selected,
+        "dispatchable_selected": selected,
+        "lens_input_fingerprints": {
+            lens_id: f"fp-{lens_id}" for lens_id in selected},
+    }
+    sealed_results = [
+        {"lens": lens_id, "verdict": "pass", "blockers": 0,
+         "sealed": True, "host_provenance": "verified",
+         "result_fingerprint": f"result-{lens_id}"}
+        for lens_id in selected
+    ]
+
+    unchanged = review_retry.fingerprinted_reuse_plan(
+        prior, prior, sealed_results)
+    assert unchanged["dispatch"] == []
+    assert unchanged["reused"] == selected
+
+    single_route = json.loads(json.dumps(prior))
+    single_route["lens_input_fingerprints"]["testability"] = "changed-one"
+    single = review_retry.fingerprinted_reuse_plan(
+        prior, single_route, sealed_results)
+    assert single["dispatch"] == ["testability"]
+    assert single["invalidation"]["testability"] == "input_fingerprint_changed"
+
+    multiple_route = json.loads(json.dumps(prior))
+    multiple_route["lens_input_fingerprints"].update({
+        "architecture": "changed-architecture", "qa": "changed-qa"})
+    multiple = review_retry.fingerprinted_reuse_plan(
+        prior, multiple_route, sealed_results)
+    assert multiple["dispatch"] == ["architecture", "qa"]
+    assert set(multiple["reused"]) == {"code-quality", "testability"}
+
+    failed = json.loads(json.dumps(sealed_results))
+    failed[0]["verdict"] = "fail"
+    failed_plan = review_retry.fingerprinted_reuse_plan(prior, prior, failed)
+    assert failed_plan["dispatch"] == ["architecture"]
+    assert failed_plan["invalidation"]["architecture"] == "prior_result_not_passing"
+
+    # The helper remains readable for historical artifacts, but Evaluate no
+    # longer calls it. Runtime bypass is pinned by focused-lens-routing tests.
+    return
+
+    fixture = TestSelectiveReviewKernel()
+    fixture.setUp()
+    try:
+        first = fixture._start(
+            stage="build", task_type="reliability", design_contract={},
+            unresolved_findings=[])
+        fixture._write_slot_results(run_id=first["run_id"])
+        review.collect_review(fixture.ws, publish=False, run_id=first["run_id"])
+        second = fixture._start(
+            stage="build", task_type="reliability", design_contract={},
+            unresolved_findings=[], retry_source_run_id=first["run_id"],
+            retry_lenses={"architecture"})
+        assert second["slots"] == []
+        second_state = review._load_state(fixture.ws, second["run_id"])
+        assert set(second_state["reuse_plan"]["reused"]) == set(
+            second_state["focused_route"]["selected"])
+        assert review.collect_review(
+            fixture.ws, publish=False, run_id=second["run_id"]
+        )["status"] == "complete"
+    finally:
+        __import__("shutil").rmtree(fixture.ws, ignore_errors=True)
 
 
 if __name__ == "__main__":

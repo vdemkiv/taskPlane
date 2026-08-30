@@ -6,7 +6,7 @@
     "skills/tp-design/SKILL.md",
     "skills/tp-design/flow.json"
   ],
-  "inputs_fingerprint": "965fd7e8454a6e8ce3b6d455b306dc11cd892ba83aeefd2787e78e16bbc0b29e",
+  "inputs_fingerprint": "de32bc8f33b40a3cd2c30ec3baa4cfbcb020b0d69041008741bff4c2b32be4c4",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp loop init",

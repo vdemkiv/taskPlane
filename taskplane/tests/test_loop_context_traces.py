@@ -61,6 +61,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -484,6 +485,10 @@ def _loop_without_the_recording(tmpdir):
     with mock.patch.object(build_c, "bind_loop_runtime",
                            side_effect=capture_runtime):
         spec.loader.exec_module(mod)
+    # Runtime module loading is rooted at loop.py's shipped directory. The
+    # source-derived control lives in a temporary file only so its recording
+    # call can be removed; it must retain the production module root.
+    mod.__file__ = loop.__file__
     if set(captured) != {"state_loader", "wait_policy_factory",
                          "wait_invocation_factory"}:  # pragma: no cover
         raise AssertionError("control module did not publish loop services")
@@ -559,19 +564,33 @@ class TestRecordingOnly(unittest.TestCase):
 
     def setUp(self):
         self.root = tempfile.mkdtemp()
+        self.old_taskplane_home = os.environ.get("TASKPLANE_HOME")
+        self.store_home = os.path.join(self.root, "taskplane-home")
+        os.environ["TASKPLANE_HOME"] = self.store_home
         self.ws = _repo(self.root)
         depgraph.scan(self.ws)
         self.base = tp.git_head(self.ws)
+
+    def tearDown(self):
+        if self.old_taskplane_home is None:
+            os.environ.pop("TASKPLANE_HOME", None)
+        else:
+            os.environ["TASKPLANE_HOME"] = self.old_taskplane_home
 
     def _run(self, module):
         """One next_action: its payload and the event names it appended."""
         before = len(_events(self.ws))
         services = getattr(module, "_test_loop_runtime_services", None)
-        if services is None:
-            payload = module.next_action(self.ws)
-        else:
-            with build_c.scoped_loop_runtime(**services):
+        runtime_bundle = getattr(module, "_REVIEW_RUNTIME_BUNDLE", None)
+        module._REVIEW_RUNTIME_BUNDLE = None
+        try:
+            if services is None:
                 payload = module.next_action(self.ws)
+            else:
+                with build_c.scoped_loop_runtime(**services):
+                    payload = module.next_action(self.ws)
+        finally:
+            module._REVIEW_RUNTIME_BUNDLE = runtime_bundle
         # Live progress is a non-gating read model over the growing audit
         # stream. Its sequence and elapsed sample are expected to advance on
         # repeated observations, so they are not part of this differential's
@@ -595,18 +614,50 @@ class TestRecordingOnly(unittest.TestCase):
                     dashboard.pop("delivery", None)
                     status["dashboard"] = dashboard
                 payload["status"] = status
-        return payload, _events(self.ws)[before:]
+        return self._comparison_projection(payload), _events(self.ws)[before:]
+
+    @classmethod
+    def _comparison_projection(cls, value):
+        """Normalize only freshly signed worker-release transport bytes."""
+        if isinstance(value, dict):
+            return {
+                key: ("<SIGNED-WORKER-RELEASE-ACTION>"
+                      if key == "signed_action"
+                      else cls._comparison_projection(item))
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._comparison_projection(item) for item in value]
+        return value
 
     def _differential(self, step, **state_kw):
         """[control, control, subject] — the control pair FIRST, because a
         nondeterministic control (a fresh uuid4 task_id, an int(time.time())
         stamp) makes the real comparison prove nothing at all."""
         _state(self.ws, step, baseline=self.base, **state_kw)
+        snapshot_root = tempfile.mkdtemp()
+        workspace_snapshot = os.path.join(snapshot_root, "workspace")
+        shutil.copytree(self.ws, workspace_snapshot)
+        store_snapshot = os.path.join(snapshot_root, "store-home")
+        if os.path.isdir(self.store_home):
+            shutil.copytree(self.store_home, store_snapshot)
+
+        def restore_runtime_state():
+            shutil.rmtree(self.ws)
+            shutil.copytree(workspace_snapshot, self.ws)
+            if os.path.lexists(self.store_home):
+                shutil.rmtree(self.store_home)
+            if os.path.isdir(store_snapshot):
+                shutil.copytree(store_snapshot, self.store_home)
+
         with mock.patch.object(time, "time", return_value=FROZEN_TIME), \
                 mock.patch.object(uuid, "uuid4", return_value=FROZEN_UUID):
-            self._run(self.norow)                       # warm side effects
+            self._run(self.norow)                       # warm imports only
+            restore_runtime_state()
             base1 = self._run(self.norow)
+            restore_runtime_state()
             base2 = self._run(self.norow)
+            restore_runtime_state()
             subject = self._run(loop)
         self.assertEqual(base1, base2,
                          f"CONTROL IS NONDETERMINISTIC at step={step} — the "

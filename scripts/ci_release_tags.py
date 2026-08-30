@@ -98,6 +98,12 @@ NOT_RELEASED = {
                   "was explicitly not released.",
         "superseded_by": "2.18.0",
     },
+    "2.18.0": {
+        "reason": "superseded public-metadata correction candidate that "
+                  "preceded the complete local and exact-PR-head-SHA release "
+                  "proof; it was explicitly not released.",
+        "superseded_by": "2.18.1",
+    },
 }
 
 # Version numbers deliberately skipped — never bumped to, never released.

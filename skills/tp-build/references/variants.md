@@ -42,7 +42,7 @@ workspace — same contracts, budgets, and hook enforcement as any task.
    return structured JSON (tests, files, per-criterion notes, decisions).
 6. **Evaluate BOTH, comparatively.** Re-run each variant's tests yourself
    (trust but verify), then one read-only tp-engineering review over both
-   diffs: per-criterion walk per variant, full lens catalog, plus a
+   sealed direct-evidence judgments: per-criterion walk per variant, plus a
    comparison — correctness risk, complexity, maintainability,
    extensibility, performance at scale, UX fit per persona. Ask for a
    pick recommendation: A, B, or hybrid (and what the hybrid takes from
@@ -62,7 +62,8 @@ workspace — same contracts, budgets, and hook enforcement as any task.
    the losing branch).
 9. **After the pick.** A winner → the loop moves to the engineering
    review: merge `tp/<winner>`, keep the losing branch as reference until
-   the retro, clear the variant worktree contracts. Hybrid → the loop
+   the retro, and confirm terminal variant worker slots were quarantined by
+   lifecycle/gate cleanup. Hybrid → the loop
    returns to `plan`: write the graft task (winner's branch as base,
    grafted parts named), plan approval and the build/evaluate cycle apply,
    and the loop pauses at `selection` again for the hybrid's confirmation.

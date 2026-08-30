@@ -20,7 +20,7 @@ from taskplane.producer_observation import (
 
 def _args(tmp_path, *, clock=FakeClock(wall_time=10.0, monotonic=1.0),
           claim=None):
-    raw = b'{"schema":"taskplane.evaluator-output/v1"}\n'
+    raw = b'{"schema":"taskplane.evaluator-output/v2"}\n'
     dispatch_projection = {
         "run_id": "run-r0013",
         "task_id": "task-a",
@@ -40,7 +40,7 @@ def _args(tmp_path, *, clock=FakeClock(wall_time=10.0, monotonic=1.0),
         "producer": "tp-evaluator",
         "output_path": ".eval/verdict.json",
         "output_bytes": raw,
-        "output_schema_id": "taskplane.evaluator-output/v1",
+        "output_schema_id": "taskplane.evaluator-output/v2",
         "output_contract_fingerprint": "b" * 64,
         "source_sha": "c" * 40,
         "producer_dispatch": {

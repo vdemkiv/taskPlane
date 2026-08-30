@@ -405,7 +405,7 @@
         "tests": "true",
         "variant": null
       },
-      "task_name": "tp_step_executor_t1_6a951176",
+      "task_name": "tp_step_executor_t1_<WORKER>",
       "wait_policy": {
         "minimum_timeout_seconds": 300,
         "mode": "event",
@@ -709,7 +709,7 @@
         "tests": "true",
         "variant": null
       },
-      "task_name": "tp_step_executor_t2_ec1cc71e",
+      "task_name": "tp_step_executor_t2_<WORKER>",
       "wait_policy": {
         "minimum_timeout_seconds": 300,
         "mode": "event",

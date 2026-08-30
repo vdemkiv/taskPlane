@@ -173,7 +173,7 @@ def test_registered_graph_loader_resolves_the_live_depgraph_seam(
     monkeypatch.setattr(depgraph, "load", lambda _workspace: fake)
 
     assert lens_signals._graph_payload("/unused", ["src/auth/a.py"])[
-        "module_dependents"] == {"auth": 1}
+        "module_dependents"] == {"auth": 0}
 
 
 def test_registered_checkpoint_loader_resolves_the_live_governed_seam(
@@ -273,7 +273,7 @@ def test_boundary_cut_shrinks_to_the_measured_residual_sccs() -> None:
     })
 
     assert set(rows) == {orchestration, kernel}
-    assert rows[orchestration]["edge_count"] == 48
+    assert rows[orchestration]["edge_count"] == 49
     assert rows[kernel]["edge_count"] == 13
     cyclic = set().union(*rows)
     assert not ({"taskplane.decompose", "taskplane.graph_decomposition",

@@ -91,3 +91,74 @@ def test_tier1_generic_layout_flags_a_real_regression(tmp_path):
     errs = rg.dod_errors(ws, base, ["src/acme/service.py"])
 
     assert any(e.startswith("regression:") for e in errs), errs
+
+
+def test_hosted_pr_checks_authorizes_repository_static_test_roots(tmp_path):
+    ws, _base = _mk_repo(tmp_path)
+
+    assert rg.approved_test_roots(
+        ws, "gh pr checks 17 --watch --fail-fast") == {"."}
+    assert rg.approved_test_roots(
+        ws, "gh pr checks 17 --fail-fast --watch") == {"."}
+
+
+def test_hosted_pr_checks_skips_tier1_but_keeps_static_coverage(tmp_path):
+    ws, base = _mk_repo(tmp_path)
+    calls = []
+
+    errors = rg.dod_errors(
+        ws, base, ["taskplane/loop.py"],
+        test_command="gh pr checks 17 --watch --fail-fast",
+        runner=lambda _ws, _files: calls.append("current") or set(),
+        baseline_failures=(
+            lambda _ws, _base, _files:
+            calls.append("baseline") or set()))
+
+    assert errors == []
+    assert calls == []
+    roots = rg.approved_test_roots(
+        ws, "gh pr checks 17 --watch --fail-fast")
+    index = rg.test_import_index(ws, roots)
+    radius, _degraded = rg.radius_tests(
+        ws, ["taskplane/loop.py"], test_roots=roots, import_index=index)
+    assert "taskplane/tests/test_loop.py" in radius
+    assert rg.coverage_gaps(
+        ["taskplane/loop.py"], radius, ws,
+        import_index=index, test_roots=roots) == []
+
+
+def test_hosted_pr_checks_still_blocks_a_real_static_coverage_gap(tmp_path):
+    ws, base = _mk_repo(tmp_path)
+    (tmp_path / "taskplane" / "tests" / "test_loop.py").write_text(
+        "def test_unrelated():\n    assert True\n")
+    calls = []
+
+    errors = rg.dod_errors(
+        ws, base, ["taskplane/loop.py"],
+        test_command="gh pr checks 17 --watch --fail-fast",
+        runner=lambda _ws, _files: calls.append("current") or set(),
+        baseline_failures=(
+            lambda _ws, _base, _files:
+            calls.append("baseline") or set()))
+
+    assert any(error.startswith("regression_coverage_gap:")
+               for error in errors)
+    assert calls == []
+
+
+@pytest.mark.parametrize("command", [
+    "gh pr checks 0 --watch --fail-fast",
+    "gh pr checks -1 --watch --fail-fast",
+    "gh pr checks one --watch --fail-fast",
+    "gh pr checks 1 --watch",
+    "gh pr checks 1 --watch --fail-fast --repo owner/repo",
+    "gh pr view 1 --watch --fail-fast",
+    "gh repo delete owner/repo --yes",
+    "gh pr checks 1 --watch --fail-fast && pytest",
+    "gh pr checks 1 --watch --fail-fast; gh pr merge 1",
+])
+def test_malformed_or_unrelated_gh_commands_do_not_widen_roots(
+        tmp_path, command):
+    ws, _base = _mk_repo(tmp_path)
+
+    assert rg.approved_test_roots(ws, command) == set()

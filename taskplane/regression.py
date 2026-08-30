@@ -68,14 +68,11 @@ REGRESSION_TIMEOUT_DEFAULT_S = 1200
 REGRESSION_TIMEOUT_MIN_S = 30
 REGRESSION_TIMEOUT_MAX_S = 1800
 
-
 class RegressionDiscoveryError(RuntimeError):
     """The candidate test surface could not be bounded safely."""
 
-
 def _skip_dir(name: str) -> bool:
     return name in _SKIP_DIRS or name.startswith("_incoming-")
-
 
 def _skipped_path(path: str) -> bool:
     """Whether a repository-relative path lives under a non-product root.
@@ -87,7 +84,6 @@ def _skipped_path(path: str) -> bool:
     parts = path.replace("\\", "/").strip("/").split("/")
     return any(_skip_dir(part) for part in parts[:-1])
 
-
 def _under_roots(path: str, roots: set[str]) -> bool:
     path = path.replace("\\", "/").strip("/")
     for root in roots:
@@ -95,7 +91,6 @@ def _under_roots(path: str, roots: set[str]) -> bool:
         if not root or root == "." or path == root or path.startswith(root + "/"):
             return True
     return False
-
 
 def _python_test_membership(parts: list[str] | tuple[str, ...],
                             name: str) -> tuple[bool, bool]:
@@ -108,7 +103,6 @@ def _python_test_membership(parts: list[str] | tuple[str, ...],
     in_test_tree = any(part in ("test", "tests") for part in parts)
     collectable = name.startswith("test_") or name.endswith("_test.py")
     return collectable, in_test_tree or collectable or name == "conftest.py"
-
 
 def _git_candidates(ws: str) -> list[str] | None:
     """Tracked plus untracked-unignored paths, or None outside Git."""
@@ -143,7 +137,6 @@ def _git_candidates(ws: str) -> list[str] | None:
             "Git file discovery failed: "
             + (proc.stderr.strip() or "git ls-files failed"))
     return sorted({p for p in proc.stdout.split("\0") if p})
-
 
 def _python_files(ws: str, *, tests: bool,
                   roots: set[str] | None = None) -> list[str]:
@@ -222,7 +215,6 @@ def _python_files(ws: str, *, tests: bool,
                 out.add(rel)
     return sorted(out)
 
-
 _PYTHON_EXE = re.compile(
     r"^(?:python(?:\d+(?:\.\d+)*)?|pypy(?:\d+)?)(?:\.exe)?$")
 _PYTHON_FLAGS = {"-B", "-E", "-I", "-O", "-OO", "-P", "-q", "-s",
@@ -238,7 +230,6 @@ _PYTEST_FLAGS = {
     "--exitfirst", "--ff", "--lf", "--no-header", "--no-summary",
     "--quiet", "--strict-markers",
 }
-
 
 def _pytest_argv(tokens: list[str]) -> list[str] | None:
     """Return pytest-owned argv only for one recognized invocation grammar."""
@@ -311,7 +302,6 @@ def _pytest_argv(tokens: list[str]) -> list[str] | None:
             return None
     return None
 
-
 def _pytest_positionals(argv: list[str]) -> list[str] | None:
     """Conservatively parse only pytest positional test targets."""
     out: list[str] = []
@@ -336,7 +326,6 @@ def _pytest_positionals(argv: list[str]) -> list[str] | None:
         i += 1
     return out
 
-
 def _approved_pytest_positionals(test_command: str) -> list[str] | None:
     """Parse one approved pytest command without inferring extra targets."""
     if "\n" in test_command or "\r" in test_command:
@@ -357,6 +346,22 @@ def _approved_pytest_positionals(test_command: str) -> list[str] | None:
     return (_pytest_positionals(pytest_argv)
             if pytest_argv is not None else None)
 
+def authoritative_hosted_ci_command(test_command: str | None) -> bool:
+    """Recognize the one read-only hosted CI command trusted by DoD."""
+    if not isinstance(test_command, str) or not test_command.strip() or \
+            "\n" in test_command or "\r" in test_command:
+        return False
+    try:
+        lexer = shlex.shlex(
+            test_command, posix=True, punctuation_chars="|&;<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    return len(tokens) == 6 and tokens[:3] == ["gh", "pr", "checks"] and \
+        re.fullmatch(r"[1-9][0-9]*", tokens[3]) is not None and \
+        set(tokens[4:]) == {"--watch", "--fail-fast"}
 
 def selector_scoped_test_command(test_command: str | None) -> bool:
     """True when every approved pytest target is an exact node selector."""
@@ -364,7 +369,6 @@ def selector_scoped_test_command(test_command: str | None) -> bool:
         return False
     positionals = _approved_pytest_positionals(test_command)
     return bool(positionals and all("::" in token for token in positionals))
-
 
 def approved_test_roots(ws: str, test_command: str | None) -> set[str]:
     """Test roots explicitly named by the approved command.
@@ -374,6 +378,8 @@ def approved_test_roots(ws: str, test_command: str | None) -> set[str]:
     """
     if test_command is None:
         return {"."}  # direct API compatibility: caller explicitly opted in
+    if authoritative_hosted_ci_command(test_command):
+        return {"."}
     positionals = _approved_pytest_positionals(test_command)
     if positionals is None:
         return set()  # non-Python command authorizes no additional Python code
@@ -401,7 +407,6 @@ def approved_test_roots(ws: str, test_command: str | None) -> set[str]:
                   else posixpath.dirname(rel) or ".")
     return roots or ({"."} if not positionals else set())
 
-
 def _module_aliases(path: str) -> set[str]:
     """Import spellings that can refer to one Python source path."""
     p = path.replace("\\", "/").strip("/")
@@ -420,7 +425,6 @@ def _module_aliases(path: str) -> set[str]:
     # Full path plus every useful import suffix and basename. `src/acme/x.py`
     # may be imported as src.acme.x, acme.x, or x depending on sys.path.
     return {".".join(parts[i:]) for i in range(len(parts))}
-
 
 def _imported_modules(src: str, mods: set) -> set:
     """Known source-module aliases imported by a Python test file."""
@@ -444,7 +448,6 @@ def _imported_modules(src: str, mods: set) -> set:
                 found |= {name, name.split(".")[-1]} & mods
     return found
 
-
 def source_alias_owners(ws: str) -> dict[str, set[str]]:
     """Import alias -> source paths; ambiguous aliases remain explicit."""
     out: dict[str, set[str]] = {}
@@ -453,11 +456,9 @@ def source_alias_owners(ws: str) -> dict[str, set[str]]:
             out.setdefault(alias, set()).add(rel)
     return out
 
-
 def source_modules(ws: str) -> set:
     """All import aliases of repository Python source modules."""
     return set(source_alias_owners(ws))
-
 
 def test_import_index(ws: str, test_roots: set[str] | None = None) -> dict:
     """{test_file (repo-relative): set(source module basenames it imports)}.
@@ -477,7 +478,6 @@ def test_import_index(ws: str, test_roots: set[str] | None = None) -> dict:
         index[rel] = _imported_modules(src, mods)
     return index
 
-
 def _changed_module_groups(changed_files) -> list[set[str]]:
     """Alias set per changed Python source module, for any repo layout."""
     out: list[set[str]] = []
@@ -493,7 +493,6 @@ def _changed_module_groups(changed_files) -> list[set[str]]:
             if aliases:
                 out.append(aliases)
     return out
-
 
 def _changed_modules(changed_files) -> set:
     out: set[str] = set()
@@ -747,8 +746,9 @@ def dod_errors(ws: str, snapshot_ref: str | None, changed_files,
     # selectors are already the approved executable proof. Keep the cheap
     # Tier-2 coverage guard above, but do not silently reinterpret selectors
     # as permission to execute their whole files in current + detached trees.
+    tier1_external = authoritative_hosted_ci_command(test_command)
     selector_scoped = selector_scoped_test_command(test_command)
-    if radius and snapshot_ref and not selector_scoped:
+    if radius and snapshot_ref and not selector_scoped and not tier1_external:
         try:
             base_fail = baseline_failures(ws, snapshot_ref, radius)
         except RegressionRunnerError as exc:

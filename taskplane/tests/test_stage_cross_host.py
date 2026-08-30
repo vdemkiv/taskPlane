@@ -348,7 +348,7 @@ def _write_reanchorable_pass(workspace: str | Path, task: dict) -> None:
     verdict_path = Path(loop.runtime_storage.evaluation_path(str(workspace)))
     verdict_path.parent.mkdir(parents=True, exist_ok=True)
     verdict_path.write_text(json.dumps({
-        "schema": "taskplane.evaluator-output/v1",
+        "schema": loop.evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
         "task": task["id"],
         "requirement": task["req"],
         "verdict": "pass",

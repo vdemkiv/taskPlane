@@ -1,6 +1,7 @@
 """The A/B `selection` step: native human gate between evaluate and em for
 variant builds — variants never merge, one gets picked (or hybridized)."""
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -11,6 +12,8 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
 import depgraph  # noqa: E402
+import producer_observation  # noqa: E402
+import taskplane_lite as tp  # noqa: E402
 from taskplane.tests.review_kernel_support import (  # noqa: E402
     complete_evaluate_slots,
 )
@@ -45,6 +48,9 @@ def _to_plan_approved(ws, plan=AB_PLAN, parallel=True):
     state["step"] = "plan"
     loop.save(ws, state)
     os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
+    plan = {"requirement": "selection-fixture",
+            "delivery_mode": "build", "automatic_lenses": [],
+            "plan_authority": "human:test-fixture", **plan}
     json.dump(plan, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     loop.gate(ws, "pass")            # plan → plan_approval (+ ab detection)
     loop.approve(ws)                 # → execute
@@ -74,24 +80,46 @@ def _pass_eval(ws):
     act_ws = task.get("workspace") if state.get("parallel") else ws
     complete_evaluate_slots(
         act_ws, session_id="selection-" + task["id"])
-    routed = [row for row in brief["lenses"] if row.get("mode") != "none"]
     os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w",
               encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v1",
+        json.dump({"schema": "taskplane.evaluator-output/v2",
                    "task": task["id"],
                    "requirement": task.get("req") or
                                   state.get("requirement_id") or "",
                    "verdict": "pass",
+                   "evaluation": {"status": "complete",
+                                  "reason_code": "none", "detail": ""},
                    "criteria": [{"criterion": c, "status": "met",
                                   "evidence": "verified"}
                                 for c in loop._criteria_for(ws, state, task)],
-                   "lenses": [{"lens": row["id"], "verdict": "pass",
-                               "blockers": 0} for row in routed],
                    "graph": {"dispositions": [],
                              "requirements_checked": [],
                              "contracts_checked": []},
                    "failures": []}, f)
+    slot = brief["contract_bootstrap"]["task_slot"]
+    binding = tp.worker_contract_for_stage(
+        act_ws, stage="evaluate", task=str(task["id"]))
+    assert binding is not None
+    assert binding["slot"] == slot
+    assert tp.load_active(act_ws) is None
+    contract = binding["contract"]
+    lifecycle = (contract or {}).get("worker_lifecycle") or {}
+    assert lifecycle.get("stage") == "evaluate"
+    assert str(lifecycle.get("task") or "") == str(task["id"])
+    material = loop.producer_output_identity(
+        act_ws, state, task, "evaluate",
+        active_contract=contract)
+    event = {"hook_event_name": "SubagentStop",
+             "session_id": "selection-evaluate-session",
+             "turn_id": "selection-evaluate-turn",
+             "agent_id": "selection-evaluator",
+             "agent_type": material["producer_dispatch"]["task_name"],
+             "task_name": material["producer_dispatch"]["task_name"]}
+    claim = hashlib.sha256(tp.hook_event_identity(
+        act_ws, "subagent-stop", event).encode("utf-8")).hexdigest()
+    producer_observation.record_codex_subagent_stop(
+        event=event, hook_claim_id=claim, **material)
     with mock.patch("runtime_eval.guide_loop",
                     return_value={"status": "on_path", "recovered": False}):
         loop.submit(ws, "pass")

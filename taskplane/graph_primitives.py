@@ -1609,3 +1609,36 @@ def route_verdicts(workspace, files, stage=None, requirement_text=None,
         (ctx._review_progression or _NO_REVIEW_PROGRESSION) \
             .apply_document_signals(vmap, files, content_by_file)
     return apply_budget(vmap, cap=DEEP_CAP, target=DEEP_TARGET, ctx=ctx)
+
+
+def focused_signal_rows(verdict_map: dict, catalog_ids) -> list[dict]:
+    """Project incumbent applicability evidence into policy-owned rows.
+
+    The projection stays lower-owned and dependency-neutral. Stage adapters
+    may add risk groups, mandatory floors, or scoped fingerprint inputs before
+    invoking ``lens_route_policy``; this function never selects work.
+    """
+    ids = list(catalog_ids or ())
+    if len(ids) != 26 or len(set(ids)) != len(ids):
+        raise ValueError("focused route requires the complete 26-lens catalog")
+    if not isinstance(verdict_map, dict) or set(verdict_map) != set(ids):
+        raise ValueError(
+            "focused route verdicts must cover the complete lens catalog")
+    rows = []
+    for lens_id in ids:
+        source = verdict_map[lens_id]
+        if not isinstance(source, dict):
+            raise ValueError(f"lens {lens_id}: verdict row must be an object")
+        row = {
+            "id": lens_id,
+            "verdict": source.get("verdict"),
+            "score": source.get("score"),
+            "evidence": list(source.get("evidence") or []),
+            "negative_evidence": list(source.get("negative_evidence") or []),
+            "risk_group": str(source.get("risk_group") or lens_id),
+            "mandatory": bool(source.get("mandatory") or source.get("floor")),
+        }
+        if "fingerprint_inputs" in source:
+            row["fingerprint_inputs"] = source["fingerprint_inputs"]
+        rows.append(row)
+    return rows
