@@ -14,6 +14,8 @@ immutable resolution receipt.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -24,6 +26,7 @@ from collections.abc import Mapping
 OUTAGE_SCHEMA = "taskplane.em-producer-receipt-outage/v1"
 RESOLUTION_SCHEMA = "taskplane.em-producer-receipt-outage-resolution/v1"
 CONTROL_PLANE_SCHEMA = "taskplane.em-outage-control-plane/v1"
+OUTPUT_SNAPSHOT_SCHEMA = "taskplane.em-output-snapshot/v1"
 REASON_CODE = "producer_receipt_unavailable"
 DOMAIN = "taskplane.final-em.producer-receipt-outage/v1"
 
@@ -50,19 +53,22 @@ def _closed_text(value: object, field: str, *, maximum: int = 4096) -> str:
 
 
 def read_regular_bytes(path: str) -> bytes:
-    """Read one exact regular, non-symlink file without following a swap.
+    """Capture bytes from one regular, non-symlink descriptor exactly once.
 
-    ``O_NOFOLLOW`` closes the final-component symlink race where supported.
-    The descriptor and path are then compared after the complete read.  A
-    final no-follow descriptor re-open pins the re-attested public entry, so
-    a replacement after ``lstat`` cannot make the returned bytes refer to a
-    different object than the final path observation.
+    Pathname currency ends at the no-follow ``open``.  From then on the one
+    descriptor is the authority: both stability checks and all bytes come
+    from that captured object.  Renaming a different object over the public
+    path later cannot substitute or relabel the captured bytes.  Platforms
+    without a no-follow open primitive fail closed because a pre-open
+    ``lstat`` would merely introduce another pathname race.
     """
 
     requested = os.path.abspath(os.fspath(path))
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise EmOutageError(
+            "safe no-follow output capture is unavailable on this host")
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags |= os.O_NOFOLLOW
     try:
         descriptor = os.open(requested, flags)
     except OSError as exc:
@@ -79,49 +85,134 @@ def read_regular_bytes(path: str) -> bytes:
                 break
             chunks.append(chunk)
         after = os.fstat(descriptor)
-        try:
-            path_after = os.lstat(requested)
-        except OSError as exc:
-            raise EmOutageError(f"output changed while hashing: {path}") \
-                from exc
         stable = (
-            stat.S_ISREG(path_after.st_mode)
-            and not stat.S_ISLNK(path_after.st_mode)
-            and (before.st_dev, before.st_ino, before.st_mode,
-                 before.st_size, before.st_mtime_ns)
-            == (after.st_dev, after.st_ino, after.st_mode,
-                after.st_size, after.st_mtime_ns)
-            == (path_after.st_dev, path_after.st_ino, path_after.st_mode,
-                path_after.st_size, path_after.st_mtime_ns)
+            (before.st_dev, before.st_ino, before.st_mode, before.st_size,
+             before.st_mtime_ns, before.st_ctime_ns)
+            == (after.st_dev, after.st_ino, after.st_mode, after.st_size,
+                after.st_mtime_ns, after.st_ctime_ns)
+            and sum(len(chunk) for chunk in chunks) == after.st_size
         )
         if not stable:
             raise EmOutageError(f"output changed while hashing: {path}")
-        try:
-            path_descriptor = os.open(requested, flags)
-        except OSError as exc:
-            raise EmOutageError(f"output changed while hashing: {path}") \
-                from exc
-        try:
-            pinned = os.fstat(path_descriptor)
-            pinned_identity = (
-                pinned.st_dev, pinned.st_ino, pinned.st_mode,
-                pinned.st_size, pinned.st_mtime_ns)
-            if not stat.S_ISREG(pinned.st_mode) or \
-                    pinned_identity != (
-                        before.st_dev, before.st_ino, before.st_mode,
-                        before.st_size, before.st_mtime_ns):
-                raise EmOutageError(
-                    f"output changed while hashing: {path}")
-        finally:
-            os.close(path_descriptor)
         return b"".join(chunks)
     finally:
         os.close(descriptor)
 
 
-def output_hashes(findings_path: str, report_path: str) -> dict:
-    findings = read_regular_bytes(findings_path)
-    report = read_regular_bytes(report_path)
+_SNAPSHOT_FIELDS = frozenset({"schema", "findings", "report", "fingerprint"})
+_SNAPSHOT_ITEM_FIELDS = frozenset({
+    "label", "sha256", "bytes", "content_base64",
+})
+
+
+def _snapshot_item(label: str, content: bytes) -> dict:
+    return {
+        "label": label,
+        "sha256": _sha256(content),
+        "bytes": len(content),
+        "content_base64": base64.b64encode(content).decode("ascii"),
+    }
+
+
+def capture_output_snapshot(findings_path: str, report_path: str) -> dict:
+    """Capture the two logical EM outputs into one durable value.
+
+    Each public name is opened exactly once.  The returned mapping contains
+    immutable ``bytes`` encoded for the protected loop-state store plus a
+    closed fingerprint.  Consumers validate and decode this value; they never
+    re-open either public pathname.
+    """
+
+    material = {
+        "schema": OUTPUT_SNAPSHOT_SCHEMA,
+        "findings": _snapshot_item(
+            "findings.json", read_regular_bytes(findings_path)),
+        "report": _snapshot_item(
+            "report.md", read_regular_bytes(report_path)),
+    }
+    material["fingerprint"] = _sha256(_canonical_bytes(material))
+    return validate_output_snapshot(material)
+
+
+def validate_output_snapshot(value: Mapping[str, object]) -> dict:
+    """Validate and return one closed, JSON-safe output snapshot."""
+
+    if not isinstance(value, Mapping) or set(value) != _SNAPSHOT_FIELDS:
+        raise EmOutageError("EM output snapshot fields are not closed")
+    checked = dict(value)
+    supplied = _closed_text(
+        checked.pop("fingerprint", None), "output_snapshot.fingerprint")
+    if checked.get("schema") != OUTPUT_SNAPSHOT_SCHEMA:
+        raise EmOutageError("EM output snapshot schema is invalid")
+    for field, label in (("findings", "findings.json"),
+                         ("report", "report.md")):
+        item = checked.get(field)
+        if not isinstance(item, Mapping) or \
+                set(item) != _SNAPSHOT_ITEM_FIELDS:
+            raise EmOutageError(f"EM output snapshot {field} is invalid")
+        item = dict(item)
+        if item.get("label") != label:
+            raise EmOutageError(
+                f"EM output snapshot {field} label is invalid")
+        try:
+            content = base64.b64decode(
+                str(item.get("content_base64") or ""), validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise EmOutageError(
+                f"EM output snapshot {field} bytes are invalid") from exc
+        if isinstance(item.get("bytes"), bool) or \
+                not isinstance(item.get("bytes"), int) or \
+                item.get("bytes") != len(content) or \
+                item.get("sha256") != _sha256(content):
+            raise EmOutageError(
+                f"EM output snapshot {field} identity is invalid")
+        checked[field] = item
+    expected = _sha256(_canonical_bytes(checked))
+    if supplied != expected:
+        raise EmOutageError("EM output snapshot fingerprint mismatch")
+    checked["fingerprint"] = supplied
+    return checked
+
+
+def output_snapshot_bytes(value: Mapping[str, object]) -> dict[str, bytes]:
+    """Decode exact bytes from a validated snapshot without path access."""
+
+    snapshot = validate_output_snapshot(value)
+    return {
+        field: base64.b64decode(snapshot[field]["content_base64"], validate=True)
+        for field in ("findings", "report")
+    }
+
+
+def output_snapshot_evidence(value: Mapping[str, object]) -> dict:
+    """Return the bounded snapshot identity carried into audit/sign-off."""
+
+    snapshot = validate_output_snapshot(value)
+    return {
+        "schema": OUTPUT_SNAPSHOT_SCHEMA,
+        "fingerprint": snapshot["fingerprint"],
+        "outputs": {
+            field: {
+                key: snapshot[field][key]
+                for key in ("label", "sha256", "bytes")
+            }
+            for field in ("findings", "report")
+        },
+    }
+
+
+def output_hashes(findings_path: str | None = None,
+                  report_path: str | None = None, *,
+                  snapshot: Mapping[str, object] | None = None) -> dict:
+    if snapshot is None:
+        if findings_path is None or report_path is None:
+            raise EmOutageError("EM output paths are missing")
+        snapshot = capture_output_snapshot(findings_path, report_path)
+    elif findings_path is not None or report_path is not None:
+        raise EmOutageError("EM output hashes require paths or one snapshot")
+    exact = output_snapshot_bytes(snapshot)
+    findings = exact["findings"]
+    report = exact["report"]
     if not findings or not report:
         raise EmOutageError("EM outputs must be non-empty")
     return {
@@ -137,7 +228,7 @@ _IDENTITY_FIELDS = frozenset({
     "worktree", "stage", "task", "run_id", "slot", "expected_worker",
     "output_contract_fingerprint", "producer_dispatch_fingerprint",
     "integration_revision", "outputs", "review_kernel_fingerprint",
-    "accepted_drift", "fingerprint",
+    "output_snapshot_fingerprint", "accepted_drift", "fingerprint",
 })
 
 
@@ -148,6 +239,7 @@ def outage_identity(*, repository: Mapping[str, object], store: str,
                     producer_dispatch_fingerprint: str,
                     integration_revision: str,
                     outputs: Mapping[str, object],
+                    output_snapshot_fingerprint: str,
                     review_kernel: Mapping[str, object],
                     task: str = "engineering-signoff",
                     accepted_drift: str = "D-0014") -> dict:
@@ -176,6 +268,12 @@ def outage_identity(*, repository: Mapping[str, object], store: str,
     kernel = dict(review_kernel)
     if not kernel:
         raise EmOutageError("ReviewKernel identity is missing")
+    snapshot_fingerprint = _closed_text(
+        output_snapshot_fingerprint, "output_snapshot_fingerprint")
+    if len(snapshot_fingerprint) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in snapshot_fingerprint):
+        raise EmOutageError("output_snapshot_fingerprint is invalid")
     material = {
         "schema": OUTAGE_SCHEMA,
         "domain": DOMAIN,
@@ -195,6 +293,7 @@ def outage_identity(*, repository: Mapping[str, object], store: str,
         "integration_revision": _closed_text(
             integration_revision, "integration_revision"),
         "outputs": output_value,
+        "output_snapshot_fingerprint": snapshot_fingerprint,
         "review_kernel_fingerprint": _sha256(_canonical_bytes(kernel)),
         "accepted_drift": _closed_text(accepted_drift, "accepted_drift"),
     }
@@ -211,6 +310,13 @@ def validate_outage_identity(value: Mapping[str, object]) -> dict:
         raise EmOutageError("EM outage identity schema/domain is invalid")
     if checked.get("reason_code") != REASON_CODE or checked.get("stage") != "em":
         raise EmOutageError("EM outage identity reason/stage is invalid")
+    snapshot_fingerprint = _closed_text(
+        checked.get("output_snapshot_fingerprint"),
+        "output_snapshot_fingerprint")
+    if len(snapshot_fingerprint) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in snapshot_fingerprint):
+        raise EmOutageError("output_snapshot_fingerprint is invalid")
     expected = _sha256(_canonical_bytes(checked))
     if supplied != expected:
         raise EmOutageError("EM outage identity fingerprint mismatch")
@@ -239,6 +345,8 @@ def resolution_receipt(identity: Mapping[str, object], *, actor: str,
         "producer_dispatch_fingerprint": outage[
             "producer_dispatch_fingerprint"],
         "review_kernel_fingerprint": outage["review_kernel_fingerprint"],
+        "output_snapshot_fingerprint": outage[
+            "output_snapshot_fingerprint"],
         "accepted_drift": outage["accepted_drift"],
         "consumed": True,
     }

@@ -36,8 +36,13 @@ def _outputs(tmp_path: Path) -> tuple[str, str]:
     return str(findings), str(report)
 
 
-def _identity(tmp_path: Path, **updates) -> dict:
+def _snapshot(tmp_path: Path) -> dict:
     findings, report = _outputs(tmp_path)
+    return em_outage.capture_output_snapshot(findings, report)
+
+
+def _identity(tmp_path: Path, **updates) -> dict:
+    snapshot = _snapshot(tmp_path)
     values = {
         "repository": {"repo_id": "repo-1", "repository_key": "key-1"},
         "store": str(tmp_path / "store"),
@@ -48,7 +53,8 @@ def _identity(tmp_path: Path, **updates) -> dict:
         "output_contract_fingerprint": "a" * 64,
         "producer_dispatch_fingerprint": "b" * 64,
         "integration_revision": "c" * 40,
-        "outputs": em_outage.output_hashes(findings, report),
+        "outputs": em_outage.output_hashes(snapshot=snapshot),
+        "output_snapshot_fingerprint": snapshot["fingerprint"],
         "review_kernel": {"run_id": "review-run-1", "slots": []},
     }
     values.update(updates)
@@ -81,6 +87,7 @@ def test_identity_is_deterministic_and_every_bound_input_invalidates(tmp_path):
         "output_contract_fingerprint": "d" * 64,
         "producer_dispatch_fingerprint": "e" * 64,
         "integration_revision": "f" * 40,
+        "output_snapshot_fingerprint": "1" * 64,
         "review_kernel": {"run_id": "review-run-1", "slots": [],
                           "revision": 2},
     }
@@ -104,28 +111,86 @@ def test_exact_output_hashing_rejects_symlinks_and_empty_files(tmp_path):
         em_outage.output_hashes(findings, report)
 
 
-def test_public_output_hashes_rejects_swap_after_path_attestation(
+def test_captured_snapshot_survives_swap_after_final_descriptor_fstat(
         tmp_path, monkeypatch):
     findings, report = _outputs(tmp_path)
     replacement = tmp_path / "replacement.json"
     replacement.write_text('{"meta":{"gate":{"verdict":"fail"}}}')
-    real_lstat = em_outage.os.lstat
-    swapped = False
+    original = Path(findings).read_bytes()
+    replaced = replacement.read_bytes()
+    real_fstat = em_outage.os.fstat
+    calls = 0
 
-    def swap_after_lstat(path):
-        nonlocal swapped
-        observed = real_lstat(path)
-        if os.path.abspath(os.fspath(path)) == os.path.abspath(findings) \
-                and not swapped:
+    def swap_after_final_fstat(descriptor):
+        nonlocal calls
+        calls += 1
+        observed = real_fstat(descriptor)
+        if calls == 2:
             os.replace(replacement, findings)
-            swapped = True
         return observed
 
-    monkeypatch.setattr(em_outage.os, "lstat", swap_after_lstat)
+    monkeypatch.setattr(em_outage.os, "fstat", swap_after_final_fstat)
+    snapshot = em_outage.capture_output_snapshot(findings, report)
+    assert em_outage.output_snapshot_bytes(snapshot)["findings"] == original
+    assert Path(findings).read_bytes() == replaced
+
+    # Control-plane consumers use only the protected snapshot.  A pathname
+    # reopen here is a regression, even when replacement bytes are valid.
+    monkeypatch.setattr(
+        em_outage.os, "open",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("consumer reopened a public output pathname")))
+    assert em_outage.validate_output_snapshot(snapshot) == snapshot
+    hashes = em_outage.output_hashes(snapshot=snapshot)
+    assert hashes["findings_sha256"] == snapshot["findings"]["sha256"]
+    assert hashes["findings_sha256"] != em_outage._sha256(replaced)
+
+
+def test_snapshot_swap_before_capture_binds_only_replacement(
+        tmp_path, monkeypatch):
+    findings, report = _outputs(tmp_path)
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text('{"meta":{"gate":{"verdict":"fail"}}}')
+    replacement_bytes = replacement.read_bytes()
+    requested = os.path.abspath(findings)
+    real_open = em_outage.os.open
+    swapped = False
+
+    def swap_before_open(path, flags):
+        nonlocal swapped
+        if os.path.abspath(os.fspath(path)) == requested and not swapped:
+            os.replace(replacement, findings)
+            swapped = True
+        return real_open(path, flags)
+
+    monkeypatch.setattr(em_outage.os, "open", swap_before_open)
+    snapshot = em_outage.capture_output_snapshot(findings, report)
+    assert swapped is True
+    assert em_outage.output_snapshot_bytes(snapshot)["findings"] == \
+        replacement_bytes
+    assert snapshot["findings"]["sha256"] == \
+        em_outage._sha256(replacement_bytes)
+
+
+def test_snapshot_rejects_in_place_mutation_during_capture(
+        tmp_path, monkeypatch):
+    findings, report = _outputs(tmp_path)
+    real_read = em_outage.os.read
+    mutated = False
+
+    def mutate_after_read(descriptor, size):
+        nonlocal mutated
+        content = real_read(descriptor, size)
+        if content and not mutated:
+            Path(findings).write_bytes(b"X" * len(content))
+            mutated = True
+        return content
+
+    monkeypatch.setattr(em_outage.os, "read", mutate_after_read)
     with pytest.raises(em_outage.EmOutageError,
                        match="output changed while hashing"):
-        em_outage.output_hashes(findings, report)
-    assert swapped is True
+        em_outage.capture_output_snapshot(findings, report)
+    assert mutated is True
 
 
 def test_resolution_receipt_binds_human_control_plane_and_outage(tmp_path):
@@ -215,7 +280,7 @@ def test_staged_guard_blocks_serial_wave_and_claim(tmp_path, monkeypatch):
     assert claimed["reason"] == "mandatory_replan_required"
 
 
-def _outage_state(identity: dict) -> dict:
+def _outage_state(identity: dict, snapshot: dict) -> dict:
     return {
         "step": "em", "tasks": [{"id": "engineering-signoff",
                                     "status": "passed"}],
@@ -224,19 +289,21 @@ def _outage_state(identity: dict) -> dict:
             "schema": em_outage.OUTAGE_SCHEMA,
             "reason_code": em_outage.REASON_CODE,
             "identity": identity,
+            "output_snapshot": snapshot,
             "terminal_contract": {"worker_scoped": True},
             "consumed": False,
         },
     }
 
 
-def _patch_resolution(monkeypatch, identity):
+def _patch_resolution(monkeypatch, identity, snapshot):
     evidence = {"schema": "taskplane.signoff-evidence/v1",
                 "integration_revision": identity["integration_revision"],
                 "dod": {"passed": True, "errors": []}}
     monkeypatch.setattr(loop, "_em_outage_candidate",
                         lambda *_args, **_kwargs:
-                        (identity, {"worker_scoped": True}, evidence))
+                        (identity, {"worker_scoped": True}, evidence,
+                         snapshot))
     monkeypatch.setattr(loop, "_em_outage_control_plane_identity",
                         lambda *_: {
                             "schema": em_outage.CONTROL_PLANE_SCHEMA,
@@ -250,8 +317,9 @@ def test_aggregate_em_outage_exact_acceptance_is_atomic_and_one_use(
         tmp_path, monkeypatch):
     ws = _git_ws(tmp_path)
     identity = _identity(tmp_path)
-    loop.save(ws, _outage_state(identity))
-    _patch_resolution(monkeypatch, identity)
+    snapshot = _snapshot(tmp_path)
+    loop.save(ws, _outage_state(identity, snapshot))
+    _patch_resolution(monkeypatch, identity, snapshot)
     before = json.dumps(loop.load(ws), sort_keys=True)
 
     wrong = loop.resolve(
@@ -261,6 +329,10 @@ def test_aggregate_em_outage_exact_acceptance_is_atomic_and_one_use(
     assert "error" in wrong
     assert json.dumps(loop.load(ws), sort_keys=True) == before
 
+    # The protected snapshot, not a later public-name replacement, is the
+    # sole accepted evidence source at control-plane consumption time.
+    (tmp_path / "findings.json").write_text(
+        '{"meta":{"gate":{"verdict":"fail"}},"findings":[]}')
     accepted = loop.resolve(
         ws, "pass", by="human:vdemkiv",
         accept_producer_receipt_outage=True,
@@ -268,6 +340,15 @@ def test_aggregate_em_outage_exact_acceptance_is_atomic_and_one_use(
     assert accepted["step"] == "signoff"
     state = loop.load(ws)
     assert state["engineering_review_outage"]["consumed"] is True
+    snapshot_evidence = em_outage.output_snapshot_evidence(snapshot)
+    receipt = state["engineering_review_outage"]["resolution"]
+    assert receipt["output_snapshot_fingerprint"] == snapshot["fingerprint"]
+    assert receipt["outputs"]["findings_sha256"] == \
+        snapshot["findings"]["sha256"]
+    assert receipt["outputs"]["findings_sha256"] != \
+        em_outage._sha256((tmp_path / "findings.json").read_bytes())
+    assert state["signoff_evidence"]["em_output_snapshot"] == \
+        snapshot_evidence
     assert state["signoff_evidence"]["accepted_drift"] == {
         "id": "D-0014", "accepted_by": "human:vdemkiv"}
     assert Path(state["engineering_review_outage"]["audit_path"]).is_file()
@@ -283,9 +364,10 @@ def test_worker_context_actor_spoof_mutation_and_audit_failure_do_not_advance(
         tmp_path, monkeypatch):
     ws = _git_ws(tmp_path)
     identity = _identity(tmp_path)
-    _patch_resolution(monkeypatch, identity)
+    snapshot = _snapshot(tmp_path)
+    _patch_resolution(monkeypatch, identity, snapshot)
 
-    loop.save(ws, _outage_state(identity))
+    loop.save(ws, _outage_state(identity, snapshot))
     monkeypatch.setattr(loop, "_em_outage_control_plane_identity",
                         lambda *_: (_ for _ in ()).throw(
                             em_outage.EmOutageError("worker context")))
@@ -294,6 +376,18 @@ def test_worker_context_actor_spoof_mutation_and_audit_failure_do_not_advance(
         accept_producer_receipt_outage=True,
         outage_fingerprint=identity["fingerprint"])
     assert "error" in spoofed
+    assert loop.load(ws)["step"] == "em"
+
+    _patch_resolution(monkeypatch, identity, snapshot)
+    tampered_snapshot = json.loads(json.dumps(snapshot))
+    tampered_snapshot["findings"]["content_base64"] = "WA=="
+    loop.save(ws, _outage_state(identity, tampered_snapshot))
+    mutated = loop.resolve(
+        ws, "pass", by="human:vdemkiv",
+        accept_producer_receipt_outage=True,
+        outage_fingerprint=identity["fingerprint"])
+    assert "failed closed" in mutated["error"]
+    assert "snapshot" in mutated["error"]
     assert loop.load(ws)["step"] == "em"
 
 
@@ -326,8 +420,9 @@ def test_stage_transition_failure_rolls_back_consumption_and_signoff(
         tmp_path, monkeypatch):
     ws = _git_ws(tmp_path)
     identity = _identity(tmp_path)
-    loop.save(ws, _outage_state(identity))
-    _patch_resolution(monkeypatch, identity)
+    snapshot = _snapshot(tmp_path)
+    loop.save(ws, _outage_state(identity, snapshot))
+    _patch_resolution(monkeypatch, identity, snapshot)
     audit_path = Path(loop.runtime_storage.review_public_path(
         ws, "em-outage-resolution.json"))
     assert not os.path.lexists(audit_path)
@@ -348,7 +443,7 @@ def test_stage_transition_failure_rolls_back_consumption_and_signoff(
     changed = _identity(tmp_path, integration_revision="d" * 40)
     monkeypatch.setattr(loop, "_em_outage_candidate",
                         lambda *_a, **_k:
-                        (changed, {}, {"dod": {"passed": True}}))
+                        (changed, {}, {"dod": {"passed": True}}, snapshot))
     stale = loop.resolve(
         ws, "pass", by="human:vdemkiv",
         accept_producer_receipt_outage=True,
@@ -356,7 +451,7 @@ def test_stage_transition_failure_rolls_back_consumption_and_signoff(
     assert "stale" in stale["error"]
     assert loop.load(ws)["step"] == "em"
 
-    _patch_resolution(monkeypatch, identity)
+    _patch_resolution(monkeypatch, identity, snapshot)
     monkeypatch.setattr(loop.tp, "atomic_write_json",
                         lambda *_a, **_k: (_ for _ in ()).throw(
                             OSError("audit unavailable")))
@@ -373,8 +468,9 @@ def test_public_resolve_restores_exact_prior_audit_bytes_on_transition_failure(
         tmp_path, monkeypatch):
     ws = _git_ws(tmp_path)
     identity = _identity(tmp_path)
-    loop.save(ws, _outage_state(identity))
-    _patch_resolution(monkeypatch, identity)
+    snapshot = _snapshot(tmp_path)
+    loop.save(ws, _outage_state(identity, snapshot))
+    _patch_resolution(monkeypatch, identity, snapshot)
     authority = {
         "schema": em_outage.CONTROL_PLANE_SCHEMA,
         "authority": "slotless-loop-control-plane",

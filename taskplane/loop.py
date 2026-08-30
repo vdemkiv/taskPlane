@@ -829,6 +829,8 @@ def bind_producer_observation(
 def producer_output_identity(ws: str, state: Mapping[str, object],
                              task: Mapping[str, object] | None, step: str,
                              *, active_contract: Mapping[str, object] | None =
+                             None,
+                             em_output_snapshot: Mapping[str, object] | None =
                              None) -> dict:
     """Derive the one engine-owned output identity a host stop may observe."""
     if step not in {"evaluate", "em"}:
@@ -869,14 +871,19 @@ def producer_output_identity(ws: str, state: Mapping[str, object],
     else:
         paths = [runtime_storage.review_public_path(ws, "findings.json"),
                  runtime_storage.review_public_path(ws, "report.md")]
-        exact = []
-        for path in paths:
-            try:
-                with open(path, "rb") as stream:
-                    exact.append((path, stream.read()))
-            except OSError as exc:
-                raise producer_observation_policy.ProducerObservationError(
-                    "EM result bytes are missing") from exc
+        if em_output_snapshot is None:
+            exact = []
+            for path in paths:
+                try:
+                    with open(path, "rb") as stream:
+                        exact.append((path, stream.read()))
+                except OSError as exc:
+                    raise producer_observation_policy.ProducerObservationError(
+                        "EM result bytes are missing") from exc
+        else:
+            captured = em_outage.output_snapshot_bytes(em_output_snapshot)
+            exact = [(paths[0], captured["findings"]),
+                     (paths[1], captured["report"])]
         output_path = json.dumps(paths, separators=(",", ":"))
         output_bytes = producer_observation_policy.exact_output_bundle(exact)
         output_schema_id = "taskplane.em-output/v1"
@@ -8140,21 +8147,47 @@ def _coverage_disposition(v) -> str:
     return str(v or "")
 
 
-def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
+def _engineering_review_errors(
+        ws: str, state: dict | None = None, *,
+        output_snapshot: Mapping[str, object] | None = None) -> list:
     """Require full-catalog lens evidence before the EM gate can pass."""
     path = runtime_storage.review_public_path(ws, "findings.json")
-    findings, errors = _read_json(path)
-    if errors:
-        return errors
     report_path = runtime_storage.review_public_path(ws, "report.md")
-    try:
-        with open(report_path, encoding="utf-8") as report_file:
-            report_text = report_file.read()
+    captured_findings = None
+    if output_snapshot is None:
+        findings, errors = _read_json(path)
+        if errors:
+            return errors
+        try:
+            with open(report_path, encoding="utf-8") as report_file:
+                report_text = report_file.read()
+            if not report_text.strip():
+                errors.append("engineering narrative report is empty")
+        except OSError:
+            errors.append("engineering narrative report is missing: "
+                          + report_path)
+    else:
+        exact = em_outage.output_snapshot_bytes(output_snapshot)
+        errors = []
+        try:
+            findings = json.loads(exact["findings"].decode("utf-8"))
+            if not isinstance(findings, dict):
+                raise ValueError("findings must be an object")
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            return ["engineering findings result is invalid: " + str(exc)]
+        try:
+            report_text = exact["report"].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            errors.append("engineering narrative report is invalid UTF-8: "
+                          + str(exc))
+            report_text = ""
         if not report_text.strip():
             errors.append("engineering narrative report is empty")
-    except OSError:
-        errors.append("engineering narrative report is missing: "
-                      + report_path)
+        # Router-audit can append deterministic rows to the public alias.
+        # A candidate derived from a protected snapshot must never silently
+        # accept those different bytes.  Fail this attempt and let the next
+        # capture bind the now-current complete document.
+        captured_findings = json.loads(json.dumps(findings))
     meta = findings.get("meta") or {}
     # Real EM/sign-off gates always pass loop state and therefore require the
     # canonical selective kernel. ``state=None`` is the long-standing pure
@@ -8276,6 +8309,10 @@ def _engineering_review_errors(ws: str, state: dict | None = None) -> list:
     # router regressions and block sign-off via the frozen finding_blocks
     # rule (no guardrail change).
     errors.extend(_router_audit_gate(ws, path, findings, meta, rows))
+    if captured_findings is not None and findings != captured_findings:
+        errors.append(
+            "engineering review changed during immutable output validation; "
+            "retry from a new captured snapshot")
     return errors
 
 
@@ -9469,7 +9506,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             }
 
 
-def _compute_signoff_dod(ws: str, state: dict) -> dict:
+def _compute_signoff_dod(
+        ws: str, state: dict, *,
+        output_snapshot: Mapping[str, object] | None = None) -> dict:
     """Mechanical final DoD over aggregate scope, requirements, tests, graph,
     engineering evidence, and committed knowledge. Human sign-off remains."""
     scopes: list = []
@@ -9538,7 +9577,8 @@ def _compute_signoff_dod(ws: str, state: dict) -> dict:
             notices=task_notices))
         notices.extend(f"task {task.get('id', '?')}: {n}"
                        for n in task_notices)
-    errors.extend(_engineering_review_errors(ws, state))
+    errors.extend(_engineering_review_errors(
+        ws, state, output_snapshot=output_snapshot))
     for problem in kb.lint(ws):
         errors.append("kb_lint: " + (problem.get("file", "?")) + " — "
                       + problem.get("problem", ""))
@@ -9549,7 +9589,10 @@ def _compute_signoff_dod(ws: str, state: dict) -> dict:
             "scope": scopes, "baseline": baseline}
 
 
-def _signoff_evidence_binding(ws: str, state: dict) -> tuple[dict | None, list]:
+def _signoff_evidence_binding(
+        ws: str, state: dict, *,
+        output_snapshot: Mapping[str, object] | None = None
+        ) -> tuple[dict | None, list]:
     """Seal final DoD and review identity at the integrated revision.
 
     Sign-off is a human decision over the EM-reviewed tree, not a fresh review
@@ -9566,14 +9609,22 @@ def _signoff_evidence_binding(ws: str, state: dict) -> tuple[dict | None, list]:
                       "diff; commit the reviewed integration tree first")
     if errors:
         return None, errors
-    dod = _compute_signoff_dod(ws, state)
+    dod = _compute_signoff_dod(
+        ws, state, output_snapshot=output_snapshot)
     if not dod["passed"]:
         return None, list(dod["errors"])
     binding = review_kernel_binding(state, "em", _current_task(state)) or {}
-    findings, _ = _read_json(
-        runtime_storage.review_public_path(ws, "findings.json"))
+    if output_snapshot is None:
+        findings, _ = _read_json(
+            runtime_storage.review_public_path(ws, "findings.json"))
+    else:
+        exact = em_outage.output_snapshot_bytes(output_snapshot)
+        try:
+            findings = json.loads(exact["findings"].decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            return None, ["engineering findings result is invalid"]
     meta = (findings or {}).get("meta") or {}
-    return {
+    evidence = {
         "schema": "taskplane.signoff-evidence/v1",
         "integration_revision": revision,
         "requirement_id": state.get("requirement_id"),
@@ -9587,7 +9638,11 @@ def _signoff_evidence_binding(ws: str, state: dict) -> tuple[dict | None, list]:
         },
         "dod": dod,
         "notices": _dc.design_review_notices(meta),
-    }, []
+    }
+    if output_snapshot is not None:
+        evidence["em_output_snapshot"] = \
+            em_outage.output_snapshot_evidence(output_snapshot)
+    return evidence, []
 
 
 def _signoff_dod(ws: str, state: dict) -> dict:
@@ -9638,8 +9693,9 @@ def _em_outage_repository_identity(ws: str) -> dict:
 
 
 def _em_outage_candidate(
-        ws: str, state: dict, *, contract: Mapping[str, object] | None = None
-        ) -> tuple[dict, dict, dict]:
+        ws: str, state: dict, *, contract: Mapping[str, object] | None = None,
+        output_snapshot: Mapping[str, object] | None = None
+        ) -> tuple[dict, dict, dict, dict]:
     """Re-derive the exact valid EM candidate and its terminal DoD."""
     if state.get("step") != "em":
         raise em_outage.EmOutageError("loop is not at final engineering review")
@@ -9657,12 +9713,22 @@ def _em_outage_candidate(
     slot = str(lifecycle.get("slot") or active.get("task_slot") or "")
     expected_worker = str(lifecycle.get("expected_task_name") or "")
     dispatch = active.get("producer_dispatch") or {}
+    if output_snapshot is None:
+        findings_path = runtime_storage.review_public_path(
+            ws, "findings.json")
+        report_path = runtime_storage.review_public_path(ws, "report.md")
+        snapshot = em_outage.capture_output_snapshot(
+            findings_path, report_path)
+    else:
+        snapshot = em_outage.validate_output_snapshot(output_snapshot)
     material = producer_output_identity(
-        ws, state, task, "em", active_contract=active)
+        ws, state, task, "em", active_contract=active,
+        em_output_snapshot=snapshot)
 
     # All product, mechanical, zero-lens, output, graph, requirement, test,
     # and final-signoff checks run before an outage can even be represented.
-    signoff_evidence, errors = _signoff_evidence_binding(ws, state)
+    signoff_evidence, errors = _signoff_evidence_binding(
+        ws, state, output_snapshot=snapshot)
     if errors or signoff_evidence is None:
         raise em_outage.EmOutageError(
             "EM has non-producer blockers: " + "; ".join(errors))
@@ -9689,9 +9755,7 @@ def _em_outage_candidate(
         "delivery_mode_receipt": kernel.get("delivery_mode_receipt"),
         "zero_lens_evaluation": kernel.get("zero_lens_evaluation"),
     }
-    findings_path = runtime_storage.review_public_path(ws, "findings.json")
-    report_path = runtime_storage.review_public_path(ws, "report.md")
-    hashes = em_outage.output_hashes(findings_path, report_path)
+    hashes = em_outage.output_hashes(snapshot=snapshot)
     identity = em_outage.outage_identity(
         repository=_em_outage_repository_identity(ws),
         store=os.path.realpath(tp.store_root(ws)),
@@ -9702,7 +9766,9 @@ def _em_outage_candidate(
             material["output_contract_fingerprint"]),
         producer_dispatch_fingerprint=str(dispatch.get("fingerprint") or ""),
         integration_revision=str(material["source_sha"] or ""),
-        outputs=hashes, review_kernel=kernel_identity,
+        outputs=hashes,
+        output_snapshot_fingerprint=str(snapshot["fingerprint"]),
+        review_kernel=kernel_identity,
         task=task_ref, accepted_drift="D-0014")
     terminal_contract = {
         "task_id": active.get("task_id"),
@@ -9711,7 +9777,7 @@ def _em_outage_candidate(
         "worker_lifecycle": dict(lifecycle),
         "producer_dispatch": dict(dispatch),
     }
-    return identity, terminal_contract, signoff_evidence
+    return identity, terminal_contract, signoff_evidence, snapshot
 
 
 def _record_em_producer_receipt_outage(
@@ -9726,7 +9792,8 @@ def _record_em_producer_receipt_outage(
         with mutate(ws) as locked:
             if locked is None or locked.get("step") != "em":
                 return {"error": "EM state changed before outage sealing"}
-            identity, terminal_contract, _ = _em_outage_candidate(ws, locked)
+            identity, terminal_contract, _, snapshot = \
+                _em_outage_candidate(ws, locked)
             existing = locked.get("engineering_review_outage")
             if isinstance(existing, Mapping):
                 if existing.get("identity") != identity or \
@@ -9738,6 +9805,7 @@ def _record_em_producer_receipt_outage(
                     "schema": em_outage.OUTAGE_SCHEMA,
                     "reason_code": em_outage.REASON_CODE,
                     "identity": identity,
+                    "output_snapshot": snapshot,
                     "terminal_contract": terminal_contract,
                     "consumed": False,
                 }
@@ -9892,8 +9960,15 @@ def _resolve_em_producer_receipt_outage(
             terminal_contract = outage.get("terminal_contract")
             if not isinstance(terminal_contract, Mapping):
                 return {"error": "final-EM terminal contract is missing"}
-            current, _, signoff_evidence = _em_outage_candidate(
-                ws, state, contract=terminal_contract)
+            snapshot = em_outage.validate_output_snapshot(
+                outage.get("output_snapshot") or {})
+            if snapshot["fingerprint"] != sealed[
+                    "output_snapshot_fingerprint"]:
+                return {"error": "final-EM output snapshot identity is stale"}
+            current, _, signoff_evidence, consumed_snapshot = \
+                _em_outage_candidate(
+                    ws, state, contract=terminal_contract,
+                    output_snapshot=snapshot)
             if current != sealed:
                 return {"error": "final-EM outage identity is stale; review "
                                  "bytes, revision, contract, or kernel changed"}
@@ -9919,6 +9994,8 @@ def _resolve_em_producer_receipt_outage(
             resolved["audit_path"] = audit_path
             state["engineering_review_outage"] = resolved
             evidence = dict(signoff_evidence)
+            evidence["em_output_snapshot"] = \
+                em_outage.output_snapshot_evidence(consumed_snapshot)
             evidence["producer_receipt_outage"] = receipt
             evidence["accepted_drift"] = {
                 "id": "D-0014", "accepted_by": "human:vdemkiv"}
