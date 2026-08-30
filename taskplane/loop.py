@@ -4145,6 +4145,68 @@ def _current_task(state: dict):
     return tasks[i] if 0 <= i < len(tasks) else None
 
 
+def _reserve_worker_dispatch_ref(
+        ws: str, state: dict, *, stage: str, task: str,
+        worker_workspace: str) -> tuple[str, int]:
+    """Reserve a host-unique identity for one native worker attempt.
+
+    Codex retains completed task names for the life of a thread. Re-emitting
+    the same stable name after Fix or an unavailable Evaluate therefore turns
+    a new worker slot into an unbindable orphan: no fresh direct native agent
+    can own the old name, and nested agent identities do not match it exactly.
+    Keep the historical name for the first attempt, then add a durable attempt
+    discriminator. The worker contract still binds the exact emitted name.
+    """
+    stage = str(stage or "").strip()
+    task = str(task or "").strip()
+    if not stage or not task:
+        raise ValueError("worker dispatch sequence identity is incomplete")
+    key = f"{stage}:{task}"
+
+    # Upgrade recovery: older state has no sequence ledger. A current pending
+    # slot, prior Evaluate warning, or prior Evaluate/Fix cycle proves that the
+    # stable first-attempt name has already been consumed on this host.
+    legacy_floor = 0
+    try:
+        if tp.worker_contract_for_stage(
+                worker_workspace, stage=stage, task=task) is not None:
+            legacy_floor = 1
+    except tp.StateError:
+        legacy_floor = 1
+    if stage == "evaluate":
+        current = _current_task(state) or {}
+        cycles = current.get("fix_cycles")
+        if isinstance(cycles, int) and not isinstance(cycles, bool):
+            legacy_floor = max(legacy_floor, cycles)
+        warnings = [
+            row for row in (state.get("evaluation_warnings") or [])
+            if isinstance(row, dict) and str(row.get("task") or "") == task
+        ]
+        legacy_floor = max(legacy_floor, len(warnings))
+
+    with mutate(ws) as fresh:
+        if fresh is None:
+            raise ValueError("worker dispatch sequence requires an active loop")
+        sequences = fresh.setdefault("worker_dispatch_sequences", {})
+        if not isinstance(sequences, dict):
+            raise ValueError("worker dispatch sequence ledger is malformed")
+        previous = sequences.get(key)
+        if isinstance(previous, bool) or not isinstance(previous, int) or \
+                previous < 0:
+            previous = legacy_floor
+        else:
+            previous = max(previous, legacy_floor)
+        sequence = previous + 1
+        sequences[key] = sequence
+        state.clear()
+        state.update(fresh)
+
+    ref = task if sequence == 1 else f"{task}-attempt-{sequence}"
+    tp.trace(ws, "worker_dispatch_identity_reserved", stage=stage, task=task,
+             sequence=sequence, dispatch_ref=ref)
+    return ref, sequence
+
+
 def _parallel_evaluate_workspace(
         ws: str, state: Mapping[str, object],
         task: Mapping[str, object]) -> tuple[str | None, str | None]:
@@ -5730,8 +5792,11 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     agent_ws = os.path.realpath(os.path.abspath(agent_ws))
     locator_error = runtime_storage.worker_locator_error(ws, agent_ws, task_id)
     if locator_error: return {"error": locator_error, "task": task_id}
+    dispatch_ref, _ = _reserve_worker_dispatch_ref(
+        ws, state, stage="execute", task=str(task_id),
+        worker_workspace=agent_ws)
     dispatch = tp.dispatch_fields(
-        "step", STEP_ROLE["execute"], str(task_id),
+        "step", STEP_ROLE["execute"], dispatch_ref,
         tp.step_tier("execute", t))
     contract = tp.prepare_worker_contract(
         agent_ws, contract, stage="execute", task=str(task_id),
@@ -6008,8 +6073,10 @@ def next_action(
 
     worker_task = _current_task(state)
     worker_ref = str((worker_task or {}).get("id") or step)
+    dispatch_ref, _ = _reserve_worker_dispatch_ref(
+        ws, state, stage=step, task=worker_ref, worker_workspace=act_ws)
     dispatch = tp.dispatch_fields(
-        "step", STEP_ROLE[step], worker_ref,
+        "step", STEP_ROLE[step], dispatch_ref,
         tp.step_tier(step, worker_task),
         capability_snapshot=capability_snapshot,
         enforcement_mode=os.environ.get("TASKPLANE_ENFORCE_DISPATCH"))
@@ -6503,6 +6570,9 @@ def next_action(
         tp.activate(
             act_ws, contract, snapshot=snapshot,
             task_slot_override=contract["task_slot"])
+        tp.release_superseded_pending_worker_contracts(
+            act_ws, stage=step, task=worker_ref,
+            keep_slot=contract["task_slot"])
     except Exception as exc:
         return {"error": "worker contract activation failed closed: "
                          f"{exc.__class__.__name__}: {exc}",

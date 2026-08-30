@@ -1208,6 +1208,45 @@ class TestLoop(unittest.TestCase):
             task["evaluation"]["outage_identity"]["evaluation"],
             verdict["evaluation"])
 
+    def test_worker_dispatch_identity_is_stable_once_then_rotates(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "g", spec_path="specs/spec.md")
+        state = loop.load(ws)
+
+        first_ref, first_sequence = loop._reserve_worker_dispatch_ref(
+            ws, state, stage="evaluate", task="t1", worker_workspace=ws)
+        second_ref, second_sequence = loop._reserve_worker_dispatch_ref(
+            ws, state, stage="evaluate", task="t1", worker_workspace=ws)
+
+        self.assertEqual((first_ref, first_sequence), ("t1", 1))
+        self.assertEqual((second_ref, second_sequence),
+                         ("t1-attempt-2", 2))
+        self.assertNotEqual(
+            tp.dispatch_task_name("step", "tp-evaluator", first_ref),
+            tp.dispatch_task_name("step", "tp-evaluator", second_ref))
+        self.assertEqual(
+            loop.load(ws)["worker_dispatch_sequences"]["evaluate:t1"], 2)
+
+    def test_unavailable_retry_emits_fresh_exact_worker_identity(self):
+        ws, _, _ = self._gate_evaluator_unavailable()
+        self.assertEqual(loop.resolve(ws, "retry")["step"], "evaluate")
+
+        action = loop.next_action(ws)
+
+        self.assertEqual(
+            loop.load(ws)["worker_dispatch_sequences"]["evaluate:t1"], 2)
+        self.assertEqual(
+            action["task_name"],
+            action["contract_bootstrap"]["worker_identity"])
+        self.assertEqual(
+            action["task_name"],
+            tp.dispatch_task_name(
+                "step", "tp-evaluator", "t1-attempt-2"))
+        lifecycle = tp.load_json(tp.active_contract_path(
+            ws, action["contract_bootstrap"]["task_slot"]))[
+                "worker_lifecycle"]
+        self.assertEqual(lifecycle["expected_task_name"], action["task_name"])
+
     def test_human_can_accept_met_criteria_during_orchestration_outage(self):
         ws, _, _ = self._gate_evaluator_unavailable()
         state = loop.load(ws)
