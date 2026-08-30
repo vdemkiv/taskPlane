@@ -6423,13 +6423,6 @@ def next_action(
             if fresh is not None:
                 fresh.setdefault("review_kernel_runs", {})[
                     _review_kernel_binding_key(step, task)] = binding
-        if not zero_lens_delivery:
-            tp.trace(ws, "lens_route", step=step, requested_breadth="routed",
-                     engine_ran="signals" in (routing.get("context") or {}),
-                     lenses=[[x["id"], x["mode"]]
-                             for x in routing.get("lenses") or []],
-                     kernel_status=review_kernel.get("status"))
-
     model_tier, model = dispatch["model_tier"], dispatch["model"]
     reasoning_effort, task_name = (dispatch["reasoning_effort"],
                                    dispatch["task_name"])
