@@ -61,7 +61,12 @@ def submit_gate(ws, outcome="pass", task_id=None):
 
 def _action_contract(workspace, action, *, stage, task):
     slot = action["contract_bootstrap"]["task_slot"]
-    contract = tp.load_active(workspace, task_slot=slot)
+    binding = tp.worker_contract_for_stage(
+        workspace, stage=stage, task=str(task))
+    assert binding is not None
+    assert binding["slot"] == slot
+    assert tp.load_active(workspace) is None
+    contract = binding["contract"]
     lifecycle = (contract or {}).get("worker_lifecycle") or {}
     if lifecycle.get("stage") != stage or \
             str(lifecycle.get("task") or "") != str(task):

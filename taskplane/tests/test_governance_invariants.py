@@ -128,7 +128,12 @@ class TestGovernanceInvariants(unittest.TestCase):
         _state(ws, "evaluate")
         action = loop.next_action(ws)
         slot = action["contract_bootstrap"]["task_slot"]
-        active_contract = tp.load_active(ws, task_slot=slot)
+        binding = tp.worker_contract_for_stage(
+            ws, stage="evaluate", task="t1")
+        self.assertIsNotNone(binding)
+        self.assertEqual(binding["slot"], slot)
+        self.assertIsNone(tp.load_active(ws))
+        active_contract = binding["contract"]
         lifecycle = (active_contract or {}).get("worker_lifecycle") or {}
         self.assertEqual(lifecycle.get("stage"), "evaluate")
         self.assertEqual(str(lifecycle.get("task") or ""), "t1")

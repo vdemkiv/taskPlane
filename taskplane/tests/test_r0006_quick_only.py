@@ -455,7 +455,7 @@ def test_clean_quick_output_completes_without_any_deep_artifact(tmp_path):
     assert state["slots"] == []
 
 
-def test_clean_quick_output_satisfies_legacy_runtime_receipts(tmp_path):
+def test_clean_zero_lens_output_satisfies_runtime_receipts(tmp_path):
     workspace = str(tmp_path / "runtime-receipts")
     opened = review.start_review(
         workspace, **_start_args({"id": "R-0006"}))
@@ -472,10 +472,8 @@ def test_clean_quick_output_satisfies_legacy_runtime_receipts(tmp_path):
     facts = runtime_eval.review_facts(
         workspace, "evaluate", run_id=opened["run_id"])
 
-    assert facts["graph_before_route"] is False
-    assert all(facts[key] for key in runtime_eval.REVIEW_FACTS
-               if key != "graph_before_route")
-    assert runtime_eval.assess("evaluate", facts)["status"] != "on_path"
+    assert all(facts[key] for key in runtime_eval.REVIEW_FACTS)
+    assert runtime_eval.assess("evaluate", facts)["status"] == "on_path"
 
 
 def test_schema_validated_evaluator_is_the_quick_output_without_slot_result(
@@ -548,8 +546,7 @@ def test_schema_validated_quick_output_also_satisfies_evaluate_gate(
     monkeypatch.setattr(loop, "_design_current_errors", lambda *_args: [])
 
     errors = loop._evaluation_errors(workspace, state, task)
-    assert any("producer observation" in error or
-               "leased slot collection" in error for error in errors), errors
+    assert errors == []
 
 
 def test_evaluate_gate_still_rejects_substantive_quick_output(

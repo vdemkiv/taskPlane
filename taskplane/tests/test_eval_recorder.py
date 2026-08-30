@@ -1331,16 +1331,13 @@ class TestTheLoopRecordsTheBreadthOnTheRouteItTraced(unittest.TestCase):
         self.assertEqual({r["requested_breadth"] for r in working},
                          {"routed"})
 
-    def test_the_final_review_records_selective_breadth(self):
-        """R-0005: final EM maps the catalog once but dispatches selectively.
-
-        The route record describes the request, not the number of mapping
-        entries; a complete 26-lens decision is therefore still ``routed``.
-        """
+    def test_the_final_review_records_zero_lens_delivery_breadth(self):
+        """Final Engineering records the sealed zero-lens delivery route."""
         em = [r for r in self.routes if r.get("step") == "em"]
         self.assertEqual([r["requested_breadth"] for r in em], ["routed"])
-        self.assertEqual([r["engine_ran"] for r in em], [True])
+        self.assertEqual([r["engine_ran"] for r in em], [False])
         self.assertEqual([r["kernel_status"] for r in em], ["ready"])
+        self.assertEqual([r.get("lenses") for r in em], [[]])
 
     def test_the_evaluate_route_records_that_the_engine_chose(self):
         """Evaluate records that D-0014 bypassed the lens engine."""
@@ -1352,14 +1349,16 @@ class TestTheLoopRecordsTheBreadthOnTheRouteItTraced(unittest.TestCase):
 
     def test_the_recorder_reads_those_routes_without_inferring(self):
         """End of the wire: the loop's own rows, through the real recorder,
-        with the real catalog. The evaluate row names all 26 lenses."""
-        biggest = max(self.routes, key=lambda r: len(r.get("lenses") or []))
-        self.assertEqual(len(biggest["lenses"]), len(CATALOG_IDS),
-                         "premise: a routed step names the whole catalog")
-        rows = eval_record.synthesize_trace([dict(biggest)],
-                                            known_lenses=set(CATALOG_IDS))
-        self.assertEqual(rows[0]["breadth"], "routed")
-        self.assertIn("recorded", rows[0]["breadth_source"])
+        with the real catalog. Zero-lens delivery remains explicit telemetry."""
+        delivery = [r for r in self.routes
+                    if r.get("step") in {"evaluate", "em"}]
+        self.assertTrue(delivery)
+        self.assertTrue(all(r.get("lenses") == [] for r in delivery))
+        rows = eval_record.synthesize_trace(
+            [dict(row) for row in delivery], known_lenses=set(CATALOG_IDS))
+        self.assertTrue(all(row["breadth"] == "routed" for row in rows))
+        self.assertTrue(all("recorded" in row["breadth_source"]
+                            for row in rows))
 
 
 PRE_INSTRUMENTATION_LOOP_BLOB = "dfb95b871361ed097d156e4785158cb7c86505a4"
@@ -1464,7 +1463,7 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
                               if k not in ignored},
                              {k: v for k, v in was.items()
                               if k not in ignored})
-            if is_.get("step") == "evaluate":
+            if is_.get("step") in {"evaluate", "em"}:
                 self.assertEqual(is_["lenses"], [])
 
     def test_the_baseline_could_not_tell_the_routed_review_from_all(self):

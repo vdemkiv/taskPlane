@@ -112,7 +112,12 @@ class TestGovernanceV2(unittest.TestCase):
         state = loop.load(self.ws)
         task = state["tasks"][state["current_task"]]
         slot = action["contract_bootstrap"]["task_slot"]
-        contract = tp.load_active(self.ws, task_slot=slot)
+        binding = tp.worker_contract_for_stage(
+            self.ws, stage="evaluate", task=str(task["id"]))
+        self.assertIsNotNone(binding)
+        self.assertEqual(binding["slot"], slot)
+        self.assertIsNone(tp.load_active(self.ws))
+        contract = binding["contract"]
         lifecycle = (contract or {}).get("worker_lifecycle") or {}
         self.assertEqual(lifecycle.get("stage"), "evaluate")
         self.assertEqual(str(lifecycle.get("task") or ""), str(task["id"]))

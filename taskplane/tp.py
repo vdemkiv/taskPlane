@@ -6723,13 +6723,23 @@ def _cli_positionals(parser):
     return out
 
 
-_CLI_NARGS_NOTE = {"*": "zero or more", "+": "one or more", "?": "optional"}
+_CLI_NARGS_NOTE = {
+    "*": "zero or more", "+": "one or more", "?": "optional",
+    argparse.REMAINDER: "zero or more",
+}
 
 
 def _cli_positional_qualifiers(action):
     """Render a positional's cardinality and closed value contract."""
-    qualifiers = ["required" if action.required else "optional"]
+    nargs = action.nargs
+    required = (
+        nargs is None or nargs == "+" or
+        isinstance(nargs, int) and not isinstance(nargs, bool) and nargs > 0
+    )
+    qualifiers = ["required" if required else "optional"]
     cardinality = _CLI_NARGS_NOTE.get(action.nargs)
+    if isinstance(nargs, int) and not isinstance(nargs, bool) and nargs > 0:
+        cardinality = f"exactly {nargs}"
     if cardinality and cardinality != qualifiers[0]:
         qualifiers.append(cardinality)
     if action.choices:

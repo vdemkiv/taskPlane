@@ -13,6 +13,22 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 import review  # noqa: E402
 
 
+class _OsProxy:
+    """Test-local platform seam that never mutates process-wide ``os.name``."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def __getattr__(self, attribute):
+        return getattr(os, attribute)
+
+
+def _set_review_platform(monkeypatch, name):
+    proxy = _OsProxy(name)
+    monkeypatch.setattr(review, "os", proxy)
+    return proxy
+
+
 def _posix_signal_fixture(monkeypatch):
     """Provide POSIX-only signal identities on non-POSIX test hosts."""
     terminate = int(signal.SIGTERM)
@@ -65,7 +81,7 @@ def test_h34_git_process_uses_process_and_total_deadlines(
         review, "_terminate_validation_sandbox_process_tree",
         lambda selected, **_deadlines: terminated.append(selected))
     monkeypatch.setattr(review.time, "monotonic", lambda: 100.0)
-    monkeypatch.setattr(review.os, "name", "posix")
+    _set_review_platform(monkeypatch, "posix")
 
     with pytest.raises(review._ValidationSandboxTimeout) as raised:
         review._run_validation_sandbox_git(
@@ -93,7 +109,7 @@ def test_h34_cancellation_terminates_the_complete_process_tree(monkeypatch):
         review, "_terminate_validation_sandbox_process_tree",
         lambda selected, **_deadlines: terminated.append(selected))
     monkeypatch.setattr(review.time, "monotonic", lambda: 20.0)
-    monkeypatch.setattr(review.os, "name", "posix")
+    _set_review_platform(monkeypatch, "posix")
 
     with pytest.raises(KeyboardInterrupt):
         review._run_validation_sandbox_git(
@@ -157,7 +173,7 @@ def test_h34_cleanup_shares_the_aggregate_deadline_and_fails_closed(
         def close(self):
             process.actions.append("job-close")
 
-    monkeypatch.setattr(review.os, "name", platform_name)
+    _set_review_platform(monkeypatch, platform_name)
     monkeypatch.setattr(
         review.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(
@@ -223,7 +239,7 @@ def test_h34_windows_launch_owns_and_closes_a_kill_on_close_job(monkeypatch):
         def close(self):
             actions.append("close")
 
-    monkeypatch.setattr(review.os, "name", "nt")
+    _set_review_platform(monkeypatch, "nt")
     monkeypatch.setattr(
         review.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200,
         raising=False)
@@ -272,7 +288,7 @@ def test_h34_windows_job_assignment_failure_aborts_suspended_child(
     process = Process()
     launched = []
     resumed = []
-    monkeypatch.setattr(review.os, "name", "nt")
+    _set_review_platform(monkeypatch, "nt")
     monkeypatch.setattr(
         review.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200,
         raising=False)
@@ -325,7 +341,7 @@ def test_h34_cleanup_without_reap_time_fails_closed_without_overrun(
 
     process = ExhaustedProcess()
     signal_names, _hard_kill = _posix_signal_fixture(monkeypatch)
-    monkeypatch.setattr(review.os, "name", "posix")
+    _set_review_platform(monkeypatch, "posix")
     monkeypatch.setattr(
         review.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(
@@ -364,7 +380,7 @@ def test_h34_process_tree_termination_escalates_to_group_kill(monkeypatch):
             self.returncode = -hard_kill
 
     sent = []
-    monkeypatch.setattr(review.os, "name", "posix")
+    _set_review_platform(monkeypatch, "posix")
     monkeypatch.setattr(
         review.os, "killpg", lambda pid, sig: sent.append((pid, sig)),
         raising=False)
@@ -473,7 +489,7 @@ def test_h34_blocked_untracked_copy_is_killed_cleaned_and_persisted(
         return original_popen(argv, *args, **kwargs)
 
     monkeypatch.setattr(review.subprocess, "Popen", popen)
-    monkeypatch.setattr(review.os, "name", "posix")
+    _set_review_platform(monkeypatch, "posix")
     monkeypatch.setattr(
         review.shutil, "copy2",
         lambda *_args, **_kwargs: pytest.fail(

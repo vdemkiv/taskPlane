@@ -1,9 +1,10 @@
 """R-0006/D-0014 — Evaluate is one zero-lens producer judgment.
 
 Evaluate still owns a ReviewKernel run at the build stage, but the accepted
-delivery contract gives it no lens slots.  Final EM remains the selective
-lens-routing stage.  These tests pin that boundary and the genuine external
-producer observation required for accepting evaluator bytes.
+delivery contract gives it no lens slots. Final EM is likewise a zero-lens
+engineering stage under the same sealed delivery authority. These tests pin
+that boundary and the genuine external producer observation required for
+accepting evaluator bytes.
 """
 import hashlib
 import inspect
@@ -17,7 +18,6 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
-import lens  # noqa: E402
 import review  # noqa: E402
 import producer_observation  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
@@ -113,7 +113,12 @@ def _pass_eval(ws, brief):
     _write_kernel_results(ws)
     _write_verdict(ws, task["id"], loop._criteria_for(ws, state, task), [])
     slot = brief["contract_bootstrap"]["task_slot"]
-    contract = tp.load_active(ws, task_slot=slot)
+    binding = tp.worker_contract_for_stage(
+        ws, stage="evaluate", task=str(task["id"]))
+    assert binding is not None
+    assert binding["slot"] == slot
+    assert tp.load_active(ws) is None
+    contract = binding["contract"]
     lifecycle = (contract or {}).get("worker_lifecycle") or {}
     assert lifecycle.get("stage") == "evaluate"
     assert str(lifecycle.get("task") or "") == str(task["id"])
@@ -148,7 +153,7 @@ class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
         self.assertEqual(loop.EVALUATE_ROUTE_STAGE, "build")
         src = _loop_src()
         # The shared kernel retains stage identity; Evaluate's adapter removes
-        # lens authority while final EM still consumes review routing.
+        # lens authority while final EM consumes the same delivery receipt.
         self.assertIn('stage = "review" if step == "em" else EVALUATE_ROUTE_STAGE',
                       src)
         # Validator consumes the persisted decision and checks its stage;
@@ -184,8 +189,8 @@ class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
         self.assertNotIn("routing", kernel)
 
 
-class TestEmUsesSelectiveKernel(unittest.TestCase):
-    """Final EM uses the same complete selective decision as Evaluate."""
+class TestEmUsesZeroLensDeliveryKernel(unittest.TestCase):
+    """Final EM consumes the sealed delivery receipt without lens workers."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -225,7 +230,7 @@ class TestCanonicalFindingEnforcement(unittest.TestCase):
         self.assertEqual(kernel["expected_lenses"], [])
         self.assertNotIn("lenses", brief)
 
-    def test_em_brief_maps_full_catalog_but_dispatches_selectively(self):
+    def test_em_brief_preserves_zero_lens_delivery_authority(self):
         ws = _repo(self.tmp)
         act = _to_evaluate(ws, {"src/app/feature.py": "def f():\n"
                                 "    return 1\n"})
@@ -234,16 +239,15 @@ class TestCanonicalFindingEnforcement(unittest.TestCase):
         self.assertEqual(loop.load(ws)["step"], "em")
         em = loop.next_action(ws)
         self.assertEqual(em["step"], "em")
-        catalog_ids = {l["id"] for l in lens.load_catalog()["lenses"]}
-        self.assertEqual({x["id"] for x in em["lenses"]}, catalog_ids)
-        self.assertTrue(any(x["tier"] == "sweep"
-                            for x in em["lenses"]))
-        self.assertTrue(any(x["tier"] == "n/a" for x in em["lenses"]))
-        for x in em["lenses"]:
-            self.assertIn("score", x)
-            if x["tier"] == "n/a":
-                self.assertEqual(x["mode"], "none")
-                self.assertTrue(x.get("negative_evidence"))
+        self.assertNotIn("lenses", em)
+        kernel = review._load_state(ws)
+        self.assertEqual(kernel["expected_lenses"], [])
+        self.assertEqual(kernel["slots"], [])
+        self.assertTrue(kernel["zero_lens_evaluation"])
+        self.assertEqual(
+            kernel["delivery_mode_receipt"]["fingerprint"],
+            loop.load(ws)["delivery_mode_receipt"]["fingerprint"],
+        )
 
     def test_audit_gate_surfaces_still_reexported(self):
         """Cadence + router-regression blocking live in audit.py now;

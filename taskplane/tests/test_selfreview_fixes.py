@@ -76,7 +76,12 @@ def _pass_eval(ws):
                              "contracts_checked": []},
                    "failures": []}, f)
     slot = brief["contract_bootstrap"]["task_slot"]
-    contract = tl.load_active(act_ws, task_slot=slot)
+    binding = tl.worker_contract_for_stage(
+        act_ws, stage="evaluate", task=str(task["id"]))
+    assert binding is not None
+    assert binding["slot"] == slot
+    assert tl.load_active(act_ws) is None
+    contract = binding["contract"]
     lifecycle = (contract or {}).get("worker_lifecycle") or {}
     assert lifecycle.get("stage") == "evaluate"
     assert str(lifecycle.get("task") or "") == str(task["id"])
