@@ -6900,6 +6900,12 @@ _REANCHOR_SEQUENCE_FIELDS = frozenset({
 })
 _REANCHOR_MAPPING_FIELDS = frozenset({"impact", "impact_policy"})
 
+_REANCHOR_RESOLVED_OUTAGE_REASONS = {
+    "human-resolved-orchestration-outage": "orchestration_unavailable",
+    "human-resolved-producer-receipt-outage":
+        "producer_receipt_unavailable",
+}
+
 
 def _reanchor_contract(task: Mapping) -> dict:
     """Canonical immutable task contract, excluding all runtime fields."""
@@ -6937,7 +6943,7 @@ def _verified_criterion_evidence(value) -> bool:
         return False
     if not str(value.get("task_id") or "").strip() or value.get(
             "disposition") not in {
-                "independent-pass", "human-resolved-orchestration-outage"}:
+                "independent-pass", *_REANCHOR_RESOLVED_OUTAGE_REASONS}:
         return False
     for field in ("contract_fingerprint", "evaluation_sha256",
                   "criteria_status_sha256", "receipt_sha256", "key_id"):
@@ -6985,12 +6991,12 @@ def _validated_reanchor_verdict(task: Mapping, verdict: Mapping,
     if disposition == "independent-pass":
         if verdict.get("verdict") != "pass" or failures:
             raise ValueError("reanchor verdict is not an independent pass")
-    elif disposition == "human-resolved-orchestration-outage":
+    elif disposition in _REANCHOR_RESOLVED_OUTAGE_REASONS:
         evaluation = verdict.get("evaluation")
         if verdict.get("verdict") != "fail" or not isinstance(
                 evaluation, Mapping) or evaluation.get("status") != \
                 "unavailable" or evaluation.get("reason_code") != \
-                "orchestration_unavailable":
+                _REANCHOR_RESOLVED_OUTAGE_REASONS[disposition]:
             raise ValueError("reanchor verdict is not a resolved outage")
     else:
         raise ValueError("reanchor disposition is invalid")
@@ -7011,8 +7017,9 @@ def _reanchor_authority_material(task: Mapping, *, source_revision: str,
         "criteria_status_sha256": str(
             criteria_status_sha256 or "").lower(),
         "disposition": str(disposition or ""),
-        "outage_identity": (outage_identity if disposition ==
-                            "human-resolved-orchestration-outage" else None),
+        "outage_identity": (
+            outage_identity
+            if disposition in _REANCHOR_RESOLVED_OUTAGE_REASONS else None),
     }
 
 
@@ -7215,13 +7222,16 @@ def _verify_reanchor_task_evidence(
         warning = prior.get("evaluation")
         if not isinstance(human, Mapping) or human.get("decision") != "pass":
             return None, "unavailable evaluation has no resolved human pass"
+        reason_code = availability.get("reason_code")
+        if reason_code not in set(_REANCHOR_RESOLVED_OUTAGE_REASONS.values()):
+            return None, "resolved outage reason is not supported"
         if not isinstance(warning, Mapping) or \
                 warning.get("status") != "unavailable" or \
                 warning.get("verdict") != "non-judged" or \
-                warning.get("reason_code") != "orchestration_unavailable":
+                warning.get("reason_code") != reason_code:
             return None, "resolved outage warning is not exact"
         if verdict.get("verdict") != "fail" or \
-                availability.get("reason_code") != "orchestration_unavailable":
+                availability.get("reason_code") != reason_code:
             return None, "durable outage verdict is not a non-judged failure"
         try:
             identity = evaluator_health.outage_identity(
@@ -7231,7 +7241,16 @@ def _verify_reanchor_task_evidence(
             return None, f"durable outage identity is invalid: {exc}"
         if warning.get("outage_identity") != identity:
             return None, "resolved outage identity no longer matches verdict"
-        resolution = "human-resolved-orchestration-outage"
+        if reason_code == "producer_receipt_unavailable":
+            if not str(human.get("actor") or "").strip() or \
+                    human.get("outage_reason_code") != reason_code or \
+                    human.get("outage_fingerprint") != identity.get(
+                        "fingerprint"):
+                return None, "producer-receipt acceptance is not bound to " \
+                    "the exact human-approved outage"
+            resolution = "human-resolved-producer-receipt-outage"
+        else:
+            resolution = "human-resolved-orchestration-outage"
     elif verdict.get("verdict") != "pass" or failures:
         return None, "durable evaluator verdict is not an exact pass"
 
@@ -10065,7 +10084,10 @@ def _cascade_skip(state: dict, root_id: str) -> list:
     return cascaded
 
 
-def resolve(ws: str, decision: str) -> dict:
+def resolve(
+        ws: str, decision: str, *, by: str | None = None,
+        accept_producer_receipt_outage: bool = False,
+        outage_fingerprint: str | None = None) -> dict:
     """Human decision when a task escalated (fix cycles exhausted)."""
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
@@ -10090,19 +10112,54 @@ def resolve(ws: str, decision: str) -> dict:
     elif decision == "pass":
         evaluation = t.get("evaluation") or {}
         accept_errors = []
+        reason_code = evaluation.get("reason_code")
+        outage_identity = evaluation.get("outage_identity") or {}
+        expected_outage_fingerprint = str(
+            outage_identity.get("fingerprint") or "").strip()
+        supplied_outage_fingerprint = str(
+            outage_fingerprint or "").strip()
+        producer_receipt_exception = (
+            reason_code == "producer_receipt_unavailable"
+            and accept_producer_receipt_outage is True
+            and bool(str(by or "").strip())
+            and bool(expected_outage_fingerprint)
+            and supplied_outage_fingerprint == expected_outage_fingerprint
+        )
         if not (
                 t.get("status") == "unavailable"
                 and evaluation.get("status") == "unavailable"
                 and evaluation.get("verdict") == "non-judged"
-                and evaluation.get("reason_code") ==
-                "orchestration_unavailable"):
+                and (reason_code == "orchestration_unavailable"
+                     or producer_receipt_exception)):
             accept_errors.append(
                 "pass is only available for a non-judged orchestration "
+                "outage or an explicitly accepted exact producer-receipt "
                 "outage")
+        if reason_code == "producer_receipt_unavailable" and \
+                not producer_receipt_exception:
+            accept_errors.append(
+                "producer-receipt acceptance requires --by, "
+                "--accept-producer-receipt-outage, and the exact current "
+                "--outage-fingerprint")
         act_ws = str(t.get("workspace") or ws)
         unavailable_errors, verdict = _evaluation_unavailable_errors(
             act_ws, state, t)
         accept_errors.extend(unavailable_errors)
+        if producer_receipt_exception:
+            try:
+                durable_identity = evaluator_health.outage_identity(
+                    task=verdict.get("task"),
+                    requirement=verdict.get("requirement"),
+                    evaluation=verdict.get("evaluation"),
+                    failures=verdict.get("failures"))
+            except evaluator_health.EvaluatorHealthError as exc:
+                accept_errors.append(
+                    f"producer-receipt outage identity is invalid: {exc}")
+            else:
+                if durable_identity != outage_identity:
+                    accept_errors.append(
+                        "producer-receipt outage fingerprint does not bind "
+                        "the current durable evaluator verdict")
         criteria = (verdict or {}).get("criteria") or []
         if not criteria or any(
                 not isinstance(row, dict) or row.get("status") != "met"
@@ -10119,11 +10176,18 @@ def resolve(ws: str, decision: str) -> dict:
         t["human_resolution"] = {
             "decision": "pass",
             "reason": "criteria met; quick-only evaluation accepted during "
-                      "orchestration outage",
+                      f"{reason_code} outage",
+            "actor": str(by or "human:unspecified"),
+            "outage_reason_code": reason_code,
+            "outage_fingerprint": expected_outage_fingerprint,
         }
+        authority_reason = (
+            "human-resolved-producer-receipt-outage"
+            if producer_receipt_exception
+            else "human-resolved-orchestration-outage")
         try:
             authority_ref, source_revision = _persist_reanchor_authority(
-                act_ws, t, "human-resolved-orchestration-outage")
+                act_ws, t, authority_reason)
         except Exception as exc:
             t.pop("human_resolution", None)
             return {"error": "human pass authority could not be persisted "

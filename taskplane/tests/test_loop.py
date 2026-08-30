@@ -1274,6 +1274,56 @@ class TestLoop(unittest.TestCase):
         self.assertTrue(os.path.isfile(runtime_storage.evaluation_path(
             ws, "reanchor-authority.json")))
 
+    def test_human_can_accept_exact_producer_receipt_outage_once(self):
+        ws, _, _ = self._gate_evaluator_unavailable()
+        state = loop.load(ws)
+        task = state["tasks"][0]
+        task["evaluation"]["reason_code"] = "producer_receipt_unavailable"
+        task["evaluation"]["outage_identity"]["evaluation"][
+            "reason_code"] = "producer_receipt_unavailable"
+        verdict_path = os.path.join(ws, ".eval", "verdict.json")
+        with open(verdict_path, encoding="utf-8") as stream:
+            verdict = json.load(stream)
+        verdict["evaluation"]["reason_code"] = \
+            "producer_receipt_unavailable"
+        task["evaluation"]["outage_identity"] = \
+            evaluator_health.outage_identity(
+                task=verdict["task"], requirement=verdict["requirement"],
+                evaluation=verdict["evaluation"],
+                failures=verdict["failures"])
+        with open(verdict_path, "w", encoding="utf-8") as stream:
+            json.dump(verdict, stream)
+        loop.save(ws, state)
+        fingerprint = task["evaluation"]["outage_identity"]["fingerprint"]
+
+        refused = loop.resolve(
+            ws, "pass", by="human:vdemkiv",
+            accept_producer_receipt_outage=True,
+            outage_fingerprint="0" * 64)
+        self.assertIn("error", refused)
+        accepted = loop.resolve(
+            ws, "pass", by="human:vdemkiv",
+            accept_producer_receipt_outage=True,
+            outage_fingerprint=fingerprint)
+
+        self.assertNotIn("error", accepted)
+        task = loop.load(ws)["tasks"][0]
+        self.assertEqual(task["status"], "passed")
+        self.assertEqual(task["human_resolution"]["actor"],
+                         "human:vdemkiv")
+        self.assertEqual(task["human_resolution"]["outage_fingerprint"],
+                         fingerprint)
+        self.assertEqual(
+            task["reanchor_authority"]["schema"],
+            loop._REANCHOR_AUTHORITY_REF_SCHEMA)
+        receipt = tp.load_json(runtime_storage.evaluation_path(
+            ws, "reanchor-authority.json"))
+        self.assertEqual(
+            receipt["disposition"],
+            "human-resolved-producer-receipt-outage")
+        self.assertEqual(
+            receipt["outage_identity"]["fingerprint"], fingerprint)
+
     def test_human_pass_refuses_unmet_criteria(self):
         ws, _, _ = self._gate_evaluator_unavailable()
         state = loop.load(ws)

@@ -3136,7 +3136,11 @@ def cmd_loop(a) -> int:
     elif action == "select":
         out = loopmod.select(ws, a.choice, note=a.note or "")
     elif action == "resolve":
-        out = loopmod.resolve(ws, a.decision)
+        out = loopmod.resolve(
+            ws, a.decision, by=getattr(a, "by", None),
+            accept_producer_receipt_outage=getattr(
+                a, "accept_producer_receipt_outage", False),
+            outage_fingerprint=getattr(a, "outage_fingerprint", None))
     elif action == "replan":
         out = loopmod.replan(ws, by=a.by, reason=a.reason)
     elif action == "evidence":
@@ -7647,6 +7651,14 @@ def main(argv=None) -> int:
         "resolve", help="resolve a blocked loop: retry, pass, skip, defer or abort")
     lr.add_argument(
         "decision", choices=["retry", "pass", "skip", "defer", "abort"])
+    lr.add_argument("--by",
+                    help="human approving an exact producer-receipt outage")
+    lr.add_argument(
+        "--accept-producer-receipt-outage", action="store_true",
+        help="accept only the exact fingerprint supplied alongside --by")
+    lr.add_argument(
+        "--outage-fingerprint",
+        help="exact current evaluator outage fingerprint; replay-safe")
     lrp = lsub.add_parser(
         "replan", help="human: archive frozen tasks and return to Plan for "
         "a corrected plan plus fresh approval")
