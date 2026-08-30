@@ -85,10 +85,14 @@ explicit.
   hook before each tool call. Literal scope overrides carry provenance: only the
   human-approved plan's `plan_minted` mark authorizes them, never a CLI flag. [docs/state-spec.md](docs/state-spec.md).
 - **26 lenses with focused stage routing.** Product and Design execute the
-  minimum-sufficient focused quick route; every non-trivial Plan and Evaluate
-  executes exactly 3–4 quick lenses; Build and Fix launch zero lens workers.
-  All 26 lenses still receive one evidenced disposition, and missing or invalid
-  routing evidence fails closed. [docs/routing-and-flows.md](docs/routing-and-flows.md).
+  minimum-sufficient focused quick route; every non-trivial Plan executes
+  exactly 3–4 quick lenses. Each routed Product, Design, and Plan stage records
+  one evidenced disposition for all 26 lenses. Build, Fix, Evaluate, and final
+  engineering review launch zero lens workers. Evaluate is only a direct
+  evidence collector and judge: it creates no lens route, slots, workers,
+  disposition ledger, lens verdict, retry/invalidation state, or expanded-route
+  authority. This successor contract is D-0014, accepted by `human:vdemkiv`.
+  [docs/routing-and-flows.md](docs/routing-and-flows.md).
 - **Graph decomposition.** `tp graph scan --decompose` derives a component layer
   inside the dependency graph (directory convention + import cohesion + AST
   clustering; floors overridable via `components.yaml`) with fingerprint-cached
@@ -375,8 +379,8 @@ taskplane/
   Slack channels via Claude Tag (beta), with the `tp-tag` skill.
 - [docs/routing-and-flows.md](docs/routing-and-flows.md) — routing v2, component
   decomposition, the review and stage waves with their mandatory byte-identical
-  Task fallback, the audit cadence, and evaluate's build-stage routing — each
-  with a dogfood example from this repository.
+  Task fallback, the audit cadence, and Evaluate's direct-evidence judgment —
+  each with a dogfood example from this repository.
 - [docs/configuration.md](docs/configuration.md) — every environment variable.
 - [docs/loop-design.md](docs/loop-design.md) · [docs/authority-matrix.md](docs/authority-matrix.md) ·
   [docs/state-spec.md](docs/state-spec.md) — engine design, who may do what at

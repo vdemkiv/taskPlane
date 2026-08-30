@@ -39,13 +39,13 @@
 
 ## Mandatory floors remain evidence-based
 
-Architecture and security cannot be silently omitted when canonical evidence shows their owned boundary. The focused policy applies each floor before it groups overlapping risks and caps normal Plan/Evaluate execution at 3–4 quick lenses. A floor guarantees an evidenced disposition; it does not authorize a Build/Fix worker or an automatic full-catalog run.
+Architecture and security cannot be silently omitted when canonical evidence shows their owned boundary. The focused policy applies each floor before it groups overlapping risks and caps normal Plan execution at 3–4 quick lenses. A floor guarantees an evidenced disposition; it does not authorize a Build/Fix/Evaluate/final-EM worker or an automatic full-catalog run.
 
 ## Routing notes
 
-- Every routed Product, Design, Plan, and Evaluate stage emits one evidenced `execute_deep`, `execute_light`, `covered_by`, or `not_applicable` row for all 26 lenses.
-- Only the two `execute_*` rows dispatch. Normal delivery uses focused quick routes; Build and Fix launch zero lens workers.
-- More than four independent mandatory Plan/Evaluate risks split scope or require protected exact-target expanded-route authority.
+- Every routed Product, Design, and Plan stage emits one evidenced `execute_deep`, `execute_light`, `covered_by`, or `not_applicable` row for all 26 lenses.
+- Only the two `execute_*` rows dispatch. Normal delivery uses focused quick routes. Build, Fix, Evaluate, and final engineering review launch zero lens workers; Evaluate is a direct evidence collector and judge and creates no lens artifacts.
+- More than four independent mandatory Plan risks split scope or require protected exact-target expanded-route authority. That authority is Plan-only.
 
 ## Adding a lens
 

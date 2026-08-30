@@ -7,8 +7,8 @@ stage and target.
 
 ## Complete disposition, focused execution
 
-Product, Design, Plan, and Evaluate each produce exactly one disposition for
-all 26 lenses:
+Product, Design, and Plan each produce exactly one disposition for all 26
+lenses:
 
 - `execute_deep` — dispatch a dedicated producer when a separately authorized
   deep/audit route calls for it;
@@ -21,15 +21,19 @@ all 26 lenses:
 Only `execute_deep` and `execute_light` create work. Missing, duplicated,
 unsupported, cyclic, or unevidenced rows fail closed. Normal delivery is
 quick-only: Product and Design choose a minimum-sufficient focused route, while
-every non-trivial Plan and Evaluate runs exactly 3–4 quick lenses. Build and
-Fix launch zero lens workers; final engineering synthesis consumes canonical
-Evaluate evidence rather than rerunning the catalog.
+every non-trivial Plan runs exactly 3–4 quick lenses. Build, Fix, Evaluate, and
+final engineering review launch zero lens workers. Evaluate is only a direct
+evidence collector and judge; it creates no lens route, slots, workers,
+disposition ledger, lens verdict, retry/invalidation record, or expanded-route
+authority. Final engineering synthesis consumes that direct evidence rather
+than rerunning the catalog.
 
-If more than four independent mandatory Plan/Evaluate risks remain, Taskplane
+If more than four independent mandatory Plan risks remain, Taskplane
 does not silently drop or demote one. It proposes deterministic scope splits or
 stops for an exact expanded-route approval. Expanded authority is protected by
 a separately executed content-addressed provider, external 0600 custody,
 authenticated exact-target approval, expiry, and atomic one-use consumption.
+Expanded-route authority is Plan-only.
 
 ## Deterministic routing and selective reuse
 
@@ -40,10 +44,11 @@ and fingerprints the complete decision.
 
 Each selected lens also receives a `lens_input_fingerprint` over only its
 relevant acceptance, design, change, impact, test, finding, catalog, and policy
-inputs. After Fix, no lens runs while editing. Evaluate recomputes the route,
-reuses sealed passing evidence whose input fingerprint is unchanged, and
-dispatches only invalidated selections. Prior failure, changed input, stale
-policy, missing result, or invalid provenance always invalidates reuse.
+inputs. A replay of the same routed Product, Design, or Plan stage may reuse
+sealed passing evidence only when that fingerprint is unchanged. Prior failure,
+changed input, stale policy, missing result, or invalid provenance invalidates
+reuse for that routed stage. Fix and Evaluate launch no lenses; Evaluate neither
+recomputes nor reuses a lens route and has no lens invalidation surface.
 
 ## Bounded route telemetry
 
@@ -53,7 +58,8 @@ tokens, runtime, cache reuse, invalidation cause, terminal status, and route
 fingerprint. Reasons are limited to 512 UTF-8 bytes, paths are
 repository-relative, raw content is represented by SHA-256, and each artifact
 is capped at 128 KiB. Telemetry is governance evidence stored with local or
-team Taskplane state; it is not remote product analytics.
+team Taskplane state; it is not remote product analytics. Lens-free Evaluate
+emits no lens-route telemetry artifact.
 
 ## Knowledge that survives the run
 

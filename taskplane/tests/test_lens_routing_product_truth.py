@@ -3,22 +3,17 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TRUTH_FILES = (
-    "specs/spec.md",
-    "design/design.md",
-    "design/visual.html",
-    "plan/plan.md",
+CURRENT_TRUTH_FILES = (
     "docs/routing-and-flows.md",
     "docs/lenses-and-knowledge.md",
     "docs/lens-catalog.md",
-    "docs/configuration.md",
-    "docs/onboarding.md",
     "README.md",
 )
 
@@ -27,7 +22,7 @@ def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_machine_truth_declares_complete_focused_stage_contract() -> None:
+def test_historical_contract_and_current_plan_route_remain_intact() -> None:
     contract = json.loads(_text("design/contract.json"))
     tasks = json.loads(_text("plan/tasks.json"))
 
@@ -45,7 +40,8 @@ def test_machine_truth_declares_complete_focused_stage_contract() -> None:
     policy = tasks["delivery_policy"]
     assert policy["build_lens_workers"] == 0
     assert policy["fix_lens_workers"] == 0
-    assert "three-or-four" in policy["evaluate"]
+    assert policy["em_lens_workers"] == 0
+    assert "exactly four" in policy["plan"]
     dispositions = tasks["plan_route"]["dispositions"]
     assert len(dispositions) == 26
     assert len({row["lens"] for row in dispositions}) == 26
@@ -56,19 +52,26 @@ def test_machine_truth_declares_complete_focused_stage_contract() -> None:
 
 
 def test_current_product_truth_describes_the_same_dispatch_model() -> None:
-    truth = "\n".join(_text(path) for path in TRUTH_FILES).lower()
+    truth = "\n".join(_text(path) for path in CURRENT_TRUTH_FILES).lower()
 
     for required in (
         "all 26",
         "execute_deep",
         "execute_light",
-        "build and fix",
+        "product and design",
+        "plan",
         "zero lens",
         "3–4",
-        "fingerprint",
-        "redact",
+        "direct evidence collector and judge",
+        "no lens route",
+        "disposition ledger",
+        "retry/invalidation",
+        "build, fix, evaluate",
+        "final engineering review",
         "expanded-route",
-        "protected",
+        "plan-only",
+        "d-0014",
+        "human:vdemkiv",
     ):
         assert required in truth, required
 
@@ -76,14 +79,7 @@ def test_current_product_truth_describes_the_same_dispatch_model() -> None:
 def test_current_guides_do_not_reassert_superseded_normal_routing() -> None:
     current_guides = "\n".join(
         _text(path).lower()
-        for path in (
-            "docs/routing-and-flows.md",
-            "docs/lenses-and-knowledge.md",
-            "docs/lens-catalog.md",
-            "docs/configuration.md",
-            "docs/onboarding.md",
-            "README.md",
-        )
+        for path in CURRENT_TRUTH_FILES
     )
     forbidden = (
         "design 8 · build 5 · review 26",
@@ -97,16 +93,22 @@ def test_current_guides_do_not_reassert_superseded_normal_routing() -> None:
     )
     assert not [phrase for phrase in forbidden if phrase in current_guides]
 
-
-def test_guides_name_bounded_private_route_telemetry_and_selective_reuse() -> None:
-    truth = "\n".join(
-        _text(path).lower()
-        for path in (
-            "docs/routing-and-flows.md",
-            "docs/configuration.md",
-            "README.md",
-        )
+    stale_evaluate_contracts = (
+        r"(?:plan and evaluate|plan/evaluate).{0,100}(?:3\s*[–-]\s*4|risks?|route)",
+        r"evaluate.{0,80}(?:executes|dispatches|runs).{0,40}3\s*[–-]\s*4",
+        r"product, design, plan, and evaluate.{0,100}disposition",
+        r"evaluate recomputes",
+        r"evaluate.{0,80}dispatches only invalidated",
+        r"canonical evaluate routing",
     )
+    assert not [
+        pattern for pattern in stale_evaluate_contracts
+        if re.search(pattern, current_guides, flags=re.DOTALL)
+    ]
+
+
+def test_routed_stage_telemetry_is_bounded_and_excludes_evaluate() -> None:
+    truth = " ".join(_text("docs/lenses-and-knowledge.md").lower().split())
     for required in (
         "selected count",
         "estimated and actual tokens",
@@ -116,7 +118,8 @@ def test_guides_name_bounded_private_route_telemetry_and_selective_reuse() -> No
         "512",
         "128 kib",
         "repository-relative",
-        "only invalidated",
+        "lens-free evaluate emits no lens-route telemetry artifact",
+        "evaluate neither recomputes nor reuses a lens route",
     ):
         assert required in truth, required
 

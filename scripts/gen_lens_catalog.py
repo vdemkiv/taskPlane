@@ -68,9 +68,10 @@ def main(*, check=False):
     L.append("Architecture and security cannot be silently omitted when "
              "canonical evidence shows their owned boundary. The focused "
              "policy applies each floor before it groups overlapping risks "
-             "and caps normal Plan/Evaluate execution at 3–4 quick lenses. "
+             "and caps normal Plan execution at 3–4 quick lenses. "
              "A floor guarantees an evidenced disposition; it does not "
-             "authorize a Build/Fix worker or an automatic full-catalog run.\n")
+             "authorize a Build/Fix/Evaluate/final-EM worker or an automatic "
+             "full-catalog run.\n")
 
     # Strategy is a single SUMMONED lens (tp-northstar), not a scheduled
     # "advisory board" tier — the board was removed in v1.0. Only emit this
@@ -86,14 +87,17 @@ def main(*, check=False):
         L.append("")
 
     L.append("## Routing notes\n")
-    L.append("- Every routed Product, Design, Plan, and Evaluate stage emits "
+    L.append("- Every routed Product, Design, and Plan stage emits "
              "one evidenced `execute_deep`, `execute_light`, `covered_by`, or "
              f"`not_applicable` row for all {n} lenses.")
     L.append("- Only the two `execute_*` rows dispatch. Normal delivery uses "
-             "focused quick routes; Build and Fix launch zero lens workers.")
-    L.append("- More than four independent mandatory Plan/Evaluate risks "
-             "split scope or require protected exact-target expanded-route "
-             "authority.\n")
+             "focused quick routes. Build, Fix, Evaluate, and final "
+             "engineering review launch zero lens workers; Evaluate is a "
+             "direct evidence collector and judge and creates no lens "
+             "artifacts.")
+    L.append("- More than four independent mandatory Plan risks split scope "
+             "or require protected exact-target expanded-route authority. "
+             "That authority is Plan-only.\n")
 
     L.append("## Adding a lens\n")
     L.append("Append an entry to `lenses/catalog.json` (id, name, group, "
