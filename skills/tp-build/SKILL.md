@@ -5,6 +5,18 @@ description: "The new-feature flow of taskplane — use when the goal is to BUIL
 
 # /tp-build — new features, refined first, seen always
 
+## Focused routing invariant
+
+Every new-feature flow uses Product/Design minimum-sufficient focused routes,
+Plan exactly three or four quick lenses for non-trivial work, and
+Build/Fix/Evaluate/EM zero lens workers. Product, Design, and Plan record all
+26 dispositions while only selected execution dispositions launch workers.
+Plan overflow must split the scope or obtain authenticated expanded-route
+approval. Evaluate performs direct evidence judgment only over the sealed
+diff, tests, criteria, graph impact, requirements/contracts, Design
+conformance, and provenance. Zero-lens stages remain zero on success, failure,
+cancellation, interruption, and handoff.
+
 On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
 workspace launcher exists; it resolves the newest valid installed taskplane
 engine on every call. Otherwise set
@@ -126,11 +138,12 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
    stage startup envelope; do not supplement it from an earlier worker or
    task. The worker rejects authority, scope, budget, execution-claim,
    stage-head, handoff, or selected-artifact mismatches before doing work.
-   Evaluate and engineering review share one canonical review context per
+   Evaluate and engineering review share one canonical evidence context per
    immutable change: diff, graph blast radius, requirements/contracts, DoR,
-   DoD, and one complete lens disposition. Only the mapped deep lenses plus at
-   most one light sweep run; agents consume scoped references and never derive
-   their own diff or graph.
+   DoD, bound tests, approved Design conformance, and provenance. Evaluate
+   directly judges that context with zero lens routes, slots, workers, or
+   verdicts; Engineering consumes the sealed judgment without a lens sweep.
+   Agents consume scoped references and never derive their own diff or graph.
    The dashboard is auto-refreshed by gate/next and the payload carries its
    path. Reuse that path as progress state; do not call `dashboard`, render,
    or acknowledge it on internal transitions. Deliver and acknowledge it once

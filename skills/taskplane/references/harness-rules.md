@@ -1,5 +1,18 @@
 # Harness rules — submit / gate / human checkpoint (canonical)
 
+## Focused routing invariant
+
+Product/Design minimum-sufficient focused routes and Plan exactly three or
+four quick lenses are the only normal lens-execution points.
+Build/Fix/Evaluate/EM zero lens workers. Product, Design, and Plan record all
+26 dispositions, while only selected execution dispositions launch workers.
+More than four independent mandatory Plan risks must split the scope or stop
+for an authenticated expanded-route approval naming extra lenses and cost.
+Evaluate performs direct evidence judgment only over the sealed diff, tests,
+criteria, graph impact, requirements/contracts, Design conformance, and
+provenance. Zero-lens stages preserve zero workers on success, failure,
+cancellation, interruption, and handoff.
+
 This file is the SINGLE canonical statement of the invariants every
 taskplane flow runs under. Skills summarize them in one line and point
 here; the engine enforces them mechanically. If a skill and this file ever
@@ -9,7 +22,7 @@ disagree, this file wins — fix the skill.
    engineering workers perform their contracted role, write their required
    evidence, run `tp loop submit pass|fail` (or evaluator-only
    `tp loop submit unavailable` for a structured host/model outage with
-   green bound tests and no product/lens defect; with `--task <id>` only in a
+   green bound tests and no product evidence defect; with `--task <id>` only in a
    parallel EXECUTE wave — outside one the engine rejects any `--task`
    that is not the current task — after committing in their worktree),
    and STOP. A submission records an engine-computed source and

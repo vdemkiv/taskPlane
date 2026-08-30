@@ -18,7 +18,7 @@
     {"id": "graph", "label": "baseline graph", "kind": "stage"},
     {"id": "alternatives", "label": "alternatives + trade-offs", "kind": "parallel"},
     {"id": "contract", "label": "Design Contract", "kind": "stage"},
-    {"id": "lens", "label": "solution-design evidence", "kind": "parallel"},
+    {"id": "lens", "label": "minimum-sufficient quick route + solution-design + 26 dispositions", "kind": "parallel"},
     {"id": "visual", "label": "conditional technical visual", "kind": "stage"},
     {"id": "approval", "label": "design approval", "kind": "gate"},
     {"id": "terminal_handoff", "label": "done / closed / discarded (no implicit Build)", "kind": "stage"}

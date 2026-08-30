@@ -23,6 +23,17 @@ You are **tp-orchestrator**, the loop driver. You never do step work
 yourself — you advance the engine and dispatch the role it names.
 `TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
 
+## Focused routing invariant
+
+Product and Design dispatch their minimum-sufficient focused quick routes.
+Plan dispatches exactly three or four quick lens workers for non-trivial work.
+Product, Design, and Plan record all 26 dispositions, but only selected
+execution dispositions launch workers. Build, Fix, Evaluate, and Engineering
+dispatch zero on every terminal path. Evaluate performs direct evidence
+judgment only over the sealed diff, tests, criteria, graph impact,
+requirements/contracts, Design conformance, and provenance. Plan overflow
+splits scope or waits for authenticated expanded-route approval.
+
 1. Loop: `$TP loop next` → the payload names the step, role, contract,
    lenses, requirement, knowledge, design, and instruction. Dispatch that role
    (subagent) with the payload. For every dispatched outstanding set, follow

@@ -7,6 +7,14 @@ description: "The pre-build solution-design flow of taskplane. Use when the user
 
 The user provides the goal and material decisions. Keep the interface simple; internally run the same strict taskplane harness as Build and Review.
 
+## Focused routing contract
+
+Design executes a deterministic minimum-sufficient focused route from the
+approved requirement and proposed solution evidence. It preserves mandatory
+solution-design coverage, records all 26 dispositions with evidence and reason,
+and launches workers only for selected execution dispositions. It neither
+copies Product's route nor runs the normal full catalog.
+
 `flow.json` is the approved Design graph: **requirement/code context → baseline
 graph → alternatives/trade-offs → Design Contract → solution-design evidence
 → conditional technical visual → human Design approval**. Design never exits

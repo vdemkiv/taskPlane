@@ -42,7 +42,7 @@ workspace — same contracts, budgets, and hook enforcement as any task.
    return structured JSON (tests, files, per-criterion notes, decisions).
 6. **Evaluate BOTH, comparatively.** Re-run each variant's tests yourself
    (trust but verify), then one read-only tp-engineering review over both
-   diffs: per-criterion walk per variant, full lens catalog, plus a
+   sealed direct-evidence judgments: per-criterion walk per variant, plus a
    comparison — correctness risk, complexity, maintainability,
    extensibility, performance at scale, UX fit per persona. Ask for a
    pick recommendation: A, B, or hybrid (and what the hybrid takes from
