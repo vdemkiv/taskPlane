@@ -150,6 +150,7 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.assertIn("evaluation evidence failed", out["error"])
         self.assertEqual(loop.load(ws)["step"], "evaluate")
         _write_eval(ws, active_contract)
+        self.assertTrue(loop.submit(ws, "pass")["submitted"])
         out = loop.gate(ws, "pass")
         self.assertEqual(out["step"], "em")
 

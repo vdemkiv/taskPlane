@@ -6213,6 +6213,7 @@ def next_action(
     focused_route = None
     expanded_route_request = None
     delivery_dispatch = None
+    zero_lens_delivery = False
     if step in {"pm", "design", "plan"}:
         focused_stage = "product" if step == "pm" else step
         try:
@@ -6245,7 +6246,6 @@ def next_action(
             return {"error": "build delivery mode refused before dispatch: "
                     + str(exc), "step": step, "status": status(ws)}
     elif step in ("evaluate", "em"):
-        # Deferred until graph quality and complete impact exist below.
         # Mapping before that evidence is the ordering defect R-0005 closes.
         routing = None
     if routing:
@@ -6370,11 +6370,6 @@ def next_action(
                     _DELIVERY_MODE_AUTHORITY_UNSET and \
                     review_kernel.get("status") == "ready" and \
                     review_kernel.get("slots") == []:
-                # EM has no automatic lens producers under the sealed Build
-                # authority. Complete that engine-owned empty set now so the
-                # engineering producer can synthesize the final report from
-                # a canonical revision; its own exact report/findings bytes
-                # are still host-observed and consumed at submit time.
                 collected = collect_review_bridge(
                     diff_ws, publish=False, run_id=review_kernel["run_id"],
                     evaluator_result={
@@ -6391,6 +6386,10 @@ def next_action(
                 diff_ws, review_kernel,
                 task_id=str((task or {}).get("id") or
                             "engineering-signoff"))
+            zero_lens_delivery = review_kernel.get("expected_lenses") == [] and \
+                review_kernel.get("slots") == [] and (review_kernel.get(
+                    "zero_lens_evaluation") is True or review_kernel.get(
+                    "delivery_mode_receipt") is not None)
         except _ReviewGraphQualityError as exc:
             tp.trace(ws, "review_graph_quality_blocked", step=step,
                      task=(task or {}).get("id"),
@@ -6424,11 +6423,12 @@ def next_action(
             if fresh is not None:
                 fresh.setdefault("review_kernel_runs", {})[
                     _review_kernel_binding_key(step, task)] = binding
-        tp.trace(ws, "lens_route", step=step, requested_breadth="routed",
-                 engine_ran="signals" in (routing.get("context") or {}),
-                 lenses=[[x["id"], x["mode"]]
-                         for x in routing.get("lenses") or []],
-                 kernel_status=review_kernel.get("status"))
+        if not zero_lens_delivery:
+            tp.trace(ws, "lens_route", step=step, requested_breadth="routed",
+                     engine_ran="signals" in (routing.get("context") or {}),
+                     lenses=[[x["id"], x["mode"]]
+                             for x in routing.get("lenses") or []],
+                     kernel_status=review_kernel.get("status"))
 
     model_tier, model = dispatch["model_tier"], dispatch["model"]
     reasoning_effort, task_name = (dispatch["reasoning_effort"],
@@ -6522,7 +6522,7 @@ def next_action(
             "lenses": routing["lenses"],
             "language_references": (routing.get("context") or {}).get(
                 "language_references"),
-        } if routing and step != "evaluate" else {}),
+        } if routing and step != "evaluate" and not zero_lens_delivery else {}),
         "review_kernel": review_kernel,
         "runtime_evals": runtime_eval.guidance(step),
         "audit": audit_info,

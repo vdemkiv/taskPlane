@@ -52,7 +52,7 @@ PYTEST_CHECK_IDS = tuple(
 # Content address of every repository-relative `path:estimated-byte-weight` row.
 # A file added, removed, renamed, or reweighted must deliberately refresh this
 # pin, so the complete suite cannot silently shrink or use stale balancing data.
-PYTEST_WEIGHT_SHA256 = "f970086db6fc0352ee478af05ebf8a03ac0c9a61945b2366683456bebdbb9564"
+PYTEST_WEIGHT_SHA256 = "99fb9cdf75c94b9dd1f566b0d8d5449a7893a0e5162c8d1d954b7c251dd7d8dd"
 
 
 def pytest_inventory() -> tuple[str, ...]:

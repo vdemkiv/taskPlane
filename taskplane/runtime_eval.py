@@ -18,7 +18,6 @@ from typing import Any
 
 import storage as runtime_storage
 
-
 SCHEMA = "taskplane.runtime-evals/v1"
 GUIDANCE_SCHEMA = "taskplane.runtime-guidance/v1"
 LIFECYCLE_SCHEMA = "taskplane.evaluation-lifecycle/v1"
@@ -31,10 +30,8 @@ REVIEW_FACTS = (
     "selective_lens_mapping", "lens_results_collected",
     "output_schema_declared", "output_schema_validated",
     "output_producer_observed")
-
 TOKEN_PROJECTION_SCHEMA = "taskplane.host-token-projection/v1"
 STAGE_STARTUP_PROJECTION_SCHEMA = "taskplane.stage-startup-projection/v1"
-
 
 def enforcement_projection(value: dict | None) -> dict:
     """Bounded lossless identity used by evidence and host projections."""
@@ -62,7 +59,6 @@ def enforcement_projection(value: dict | None) -> dict:
         } if advisory else None),
     }
 
-
 def foreign_interference_projection(value: dict | None) -> dict:
     """Bounded durable projection for status, retro, and runtime guidance."""
     row = value if isinstance(value, dict) else {}
@@ -87,7 +83,6 @@ def foreign_interference_projection(value: dict | None) -> dict:
             for item in (row.get("events") or []) + (row.get("state_roots") or [])
             if isinstance(item, dict) and item.get("registry_fingerprint")})[:16],
     }
-
 
 def worktree_cleanup_projection(value: object) -> dict:
     """Bounded cleanup outcomes used after worker directories disappear."""
@@ -118,7 +113,6 @@ def worktree_cleanup_projection(value: object) -> dict:
             "headline": attention > 0, "attention": attention,
             "counts": counts, "outcomes": projected[:128]}
 
-
 def review_fix_convergence_projection(
         previous_revision: dict, current_revision: dict, *, cycle: int,
         previously_closed: set[str] | None = None,
@@ -134,7 +128,6 @@ def review_fix_convergence_projection(
         max_cycles=max_cycles, human_stop=human_stop,
         unsafe_recovery=unsafe_recovery, scope_changed=scope_changed,
         authority_changed=authority_changed)
-
 
 def review_outcome_with_lens_telemetry(
         sealed_revision: dict, *, lifecycle: dict | None = None,
@@ -154,7 +147,6 @@ def review_outcome_with_lens_telemetry(
             review_snapshot, lifecycle=lifecycle,
             usage_by_lens=usage_by_lens)
     return {"review": review_snapshot, "telemetry": telemetry}
-
 
 def observed_token_projection(usage: dict | None, *, provider: str,
                               source: str, scope: str) -> dict:
@@ -188,7 +180,6 @@ def observed_token_projection(usage: dict | None, *, provider: str,
     encoded = json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
     row["fingerprint"] = hashlib.sha256(encoded).hexdigest()
     return row
-
 
 def stage_startup_projection(dispatch: dict) -> dict:
     """Return exact bounded startup measurements from a verified dispatch."""
@@ -224,7 +215,6 @@ def stage_startup_projection(dispatch: dict) -> dict:
         "predecessor_root_opens": telemetry["predecessor_root_opens"],
     }
 
-
 _LIFECYCLE_TERMINAL = {"success", "failed", "timeout", "cancelled",
                        "unavailable"}
 _VALIDATION_STATUSES = {"valid", "invalid", "unavailable"}
@@ -233,7 +223,6 @@ _SECRET_ASSIGNMENT = re.compile(
     r"CREDENTIAL|PRIVATE_KEY)[A-Z0-9_]*)\s*=\s*[^\s,;]+")
 _ABSOLUTE_PATH = re.compile(
     r"(?:(?:[A-Za-z]:[\\/])|/)(?:[^\s,;]+[\\/])*[^\s,;]*")
-
 
 def review_revision_projection(revision: dict) -> dict:
     """Project revision health without copying findings into machine context."""
@@ -268,7 +257,6 @@ def review_revision_projection(revision: dict) -> dict:
         "gap_slot_ids": gap_ids,
         "approval_enabled": approval.get("enabled") is True and complete,
     }
-
 
 def command_wave_projection(wave: dict, *, efficiency: dict | None = None,
                             artifacts: list[dict] | None = None) -> dict:
@@ -307,7 +295,6 @@ def command_wave_projection(wave: dict, *, efficiency: dict | None = None,
         },
     }
 
-
 def _bounded_diagnostic(value: Any, limit: int = 512) -> str:
     text = _SECRET_ASSIGNMENT.sub("<redacted>", str(value or ""))
     text = _ABSOLUTE_PATH.sub("<redacted-path>", text)
@@ -318,7 +305,6 @@ def _bounded_diagnostic(value: Any, limit: int = 512) -> str:
         except UnicodeDecodeError:
             raw = raw[:-1]
     return ""
-
 
 def _bounded_artifact_path(value: Any, limit: int = 512) -> str:
     """Preserve safe relative references without exposing host paths."""
@@ -337,7 +323,6 @@ def _bounded_artifact_path(value: Any, limit: int = 512) -> str:
         except UnicodeDecodeError:
             raw = raw[:-1]
     return ""
-
 
 def build_evaluation_lifecycle(
         *, run_id: str, host: str, host_version: str | None,
@@ -404,7 +389,6 @@ def build_evaluation_lifecycle(
         "diagnostics": safe_diagnostics,
     }
 
-
 def validate_evaluation_lifecycle(row: dict) -> list[str]:
     """Return exact schema errors; records do not enter evals when non-empty."""
     if not isinstance(row, dict):
@@ -445,10 +429,8 @@ def validate_evaluation_lifecycle(row: dict) -> list[str]:
         errors.append("diagnostic is invalid or oversized")
     return errors
 
-
 class RuntimeEvalError(ValueError):
     pass
-
 
 @lru_cache(maxsize=4)
 def load_controls(path: str | None = None) -> dict:
@@ -482,12 +464,10 @@ def load_controls(path: str | None = None) -> dict:
                     f"recoverable control {row['id']} must define one correction")
     return data
 
-
 def controls_fingerprint() -> str:
     encoded = json.dumps(load_controls(), sort_keys=True,
                          separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
 
 def controls_for(step: str, *, checkpoint: str | None = None) -> list:
     rows = []
@@ -499,7 +479,6 @@ def controls_for(step: str, *, checkpoint: str | None = None) -> list:
         rows.append({key: value for key, value in row.items()
                      if key not in {"steps"}})
     return rows
-
 
 def guidance(step: str) -> dict:
     return {
@@ -513,7 +492,6 @@ def guidance(step: str) -> dict:
                        "unresolved drift is blocking."),
         "controls": controls_for(step),
     }
-
 
 def assess(step: str, facts: dict | None,
            *, correction_attempts: int = 0) -> dict:
@@ -549,7 +527,6 @@ def assess(step: str, facts: dict | None,
                         "The same workflow drift remains after its correction; "
                         "submit fail or return control to the orchestrator."),
     }
-
 
 def _complete_quick_only_evaluation(
         state: dict, quality: dict, verdict: dict, review_module: Any) -> bool:
@@ -653,7 +630,6 @@ def _complete_quick_only_evaluation(
                     row.get("blockers") == 0 for row in lens_rows)):
         return False
     return True
-
 
 def review_facts(ws: str, step: str, *, run_id: str) -> dict:
     """Machine-owned ReviewKernel facts used by Evaluate and final EM."""
@@ -759,53 +735,35 @@ def review_facts(ws: str, step: str, *, run_id: str) -> dict:
             if state.get("zero_lens_evaluation") is not True:
                 facts["output_producer_observed"] = facts[
                     "lens_results_collected"]
-        if not facts["selective_lens_mapping"] and \
-                _completed_zero_lens_mapping_is_satisfied(
-                    state, step, facts):
-            # A completed zero-lens delivery owes no selective mapping.  The
-            # fact is satisfied as non-applicable only after the canonical
-            # revision and exact output contract have both been validated.
+        if _completed_zero_lens_mapping_is_satisfied(state, step, facts):
             facts["selective_lens_mapping"] = True
     except Exception:
         pass
     return facts
 
-
-def _completed_zero_lens_mapping_is_satisfied(
-        state: dict, step: str, facts: dict) -> bool:
-    """Recognize only a canonical, schema-valid zero-lens completion."""
-    revision = state.get("revision") \
-        if isinstance(state.get("revision"), dict) else {}
-    completeness = revision.get("completeness") \
-        if isinstance(revision.get("completeness"), dict) else {}
-    if not (
-            state.get("status") == "complete"
-            and state.get("expected_lenses") == []
-            and state.get("slots") == []
-            and revision.get("schema") == "taskplane.findings-revision/v2"
-            and revision.get("disposition") == "canonical"
-            and completeness.get("complete") is True
-            and not (revision.get("gaps") or [])
-            and all(facts.get(key) is True for key in (
-                "graph_before_route", "shared_review_context",
-                "lens_results_collected", "output_schema_declared",
-                "output_schema_validated", "output_producer_observed"))):
+def _completed_zero_lens_mapping_is_satisfied(state: dict, step: str, facts: dict) -> bool:
+    revision = state.get("revision") if isinstance(state.get("revision"), dict) else {}
+    completeness = revision.get("completeness") if isinstance(
+        revision.get("completeness"), dict) else {}
+    required = REVIEW_FACTS[:2] + REVIEW_FACTS[3:]
+    if not (state.get("status") == "complete" and
+            state.get("expected_lenses") == state.get("slots") == [] and
+            revision.get("schema") == "taskplane.findings-revision/v2" and
+            revision.get("disposition") == "canonical" and
+            completeness.get("complete") is True and not revision.get("gaps") and
+            all(facts.get(key) is True for key in required)):
         return False
     if step == "evaluate":
-        return state.get("zero_lens_evaluation") is True and \
-            state.get("lens_execution_policy") == "none"
-    if step != "em":
-        return False
+        return state.get("zero_lens_evaluation") is True and state.get(
+            "lens_execution_policy") == "none"
     try:
         import delivery_policy
-
         receipt = delivery_policy.validate_delivery_mode_receipt(
             state.get("delivery_mode_receipt"))
     except Exception:
         return False
-    return receipt.get("mode") == "build" and \
+    return step == "em" and receipt.get("mode") == "build" and \
         receipt.get("automatic_lenses") == []
-
 
 def collect_review_if_ready(ws: str, step: str, *, run_id: str) -> None:
     """Seal authored leased results before the submission checkpoint.
@@ -824,7 +782,6 @@ def collect_review_if_ready(ws: str, step: str, *, run_id: str) -> None:
             review.collect_review(ws, publish=False, run_id=state.get("run_id"))
     except Exception:
         pass
-
 
 def guide_loop(ws: str, task_id: str | None = None) -> dict:
     """Checkpoint the active loop and persist at most one correction."""

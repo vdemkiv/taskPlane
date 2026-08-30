@@ -23,6 +23,16 @@ class _OsProxy:
         return getattr(os, attribute)
 
 
+class _SubprocessProxy:
+    """Module-local process seam that leaves shared ``subprocess`` intact."""
+
+    def __init__(self, popen):
+        self.Popen = popen
+
+    def __getattr__(self, attribute):
+        return getattr(subprocess, attribute)
+
+
 def _set_review_platform(monkeypatch, name):
     proxy = _OsProxy(name)
     monkeypatch.setattr(review, "os", proxy)
@@ -507,7 +517,7 @@ def test_h34_blocked_untracked_copy_is_killed_cleaned_and_persisted(
         empty = "" if text else b""
         return subprocess.CompletedProcess(argv, 0, empty, empty)
 
-    monkeypatch.setattr(review.subprocess, "Popen", popen)
+    monkeypatch.setattr(review, "subprocess", _SubprocessProxy(popen))
     monkeypatch.setattr(review, "_run_validation_sandbox_git", run_prepare)
     monkeypatch.setattr(review.time, "monotonic", lambda: 1000.0)
     _set_review_platform(monkeypatch, "posix")

@@ -1329,39 +1329,30 @@ class TestTheLoopRecordsTheBreadthOnTheRouteItTraced(unittest.TestCase):
                 self.assertIsInstance(row.get("engine_ran"), bool)
 
     def test_the_working_steps_record_a_routed_breadth(self):
-        working = [r for r in self.routes if r.get("step") != "em"]
+        working = [r for r in self.routes
+                   if r.get("step") in {"pm", "design", "plan"}]
         self.assertTrue(working)
         self.assertEqual({r["requested_breadth"] for r in working},
                          {"routed"})
 
-    def test_the_final_review_records_zero_lens_delivery_breadth(self):
-        """Final Engineering records the sealed zero-lens delivery route."""
+    def test_the_final_review_does_not_invent_a_lens_route(self):
+        """Final Engineering has delivery authority, not a lens route."""
         em = [r for r in self.routes if r.get("step") == "em"]
-        self.assertEqual([r["requested_breadth"] for r in em], ["routed"])
-        self.assertEqual([r["engine_ran"] for r in em], [False])
-        self.assertEqual([r["kernel_status"] for r in em], ["ready"])
-        self.assertEqual([r.get("lenses") for r in em], [[]])
+        self.assertEqual(em, [])
 
-    def test_the_evaluate_route_records_that_the_engine_chose(self):
-        """Evaluate records that D-0014 bypassed the lens engine."""
+    def test_the_evaluate_delivery_does_not_invent_a_lens_route(self):
+        """D-0014 bypasses the lens engine without route telemetry."""
         ev = [r for r in self.routes if r.get("step") == "evaluate"]
-        self.assertTrue(ev)
-        self.assertEqual({r["engine_ran"] for r in ev}, {False})
-        self.assertEqual({r["requested_breadth"] for r in ev}, {"routed"})
-        self.assertTrue(all(r.get("lenses") == [] for r in ev))
+        self.assertEqual(ev, [])
 
     def test_the_recorder_reads_those_routes_without_inferring(self):
-        """End of the wire: the loop's own rows, through the real recorder,
-        with the real catalog. Zero-lens delivery remains explicit telemetry."""
+        """The recorder must not infer delivery rows the loop did not emit."""
         delivery = [r for r in self.routes
                     if r.get("step") in {"evaluate", "em"}]
-        self.assertTrue(delivery)
-        self.assertTrue(all(r.get("lenses") == [] for r in delivery))
+        self.assertEqual(delivery, [])
         rows = eval_record.synthesize_trace(
             [dict(row) for row in delivery], known_lenses=set(CATALOG_IDS))
-        self.assertTrue(all(row["breadth"] == "routed" for row in rows))
-        self.assertTrue(all("recorded" in row["breadth_source"]
-                            for row in rows))
+        self.assertEqual(rows, [])
 
 
 PRE_INSTRUMENTATION_LOOP_BLOB = "dfb95b871361ed097d156e4785158cb7c86505a4"
@@ -1450,13 +1441,15 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
         added = {"requested_breadth", "engine_ran", "kernel_status"}
         for name in ("control_a", "current"):
             self.assertTrue(self.runs[name]["routes"])
-        base = self.runs["control_a"]["routes"]
-        now = self.runs["current"]["routes"]
+        base = [row for row in self.runs["control_a"]["routes"]
+                if row.get("step") not in {"evaluate", "em"}]
+        now = [row for row in self.runs["current"]["routes"]
+               if row.get("step") not in {"evaluate", "em"}]
+        self.assertFalse([row for row in self.runs["current"]["routes"]
+                          if row.get("step") in {"evaluate", "em"}])
         self.assertEqual(len(base), len(now))
         for was, is_ in zip(base, now):
             expected = {"requested_breadth", "engine_ran"}
-            if is_.get("step") in ("evaluate", "em"):
-                expected.add("kernel_status")
             self.assertEqual(set(was) & added, set())
             self.assertEqual(set(is_) - set(was), expected)
             # R-0005 deliberately changes the routed dispositions while
@@ -1466,8 +1459,6 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
                               if k not in ignored},
                              {k: v for k, v in was.items()
                               if k not in ignored})
-            if is_.get("step") in {"evaluate", "em"}:
-                self.assertEqual(is_["lenses"], [])
 
     def test_the_baseline_could_not_tell_the_routed_review_from_all(self):
         """The regression this locks: over the PREVIOUS revision's own trace,

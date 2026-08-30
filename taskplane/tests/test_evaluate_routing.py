@@ -245,7 +245,8 @@ class TestCanonicalFindingEnforcement(unittest.TestCase):
         kernel = review._load_state(ws)
         self.assertEqual(kernel["expected_lenses"], [])
         self.assertEqual(kernel["slots"], [])
-        self.assertTrue(kernel["zero_lens_evaluation"])
+        self.assertEqual(
+            kernel["delivery_mode_receipt"]["automatic_lenses"], [])
         self.assertEqual(
             kernel["delivery_mode_receipt"]["fingerprint"],
             loop.load(ws)["delivery_mode_receipt"]["fingerprint"],
