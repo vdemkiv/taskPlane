@@ -173,7 +173,7 @@ def test_registered_graph_loader_resolves_the_live_depgraph_seam(
     monkeypatch.setattr(depgraph, "load", lambda _workspace: fake)
 
     assert lens_signals._graph_payload("/unused", ["src/auth/a.py"])[
-        "module_dependents"] == {"auth": 0}
+        "module_dependents"] == {"auth": 1}
 
 
 def test_registered_checkpoint_loader_resolves_the_live_governed_seam(

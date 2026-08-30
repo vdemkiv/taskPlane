@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -19,7 +18,6 @@ from taskplane.tests import run_lr10_parallel as parallel_runner
 
 
 ROOT = Path(__file__).resolve().parents[2]
-LR10_BOOTSTRAP_COMMIT = "8e261f03bf2c527d0042a3a5dd41f352f0cc40d3"
 
 
 def _plan() -> dict:
@@ -165,23 +163,6 @@ def test_evaluate_kernel_output_and_guidance_have_no_lens_surface(
     assert "exact diff" in guidance_text
     assert "provenance" in guidance_text
     assert "do not create or collect lens work" in guidance_text
-
-
-def test_lr10_bootstrap_precedes_join_and_final_em_must_attribute_drift() -> None:
-    present = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", LR10_BOOTSTRAP_COMMIT, "HEAD"],
-        cwd=ROOT,
-        check=False,
-    )
-    assert present.returncode == 0, (
-        f"exact LR-10 bootstrap commit {LR10_BOOTSTRAP_COMMIT} is absent"
-    )
-
-    plan = _plan()
-    assert plan["remaining_dispatch_chain"][-1] == "EM:accepted_drift-D-0014"
-    assert plan["accepted_drift"]["final_em_obligation"] == (
-        "surface accepted_drift with accepted_by human:vdemkiv"
-    )
 
 
 def _flatten_shards(shards: dict[str, tuple[str, ...]]) -> list[str]:

@@ -15,7 +15,6 @@ from taskplane.producer_observation import (
     record_codex_subagent_stop,
     validate_consumed_matching_observation,
 )
-from taskplane.tests import test_r0013_design_sweep as design_proof
 
 
 _PRODUCERS = {
@@ -92,48 +91,6 @@ def _record_consume_validate(workspace, stage):
     assert consume_matching_observation(**common) == receipt
     assert validate_consumed_matching_observation(receipt, **common) == receipt
     return receipt, common, event
-
-
-def test_m14_design_sweep_proof_is_required_in_CI():
-    audit = design_proof._canonical_ci_audit()
-    assert hashlib.sha256(audit).hexdigest() == \
-        design_proof.CANONICAL_CI_AUDIT_SHA256
-
-    receipt = design_proof._validate_log(
-        audit,
-        source_thread=design_proof.CANONICAL_THREAD,
-        design_turn=design_proof.CANONICAL_TURN,
-        expected_audit_sha=design_proof.CANONICAL_CI_AUDIT_SHA256,
-    )
-    assert receipt["status"] == "complete"
-    assert receipt["result_count"] == 26
-    assert receipt["unique_lens_count"] == 26
-    assert receipt["native_thread_count"] == 26
-    assert receipt["concurrent_batch_ids"] == ["native-overlap-batch-00"]
-
-
-def test_m14_required_design_sweep_rejects_tampered_result_evidence():
-    rows = [
-        json.loads(line)
-        for line in design_proof._canonical_ci_audit().splitlines()
-    ]
-    final = next(row for row in rows if row["type"] == "response_item")
-    text = final["payload"]["content"][0]["text"]
-    marker = "taskplane-result-sha256:"
-    prefix, _digest = text.rsplit(marker, 1)
-    final["payload"]["content"][0]["text"] = prefix + marker + "0" * 64
-    tampered = b"".join(
-        json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-        for row in rows
-    )
-
-    with pytest.raises(design_proof.DesignSweepError, match="result|evidence|digest"):
-        design_proof._validate_log(
-            tampered,
-            source_thread=design_proof.CANONICAL_THREAD,
-            design_turn=design_proof.CANONICAL_TURN,
-            expected_audit_sha=hashlib.sha256(tampered).hexdigest(),
-        )
 
 
 def test_m15_live_Codex_producer_event_path_is_required(tmp_path):

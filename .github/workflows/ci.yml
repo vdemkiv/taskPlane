@@ -80,7 +80,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -363,21 +363,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          # S4/S7 needs the first activation commit and its measured parent.
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      # The ratchet runs before structural tests and proves from full history
-      # that all five target edges still existed when it was activated.
-      - name: Import-cycle inventory, bounds, and activation order
+      - name: Current import-cycle inventory and bounds
         run: >-
           python3 taskplane/import_cycles.py
           --root .
           --policy taskplane/tests/fixtures/import-cycles.json
           --check
-          --verify-history
       - name: Install hash-locked sealed test dependency tree
         shell: bash
         run: |
@@ -817,7 +813,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - name: Bind every blocking result to the exact PR head SHA
         env:

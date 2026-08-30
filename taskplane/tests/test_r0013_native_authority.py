@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import json
 from pathlib import Path
 import subprocess
 
@@ -14,16 +13,83 @@ from taskplane import loop, native_authority
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _json(rel: str) -> dict:
-    if rel in {"design/contract.json", "plan/tasks.json"}:
-        design, plan = native_authority.retained_r0013_design_and_plan(ROOT)
-        return design if rel == "design/contract.json" else plan
-    return json.loads((ROOT / rel).read_text(encoding="utf-8"))
+def _authority_design_and_plan() -> tuple[dict, dict]:
+    selector = (
+        "taskplane/tests/test_r0013_native_authority.py::"
+        "test_complete_native_capability_map_is_required_by_design_and_plan"
+    )
+    criterion = "AC1: current-tree native authority is complete."
+    inventory = {
+        "schema": native_authority.CAPABILITY_INVENTORY_SCHEMA,
+        "pinned_source_sha": native_authority.APPROVED_PINNED_SOURCE_SHA,
+        "rows": [
+            {
+                "capability": capability,
+                "native_owner": native_authority.REQUIRED_NATIVE_OWNERS[
+                    capability],
+                "taskplane_role": native_authority.REQUIRED_NATIVE_ROLES[
+                    capability],
+                "forbidden_taskplane_authority": list(
+                    native_authority.REQUIRED_FORBIDDEN_BY_CAPABILITY[
+                        capability]),
+                "sources": list(native_authority.REQUIRED_EVIDENCE_SOURCES[
+                    capability]),
+            }
+            for capability in native_authority.REQUIRED_CAPABILITIES
+        ],
+        "completeness_rule": "All seven current capabilities are required.",
+        "host_gap_rule": (
+            "A host gap is a human Design blocker and never authorizes "
+            "Taskplane."
+        ),
+    }
+    design = {
+        "requirement": "R-0013",
+        "native_capability_inventory": inventory,
+        "authority_boundary": {
+            "schema": native_authority.NATIVE_AUTHORITY_SCHEMA,
+            "allowed_taskplane_roots": list(
+                native_authority.REQUIRED_ALLOWED_ROOTS),
+            "forbidden_from_native_dispatch_roots": list(
+                native_authority.REQUIRED_FORBIDDEN_AUTHORITIES),
+            "stage_journal_disposition": "Current state remains inspectable.",
+            "static_rule": "Forbidden current-tree edges fail closed.",
+            "behavioral_rule": "Native dispatch remains Codex-owned.",
+        },
+        "acceptance_map": [{"criterion": criterion, "tests": [selector]}],
+        "contracts": [{
+            "id": native_authority.NATIVE_CAPABILITY_CONTRACT,
+            "relation": "provides",
+        }],
+    }
+    plan = {
+        "requirement": "R-0013",
+        "tasks": [{
+            "id": "t01-native-authority",
+            "scope": [
+                "taskplane/native_authority.py",
+                "taskplane/tests/test_r0013_native_authority.py",
+            ],
+            "deps": [],
+            "type": "architecture",
+            "criteria": [criterion],
+            "contracts": [native_authority.NATIVE_CAPABILITY_CONTRACT],
+            "tests": f"python3 -m pytest -q {selector}",
+            "new_modules": ["taskplane/native_authority.py"],
+            "design_edges": [
+                "design->contract:design.codex-native-capability-inventory:provides",
+                "contract:design.codex-native-capability-inventory->"
+                "taskplane/native_authority.py:validated-by",
+                "taskplane/native_authority.py->plan:blocks",
+                "taskplane/native_authority.py->taskplane:consumed-by",
+            ],
+        }],
+    }
+    return design, plan
 
 
 def test_complete_native_capability_map_is_required_by_design_and_plan():
-    design = _json("design/contract.json")
-    plan = _json("plan/tasks.json")
+    design, plan = _authority_design_and_plan()
 
     receipt = native_authority.validate_design_and_plan(design, plan)
 
