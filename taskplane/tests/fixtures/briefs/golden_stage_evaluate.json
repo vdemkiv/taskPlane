@@ -30,15 +30,15 @@
     "activation": "pending_subagent_start_binding",
     "control_plane_release": {
       "command": "worker-release",
-      "signed_action": "eyJhY3Rpb25faWQiOiJ3b3JrZXItcmVsZWFzZS02ZjZmZjkwNjYzMjM2ZDYyZGYxMzM4YzEiLCJjb250cmFjdF9pZCI6InRhc2tfYjEyYTg0NjMiLCJpc3N1ZWRfYXQiOjE3ODgwMzA2NTEsImtleV9pZCI6ImE5Yzc3NmMyZTcwODI5ZGRlNzRiOWY4MmNlNDkwZDlkYzU3OTdkODFkOWU2MmM0MzkwNWM5NzQ2NTEwZGRlMjYiLCJzY2hlbWEiOiJ0YXNrcGxhbmUud29ya2VyLWNvbnRyYWN0LXJlbGVhc2UtYWN0aW9uL3YxIiwic2lnbmF0dXJlIjoiMGM1ZDRiYWY2ZjZiMGFhYjFiOWY1NTViYzA4MGIxYWUwNjlhYjYyZjlhNWMwNWU5MDdlYzJkMmI5NjgxMzBjOSIsInNsb3QiOiJ0YXNrX2IxMmE4NDYzIiwic3RhZ2UiOiJldmFsdWF0ZSIsInRhc2siOiJ0MSIsIndvcmtzcGFjZV9maW5nZXJwcmludCI6IjUxMDljYThiZjE3YjRiNzE3YTU4M2M1NDk0OTY3YjUwOGRiNzliOWVhODUyMmE0YWZiMWU0YzY0MTQ2ZTNhZDMifQ",
+      "signed_action": "<SIGNED_RELEASE_ACTION>",
       "terminal_receipt_required": true
     },
     "environment": {
-      "TASKPLANE_TASK": "task_b12a8463"
+      "TASKPLANE_TASK": "task_<SLOT>"
     },
     "schema": "taskplane.worker-contract-bootstrap/v1",
-    "task_slot": "task_b12a8463",
-    "worker_identity": "tp_step_evaluator_t1_bb4efcad"
+    "task_slot": "task_<SLOT>",
+    "worker_identity": "tp_step_evaluator_t1_<WORKER>"
   },
   "dashboard": {
     "delivery": {
@@ -465,7 +465,7 @@
     "result_path": ".eval/verdict.json",
     "schema": "taskplane.evaluation-output-contract/v1",
     "schema_transport": "validated_file",
-    "slot": "task_b12a8463",
+    "slot": "task_<SLOT>",
     "stage": "evaluate",
     "task": "t1",
     "transport": "validated_file",
@@ -634,7 +634,7 @@
   },
   "reasoning_effort": null,
   "requirement": null,
-  "resume_identity": "fe334d08b01726c4b46fc8cd020acc0131429a1368f7aa08c7cea872f28696e4",
+  "resume_identity": "<SHA>",
   "review_kernel": {
     "context_fingerprint": "<SHA>",
     "counters": {
@@ -825,7 +825,7 @@
     "tests": "true",
     "workspace": "<WS>/.tp-work/t1"
   },
-  "task_name": "tp_step_evaluator_t1_bb4efcad",
+  "task_name": "tp_step_evaluator_t1_<WORKER>",
   "wait_invocation": {
     "operation": "wait_for_events",
     "outstanding_members": [

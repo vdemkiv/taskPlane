@@ -231,6 +231,9 @@ def test_new_run_next_bootstraps_and_replays_one_stage_root_without_artifacts(
     from taskplane.tests.test_stage_cross_host import (
         _real_pristine_run, _record_bootstrap_requirement)
 
+    worker_clock = iter(range(1_800_000_000, 1_800_001_000))
+    monkeypatch.setattr(
+        taskplane_lite._time, "time", lambda: next(worker_clock))
     workspace, store, initial = _real_pristine_run(tmp_path)
     monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")

@@ -1341,12 +1341,12 @@ class TestTheLoopRecordsTheBreadthOnTheRouteItTraced(unittest.TestCase):
         self.assertEqual([r["kernel_status"] for r in em], ["ready"])
 
     def test_the_evaluate_route_records_that_the_engine_chose(self):
-        """The one step that runs route v2 — and the exact case the routed
-        set could not distinguish from `--all`."""
+        """Evaluate records that D-0014 bypassed the lens engine."""
         ev = [r for r in self.routes if r.get("step") == "evaluate"]
         self.assertTrue(ev)
-        self.assertEqual({r["engine_ran"] for r in ev}, {True})
+        self.assertEqual({r["engine_ran"] for r in ev}, {False})
         self.assertEqual({r["requested_breadth"] for r in ev}, {"routed"})
+        self.assertTrue(all(r.get("lenses") == [] for r in ev))
 
     def test_the_recorder_reads_those_routes_without_inferring(self):
         """End of the wire: the loop's own rows, through the real recorder,
@@ -1463,7 +1463,7 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
                              {k: v for k, v in was.items()
                               if k not in ignored})
             if is_.get("step") in ("evaluate", "em"):
-                self.assertEqual(len(is_["lenses"]), len(CATALOG_IDS))
+                self.assertEqual(is_["lenses"], [])
 
     def test_the_baseline_could_not_tell_the_routed_review_from_all(self):
         """The regression this locks: over the PREVIOUS revision's own trace,

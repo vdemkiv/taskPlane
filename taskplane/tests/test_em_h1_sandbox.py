@@ -46,6 +46,7 @@ def test_h34_git_process_uses_process_and_total_deadlines(
         review, "_terminate_validation_sandbox_process_tree",
         lambda selected, **_deadlines: terminated.append(selected))
     monkeypatch.setattr(review.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(review.os, "name", "posix")
 
     with pytest.raises(review._ValidationSandboxTimeout) as raised:
         review._run_validation_sandbox_git(
@@ -73,6 +74,7 @@ def test_h34_cancellation_terminates_the_complete_process_tree(monkeypatch):
         review, "_terminate_validation_sandbox_process_tree",
         lambda selected, **_deadlines: terminated.append(selected))
     monkeypatch.setattr(review.time, "monotonic", lambda: 20.0)
+    monkeypatch.setattr(review.os, "name", "posix")
 
     with pytest.raises(KeyboardInterrupt):
         review._run_validation_sandbox_git(
@@ -145,7 +147,8 @@ def test_h34_cleanup_shares_the_aggregate_deadline_and_fails_closed(
     if platform_name == "posix":
         monkeypatch.setattr(
             review.os, "killpg",
-            lambda _pid, sig: process.actions.append(signal.Signals(sig).name))
+            lambda _pid, sig: process.actions.append(signal.Signals(sig).name),
+            raising=False)
     else:
         def create_job(selected):
             assert selected is process
@@ -306,7 +309,8 @@ def test_h34_cleanup_without_reap_time_fails_closed_without_overrun(
         review.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(
         review.os, "killpg",
-        lambda _pid, sig: process.actions.append(signal.Signals(sig).name))
+        lambda _pid, sig: process.actions.append(signal.Signals(sig).name),
+        raising=False)
     monkeypatch.setattr(review.time, "monotonic", clock)
 
     with pytest.raises(review._ValidationSandboxTimeout) as raised:
@@ -337,7 +341,10 @@ def test_h34_process_tree_termination_escalates_to_group_kill(monkeypatch):
             self.returncode = -signal.SIGKILL
 
     sent = []
-    monkeypatch.setattr(review.os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+    monkeypatch.setattr(review.os, "name", "posix")
+    monkeypatch.setattr(
+        review.os, "killpg", lambda pid, sig: sent.append((pid, sig)),
+        raising=False)
 
     deadline = review.time.monotonic() + 10.0
     review._terminate_validation_sandbox_process_tree(
@@ -442,12 +449,14 @@ def test_h34_blocked_untracked_copy_is_killed_cleaned_and_persisted(
         return original_popen(argv, *args, **kwargs)
 
     monkeypatch.setattr(review.subprocess, "Popen", popen)
+    monkeypatch.setattr(review.os, "name", "posix")
     monkeypatch.setattr(
         review.shutil, "copy2",
         lambda *_args, **_kwargs: pytest.fail(
             "untracked copy ran synchronously in the preparation process"))
     monkeypatch.setattr(
-        review.os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+        review.os, "killpg", lambda pid, sig: sent.append((pid, sig)),
+        raising=False)
 
     with pytest.raises(review.ReviewKernelError, match="timed out.*copy-untracked"):
         review.prepare_review_validation_sandbox(

@@ -46,6 +46,7 @@ def test_zero_token_checkout_does_not_persist_credentials():
     assert re.search(
         r"(?m)^      - uses: actions/checkout@[^\n]+\n"
         r"        with:\n"
+        r"          ref: [^\n]+\n"
         r"          persist-credentials: false$",
         job,
     )

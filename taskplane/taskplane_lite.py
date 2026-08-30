@@ -206,6 +206,29 @@ def _durable_directory_identity(path: str) -> tuple[int, int]:
     return int(value.st_dev), int(value.st_ino)
 
 
+def _flush_windows_directory(path: str) -> None:
+    """Flush one directory through the native backup-semantics handle."""
+    import ctypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.restype = ctypes.c_void_p
+    kernel.CreateFileW.argtypes = (
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
+    kernel.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
+    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handle = kernel.CreateFileW(
+        str(path), 0x80000000, 0x00000007, None, 3, 0x02000000, None)
+    invalid = ctypes.c_void_p(-1).value
+    if handle == invalid:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not kernel.FlushFileBuffers(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        if not kernel.CloseHandle(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
 def _fsync_directory(path: str) -> None:
     """Persist a directory entry update before its caller acknowledges it."""
     flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -215,30 +238,19 @@ def _fsync_directory(path: str) -> None:
     except OSError:
         if os.name != "nt":
             raise
-        # Windows refuses opening directories through os.open. Use the
-        # documented backup-semantics handle and flush it instead of silently
-        # weakening durability on a supported host.
-        import ctypes
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.CreateFileW.restype = ctypes.c_void_p
-        kernel.CreateFileW.argtypes = (
-            ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
-            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
-        kernel.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
-        kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
-        handle = kernel.CreateFileW(
-            str(path), 0x80000000, 0x00000007, None, 3, 0x02000000, None)
-        invalid = ctypes.c_void_p(-1).value
-        if handle == invalid:
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            if not kernel.FlushFileBuffers(handle):
-                raise ctypes.WinError(ctypes.get_last_error())
-        finally:
-            kernel.CloseHandle(handle)
+        # Windows may refuse opening directories through os.open.
+        _flush_windows_directory(path)
         return
     try:
-        os.fsync(fd)
+        try:
+            os.fsync(fd)
+        except PermissionError:
+            if os.name != "nt":
+                raise
+            # CPython can open the directory descriptor on Windows while the
+            # CRT still rejects fsync on it. FlushFileBuffers is the durable
+            # native fallback; the error remains fatal if that flush fails.
+            _flush_windows_directory(path)
     finally:
         os.close(fd)
 

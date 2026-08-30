@@ -97,8 +97,10 @@ def test_runner_provides_portable_validated_package_root(tmp_path):
     roots = package.approved_output_roots(env)
     assert shard.resolve() in roots
     package.require_approved_output(nested_output, roots)
+    outside = Path(tmp_path.anchor) / "package-output-escape"
+    assert not any(outside.resolve().is_relative_to(root) for root in roots)
     with pytest.raises(package.PackageError, match="approved temporary root"):
-        package.require_approved_output(tmp_path.parent / "escape", roots)
+        package.require_approved_output(outside, roots)
 
 
 def test_receipt_collection_fails_closed_on_missing_duplicate_and_malformed():
@@ -165,8 +167,10 @@ def test_pr_workflow_binds_all_blocking_jobs_to_exact_head_sha():
     graph_job = workflow.split("  wave3-contracts:", 1)[1].split(
         "\n  pushed-sha-proof:", 1,
     )[0]
-    assert "github.event.pull_request.head.sha" not in graph_job
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in \
+        graph_job
     assert "fetch-depth: 0" in graph_job
+    assert "persist-credentials: false" in graph_job
     assert "synthetic_merge_substitutes" in workflow
     assert "pushed SHA delivery proof" in workflow
 

@@ -234,7 +234,7 @@ class TestSchemaPins:
     def test_evaluate_consumes_the_canonical_evaluator_contract(self):
         src = _js("evaluate-wave")
         for token in ("output_contract.output_schema", "resume_identity",
-                      "max_attempts", "taskplane.evaluator-output/v1"):
+                      "max_attempts", "taskplane.evaluator-output/v2"):
             assert token in src
         assert "typeof output_schema !== 'object'" in src
 
@@ -1051,17 +1051,16 @@ def _walk_pass_eval(ws):
     contracts = [c.get("id") if isinstance(c, dict) else c
                  for c in (task.get("contracts") or [])]
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v1",
+        json.dump({"schema": "taskplane.evaluator-output/v2",
                    "task": task["id"],
                    "requirement": task.get("req") or
                                   state.get("requirement_id") or "",
                    "verdict": "pass",
+                   "evaluation": {"status": "complete",
+                                  "reason_code": "none", "detail": ""},
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}
                                 for c in criteria],
-                   "lenses": [{"lens": lens_id, "verdict": "pass",
-                               "blockers": 0}
-                              for lens_id in routed_lenses],
                    "graph": {"dispositions": [
                        {"node": n, "status": "tested",
                         "evidence": "covered by declared task tests"}

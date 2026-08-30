@@ -5,6 +5,7 @@ import ast
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -19,6 +20,17 @@ import graph_primitives  # noqa: E402
 import lens  # noqa: E402
 
 
+R0002_AUTHORITY_REVISION = "fe5df7b"
+
+
+def _accepted_r0002_contract(repository: Path) -> dict:
+    payload = subprocess.run(
+        ["git", "show", f"{R0002_AUTHORITY_REVISION}:design/contract.json"],
+        cwd=repository, check=True, capture_output=True, text=True,
+        encoding="utf-8").stdout
+    return json.loads(payload)
+
+
 def _write(root: Path, relative: str, text: str) -> None:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -28,8 +40,7 @@ def _write(root: Path, relative: str, text: str) -> None:
 def _architecture(root: Path, *, a: str = "x = 1\n",
                   b: str = "x = 2\n", mutate=None) -> dict:
     repository = Path(__file__).resolve().parents[2]
-    accepted = json.loads(
-        (repository / "design" / "contract.json").read_text(encoding="utf-8"))
+    accepted = _accepted_r0002_contract(repository)
     contract = {
         "requirement": accepted["requirement"],
         "contracts": accepted["contracts"],
@@ -96,7 +107,8 @@ def test_h02_nodes_activate_with_enter_and_space() -> None:
 
 
 def test_h31_scanner_consumes_accepted_architecture_map(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = tmp_path / "accepted-r0002"
+    _architecture(root)
     graph = _scan_without_external_store(
         root, strict=True, graph_path=tmp_path / "graph.json")
     proof = graph["meta"]["architecture_map"]

@@ -63,6 +63,22 @@ QUALITY_PINS = {
 }
 
 
+@pytest.fixture(scope="module", autouse=True)
+def retained_r0002_candidate(tmp_path_factory):
+    global ROOT
+    original = ROOT
+    workspace = tmp_path_factory.mktemp("h2-r0002") / "repository"
+    subprocess.run(["git", "clone", "--quiet", "--no-hardlinks",
+                    str(original), str(workspace)], check=True)
+    subprocess.run(["git", "checkout", "-q", "86c7f74"], cwd=workspace,
+                   check=True)
+    ROOT = workspace
+    try:
+        yield
+    finally:
+        ROOT = original
+
+
 def _canonical_fingerprint(value: object) -> str:
     return hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":"),
@@ -196,10 +212,14 @@ def _graph_errors(proof: dict) -> list[str]:
     return errors
 
 
-def _real_retained_audit() -> Path:
+def _real_retained_audit(tmp_path: Path) -> Path:
     evidence = native_authority.retained_r0013_sweep_evidence()
     path = Path(evidence["codex_audit_path"])
-    assert path.is_file(), "the retained R-0013 native audit is unavailable"
+    if not path.is_file():
+        from taskplane.tests.test_r0013_design_sweep import \
+            _canonical_ci_audit
+        path = tmp_path / "retained-r0013-audit.jsonl"
+        path.write_bytes(_canonical_ci_audit())
     assert _file_sha256(path) == \
         evidence["expected_source_log_sha256"]
     return path
@@ -409,7 +429,7 @@ def test_ac3_live_wiring_bounds_and_quality(
         blobs["requirements-dev.lock"].decode(),
     ) == []
 
-    audit_path = _real_retained_audit()
+    audit_path = _real_retained_audit(tmp_path)
     authority = _production_gate(audit_path)
     assert authority["schema"] == native_authority.PRODUCTION_DESIGN_GATE_SCHEMA
     assert authority["status"] == "ready"

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -12,6 +14,20 @@ import remediation_trace
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = ROOT / "specs" / "spec.md"
+
+
+@pytest.fixture(autouse=True)
+def retained_r0002_product_authority(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "retained-r0002"
+    subprocess.run(["git", "clone", "--quiet", "--no-hardlinks",
+                    str(ROOT), str(workspace)], check=True)
+    subprocess.run(["git", "checkout", "-q", "86c7f74"], cwd=workspace,
+                   check=True)
+    monkeypatch.setattr(remediation_trace, "_REPOSITORY_ROOT", workspace)
+    monkeypatch.setattr(remediation_trace, "_PRICED_DEBT_SPEC",
+                        workspace / "specs" / "spec.md")
+    monkeypatch.setattr(sys.modules[__name__], "SPEC",
+                        workspace / "specs" / "spec.md")
 
 
 def test_m25_deferred_items_link_to_priced_governed_debt() -> None:

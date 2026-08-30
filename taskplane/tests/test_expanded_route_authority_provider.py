@@ -164,6 +164,8 @@ def _run_package(
         cwd=cwd,
         input=json.dumps({"request": request, "approval": approval}),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": ""},
         check=False,
@@ -473,6 +475,7 @@ def test_clean_content_addressed_package_import_and_protocol_binding(
         [sys.executable, str(package), "self-check", "--locator",
          str(installation["locator_path"])],
         cwd=empty, text=True, capture_output=True,
+        encoding="utf-8", errors="replace",
         env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": ""},
         check=False,
     )
@@ -489,6 +492,7 @@ def test_clean_content_addressed_package_import_and_protocol_binding(
         [sys.executable, str(package), "self-check", "--locator",
          str(installation["locator_path"])],
         cwd=empty, text=True, capture_output=True,
+        encoding="utf-8", errors="replace",
         env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": ""},
         check=False,
     )

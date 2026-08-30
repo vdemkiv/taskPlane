@@ -180,7 +180,7 @@ def _checkpoint_authority(value: bytes | None) -> bytes:
 
 
 def _seal_transcript_checkpoint(
-        checkpoint: Mapping[str, Any], authority: bytes) -> dict:
+        checkpoint: Mapping[str, Any], authority: bytes) -> dict[str, object]:
     """Content-address and authenticate every checkpoint field as one unit."""
     sealed = dict(checkpoint)
     sealed["authority_id"] = hashlib.sha256(authority).hexdigest()
@@ -323,7 +323,8 @@ def project_transcript_usage(
             return _unavailable_transcript_projection(
                 provider, "transcript usage checkpoint is malformed",
                 byte_limit=byte_limit), None
-        seen = set(str(value) for value in prior["seen_identity_hashes"])
+        seen: set[str] = set(
+            str(value) for value in prior["seen_identity_hashes"])
     else:
         offset = 0
         totals = {key: 0 for key in (
@@ -331,7 +332,7 @@ def project_transcript_usage(
             "cache_creation_tokens", "output_tokens", "reasoning_tokens",
             "raw_total_tokens", "effective_tokens", "messages",
             "duplicates_removed")}
-        seen: set[str] = set()
+        seen = set()
 
     appended = payload[offset:]
 

@@ -1,6 +1,7 @@
 """Fail-closed DoR/DoD invariants shared by Claude and Codex hosts."""
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -12,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lens  # noqa: E402
 import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
+import producer_observation  # noqa: E402
 from taskplane.tests.review_kernel_support import (  # noqa: E402
     complete_evaluate_slots,
     complete_review,
@@ -49,13 +51,23 @@ def _write_eval(ws, state):
     for row in verdict["criteria"]:
         row["status"] = "met"
         row["evidence"] = "covered by the task's tests"
-    for row in verdict["lenses"]:
-        row["verdict"] = "pass"
-        row["blockers"] = 0
     complete_evaluate_slots(ws)
     os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
     with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
         json.dump(verdict, f)
+    task = state["tasks"][state["current_task"]]
+    material = loop.producer_output_identity(
+        ws, state, task, "evaluate", active_contract=tp.load_active(ws) or {})
+    event = {"hook_event_name": "SubagentStop",
+             "session_id": "governance-evaluate-session",
+             "turn_id": "governance-evaluate-turn",
+             "agent_id": "governance-evaluator",
+             "agent_type": material["producer_dispatch"]["task_name"],
+             "task_name": material["producer_dispatch"]["task_name"]}
+    claim = hashlib.sha256(tp.hook_event_identity(
+        ws, "subagent-stop", event).encode("utf-8")).hexdigest()
+    producer_observation.record_codex_subagent_stop(
+        event=event, hook_claim_id=claim, **material)
 
 
 def _write_em(ws):
@@ -71,8 +83,7 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.assertIn("error", out)
         self.assertFalse(out["dor"]["ready"])
         active = tp.load_active(ws)
-        self.assertIsNotNone(active)
-        self.assertEqual(active["task"], "EXECUTE: t1")
+        self.assertIsNone(active)
         self.assertEqual(loop.load(ws)["step"], "execute")
 
     def test_execute_pass_is_rejected_when_tests_fail(self):

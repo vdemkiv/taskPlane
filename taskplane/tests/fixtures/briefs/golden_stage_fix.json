@@ -26,6 +26,20 @@
     "tests": "true",
     "write_allow": null
   },
+  "contract_bootstrap": {
+    "activation": "pending_subagent_start_binding",
+    "control_plane_release": {
+      "command": "worker-release",
+      "signed_action": "<SIGNED_RELEASE_ACTION>",
+      "terminal_receipt_required": true
+    },
+    "environment": {
+      "TASKPLANE_TASK": "task_<SLOT>"
+    },
+    "schema": "taskplane.worker-contract-bootstrap/v1",
+    "task_slot": "task_<SLOT>",
+    "worker_identity": "tp_step_fixer_t1_<WORKER>"
+  },
   "dashboard": {
     "delivery": {
       "artifacts": {
@@ -469,7 +483,7 @@
     "tests": "true",
     "workspace": "<WS>/.tp-work/t1"
   },
-  "task_name": "tp_step_fixer_t1_39fb60c2",
+  "task_name": "tp_step_fixer_t1_<WORKER>",
   "wait_invocation": {
     "operation": "wait_for_events",
     "outstanding_members": [

@@ -640,12 +640,14 @@ def _configured_package_path(locator_path: str) -> str:
             Path(os.path.abspath(locator_path))).decode("utf-8"))
     except (UnicodeError, ValueError) as exc:
         raise ProviderError("locator", "provider locator is unreadable") from exc
+    package_path = value.get("package_path") if isinstance(value, Mapping) \
+        else None
     if not isinstance(value, Mapping) or set(value) != _LOCATOR_FIELDS or \
             value.get("schema") != LOCATOR_SCHEMA or \
             value.get("provider_protocol_version") != PROTOCOL_VERSION or \
-            not isinstance(value.get("package_path"), str):
+            not isinstance(package_path, str):
         raise ProviderError("locator", "provider locator is invalid")
-    return value["package_path"]
+    return package_path
 
 
 def _authenticate_terminal_receipt(
@@ -707,9 +709,12 @@ def _authenticate_terminal_receipt(
     issued_at = action.get("issued_at")
     expiry = action.get("expiry")
     consumed_at = receipt.get("consumed_at")
-    if any(isinstance(value, bool) or not isinstance(value, int)
-           for value in (issued_at, expiry, consumed_at)) or \
-            issued_at > consumed_at or consumed_at >= expiry:
+    if isinstance(issued_at, bool) or not isinstance(issued_at, int) or \
+            isinstance(expiry, bool) or not isinstance(expiry, int) or \
+            isinstance(consumed_at, bool) or not isinstance(consumed_at, int):
+        raise ProviderError(
+            "time", "expanded route terminal receipt time order is invalid")
+    if issued_at > consumed_at or consumed_at >= expiry:
         raise ProviderError(
             "time", "expanded route terminal receipt time order is invalid")
 
@@ -742,7 +747,11 @@ def _authenticate_terminal_receipt(
             head.get("receipt_sha256") != _bytes_digest(durable_bytes):
         raise ProviderError(
             "consumption", "expanded route terminal receipt is not durable head")
-    return json.loads(expected_bytes.decode("utf-8"))
+    authenticated = json.loads(expected_bytes.decode("utf-8"))
+    if not isinstance(authenticated, dict):
+        raise ProviderError(
+            "consumption", "expanded route terminal receipt is not an object")
+    return authenticated
 
 
 class _AuthorityEngine:
@@ -878,9 +887,11 @@ def _test_execution_path(locator_path: str) -> str:
         value = json.loads(Path(locator_path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ProviderError("locator", "test provider locator is unreadable") from exc
-    if not isinstance(value, Mapping) or not isinstance(value.get("package_path"), str):
+    package_path = value.get("package_path") if isinstance(value, Mapping) \
+        else None
+    if not isinstance(value, Mapping) or not isinstance(package_path, str):
         raise ProviderError("locator", "test provider locator is invalid")
-    return value["package_path"]
+    return package_path
 
 
 def _authorize_for_test(

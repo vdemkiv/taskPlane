@@ -362,6 +362,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # S4/S7 needs the first activation commit and its measured parent.
           fetch-depth: 0
           persist-credentials: false
@@ -402,6 +403,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -444,11 +446,10 @@ jobs:
   # real Windows-only failures. Those defects are also reproduced on Linux by
   # test_windows_portability.py, so the hosted leg validates the actual host
   # boundary rather than spending ~27 minutes duplicating the full suite.
-  # macOS remains an advisory host-boundary signal.
+  # Both native host legs are blocking release boundaries.
   tests-portability:
     name: tests portability (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.advisory }}
     strategy:
       fail-fast: false
       matrix:
@@ -461,7 +462,7 @@ jobs:
               taskplane/tests/test_eval_recorder.py
               taskplane/tests/test_em_h1_sandbox.py
           - os: macos-latest
-            advisory: true
+            advisory: false
             tests: >-
               taskplane/tests/test_repository_preflight.py
               taskplane/tests/test_storage_kernel.py
@@ -771,6 +772,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"

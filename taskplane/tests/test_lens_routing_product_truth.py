@@ -131,6 +131,8 @@ def test_generated_catalog_is_current_via_argv_safe_check() -> None:
         cwd=ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     output = "\n".join(part for part in (completed.stdout, completed.stderr)

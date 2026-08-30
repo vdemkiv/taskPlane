@@ -61,6 +61,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -559,9 +560,18 @@ class TestRecordingOnly(unittest.TestCase):
 
     def setUp(self):
         self.root = tempfile.mkdtemp()
+        self.old_taskplane_home = os.environ.get("TASKPLANE_HOME")
+        self.store_home = os.path.join(self.root, "taskplane-home")
+        os.environ["TASKPLANE_HOME"] = self.store_home
         self.ws = _repo(self.root)
         depgraph.scan(self.ws)
         self.base = tp.git_head(self.ws)
+
+    def tearDown(self):
+        if self.old_taskplane_home is None:
+            os.environ.pop("TASKPLANE_HOME", None)
+        else:
+            os.environ["TASKPLANE_HOME"] = self.old_taskplane_home
 
     def _run(self, module):
         """One next_action: its payload and the event names it appended."""
@@ -602,11 +612,29 @@ class TestRecordingOnly(unittest.TestCase):
         nondeterministic control (a fresh uuid4 task_id, an int(time.time())
         stamp) makes the real comparison prove nothing at all."""
         _state(self.ws, step, baseline=self.base, **state_kw)
+        snapshot_root = tempfile.mkdtemp()
+        workspace_snapshot = os.path.join(snapshot_root, "workspace")
+        shutil.copytree(self.ws, workspace_snapshot)
+        store_snapshot = os.path.join(snapshot_root, "store-home")
+        if os.path.isdir(self.store_home):
+            shutil.copytree(self.store_home, store_snapshot)
+
+        def restore_runtime_state():
+            shutil.rmtree(self.ws)
+            shutil.copytree(workspace_snapshot, self.ws)
+            if os.path.lexists(self.store_home):
+                shutil.rmtree(self.store_home)
+            if os.path.isdir(store_snapshot):
+                shutil.copytree(store_snapshot, self.store_home)
+
         with mock.patch.object(time, "time", return_value=FROZEN_TIME), \
                 mock.patch.object(uuid, "uuid4", return_value=FROZEN_UUID):
-            self._run(self.norow)                       # warm side effects
+            self._run(self.norow)                       # warm imports only
+            restore_runtime_state()
             base1 = self._run(self.norow)
+            restore_runtime_state()
             base2 = self._run(self.norow)
+            restore_runtime_state()
             subject = self._run(loop)
         self.assertEqual(base1, base2,
                          f"CONTROL IS NONDETERMINISTIC at step={step} — the "

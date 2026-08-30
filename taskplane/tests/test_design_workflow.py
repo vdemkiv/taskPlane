@@ -206,8 +206,11 @@ class DesignWorkflowTest(unittest.TestCase):
                   requirement_id=self.req["id"], design=True)
         action = loop.next_action(self.ws)
         self.assertEqual(action["role"], "tp-designer")
-        self.assertEqual([x["id"] for x in action["lenses"]],
-                         ["solution-design"])
+        self.assertEqual({x["id"] for x in action["lenses"]},
+                         {x["id"] for x in lens.load_catalog()["lenses"]})
+        solution = next(x for x in action["lenses"]
+                        if x["id"] == "solution-design")
+        self.assertNotEqual(solution["mode"], "none")
         self._write_design()
         gated = loop.gate(self.ws, "pass")
         self.assertEqual(gated["step"], "design_approval")

@@ -1,14 +1,11 @@
-"""R-0006 row 1 — evaluate consumes routed briefs (t7).
+"""R-0006/D-0014 — Evaluate is one zero-lens producer judgment.
 
-The EVALUATE step routes its lens brief with stage="build" so route v2
-engages: build-profile candidates, the R-0001 budget (5-7 deep target,
-hard cap 8, demote-never-drop) inherited verbatim, floors surviving
-profile narrowing, and n/a entries carrying negative evidence. Final EM
-uses the same complete decision with the review stage profile.
-
-_evaluation_errors consumes the persisted decision and verifies the SAME
-stage, so the validator never performs a second mapping derivation.
+Evaluate still owns a ReviewKernel run at the build stage, but the accepted
+delivery contract gives it no lens slots.  Final EM remains the selective
+lens-routing stage.  These tests pin that boundary and the genuine external
+producer observation required for accepting evaluator bytes.
 """
+import hashlib
 import inspect
 import json
 import os
@@ -22,7 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
 import lens  # noqa: E402
 import review  # noqa: E402
-import review_evidence  # noqa: E402
+import producer_observation  # noqa: E402
+import taskplane_lite as tp  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -73,8 +71,9 @@ def _to_evaluate(ws, build_files) -> dict:
 
 
 def _routed(brief) -> list:
-    """The lenses that owe the evaluator a verdict: deep + light."""
-    return [x for x in brief["lenses"] if x["mode"] != "none"]
+    """Evaluate deliberately owes no lens verdicts after D-0014."""
+    assert "lenses" not in brief
+    return []
 
 
 def _write_verdict(ws, task_id, criteria, lens_rows):
@@ -82,15 +81,16 @@ def _write_verdict(ws, task_id, criteria, lens_rows):
     task = state["tasks"][state["current_task"]]
     os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
     with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v1",
+        json.dump({"schema": "taskplane.evaluator-output/v2",
                    "task": task_id,
                    "requirement": task.get("req") or
                                   state.get("requirement_id") or "",
                    "verdict": "pass",
+                   "evaluation": {"status": "complete",
+                                  "reason_code": "none", "detail": ""},
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}
                                 for c in criteria],
-                   "lenses": lens_rows,
                    "graph": {"dispositions": [],
                              "requirements_checked": [],
                              "contracts_checked": []},
@@ -99,52 +99,33 @@ def _write_verdict(ws, task_id, criteria, lens_rows):
 
 def _write_kernel_results(ws, *, dropped=None):
     state = review._load_state(ws)
-    store = review_evidence.ArtifactStore(ws)
-    for index, slot in enumerate(state["slots"]):
-        lease = store.read(slot["lease"])
-        brief = store.read(slot["brief"])
-        lens_ids = [lid for lid in lease["lens_ids"] if lid != dropped]
-        if not lens_ids:
-            continue
-        row = {**lease, "schema": "taskplane.lens-slot-output/v2",
-               "authored_by": "lens-slot", "findings": [],
-               "lens_results": [{"lens": lid, "verdict": "pass",
-                                  "blockers": 0,
-                                  "checked_evidence": [{
-                                      "file": "src/app/feature.py", "line": 1,
-                                      "claim": "reviewed source"}]}
-                                 for lid in lens_ids]}
-        if brief.get("language_references"):
-            row["references_applied"] = list(brief["language_references"])
-        content = json.dumps(row, sort_keys=True, separators=(",", ":"))
-        event = {"session_id": "eval-lens-session",
-                 "agent_id": f"eval-lens-child-{index}",
-                 "tool_name": "Write",
-                 "tool_input": {"file_path": slot["result_path"],
-                                "content": content}}
-        contract = {"task": brief["producer_contract"]["task"],
-                    "task_id": "eval-lens-contract", "read_only": True,
-                    "write_allow": [slot["result_path"]]}
-        review.register_slot_producer(
-            ws, event=event, contract=contract,
-            task_slot=brief["producer_contract"]["task_slot"])
-        review.record_slot_write_observation(
-            ws, event=event, contract=contract,
-            task_slot=brief["producer_contract"]["task_slot"])
-        path = os.path.join(ws, slot["result_path"])
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as stream:
-            stream.write(content)
+    assert dropped is None
+    assert state["expected_lenses"] == []
+    assert state["slots"] == []
+    assert state["zero_lens_evaluation"] is True
 
 
 def _pass_eval(ws, brief):
-    """Evaluator evidence built from the ROUTED set of the brief itself."""
+    """Record the genuine host stop that observed the evaluator bytes."""
     state = loop.load(ws)
     task = state["tasks"][state["current_task"]]
-    rows = [{"lens": x["id"], "verdict": "pass", "blockers": 0}
-            for x in _routed(brief)]
+    _routed(brief)
     _write_kernel_results(ws)
-    _write_verdict(ws, task["id"], loop._criteria_for(ws, state, task), rows)
+    _write_verdict(ws, task["id"], loop._criteria_for(ws, state, task), [])
+    material = loop.producer_output_identity(
+        ws, state, task, "evaluate", active_contract=tp.load_active(ws) or {})
+    event = {
+        "hook_event_name": "SubagentStop",
+        "session_id": "evaluate-routing-session",
+        "turn_id": "evaluate-routing-turn",
+        "agent_id": "evaluate-routing-producer",
+        "agent_type": material["producer_dispatch"]["task_name"],
+        "task_name": material["producer_dispatch"]["task_name"],
+    }
+    claim = hashlib.sha256(tp.hook_event_identity(
+        ws, "subagent-stop", event).encode("utf-8")).hexdigest()
+    producer_observation.record_codex_subagent_stop(
+        event=event, hook_claim_id=claim, **material)
     with mock.patch("runtime_eval.guide_loop",
                     return_value={"status": "on_path", "recovered": False}):
         loop.submit(ws, "pass")
@@ -152,7 +133,7 @@ def _pass_eval(ws, brief):
 
 
 class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
-    """(a) the evaluate brief carries build-stage (route v2) routing."""
+    """Evaluate keeps build-stage identity without lens dispatch."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -160,7 +141,8 @@ class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
     def test_constant_is_build_and_single_sourced(self):
         self.assertEqual(loop.EVALUATE_ROUTE_STAGE, "build")
         src = _loop_src()
-        # Both are mapped: Evaluate uses build signals, final EM review signals.
+        # The shared kernel retains stage identity; Evaluate's adapter removes
+        # lens authority while final EM still consumes review routing.
         self.assertIn('stage = "review" if step == "em" else EVALUATE_ROUTE_STAGE',
                       src)
         # Validator consumes the persisted decision and checks its stage;
@@ -169,40 +151,27 @@ class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
         self.assertIn('kernel.get("stage") != EVALUATE_ROUTE_STAGE', validator)
         self.assertNotIn("route_git_diff", validator)
 
-    def test_evaluate_brief_is_route_v2_with_inherited_budget(self):
+    def test_evaluate_brief_has_zero_lens_delivery_contract(self):
         ws = _repo(self.tmp)
         act = _to_evaluate(ws, {"src/app/feature.py":
                                 "def f():\n    return 1\n"})
-        lenses = act["lenses"]
-        # v2 signature: EVERY catalog lens appears (coverage honesty) —
-        # the legacy routed path returns only the summoned subset.
-        catalog_ids = {l["id"] for l in lens.load_catalog()["lenses"]}
-        self.assertEqual({x["id"] for x in lenses}, catalog_ids)
-        # v2 entries carry the engine's verdict + score
-        for x in _routed(act):
-            self.assertIn("verdict", x)
-            self.assertIn("score", x)
-        # R-0001 budget inherited verbatim: hard cap 8 deep, no new knobs
-        deep = [x for x in lenses if x["mode"] == "subagent"]
-        self.assertLessEqual(len(deep), 8)
-        # something routed and something narrowed away (build profile)
-        self.assertTrue(_routed(act))
-        self.assertTrue([x for x in lenses if x["mode"] == "none"])
+        self.assertNotIn("lenses", act)
+        self.assertEqual(act["output_schema"],
+                         "taskplane.evaluator-output/v2")
+        kernel = review._load_state(ws)
+        self.assertEqual(kernel["stage"], loop.EVALUATE_ROUTE_STAGE)
+        self.assertEqual(kernel["expected_lenses"], [])
+        self.assertEqual(kernel["slots"], [])
+        self.assertTrue(kernel["zero_lens_evaluation"])
+        self.assertIsNotNone(kernel["delivery_mode_receipt"])
 
-    def test_brief_matches_direct_build_stage_routing(self):
-        """The brief's routed set IS route_git_diff(stage='build') — same
-        derivation the validator uses (no second implementation)."""
+    def test_evaluate_does_not_reexport_internal_route_decision(self):
         ws = _repo(self.tmp)
         act = _to_evaluate(ws, {"src/app/feature.py": "def f():\n"
                                 "    return 1\n"})
-        state = loop.load(ws)
-        direct = lens.route_git_diff(
-            ws, base=state.get("baseline") or "HEAD",
-            task_type=None, stage=loop.EVALUATE_ROUTE_STAGE,
-            breadth="routed")
-        direct_ids = {x["id"] for x in direct["lenses"]
-                      if x["mode"] != "none"}
-        self.assertEqual({x["id"] for x in _routed(act)}, direct_ids)
+        self.assertNotIn("lenses", act)
+        kernel = review._load_state(ws)
+        self.assertEqual(kernel["routing"]["lenses"], [])
 
 
 class TestEmUsesSelectiveKernel(unittest.TestCase):
@@ -237,79 +206,14 @@ class TestCanonicalFindingEnforcement(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
-    def test_evaluate_derives_blocking_from_revision_findings(self):
+    def test_evaluate_cannot_receive_caller_authored_lens_findings(self):
         ws = _repo(self.tmp)
         brief = _to_evaluate(ws, {"src/app/feature.py":
                                   "def f():\n    return 1\n"})
-        state = loop.load(ws)
-        task = state["tasks"][state["current_task"]]
         kernel = review._load_state(ws)
-        store = review_evidence.ArtifactStore(ws)
-        blocking_lens = kernel["slots"][0]["lens_ids"][0]
-        for index, slot in enumerate(kernel["slots"]):
-            lease = store.read(slot["lease"])
-            brief_row = store.read(slot["brief"])
-            is_blocking = blocking_lens in lease["lens_ids"]
-            findings = ([{
-                "lens": blocking_lens, "kind": "defect", "severity": "high",
-                "class": "regression", "file": "src/app/feature.py",
-                "line": 1, "title": "broken behavior",
-                "scenario": "production", "fix": "repair it",
-                "claim": {
-                    "trigger": "run the changed feature on its production input",
-                    "outcome": "the feature returns the wrong production result",
-                    "repro": "invoke the feature and compare its required output"},
-            }] if is_blocking else [])
-            rows = [{"lens": lid,
-                     "verdict": "fail" if lid == blocking_lens else "pass",
-                     "blockers": 1 if lid == blocking_lens else 0,
-                     **({"checked_evidence": [{
-                         "file": "src/app/feature.py", "line": 1,
-                         "claim": "reviewed source"}]}
-                        if lid != blocking_lens else {})}
-                    for lid in lease["lens_ids"]]
-            payload = {**lease,
-                       "schema": "taskplane.lens-slot-output/v2",
-                       "authored_by": "lens-slot",
-                       "lens_results": rows, "findings": findings}
-            if brief_row.get("language_references"):
-                payload["references_applied"] = list(
-                    brief_row["language_references"])
-            content = json.dumps(
-                payload, sort_keys=True, separators=(",", ":"))
-            event = {"session_id": "eval-child",
-                     "agent_id": f"eval-agent-{index}",
-                     "tool_name": "Write",
-                     "tool_input": {"file_path": slot["result_path"],
-                                    "content": content}}
-            contract = {"task": brief_row["producer_contract"]["task"],
-                        "read_only": True,
-                        "write_allow": [slot["result_path"]]}
-            review.register_slot_producer(
-                ws, event=event, contract=contract,
-                task_slot=brief_row["producer_contract"]["task_slot"])
-            review.record_slot_write_observation(
-                ws, event=event, contract=contract,
-                task_slot=brief_row["producer_contract"]["task_slot"])
-            path = os.path.join(ws, slot["result_path"])
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as stream:
-                stream.write(content)
-        review.collect_review(ws, publish=False)
-        # Model a corrupted/synthesized summary: the immutable canonical
-        # revision still contains the blocker and must control the gate.
-        collected = review._load_state(ws)
-        collected["lens_results"] = [
-            {"lens": row["lens"], "verdict": "pass", "blockers": 0}
-            for row in collected["lens_results"]]
-        review._save_state(ws, collected)
-        free_rows = [{"lens": row["id"], "verdict": "pass", "blockers": 0}
-                     for row in _routed(brief)]
-        _write_verdict(ws, task["id"], loop._criteria_for(ws, state, task),
-                       free_rows)
-        errors = loop._evaluation_errors(ws, state, task)
-        self.assertTrue(any("canonical blocking finding" in item
-                            for item in errors), errors)
+        self.assertEqual(kernel["slots"], [])
+        self.assertEqual(kernel["expected_lenses"], [])
+        self.assertNotIn("lenses", brief)
 
     def test_em_brief_maps_full_catalog_but_dispatches_selectively(self):
         ws = _repo(self.tmp)
@@ -341,35 +245,23 @@ class TestCanonicalFindingEnforcement(unittest.TestCase):
         self.assertIs(loop.router_audit, audit.router_audit)
 
 
-class TestFloorsSurviveBuildProfileNarrowing(unittest.TestCase):
-    """(d) shipped route v2 rule, pinned from the EVALUATE path."""
+class TestFloorsRemainAnEngineeringConcern(unittest.TestCase):
+    """Evaluate does not reacquire final-EM floor authority."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
-    def test_floors_on_enforcement_and_code_diff(self):
+    def test_enforcement_and_code_diff_still_produce_zero_lens_evaluate(self):
         ws = _repo(self.tmp)
         act = _to_evaluate(ws, {
             "hooks/guard.py": "def guard():\n    return True\n",
             "src/app/feature.py": "def feature():\n    return 3\n"})
-        by_id = {x["id"]: x for x in act["lenses"]}
-        # security: quick-only routing still selects the enforcement floor
-        sec = by_id["security"]
-        self.assertEqual(sec["tier"], "sweep")
-        self.assertNotEqual(sec["mode"], "none")
-        # architecture: the quick sweep survives build-profile narrowing
-        # precisely because code changes retain the architecture floor
-        profile = lens.load_catalog()["stage_profiles"]["build"]
-        self.assertNotIn("architecture", profile)   # narrowing is real
-        arch = by_id["architecture"]
-        self.assertEqual(arch["tier"], "sweep")
-        self.assertNotEqual(arch["mode"], "none")
-        self.assertIn("floor", arch)
+        self.assertNotIn("lenses", act)
+        self.assertEqual(review._load_state(ws)["expected_lenses"], [])
 
 
-class TestEvaluationErrorsRoutedSet(unittest.TestCase):
-    """(e) n/a-with-evidence unchanged; (f) validator accepts the routed
-    set and rejects a missing routed lens."""
+class TestEvaluationErrorsZeroLensSet(unittest.TestCase):
+    """The validator accepts exactly the evaluator output contract."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -383,60 +275,24 @@ class TestEvaluationErrorsRoutedSet(unittest.TestCase):
         task = state["tasks"][state["current_task"]]
         return ws, act, state, task
 
-    def test_na_entries_carry_negative_evidence(self):
+    def test_no_lens_entries_are_exposed(self):
+        _, act, _, _ = self._at_evaluate()
+        self.assertNotIn("lenses", act)
+
+    def test_genuinely_observed_zero_lens_verdict_validates(self):
         ws, act, _, _ = self._at_evaluate()
-        na = [x for x in act["lenses"] if x["mode"] == "none"]
-        self.assertTrue(na)                     # narrowing really happened
-        for x in na:
-            self.assertTrue(x.get("negative_evidence"),
-                            f"lens {x['id']} is n/a without evidence")
+        result = _pass_eval(ws, act)
+        self.assertNotIn("error", result)
+        self.assertEqual(loop.load(ws)["step"], "em")
 
-    def test_verdict_rows_without_leased_slot_results_are_rejected(self):
+    def test_unobserved_verdict_is_rejected(self):
         ws, act, state, task = self._at_evaluate()
-        rows = [{"lens": x["id"], "verdict": "pass", "blockers": 0}
-                for x in _routed(act)]
         _write_verdict(ws, task["id"],
-                       loop._criteria_for(ws, state, task), rows)
+                       loop._criteria_for(ws, state, task), [])
         errors = loop._evaluation_errors(ws, state, task)
-        self.assertTrue(any("leased slot" in err for err in errors), errors)
-
-    def test_verdict_from_leased_routed_set_validates(self):
-        ws, act, state, task = self._at_evaluate()
-        rows = [{"lens": x["id"], "verdict": "pass", "blockers": 0}
-                for x in _routed(act)]
-        _write_kernel_results(ws)
-        _write_verdict(ws, task["id"],
-                       loop._criteria_for(ws, state, task), rows)
-        self.assertEqual(loop._evaluation_errors(ws, state, task), [])
-
-    def test_verdict_missing_a_routed_lens_is_rejected(self):
-        ws, act, state, task = self._at_evaluate()
-        routed = _routed(act)
-        self.assertGreater(len(routed), 1)
-        dropped = routed[0]["id"]
-        rows = [{"lens": x["id"], "verdict": "pass", "blockers": 0}
-                for x in routed[1:]]
-        _write_verdict(ws, task["id"],
-                       loop._criteria_for(ws, state, task), rows)
-        _write_kernel_results(ws)
-        errors = loop._evaluation_errors(ws, state, task)
-        self.assertIn(f"routed lens has no verdict: {dropped}", errors)
-
-    def test_na_lens_owes_no_verdict_row(self):
-        """n/a lenses are covered by the routing's negative evidence, not
-        by evaluator rows — the validator must not demand them."""
-        ws, act, state, task = self._at_evaluate()
-        na_ids = {x["id"] for x in act["lenses"] if x["mode"] == "none"}
-        self.assertTrue(na_ids)
-        rows = [{"lens": x["id"], "verdict": "pass", "blockers": 0}
-                for x in _routed(act)]
-        _write_verdict(ws, task["id"],
-                       loop._criteria_for(ws, state, task), rows)
-        _write_kernel_results(ws)
-        errors = loop._evaluation_errors(ws, state, task)
-        for err in errors:
-            for lens_id in na_ids:
-                self.assertNotIn(lens_id, err)
+        self.assertTrue(any("producer observation" in err or
+                            "leased slot collection" in err
+                            for err in errors), errors)
 
 
 class TestWorkflowAgnostic(unittest.TestCase):

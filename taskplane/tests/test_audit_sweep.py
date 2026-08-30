@@ -13,6 +13,7 @@ Covers:
     v2.3.1 finding_blocks rule.
 """
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -28,6 +29,7 @@ import lens  # noqa: E402
 import depgraph  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
+import producer_observation  # noqa: E402
 from taskplane.tests.review_kernel_support import complete_review  # noqa: E402
 
 
@@ -100,22 +102,36 @@ def pass_eval(ws):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as stream:
             stream.write(content)
-    review.collect_review(act_ws, publish=False, run_id=kernel["run_id"])
-    collected = review._load_state(act_ws)
     with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v1",
+        json.dump({"schema": "taskplane.evaluator-output/v2",
                    "task": task["id"],
                    "requirement": task.get("req") or
                                   state.get("requirement_id") or "",
                    "verdict": "pass",
+                   "evaluation": {"status": "complete",
+                                  "reason_code": "none", "detail": ""},
                    "criteria": [{"criterion": c, "status": "met",
                                  "evidence": "verified by test"}
                                 for c in criteria],
-                   "lenses": collected["lens_results"],
                    "graph": {"dispositions": [],
                              "requirements_checked": [],
                              "contracts_checked": []},
                    "failures": []}, f)
+    material = loop.producer_output_identity(
+        act_ws, state, task, "evaluate",
+        active_contract=tp.load_active(act_ws) or {})
+    event = {
+        "hook_event_name": "SubagentStop",
+        "session_id": "audit-eval-session",
+        "turn_id": "audit-eval-turn",
+        "agent_id": "audit-evaluator",
+        "agent_type": material["producer_dispatch"]["task_name"],
+        "task_name": material["producer_dispatch"]["task_name"],
+    }
+    claim = hashlib.sha256(tp.hook_event_identity(
+        act_ws, "subagent-stop", event).encode("utf-8")).hexdigest()
+    producer_observation.record_codex_subagent_stop(
+        event=event, hook_claim_id=claim, **material)
     return submit_gate(ws, "pass")
 
 
@@ -131,6 +147,20 @@ def pass_em(ws, coverage=None, findings_rows=None):
         ws, coverage=coverage, impact=impact, tests=["true"],
         findings=findings_rows or [],
         report="# Engineering review\n\nAll required evidence passed.\n")
+    task = loop._current_task(state)
+    material = loop.producer_output_identity(
+        ws, state, task, "em", active_contract=tp.load_active(ws) or {})
+    event = {
+        "hook_event_name": "SubagentStop",
+        "session_id": "audit-em-session", "turn_id": "audit-em-turn",
+        "agent_id": "audit-engineering",
+        "agent_type": material["producer_dispatch"]["task_name"],
+        "task_name": material["producer_dispatch"]["task_name"],
+    }
+    claim = hashlib.sha256(tp.hook_event_identity(
+        ws, "subagent-stop", event).encode("utf-8")).hexdigest()
+    producer_observation.record_codex_subagent_stop(
+        event=event, hook_claim_id=claim, **material)
     return submit_gate(ws, "pass")
 
 

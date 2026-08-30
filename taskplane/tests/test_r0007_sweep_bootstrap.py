@@ -455,8 +455,9 @@ def test_producer_activation_dispatches_independent_sweep_set_and_collects_all(
     instruction = loop._instruction(
         "evaluate", {"tasks": [{"id": "bootstrap-sweep"}],
                      "current_task": 0}, workspace)
-    assert "one governed read-only subagent per subagent-mode lens" in instruction
-    assert "Pass each slot's contract_bootstrap unchanged" in instruction
+    assert "Evaluate is lens-free" in instruction
+    assert "do not route, score, start, retry, or collect lens workers" in \
+        instruction
     worker_lenses = {
         row["id"] for row in state["routing"]["lenses"]
         if row.get("mode") == "subagent"}

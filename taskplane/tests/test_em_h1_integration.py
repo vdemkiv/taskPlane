@@ -30,12 +30,29 @@ def _head(workspace: Path) -> str:
 @pytest.fixture(scope="module")
 def h1_receipt_bundle(tmp_path_factory):
     """Real producer/evaluator helpers issue all 13 exact-SHA receipts."""
-    candidate_sha = _head(ROOT)
+    workspace = tmp_path_factory.mktemp("h1-workspace") / "repository"
+    subprocess.run(["git", "clone", "--quiet", "--no-hardlinks",
+                    str(ROOT), str(workspace)], check=True)
+    accepted_design = subprocess.run(
+        ["git", "show", "fe5df7b:design/contract.json"], cwd=ROOT,
+        check=True, capture_output=True, text=True,
+        encoding="utf-8").stdout
+    (workspace / "design" / "contract.json").write_text(
+        accepted_design, encoding="utf-8")
+    subprocess.run(["git", "config", "user.email", "e@e"], cwd=workspace,
+                   check=True)
+    subprocess.run(["git", "config", "user.name", "fixture"], cwd=workspace,
+                   check=True)
+    subprocess.run(["git", "add", "design/contract.json"], cwd=workspace,
+                   check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture R-0002 authority"],
+                   cwd=workspace, check=True)
+    candidate_sha = _head(workspace)
     receipt_directory = tmp_path_factory.mktemp("h1-receipts")
     evaluate_receipts = []
     finding_map = {
         row["id"]: row for row in json.loads(
-            (ROOT / "design" / "contract.json").read_text(
+            (workspace / "design" / "contract.json").read_text(
                 encoding="utf-8"))["finding_map"]
     }
     for finding_id in remediation_trace.H1_FINDING_IDS:
@@ -49,18 +66,19 @@ def h1_receipt_bundle(tmp_path_factory):
             task_name=f"h1-evaluate-{finding_id}", task_id=task_id,
             session_id="h1-receipt-fixture")
         build_path = remediation_trace.produce_build_receipt(
-            str(ROOT), receipt_directory, candidate_sha=candidate_sha,
+            str(workspace), receipt_directory, candidate_sha=candidate_sha,
             finding_id=finding_id, producer_identity=producer)
         evaluate_receipts.append(
             remediation_trace.produce_evaluate_receipt(
-                str(ROOT), receipt_directory,
+                str(workspace), receipt_directory,
                 build_receipt_path=build_path,
                 evaluator_identity=evaluator))
 
     trace = remediation_trace.build_h1_trace(
-        str(ROOT), candidate_sha=candidate_sha,
+        str(workspace), candidate_sha=candidate_sha,
         evaluate_receipt_paths=evaluate_receipts)
     return {
+        "workspace": workspace,
         "candidate_sha": candidate_sha,
         "directory": receipt_directory,
         "evaluate_receipts": evaluate_receipts,
@@ -73,7 +91,8 @@ def test_ac2_h1_contracts_close_at_one_sha(h1_receipt_bundle):
     candidate_sha = h1_receipt_bundle["candidate_sha"]
     trace = h1_receipt_bundle["trace"]
 
-    assert remediation_trace.verify_h1_trace(str(ROOT), trace) == trace
+    assert remediation_trace.verify_h1_trace(
+        str(h1_receipt_bundle["workspace"]), trace) == trace
     assert trace["candidate_sha"] == candidate_sha
     assert trace["required_finding_ids"] == list(
         remediation_trace.H1_FINDING_IDS)
@@ -99,7 +118,8 @@ def test_ac2_h1_contracts_close_at_one_sha(h1_receipt_bundle):
     forged = copy.deepcopy(trace)
     forged["results"][0]["candidate_sha"] = "0" * 40
     with pytest.raises(remediation_trace.RemediationTraceError):
-        remediation_trace.verify_h1_trace(str(ROOT), forged)
+        remediation_trace.verify_h1_trace(
+            str(h1_receipt_bundle["workspace"]), forged)
 
 
 def test_h1_trace_rejects_missing_and_replayed_receipts(h1_receipt_bundle):
@@ -108,17 +128,17 @@ def test_h1_trace_rejects_missing_and_replayed_receipts(h1_receipt_bundle):
     with pytest.raises(remediation_trace.RemediationTraceError,
                        match="one unique receipt"):
         remediation_trace.build_h1_trace(
-            str(ROOT), candidate_sha=candidate_sha,
+            str(h1_receipt_bundle["workspace"]), candidate_sha=candidate_sha,
             evaluate_receipt_paths=receipts[:-1])
     with pytest.raises(remediation_trace.RemediationTraceError,
                        match="one unique receipt"):
         remediation_trace.build_h1_trace(
-            str(ROOT), candidate_sha=candidate_sha,
+            str(h1_receipt_bundle["workspace"]), candidate_sha=candidate_sha,
             evaluate_receipt_paths=[*receipts[:-1], receipts[0]])
     with pytest.raises(remediation_trace.RemediationTraceError,
                        match="receipt path"):
         remediation_trace.build_h1_trace(
-            str(ROOT), candidate_sha=candidate_sha,
+            str(h1_receipt_bundle["workspace"]), candidate_sha=candidate_sha,
             evaluate_receipt_paths=[{} for _ in receipts])
 
 
@@ -148,7 +168,8 @@ def test_h1_trace_rejects_forged_outcomes_labels_and_git_identity(
 
     for forged in mutations:
         with pytest.raises(remediation_trace.RemediationTraceError):
-            remediation_trace.verify_h1_trace(str(ROOT), forged)
+            remediation_trace.verify_h1_trace(
+                str(h1_receipt_bundle["workspace"]), forged)
 
 
 def test_h1_receipts_reject_wrong_sha_and_duplicate_native_identity(
@@ -161,12 +182,13 @@ def test_h1_receipts_reject_wrong_sha_and_duplicate_native_identity(
     with pytest.raises(remediation_trace.RemediationTraceError,
                        match="exact current HEAD"):
         remediation_trace.produce_build_receipt(
-            str(ROOT), h1_receipt_bundle["directory"],
+            str(h1_receipt_bundle["workspace"]),
+            h1_receipt_bundle["directory"],
             candidate_sha="0" * 40, finding_id=first_id,
             producer_identity=producer)
 
     build_path = remediation_trace.produce_build_receipt(
-        str(ROOT), h1_receipt_bundle["directory"],
+        str(h1_receipt_bundle["workspace"]), h1_receipt_bundle["directory"],
         candidate_sha=h1_receipt_bundle["candidate_sha"],
         finding_id=first_id, producer_identity=producer)
     duplicated_evaluator = remediation_trace.agent_identity(
@@ -176,7 +198,8 @@ def test_h1_receipts_reject_wrong_sha_and_duplicate_native_identity(
     with pytest.raises(remediation_trace.RemediationTraceError,
                        match="not independent"):
         remediation_trace.produce_evaluate_receipt(
-            str(ROOT), h1_receipt_bundle["directory"],
+            str(h1_receipt_bundle["workspace"]),
+            h1_receipt_bundle["directory"],
             build_receipt_path=build_path,
             evaluator_identity=duplicated_evaluator)
 
@@ -214,7 +237,8 @@ def test_h1_git_evidence_ignores_ambient_path_config_and_repository_redirects(
         monkeypatch.setenv(key, value)
 
     trace = remediation_trace.build_h1_trace(
-        str(ROOT), candidate_sha=h1_receipt_bundle["candidate_sha"],
+        str(h1_receipt_bundle["workspace"]),
+        candidate_sha=h1_receipt_bundle["candidate_sha"],
         evaluate_receipt_paths=h1_receipt_bundle["evaluate_receipts"])
 
     assert trace == h1_receipt_bundle["trace"]

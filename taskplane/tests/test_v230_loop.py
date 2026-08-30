@@ -433,15 +433,13 @@ class TestGateStalenessInsideLock(unittest.TestCase):
         ws = git_ws([TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=[])
         loop.next_action(ws)                        # activates plan contract
-        cpath = os.path.join(tp.tp_dir(ws), "active_contract.json")
-        self.assertTrue(os.path.exists(cpath))
+        self.assertIsNotNone(tp.load_active(ws))
         loop.gate(ws, "pass")
-        self.assertFalse(os.path.exists(cpath))     # released on transition
+        self.assertIsNone(tp.load_active(ws))       # released on transition
 
 
 class TestClaimLockShrink(unittest.TestCase):
-    """L: claim() snapshots git info BEFORE the global lock; the claim
-    itself re-checks claimability under the lock."""
+    """Claim snapshots and claimability now share the mutation lock."""
 
     def _parallel_ws(self):
         ws = git_ws([dict(TASK, id="t1")])
@@ -449,7 +447,7 @@ class TestClaimLockShrink(unittest.TestCase):
         loop.gate(ws, "pass")                       # plan → execute
         return ws
 
-    def test_git_snapshot_happens_before_the_lock(self):
+    def test_git_snapshot_happens_inside_the_lock(self):
         ws = self._parallel_ws()
         agent_ws = os.path.join(ws, ".tp-work", "t1")
         subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
@@ -471,7 +469,7 @@ class TestClaimLockShrink(unittest.TestCase):
         self.assertEqual(out["claimed"], "t1")
         self.assertIn("git_head", order)
         self.assertIn("mutate", order)
-        self.assertLess(order.index("git_head"), order.index("mutate"))
+        self.assertLess(order.index("mutate"), order.index("git_head"))
 
     def test_claim_rechecks_status_under_the_lock(self):
         ws = self._parallel_ws()

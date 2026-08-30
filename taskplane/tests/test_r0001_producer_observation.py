@@ -178,7 +178,7 @@ def test_missing_host_receipt_emits_no_producer_provenance_claim():
             submission,
             None,
             output_bytes=b"{}\n",
-            output_schema_id="taskplane.evaluator-output/v1",
+            output_schema_id="taskplane.evaluator-output/v2",
             output_contract_fingerprint="d" * 64,
         )
 
@@ -196,7 +196,7 @@ def test_loop_submission_rejects_missing_observation_without_outage_path():
             {"step": "evaluate", "task": "task-eval"},
             None,
             output_bytes=b"{}\n",
-            output_schema_id="taskplane.evaluator-output/v1",
+            output_schema_id="taskplane.evaluator-output/v2",
             output_contract_fingerprint="d" * 64,
         )
 

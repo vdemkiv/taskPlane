@@ -24,8 +24,11 @@ STRICT_BOUNDARIES = {
     "taskplane.audit_projection",
     "taskplane.checkpoint_boundary",
     "taskplane.dispatch_telemetry",
+    "taskplane.em_outage",
     "taskplane.enforcement",
+    "taskplane.expanded_route_authority_provider",
     "taskplane.host_native",
+    "taskplane.lens_route_policy",
     "taskplane.review_convergence",
 }
 DYNAMIC_RUFF_NAMES = {
@@ -194,7 +197,7 @@ def test_h09_staged_strict_baseline_covers_all_top_level_modules() -> None:
     debt = set(_array_values(policy, "module"))
     production = _production_modules()
 
-    assert len(production) == 89
+    assert len(production) == 92
     assert production - debt == STRICT_BOUNDARIES
     assert _strict_policy_violations(policy) == []
 

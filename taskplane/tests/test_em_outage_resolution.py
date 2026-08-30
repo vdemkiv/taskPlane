@@ -248,6 +248,7 @@ def test_existing_public_cli_exposes_only_the_approved_resolve_shape():
     completed = subprocess.run(
         [sys.executable, str(root / "taskplane" / "tp.py"), "loop",
          "resolve", "--help"], cwd=root, text=True, capture_output=True,
+        encoding="utf-8", errors="replace",
         check=True)
     help_text = completed.stdout
     assert "--accept-producer-receipt-outage" in help_text

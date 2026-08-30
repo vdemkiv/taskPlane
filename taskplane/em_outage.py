@@ -105,7 +105,7 @@ _SNAPSHOT_ITEM_FIELDS = frozenset({
 })
 
 
-def _snapshot_item(label: str, content: bytes) -> dict:
+def _snapshot_item(label: str, content: bytes) -> dict[str, object]:
     return {
         "label": label,
         "sha256": _sha256(content),
@@ -114,7 +114,8 @@ def _snapshot_item(label: str, content: bytes) -> dict:
     }
 
 
-def capture_output_snapshot(findings_path: str, report_path: str) -> dict:
+def capture_output_snapshot(
+        findings_path: str, report_path: str) -> dict[str, object]:
     """Capture the two logical EM outputs into one durable value.
 
     Each public name is opened exactly once.  The returned mapping contains
@@ -134,7 +135,8 @@ def capture_output_snapshot(findings_path: str, report_path: str) -> dict:
     return validate_output_snapshot(material)
 
 
-def validate_output_snapshot(value: Mapping[str, object]) -> dict:
+def validate_output_snapshot(
+        value: Mapping[str, object]) -> dict[str, object]:
     """Validate and return one closed, JSON-safe output snapshot."""
 
     if not isinstance(value, Mapping) or set(value) != _SNAPSHOT_FIELDS:
@@ -178,32 +180,40 @@ def output_snapshot_bytes(value: Mapping[str, object]) -> dict[str, bytes]:
     """Decode exact bytes from a validated snapshot without path access."""
 
     snapshot = validate_output_snapshot(value)
-    return {
-        field: base64.b64decode(snapshot[field]["content_base64"], validate=True)
-        for field in ("findings", "report")
-    }
+    exact: dict[str, bytes] = {}
+    for field in ("findings", "report"):
+        item = snapshot.get(field)
+        if not isinstance(item, Mapping):
+            raise EmOutageError(f"EM output snapshot {field} is invalid")
+        exact[field] = base64.b64decode(
+            str(item.get("content_base64") or ""), validate=True)
+    return exact
 
 
-def output_snapshot_evidence(value: Mapping[str, object]) -> dict:
+def output_snapshot_evidence(
+        value: Mapping[str, object]) -> dict[str, object]:
     """Return the bounded snapshot identity carried into audit/sign-off."""
 
     snapshot = validate_output_snapshot(value)
+    outputs: dict[str, object] = {}
+    for field in ("findings", "report"):
+        item = snapshot.get(field)
+        if not isinstance(item, Mapping):
+            raise EmOutageError(f"EM output snapshot {field} is invalid")
+        outputs[field] = {
+            key: item[key] for key in ("label", "sha256", "bytes")
+        }
     return {
         "schema": OUTPUT_SNAPSHOT_SCHEMA,
         "fingerprint": snapshot["fingerprint"],
-        "outputs": {
-            field: {
-                key: snapshot[field][key]
-                for key in ("label", "sha256", "bytes")
-            }
-            for field in ("findings", "report")
-        },
+        "outputs": outputs,
     }
 
 
 def output_hashes(findings_path: str | None = None,
                   report_path: str | None = None, *,
-                  snapshot: Mapping[str, object] | None = None) -> dict:
+                  snapshot: Mapping[str, object] | None = None
+                  ) -> dict[str, object]:
     if snapshot is None:
         if findings_path is None or report_path is None:
             raise EmOutageError("EM output paths are missing")
@@ -242,7 +252,7 @@ def outage_identity(*, repository: Mapping[str, object], store: str,
                     output_snapshot_fingerprint: str,
                     review_kernel: Mapping[str, object],
                     task: str = "engineering-signoff",
-                    accepted_drift: str = "D-0014") -> dict:
+                    accepted_drift: str = "D-0014") -> dict[str, object]:
     """Build the engine-derived, domain-separated outage identity."""
 
     repository_value = {
@@ -262,8 +272,9 @@ def outage_identity(*, repository: Mapping[str, object], store: str,
         if len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
             raise EmOutageError(f"outputs.{field} is invalid")
     for field in ("findings_bytes", "report_bytes"):
-        value = output_value[field]
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        byte_count = output_value[field]
+        if isinstance(byte_count, bool) or not isinstance(byte_count, int) or \
+                byte_count <= 0:
             raise EmOutageError(f"outputs.{field} is invalid")
     kernel = dict(review_kernel)
     if not kernel:
@@ -301,7 +312,8 @@ def outage_identity(*, repository: Mapping[str, object], store: str,
     return validate_outage_identity(material)
 
 
-def validate_outage_identity(value: Mapping[str, object]) -> dict:
+def validate_outage_identity(
+        value: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(value, Mapping) or set(value) != _IDENTITY_FIELDS:
         raise EmOutageError("EM outage identity fields are not closed")
     checked = dict(value)
@@ -325,7 +337,8 @@ def validate_outage_identity(value: Mapping[str, object]) -> dict:
 
 
 def resolution_receipt(identity: Mapping[str, object], *, actor: str,
-                       control_plane: Mapping[str, object]) -> dict:
+                       control_plane: Mapping[str, object]
+                       ) -> dict[str, object]:
     """Mint the immutable one-use audit value persisted with sign-off."""
 
     outage = validate_outage_identity(identity)
