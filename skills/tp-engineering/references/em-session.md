@@ -42,9 +42,9 @@ evidence that materially changes the decision; do not generate three versions
 of the same simulation merely to satisfy a ritual. Fixed session order:
 
 **(0) one ReviewKernel start → (1) deliver workflow + dependency graph → (2)
-consume the sealed three-or-four quick Evaluate results and complete all-26
-disposition ledger → (3) canonical collect; missing or insufficient substantive
-evidence returns to a newly authorized focused Evaluate route → (4)
+consume the sealed direct Evaluate evidence with zero lens workers → (3)
+canonical collect; missing or insufficient substantive evidence returns to a
+fresh zero-lens Evaluate judgment → (4)
 requirements walk + the best relevant runtime/visual evidence → (5) human
 sign-off.**
 
@@ -99,10 +99,10 @@ How hard it was to mock the code *is itself a testability finding*. Clean seams 
 ## Step 0 — Open once
 
 Run `review start` exactly once. It pins the target, derives the diff and graph
-blast radius once, probes runnability once, maps all 26 lenses, writes one
-immutable shared context, and returns the sealed results for exactly three or
-four quick Evaluate lenses on non-trivial work. Engineering consumes those
-results without launching a second sweep. Deliver its workflow/wave and dependency-graph artifacts by
+blast radius once, probes runnability once, writes one immutable shared
+context, and returns the sealed direct Evaluate evidence. Loop Engineering
+consumes that evidence without launching any lens workers. Deliver its
+workflow/wave and dependency-graph artifacts by
 reference. Do not separately run target, graph impact, lens route, runnability,
 or a second review start.
 

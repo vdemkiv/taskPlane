@@ -1,19 +1,19 @@
 ---
 name: tp-engineering
-description: "The engineering persona of taskplane — owns whether the built thing is right and sound. Use for validating completed work: 'review this' (PR/branch/code/work), 'security review', 'architecture review', 'does this match the requirement', 'what depends on X', 'blast radius', 'run the retro', 'sign-off'. Engineering consumes Evaluate's sealed three-or-four quick lens results and evidenced all-26 disposition ledger, launches no lens workers, and returns missing or insufficient substantive evidence to a newly authorized focused Evaluate route. It also walks requirements against implementation for human sign-off. Read-only toward code by enforced contract; it judges — it never implements or fixes."
+description: "The engineering persona of taskplane — owns whether the built thing is right and sound. Use for validating completed work: 'review this' (PR/branch/code/work), 'security review', 'architecture review', 'does this match the requirement', 'what depends on X', 'blast radius', 'run the retro', 'sign-off'. Engineering consumes Evaluate's sealed direct evidence, launches no lens workers, and returns missing or insufficient substantive evidence to a fresh zero-lens Evaluate judgment. It also walks requirements against implementation for human sign-off. Read-only toward code by enforced contract; it judges — it never implements or fixes."
 ---
 
 # /tp-engineering — the SOUND seat (impact · all lenses · verdicts)
 
 ## Focused routing contract
 
-The governed Evaluate step executes exactly three or four quick lenses for
-non-trivial work and records all 26 dispositions with evidence and reason.
-Engineering consumes that complete ledger and the resulting evidence; it does
-not launch a second lens sweep. If more than four independent mandatory risks
-exist, split the scope or stop for authenticated expanded-route approval.
-After a Fix, rerun only evidence whose fingerprint inputs changed and retain
-independently valid fingerprinted evidence without launching its worker.
+Evaluate launches zero Taskplane lens workers and performs
+direct evidence judgment over its sealed diff, tests, acceptance criteria,
+graph impact, requirements/contracts, approved Design conformance, and
+provenance. Engineering launches zero lens workers and consumes that judgment
+in the loop EM stage. Evaluate creates no lens route, slots, ledger, lens verdicts, retry
+or invalidation, or expanded-route authority. Missing or invalid evidence
+returns to a fresh zero-lens Evaluate judgment.
 
 On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
 workspace launcher exists; it resolves the newest valid installed taskplane
@@ -25,14 +25,19 @@ learn. The loop's `em` step is this persona. Its counterpart,
 grader never graded their own definition.
 
 `flow.json` is the approved Review graph: **verify the bounded stage manifest
-→ pin target → derive one diff and graph impact → graph-quality gate → 26
-dispositions → exactly 3–4 quick Evaluate slots → canonical collect →
+→ pin target → derive one diff and graph impact → graph-quality gate → sealed
+direct Evaluate evidence → zero-lens Engineering judgment → canonical collect →
 workflow/graph/findings dashboard
 → human approve or request changes → terminalize the addressed Review or
 Engineering stage**. Collection is not completion; the final human decision is
 mandatory for loop and standalone reviews.
 
 ## Stage-native review boundary
+
+Engineering consumes the sealed direct Evaluate evidence; it never launches
+lens workers or a promotion wave. Standalone Review routing, when explicitly
+requested, is a separate Review-owned surface and is never attributed to
+Evaluate or loop EM.
 
 When Taskplane supplies a `taskplane.stage-dispatch/v1` envelope, treat its
 verified `taskplane.stage-startup/v1` value as the complete execution context.
@@ -131,25 +136,24 @@ blocked; only declaring it finished. This exists because "render the
 dashboard" written in a skill was ignored for a month — an instruction is
 not a mechanism, and a refusal is.
 
-**Every review DISPOSITIONS the full catalog — it does not RUN the full
-catalog.** Evaluate records exactly one evidenced row for all 26 dispositions
-and executes exactly three or four quick lenses for a non-trivial target. The
-ledger is the coverage record; selected result consumption follows the sealed
-boundary below. Coverage honesty comes from evidence, not from running a lens
-to avoid the question.
+**Every standalone review DISPOSITIONS the full catalog — it does not RUN the
+full catalog.** This Review-owned route is separate from loop Evaluate and EM,
+which remain zero-lens. The standalone ledger is the coverage record; selected
+result consumption follows the sealed boundary below. Coverage honesty comes
+from evidence, not from running a lens to avoid the question.
 
 Do NOT pass `--all`. It forces every lens to run AND switches the
 applicability engine off (`lens.py`: `breadth != "all"`), which is
 precisely the waste this paragraph exists to prevent. Full-catalog execution
 belongs only to a separate explicitly authorized calibration workflow.
 
-**Consume the exact focused set.** `review start` provides the sealed results
-from Evaluate's exactly three or four quick lenses, each tied to its scoped
-view and producer receipt. Engineering consumes the sealed three-or-four quick
-Evaluate results and the complete all-26 disposition ledger; it never launches
-lens workers or a promotion wave. Missing or insufficient substantive evidence
-returns to a newly authorized focused Evaluate route; missing or invalid
-producer evidence remains a bounded blocker.
+**Consume the exact governed set.** Loop Engineering consumes the sealed
+direct Evaluate judgment and never launches lens workers or a promotion wave.
+Standalone `review start` may provide its own Review-owned selected results,
+each tied to its scoped view and producer receipt; these are not Evaluate
+outputs. Missing or insufficient loop evidence returns to a fresh zero-lens
+Evaluate judgment; missing or invalid producer evidence remains a bounded
+blocker.
 
 **Runnability is probed ONCE, before briefs.** `review start` answers
 "can `go test` / `npm test` / `pytest` even start in this checkout"
@@ -189,19 +193,19 @@ Do not substitute `review resume` or a prose-only instruction. The opening
 canonical dashboard is `visuals.workflow_and_wave.inline.path`; after
 collection the canonical dashboard is `visuals.final_dashboard.inline.path`.
 
-If the host cannot verify or expose the sealed Evaluate producer results,
-return that specific evidence gap to Evaluate for a newly authorized focused
-route. Engineering must not use a general subagent, a fallback `tp-lens`
+If the host cannot verify or expose the sealed direct Evaluate evidence,
+return that specific evidence gap for a fresh zero-lens Evaluate judgment.
+Engineering must not use a general subagent, a fallback `tp-lens`
 dispatch, or an inferred result to bypass the sealed producer boundary.
 
 **SHOW PROGRESS WITHOUT RE-DERIVING.** Render or deliver the wave-board
 artifact at `review start.visuals.workflow_and_wave` inline through the host
 widget. Its dashboard already embeds the exact blast-radius graph; do not
 create or deliver a second graph artifact.
-Consume the returned focused Evaluate results, then run `$TP review collect`.
-Collect validates each leased result. A request for substantive additional
-lens work returns to Evaluate for a newly authorized focused route; Engineering
-does not dispatch promoted slots. Otherwise collection commits one canonical findings revision and
+Consume the returned direct Evaluate evidence, then run `$TP review collect`.
+Collect validates the governed evidence. A request for substantive additional
+loop evidence returns to a fresh zero-lens Evaluate judgment; Engineering does
+not dispatch lens slots. Otherwise collection commits one canonical findings revision and
 returns `visuals.final_dashboard`, whose structure is workflow/gates first,
 dependency graph second, then the complete findings and approval/rejection
 surface. Render `visuals.final_dashboard.inline.path` inline; use its durable
@@ -225,9 +229,9 @@ its named original producer concurrently as one repair wave, wait for all of
 them, and retry `$TP review collect` once. Never retry collection after only a
 subset of the reported repairs, and never turn a schema repair into a fresh
 substantive review.
-Additional substantive review is not schema repair. It requires a new focused
-Evaluate route with its own evidence and authority; it is never an implicit
-Engineering promotion wave.
+Additional substantive loop evidence is not schema repair. It requires a fresh
+zero-lens Evaluate judgment with its own evidence and authority; it is never an
+implicit Engineering promotion wave.
 If collection reports that producer provenance is unavailable, stop with that
 named host/provenance blocker. Do not inspect taskplane's implementation,
 reconstruct a receipt, hand-merge results, or dispatch replacement lenses.

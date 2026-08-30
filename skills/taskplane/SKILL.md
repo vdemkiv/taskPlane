@@ -8,12 +8,14 @@ description: "The simple user-facing entry point for taskplane. Use whenever the
 ## Focused routing invariant
 
 Every governed flow uses Product/Design minimum-sufficient focused routes,
-Plan/Evaluate exactly three or four quick lenses for non-trivial work, and
-Build/Fix zero lens workers. Every routed stage emits all 26 dispositions;
-only selected execution dispositions launch workers. Overflow must split the
-scope or obtain authenticated expanded-route approval, and post-Fix Evaluate
-reruns only evidence whose fingerprint inputs changed. Build/Fix keep zero
-lens workers on success, failure, cancellation, interruption, and handoff.
+Plan exactly three or four quick lenses for non-trivial work, and
+Build/Fix/Evaluate/EM zero lens workers. Product, Design, and Plan record all
+26 dispositions; only selected execution dispositions launch workers. Plan
+overflow must split the scope or obtain authenticated expanded-route approval.
+Evaluate performs direct evidence judgment only over the sealed diff, tests,
+criteria, graph impact, requirements/contracts, Design conformance, and
+provenance. Zero-lens stages stay zero on success, failure, cancellation,
+interruption, and handoff.
 
 The user should need to say only one of these:
 

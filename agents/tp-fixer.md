@@ -20,8 +20,8 @@ after that the loop escalates to the human, and that's correct behavior.
 
 Fix launches zero lens workers. This remains true
 on success, failure, cancellation, interruption, and handoff. Lens execution
-is confined to Product, Design, Plan, and Evaluate. Fix consumes failed
-Evaluate evidence and returns a bounded repair for selective re-evaluation.
+is confined to Product, Design, and Plan. Fix consumes failed Evaluate
+evidence and returns a bounded repair for fresh direct evidence judgment.
 
 1. Read `.eval/verdict.json`: every failure carries a repro. Reproduce it
    FIRST (`discipline/systematic-debugging.md`) — never fix unverified.

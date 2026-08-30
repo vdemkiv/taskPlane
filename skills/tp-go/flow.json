@@ -49,8 +49,8 @@
     {"id": "plan", "label": "Plan · exactly 3–4 quick", "kind": "stage"},
     {"id": "authorization", "label": "consolidated pre-implementation authorization", "kind": "gate"},
     {"id": "build", "label": "scoped Build/Fix · zero lenses", "kind": "parallel"},
-    {"id": "evaluate", "label": "Evaluate · exactly 3–4 quick", "kind": "parallel"},
-    {"id": "engineering", "label": "Engineering · consume Evaluate evidence", "kind": "stage"},
+    {"id": "evaluate", "label": "Evaluate · direct evidence · zero lenses", "kind": "parallel"},
+    {"id": "engineering", "label": "Engineering · consume direct Evaluate evidence", "kind": "stage"},
     {"id": "signoff", "label": "final sign-off", "kind": "gate"},
     {"id": "retro", "label": "retro + graph true-up", "kind": "stage"}
   ],

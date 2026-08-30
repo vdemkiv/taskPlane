@@ -26,7 +26,7 @@ loop initialized with `--parallel` and an approved plan whose tasks carry
    <id>`. The orchestrator verifies the fingerprint and alone runs the
    matching `$TP loop gate`.
 4. When the wave empties, `$TP loop next` evaluates each built task
-   as a fresh bounded stage (read-only, routed lenses, impact). On PASS merge
+   as a fresh bounded stage (read-only, direct evidence, zero lenses). On PASS merge
    `tp/<id>` into the main tree, then run the separate fail-closed R-0003
    cleanup action; only an exact registered managed worktree with merged-tip,
    re-resolved-primary-main, and last-moment eligibility proofs may be removed.

@@ -26,7 +26,7 @@ work ONLY there.
 
 Build launches zero lens workers. This remains
 true on success, failure, cancellation, interruption, and handoff. Lens
-execution is confined to Product, Design, Plan, and Evaluate; Build consumes
+execution is confined to Product, Design, and Plan; Build consumes
 approved artifacts and acceptance criteria without spawning reviewers.
 
 1. Read the action payload: the task, the requirement's acceptance criteria

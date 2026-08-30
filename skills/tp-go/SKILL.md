@@ -8,13 +8,15 @@ description: "The internal delivery driver behind the taskplane facade — goal-
 ## Focused routing invariant
 
 Every delivery uses Product/Design minimum-sufficient focused routes,
-Plan/Evaluate exactly three or four quick lenses for non-trivial work, and
-Build/Fix zero lens workers. Routed stages record all 26 dispositions but only
-selected execution dispositions launch workers. If more than four independent
-mandatory risks remain, split the scope or stop for authenticated
-expanded-route approval naming the added lenses and cost. After a Fix, rerun
-only evidence whose fingerprint inputs changed. Build/Fix preserve zero lens
-workers on success, failure, cancellation, interruption, and handoff.
+Plan exactly three or four quick lenses for non-trivial work, and
+Build/Fix/Evaluate/EM zero lens workers. Product, Design, and Plan record all
+26 dispositions, but only selected execution dispositions launch workers. If
+more than four independent Plan risks remain, split the scope or stop for
+authenticated expanded-route approval naming the added lenses and cost.
+Evaluate performs direct evidence judgment only over the sealed diff, tests,
+criteria, graph impact, requirements/contracts, Design conformance, and
+provenance. Zero-lens stages remain zero on success, failure, cancellation,
+interruption, and handoff.
 
 Current workflow contract: **v2.17**. Review, Evaluate, and final Engineering
 all consume the same **canonical review context**; transport may differ by
@@ -52,13 +54,11 @@ the first PM action creates exactly one complete requirement and spec. Attach
 that returned R-id on the PM gate with `loop gate pass --req R-XXXX`. Never
 run standalone Product refinement first and then repeat it inside the loop.
 
-**One selective evidence kernel.** Review, Evaluate, and final EM use one
-pinned diff, graph-quality/blast-radius record, requirements/contracts and
-DoR/DoD envelope, one complete 26-lens disposition, and leased results.
-Evaluate dispatches exactly three or four quick lens slots for non-trivial
-work; final Engineering consumes them without a second sweep. An
-`impact_incomplete` run dispatches nobody. Lenses consume scoped artifact
-references and never rederive diff, graph, routing, or runnability.
+**One direct evidence kernel.** Evaluate and final EM use one pinned diff,
+graph-quality/blast-radius record, requirements/contracts, DoR/DoD envelope,
+tests, Design conformance, and provenance. Evaluate creates no lens route or
+slots; final Engineering consumes the sealed direct judgment without a lens
+sweep. An `impact_incomplete` run dispatches nobody.
 
 **Update fixtures with the interface, then test from narrow to broad.** When
 code changes a schema, signature, payload, failure order, or persisted state,
@@ -220,12 +220,11 @@ explicit approval in conversation. Never run the loop silently.
    (each task: id, scope, tests as one command string (never a list), req,
    deps, contracts, `new_modules` when
    applicable, and typed `impact_policy`), execute builds TDD-first
-   (`discipline/tdd.md`) without launching lens workers; evaluate proves
-   criteria + runs the exactly three or four quick lenses selected from the
-   real diff and evidence, while recording all 26 dispositions. Engineering
-   uses the same canonical context and collected results without launching a
-   second sweep. Calibration is a separate explicitly authorized workflow,
-   never an automatic delivery-stage full-catalog execution. Full detail:
+   (`discipline/tdd.md`) without launching lens workers; Evaluate directly
+   judges the exact diff, bound tests, criteria, graph impact,
+   requirements/contracts, approved Design conformance, and provenance with
+   zero lens routes, slots, workers, or verdicts. Engineering uses the same
+   canonical context without launching a lens sweep. Full detail:
    `docs/routing-and-flows.md`.
    Execute/fix/evaluate/engineering workers
    end with `loop submit` and stop; the orchestrator alone calls `loop gate`

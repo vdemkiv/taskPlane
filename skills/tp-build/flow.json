@@ -10,8 +10,8 @@
     {"id": "authorization", "label": "consolidated pre-implementation authorization", "kind": "gate"},
     {"id": "variants", "label": "Build/Fix · zero lenses", "kind": "parallel"},
     {"id": "selection", "label": "A/B selection if used", "kind": "gate"},
-    {"id": "evaluate", "label": "Evaluate · exactly 3–4 quick", "kind": "parallel"},
-    {"id": "review", "label": "Engineering · consume Evaluate evidence", "kind": "stage"},
+    {"id": "evaluate", "label": "Evaluate · direct evidence · zero lenses", "kind": "parallel"},
+    {"id": "review", "label": "Engineering · consume direct Evaluate evidence", "kind": "stage"},
     {"id": "signoff", "label": "feature sign-off", "kind": "gate"},
     {"id": "retro", "label": "retro + graph true-up", "kind": "stage"}
   ],
