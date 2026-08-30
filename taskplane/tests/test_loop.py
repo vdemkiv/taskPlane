@@ -3958,6 +3958,21 @@ class TestReviewBridge(unittest.TestCase):
         self.assertEqual(argv, ["python3", "-m", "pytest", "-q"])
         self.assertFalse(invoked.call_args.kwargs["shell"])
 
+    def test_review_bridge_execute_gate_accepts_safe_hosted_checks_argv(self):
+        completed = subprocess.CompletedProcess(
+            ["gh", "pr", "checks", "1", "--watch", "--fail-fast"],
+            0, "", "")
+        with unittest.mock.patch(
+                "subprocess.run", return_value=completed) as invoked:
+            with loop._claimed_execute_suite_binding():
+                result = tp.run_suite_command(
+                    ".", "gh pr checks 1 --watch --fail-fast")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            invoked.call_args.args[0],
+            ["gh", "pr", "checks", "1", "--watch", "--fail-fast"])
+        self.assertFalse(invoked.call_args.kwargs["shell"])
+
     def test_review_bridge_execute_gate_rejects_shell_operators(self):
         with unittest.mock.patch("subprocess.run") as invoked:
             with loop._claimed_execute_suite_binding():
