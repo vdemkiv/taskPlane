@@ -112,6 +112,35 @@
         "new-cyclic-member",
         "physical-loc-growth"
       ]
+    },
+    {
+      "affected_modules": [
+        "taskplane.audit",
+        "taskplane.dashboard",
+        "taskplane.defect_claim",
+        "taskplane.design_contract",
+        "taskplane.evidence",
+        "taskplane.lens",
+        "taskplane.lens_signals",
+        "taskplane.loop",
+        "taskplane.loop_status",
+        "taskplane.requirements",
+        "taskplane.retro",
+        "taskplane.review",
+        "taskplane.review_progression",
+        "taskplane.review_repair",
+        "taskplane.review_retry",
+        "taskplane.runtime_eval",
+        "taskplane.views"
+      ],
+      "commit_count": 1,
+      "history_sha256": "32ed0e0a60622c86aaeebd04e115914e4108215c99ee996a49bd81aedb4aafaf",
+      "introduced_revision": "e88308974c172cb9f2c26ae46b1130c85a92c9e8",
+      "reason": "The runtime-guidance implementation temporarily added physical lines without changing protected SCC membership or edges. Revision 69c5b937 compacted it back to the exact ceiling; this receipt covers only e8830897 and authorizes no future growth.",
+      "repaired_revision": "69c5b937de4c5dc8ccb21eaa74df0c526fb18b27",
+      "violation_codes": [
+        "physical-loc-growth"
+      ]
     }
   ],
   "schema": "taskplane.import-cycle-history-resolutions/v1"
