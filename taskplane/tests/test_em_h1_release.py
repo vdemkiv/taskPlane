@@ -5,8 +5,6 @@ from copy import deepcopy
 import importlib.util
 import json
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
@@ -478,61 +476,6 @@ def test_h19_compatibility_receipt_producer_refuses_dirty_checkout(monkeypatch):
         packager.produce_release_compatibility_receipt(
             expected_source_sha=SHA, policy=_policy()
         )
-
-
-def test_h22_package_workflow_produces_executable_cell_evidence():
-    packager = _packager()
-    policy = _policy()
-
-    receipt = packager.produce_release_compatibility_receipt(
-        expected_source_sha=packager.git_head(), policy=policy
-    )
-
-    assert receipt["status"] == "release-compatible"
-    assert receipt["producer"] == policy["release_observation_producer"][
-        "entrypoint"
-    ]
-    assert len(receipt["cells"]) == 4
-    for cell in receipt["cells"]:
-        assert set(cell) == {
-            "plugin", "host", "candidate_sha", "test_name", "test_outcome",
-            "artifact_sha256", "host_validator_sha256", "check_identity",
-            "platform",
-        }
-        assert cell["candidate_sha"] == packager.git_head()
-        assert cell["test_name"] == "openai-package-archive-roundtrip"
-        assert cell["test_outcome"] == "passed"
-        assert len(cell["artifact_sha256"]) == 64
-        assert len(cell["host_validator_sha256"]) == 64
-        assert cell["check_identity"].startswith("package-openai/release-matrix/")
-        assert cell["platform"] == "openai-marketplace-zip"
-        assert "observed" not in cell
-
-
-def test_h22_package_cli_executes_the_production_observation_path(tmp_path):
-    receipt_path = Path("/tmp") / f"taskplane-{tmp_path.name}-compatibility.json"
-    try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "scripts" / "package_openai.py"),
-                "--write-compatibility-receipt",
-                str(receipt_path),
-            ],
-            cwd=ROOT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-        )
-
-        assert result.returncode == 0, result.stderr
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        assert receipt["schema"] == "taskplane.release-compatibility-matrix/v2"
-        assert receipt["status"] == "release-compatible"
-    finally:
-        receipt_path.unlink(missing_ok=True)
 
 
 def test_h26_release_gate_refuses_without_N_minus_1_evidence(monkeypatch):

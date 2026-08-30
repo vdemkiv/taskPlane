@@ -195,7 +195,7 @@ R0013_PRODUCTION_EDGE_BINDINGS = (
     ("E04", "sealed ready set", "build_c.assign_scopes", "taskplane/tests/test_r0013_native_dispatch.py::test_build_c_consumes_one_sealed_ready_set_without_reclassification"),
     ("E05", "native dispatch intent", "Codex screen-dispatch observation", "taskplane/tests/test_r0013_native_budget.py::test_cut_screen_dispatch_to_telemetry_binding_refuses_dispatch"),
     ("E06", "Codex completion or attention", "native event wait", "taskplane/tests/test_r0013_native_dispatch.py::test_one_native_wait_wakes_on_completion_or_attention"),
-    ("E07", "lenses/catalog.json", "design_sweep.validate_design_sweep", "taskplane/tests/test_em_h2_wiring.py::test_h11_design_sweep_validator_is_reachable_or_removed"),
+    ("E07", "lenses/catalog.json", "focused Design routing", "taskplane/tests/test_focused_lens_routing.py::test_design_route_covers_solution_design_and_independent_risk_mutations"),
     ("E08", "Design native lens results", "Design sweep dispositions", "taskplane/tests/test_lens_route_policy.py::test_complete_catalog_disposition_and_selected_conservation"),
     ("E09", "delivery_policy zero-lens authorization", "Build/Fix/Evaluate/EM dispatch", "taskplane/tests/test_r0013_zero_lens.py::test_build_fix_evaluate_and_em_start_zero_taskplane_lens_workers"),
     ("E10", "direct evaluator/EM result", "empty expected-lens gate", "taskplane/tests/test_r0013_zero_lens.py::test_empty_expected_collection_is_valid_success"),

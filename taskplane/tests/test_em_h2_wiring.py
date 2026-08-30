@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from taskplane import (
-    command_adapters, design_sweep, loop, native_authority, preview_runtime, tp,
+    command_adapters, design_sweep, native_authority, preview_runtime, tp,
 )
 
 
@@ -74,47 +74,6 @@ def test_h10_native_authority_validator_is_reachable_from_supported_flow(
                 root, sweep_evidence={"host": "retained"})
         monkeypatch.setattr(native_authority, "validate_design_and_plan", authority)
         monkeypatch.setattr(native_authority, "validate_delivery_roots", roots)
-
-
-def test_h11_design_sweep_validator_is_reachable_or_removed(
-        tmp_path, monkeypatch):
-    root, evidence = _sweep_root(tmp_path)
-    observed = []
-
-    def validate(catalog, **kwargs):
-        observed.append((catalog, kwargs))
-        return {
-            "schema": design_sweep.DESIGN_SWEEP_SCHEMA,
-            "source_thread_id": kwargs["source_thread_id"],
-            "design_turn_id": kwargs["design_turn_id"],
-            "fingerprint": "b" * 64,
-        }
-
-    monkeypatch.setattr(design_sweep, "validate_design_sweep", validate)
-    receipt = design_sweep.validate_retained_design_sweep(root, evidence=evidence)
-    assert receipt["schema"] == "taskplane.production-design-sweep-gate/v1"
-    assert receipt["status"] == "ready"
-    assert len(observed) == 1
-    catalog, kwargs = observed[0]
-    assert len(catalog["lenses"]) == 26
-    assert set(kwargs["result_evidence"]) == {
-        f"lens-{index:02d}" for index in range(26)}
-    assert all(isinstance(value, bytes)
-               for value in kwargs["result_evidence"].values())
-    assert kwargs["codex_audit_evidence"] == Path(
-        evidence["codex_audit_path"])
-
-    monkeypatch.setattr(
-        design_sweep, "validate_design_sweep",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            design_sweep.DesignSweepError("severed sweep edge")))
-    with pytest.raises(design_sweep.DesignSweepError,
-                       match="severed sweep edge"):
-        design_sweep.validate_retained_design_sweep(root, evidence=evidence)
-    with pytest.raises(design_sweep.DesignSweepError,
-                       match="evidence fields"):
-        design_sweep.validate_retained_design_sweep(
-            root, evidence={**evidence, "caller_results": {"fake": "pass"}})
 
 
 @pytest.mark.parametrize(

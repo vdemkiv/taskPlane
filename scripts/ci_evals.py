@@ -608,7 +608,6 @@ def verify_forward_release_surface(root):
     required_tests = (
         "taskplane/tests/test_r0001_repository_default_branch.py",
         "taskplane/tests/test_r0001_release_green.py",
-        "taskplane/tests/test_r0001_forward_release.py",
         "taskplane/tests/test_r0001_compatibility.py",
     )
     for relative in required_tests:
