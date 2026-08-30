@@ -57,12 +57,8 @@
         }
       },
       "gate": {},
-      "inline": {
-        "complete": true,
-        "format": "html",
-        "path": "<WS>/.taskplane/dashboard-delivery/dashboard.inline.html"
-      },
-      "mode": "inline",
+      "inline": null,
+      "mode": "complete-markdown",
       "schema": "taskplane.dashboard-delivery/v1",
       "status": "published"
     },
