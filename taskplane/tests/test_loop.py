@@ -25,6 +25,7 @@ import storage as runtime_storage  # noqa: E402
 import run_store  # noqa: E402
 import checkpoint  # noqa: E402
 import build_c  # noqa: E402
+from tests import run_lr10_parallel as lr10_runner  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -3876,3 +3877,219 @@ class TestReviewBridge(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("shell operators", result.stderr)
         invoked.assert_not_called()
+
+
+class TestLR10ParallelRunner:
+    @staticmethod
+    def _roots(tmp_path, shards):
+        parent = tmp_path / "runner"
+        parent.mkdir()
+        roots = {}
+        for index, name in enumerate(shards, 1):
+            child = parent / f"{index:02d}-{name}"
+            child.mkdir()
+            roots[name] = child
+        return parent, roots
+
+    def test_timeout_terminates_then_kills_and_collects_later_shards(
+            self, tmp_path, monkeypatch):
+        events = []
+
+        class TimedOutProcess:
+            returncode = None
+            calls = 0
+
+            def communicate(self, timeout):
+                self.calls += 1
+                events.append(("communicate-slow", timeout))
+                if self.calls == 1:
+                    raise subprocess.TimeoutExpired(
+                        ["slow"], timeout, output="partial-out",
+                        stderr="partial-err")
+                if self.calls == 2:
+                    raise subprocess.TimeoutExpired(
+                        ["slow"], timeout, output="partial-out-after-term",
+                        stderr="partial-err-after-term")
+                self.returncode = -9
+                return ("partial-out-after-term-complete\n",
+                        "partial-err-after-term-complete\n")
+
+            def terminate(self):
+                events.append(("terminate-slow", None))
+
+            def kill(self):
+                events.append(("kill-slow", None))
+
+        class ReadyProcess:
+            returncode = 0
+
+            def communicate(self, timeout):
+                events.append(("communicate-ready", timeout))
+                return "ready-out\n", "ready-err\n"
+
+        def popen(argv, **_kwargs):
+            name = argv[-1]
+            events.append((f"start-{name}", None))
+            return TimedOutProcess() if name == "slow.py" else ReadyProcess()
+
+        shards = {"slow": ("slow.py",), "ready": ("ready.py",)}
+        monkeypatch.setattr(
+            lr10_runner, "_create_temp_roots",
+            lambda value: self._roots(tmp_path, value))
+        _, results = lr10_runner.run_shards(
+            shards, popen_factory=popen, clock=lambda: 100.0)
+
+        assert [result.status for result in results] == ["timeout", "passed"]
+        assert results[0].stdout == "partial-out-after-term-complete\n"
+        assert results[0].stderr == "partial-err-after-term-complete\n"
+        assert results[1].stdout == "ready-out\n"
+        assert events.index(("start-ready.py", None)) < next(
+            index for index, event in enumerate(events)
+            if event[0].startswith("communicate"))
+        assert ("terminate-slow", None) in events
+        assert ("kill-slow", None) in events
+        assert events[2] == ("communicate-slow", 1500.0)
+
+    def test_popen_failure_does_not_abandon_started_or_later_shards(
+            self, tmp_path, monkeypatch):
+        events = []
+
+        class Process:
+            returncode = 0
+
+            def __init__(self, name):
+                self.name = name
+
+            def communicate(self, timeout):
+                events.append((f"collect-{self.name}", timeout))
+                return f"{self.name}-out", f"{self.name}-err"
+
+        def popen(argv, **_kwargs):
+            name = argv[-1]
+            events.append((f"start-{name}", None))
+            if name == "second.py":
+                raise OSError("synthetic startup failure")
+            return Process(name)
+
+        shards = {
+            "first": ("first.py",),
+            "second": ("second.py",),
+            "third": ("third.py",),
+        }
+        monkeypatch.setattr(
+            lr10_runner, "_create_temp_roots",
+            lambda value: self._roots(tmp_path, value))
+        _, results = lr10_runner.run_shards(
+            shards, popen_factory=popen, clock=lambda: 100.0)
+
+        assert [result.status for result in results] == [
+            "passed", "startup-error", "passed"]
+        assert "synthetic startup failure" in results[1].stderr
+        assert [event[0] for event in events[:3]] == [
+            "start-first.py", "start-second.py", "start-third.py"]
+        assert "collect-first.py" in [event[0] for event in events]
+        assert "collect-third.py" in [event[0] for event in events]
+
+    def test_nonzero_shard_still_collects_every_result(
+            self, tmp_path, monkeypatch):
+        collected = []
+
+        class Process:
+            def __init__(self, name, returncode):
+                self.name = name
+                self.returncode = returncode
+
+            def communicate(self, timeout):
+                collected.append(self.name)
+                return self.name, ""
+
+        processes = iter([Process("failed", 2), Process("passed", 0)])
+        shards = {"failed": ("failed.py",), "passed": ("passed.py",)}
+        monkeypatch.setattr(
+            lr10_runner, "_create_temp_roots",
+            lambda value: self._roots(tmp_path, value))
+        _, results = lr10_runner.run_shards(
+            shards, popen_factory=lambda *_args, **_kwargs: next(processes),
+            clock=lambda: 100.0)
+
+        assert collected == ["failed", "passed"]
+        assert [result.status for result in results] == ["failed", "passed"]
+
+    def test_output_order_is_deterministic_and_omits_temp_paths(self, capsys):
+        shards = {"zeta": ("z.py",), "alpha": ("a.py", "b.py")}
+        results = [
+            lr10_runner.ShardResult(
+                "01-zeta", "zeta", ("z.py",), "passed", 0,
+                "z-out\n", "z-err\n", 1.25),
+            lr10_runner.ShardResult(
+                "02-alpha", "alpha", ("a.py", "b.py"), "passed", 0,
+                "a-out\n", "a-err\n", 2.5),
+        ]
+
+        lr10_runner._render_shard_map(shards)
+        assert lr10_runner._render_results(results) == 0
+        output = capsys.readouterr().out
+
+        assert ("1 Taskplane Fix worker/native agent; "
+                "5 internal parallel pytest subprocess shards") in output
+        assert output.index("01-zeta") < output.index("02-alpha")
+        assert output.index("z.py") < output.index("a.py") < output.index("b.py")
+        assert "lr10-runner-" not in output
+        assert "temp=" not in output
+
+    def test_temp_roots_are_validated_direct_non_symlink_children(
+            self, tmp_path):
+        parent = tmp_path / "parent"
+        child = parent / "01-valid"
+        outside = tmp_path / "outside"
+        parent.mkdir()
+        child.mkdir()
+        outside.mkdir()
+
+        assert lr10_runner._validate_child_root(parent, child) == child.resolve()
+        with pytest.raises(RuntimeError, match="direct child"):
+            lr10_runner._validate_child_root(parent, outside)
+
+        link = parent / "02-link"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks are unavailable")
+        with pytest.raises(RuntimeError, match="must not be a symlink"):
+            lr10_runner._validate_child_root(parent, link)
+
+    def test_streams_stay_separate_and_duration_and_deadlines_are_recorded(
+            self, tmp_path, monkeypatch):
+        invocations = []
+        moments = iter([10.0, 10.0, 11.0, 12.5])
+
+        class Process:
+            returncode = 0
+
+            def communicate(self, timeout):
+                assert timeout == 1499.0
+                return "stdout-only", "stderr-only"
+
+        def popen(argv, **kwargs):
+            invocations.append((argv, kwargs))
+            return Process()
+
+        shards = {"only": ("only.py",)}
+        monkeypatch.setattr(
+            lr10_runner, "_create_temp_roots",
+            lambda value: self._roots(tmp_path, value))
+        _, results = lr10_runner.run_shards(
+            shards, popen_factory=popen, clock=lambda: next(moments))
+
+        result = results[0]
+        assert result.stdout == "stdout-only"
+        assert result.stderr == "stderr-only"
+        assert result.duration_seconds == 2.5
+        kwargs = invocations[0][1]
+        assert kwargs["stdout"] is subprocess.PIPE
+        assert kwargs["stderr"] is subprocess.PIPE
+        assert kwargs["shell"] is False
+        assert "TASKPLANE_TASK" not in kwargs["env"]
+        assert lr10_runner.SHARD_TIMEOUT_SECONDS == 1500
+        assert lr10_runner.AGGREGATE_TIMEOUT_SECONDS == 1800
+        assert lr10_runner.CLEANUP_MARGIN_SECONDS == 300
