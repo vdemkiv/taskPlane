@@ -260,8 +260,8 @@ def validate_archive(path: Path, version: str) -> tuple:
                 "Claude manifest version must match release runtime version")
         require(release["PREVIOUS_VERSION"] == "2.17.20",
                 "forward repair must preserve v2.17.20 as the previous release")
-        require(release["COMPATIBILITY_PREVIOUS_VERSION"] == "2.17.26",
-                "forward repair compatibility N-1 must be v2.17.26")
+        require(release["COMPATIBILITY_PREVIOUS_VERSION"] == "2.18.0",
+                "forward repair compatibility N-1 must be v2.18.0")
         require(release["HISTORICAL_GRAPH_REVISION"] ==
                 "2757822ede49177fc52de8c173302286364d6206",
                 "forward repair must preserve historical graph revision 2757822e")

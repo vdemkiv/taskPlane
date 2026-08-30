@@ -414,6 +414,7 @@ class TestDeclaredButNotReleasedCannotRot(unittest.TestCase):
         self.assertEqual(
             set(gate.NOT_RELEASED), {
                 "2.17.22", "2.17.23", "2.17.24", "2.17.25", "2.17.26",
+                "2.18.0",
             }
         )
         for version, info in gate.NOT_RELEASED.items():

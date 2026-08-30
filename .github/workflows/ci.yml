@@ -79,6 +79,7 @@ jobs:
       # a moved/compromised tag cannot change what runs in the release-trust path.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -220,6 +221,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -243,6 +245,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -359,6 +362,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # S4/S7 needs the first activation commit and its measured parent.
           fetch-depth: 0
           persist-credentials: false
@@ -397,6 +401,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -465,6 +470,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -487,6 +493,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: JSON manifests parse and versions agree
         run: |
@@ -629,6 +636,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -679,6 +687,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -719,6 +728,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -759,6 +769,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           fetch-tags: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -781,3 +792,88 @@ jobs:
         run: python3 scripts/ci_release_tags.py
       - name: The gate itself catches planted drift (it is not a no-op)
         run: python3 -m pytest taskplane/tests/test_release_tags.py -q
+
+  # This is the single blocking pull-request proof. Every prerequisite above
+  # checks out the actual PR head; the aggregate then binds their conclusions
+  # and its own checkout to that same immutable SHA. GitHub's synthetic merge
+  # ref may be validated separately, but can never satisfy this proof.
+  pr-head-sha-proof:
+    name: exact PR head SHA blocking proof
+    if: always() && github.event_name == 'pull_request'
+    needs:
+      - tests
+      - python-quality
+      - zero-token-corpus
+      - wave3-contracts
+      - tests-portability
+      - validate-plugin
+      - docs-truth
+      - codex-parity
+      - codex-host
+      - release-tags
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind every blocking result to the exact PR head SHA
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+          QUALITY_RESULT: ${{ needs.python-quality.result }}
+          CORPUS_RESULT: ${{ needs.zero-token-corpus.result }}
+          GRAPH_RESULT: ${{ needs.wave3-contracts.result }}
+          PORTABILITY_RESULT: ${{ needs.tests-portability.result }}
+          PLUGIN_RESULT: ${{ needs.validate-plugin.result }}
+          DOCS_RESULT: ${{ needs.docs-truth.result }}
+          PARITY_RESULT: ${{ needs.codex-parity.result }}
+          HOST_RESULT: ${{ needs.codex-host.result }}
+          HISTORY_RESULT: ${{ needs.release-tags.result }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+
+          expected = os.environ["EXPECTED_HEAD_SHA"]
+          checked = subprocess.run(
+              ["git", "rev-parse", "HEAD"], check=True, capture_output=True,
+              text=True, encoding="utf-8",
+          ).stdout.strip()
+          names = (
+              "tests", "python-quality", "zero-token-corpus",
+              "wave3-contracts", "tests-portability", "validate-plugin",
+              "docs-truth", "codex-parity", "codex-host", "release-tags",
+          )
+          conclusions = (
+              os.environ["TESTS_RESULT"], os.environ["QUALITY_RESULT"],
+              os.environ["CORPUS_RESULT"], os.environ["GRAPH_RESULT"],
+              os.environ["PORTABILITY_RESULT"], os.environ["PLUGIN_RESULT"],
+              os.environ["DOCS_RESULT"], os.environ["PARITY_RESULT"],
+              os.environ["HOST_RESULT"], os.environ["HISTORY_RESULT"],
+          )
+          receipts = [
+              {"name": name, "sha": expected, "conclusion": conclusion}
+              for name, conclusion in zip(names, conclusions)
+          ]
+          proof = {
+              "schema": "taskplane.pr-head-ci-proof/v1",
+              "event": "pull_request",
+              "pr_head_sha": expected,
+              "checked_sha": checked,
+              "synthetic_merge_substitutes": False,
+              "receipts": receipts,
+          }
+          proof["fingerprint"] = hashlib.sha256(
+              json.dumps(proof, sort_keys=True, separators=(",", ":")).encode()
+          ).hexdigest()
+          print(json.dumps(proof, sort_keys=True))
+          if checked != expected:
+              raise SystemExit("checkout is not github.event.pull_request.head.sha")
+          failed = [row for row in receipts if row["conclusion"] != "success"]
+          if failed:
+              raise SystemExit(f"blocking PR-head checks are not green: {failed}")
+          PY
