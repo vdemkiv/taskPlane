@@ -26,8 +26,9 @@ from typing import NamedTuple, Sequence
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
 SCHEMA = "taskplane.local-ci-equivalent/v1"
-INVENTORY_VERSION = "REL-2181/1"
+INVENTORY_VERSION = "REL-2181/2"
 RECURSION_GUARD = "TASKPLANE_LOCAL_CI_ACTIVE"
+PACKAGE_TEMP_ROOT = "TASKPLANE_PACKAGE_TEMP_ROOT"
 TEMP_PREFIX = "taskplane-local-ci-"
 DEADLINE_SECONDS = 13_800
 CLEANUP_RESERVE_SECONDS = 600
@@ -44,11 +45,90 @@ class Check(NamedTuple):
     missing_tool: str | None = None
 
 
+PYTEST_SHARD_COUNT = 4
+PYTEST_CHECK_IDS = tuple(
+    f"pytest-shard-{index + 1}" for index in range(PYTEST_SHARD_COUNT)
+)
+# Content address of every repository-relative `path:estimated-byte-weight` row.
+# A file added, removed, renamed, or reweighted must deliberately refresh this
+# pin, so the complete suite cannot silently shrink or use stale balancing data.
+PYTEST_WEIGHT_SHA256 = "f88e01bc79259819af8211f7846d91b3c2eaffeded66d89802b126a9808c6aac"
+
+
+def pytest_inventory() -> tuple[str, ...]:
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "taskplane/tests/test_*.py"],
+        cwd=ROOT, check=True, capture_output=True, text=True, encoding="utf-8",
+    ).stdout.splitlines()
+    files = tuple(sorted(row for row in tracked if row))
+    present = tuple(sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "taskplane" / "tests").glob("test_*.py")
+        if path.is_file()
+    ))
+    if not files or files != present or len(files) != len(set(files)):
+        raise RunnerError("pytest inventory is missing, duplicate, or untracked")
+    return files
+
+
+def pytest_weights(files: Sequence[str]) -> dict[str, int]:
+    weights = {
+        path: max(1, (ROOT / path).stat().st_size)
+        for path in files
+    }
+    rows = "\n".join(f"{path}:{weights[path]}" for path in sorted(weights))
+    observed = hashlib.sha256(rows.encode()).hexdigest()
+    if observed != PYTEST_WEIGHT_SHA256:
+        raise RunnerError(
+            "pytest weight inventory is absent or stale: "
+            f"expected {PYTEST_WEIGHT_SHA256}, observed {observed}"
+        )
+    return weights
+
+
+def partition_pytest_files(
+    files: Sequence[str], weights: dict[str, int], shard_count: int,
+) -> tuple[tuple[str, ...], ...]:
+    if len(files) != len(set(files)):
+        raise RunnerError("duplicate pytest file inventory row")
+    if set(files) != set(weights) or any(
+        not isinstance(weight, int) or weight <= 0 for weight in weights.values()
+    ):
+        raise RunnerError("pytest weight inventory is absent or stale")
+    if shard_count < 2 or len(files) < shard_count:
+        raise RunnerError("pytest partitions must all be nonempty")
+    partitions: list[list[str]] = [[] for _ in range(shard_count)]
+    loads = [0] * shard_count
+    for path in sorted(files, key=lambda row: (-weights[row], row)):
+        target = min(range(shard_count), key=lambda index: (loads[index], index))
+        partitions[target].append(path)
+        loads[target] += weights[path]
+    largest = max(weights.values())
+    if max(loads) - min(loads) > largest:
+        raise RunnerError("pytest partition estimate is unbalanced")
+    result = tuple(tuple(sorted(partition)) for partition in partitions)
+    assigned = [path for partition in result for path in partition]
+    if sorted(assigned) != sorted(files) or len(assigned) != len(set(assigned)):
+        raise RunnerError("pytest file assignment is missing or duplicate")
+    return result
+
+
+PYTEST_FILES = pytest_inventory()
+PYTEST_WEIGHTS = pytest_weights(PYTEST_FILES)
+PYTEST_PARTITIONS = partition_pytest_files(
+    PYTEST_FILES, PYTEST_WEIGHTS, PYTEST_SHARD_COUNT,
+)
+PYTEST_CHECKS = tuple(
+    Check(check_id, (PYTHON, "-m", "pytest", *partition, "-q"))
+    for check_id, partition in zip(PYTEST_CHECK_IDS, PYTEST_PARTITIONS)
+)
+
+
 INVENTORY = (
     Check("compile-import", (PYTHON, __file__, "--internal", "compile-import")),
     Check("version-verify", (PYTHON, "taskplane/tp.py", "version", "--verify")),
     Check("zero-token-corpus", (PYTHON, __file__, "--internal", "zero-token-corpus")),
-    Check("pytest-complete", (PYTHON, "-m", "pytest", "taskplane/tests", "-q")),
+    *PYTEST_CHECKS,
     Check("release-surface", (PYTHON, "scripts/ci_evals.py", "--verify-release-surface", "--json")),
     Check("release-history", (PYTHON, "scripts/ci_release_tags.py", "--json")),
     Check("unittest-canary", (PYTHON, "-m", "unittest", "taskplane.tests.test_runner_isolation.TestUnittestRunnerIsolation", "-v")),
@@ -64,10 +144,10 @@ INVENTORY = (
 )
 
 SHARDS = (
-    ("compile-import", "pytest-complete", "generated-lens-drift", "ruff"),
-    ("version-verify", "release-surface", "generated-cli-drift", "mypy"),
-    ("zero-token-corpus", "release-history", "package-openai", "host-platform"),
-    ("unittest-canary", "loop-cost", "import-cycle-history", "package-claude"),
+    (PYTEST_CHECK_IDS[0], "compile-import", "generated-lens-drift", "ruff"),
+    (PYTEST_CHECK_IDS[1], "version-verify", "release-surface", "generated-cli-drift", "mypy"),
+    (PYTEST_CHECK_IDS[2], "zero-token-corpus", "release-history", "package-openai", "host-platform"),
+    (PYTEST_CHECK_IDS[3], "unittest-canary", "loop-cost", "import-cycle-history", "package-claude"),
 )
 CHECKS = {check.id: check for check in INVENTORY}
 
@@ -98,6 +178,7 @@ def _safe_env(shard_root: Path) -> dict[str, str]:
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        PACKAGE_TEMP_ROOT: str(shard_root.resolve(strict=True)),
         RECURSION_GUARD: "1",
     }
     if os.name == "nt":
@@ -198,6 +279,15 @@ def build_report(source_sha: str, results: Sequence[dict[str, object]], *, check
         "checkout_mutated": checkout_mutated,
         "failed_checks": failed,
         "remote_required_checks": remote,
+        "pytest_partition": [
+            {
+                "check_id": check_id,
+                "estimated_weight": sum(PYTEST_WEIGHTS[path] for path in partition),
+                "file_count": len(partition),
+                "files": list(partition),
+            }
+            for check_id, partition in zip(PYTEST_CHECK_IDS, PYTEST_PARTITIONS)
+        ],
         "receipts": receipts,
     }
     report["fingerprint"] = hashlib.sha256(canonical_json(report).encode()).hexdigest()

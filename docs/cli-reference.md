@@ -812,6 +812,12 @@ Positional arguments:
 
 - `decision` (required; choices: `retry`, `pass`, `skip`, `defer`, `abort`)
 
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--accept-producer-receipt-outage` | flag | accept only the exact fingerprint supplied alongside --by |
+| `--by` | BY | human approving an exact producer-receipt outage |
+| `--outage-fingerprint` | OUTAGE_FINGERPRINT | exact current evaluator outage fingerprint; replay-safe |
+
 ## `tp.py loop retro`
 
 print the loop retrospective

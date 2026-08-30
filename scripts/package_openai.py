@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import hashlib
 import importlib.util
 import io
@@ -46,6 +46,7 @@ MANIFEST_PATH = ROOT / ".codex-plugin" / "plugin.json"
 ARCHIVE_ROOT = "taskplane"
 FIXED_ZIP_TIME = (2020, 1, 1, 0, 0, 0)
 OPENAI_EXCLUDED_SKILLS = {"tp-tag"}
+PACKAGE_TEMP_ROOT = "TASKPLANE_PACKAGE_TEMP_ROOT"
 
 CATEGORIES = {
     "Productivity",
@@ -140,6 +141,29 @@ class PackageError(RuntimeError):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise PackageError(message)
+
+
+def approved_output_roots(environ: Mapping[str, str] | None = None) -> tuple[Path, ...]:
+    env = os.environ if environ is None else environ
+    configured = env.get(PACKAGE_TEMP_ROOT)
+    temporary = Path(configured) if configured else Path(tempfile.gettempdir())
+    try:
+        if temporary.is_symlink():
+            raise PackageError("approved temporary root must not be a symlink")
+        resolved = temporary.resolve(strict=True)
+    except OSError as exc:
+        raise PackageError(f"approved temporary root is invalid: {exc}") from exc
+    require(resolved.is_dir(), "approved temporary root must be a directory")
+    roots = (ROOT.resolve(), Path("/tmp").resolve(), resolved)
+    return tuple(dict.fromkeys(roots))
+
+
+def require_approved_output(path: Path, roots: Sequence[Path]) -> None:
+    resolved = path.resolve()
+    require(
+        any(resolved == root or resolved.is_relative_to(root) for root in roots),
+        "output path must stay inside the repository or approved temporary root",
+    )
 
 
 def load_json_object(path: Path, label: str) -> dict:
@@ -1353,10 +1377,7 @@ def main() -> int:
     try:
         if args.write_compatibility_receipt is not None:
             receipt_path = args.write_compatibility_receipt.resolve()
-            temporary_root = Path("/tmp").resolve()
-            require(receipt_path.is_relative_to(ROOT) or
-                    receipt_path.is_relative_to(temporary_root),
-                    "compatibility receipt path must stay inside the repository or /tmp")
+            require_approved_output(receipt_path, approved_output_roots())
             receipt = produce_release_compatibility_receipt(
                 expected_source_sha=git_head(),
             )
@@ -1379,9 +1400,7 @@ def main() -> int:
         validate_skills(manifest)
         files = package_files(manifest)
         output_dir = args.output_dir.resolve()
-        temporary_root = Path("/tmp").resolve()
-        require(output_dir == ROOT / "dist" or output_dir.is_relative_to(ROOT) or output_dir.is_relative_to(temporary_root),
-                "output directory must stay inside the repository or /tmp")
+        require_approved_output(output_dir, approved_output_roots())
         output = output_dir / f"{manifest['name']}-{manifest['version']}-openai.zip"
         write_zip(files, output)
         member_count, uncompressed = validate_archive(output)

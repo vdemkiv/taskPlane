@@ -101,9 +101,9 @@ sys.path.insert(0, os.path.join(HERE, "taskplane"))
 # never measurements. `engine_entrypoints: 10` and `gates: 4` came from a
 # hand-written counter in the driver, and both were simply WRONG about the
 # engine they claimed to pin: the driver makes ELEVEN entry-point calls (the
-# hand count forgot `loop.init`) and the engine emits THREE `loop_gate`
-# events, not four (the fourth was a `+ 1` in the return statement). Now that
-# they read the engine, they read 11 and 3.
+# hand count forgot `loop.init`). The current lifecycle emits TWO measured
+# `loop_gate` events; the former pin of three was stale after gate
+# consolidation. Now that the ratchet reads the engine, it reads 11 and 2.
 #
 # This is not a cost increase and must not be read as one. Nothing about the
 # loop changed here; the instrument started working. The pins move to what
@@ -111,7 +111,7 @@ sys.path.insert(0, os.path.join(HERE, "taskplane"))
 PINS = {
     "suite_executions": 1,
     "engine_entrypoints": 11,
-    "gates": 3,
+    "gates": 2,
     # Review routing surface. Measured 7.55 / 19 at the lenses 2.0 landing;
     # pinned just above so ordinary noise does not fail CI but a real
     # widening does. TIGHTENED after D-0006 stopped content detectors
