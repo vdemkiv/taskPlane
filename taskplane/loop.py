@@ -71,6 +71,7 @@ if __package__:
     from . import brief_projection
     from . import delivery_policy
     from . import dispatch_telemetry
+    from . import em_outage
     from . import evaluation_output as evaluation_output
     from . import lens_route_policy
     from . import plan_topology
@@ -81,6 +82,7 @@ else:  # pragma: no cover - direct CLI module loading
     import brief_projection
     import delivery_policy
     import dispatch_telemetry
+    import em_outage
     import lens_route_policy
     import plan_topology
     import producer_observation as producer_observation_policy
@@ -5614,6 +5616,14 @@ def wave(ws: str) -> dict:
                                   "shared_owner": "scope"})
         ready, held = selected, [*held, *remaining]
 
+    for ready_task in ready:
+        if staged_refusal := _staged_dispatch_refusal(ready_task):
+            tp.trace(ws, "loop_staged_dispatch_blocked",
+                     task=ready_task.get("id"), surface="wave",
+                     reason="mandatory_replan_required")
+            return {**staged_refusal, "parallel": True,
+                    "wave": [], "held": held}
+
     wave_wait_policy = (
         event_wait_policy("execute-wave", len(ready)) if ready else None)
     wave_wait_invocation = (
@@ -5780,6 +5790,10 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     if t.get("status") not in ("pending", "running"):
         return {"error": f"task {task_id} is {t.get('status')} — "
                          "not claimable"}
+    if staged_refusal := _staged_dispatch_refusal(t):
+        tp.trace(ws, "loop_staged_dispatch_blocked", task=task_id,
+                 surface="claim", reason="mandatory_replan_required")
+        return staged_refusal
     contract = tp.build_contract(
         f"EXECUTE: {t['id']}", scope=t.get("scope"),
         test_command=t.get("tests"), plan_minted=True, regression_gate=True,
@@ -6017,6 +6031,14 @@ def next_action(
                          f"Re-run the plan step (`loop gate fail`, then "
                          f"re-plan) or start over with `loop init`.",
                 "step": step, "status": status(ws)}
+
+    if step == "execute":
+        current_dispatch_task = _current_task(state)
+        if staged_refusal := _staged_dispatch_refusal(current_dispatch_task):
+            tp.trace(ws, "loop_staged_dispatch_blocked",
+                     task=(current_dispatch_task or {}).get("id"),
+                     surface="next", reason="mandatory_replan_required")
+            return {**staged_refusal, "status": status(ws)}
 
     # Per-task steps run in the task's own workspace when one was claimed.
     act_ws = ws
@@ -7409,6 +7431,44 @@ def _first_unsettled_task_index(state: Mapping) -> int | None:
     return None
 
 
+_STAGED_TASK_DISPATCH_GUARD_SCHEMA = \
+    "taskplane.staged-task-dispatch-guard/v1"
+
+
+def _staged_dispatch_refusal(task: Mapping | None) -> dict | None:
+    """Refuse the exact stage-two release task until Plan re-gates it.
+
+    The first-stage Plan has to remain valid under the incumbent 3,600s
+    engine while EM-OUTAGE is built.  Dependency blocking owns that interval;
+    after this engine is integrated, this marker prevents a status edit or a
+    direct serial/wave/claim call from dispatching REL-2181 before the
+    mandatory same-run replan removes the marker and seals 14,400s authority.
+    """
+    if not isinstance(task, Mapping):
+        return None
+    guard = task.get("staged_dispatch_guard")
+    if guard is None:
+        return None
+    exact = (
+        isinstance(guard, Mapping)
+        and guard.get("schema") == _STAGED_TASK_DISPATCH_GUARD_SCHEMA
+        and guard.get("reason") == "mandatory_replan_required"
+        and str(guard.get("task") or "") == "REL-2181"
+        and str(guard.get("required_predecessor") or "") == "EM-OUTAGE"
+        and str(task.get("id") or "") == "REL-2181"
+    )
+    return {
+        "error": ("mandatory_replan_required: REL-2181 cannot dispatch "
+                  "until the bounded same-run Plan reanchor removes its "
+                  "exact staged-dispatch marker" if exact else
+                  "staged task dispatch guard is malformed — mandatory "
+                  "replan required"),
+        "reason": "mandatory_replan_required",
+        "task": str(task.get("id") or ""),
+        "step": "execute",
+    }
+
+
 def _task_graph_dod(ws: str, state: dict, task: dict) -> dict:
     """As-built dependency proof for one task.
 
@@ -8406,10 +8466,32 @@ def submit(ws: str, outcome: str, note: str = "",
                     _collect_zero_lens_evaluate_before_guidance(
                         ws, act_ws, state, task, step=step))
             except Exception as exc:
+                if step == "em" and isinstance(
+                        exc, producer_observation_policy.
+                        ProducerObservationError):
+                    outage = _record_em_producer_receipt_outage(
+                        ws, state, task, exc)
+                    if not outage.get("error"):
+                        return {
+                            "error": "runtime em producer receipt is "
+                                     "unavailable; the valid aggregate review "
+                                     "was sealed for exact human resolution",
+                            "submitted": False, "transitioned": False,
+                            "reason_code": em_outage.REASON_CODE,
+                            "outage_fingerprint": outage["fingerprint"],
+                            "resolution": "loop resolve pass --by <human> "
+                                          "--accept-producer-receipt-outage "
+                                          "--outage-fingerprint "
+                                          + outage["fingerprint"],
+                            "contract_cleanup": outage.get(
+                                "contract_cleanup"),
+                        }
                 return {
                     "error": f"runtime {step} producer collection failed: "
                              f"{exc.__class__.__name__}: {exc}",
                     "submitted": False, "transitioned": False,
+                    **({"outage": outage} if step == "em" and
+                       'outage' in locals() else {}),
                 }
         runtime_guidance = runtime_eval.guide_loop(ws, task_id=task_id)
         if runtime_guidance.get("error"):
@@ -9535,6 +9617,247 @@ def _signoff_gate_dod(ws: str, state: dict) -> dict:
     }
 
 
+def _em_outage_repository_identity(ws: str) -> dict:
+    """Return only durable repository identity, never caller assertions."""
+    try:
+        locator = runtime_storage.load_workspace_locator(ws)
+    except Exception:
+        locator = None
+    identity = {}
+    if isinstance(locator, Mapping):
+        for key in ("repo_id", "repository_key", "run_id", "worktree_id"):
+            if locator.get(key) not in (None, ""):
+                identity[key] = str(locator[key])
+    git_common = tp._run(["git", "rev-parse", "--git-common-dir"], cwd=ws)
+    if git_common.returncode == 0 and str(git_common.stdout or "").strip():
+        common = str(git_common.stdout).strip()
+        if not os.path.isabs(common):
+            common = os.path.join(ws, common)
+        identity["git_common_dir"] = os.path.realpath(common)
+    return identity
+
+
+def _em_outage_candidate(
+        ws: str, state: dict, *, contract: Mapping[str, object] | None = None
+        ) -> tuple[dict, dict, dict]:
+    """Re-derive the exact valid EM candidate and its terminal DoD."""
+    if state.get("step") != "em":
+        raise em_outage.EmOutageError("loop is not at final engineering review")
+    task = _current_task(state)
+    task_ref = str((task or {}).get("id") or "engineering-signoff")
+    binding = review_kernel_binding(state, "em", task)
+    if not isinstance(binding, Mapping) or not binding.get("run_id"):
+        raise em_outage.EmOutageError("EM ReviewKernel binding is missing")
+    active = dict(contract or _worker_stage_contract(ws, "em", task))
+    lifecycle = active.get("worker_lifecycle") or {}
+    if active.get("worker_scoped") is not True or \
+            lifecycle.get("stage") != "em" or \
+            str(lifecycle.get("task") or "") != task_ref:
+        raise em_outage.EmOutageError("exact EM worker contract is missing")
+    slot = str(lifecycle.get("slot") or active.get("task_slot") or "")
+    expected_worker = str(lifecycle.get("expected_task_name") or "")
+    dispatch = active.get("producer_dispatch") or {}
+    material = producer_output_identity(
+        ws, state, task, "em", active_contract=active)
+
+    # All product, mechanical, zero-lens, output, graph, requirement, test,
+    # and final-signoff checks run before an outage can even be represented.
+    signoff_evidence, errors = _signoff_evidence_binding(ws, state)
+    if errors or signoff_evidence is None:
+        raise em_outage.EmOutageError(
+            "EM has non-producer blockers: " + "; ".join(errors))
+    try:
+        import review as _review
+        kernel_ws = str(binding.get("workspace") or ws)
+        kernel = _review._load_state(kernel_ws, str(binding["run_id"]))
+    except Exception as exc:
+        raise em_outage.EmOutageError(
+            "EM ReviewKernel identity is unreadable") from exc
+    if kernel.get("status") != "complete" or kernel.get("stage") != "review" \
+            or kernel.get("expected_lenses") != [] or kernel.get("slots") != []:
+        raise em_outage.EmOutageError(
+            "EM outage recovery requires one complete zero-lens ReviewKernel")
+    kernel_identity = {
+        "binding": dict(binding),
+        "schema": kernel.get("schema"),
+        "run_id": kernel.get("run_id"),
+        "stage": kernel.get("stage"),
+        "status": kernel.get("status"),
+        "expected_lenses": [],
+        "slots": [],
+        "revision": kernel.get("revision"),
+        "delivery_mode_receipt": kernel.get("delivery_mode_receipt"),
+        "zero_lens_evaluation": kernel.get("zero_lens_evaluation"),
+    }
+    findings_path = runtime_storage.review_public_path(ws, "findings.json")
+    report_path = runtime_storage.review_public_path(ws, "report.md")
+    hashes = em_outage.output_hashes(findings_path, report_path)
+    identity = em_outage.outage_identity(
+        repository=_em_outage_repository_identity(ws),
+        store=os.path.realpath(tp.store_root(ws)),
+        worktree=os.path.realpath(ws),
+        run_id=str(binding["run_id"]), slot=slot,
+        expected_worker=expected_worker,
+        output_contract_fingerprint=str(
+            material["output_contract_fingerprint"]),
+        producer_dispatch_fingerprint=str(dispatch.get("fingerprint") or ""),
+        integration_revision=str(material["source_sha"] or ""),
+        outputs=hashes, review_kernel=kernel_identity,
+        task=task_ref, accepted_drift="D-0014")
+    terminal_contract = {
+        "task_id": active.get("task_id"),
+        "task_slot": active.get("task_slot"),
+        "worker_scoped": active.get("worker_scoped"),
+        "worker_lifecycle": dict(lifecycle),
+        "producer_dispatch": dict(dispatch),
+    }
+    return identity, terminal_contract, signoff_evidence
+
+
+def _record_em_producer_receipt_outage(
+        ws: str, state: dict, task: dict | None,
+        failure: Exception) -> dict:
+    """Seal a valid aggregate EM when the sole failure is its host receipt."""
+    del state, task
+    if str(failure).strip() != "missing host producer observation":
+        return {"error": "EM producer failure is not the one allowed outage",
+                "detail": str(failure)}
+    try:
+        with mutate(ws) as locked:
+            if locked is None or locked.get("step") != "em":
+                return {"error": "EM state changed before outage sealing"}
+            identity, terminal_contract, _ = _em_outage_candidate(ws, locked)
+            existing = locked.get("engineering_review_outage")
+            if isinstance(existing, Mapping):
+                if existing.get("identity") != identity or \
+                        existing.get("consumed") is True:
+                    return {"error": "a different or consumed EM outage "
+                                     "already exists"}
+            else:
+                locked["engineering_review_outage"] = {
+                    "schema": em_outage.OUTAGE_SCHEMA,
+                    "reason_code": em_outage.REASON_CODE,
+                    "identity": identity,
+                    "terminal_contract": terminal_contract,
+                    "consumed": False,
+                }
+    except Exception as exc:
+        return {"error": "EM outage could not be sealed fail-closed: "
+                         f"{exc.__class__.__name__}: {exc}"}
+    try:
+        cleanup = tp.release_worker_contracts_for_gate(
+            ws, stage="em", task=str(identity["task"]),
+            outcome="success",
+            submission_status="producer_receipt_unavailable")
+    except Exception as exc:
+        cleanup = {"status": "quarantine_failed",
+                   "error": f"{exc.__class__.__name__}: {exc}"}
+    tp.trace(ws, "em_producer_receipt_outage_sealed",
+             fingerprint=identity["fingerprint"],
+             reason=em_outage.REASON_CODE,
+             contract_cleanup=bool(cleanup))
+    return {"fingerprint": identity["fingerprint"],
+            "identity": identity, "contract_cleanup": cleanup}
+
+
+def _em_outage_control_plane_identity(ws: str, state: dict) -> dict:
+    """Authenticate the slot-less loop controller against live run identity."""
+    if tp.task_slot() is not None:
+        raise em_outage.EmOutageError(
+            "worker TASKPLANE_TASK context cannot resolve final EM")
+    if tp.load_active(ws) is not None:
+        raise em_outage.EmOutageError(
+            "a worker-scoped or legacy contract cannot act as control plane")
+    run_binding = _stage_read_run_binding(state)
+    repository = _em_outage_repository_identity(ws)
+    material = {
+        "schema": em_outage.CONTROL_PLANE_SCHEMA,
+        "authority": "slotless-loop-control-plane",
+        "repository": repository,
+        "store": os.path.realpath(tp.store_root(ws)),
+        "worktree": os.path.realpath(ws),
+        "run_binding": dict(run_binding) if isinstance(
+            run_binding, Mapping) else None,
+    }
+    material["fingerprint"] = hashlib.sha256(
+        tp.canonical_json_bytes(material)).hexdigest()
+    return material
+
+
+def _resolve_em_producer_receipt_outage(
+        ws: str, *, by: str | None, accept: bool,
+        supplied_fingerprint: str | None) -> dict:
+    """CAS-consume one current aggregate outage under the loop-state lock."""
+    actor = str(by or "").strip()
+    supplied = str(supplied_fingerprint or "").strip()
+    if not accept or not actor or not supplied:
+        return {"error": "EM producer-receipt acceptance requires --by, "
+                         "--accept-producer-receipt-outage, and the exact "
+                         "current --outage-fingerprint"}
+    try:
+        with mutate(ws) as state:
+            if state is None or state.get("step") != "em":
+                return {"error": "no current final-EM outage to resolve"}
+            state_before = json.loads(json.dumps(state))
+            outage = state.get("engineering_review_outage")
+            if not isinstance(outage, Mapping) or outage.get("consumed") is True:
+                return {"error": "no unconsumed final-EM outage to resolve"}
+            sealed = em_outage.validate_outage_identity(
+                outage.get("identity") or {})
+            if sealed["fingerprint"] != supplied:
+                return {"error": "final-EM outage fingerprint is not the "
+                                 "exact current fingerprint"}
+            terminal_contract = outage.get("terminal_contract")
+            if not isinstance(terminal_contract, Mapping):
+                return {"error": "final-EM terminal contract is missing"}
+            current, _, signoff_evidence = _em_outage_candidate(
+                ws, state, contract=terminal_contract)
+            if current != sealed:
+                return {"error": "final-EM outage identity is stale; review "
+                                 "bytes, revision, contract, or kernel changed"}
+            authority = _em_outage_control_plane_identity(ws, state)
+            receipt = em_outage.resolution_receipt(
+                current, actor=actor, control_plane=authority)
+            audit_path = runtime_storage.review_public_path(
+                ws, "em-outage-resolution.json")
+            tp.atomic_write_json(audit_path, receipt, sort_keys=True)
+            if tp.load_json(audit_path, what="EM outage resolution audit") \
+                    != receipt:
+                return {"error": "EM outage audit did not persist exactly"}
+            resolved = dict(outage)
+            resolved["consumed"] = True
+            resolved["resolution"] = receipt
+            resolved["audit_path"] = audit_path
+            state["engineering_review_outage"] = resolved
+            evidence = dict(signoff_evidence)
+            evidence["producer_receipt_outage"] = receipt
+            evidence["accepted_drift"] = {
+                "id": "D-0014", "accepted_by": "human:vdemkiv"}
+            state["signoff_evidence"] = evidence
+            state["signoff_dod"] = dict(evidence["dod"])
+            state["engineering_review_outage_resolution"] = receipt
+            completion = _stage_loop_gate_completion(
+                ws, state, step="em", outcome="pass",
+                note="exact producer-receipt outage accepted")
+            state["step"] = "signoff"
+            try:
+                stage_transition = _stage_loop_transition(
+                    ws, state, from_step="em", to_step="signoff",
+                    completion=completion)
+            except Exception:
+                state.clear()
+                state.update(state_before)
+                raise
+    except Exception as exc:
+        return {"error": "final-EM outage resolution failed closed: "
+                         f"{exc.__class__.__name__}: {exc}"}
+    tp.trace(ws, "em_producer_receipt_outage_resolved",
+             fingerprint=supplied, actor=actor,
+             authority=authority["fingerprint"])
+    return {"step": "signoff", "outage_resolution": receipt,
+            "stage_transition": stage_transition, "status": status(ws)}
+
+
 def _record_design_contracts(ws: str, state: dict, contract: dict | None) -> list:
     """The sanctioned mechanical path for DESIGN-introduced contracts into
     the dependency graph (v2.3.0).
@@ -10092,6 +10415,12 @@ def resolve(
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
     state = load(ws)
+    if state is not None and state.get("step") == "em" and \
+            isinstance(state.get("engineering_review_outage"), Mapping) and \
+            decision == "pass" and accept_producer_receipt_outage is True:
+        return _resolve_em_producer_receipt_outage(
+            ws, by=by, accept=accept_producer_receipt_outage,
+            supplied_fingerprint=outage_fingerprint)
     if state is None or state["step"] != "escalated":
         return {"error": "nothing escalated to resolve"}
     t = _current_task(state)
