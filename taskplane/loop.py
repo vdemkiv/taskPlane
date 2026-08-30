@@ -9784,6 +9784,84 @@ def _em_outage_control_plane_identity(ws: str, state: dict) -> dict:
     return material
 
 
+def _prepare_em_outage_audit(
+        transaction: Mapping[str, object],
+        receipt: Mapping[str, object]) -> dict:
+    """Persist or re-use the exact immutable audit from a retained snapshot."""
+    path = str(transaction["path"])
+    prior = transaction.get("prior")
+    expected = transaction.get("expected")
+    if prior is not None and not isinstance(prior, bytes):
+        raise em_outage.EmOutageError("EM outage audit snapshot is invalid")
+    if not isinstance(expected, bytes):
+        raise em_outage.EmOutageError("EM outage audit transaction is invalid")
+    exists_now = os.path.lexists(path)
+    if exists_now != (prior is not None) or (
+            exists_now and em_outage.read_regular_bytes(path) != prior):
+        raise em_outage.EmOutageError(
+            "EM outage audit changed before persistence")
+    if prior is not None:
+        if prior != expected:
+            raise em_outage.EmOutageError(
+                "a different immutable EM outage audit already exists")
+        return dict(transaction)
+    # The durable primitive may replace the name before a directory fsync
+    # fails.  The caller already retained enough exact material to compare and
+    # restore that partial outcome.
+    tp.atomic_write_json(path, dict(receipt), sort_keys=True)
+    if em_outage.read_regular_bytes(path) != expected:
+        raise em_outage.EmOutageError(
+            "EM outage audit did not persist with exact bytes")
+    return dict(transaction)
+
+
+def _restore_em_outage_audit(transaction: Mapping[str, object]) -> None:
+    """Compare-and-restore only the audit written by this resolution attempt."""
+    path = str(transaction["path"])
+    prior = transaction.get("prior")
+    expected = transaction.get("expected")
+    if prior is not None and not isinstance(prior, bytes):
+        raise em_outage.EmOutageError("EM outage audit snapshot is invalid")
+    if not isinstance(expected, bytes):
+        raise em_outage.EmOutageError("EM outage audit transaction is invalid")
+    if not os.path.lexists(path):
+        if prior is not None:
+            tp.atomic_write_bytes(path, prior)
+        return
+    current = em_outage.read_regular_bytes(path)
+    if current == prior:
+        return
+    if current != expected:
+        raise em_outage.EmOutageError(
+            "EM outage audit changed during rollback")
+    if prior is None:
+        tp.safe_remove(path)
+        if os.path.lexists(path):
+            raise em_outage.EmOutageError(
+                "EM outage audit path survived rollback")
+    else:
+        tp.atomic_write_bytes(path, prior)
+        if em_outage.read_regular_bytes(path) != prior:
+            raise em_outage.EmOutageError(
+                "EM outage audit bytes did not roll back exactly")
+
+
+def _em_outage_resolution_persisted(
+        state: Mapping[str, object] | None, receipt: Mapping[str, object],
+        audit_path: str) -> bool:
+    """Recognize a commit that survived a late persistence exception."""
+    if not isinstance(state, Mapping) or state.get("step") != "signoff":
+        return False
+    outage = state.get("engineering_review_outage") or {}
+    evidence = state.get("signoff_evidence") or {}
+    return isinstance(outage, Mapping) and outage.get("consumed") is True \
+        and outage.get("resolution") == receipt \
+        and outage.get("audit_path") == audit_path \
+        and state.get("engineering_review_outage_resolution") == receipt \
+        and isinstance(evidence, Mapping) \
+        and evidence.get("producer_receipt_outage") == receipt
+
+
 def _resolve_em_producer_receipt_outage(
         ws: str, *, by: str | None, accept: bool,
         supplied_fingerprint: str | None) -> dict:
@@ -9794,6 +9872,10 @@ def _resolve_em_producer_receipt_outage(
         return {"error": "EM producer-receipt acceptance requires --by, "
                          "--accept-producer-receipt-outage, and the exact "
                          "current --outage-fingerprint"}
+    audit_transaction = None
+    audit_path = None
+    receipt = None
+    committed = False
     try:
         with mutate(ws) as state:
             if state is None or state.get("step") != "em":
@@ -9820,10 +9902,17 @@ def _resolve_em_producer_receipt_outage(
                 current, actor=actor, control_plane=authority)
             audit_path = runtime_storage.review_public_path(
                 ws, "em-outage-resolution.json")
-            tp.atomic_write_json(audit_path, receipt, sort_keys=True)
-            if tp.load_json(audit_path, what="EM outage resolution audit") \
-                    != receipt:
-                return {"error": "EM outage audit did not persist exactly"}
+            # Retain the exact previous bytes before touching the immutable
+            # public alias.  If any later transition or singleton persistence
+            # fails, the outer recovery restores this exact path state.
+            expected = json.dumps(
+                receipt, indent=1, sort_keys=True).encode("utf-8")
+            prior = (em_outage.read_regular_bytes(audit_path)
+                     if os.path.lexists(audit_path) else None)
+            audit_transaction = {
+                "path": audit_path, "prior": prior, "expected": expected}
+            audit_transaction = _prepare_em_outage_audit(
+                audit_transaction, receipt)
             resolved = dict(outage)
             resolved["consumed"] = True
             resolved["resolution"] = receipt
@@ -9848,9 +9937,24 @@ def _resolve_em_producer_receipt_outage(
                 state.clear()
                 state.update(state_before)
                 raise
+        committed = True
     except Exception as exc:
+        recovery_error = None
+        if audit_transaction is not None and not committed:
+            try:
+                durable = _load_raw(ws)
+                if not _em_outage_resolution_persisted(
+                        durable, receipt or {}, str(audit_path or "")):
+                    _restore_em_outage_audit(audit_transaction)
+            except Exception as recovery:
+                recovery_error = recovery
+        detail = f"{exc.__class__.__name__}: {exc}"
+        if recovery_error is not None:
+            detail += ("; audit recovery failed closed: "
+                       f"{recovery_error.__class__.__name__}: "
+                       f"{recovery_error}")
         return {"error": "final-EM outage resolution failed closed: "
-                         f"{exc.__class__.__name__}: {exc}"}
+                         + detail}
     tp.trace(ws, "em_producer_receipt_outage_resolved",
              fingerprint=supplied, actor=actor,
              authority=authority["fingerprint"])

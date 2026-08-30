@@ -104,6 +104,30 @@ def test_exact_output_hashing_rejects_symlinks_and_empty_files(tmp_path):
         em_outage.output_hashes(findings, report)
 
 
+def test_public_output_hashes_rejects_swap_after_path_attestation(
+        tmp_path, monkeypatch):
+    findings, report = _outputs(tmp_path)
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text('{"meta":{"gate":{"verdict":"fail"}}}')
+    real_lstat = em_outage.os.lstat
+    swapped = False
+
+    def swap_after_lstat(path):
+        nonlocal swapped
+        observed = real_lstat(path)
+        if os.path.abspath(os.fspath(path)) == os.path.abspath(findings) \
+                and not swapped:
+            os.replace(replacement, findings)
+            swapped = True
+        return observed
+
+    monkeypatch.setattr(em_outage.os, "lstat", swap_after_lstat)
+    with pytest.raises(em_outage.EmOutageError,
+                       match="output changed while hashing"):
+        em_outage.output_hashes(findings, report)
+    assert swapped is True
+
+
 def test_resolution_receipt_binds_human_control_plane_and_outage(tmp_path):
     identity = _identity(tmp_path)
     authority = {
@@ -304,6 +328,9 @@ def test_stage_transition_failure_rolls_back_consumption_and_signoff(
     identity = _identity(tmp_path)
     loop.save(ws, _outage_state(identity))
     _patch_resolution(monkeypatch, identity)
+    audit_path = Path(loop.runtime_storage.review_public_path(
+        ws, "em-outage-resolution.json"))
+    assert not os.path.lexists(audit_path)
     monkeypatch.setattr(
         loop, "_stage_loop_transition",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("stage red")))
@@ -316,6 +343,7 @@ def test_stage_transition_failure_rolls_back_consumption_and_signoff(
     assert state["step"] == "em"
     assert state["engineering_review_outage"]["consumed"] is False
     assert "signoff_evidence" not in state
+    assert not os.path.lexists(audit_path)
 
     changed = _identity(tmp_path, integration_revision="d" * 40)
     monkeypatch.setattr(loop, "_em_outage_candidate",
@@ -338,6 +366,41 @@ def test_stage_transition_failure_rolls_back_consumption_and_signoff(
         outage_fingerprint=identity["fingerprint"])
     assert "failed closed" in failed["error"]
     assert loop.load(ws)["step"] == "em"
+    assert not os.path.lexists(audit_path)
+
+
+def test_public_resolve_restores_exact_prior_audit_bytes_on_transition_failure(
+        tmp_path, monkeypatch):
+    ws = _git_ws(tmp_path)
+    identity = _identity(tmp_path)
+    loop.save(ws, _outage_state(identity))
+    _patch_resolution(monkeypatch, identity)
+    authority = {
+        "schema": em_outage.CONTROL_PLANE_SCHEMA,
+        "authority": "slotless-loop-control-plane",
+        "fingerprint": "e" * 64,
+    }
+    receipt = em_outage.resolution_receipt(
+        identity, actor="human:vdemkiv", control_plane=authority)
+    exact = json.dumps(receipt, indent=1, sort_keys=True).encode("utf-8")
+    audit_path = Path(loop.runtime_storage.review_public_path(
+        ws, "em-outage-resolution.json"))
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_bytes(exact)
+    monkeypatch.setattr(
+        loop, "_stage_loop_transition",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("stage red")))
+
+    failed = loop.resolve(
+        ws, "pass", by="human:vdemkiv",
+        accept_producer_receipt_outage=True,
+        outage_fingerprint=identity["fingerprint"])
+
+    assert "failed closed" in failed["error"]
+    assert audit_path.read_bytes() == exact
+    state = loop.load(ws)
+    assert state["step"] == "em"
+    assert state["engineering_review_outage"]["consumed"] is False
 
 
 @pytest.mark.parametrize("terminal_outcome", [

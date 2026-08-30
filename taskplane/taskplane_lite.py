@@ -124,6 +124,35 @@ def atomic_write_json(path: str, data, *, indent: int = 1,
             pass
 
 
+def atomic_write_bytes(path: str, data: bytes) -> None:
+    """Durably replace one file with exact caller-owned bytes.
+
+    This is the byte-preserving counterpart of :func:`atomic_write_json` for
+    recovery paths that must restore the exact prior artifact representation,
+    rather than merely an equivalent decoded JSON value.
+    """
+    if not isinstance(data, bytes):
+        raise TypeError("atomic_write_bytes requires bytes")
+    directory = os.path.dirname(path) or "."
+    _durable_makedirs(directory)
+    temporary = os.path.join(
+        directory, f".{os.path.basename(path)}.tmp.{os.getpid()}."
+        f"{secrets.token_hex(8)}")
+    try:
+        with open(temporary, "xb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(directory)
+    finally:
+        try:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        except OSError:
+            pass
+
+
 def _durable_makedirs(path: str) -> None:
     """Create a directory chain without acknowledging volatile ancestors.
 

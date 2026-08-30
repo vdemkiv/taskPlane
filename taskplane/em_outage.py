@@ -53,8 +53,10 @@ def read_regular_bytes(path: str) -> bytes:
     """Read one exact regular, non-symlink file without following a swap.
 
     ``O_NOFOLLOW`` closes the final-component symlink race where supported.
-    The descriptor and path are then compared after the complete read, so a
-    replacement during hashing is refused rather than silently fingerprinted.
+    The descriptor and path are then compared after the complete read.  A
+    final no-follow descriptor re-open pins the re-attested public entry, so
+    a replacement after ``lstat`` cannot make the returned bytes refer to a
+    different object than the final path observation.
     """
 
     requested = os.path.abspath(os.fspath(path))
@@ -94,6 +96,24 @@ def read_regular_bytes(path: str) -> bytes:
         )
         if not stable:
             raise EmOutageError(f"output changed while hashing: {path}")
+        try:
+            path_descriptor = os.open(requested, flags)
+        except OSError as exc:
+            raise EmOutageError(f"output changed while hashing: {path}") \
+                from exc
+        try:
+            pinned = os.fstat(path_descriptor)
+            pinned_identity = (
+                pinned.st_dev, pinned.st_ino, pinned.st_mode,
+                pinned.st_size, pinned.st_mtime_ns)
+            if not stat.S_ISREG(pinned.st_mode) or \
+                    pinned_identity != (
+                        before.st_dev, before.st_ino, before.st_mode,
+                        before.st_size, before.st_mtime_ns):
+                raise EmOutageError(
+                    f"output changed while hashing: {path}")
+        finally:
+            os.close(path_descriptor)
         return b"".join(chunks)
     finally:
         os.close(descriptor)
