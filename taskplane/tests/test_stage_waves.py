@@ -1161,9 +1161,13 @@ def _walk_pass_em(ws, state):
     with open(findings_path, "w", encoding="utf-8") as f:
         json.dump({"meta": meta, "findings": findings["findings"]}, f)
     from producer_observation import record_codex_subagent_stop
+    current = loop.load(ws)
+    task = loop._current_task(current)
+    worker = tp_lite.worker_contract_for_stage(
+        ws, stage="em", task=str(task["id"]))
     material = loop.producer_output_identity(
-        ws, loop.load(ws), loop._current_task(loop.load(ws)), "em",
-        active_contract=tp_lite.load_active(ws) or {})
+        ws, current, task, "em",
+        active_contract=(worker or {}).get("contract") or {})
     event = {"hook_event_name": "SubagentStop",
              "session_id": "stage-wave-compat-session",
              "turn_id": "em-turn", "agent_id": "em-agent",
