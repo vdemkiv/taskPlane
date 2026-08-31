@@ -34,6 +34,75 @@ def _browser():
     }
 
 
+def _green_receipt(runner, runtime, cell, owned, *, python_version="3.12.9"):
+    ownership_material = {
+        "schema": "taskplane.ci-owned-cell/v1",
+        "candidate_fingerprint": runtime["candidate"]["fingerprint"],
+        "source_sha": runtime["candidate"]["source_sha"],
+        "cell_id": cell["id"],
+        "containment_root": str(owned.parent),
+        "relative_name": owned.name,
+        "registered_before_run": True,
+    }
+    ownership = {
+        **ownership_material,
+        "fingerprint": runner._sha256_json(ownership_material),
+    }
+    cleanup_material = {
+        "schema": runner.CI_CLEANUP_SCHEMA,
+        "registration_fingerprint": ownership["fingerprint"],
+        "outcome": "success",
+        "resources": [str(owned)],
+        "status": "clean",
+        "leak_count": 0,
+        "leaks": [],
+    }
+    cleanup = {
+        **cleanup_material,
+        "fingerprint": runner._sha256_json(cleanup_material),
+    }
+    observed = {
+        "implementation": "CPython", "python": python_version,
+        "os": "posix", "platform": "Linux", "machine": "x86_64",
+    }
+    commands = [{
+        "argv": argv, "returncode": 0, "duration_ms": 0,
+        "output_digest": runner._digest(""),
+    } for argv in runner._ci_cell_commands(cell, owned)]
+    payload = {
+        "schema": runner.CI_CELL_SCHEMA,
+        "id": cell["id"],
+        "kind": cell["kind"],
+        "status": "green",
+        "outcome": "success",
+        "classification": None,
+        "candidate_fingerprint": runtime["candidate"]["fingerprint"],
+        "source_sha": runtime["candidate"]["source_sha"],
+        "plan_fingerprint": runtime["plan"]["fingerprint"],
+        "settings_receipt_fingerprint": runtime["settings_receipt"]["fingerprint"],
+        "environment": {
+            "candidate_fingerprint": runtime["candidate"]["fingerprints"]["environment"],
+            "observed": observed,
+            "observed_fingerprint": runner._sha256_json(observed),
+        },
+        "browser_fingerprint": (
+            runtime["candidate"]["browser_fingerprint"]
+            if cell["kind"] == "browser" else None
+        ),
+        "browser_observation": (
+            runtime["candidate"]["browser"]
+            if cell["kind"] == "browser" else None
+        ),
+        "selectors": cell["selectors"],
+        "duration_ms": 0,
+        "commands": commands,
+        "output_digest": runner._digest(""),
+        "ownership": ownership,
+        "cleanup": cleanup,
+    }
+    return {**payload, "receipt": runner._sha256_json(payload)}
+
+
 def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     runner = _runner()
     contract = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -86,72 +155,7 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     receipt_root = tmp_path / "receipts"
     for cell in plan["cells"]:
         owned = tmp_path / "owned" / cell["id"]
-        ownership_material = {
-            "schema": "taskplane.ci-owned-cell/v1",
-            "candidate_fingerprint": runtime["candidate"]["fingerprint"],
-            "source_sha": source_sha,
-            "cell_id": cell["id"],
-            "containment_root": str(owned.parent),
-            "relative_name": owned.name,
-            "registered_before_run": True,
-        }
-        ownership = {
-            **ownership_material,
-            "fingerprint": runner._sha256_json(ownership_material),
-        }
-        cleanup_material = {
-            "schema": runner.CI_CLEANUP_SCHEMA,
-            "registration_fingerprint": ownership["fingerprint"],
-            "outcome": "success",
-            "resources": [str(owned)],
-            "status": "clean",
-            "leak_count": 0,
-            "leaks": [],
-        }
-        cleanup = {
-            **cleanup_material,
-            "fingerprint": runner._sha256_json(cleanup_material),
-        }
-        observed = {
-            "implementation": "CPython", "python": "3.12.9",
-            "os": "posix", "platform": "Linux", "machine": "x86_64",
-        }
-        commands = [{
-            "argv": argv, "returncode": 0, "duration_ms": 0,
-            "output_digest": runner._digest(""),
-        } for argv in runner._ci_cell_commands(cell, owned)]
-        payload = {
-            "schema": runner.CI_CELL_SCHEMA,
-            "id": cell["id"],
-            "kind": cell["kind"],
-            "status": "green",
-            "outcome": "success",
-            "classification": None,
-            "candidate_fingerprint": runtime["candidate"]["fingerprint"],
-            "source_sha": source_sha,
-            "plan_fingerprint": plan["fingerprint"],
-            "settings_receipt_fingerprint": settings["fingerprint"],
-            "environment": {
-                "candidate_fingerprint": runtime["candidate"]["fingerprints"]["environment"],
-                "observed": observed,
-                "observed_fingerprint": runner._sha256_json(observed),
-            },
-            "browser_fingerprint": (
-                runtime["candidate"]["browser_fingerprint"]
-                if cell["kind"] == "browser" else None
-            ),
-            "browser_observation": (
-                runtime["candidate"]["browser"]
-                if cell["kind"] == "browser" else None
-            ),
-            "selectors": cell["selectors"],
-            "duration_ms": 0,
-            "commands": commands,
-            "output_digest": runner._digest(""),
-            "ownership": ownership,
-            "cleanup": cleanup,
-        }
-        receipt = {**payload, "receipt": runner._sha256_json(payload)}
+        receipt = _green_receipt(runner, runtime, cell, owned)
         runner._atomic_write_json(
             receipt_root / cell["id"] / f"{cell['id']}.json", receipt,
         )
@@ -210,3 +214,51 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     assert all(f"name: {name}" in workflow for name in required[1:])
     action_refs = re.findall(r"uses:\s*[^@\s]+@([^\s#]+)", workflow)
     assert action_refs and all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs)
+
+
+def test_quality_receipt_command_identity_is_cross_runner_and_tamper_closed(
+    tmp_path, monkeypatch,
+):
+    runner = _runner()
+    source_sha = runner._git("rev-parse", "HEAD")
+    runtime = runner.build_authoritative_ci_runtime(
+        source_sha=source_sha,
+        event="pull_request",
+        ref="482",
+        run_id="9001",
+        browser=_browser(),
+    )
+    runtime_path = tmp_path / "runtime.json"
+    runner._atomic_write_json(runtime_path, runtime)
+    receipt_root = tmp_path / "receipts"
+    quality_path = receipt_root / "quality-package" / "quality-package.json"
+    for cell in runtime["plan"]["cells"]:
+        receipt = _green_receipt(
+            runner,
+            runtime,
+            cell,
+            tmp_path / "owned" / cell["id"],
+            python_version="3.14.0" if cell["id"] == "quality-package" else "3.12.9",
+        )
+        runner._atomic_write_json(
+            receipt_root / cell["id"] / f"{cell['id']}.json", receipt,
+        )
+
+    quality = json.loads(quality_path.read_text(encoding="utf-8"))
+    assert {command["argv"][0] for command in quality["commands"]} == {
+        runner.CI_LOGICAL_PYTHON,
+    }
+    monkeypatch.setattr(runner, "PYTHON", "/opt/cpython-3.12/bin/python3")
+    assert runner.aggregate_authoritative_ci(
+        runtime_path, receipt_root, tmp_path / "terminal.json",
+    ) == 0
+
+    quality["commands"][0]["argv"][0] = "/opt/cpython-3.14/bin/python3"
+    quality["receipt"] = runner._sha256_json({
+        key: value for key, value in quality.items() if key != "receipt"
+    })
+    runner._atomic_write_json(quality_path, quality)
+    with pytest.raises(runner.RunnerError, match="command evidence is not exact"):
+        runner.aggregate_authoritative_ci(
+            runtime_path, receipt_root, tmp_path / "refused-terminal.json",
+        )

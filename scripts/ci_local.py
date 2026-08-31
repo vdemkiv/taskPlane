@@ -67,6 +67,7 @@ CI_BROWSER_SELECTORS = (
 CI_MATRICES = ("tests", "quality-package", "browser")
 CI_RUNNER_MINUTES_CEILING = 30
 CI_RECEIPT_RESERVE_SECONDS = 60
+CI_LOGICAL_PYTHON = "taskplane-python"
 INVENTORY_VERSION = "REL-2181/2"
 RECURSION_GUARD = "TASKPLANE_LOCAL_CI_ACTIVE"
 PACKAGE_TEMP_ROOT = "TASKPLANE_PACKAGE_TEMP_ROOT"
@@ -358,7 +359,7 @@ PYTEST_CHECK_IDS = tuple(
 # Content address of every repository-relative `path:estimated-byte-weight` row.
 # A file added, removed, renamed, or reweighted must deliberately refresh this
 # pin, so the complete suite cannot silently shrink or use stale balancing data.
-PYTEST_WEIGHT_SHA256 = "49a61e2fc1d9046f0b606954664f709f19be9e9dd8eb542aea13061345ace165"
+PYTEST_WEIGHT_SHA256 = "3b95ac6f50de48901cc0d649795d7b7fd1a286d4912438cf3f62abb3d193f1d0"
 
 
 def pytest_inventory() -> tuple[str, ...]:
@@ -838,6 +839,8 @@ def _atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
 
 
 def _ci_cell_commands(cell: Mapping[str, Any], root: Path) -> list[list[str]]:
+    """Return the sealed logical command contract, independent of runner paths."""
+    PYTHON = CI_LOGICAL_PYTHON  # noqa: N806 - contract token, not executable path
     kind = cell.get("kind")
     selectors = [str(item) for item in cell.get("selectors") or []]
     if kind in {"pytest", "browser"}:
@@ -853,6 +856,12 @@ def _ci_cell_commands(cell: Mapping[str, Any], root: Path) -> list[list[str]]:
             [PYTHON, "scripts/package_claude.py", "--output-dir", str(root / "claude")],
         ]
     raise RunnerError(f"unsupported authoritative CI cell kind: {kind}")
+
+
+def _materialize_ci_cell_command(command: Sequence[str]) -> list[str]:
+    if not command or command[0] != CI_LOGICAL_PYTHON:
+        raise RunnerError("CI command contract has an unknown interpreter identity")
+    return [PYTHON, *command[1:]]
 
 
 def _classify_ci_failure(status: str, output: str) -> str | None:
@@ -1013,7 +1022,10 @@ def run_authoritative_ci_cell(
                         "browser environment failure: executing runner identity "
                         "does not match the frozen candidate\n"
                     )
-        for command in ([] if outcome != "success" else _ci_cell_commands(cell, target)):
+        logical_commands = (
+            [] if outcome != "success" else _ci_cell_commands(cell, target)
+        )
+        for command in logical_commands:
             if interrupted:
                 outcome = interrupted
                 break
@@ -1022,8 +1034,9 @@ def run_authoritative_ci_cell(
                 outcome = "timeout"
                 break
             command_started = time.monotonic()
+            execution_argv = _materialize_ci_cell_command(command)
             active = subprocess.Popen(
-                command, cwd=ROOT, env=safe_env, text=True, encoding="utf-8",
+                execution_argv, cwd=ROOT, env=safe_env, text=True, encoding="utf-8",
                 errors="replace", stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, start_new_session=True,
             )
