@@ -1,0 +1,55 @@
+{
+  "event": {
+    "event_type": "updated",
+    "fingerprint": "529a5c32c8ea4220394ab6ec15b0e65f5b1f0d014655982681c0dec3ac21b607",
+    "revision": "rev-7",
+    "run_id": "run-1",
+    "schema": "taskplane.host-surface-event/v1",
+    "sequence": 41,
+    "snapshot_fingerprint": "81cb21ffeb68f8b796167f522093f86d51a2d393d99a29c23d71dc36ab4a4511",
+    "workflow_id": "wf-1"
+  },
+  "same_sequence_contradiction": {
+    "evidence": [
+      "sha256:e1"
+    ],
+    "fingerprint": "1a4b60e6dd7514fd7b98d124c32f4c1962b300b202c2fbb75bdba5e81dcdab2d",
+    "revision": "rev-7",
+    "run_id": "run-1",
+    "safe_actions": [
+      "cancel"
+    ],
+    "schema": "taskplane.host-surface-snapshot/v1",
+    "sequence": 41,
+    "stage": "execute",
+    "state": "blocked",
+    "target": "repo@abc",
+    "values": {
+      "gate": "blocked",
+      "generated_at": "2026-08-18T10:00:00Z",
+      "settings_fingerprint": "sha256:settings"
+    },
+    "workflow_id": "wf-1"
+  },
+  "snapshot": {
+    "evidence": [
+      "sha256:e1"
+    ],
+    "fingerprint": "81cb21ffeb68f8b796167f522093f86d51a2d393d99a29c23d71dc36ab4a4511",
+    "revision": "rev-7",
+    "run_id": "run-1",
+    "safe_actions": [
+      "cancel"
+    ],
+    "schema": "taskplane.host-surface-snapshot/v1",
+    "sequence": 41,
+    "stage": "execute",
+    "state": "active",
+    "target": "repo@abc",
+    "values": {
+      "generated_at": "2026-08-18T10:00:00Z",
+      "settings_fingerprint": "sha256:settings"
+    },
+    "workflow_id": "wf-1"
+  }
+}
