@@ -1,0 +1,24 @@
+{
+  "touched": ["taskplane/dashboard.py"],
+  "impacted": {
+    "1": [
+      {"module": "taskplane/views.py", "via": "taskplane/dashboard.py", "kind": "imports"},
+      {"module": "hooks/host_native_runtime.py", "via": "taskplane/dashboard.py", "kind": "projects"},
+      {"module": "taskplane/host_native.py", "via": "taskplane/dashboard.py", "kind": "projects"}
+    ],
+    "2": [
+      {"module": "taskplane/loop_status.py", "via": "taskplane/views.py", "kind": "publishes"},
+      {"module": "contract:delivery.canonical-dashboard-state", "via": "taskplane/host_native.py", "kind": "provides"}
+    ]
+  },
+  "total_impacted": 5,
+  "unknown": ["hooks/host_native_runtime.py"],
+  "depth_limit": 3,
+  "truncated": true,
+  "depth_truncated": true,
+  "policy_blocked": [
+    {"module": "resource:delivery.dashboard-publication-receipt", "via": "contract:delivery.canonical-dashboard-state", "kind": "verifies", "reason": "contract-depth"}
+  ],
+  "boundary_nodes": ["contract:delivery.canonical-dashboard-state"],
+  "graph": {"content_fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+}

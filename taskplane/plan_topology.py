@@ -9,6 +9,8 @@ concurrency and agent lifecycle remain owned by the native Codex runtime.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import json
 import math
 from pathlib import Path
 import shlex
@@ -22,10 +24,32 @@ except ImportError:  # pragma: no cover - direct module loading
 
 TOPOLOGY_SCHEMA = "taskplane.plan-topology/v1"
 SEALED_READY_SET_SCHEMA = "taskplane.sealed-ready-set/v1"
+PLAN_DASHBOARD_SCHEMA = "taskplane.dashboard-plan-task-dag/v1"
+PLAN_WAVES_DASHBOARD_SCHEMA = "taskplane.dashboard-plan-waves/v1"
 
 
 class PlanTopologyError(RuntimeError):
     """The Plan topology or trace-derived metrics are structurally unsafe."""
+
+
+def canonical_plan_fingerprint(plan: Mapping[str, Any]) -> str:
+    """Return the exact fingerprint used by the Plan approval receipt.
+
+    The loop seals the complete committed ``plan/tasks.json`` object rather
+    than a renderer-selected subset.  Keeping that byte-independent canonical
+    rule here lets presentation code prove approval without inventing a second
+    approval flag.
+    """
+    if not isinstance(plan, Mapping):
+        raise PlanTopologyError("Plan dashboard source must be an object")
+    try:
+        encoded = json.dumps(
+            dict(plan), sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise PlanTopologyError("Plan dashboard source is not canonical JSON") from exc
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _finite_number(value: object, label: str) -> float:
@@ -220,6 +244,192 @@ def classify_plan(
     }
     material["fingerprint"] = content_fingerprint(material)
     return material
+
+
+def _topological_order(
+    dependencies: Mapping[str, Sequence[str]],
+) -> list[str]:
+    """Return one deterministic order or refuse a cyclic Plan."""
+    _descendants(dependencies)  # validates the complete graph first
+    remaining = {task_id: set(values)
+                 for task_id, values in dependencies.items()}
+    order: list[str] = []
+    while remaining:
+        ready = sorted(task_id for task_id, deps in remaining.items()
+                       if not deps)
+        if not ready:  # defensive; _descendants already rejects this
+            raise PlanTopologyError("task dependency graph contains a cycle")
+        for task_id in ready:
+            order.append(task_id)
+            remaining.pop(task_id)
+        for deps in remaining.values():
+            deps.difference_update(ready)
+    return order
+
+
+def _dashboard_waves(
+    raw_waves: object, *, task_ids: Sequence[str],
+    dependencies: Mapping[str, Sequence[str]], approval: str,
+) -> list[dict[str, Any]]:
+    """Validate and normalize the Plan-authored wave partition."""
+    if not isinstance(raw_waves, list) or not raw_waves:
+        raise PlanTopologyError("Plan dashboard waves must be a non-empty list")
+    known = set(task_ids)
+    seen_wave_ids: set[str] = set()
+    seen_tasks: set[str] = set()
+    task_wave: dict[str, int] = {}
+    normalized: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_waves):
+        if not isinstance(raw, Mapping):
+            raise PlanTopologyError("every Plan dashboard wave must be an object")
+        wave_id = str(raw.get("id") or "").strip()
+        if not wave_id or wave_id in seen_wave_ids:
+            raise PlanTopologyError("Plan dashboard wave ids must be unique")
+        seen_wave_ids.add(wave_id)
+        tasks = raw.get("parallel")
+        if not isinstance(tasks, list) or not tasks or any(
+                not isinstance(task_id, str) or not task_id.strip()
+                for task_id in tasks):
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} has invalid task membership")
+        members = [task_id.strip() for task_id in tasks]
+        if len(set(members)) != len(members):
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} repeats a task")
+        unknown = sorted(set(members) - known)
+        repeated = sorted(set(members) & seen_tasks)
+        if unknown:
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} has unknown tasks: {unknown}")
+        if repeated:
+            raise PlanTopologyError(
+                f"Plan dashboard tasks occur in multiple waves: {repeated}")
+        after = raw.get("after") or []
+        if not isinstance(after, list) or any(
+                not isinstance(task_id, str) or not task_id.strip()
+                for task_id in after):
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} has invalid predecessors")
+        after_ids = [task_id.strip() for task_id in after]
+        if sorted(set(after_ids) - known):
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} has unknown predecessors")
+        if any(task_id not in seen_tasks for task_id in after_ids):
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} precedes its after-task")
+        for task_id in members:
+            task_wave[task_id] = index
+        seen_tasks.update(members)
+        normalized.append({
+            "id": wave_id,
+            "index": index,
+            "tasks": members,
+            "after": after_ids,
+            "serialization": str(raw.get("serialization") or ""),
+            "approval": approval,
+        })
+    missing = sorted(known - seen_tasks)
+    if missing:
+        raise PlanTopologyError(
+            f"Plan dashboard waves omit tasks: {missing}")
+    for task_id, deps in dependencies.items():
+        for dependency in deps:
+            if task_wave[dependency] >= task_wave[task_id]:
+                raise PlanTopologyError(
+                    f"Plan dashboard wave order violates {dependency}->{task_id}")
+    return normalized
+
+
+def _exact_plan_approval(
+    plan: Mapping[str, Any], receipt: Mapping[str, Any] | None,
+    *, plan_fingerprint: str,
+) -> tuple[str, str | None]:
+    """Return approved only for a valid receipt over this complete Plan."""
+    if not isinstance(receipt, Mapping):
+        return "planned", None
+    try:
+        try:
+            from . import delivery_policy
+        except ImportError:  # pragma: no cover - direct module loading
+            import delivery_policy  # type: ignore
+        checked = delivery_policy.validate_delivery_mode_receipt(receipt)
+    except Exception:
+        return "planned", None
+    matches = (
+        checked.get("plan_fingerprint") == plan_fingerprint
+        and checked.get("requirement") == str(plan.get("requirement") or "")
+        and checked.get("mode") == plan.get("delivery_mode")
+        and checked.get("automatic_lenses") == plan.get("automatic_lenses")
+        and checked.get("plan_authority") == plan.get("plan_authority")
+    )
+    if not matches:
+        return "planned", None
+    return "approved", str(checked.get("fingerprint") or "") or None
+
+
+def dashboard_plan_projection(
+    plan: Mapping[str, Any], *,
+    approval_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Project the current Plan DAG and waves without becoming authority.
+
+    The complete Plan is fingerprinted before any presentation field is
+    selected.  Wave membership is checked against the declared DAG, and the
+    word ``approved`` appears only when the incumbent closed delivery-mode
+    receipt validates and binds that exact full-Plan fingerprint.
+    """
+    if not isinstance(plan, Mapping) or plan.get("schema") != \
+            "taskplane.plan/v1":
+        raise PlanTopologyError("Plan dashboard source schema is invalid")
+    raw_tasks = plan.get("tasks")
+    if not isinstance(raw_tasks, list) or any(
+            not isinstance(row, Mapping) for row in raw_tasks):
+        raise PlanTopologyError("Plan dashboard tasks must be a list of objects")
+    rows = _task_rows(raw_tasks)
+    dependencies = {row["id"]: list(row["deps"]) for row in rows}
+    order = _topological_order(dependencies)
+    plan_fingerprint = canonical_plan_fingerprint(plan)
+    approval, receipt_fingerprint = _exact_plan_approval(
+        plan, approval_receipt, plan_fingerprint=plan_fingerprint)
+    edges = [
+        {"from": dependency, "to": row["id"], "kind": "depends"}
+        for row in rows for dependency in row["deps"]
+    ]
+    edges.sort(key=lambda row: (row["from"], row["to"]))
+    tasks = [{
+        "id": row["id"],
+        "deps": list(row["deps"]),
+        "scope": list(row["scope"]),
+        "status": str(row.get("status") or "pending"),
+    } for row in rows]
+    waves = _dashboard_waves(
+        plan.get("waves"), task_ids=[row["id"] for row in rows],
+        dependencies=dependencies, approval=approval)
+    dag_material = {
+        "schema": PLAN_DASHBOARD_SCHEMA,
+        "source": "plan/tasks.json#/tasks",
+        "plan_fingerprint": plan_fingerprint,
+        "tasks": tasks,
+        "edges": edges,
+        "task_total": len(tasks),
+        "edge_total": len(edges),
+        "topological_order": order,
+    }
+    wave_material = {
+        "schema": PLAN_WAVES_DASHBOARD_SCHEMA,
+        "source": "plan/tasks.json#/waves",
+        "plan_fingerprint": plan_fingerprint,
+        "waves": waves,
+        "wave_total": len(waves),
+        "approval": approval,
+        "approval_receipt_fingerprint": receipt_fingerprint,
+    }
+    return {
+        "dag": {**dag_material,
+                "fingerprint": content_fingerprint(dag_material)},
+        "waves": {**wave_material,
+                  "fingerprint": content_fingerprint(wave_material)},
+    }
 
 
 def _ready_task_fingerprint(row: Mapping[str, Any], *,
