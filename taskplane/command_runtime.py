@@ -585,7 +585,8 @@ class CommandRuntime:
     def __init__(self, root: str, *, workspace: str, authorization: str,
                  clock: Callable[[], float] | None = None,
                  delivery_lease_seconds: float =
-                 DEFAULT_DELIVERY_LEASE_SECONDS):
+                 DEFAULT_DELIVERY_LEASE_SECONDS,
+                 owned_cleanup_context: Mapping[str, object] | None = None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._workspace = _fingerprint(str(workspace))
@@ -593,6 +594,15 @@ class CommandRuntime:
         self._clock = clock or time.time
         self._delivery_lease_seconds = max(0.001,
                                            float(delivery_lease_seconds))
+        self._owned_cleanup_context = (
+            dict(owned_cleanup_context) if owned_cleanup_context is not None
+            else None)
+        if self._owned_cleanup_context is not None:
+            required = {"manifest", "process_resource_id", "handoff_path"}
+            if (set(self._owned_cleanup_context) != required or
+                    any(not str(self._owned_cleanup_context.get(key) or "")
+                        for key in required)):
+                raise ValueError("owned cleanup runtime context is invalid")
         self.enforce_retention()
 
     def enforce_retention(self, *, now: float | None = None) -> dict:
@@ -871,9 +881,47 @@ class CommandRuntime:
                 "output_redactions": 0,
             },
         }
+        cleanup_resource_id = None
+        if self._owned_cleanup_context is not None:
+            try:
+                import owned_cleanup
+            except ImportError:
+                from taskplane import owned_cleanup
+            cleanup_resource_id = owned_cleanup.reserve_resource(
+                str(self._owned_cleanup_context["manifest"]),
+                kind="worker-contract",
+                containment_root=str(self.root.resolve()),
+                relative_name=handle,
+                creator_nonce="command-runtime:" + handle,
+                stable_identity={
+                    "handle": handle,
+                    "run_id": (identity or {}).get("run_id"),
+                    "task_id": (identity or {}).get("task_id"),
+                    "workspace_fingerprint": self._workspace,
+                    "authorization_fingerprint": self._authorization,
+                    "command_fingerprint": snapshot["command_fingerprint"],
+                    "binding_digest": snapshot.get("binding_digest"),
+                    "created_at": snapshot["created_at"],
+                },
+                evidence_refs=(
+                    "terminal-state", "handoff", "publication-replay"),
+                policy={"active": True},
+            )
+            snapshot["owned_cleanup"] = {
+                **self._owned_cleanup_context,
+                "worker_resource_id": cleanup_resource_id,
+            }
         event = self._build_event(snapshot)
         snapshot["lifecycle"].append(event)
         self._save(handle, snapshot, event)
+        if cleanup_resource_id is not None:
+            owned_cleanup.activate_resource(
+                str(self._owned_cleanup_context["manifest"]),
+                cleanup_resource_id)
+            owned_cleanup.bind_resource_dependency(
+                str(self._owned_cleanup_context["manifest"]),
+                str(self._owned_cleanup_context["process_resource_id"]),
+                cleanup_resource_id)
         return handle
 
     def snapshot(self, handle: str) -> dict:

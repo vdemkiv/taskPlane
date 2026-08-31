@@ -18,11 +18,19 @@ import signal
 import stat
 import tempfile
 import time
+from contextlib import contextmanager
 from typing import Callable, Mapping, Sequence
+
+try:
+    import fcntl as _file_lock
+except ImportError:  # pragma: no cover - exercised by windows-latest
+    _file_lock = None
+    import msvcrt as _windows_lock
 
 
 MANIFEST_SCHEMA = "taskplane.owned-resource-manifest/v1"
 RECEIPT_SCHEMA = "taskplane.cleanup-receipt/v1"
+PUBLICATION_REPLAY_SCHEMA = "taskplane.dashboard-publication-replay/v1"
 _TERMINAL_OUTCOMES = frozenset({
     "success", "failure", "cancellation", "interruption", "timeout",
     "handoff", "recovery",
@@ -93,11 +101,63 @@ def _atomic_json(path: Path, value: Mapping[str, object]) -> None:
             pass
 
 
-def _save_manifest(path: Path, manifest: dict) -> dict:
+def _lock_file(handle) -> None:
+    if _file_lock is not None:
+        _file_lock.flock(handle.fileno(), _file_lock.LOCK_EX)
+        return
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"\0")
+        handle.flush()
+    handle.seek(0)
+    _windows_lock.locking(handle.fileno(), _windows_lock.LK_LOCK, 1)
+
+
+def _unlock_file(handle) -> None:
+    if _file_lock is not None:
+        _file_lock.flock(handle.fileno(), _file_lock.LOCK_UN)
+        return
+    handle.seek(0)
+    _windows_lock.locking(handle.fileno(), _windows_lock.LK_UNLCK, 1)
+
+
+@contextmanager
+def _manifest_lock(path: Path, *, suffix: str = ".lock"):
+    """Serialize one durable transition; process death releases the lock."""
+    lock_path = path.with_name(path.name + suffix)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        _lock_file(handle)
+        try:
+            yield
+        finally:
+            _unlock_file(handle)
+
+
+def _save_manifest(path: Path, manifest: dict, *,
+                   expected_revision: int) -> dict:
+    """Revision-checked atomic replacement; callers must hold the lock."""
+    current = load_manifest(path)
+    if current["revision"] != expected_revision:
+        raise OwnedCleanupError(
+            f"manifest revision conflict: expected {expected_revision}, "
+            f"observed {current['revision']}")
     value = copy.deepcopy(manifest)
+    value["revision"] = expected_revision + 1
     value["manifest_digest"] = _manifest_digest(value)
     _atomic_json(path, value)
     return value
+
+
+def _mutate_manifest(path: Path,
+                     mutate: Callable[[dict], object]) -> tuple[dict, object]:
+    with _manifest_lock(path):
+        manifest = load_manifest(path)
+        revision = manifest["revision"]
+        result = mutate(manifest)
+        committed = _save_manifest(
+            path, manifest, expected_revision=revision)
+        return committed, result
 
 
 def _closed_owner(value: object) -> dict:
@@ -147,9 +207,12 @@ def _target(resource: Mapping[str, object]) -> str:
 
 
 def _assert_no_symlink_path(root: str, target: str) -> None:
-    current = Path(root)
-    if os.path.lexists(current) and stat.S_ISLNK(current.lstat().st_mode):
-        raise OwnedCleanupError("resource containment root is symlinked")
+    root_path = Path(root)
+    current = Path(root_path.anchor)
+    for part in root_path.parts[1:]:
+        current = current / part
+        if os.path.lexists(current) and stat.S_ISLNK(current.lstat().st_mode):
+            raise OwnedCleanupError("resource containment root is symlinked")
     relative = os.path.relpath(target, root)
     for part in PurePath(relative).parts:
         current = current / part
@@ -185,6 +248,50 @@ def _path_identity(path: str) -> dict:
     return value
 
 
+def _evidence_labels(value: Sequence[str]) -> list[str]:
+    if any(not isinstance(item, str) for item in value):
+        raise OwnedCleanupError("resource evidence references are invalid")
+    labels = list(value)
+    if (not labels or len(labels) != len(set(labels)) or
+            any(not label or not label.replace("-", "").replace("_", "").
+                isalnum() for label in labels)):
+        raise OwnedCleanupError("resource evidence references are invalid")
+    return labels
+
+
+def _assert_evidence_external(manifest: Mapping[str, object],
+                              target: str | None = None) -> None:
+    evidence = _absolute_lexical(str(manifest.get("evidence_root") or ""))
+    evidence_path = Path(evidence)
+    current = Path(evidence_path.anchor)
+    for part in evidence_path.parts[1:]:
+        current = current / part
+        if os.path.lexists(current) and stat.S_ISLNK(current.lstat().st_mode):
+            raise OwnedCleanupError("cleanup evidence root is symlinked")
+    if target is not None:
+        targets = [target]
+    else:
+        targets = []
+        for resource in (manifest.get("resources") or {}).values():
+            try:
+                targets.append(_target(resource))
+            except OwnedCleanupError:
+                # An unresolvable target is never deleted. Preserve terminal
+                # evidence first, then let the cleanup precheck emit the exact
+                # containment refusal and leak receipt.
+                continue
+    for candidate in targets:
+        if candidate is None:
+            continue
+        try:
+            if os.path.commonpath((candidate, evidence)) == candidate:
+                raise OwnedCleanupError(
+                    "cleanup evidence root is inside a deletable target")
+        except ValueError as exc:
+            raise OwnedCleanupError(
+                "cleanup evidence externality is invalid") from exc
+
+
 def create_manifest(path: str | os.PathLike[str], *, repository_id: str,
                     workspace_fingerprint: str, settings_digest: str,
                     run_id: str, task_id: str, attempt: int,
@@ -209,9 +316,17 @@ def create_manifest(path: str | os.PathLike[str], *, repository_id: str,
         "resources": {},
         "terminal": None,
         "journal": [],
+        "revision": 0,
         "created_at_ns": time.time_ns(),
     }
-    return _save_manifest(manifest_path, manifest)
+    _assert_evidence_external(manifest)
+    with _manifest_lock(manifest_path):
+        if os.path.lexists(manifest_path):
+            raise OwnedCleanupError("owned resource manifest already exists")
+        value = copy.deepcopy(manifest)
+        value["manifest_digest"] = _manifest_digest(value)
+        _atomic_json(manifest_path, value)
+        return value
 
 
 def load_manifest(path: str | os.PathLike[str]) -> dict:
@@ -222,7 +337,10 @@ def load_manifest(path: str | os.PathLike[str]) -> dict:
     if (not isinstance(value, dict) or value.get("schema") != MANIFEST_SCHEMA or
             value.get("manifest_digest") != _manifest_digest(value) or
             not isinstance(value.get("resources"), dict) or
-            not isinstance(value.get("journal"), list)):
+            not isinstance(value.get("journal"), list) or
+            isinstance(value.get("revision"), bool) or
+            not isinstance(value.get("revision"), int) or
+            value["revision"] < 0):
         raise OwnedCleanupError("owned resource manifest is invalid or tampered")
     _closed_owner(value.get("owner"))
     return copy.deepcopy(value)
@@ -236,10 +354,6 @@ def reserve_resource(path: str | os.PathLike[str], *, kind: str,
                      dependencies: Sequence[str] = (),
                      policy: Mapping[str, object] | None = None) -> str:
     """CAS-style append of one exact reservation before resource creation."""
-    manifest_path = Path(path).absolute()
-    manifest = load_manifest(manifest_path)
-    if manifest.get("terminal") is not None:
-        raise OwnedCleanupError("terminal manifest cannot reserve resources")
     if kind not in _RESOURCE_KINDS:
         raise OwnedCleanupError("resource kind is invalid")
     if not isinstance(creator_nonce, str) or not creator_nonce:
@@ -248,32 +362,44 @@ def reserve_resource(path: str | os.PathLike[str], *, kind: str,
         raise OwnedCleanupError("resource stable identity is required")
     root = _absolute_lexical(containment_root)
     relative = _relative_name(relative_name)
-    owner = copy.deepcopy(manifest["owner"])
-    material = {
-        "owner": owner, "kind": kind, "containment_root": root,
-        "relative_name": relative, "creator_nonce": creator_nonce,
-    }
-    resource_id = "res-" + _digest(material)[:32]
-    if resource_id in manifest["resources"]:
-        raise OwnedCleanupError("resource reservation is ambiguous")
-    missing = set(dependencies) - set(manifest["resources"])
-    if missing:
-        raise OwnedCleanupError("resource dependency is not reserved")
-    candidate = os.path.abspath(os.path.join(root, relative))
-    for existing in manifest["resources"].values():
-        if _target(existing) == candidate:
-            raise OwnedCleanupError("multiple resources address the same target")
-    manifest["resources"][resource_id] = {
-        "resource_id": resource_id,
-        **material,
-        "stable_identity": copy.deepcopy(dict(stable_identity)),
-        "observed_identity": None,
-        "evidence_refs": [str(item) for item in evidence_refs],
-        "dependencies": [str(item) for item in dependencies],
-        "policy": copy.deepcopy(dict(policy or {})),
-        "state": "reserved",
-    }
-    _save_manifest(manifest_path, manifest)
+    labels = _evidence_labels(evidence_refs)
+    manifest_path = Path(path).absolute()
+    resource_id = ""
+
+    def mutate(manifest: dict) -> None:
+        nonlocal resource_id
+        if manifest.get("terminal") is not None:
+            raise OwnedCleanupError("terminal manifest cannot reserve resources")
+        owner = copy.deepcopy(manifest["owner"])
+        material = {
+            "owner": owner, "kind": kind, "containment_root": root,
+            "relative_name": relative, "creator_nonce": creator_nonce,
+        }
+        resource_id = "res-" + _digest(material)[:32]
+        if resource_id in manifest["resources"]:
+            raise OwnedCleanupError("resource reservation is ambiguous")
+        missing = set(dependencies) - set(manifest["resources"])
+        if missing:
+            raise OwnedCleanupError("resource dependency is not reserved")
+        candidate = os.path.abspath(os.path.join(root, relative))
+        _assert_evidence_external(manifest, candidate)
+        for existing in manifest["resources"].values():
+            if _target(existing) == candidate:
+                raise OwnedCleanupError(
+                    "multiple resources address the same target")
+        manifest["resources"][resource_id] = {
+            "resource_id": resource_id,
+            **material,
+            "stable_identity": copy.deepcopy(dict(stable_identity)),
+            "stable_identity_digest": None,
+            "observed_identity": None,
+            "evidence_refs": labels,
+            "dependencies": [str(item) for item in dependencies],
+            "policy": copy.deepcopy(dict(policy or {})),
+            "state": "reserved",
+        }
+
+    _mutate_manifest(manifest_path, mutate)
     return resource_id
 
 
@@ -281,38 +407,137 @@ def activate_resource(path: str | os.PathLike[str], resource_id: str, *,
                       observed_identity: Mapping[str, object] | None = None) -> dict:
     """Activate a reservation using the identity observed after creation."""
     manifest_path = Path(path).absolute()
-    manifest = load_manifest(manifest_path)
-    resource = manifest["resources"].get(resource_id)
-    if not isinstance(resource, dict) or resource.get("state") != "reserved":
-        raise OwnedCleanupError("resource reservation is unavailable")
-    target = _target(resource)
-    _assert_no_symlink_path(str(resource["containment_root"]), target)
-    if not os.path.lexists(target):
-        raise OwnedCleanupError("reserved resource was not created")
-    path_identity = _path_identity(target)
-    if resource["kind"] == "process-group":
-        if not isinstance(observed_identity, Mapping):
-            raise OwnedCleanupError("process resource requires a stable binding")
-        binding = copy.deepcopy(dict(observed_identity))
-        required = {"schema", "pid", "pgid", "started", "token"}
-        if (set(binding) != required or binding.get("schema") !=
-                "taskplane.detached-command-binding/v1" or
-                not str(binding.get("started") or "") or
-                not str(binding.get("token") or "")):
-            raise OwnedCleanupError("process resource binding is invalid")
-        observed = {"path": path_identity, "process": binding}
-    else:
-        if observed_identity is not None:
-            raise OwnedCleanupError("filesystem identity is observed internally")
-        observed = path_identity
-    resource["observed_identity"] = observed
-    resource["state"] = "active"
-    manifest["journal"].append({
-        "event": "activated", "resource_id": resource_id,
-        "identity_digest": _digest(observed),
-    })
-    _save_manifest(manifest_path, manifest)
-    return copy.deepcopy(resource)
+    activated: dict = {}
+
+    def mutate(manifest: dict) -> None:
+        nonlocal activated
+        resource = manifest["resources"].get(resource_id)
+        if not isinstance(resource, dict) or resource.get("state") != "reserved":
+            raise OwnedCleanupError("resource reservation is unavailable")
+        target = _target(resource)
+        _assert_no_symlink_path(str(resource["containment_root"]), target)
+        if not os.path.lexists(target):
+            raise OwnedCleanupError("reserved resource was not created")
+        path_identity = _path_identity(target)
+        if resource["kind"] == "process-group":
+            if not isinstance(observed_identity, Mapping):
+                raise OwnedCleanupError(
+                    "process resource requires a stable binding")
+            binding = copy.deepcopy(dict(observed_identity))
+            required = {"schema", "pid", "pgid", "started", "token"}
+            if (set(binding) != required or binding.get("schema") !=
+                    "taskplane.detached-command-binding/v1" or
+                    not str(binding.get("started") or "") or
+                    not str(binding.get("token") or "")):
+                raise OwnedCleanupError("process resource binding is invalid")
+            observed = {"path": path_identity, "process": binding}
+        else:
+            if observed_identity is not None:
+                raise OwnedCleanupError(
+                    "filesystem identity is observed internally")
+            observed = path_identity
+        stable_digest = _digest(resource["stable_identity"])
+        resource["stable_identity_digest"] = stable_digest
+        resource["observed_identity"] = observed
+        resource["state"] = "active"
+        manifest["journal"].append({
+            "event": "activated", "resource_id": resource_id,
+            "identity_digest": _digest(observed),
+            "stable_identity_digest": stable_digest,
+        })
+        activated = copy.deepcopy(resource)
+
+    _mutate_manifest(manifest_path, mutate)
+    return activated
+
+
+def bind_resource_dependency(path: str | os.PathLike[str], resource_id: str,
+                             dependency_id: str) -> dict:
+    """CAS-bind a later reservation so reverse cleanup order stays exact."""
+    manifest_path = Path(path).absolute()
+    updated: dict = {}
+
+    def mutate(manifest: dict) -> None:
+        nonlocal updated
+        if manifest.get("terminal") is not None:
+            raise OwnedCleanupError("terminal manifest cannot change dependencies")
+        resource = manifest["resources"].get(resource_id)
+        if not isinstance(resource, dict) or resource.get("state") != "active":
+            raise OwnedCleanupError("active resource is unavailable")
+        if dependency_id not in manifest["resources"] or \
+                dependency_id == resource_id:
+            raise OwnedCleanupError("resource dependency is unavailable")
+        dependencies = list(resource.get("dependencies") or [])
+        if dependency_id not in dependencies:
+            dependencies.append(dependency_id)
+            resource["dependencies"] = dependencies
+        updated = copy.deepcopy(resource)
+
+    _mutate_manifest(manifest_path, mutate)
+    return updated
+
+
+def update_resource_policy(path: str | os.PathLike[str], resource_id: str, *,
+                           expected: Mapping[str, object],
+                           replacement: Mapping[str, object]) -> dict:
+    """Revision-checked lifecycle attestation, used before terminal cleanup."""
+    manifest_path = Path(path).absolute()
+    updated: dict = {}
+
+    def mutate(manifest: dict) -> None:
+        nonlocal updated
+        if manifest.get("terminal") is not None:
+            raise OwnedCleanupError("terminal manifest policy is immutable")
+        resource = manifest["resources"].get(resource_id)
+        if not isinstance(resource, dict) or resource.get("state") != "active":
+            raise OwnedCleanupError("active resource is unavailable")
+        if dict(resource.get("policy") or {}) != dict(expected):
+            raise OwnedCleanupError("resource policy revision conflict")
+        resource["policy"] = copy.deepcopy(dict(replacement))
+        updated = copy.deepcopy(resource)
+
+    _mutate_manifest(manifest_path, mutate)
+    return updated
+
+
+def write_publication_replay(path: str | os.PathLike[str], *,
+                             owner: Mapping[str, object], outcome: str,
+                             source_revision: int,
+                             source_fingerprint: str,
+                             trigger: str) -> dict:
+    """Persist an independently replayable dashboard publication obligation."""
+    checked_owner = _closed_owner(dict(owner))
+    if outcome not in _TERMINAL_OUTCOMES:
+        raise OwnedCleanupError("publication replay outcome is invalid")
+    if (isinstance(source_revision, bool) or
+            not isinstance(source_revision, int) or source_revision < 1 or
+            len(source_fingerprint) != 64 or
+            set(source_fingerprint) - _DIGEST or
+            trigger not in {"terminal", "handoff", "recovery"}):
+        raise OwnedCleanupError("publication replay identity is invalid")
+    material = {
+        "schema": PUBLICATION_REPLAY_SCHEMA,
+        "owner": checked_owner,
+        "outcome": outcome,
+        "source_revision": source_revision,
+        "source_fingerprint": source_fingerprint,
+        "trigger": trigger,
+        "status": "pending",
+        "replay_required": True,
+    }
+    value = {**material, "fingerprint": _digest(material)}
+    destination = Path(path).absolute()
+    if destination.exists():
+        try:
+            prior = json.loads(destination.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise OwnedCleanupError(
+                "publication replay evidence is unavailable") from exc
+        if prior != value:
+            raise OwnedCleanupError("publication replay evidence conflicts")
+        return copy.deepcopy(value)
+    _atomic_json(destination, value)
+    return copy.deepcopy(value)
 
 
 def _copy_evidence(source: Path, destination: Path) -> dict:
@@ -334,52 +559,108 @@ def _copy_evidence(source: Path, destination: Path) -> dict:
     }
 
 
+def _validate_publication_replay(path: Path,
+                                 owner: Mapping[str, object], *,
+                                 outcome: str) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise OwnedCleanupError(
+            "publication replay evidence is unavailable") from exc
+    if (not isinstance(value, dict) or
+            value.get("schema") != PUBLICATION_REPLAY_SCHEMA or
+            value.get("owner") != dict(owner) or
+            value.get("outcome") != outcome or
+            value.get("replay_required") is not True or
+            value.get("status") not in {"pending", "published"} or
+            value.get("fingerprint") != _digest({
+                key: copy.deepcopy(item) for key, item in value.items()
+                if key != "fingerprint"
+            })):
+        raise OwnedCleanupError("publication replay evidence is invalid")
+    return value
+
+
 def seal_terminal(path: str | os.PathLike[str], *, outcome: str,
                   evidence: Mapping[str, str | os.PathLike[str]]) -> dict:
     """Seal original terminal truth and evidence before cleanup can start."""
-    manifest_path = Path(path).absolute()
-    manifest = load_manifest(manifest_path)
-    if manifest.get("terminal") is not None:
-        return copy.deepcopy(manifest["terminal"])
     if outcome not in _TERMINAL_OUTCOMES:
         raise OwnedCleanupError("cleanup terminal outcome is invalid")
     if not isinstance(evidence, Mapping) or not evidence:
         raise OwnedCleanupError("cleanup requires durable evidence")
-    evidence_root = Path(str(manifest["evidence_root"])).absolute()
-    evidence_root.mkdir(parents=True, exist_ok=True)
-    sealed = []
-    for label, raw_source in sorted(evidence.items()):
-        if not isinstance(label, str) or not label:
-            raise OwnedCleanupError("cleanup evidence label is invalid")
-        source = Path(raw_source).absolute()
-        digest = file_sha256(source)
-        destination = evidence_root / (
-            f"{manifest['owner']['run_id']}-{manifest['owner']['task_id']}-"
-            f"{label}-{digest[:16]}.evidence")
-        if destination.exists():
-            if file_sha256(destination) != digest:
-                raise OwnedCleanupError("sealed cleanup evidence conflicts")
-            row = {"name": source.name, "source_sha256": digest,
-                   "sealed_path": str(destination), "sha256": digest,
-                   "bytes": destination.stat().st_size}
-        else:
-            row = _copy_evidence(source, destination)
-        row["label"] = label
-        sealed.append(row)
-    terminal_material = {
-        "outcome": outcome,
-        "owner": copy.deepcopy(manifest["owner"]),
-        "evidence": sealed,
-    }
-    terminal = {**terminal_material,
-                "terminal_digest": _digest(terminal_material)}
-    manifest["terminal"] = terminal
-    manifest["journal"].append({
-        "event": "terminal-sealed", "outcome": outcome,
-        "terminal_digest": terminal["terminal_digest"],
-    })
-    _save_manifest(manifest_path, manifest)
-    return copy.deepcopy(terminal)
+    manifest_path = Path(path).absolute()
+    terminal_result: dict = {}
+
+    def mutate(manifest: dict) -> None:
+        nonlocal terminal_result
+        if manifest.get("terminal") is not None:
+            terminal_result = copy.deepcopy(manifest["terminal"])
+            return
+        _assert_evidence_external(manifest)
+        required = {"publication-replay"}
+        for resource in manifest["resources"].values():
+            required.update(_evidence_labels(resource.get("evidence_refs") or []))
+        supplied = set(evidence)
+        missing = required - supplied
+        if missing:
+            raise OwnedCleanupError(
+                "cleanup evidence references are unresolved: " +
+                ", ".join(sorted(missing)))
+        evidence_root = Path(str(manifest["evidence_root"])).absolute()
+        evidence_root.mkdir(parents=True, exist_ok=True)
+        sealed = []
+        publication = None
+        for label in sorted(_evidence_labels(list(evidence))):
+            raw_source = evidence[label]
+            source = Path(raw_source).absolute()
+            if label == "publication-replay":
+                publication = _validate_publication_replay(
+                    source, manifest["owner"], outcome=outcome)
+            digest = file_sha256(source)
+            destination = evidence_root / (
+                f"{manifest['owner']['run_id']}-{manifest['owner']['task_id']}-"
+                f"{label}-{digest[:16]}.evidence")
+            if destination.exists():
+                if file_sha256(destination) != digest:
+                    raise OwnedCleanupError("sealed cleanup evidence conflicts")
+                row = {"name": source.name, "source_sha256": digest,
+                       "sealed_path": str(destination), "sha256": digest,
+                       "bytes": destination.stat().st_size}
+            else:
+                row = _copy_evidence(source, destination)
+            sealed_path = Path(row["sealed_path"])
+            if (sealed_path.resolve(strict=True).parent !=
+                    evidence_root.resolve(strict=True) or
+                    sealed_path.stat().st_nlink != 1 or
+                    row["source_sha256"] != row["sha256"]):
+                raise OwnedCleanupError(
+                    "sealed cleanup evidence is not independently external")
+            row["label"] = label
+            sealed.append(row)
+        assert publication is not None
+        terminal_material = {
+            "outcome": outcome,
+            "owner": copy.deepcopy(manifest["owner"]),
+            "evidence": sealed,
+            "publication_replay": {
+                "fingerprint": publication["fingerprint"],
+                "status": publication["status"],
+                "replay_required": publication["replay_required"],
+            },
+        }
+        terminal_result = {**terminal_material,
+                           "terminal_digest": _digest(terminal_material)}
+        manifest["terminal"] = copy.deepcopy(terminal_result)
+        manifest["journal"].append({
+            "event": "terminal-sealed", "outcome": outcome,
+            "terminal_digest": terminal_result["terminal_digest"],
+        })
+
+    manifest_before = load_manifest(manifest_path)
+    if manifest_before.get("terminal") is not None:
+        return copy.deepcopy(manifest_before["terminal"])
+    _mutate_manifest(manifest_path, mutate)
+    return terminal_result
 
 
 def _ordered_resources(resources: Mapping[str, dict]) -> list[dict]:
@@ -432,6 +713,12 @@ def _current_process_started(pid: int) -> str:
 def _process_status(binding: Mapping[str, object]) -> str:
     try:
         pid = int(binding["pid"])
+        try:
+            waited, _status = os.waitpid(pid, os.WNOHANG)
+            if waited == pid:
+                return "absent"
+        except ChildProcessError:
+            pass
         os.kill(pid, 0)
     except ProcessLookupError:
         return "absent"
@@ -446,8 +733,80 @@ def _process_status(binding: Mapping[str, object]) -> str:
     return "live"
 
 
+def _verify_stable_identity(resource: Mapping[str, object], target: str) -> None:
+    stable = resource.get("stable_identity")
+    if (not isinstance(stable, dict) or not stable or
+            resource.get("stable_identity_digest") != _digest(stable)):
+        raise OwnedCleanupError("resource stable identity is unverified")
+    kind = resource.get("kind")
+    observed = resource.get("observed_identity") or {}
+    if kind == "process-group":
+        binding = observed.get("process") or {}
+        binding_matches = (
+            stable.get("binding_digest") == _digest(binding)
+            if "binding_digest" in stable else
+            stable.get("token") == binding.get("token") and
+            stable.get("run_id") == resource.get("owner", {}).get("run_id") and
+            stable.get("task_id") == resource.get("owner", {}).get("task_id")
+        )
+        if not binding_matches:
+            raise OwnedCleanupError("process stable identity changed")
+    elif kind == "worker-contract":
+        try:
+            snapshot = json.loads(
+                (Path(target) / "snapshot.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise OwnedCleanupError(
+                "worker contract stable identity is unavailable") from exc
+        identity = snapshot.get("identity") or {}
+        live = {
+            "handle": snapshot.get("handle"),
+            "run_id": identity.get("run_id"),
+            "task_id": identity.get("task_id"),
+            "workspace_fingerprint": snapshot.get("workspace_fingerprint"),
+            "authorization_fingerprint": snapshot.get(
+                "authorization_fingerprint"),
+            "command_fingerprint": snapshot.get("command_fingerprint"),
+            "binding_digest": snapshot.get("binding_digest"),
+            "created_at": snapshot.get("created_at"),
+        }
+        if stable != live:
+            raise OwnedCleanupError("worker contract stable identity changed")
+    elif kind == "worktree":
+        receipt = (resource.get("policy") or {}).get("merge_receipt") or {}
+        comparisons = {
+            "registration_path": target,
+            "branch_tip": receipt.get("branch_tip"),
+            "run_id": receipt.get("run_id"),
+            "task_id": receipt.get("task_id"),
+            "merge_receipt_id": receipt.get("receipt_id"),
+        }
+        for key, expected in comparisons.items():
+            if key in stable and stable[key] != expected:
+                raise OwnedCleanupError("worktree stable identity changed")
+    elif "sha256" in stable:
+        if not Path(target).is_file() or stable["sha256"] != file_sha256(target):
+            raise OwnedCleanupError("filesystem stable identity changed")
+
+
+def _assert_activation_binding(resource: Mapping[str, object],
+                               journal: Sequence[Mapping[str, object]]) -> None:
+    resource_id = resource.get("resource_id")
+    activation = next((event for event in reversed(journal)
+                       if event.get("event") == "activated" and
+                       event.get("resource_id") == resource_id), None)
+    if (not isinstance(activation, Mapping) or
+            activation.get("stable_identity_digest") !=
+            resource.get("stable_identity_digest") or
+            activation.get("identity_digest") !=
+            _digest(resource.get("observed_identity"))):
+        raise OwnedCleanupError("resource activation identity is unverified")
+
+
 def _precheck(resource: Mapping[str, object], owner: Mapping[str, object],
-              duplicate_targets: set[str]) -> tuple[bool, str, bool]:
+              duplicate_targets: set[str], *,
+              journal: Sequence[Mapping[str, object]] = ()) \
+        -> tuple[bool, str, bool]:
     try:
         if _closed_owner(resource.get("owner")) != dict(owner):
             raise OwnedCleanupError("resource has a foreign owner")
@@ -455,6 +814,7 @@ def _precheck(resource: Mapping[str, object], owner: Mapping[str, object],
             raise OwnedCleanupError("resource kind is invalid")
         if resource.get("state") != "active":
             raise OwnedCleanupError("resource is not activated")
+        _assert_activation_binding(resource, journal)
         target = _target(resource)
         if target in duplicate_targets:
             raise OwnedCleanupError("resource target is ambiguous")
@@ -465,9 +825,27 @@ def _precheck(resource: Mapping[str, object], owner: Mapping[str, object],
         observed = resource.get("observed_identity")
         path_observed = (observed or {}).get("path") \
             if resource.get("kind") == "process-group" else observed
-        if _path_identity(target) != path_observed:
+        current_identity = _path_identity(target)
+        if resource.get("kind") == "worker-contract" and \
+                current_identity.get("type") == "directory":
+            # Runtime delivery/artifact subdirectories legitimately change a
+            # directory's link count. Generation, containment, mode and the
+            # exact live snapshot identity below remain immutable authority.
+            comparable = {
+                key: value for key, value in current_identity.items()
+                if key != "links"
+            }
+            observed_comparable = {
+                key: value for key, value in (path_observed or {}).items()
+                if key != "links"
+            }
+        else:
+            comparable = current_identity
+            observed_comparable = path_observed
+        if comparable != observed_comparable:
             raise OwnedCleanupError("resource identity changed or is dirty")
-        current_path_identity = _path_identity(target)
+        _verify_stable_identity(resource, target)
+        current_path_identity = current_identity
         if (current_path_identity.get("type") == "file" and
                 current_path_identity.get("links", 1) > 1):
             raise OwnedCleanupError("resource target is hard-linked")
@@ -566,15 +944,18 @@ def _receipt_path(manifest_path: Path) -> Path:
 def _journal_event(path: str | os.PathLike[str], event: Mapping[str, object]) \
         -> dict:
     """Durably append one cleanup action boundary before returning."""
-    manifest_path = Path(path).absolute()
-    manifest = load_manifest(manifest_path)
     row = copy.deepcopy(dict(event))
-    if row.get("event") not in {
-            "action-started", "action-cleaned", "action-refused"} or \
-            row.get("resource_id") not in manifest["resources"]:
-        raise OwnedCleanupError("cleanup journal event is invalid")
-    manifest["journal"].append(row)
-    return _save_manifest(manifest_path, manifest)
+    manifest_path = Path(path).absolute()
+
+    def mutate(manifest: dict) -> None:
+        if row.get("event") not in {
+                "action-started", "action-cleaned", "action-refused"} or \
+                row.get("resource_id") not in manifest["resources"]:
+            raise OwnedCleanupError("cleanup journal event is invalid")
+        manifest["journal"].append(row)
+
+    committed, _ = _mutate_manifest(manifest_path, mutate)
+    return committed
 
 
 def _journal_states(manifest: Mapping[str, object]) -> dict[str, str]:
@@ -610,18 +991,77 @@ def _load_receipt(path: Path) -> dict | None:
     return value
 
 
+def _validate_terminal(manifest: Mapping[str, object]) -> dict:
+    terminal = manifest.get("terminal")
+    if (not isinstance(terminal, dict) or
+            terminal.get("terminal_digest") != _digest({
+                key: copy.deepcopy(value) for key, value in terminal.items()
+                if key != "terminal_digest"
+            })):
+        raise OwnedCleanupError("original terminal outcome is not sealed")
+    labels = set()
+    for row in terminal.get("evidence") or []:
+        if not isinstance(row, dict):
+            raise OwnedCleanupError("sealed cleanup evidence is invalid")
+        sealed = Path(str(row.get("sealed_path") or ""))
+        try:
+            valid = (sealed.is_file() and not sealed.is_symlink() and
+                     sealed.stat().st_nlink == 1 and
+                     sealed.stat().st_size == row.get("bytes") and
+                     file_sha256(sealed) == row.get("sha256") ==
+                     row.get("source_sha256") and
+                     sealed.resolve(strict=True).parent ==
+                     Path(str(manifest["evidence_root"])).resolve(strict=True))
+        except OSError:
+            valid = False
+        if not valid:
+            raise OwnedCleanupError("sealed cleanup evidence is invalid")
+        labels.add(row.get("label"))
+    required = {"publication-replay"}
+    for resource in (manifest.get("resources") or {}).values():
+        required.update(_evidence_labels(resource.get("evidence_refs") or []))
+    if not required.issubset(labels):
+        raise OwnedCleanupError("sealed cleanup evidence references are incomplete")
+    replay = terminal.get("publication_replay") or {}
+    if (replay.get("replay_required") is not True or
+            replay.get("status") not in {"pending", "published"} or
+            not isinstance(replay.get("fingerprint"), str)):
+        raise OwnedCleanupError("publication replay obligation is unsealed")
+    return copy.deepcopy(terminal)
+
+
+def _validate_receipt_binding(receipt: Mapping[str, object],
+                              manifest: Mapping[str, object]) -> None:
+    terminal = _validate_terminal(manifest)
+    if (receipt.get("manifest_digest") != manifest.get("manifest_digest") or
+            receipt.get("manifest_revision") != manifest.get("revision") or
+            receipt.get("terminal_digest") != terminal.get("terminal_digest") or
+            receipt.get("owner") != manifest.get("owner") or
+            receipt.get("replay_key") != _digest({
+                "manifest_digest": manifest.get("manifest_digest"),
+                "manifest_revision": manifest.get("revision"),
+                "terminal_digest": terminal.get("terminal_digest"),
+            })):
+        raise OwnedCleanupError(
+            "cleanup receipt is stale or bound to another manifest revision")
+
+
 def cleanup_manifest(path: str | os.PathLike[str]) -> dict:
+    """Serialize concurrent callbacks and replay only an exactly bound receipt."""
+    manifest_path = Path(path).absolute()
+    with _manifest_lock(manifest_path, suffix=".cleanup.lock"):
+        return _cleanup_manifest_locked(manifest_path)
+
+
+def _cleanup_manifest_locked(path: str | os.PathLike[str]) -> dict:
     """Revalidate, clean in reverse dependencies, and prove zero leaks."""
     manifest_path = Path(path).absolute()
+    manifest = load_manifest(manifest_path)
     prior = _load_receipt(_receipt_path(manifest_path))
     if prior is not None:
+        _validate_receipt_binding(prior, manifest)
         return copy.deepcopy(prior)
-    manifest = load_manifest(manifest_path)
-    terminal = manifest.get("terminal")
-    if not isinstance(terminal, dict) or terminal.get("terminal_digest") != \
-            _digest({key: value for key, value in terminal.items()
-                     if key != "terminal_digest"}):
-        raise OwnedCleanupError("original terminal outcome is not sealed")
+    terminal = _validate_terminal(manifest)
     resources = manifest["resources"]
     ordered = _ordered_resources(resources)
     journal_states = _journal_states(manifest)
@@ -646,7 +1086,8 @@ def cleanup_manifest(path: str | os.PathLike[str]) -> dict:
             eligible, reason, exists = True, "durable action postcheck is absent", False
         else:
             eligible, reason, exists = _precheck(
-                resource, manifest["owner"], duplicates)
+                resource, manifest["owner"], duplicates,
+                journal=manifest["journal"])
             if journal_state == "action-cleaned" and exists:
                 eligible = False
                 reason = "cleaned resource reappeared after durable postcheck"
@@ -682,7 +1123,10 @@ def cleanup_manifest(path: str | os.PathLike[str]) -> dict:
                                 "status": "cleaned",
                                 "reason": "recovered exact absent postcheck"})
                 continue
-            eligible, reason, _ = _precheck(resource, manifest["owner"], set())
+            current_manifest = load_manifest(manifest_path)
+            eligible, reason, _ = _precheck(
+                resource, manifest["owner"], set(),
+                journal=current_manifest["journal"])
             if not eligible:
                 results.append({"resource_id": resource_id,
                                 "kind": resource["kind"],
@@ -741,6 +1185,7 @@ def cleanup_manifest(path: str | os.PathLike[str]) -> dict:
     material = {
         "schema": RECEIPT_SCHEMA,
         "manifest_digest": manifest["manifest_digest"],
+        "manifest_revision": manifest["revision"],
         "terminal_digest": terminal["terminal_digest"],
         "original_outcome": terminal["outcome"],
         "owner": copy.deepcopy(manifest["owner"]),
@@ -752,6 +1197,7 @@ def cleanup_manifest(path: str | os.PathLike[str]) -> dict:
             row["status"] == "cleaned" for row in results) else "attention",
         "replay_key": _digest({
             "manifest_digest": manifest["manifest_digest"],
+            "manifest_revision": manifest["revision"],
             "terminal_digest": terminal["terminal_digest"],
         }),
     }
@@ -764,9 +1210,6 @@ def seal_and_cleanup(path: str | os.PathLike[str], *, outcome: str,
                      evidence: Mapping[str, str | os.PathLike[str]]) -> dict:
     """Idempotent terminal callback: first outcome wins; callbacks replay."""
     manifest_path = Path(path).absolute()
-    prior = _load_receipt(_receipt_path(manifest_path))
-    if prior is not None:
-        return copy.deepcopy(prior)
     seal_terminal(manifest_path, outcome=outcome, evidence=evidence)
     return cleanup_manifest(manifest_path)
 
@@ -775,6 +1218,4 @@ def _rewrite_for_test(path: str | os.PathLike[str],
                       mutate: Callable[[dict], None]) -> None:
     """Test seam for constructing validly encoded hostile manifests."""
     manifest_path = Path(path).absolute()
-    manifest = load_manifest(manifest_path)
-    mutate(manifest)
-    _save_manifest(manifest_path, manifest)
+    _mutate_manifest(manifest_path, lambda manifest: mutate(manifest))
