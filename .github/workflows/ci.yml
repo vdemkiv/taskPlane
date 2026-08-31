@@ -109,7 +109,7 @@ jobs:
               taskplane/tests/test_stage_release_matrix.py
               taskplane/tests/test_stage_loop_integration.py
               taskplane/tests/test_stage_cli.py
-              taskplane/tests/test_r0006_python_matrix.py
+              taskplane/tests/test_github_workflow_execution.py::test_supported_python_matrix_compiles_imports_before_tests
           - python: "3.11"
             tests: >-
               taskplane/tests/test_r0002_reviewkernel_regression_floor.py
@@ -123,7 +123,7 @@ jobs:
               taskplane/tests/test_stage_release_matrix.py
               taskplane/tests/test_stage_loop_integration.py
               taskplane/tests/test_stage_cli.py
-              taskplane/tests/test_r0006_python_matrix.py
+              taskplane/tests/test_github_workflow_execution.py::test_supported_python_matrix_compiles_imports_before_tests
           - python: "3.12"
             tests: >-
               taskplane/tests/test_r0002_reviewkernel_regression_floor.py
@@ -137,7 +137,7 @@ jobs:
               taskplane/tests/test_stage_release_matrix.py
               taskplane/tests/test_stage_loop_integration.py
               taskplane/tests/test_stage_cli.py
-              taskplane/tests/test_r0006_python_matrix.py
+              taskplane/tests/test_github_workflow_execution.py::test_supported_python_matrix_compiles_imports_before_tests
           - python: "3.13"
             tests: >-
               taskplane/tests/test_r0002_reviewkernel_regression_floor.py
@@ -151,7 +151,7 @@ jobs:
               taskplane/tests/test_stage_release_matrix.py
               taskplane/tests/test_stage_loop_integration.py
               taskplane/tests/test_stage_cli.py
-              taskplane/tests/test_r0006_python_matrix.py
+              taskplane/tests/test_github_workflow_execution.py::test_supported_python_matrix_compiles_imports_before_tests
     steps:
       # Third-party actions are pinned to full commit SHAs (tag as comment) so
       # a moved/compromised tag cannot change what runs in the release-trust path.
@@ -543,12 +543,12 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
           python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
-      - name: Cycle, graph quality, and public CLI recovery contracts
+      - name: Current graph quality, authority, and public CLI contracts
         run: >-
           python3 -m pytest -q
-          taskplane/tests/test_r0006_import_cycle_ratchet.py
-          taskplane/tests/test_r0006_graph_quality.py
-          taskplane/tests/test_r0006_cli_errors.py
+          taskplane/tests/test_graph_quality.py::TestGraphQualityRecord::test_stale_graph_cannot_be_rescued_by_expansion
+          taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied
+          taskplane/tests/test_stage_cli.py::test_stage_runtime_refusal_is_nonzero_and_machine_readable
 
   # P1 is push-only: pull_request uses a synthetic merge/branch SHA and must
   # remain local_green. The protected floors, terminal join, and browser cell
@@ -938,7 +938,6 @@ jobs:
         run: >-
           python3 -m pytest -q
           taskplane/tests/test_codex_compat.py
-          taskplane/tests/test_v101_fixes.py
 
   # Release-history truth. Five releases (v2.5.0, v2.5.1, v2.6.0, v2.8.1,
   # v2.8.2) shipped with NO tag and nobody noticed for months, because

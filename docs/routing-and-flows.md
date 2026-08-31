@@ -273,8 +273,8 @@ Dogfood example: `TASKPLANE_AUDIT_EVERY=1` makes EVERY review carry the
 sweep — useful while tuning a new repo's routing signals. taskplane's own
 loop runs under the default cadence; the sweep, the auto-filing, and the
 byte-frozen extraction are pinned by
-`taskplane/tests/test_audit_sweep.py` and
-`taskplane/tests/test_audit_extraction.py`.
+`taskplane/tests/test_audit_sweep.py`, including direct cadence, gate,
+and engineering-payload behavior.
 
 ## Evaluate and final engineering review are lens-free judges
 

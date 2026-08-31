@@ -8117,8 +8117,8 @@ from evidence import EVIDENCE_JUDGMENT_KEYS, evidence  # noqa: E402,F401
 
 # ---------------------------------------------------------------------------
 # Audit sweep cadence + router-regression auto-filing (v3 Phase 1, R-0001):
-# MOVED VERBATIM to audit.py (R-0006 / D-0004, v3 Phase 2), byte-frozen by
-# taskplane/tests/test_audit_extraction.py. The names below are CALLER
+# MOVED VERBATIM to audit.py (R-0006 / D-0004, v3 Phase 2), protected by
+# direct cadence/gate tests in taskplane/tests/test_audit_sweep.py. The names below are CALLER
 # aliases bound once at import — NOT patch seams (t9 / R-0011 E6). Patch the
 # MACHINERY at audit.<name> (audit.audit_counter, audit.audit_every, …),
 # resolved module-locally inside audit.py: rebinding the loop alias is

@@ -7,7 +7,7 @@ every-Nth/release/corrupt-state audit_due rule, the em brief's audit block
 (router_audit), and the em-gate half that auto-files n/a-lens findings as
 router regressions into findings.json and blocks sign-off on them.
 
-Behavior is BYTE-FROZEN by taskplane/tests/test_audit_extraction.py: a
+Behavior is protected directly by taskplane/tests/test_audit_sweep.py: a
 differential corpus captured from the pre-extraction loop.py replays against
 this module and must produce identical gate error lists, findings.json
 bytes, and trace event names. No guardrail here may loosen.

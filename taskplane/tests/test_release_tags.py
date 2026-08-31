@@ -28,6 +28,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import ci_release_tags as gate     # noqa: E402
+import ci_evals  # noqa: E402
 import release_provenance as provenance  # noqa: E402
 from taskplane import release_evidence  # noqa: E402
 from taskplane import (  # noqa: E402
@@ -42,6 +43,104 @@ def _git(root, *args, check=True):
     if check and p.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {p.stdout}")
     return p.stdout.strip()
+
+
+def _pushed_sha_receipts(sha):
+    return [
+        {"name": name, "sha": sha, "conclusion": "success"}
+        for name in ci_evals.PUSHED_GREEN_REQUIRED_CHECKS
+    ]
+
+
+def _pushed_sha_repository(tmp_path):
+    remote = tmp_path / "remote.git"
+    repository = tmp_path / "repository"
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)],
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    repository.mkdir()
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.name", "taskplane-test")
+    _git(repository, "config", "user.email", "taskplane@example.invalid")
+    (repository / "tracked.txt").write_text("one\n", encoding="utf-8")
+    _git(repository, "add", "tracked.txt")
+    _git(repository, "commit", "-qm", "initial")
+    _git(repository, "branch", "-M", "main")
+    _git(repository, "remote", "add", "origin", str(remote))
+    _git(repository, "push", "-q", "-u", "origin", "main")
+    return repository, remote, _git(repository, "rev-parse", "HEAD")
+
+
+def _run_pushed_sha_proof(repository, checked_sha, receipts):
+    receipt_path = repository.parent / "required-checks.json"
+    receipt_path.write_text(
+        json.dumps(_pushed_sha_receipts(receipts), sort_keys=True),
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [
+            sys.executable,
+            str(Path(ROOT) / "scripts" / "ci_evals.py"),
+            "--prove-pushed-sha",
+            "--checked-sha", checked_sha,
+            "--check-receipts", str(receipt_path),
+            "--root", str(repository),
+            "--json",
+        ],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+
+def test_pushed_sha_proof_fetches_before_classifying_stale_tracking_ref(
+        tmp_path):
+    repository, remote, stale_sha = _pushed_sha_repository(tmp_path)
+    publisher = tmp_path / "publisher"
+    subprocess.run(
+        ["git", "clone", "-q", str(remote), str(publisher)],
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    _git(publisher, "config", "user.name", "taskplane-test")
+    _git(publisher, "config", "user.email", "taskplane@example.invalid")
+    _git(publisher, "checkout", "-q", "-B", "main", "origin/main")
+    (publisher / "tracked.txt").write_text("remote advanced\n", encoding="utf-8")
+    _git(publisher, "commit", "-qam", "remote advanced")
+    _git(publisher, "push", "-q", "origin", "main")
+    remote_sha = _git(publisher, "rev-parse", "HEAD")
+    assert _git(repository, "rev-parse", "refs/remotes/origin/main") == stale_sha
+
+    result = _run_pushed_sha_proof(repository, stale_sha, stale_sha)
+
+    assert result.returncode == 1
+    proof = json.loads(result.stdout)
+    assert proof["status"] == "local_green"
+    assert proof["fetch_receipt"]["ok"] is True
+    assert proof["remote_sha"] == remote_sha
+    assert proof["behind_count"] == 1
+
+
+def test_pushed_sha_proof_refuses_cached_ref_when_fetch_fails(tmp_path):
+    repository, remote, sha = _pushed_sha_repository(tmp_path)
+    unavailable = tmp_path / "remote-unavailable.git"
+    remote.rename(unavailable)
+    assert _git(repository, "rev-parse", "refs/remotes/origin/main") == sha
+
+    result = _run_pushed_sha_proof(repository, sha, sha)
+
+    assert result.returncode == 1
+    proof = json.loads(result.stdout)
+    assert proof["status"] == "refused"
+    assert proof["fetch_receipt"]["ok"] is False
+    assert proof["remote_sha"] is None
+    assert any("fetch failed" in row for row in proof["errors"])
 
 
 class _Repo:
