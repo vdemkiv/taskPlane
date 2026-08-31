@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -21,7 +23,7 @@ from taskplane import (
     views,
 )
 from taskplane.host_capabilities import Observation, negotiate_host_surfaces
-from taskplane.host_native import HostSurfaceSnapshot
+from taskplane.host_native import HostSurfaceEvent, HostSurfaceSnapshot
 from taskplane.tests.test_stage_dispatch import _receipt, _stage_and_handoff
 
 
@@ -105,6 +107,18 @@ def _snapshot(dispatch: dict[str, object]) -> HostSurfaceSnapshot:
         evidence=(f"sha256:{dispatch['startup_sha256']}",),
         safe_actions=("inspect",),
     )
+
+
+def _host_runtime_module():
+    path = Path(__file__).resolve().parents[2] / "hooks" / \
+        "host_native_runtime.py"
+    spec = importlib.util.spec_from_file_location(
+        "stage_cross_host_native_runtime", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _git(workspace: Path, *args: str) -> str:
@@ -451,6 +465,55 @@ def test_cross_host_surfaces_preserve_one_canonical_bounded_startup(
     assert len(fingerprints) == 1
     assert len(startup_hashes) == 1
     assert len(handoff_fingerprints) == 1
+
+
+def test_dashboard_handoff_republishes_same_snapshot_without_portable_host_paths(
+    tmp_path: Path,
+) -> None:
+    runtime = _host_runtime_module()
+    dispatch, _stage = _dispatch()
+    snapshot = _snapshot(dispatch)
+    committed = {
+        "schema": "taskplane.dashboard-snapshot-refresh/v1",
+        "snapshot": snapshot.to_dict(),
+        "event": HostSurfaceEvent.from_snapshot(
+            snapshot, event_type="handoff").to_dict(),
+        "replayed": False,
+        "source_mode": "v4",
+    }
+    recovery = runtime.HostNativeRecovery()
+    presentations = []
+    for host in ("codex", "claude"):
+        selections = negotiate_host_surfaces(
+            host=host, host_version="test", observations={
+                name: Observation(
+                    status="supported", source=str(tmp_path / host / name),
+                    confidence="high", observed_at="100.0")
+                for name in runtime.SURFACE_CAPABILITIES
+            })
+        presentations.append(runtime.project_committed_dashboard(
+            committed, host=host, selections=selections, recovery=recovery))
+
+    codex, claude = presentations
+    assert codex["publish_head"] == claude["publish_head"]
+    assert codex["publish_head"]["sequence"] == snapshot.sequence
+    assert [event.sequence for event in recovery.audit] == [snapshot.sequence]
+    assert codex["projections"]["dashboard"]["canonical"] == \
+        claude["projections"]["dashboard"]["canonical"] == snapshot.to_dict()
+    for result in presentations:
+        acknowledgement = result["acknowledgement"]
+        assert acknowledgement["identity"]["workflow_id"] == \
+            snapshot.workflow_id
+        assert acknowledgement["evidence"] == list(snapshot.evidence)
+        assert acknowledgement["gate"] == snapshot.to_dict()["values"].get(
+            "gate", {})
+
+    portable = json.dumps(
+        [codex["acknowledgement"], claude["acknowledgement"]],
+        sort_keys=True)
+    assert str(tmp_path) not in portable
+    assert "host_path" not in portable
+    assert "workspace_path" not in portable
 
 
 def test_real_loop_journey_emits_one_bounded_dispatch_on_every_host(
