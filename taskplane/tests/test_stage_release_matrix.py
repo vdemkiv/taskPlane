@@ -4,7 +4,10 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -254,3 +257,41 @@ def test_claude_plugin_upload_is_deterministic_and_provenanced(
         assert provenance["archive"] == filename
         assert provenance["sha256"] == hashlib.sha256(
             artifact.read_bytes()).hexdigest()
+
+    # Exercise the actual script boundary with no ambient import-path help.
+    # Importing the module above cannot prove that release_provenance can find
+    # taskplane when Python starts with scripts/ as sys.path[0].
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    cli_outputs = {
+        "zip": tmp_path / "cli-zip",
+        "plugin": tmp_path / "cli-plugin",
+    }
+    for extension, output_dir in cli_outputs.items():
+        command = [
+            sys.executable,
+            str(ROOT / "scripts/package_claude.py"),
+            "--output-dir", str(output_dir),
+            "--allow-dirty",
+        ]
+        if extension == "plugin":
+            command.extend(("--ext", "plugin"))
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        artifact = output_dir / (
+            f"taskplane-{VERSION}-claude.zip" if extension == "zip"
+            else f"taskplane-{VERSION}.plugin"
+        )
+        assert artifact.is_file()
+        assert artifact.with_suffix(artifact.suffix + ".sha256").is_file()
+        assert artifact.with_suffix(
+            artifact.suffix + ".provenance.json").is_file()

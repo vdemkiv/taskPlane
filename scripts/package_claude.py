@@ -49,7 +49,11 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 MANIFEST_PATH = ROOT / ".claude-plugin" / "plugin.json"
 MARKETPLACE_PATH = ROOT / ".claude-plugin" / "marketplace.json"
 ARCHIVE_ROOT = "taskplane"
