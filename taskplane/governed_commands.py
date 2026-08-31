@@ -1238,10 +1238,14 @@ def unwind_owned_failure(
     manifest = owned_cleanup.load_manifest(manifest_path)
     if manifest.get("terminal") is not None:
         receipt = owned_cleanup.cleanup_manifest(manifest_path)
-        return {"schema": RESULT_SCHEMA, "action": "failure-unwind",
-                "error": str(error), "cleanup_receipt": receipt,
-                "cleanup_evidence":
-                    owned_cleanup.cleanup_consumer_evidence(receipt)}
+        completed = {
+            "schema": RESULT_SCHEMA, "action": "failure-unwind",
+            "error": str(error), "cleanup_receipt": receipt,
+            "cleanup_evidence":
+                owned_cleanup.cleanup_consumer_evidence(receipt),
+        }
+        return _finish_terminal_publication(
+            completed, error if isinstance(error, BaseException) else None)
     for resource_id, resource in list(manifest["resources"].items()):
         if resource.get("state") != "reserved":
             continue
@@ -1298,22 +1302,19 @@ def unwind_owned_failure(
             owner=manifest["owner"], outcome=outcome, publisher=publisher)
         replay = dict(publication["obligation"])
     except BaseException as exc:
-        # A second publication interrupt cannot replace an interruption that
-        # is already being unwound. For an ordinary original failure it stays
-        # authoritative and propagates after terminal sealing.
-        if (isinstance(error, Exception) or
-                not isinstance(error, BaseException)) and not isinstance(
-                exc, Exception):
-            raise
+        # Publication is a secondary durability surface. Even an interruption
+        # at this seam must not bypass cleanup or replace the triggering error.
         publication = {"status": "pending", "replay_required": True,
                        "error": str(exc)}
     receipt = owned_cleanup.cleanup_manifest(manifest_path)
-    return {
+    completed = {
         "schema": RESULT_SCHEMA, "action": "failure-unwind",
         "error": str(error), "cleanup_receipt": receipt,
         "cleanup_evidence": owned_cleanup.cleanup_consumer_evidence(receipt),
         "publication_replay": replay, "publication_result": publication,
     }
+    return _finish_terminal_publication(
+        completed, error if isinstance(error, BaseException) else None)
 
 
 def recover_owned_cleanup(
@@ -1343,7 +1344,9 @@ def recover_owned_cleanup(
             try:
                 publication = owned_cleanup.replay_terminal_publication(
                     manifest_path, workspace=workspace, publisher=publisher)
-            except Exception as exc:
+            except BaseException as exc:
+                # Startup publication is secondary to recovered terminal truth;
+                # cleanup must complete even when the publisher is interrupted.
                 publication = {"status": "pending", "replay_required": True,
                                "error": str(exc)}
             receipt = owned_cleanup.cleanup_manifest(manifest_path)
@@ -1370,6 +1373,10 @@ def _safe_failure_unwind(context: Mapping[str, object], *, error: object,
             context, error=error, process_binding=process_binding,
             outcome=outcome)
     except BaseException as cleanup_error:
+        if cleanup_error is error and not isinstance(error, Exception):
+            # unwind_owned_failure completed cleanup, attached its receipt, and
+            # deliberately restored the original interruption as primary.
+            raise
         # A fresh interrupt during ordinary failure cleanup is authoritative
         # and must still propagate. When an interruption is already being
         # unwound, cleanup may never replace that original outcome.

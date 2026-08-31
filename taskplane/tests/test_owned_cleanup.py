@@ -31,6 +31,16 @@ TERMINAL_OUTCOME_CASES = (
                  id="terminal-replay-keyboard-interrupt"),
     pytest.param("success", "already-terminal", SystemExit,
                  id="terminal-replay-system-exit"),
+    pytest.param("recovery", "startup-recovery-abandoned", KeyboardInterrupt,
+                 id="startup-recovery-abandoned-publisher-keyboard-interrupt"),
+    pytest.param("recovery", "startup-recovery-abandoned", SystemExit,
+                 id="startup-recovery-abandoned-publisher-system-exit"),
+    pytest.param(
+        "recovery", "startup-recovery-already-terminal", KeyboardInterrupt,
+        id="startup-recovery-already-terminal-publisher-keyboard-interrupt"),
+    pytest.param(
+        "recovery", "startup-recovery-already-terminal", SystemExit,
+        id="startup-recovery-already-terminal-publisher-system-exit"),
 )
 
 
@@ -87,11 +97,162 @@ def _owned_file(manifest: Path, root: Path, name: str = "artifact.txt", *,
     return resource_id
 
 
+def _seal_startup_recovery_terminal(context: dict) -> None:
+    """Leave one terminal manifest uncleaned for startup replay coverage."""
+    manifest_path = Path(context["manifest"])
+    cleanup.abandon_resource(manifest_path, context["process_resource_id"])
+    manifest = cleanup.load_manifest(manifest_path)
+    recovery_root = manifest_path.parent.parent / "recovery" / manifest_path.stem
+    recovery_root.mkdir(parents=True, exist_ok=True)
+    terminal_source = recovery_root / "terminal-state.json"
+    handoff_source = recovery_root / "handoff.json"
+    terminal_source.write_text(
+        json.dumps({"owner": manifest["owner"], "outcome": "recovery"}) +
+        "\n", encoding="utf-8")
+    handoff_source.write_text(
+        json.dumps({"owner": manifest["owner"], "trigger": "recovery"}) +
+        "\n", encoding="utf-8")
+    replay_source = (manifest_path.parent.parent / "publication" /
+                     f"{manifest_path.stem}-startup.json")
+    cleanup.write_publication_replay(
+        replay_source, owner=manifest["owner"], outcome="recovery",
+        source_revision=max(1, int(manifest["revision"])),
+        source_fingerprint="d" * 64, trigger="recovery")
+    cleanup.seal_terminal(
+        manifest_path, outcome="recovery", evidence={
+            "terminal-state": terminal_source,
+            "handoff": handoff_source,
+            "publication-replay": replay_source,
+        })
+
+
 @pytest.mark.parametrize(
     "outcome,publication_phase,publication_exception", TERMINAL_OUTCOME_CASES)
 def test_cleanup_runs_on_every_terminal_outcome(
         tmp_path, outcome, publication_phase, publication_exception,
         monkeypatch):
+    if publication_phase in {
+            "startup-recovery-abandoned",
+            "startup-recovery-already-terminal",
+    }:
+        recovery_kind = publication_phase.removeprefix("startup-recovery-")
+        workspace = tmp_path / (
+            f"{publication_phase}-{publication_exception.__name__.lower()}")
+        workspace.mkdir()
+        tokens = {
+            ("abandoned", KeyboardInterrupt): "a" * 32,
+            ("abandoned", SystemExit): "b" * 32,
+            ("already-terminal", KeyboardInterrupt): "c" * 32,
+            ("already-terminal", SystemExit): "d" * 32,
+        }
+        context = governed_commands.prepare_owned_cleanup(
+            str(workspace), "agent:startup-recovery",
+            run_id="run-startup-recovery", task_id="task-startup-recovery",
+            attempt=1, token=tokens[(recovery_kind, publication_exception)])
+        owned_root = workspace / "owned"
+        artifact_id = _owned_file(
+            Path(context["manifest"]), owned_root,
+            f"{recovery_kind}.txt", evidence_ref="terminal-state")
+        artifact_path = owned_root / f"{recovery_kind}.txt"
+        if recovery_kind == "already-terminal":
+            _seal_startup_recovery_terminal(context)
+        interrupted = publication_exception(
+            f"{publication_phase} publisher interrupted")
+        publication_observations = []
+
+        def interrupt_startup_publication(
+                _workspace, *, outcome, **_kwargs):
+            terminal = cleanup.load_manifest(context["manifest"])["terminal"]
+            publication_observations.append({
+                "outcome": outcome,
+                "sealed_outcome": terminal["outcome"],
+                "resource_live": artifact_path.is_file(),
+            })
+            raise interrupted
+
+        recovered = governed_commands.recover_owned_cleanup(
+            str(workspace), run_id="run-startup-recovery",
+            task_id="task-startup-recovery", before_attempt=2,
+            publisher=interrupt_startup_publication)
+        assert len(recovered["recovered"]) == 1
+        row = recovered["recovered"][0]
+        receipt = row["cleanup_receipt"]
+        assert row["action"] == (
+            "failure-unwind" if recovery_kind == "abandoned" else
+            "startup-recovery")
+        if recovery_kind == "abandoned":
+            assert row["error"] == \
+                "startup recovered an abandoned older attempt"
+        assert row["publication_result"] == {
+            "status": "pending", "replay_required": True,
+            "error": str(interrupted),
+        }
+        assert receipt["cleanup_status"] == "clean"
+        assert receipt["original_outcome"] == "recovery"
+        assert receipt["leak_count"] == recovered["leak_count"] == 0
+        assert row["cleanup_evidence"] == \
+            cleanup.cleanup_consumer_evidence(receipt)
+        assert row["cleanup_evidence"]["original_outcome"] == "recovery"
+        assert row["cleanup_evidence"]["leak_count"] == 0
+        artifact_result = next(
+            item for item in receipt["resources"]
+            if item["resource_id"] == artifact_id)
+        assert artifact_result["status"] == "cleaned"
+        assert not artifact_path.exists()
+        manifest = cleanup.load_manifest(context["manifest"])
+        assert manifest["terminal"]["outcome"] == "recovery"
+        assert {item["label"] for item in manifest["terminal"]["evidence"]} == {
+            "terminal-state", "handoff", "publication-replay",
+        }
+        assert all(Path(item["sealed_path"]).is_file()
+                   for item in manifest["terminal"]["evidence"])
+        receipt_path = Path(context["manifest"]).with_name(
+            Path(context["manifest"]).name + ".cleanup-receipt.json")
+        assert json.loads(receipt_path.read_text(encoding="utf-8")) == receipt
+        assert publication_observations == [{
+            "outcome": "recovery", "sealed_outcome": "recovery",
+            "resource_live": True,
+        }]
+
+        if recovery_kind == "abandoned":
+            # The triggering interruption remains primary when this same
+            # abandoned-manifest unwind is entered from an interrupted launch.
+            primary_context = governed_commands.prepare_owned_cleanup(
+                str(workspace), "agent:startup-primary",
+                run_id="run-startup-primary", task_id="task-startup-primary",
+                attempt=1, token=("e" if publication_exception is
+                                  KeyboardInterrupt else "f") * 32)
+            primary_root = workspace / "primary-owned"
+            primary_artifact_id = _owned_file(
+                Path(primary_context["manifest"]), primary_root,
+                "primary.txt", evidence_ref="terminal-state")
+            primary = publication_exception("primary interruption")
+            secondary = publication_exception("secondary publisher interrupt")
+
+            def interrupt_secondary_publication(*_args, **_kwargs):
+                raise secondary
+
+            with pytest.raises(publication_exception) as caught:
+                governed_commands.unwind_owned_failure(
+                    primary_context, error=primary, outcome="interruption",
+                    trigger="recovery",
+                    publisher=interrupt_secondary_publication)
+            assert caught.value is primary
+            primary_result = primary.cleanup_result
+            assert primary_result["publication_result"]["error"] == \
+                str(secondary)
+            assert primary_result["cleanup_receipt"][
+                "original_outcome"] == "interruption"
+            assert primary_result["cleanup_evidence"]["leak_count"] == 0
+            assert next(
+                item for item in primary_result["cleanup_receipt"]["resources"]
+                if item["resource_id"] == primary_artifact_id
+            )["status"] == "cleaned"
+            assert not (primary_root / "primary.txt").exists()
+            assert cleanup.load_manifest(primary_context["manifest"])[
+                "terminal"]["outcome"] == "interruption"
+        return
+
     if publication_phase is not None:
         workspace = tmp_path / (
             f"publication-{publication_phase}-" +
