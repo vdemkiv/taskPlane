@@ -100,11 +100,12 @@ def _replace_hook_manifest(
 
 
 def _python_matrix_entries(workflow: str) -> dict[str, tuple[str, ...]]:
-    """Return only the three bounded entries from the primary test matrix."""
+    """Return the bounded entries from the primary compatibility matrix."""
     lines = workflow.splitlines()
+    versions = ("3.10", "3.11", "3.12", "3.13")
     headers = {
         version: f'          - python: "{version}"'
-        for version in ("3.10", "3.11", "3.12")
+        for version in versions
     }
     indexes: dict[str, int] = {}
     for version, header in headers.items():
@@ -113,29 +114,26 @@ def _python_matrix_entries(workflow: str) -> dict[str, tuple[str, ...]]:
         assert len(matches) == 1, \
             f"expected one exact Python {version} test-matrix entry"
         indexes[version] = matches[0]
-    assert indexes["3.10"] < indexes["3.11"] < indexes["3.12"]
+    assert [indexes[version] for version in versions] == sorted(indexes.values())
     step_boundaries = [index for index, line in enumerate(lines)
-                       if index > indexes["3.12"] and line == "    steps:"]
-    assert step_boundaries, "Python 3.12 matrix entry has no bounded end"
-    return {
-        "3.10": tuple(lines[indexes["3.10"]:indexes["3.11"]]),
-        "3.11": tuple(lines[indexes["3.11"]:indexes["3.12"]]),
-        "3.12": tuple(lines[indexes["3.12"]:step_boundaries[0]]),
-    }
+                       if index > indexes[versions[-1]] and line == "    steps:"]
+    assert step_boundaries, "last Python matrix entry has no bounded end"
+    boundaries = [indexes[version] for version in versions] + [step_boundaries[0]]
+    return {version: tuple(lines[boundaries[offset]:boundaries[offset + 1]])
+            for offset, version in enumerate(versions)}
 
 
-def test_ci_runs_the_stage_release_contract_on_python_310_through_312() \
+def test_ci_runs_the_stage_release_contract_on_python_310_through_313() \
         -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(
         encoding="utf-8")
     entries = _python_matrix_entries(workflow)
 
-    for version in ("3.10", "3.11"):
+    for version in ("3.10", "3.11", "3.12", "3.13"):
         for test_file in STAGE_MATRIX_TESTS:
             selector = "              " + test_file
             assert entries[version].count(selector) == 1, \
                 f"Python {version} must run exact selector {test_file}"
-    assert entries["3.12"].count("              taskplane/tests") == 1
 
 
 def test_ci_builds_and_provenances_the_deterministic_claude_plugin() -> None:

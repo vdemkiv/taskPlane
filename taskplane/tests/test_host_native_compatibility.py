@@ -318,6 +318,13 @@ def test_session_recovery_republishes_committed_unpublished_snapshot_without_new
     }
     assert declaration["acknowledgement"] == \
         "taskplane.host-native-acknowledgement/v1"
+    assert runtime._configured_loop_status() is loop_status
+    frozen_design = {"schema": "taskplane.dashboard-design-graph/v1",
+                     "modules": [], "edges": []}
+    projected = loop_status._PHASE_GRAPH_PROJECTOR(
+        "/portable/workspace", {"step": "design"},
+        snapshot_values={"design_graph": frozen_design})
+    assert projected["design_graph"] == frozen_design
 
     snapshot = _snapshot(7)
     calls: list[tuple[str, str, bool]] = []

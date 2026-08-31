@@ -468,13 +468,27 @@ def _surface_selections(
         observations=capability_snapshot.capabilities)
 
 
+def _phase_graph_projection(workspace: str, state=None, **kwargs) -> dict:
+    """Project package-qualified Design/Plan graphs without dashboard imports."""
+    from taskplane import plan_topology
+    return plan_topology.phase_graph_projection(
+        workspace, state, **kwargs)
+
+
+def _configured_loop_status():
+    """Compose the exact package module used by SessionStart recovery."""
+    from taskplane import loop_status
+    loop_status.configure_phase_graph_projector(_phase_graph_projection)
+    return loop_status
+
+
 def recover_session_dashboard(
         workspace: str, *, host: str,
         environment: Mapping[str, str] | None = None,
         selections: Mapping[str, SurfaceSelection] | None = None,
         recovery: HostNativeRecovery | None = None) -> dict:
     """Republish the callback-owned committed head during SessionStart."""
-    from taskplane import loop_status
+    loop_status = _configured_loop_status()
     from taskplane.settings import load_settings
     settings = load_settings()
     refresh_policy = settings.dashboard.refresh
@@ -525,7 +539,7 @@ def _main(argv: list[str]) -> int:
     # compatible installations lack the callback; once present, no-active is
     # an ordinary fresh-install outcome while corrupt/ambiguous state arrives
     # as an explicit action-disabled snapshot and is still projected.
-    from taskplane import loop_status
+    loop_status = _configured_loop_status()
     if callable(getattr(loop_status, "refresh_dashboard_snapshot", None)):
         recover_session_dashboard(workspace, host=host)
     return 0

@@ -47,7 +47,7 @@
       "role": "tp-lens",
       "role_instructions": "<PLUGIN>/agents/tp-lens.md",
       "role_marker": "taskplane-role:tp-lens",
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task_name": "tp_lens_security_8c38142f",
       "task_slot": "lens-security",
       "tier": "deep"
@@ -87,7 +87,7 @@
       "role": "tp-lens",
       "role_instructions": "<PLUGIN>/agents/tp-lens.md",
       "role_marker": "taskplane-role:tp-lens",
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task_name": "tp_lens_code_quality_359a6283",
       "task_slot": "lens-code-quality",
       "tier": "deep"
@@ -125,7 +125,7 @@
       "role": "tp-lens",
       "role_instructions": "<PLUGIN>/agents/tp-lens.md",
       "role_marker": "taskplane-role:tp-lens",
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task_name": "tp_lens_testability_cb43f3ad",
       "task_slot": "lens-testability",
       "tier": "deep"
@@ -161,7 +161,7 @@
       "role": "tp-lens",
       "role_instructions": "<PLUGIN>/agents/tp-lens.md",
       "role_marker": "taskplane-role:tp-lens",
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task_name": "tp_lens_scalability_857b3e85",
       "task_slot": "lens-scalability",
       "tier": "deep"
@@ -197,7 +197,7 @@
       "role": "tp-lens",
       "role_instructions": "<PLUGIN>/agents/tp-lens.md",
       "role_marker": "taskplane-role:tp-lens",
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task_name": "tp_lens_integrability_9aaac1d0",
       "task_slot": "lens-integrability",
       "tier": "deep"
@@ -224,7 +224,7 @@
       "role": "tp-lens",
       "role_instructions": "<PLUGIN>/agents/tp-lens.md",
       "role_marker": "taskplane-role:tp-lens",
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task_name": "tp_lens_tech_writer_f889ba12",
       "task_slot": "lens-tech-writer",
       "tier": "deep"
@@ -260,7 +260,7 @@
       "role": "tp-lens",
       "role_instructions": "<PLUGIN>/agents/tp-lens.md",
       "role_marker": "taskplane-role:tp-lens",
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task_name": "tp_lens_qa_471e2e6f",
       "task_slot": "lens-qa",
       "tier": "deep"
@@ -287,7 +287,7 @@
       "role": "tp-lens",
       "role_instructions": "<PLUGIN>/agents/tp-lens.md",
       "role_marker": "taskplane-role:tp-lens",
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task_name": "tp_lens_backend_f49b3f3e",
       "task_slot": "lens-backend",
       "tier": "deep"
@@ -314,7 +314,7 @@
       "role": "tp-lens",
       "role_instructions": "<PLUGIN>/agents/tp-lens.md",
       "role_marker": "taskplane-role:tp-lens",
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task_name": "tp_lens_architecture_ce6dbb2d",
       "task_slot": "lens-architecture",
       "tier": "deep"
@@ -322,6 +322,6 @@
   ],
   "instruction": "Dispatch ONE tp-lens agent per DEEP brief IN PARALLEL (single message, multiple Task calls) plus one for the SWEEP \u2014 each activates its read-only contract, applies exactly its lens to the diff, and writes its own findings.json. None can modify code (read-only harness). When they return, merge every lens's findings into one findings dashboard (`tp findings`) for the human review gate.",
   "nothing_to_review": false,
-  "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+  "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
   "sweep": null
 }

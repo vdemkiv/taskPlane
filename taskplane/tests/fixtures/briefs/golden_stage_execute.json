@@ -398,7 +398,7 @@
         "mode": "guide-and-recover",
         "schema": "taskplane.runtime-guidance/v1"
       },
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task": {
         "deps": [],
         "id": "t1",
@@ -705,7 +705,7 @@
         "mode": "guide-and-recover",
         "schema": "taskplane.runtime-guidance/v1"
       },
-      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+      "settings_digest": "d306d8f0b0f0144e31b003e5e81d11bb2792b7c90bf568f15a26931c42df8000",
       "task": {
         "deps": [],
         "id": "t2",

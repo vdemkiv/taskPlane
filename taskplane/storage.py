@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import tempfile
@@ -280,51 +281,105 @@ def _atomic_json(path: str, value: dict) -> None:
 
 @contextmanager
 def _storage_file_lock(path: str, *, timeout: float = 10.0):
-    """Cross-host storage lock with a fail-closed mkdir fallback."""
+    """Cross-host storage lock with a fail-closed, owner-bound fallback."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    handle = None
     try:
         handle = open(path, "a+b")
+    except OSError as exc:
+        raise StorageIdentityError(
+            f"could not open dashboard storage lock: {exc}") from exc
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl is not None:
         try:
-            import fcntl
-            fcntl.flock(handle, fcntl.LOCK_EX)
-        except (ImportError, OSError):
-            handle.close()
-            handle = None
-    except OSError:
-        handle = None
-    if handle is not None:
-        try:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise StorageIdentityError(
+                    f"could not acquire dashboard storage lock: {exc}") \
+                    from exc
             yield
         finally:
             handle.close()
         return
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
+    if msvcrt is not None:
+        try:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            deadline = time.monotonic() + max(0.1, timeout)
+            while True:
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        raise StorageIdentityError(
+                            "could not acquire dashboard storage lock") \
+                            from exc
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            handle.close()
+        return
+    handle.close()
     lockdir = path + ".lockdir"
+    owner_path = os.path.join(lockdir, "owner")
+    owner = secrets.token_hex(32)
     deadline = time.monotonic() + max(0.1, timeout)
     while True:
         try:
             os.mkdir(lockdir)
-            break
         except FileExistsError:
-            try:
-                if time.time() - os.stat(lockdir).st_mtime > 120.0:
-                    os.rmdir(lockdir)
-                    continue
-            except OSError:
-                pass
             if time.monotonic() >= deadline:
                 raise StorageIdentityError(
                     "could not acquire dashboard storage lock")
             time.sleep(0.01)
+            continue
         except OSError as exc:
             raise StorageIdentityError(
                 f"could not acquire dashboard storage lock: {exc}") from exc
+        try:
+            with open(owner_path, "x", encoding="ascii") as marker:
+                marker.write(owner)
+                marker.flush()
+                os.fsync(marker.fileno())
+        except OSError as exc:
+            try:
+                os.rmdir(lockdir)
+            except OSError:
+                pass
+            raise StorageIdentityError(
+                f"could not establish dashboard lock ownership: {exc}") \
+                from exc
+        break
     try:
         yield
     finally:
         try:
+            with open(owner_path, encoding="ascii") as marker:
+                observed_owner = marker.read()
+            if observed_owner != owner:
+                raise StorageIdentityError(
+                    "could not release dashboard storage lock: "
+                    "ownership is ambiguous")
+            os.unlink(owner_path)
             os.rmdir(lockdir)
+        except StorageIdentityError:
+            raise
         except OSError as exc:
             raise StorageIdentityError(
                 f"could not release dashboard storage lock: {exc}") from exc

@@ -25,6 +25,10 @@ def test_valid_canonical_settings_load_typed():
     assert settings.lenses.counts["build"] == 0
     assert settings.build.shards == 1
     assert settings.tests.backend == "pytest"
+    assert settings.limits.budgets["lens_deep_max_actions"] == 45
+    assert settings.limits.budgets["lens_sweep_max_actions"] == 30
+    assert settings.limits.timeouts["lens_wait_seconds"] == 1800
+    assert settings.limits.timeouts["lens_minimum_wait_seconds"] == 300
     assert settings.workflow.transport == "native"
     assert len(settings.digest) == 64
     with pytest.raises(FrozenInstanceError):
@@ -50,6 +54,11 @@ def test_invalid_or_unknown_settings_fail_closed(tmp_path):
     conflicting["workflow"]["transport"] = "local-scheduler"
     with pytest.raises(SettingsError, match="native"):
         load_settings(_write(tmp_path, conflicting))
+
+    invalid_wait = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    invalid_wait["limits"]["timeouts"]["lens_minimum_wait_seconds"] = 2000
+    with pytest.raises(SettingsError, match="cannot exceed"):
+        load_settings(_write(tmp_path, invalid_wait))
 
 
 def test_precedence_migration_and_safe_override_contract(tmp_path):
@@ -81,4 +90,3 @@ def test_precedence_migration_and_safe_override_contract(tmp_path):
         authority=authority)
     assert weakened.lenses.counts["product"] == 0
     assert weakened.receipt["overlay"]["authority_fingerprint"]
-

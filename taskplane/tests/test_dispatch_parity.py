@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lens  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import tp as cli  # noqa: E402
+from taskplane.settings import load_settings  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BRIEFS = os.path.join(HERE, "fixtures", "briefs")
@@ -220,7 +221,8 @@ class TestGoldenReplay:
             assert head.startswith("#")
             assert "python3 taskplane/tests/fixtures/briefs/regen.py" in head
 
-    def test_golden_carries_the_lens_brief_contract_fields(self):
+    def test_golden_carries_the_lens_brief_contract_fields(
+            self, monkeypatch):
         """Spot-pin the contract:lens-brief surface so a reviewer can see
         WHAT the byte-compare protects."""
         payload = load_golden("golden_dispatch_all.json")
@@ -243,6 +245,31 @@ class TestGoldenReplay:
             payload["sweep"]["settings_digest"] == payload["settings_digest"]
         assert payload["sweep"]["task_name"] == tp.dispatch_task_name(
             "lens", "tp-lens", "sweep")
+
+        custom = load_settings(overlay={"limits": {
+            "budgets": {"lens_deep_max_actions": 41,
+                        "lens_sweep_max_actions": 19},
+            "timeouts": {"lens_wait_seconds": 901,
+                         "lens_minimum_wait_seconds": 101},
+        }})
+        loads = []
+
+        def settings_snapshot(**_kwargs):
+            loads.append(custom.digest)
+            return custom
+
+        monkeypatch.setattr(tp, "_canonical_operational_settings",
+                            settings_snapshot)
+        projected = lens.dispatch_briefs(
+            lens.route(frozen_files(), breadth="all"), base="HEAD",
+            context_paths=SHARED_CONTEXT_PATHS)
+        assert loads == [custom.digest]
+        assert {brief["contract"]["max_actions"]
+                for brief in projected["deep"]} == {41}
+        assert projected["sweep"]["contract"]["max_actions"] == 19
+        assert projected["sweep"]["wait_policy"]["timeout_seconds"] == 901
+        assert projected["sweep"]["wait_policy"][
+            "minimum_timeout_seconds"] == 101
 
 
 # ------------------------------------------------- 2. codex-env CLI parity

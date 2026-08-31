@@ -58,8 +58,12 @@ _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
     ("build",): frozenset(("shards", "concurrency")),
     ("tests",): frozenset(("backend", "selection", "shards", "cache")),
     ("limits",): frozenset(("timeouts", "budgets")),
-    ("limits", "timeouts"): frozenset(("task_seconds", "subprocess_seconds", "wait_seconds")),
-    ("limits", "budgets"): frozenset(("max_actions", "max_tokens", "max_cost_usd")),
+    ("limits", "timeouts"): frozenset((
+        "task_seconds", "subprocess_seconds", "wait_seconds",
+        "lens_wait_seconds", "lens_minimum_wait_seconds")),
+    ("limits", "budgets"): frozenset((
+        "max_actions", "lens_deep_max_actions", "lens_sweep_max_actions",
+        "max_tokens", "max_cost_usd")),
     ("workflow",): frozenset(("transport", "worker_inheritance")),
     ("workflow", "worker_inheritance"): frozenset(("model", "reasoning")),
     ("cleanup",): frozenset(("worktrees", "artifacts_days")),
@@ -393,10 +397,19 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
     limits_raw = _plain_mapping(data.get("limits"), "limits")
     timeouts_raw = _plain_mapping(limits_raw.get("timeouts"), "limits.timeouts")
     timeouts = {key: _positive_int(timeouts_raw.get(key), f"limits.timeouts.{key}")
-                for key in ("task_seconds", "subprocess_seconds", "wait_seconds")}
+                for key in (
+                    "task_seconds", "subprocess_seconds", "wait_seconds",
+                    "lens_wait_seconds", "lens_minimum_wait_seconds")}
+    if timeouts["lens_minimum_wait_seconds"] > timeouts["lens_wait_seconds"]:
+        raise SettingsError(
+            "limits.timeouts.lens_minimum_wait_seconds cannot exceed "
+            "limits.timeouts.lens_wait_seconds")
     budgets_raw = _plain_mapping(limits_raw.get("budgets"), "limits.budgets")
     budgets: dict[str, int | float | None] = {
-        "max_actions": _positive_int(budgets_raw.get("max_actions"), "limits.budgets.max_actions")}
+        key: _positive_int(budgets_raw.get(key), f"limits.budgets.{key}")
+        for key in (
+            "max_actions", "lens_deep_max_actions",
+            "lens_sweep_max_actions")}
     for key in ("max_tokens", "max_cost_usd"):
         value = budgets_raw.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0):

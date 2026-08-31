@@ -1367,7 +1367,7 @@ def _lens_prompt(entry: dict, base: str) -> str:
         + CLEAR_ALWAYS)
 
 
-# Per-brief action ceilings (v2.11.0). A flat 30 truncated a verification
+# Per-brief action ceilings (v2.11.0). A flat ceiling truncated a verification
 # agent mid-research on karpenter#9464: it was fetching and reading external
 # sources to check the lenses' load-bearing claims, hit the ceiling, and
 # returned partial findings naming the questions it could not close. It
@@ -1380,12 +1380,12 @@ def _lens_prompt(entry: dict, base: str) -> str:
 # `.em-review/lens-<id>/**` and still cannot touch reviewed source. An
 # explicit `max_actions` overrides every tier, so callers that pin a number
 # (the parity fixtures) keep getting exactly that number.
-DEEP_ACTIONS, SWEEP_ACTIONS = 45, 30
-
-
-def actions_for(tier: str, override=None) -> int:
-    return int(override) if override is not None else (
-        DEEP_ACTIONS if tier == "deep" else SWEEP_ACTIONS)
+def actions_for(tier: str, settings_context, override=None) -> int:
+    if override is not None:
+        return int(override)
+    key = ("lens_deep_max_actions" if tier == "deep"
+           else "lens_sweep_max_actions")
+    return int(settings_context.limits.budgets[key])
 
 
 def dispatch_briefs(routing: dict, base: str = "HEAD",
@@ -1505,7 +1505,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "contract": {"read_only": True,
                          "task_slot": f"lens-{lid}",
                          "write_allow": [f".em-review/lens-{lid}/**"],
-                         "max_actions": actions_for("deep", max_actions)},
+                         "max_actions": actions_for(
+                             "deep", settings_context, max_actions)},
             "prompt": _slot_instr(f"lens-{lid}") + _lens_prompt(x, base)
                 + _language_note(x.get("language_references")) + (
                 "\nBLAST RADIUS (from the dependency graph - factor "
@@ -1547,7 +1548,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "contract": {"read_only": True,
                          "task_slot": "lens-sweep",
                          "write_allow": [".em-review/lens-sweep/**"],
-                         "max_actions": actions_for("sweep", max_actions)},
+                         "max_actions": actions_for(
+                             "sweep", settings_context, max_actions)},
             "dispatch_set": {"schema": "taskplane.dispatch-set/v1",
                              "id": "automatic-review-sweep",
                              "concurrent": True,
@@ -1555,8 +1557,11 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "wait_policy": {"schema": "taskplane.wait-policy/v1",
                             "outstanding_set": "automatic-review-sweep",
                             "outstanding_count": len(sweep), "mode": "event",
-                            "timeout_seconds": 1800,
-                            "minimum_timeout_seconds": 300,
+                            "timeout_seconds": settings_context.limits.timeouts[
+                                "lens_wait_seconds"],
+                            "minimum_timeout_seconds":
+                                settings_context.limits.timeouts[
+                                    "lens_minimum_wait_seconds"],
                             "reissue_after": ["completion", "attention"],
                             "scheduled_polling": False},
             "prompt": _slot_instr("lens-sweep") + (

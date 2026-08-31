@@ -16,13 +16,13 @@
   "final": {
     "test_files": 230,
     "collected_cases": 4104,
-    "test_loc": 85002,
+    "test_loc": 85051,
     "removed_files": 57,
     "removed_cases": 916,
     "removed_loc": 16865,
     "added_contract_files": 4,
     "added_contract_cases": 11,
-    "added_contract_loc": 1576,
+    "added_contract_loc": 1625,
     "redundant_families_removed": 18,
     "targets": {"test_files_max": 230, "collected_cases_max": 4200, "families_min": 6}
   },
