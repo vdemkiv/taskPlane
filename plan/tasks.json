@@ -1010,7 +1010,6 @@
         "skills/**",
         "workflows/**",
         "taskplane/tests/test_host_native_compatibility.py",
-        "taskplane/tests/test_status_and_large_delivery.py",
         "taskplane/tests/test_stage_cross_host.py",
         "taskplane/tests/fixtures/host-native/**"
       ],

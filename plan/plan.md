@@ -53,7 +53,7 @@ The dashboard ownership is explicit:
 - `DASHBOARD-CONTRACT` owns existing `HostSurfaceSnapshot` v1 identity, ordering, fingerprint, and canonical-value fixtures.
 - `STARTUP-DASHBOARD-STATE` owns one-read source selection, sequence allocation, canonical assembly, and publication callbacks for successful and failed gates, worker/lens member terminal, cancellation, interruption, timeout, handoff, replan, resolve, and recovery.
 - `DASHBOARD-PROJECTION` owns native rendering plus separately truthful Design graph, current Plan task DAG/waves/approval, and repository module-impact components.
-- `DASHBOARD-HOST-SURFACES` owns `HostNativeRecovery`, host acknowledgement/fallback, hooks, and declarative host flow surfaces; it consumes but does not edit the capability interface.
+- `DASHBOARD-HOST-SURFACES` owns `HostNativeRecovery`, host acknowledgement/fallback, hooks, and declarative host flow surfaces; it consumes but does not edit the capability interface or the `DASHBOARD-DELIVERY`-owned `test_status_and_large_delivery.py` consumer proof.
 - `DASHBOARD-DELIVERY` owns static delivery, single-document HTML, decoded equality, content-addressed generation, current-pointer CAS, publication receipt, and stale/unverified/static action disabling.
 - Replan correction: the missing publication-receipt selector is landed test-first in the predecessor-owned `test_r0001_dashboard_pipeline.py` before fresh approval. `DASHBOARD-DELIVERY` changes only its own producer and test files, then runs that exact predecessor-owned selector; file ownership therefore remains single and its dependency names the required serialization.
 - `DASHBOARD-CONFORMANCE` owns the isolated real-browser DOM/SVG proof and its fixtures.
