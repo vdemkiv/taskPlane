@@ -1143,7 +1143,6 @@
         "taskplane/tests/test_host_native_dashboard.py",
         "taskplane/tests/test_em_h3_dashboard.py",
         "taskplane/tests/test_dashboard_delivery_html.py",
-        "taskplane/tests/test_r0001_dashboard_pipeline.py",
         "taskplane/tests/fixtures/dashboard-delivery/**"
       ],
       "tests": "python3 -m pytest -q taskplane/tests/test_views_seam.py::TestAFailedRenderIsReported::test_canonical_delivery_survives_html_renderer_failure taskplane/tests/test_views_seam.py::TestTheSeamIsRealNotCosmetic::test_the_transition_and_its_presentation_are_separable taskplane/tests/test_dashboard_delivery_html.py::test_delivery_contains_exactly_one_doctype_html_head_and_body taskplane/tests/test_host_native_dashboard.py::test_codex_and_claude_project_equal_semantics_for_all_components taskplane/tests/test_em_h3_dashboard.py::test_stale_open_page_disables_actions_and_recovers_only_on_newer_snapshot taskplane/tests/test_em_h3_dashboard.py::test_file_url_refresh_fails_closed_without_bridge_or_fetch taskplane/tests/test_r0001_dashboard_pipeline.py::test_publication_receipt_binds_snapshot_graphs_dom_freshness_and_host_ack",
