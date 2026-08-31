@@ -3536,12 +3536,16 @@ def _native_dispatch_intent(
             "role": role,
             "task_name": dispatch.get("task_name"),
             "wait_policy": dict(wait_policy),
+            "fork_turns": "none",
+            "inherited_turns": 0,
         },
         "run_id": run_id,
         "task_id": task_id,
         "wave_id": wave_id,
     })
     result["wait_policy"] = dict(wait_policy)
+    result["fork_turns"] = "none"
+    result["inherited_turns"] = 0
     return result
 
 # A task is SETTLED when nothing further is owed on it: it passed, or the
@@ -5774,6 +5778,18 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     (worktree). From here the worker's PreToolUse hook enforces this task's
     scope/tools/commands — the core invariant: every parallel agent runs
     under the harness, individually."""
+    try:
+        if __package__:
+            from . import preflight as startup_preflight
+        else:
+            import preflight as startup_preflight
+        startup_receipt = startup_preflight.atomic_governed_startup(
+            workspace=ws, worker_workspace=agent_ws, task_id=task_id)
+    except Exception as exc:
+        return {"error": "atomic governed preflight failed before any "
+                         "worker/worktree effect: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "task": task_id}
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
     # v2.3.0 (scalability): DoR preparation shells out to git in the worker's
@@ -5807,6 +5823,7 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         test_timeout_seconds=tp.task_test_timeout_seconds(t),
         tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
                "MultiEdit"])
+    contract["startup_preflight"] = startup_receipt
     enforcement = ((state.get("enforcement") or {}).get("current"))
     if enforcement:
         contract["enforcement"] = enforcement
@@ -10965,4 +10982,9 @@ gate = _with_dashboard(gate)
 submit = _with_dashboard(submit)
 next_action = _with_dispatch_dashboard(next_action)
 approve = _with_dashboard(approve)
+select = _with_dashboard(select)
+resolve = _with_dashboard(resolve)
+replan = _with_dashboard(replan)
+handle_host_input = _with_dashboard(handle_host_input)
+cleanup_replay = _with_dashboard(cleanup_replay)
 retro = _with_dashboard(retro)

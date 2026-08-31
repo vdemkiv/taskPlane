@@ -5833,6 +5833,28 @@ def _worker_terminal_path(workspace: str, slot: str) -> str:
     return os.path.join(tp_dir(workspace), "worker-terminals", f"{slot}.json")
 
 
+def _refresh_dashboard_lifecycle(
+        workspace: str, *, event_type: str, outcome: str,
+        member_terminal: bool = False) -> None:
+    """Best-effort publication after the terminal receipt is durable.
+
+    Dashboard failure is secondary evidence and may never rewrite or prevent
+    the worker's authenticated terminal outcome.
+    """
+    try:
+        if __package__:
+            from . import loop_status
+        else:
+            import loop_status
+        loop_status.refresh_dashboard_snapshot(
+            workspace, event_type=event_type, outcome=outcome)
+    except Exception as exc:
+        trace(workspace, "dashboard_publication_deferred",
+              event_type=event_type, outcome=outcome,
+              member_terminal=member_terminal,
+              error=f"{exc.__class__.__name__}: {exc}")
+
+
 def record_worker_terminal(
         workspace: str, slot: str, *, event: dict | None, outcome: object,
         submission_status: str, now: int | None = None,
@@ -5891,6 +5913,9 @@ def record_worker_terminal(
           task_id=contract.get("task_id"), outcome=normalized,
           submission_status=receipt["submission_status"],
           authority=authority, receipt_id=receipt["receipt_id"])
+    _refresh_dashboard_lifecycle(
+        workspace, event_type="worker_terminal", outcome=normalized,
+        member_terminal=True)
     return receipt
 
 

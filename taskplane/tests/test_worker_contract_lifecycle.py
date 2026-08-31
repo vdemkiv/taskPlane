@@ -242,3 +242,25 @@ def test_gate_release_targets_exact_stage_and_task(tmp_path):
         tp.active_contract_path(str(tmp_path), target["task_slot"]))
     assert os.path.exists(
         tp.active_contract_path(str(tmp_path), sibling["task_slot"]))
+
+
+@pytest.mark.parametrize("outcome", [
+    "success", "failure", "cancellation", "interruption", "handoff"])
+def test_every_worker_terminal_outcome_refreshes_dashboard_component_without_closing_run(
+        tmp_path, monkeypatch, outcome):
+    contract = _active_worker(tmp_path)
+    start = _event(tmp_path)
+    tp.bind_worker_contract_event(str(tmp_path), start, now=11)
+    calls = []
+    monkeypatch.setattr(tp, "_refresh_dashboard_lifecycle",
+                        lambda workspace, **kw: calls.append((workspace, kw)))
+
+    receipt = tp.record_worker_terminal(
+        str(tmp_path), contract["task_slot"], event=start, outcome=outcome,
+        submission_status="terminal", now=12)
+
+    assert receipt["outcome"] == tp.normalize_worker_terminal_outcome(outcome)
+    assert len(calls) == 1
+    assert calls[0][1]["event_type"] == "worker_terminal"
+    assert calls[0][1]["outcome"] == receipt["outcome"]
+    assert calls[0][1]["member_terminal"] is True

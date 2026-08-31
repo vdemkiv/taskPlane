@@ -1206,3 +1206,152 @@ def instruction_artifact_paths(checkout: str | None) -> tuple[str, str]:
     if checkout:
         return evaluator_contract_path(checkout), review_public_root(checkout)
     return ".eval/verdict.json", ".em-review"
+
+
+DASHBOARD_PUBLICATION_SCHEMA = "taskplane.dashboard-publication-store/v1"
+
+
+def dashboard_snapshot_store_path(workspace: str) -> str:
+    """Return the workspace-local atomic dashboard publication head."""
+    root = os.path.realpath(os.path.abspath(workspace))
+    return os.path.join(root, ".taskplane", "dashboard-state", "current.json")
+
+
+def load_dashboard_publication(workspace: str) -> dict | None:
+    """Load and authenticate the complete persisted snapshot history."""
+    path = dashboard_snapshot_store_path(workspace)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise StorageIdentityError(
+            f"dashboard publication is unreadable: {exc}") from exc
+    if not isinstance(value, dict) or value.get("schema") != \
+            DASHBOARD_PUBLICATION_SCHEMA or set(value) != {
+                "schema", "current", "history"}:
+        raise StorageIdentityError("dashboard publication schema is invalid")
+    history = value.get("history")
+    if not isinstance(history, list) or not history:
+        raise StorageIdentityError("dashboard publication history is invalid")
+    try:
+        if __package__:
+            from .host_native import (ContradictorySnapshotError,
+                                      HostSurfaceSnapshot)
+        else:
+            from taskplane.host_native import (ContradictorySnapshotError,
+                                               HostSurfaceSnapshot)
+        checked = [HostSurfaceSnapshot.from_dict(row) for row in history]
+    except (TypeError, ValueError) as exc:
+        raise StorageIdentityError(
+            f"dashboard publication snapshot is invalid: {exc}") from exc
+    identities: dict[tuple[str, str, str, str, int], str] = {}
+    for snapshot in checked:
+        key = (snapshot.workflow_id, snapshot.run_id, snapshot.target,
+               snapshot.revision, snapshot.sequence)
+        prior = identities.get(key)
+        if prior is not None and prior != snapshot.fingerprint:
+            raise ContradictorySnapshotError(
+                "contradictory snapshots share one sequence")
+        identities[key] = snapshot.fingerprint
+    current = HostSurfaceSnapshot.from_dict(value["current"])
+    if current.to_dict() != checked[-1].to_dict():
+        raise StorageIdentityError(
+            "dashboard publication current head does not match history")
+    return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
+            "current": current.to_dict(),
+            "history": [snapshot.to_dict() for snapshot in checked]}
+
+
+def commit_dashboard_snapshot(workspace: str, snapshot) -> dict:
+    """CAS one authenticated HostSurfaceSnapshot into the durable head.
+
+    An exact duplicate is idempotent. Equal sequence with different bytes is
+    contradictory, and lower/non-monotonic updates fail closed.
+    """
+    try:
+        if __package__:
+            from . import taskplane_lite as tp
+            from .host_native import (ContradictorySnapshotError,
+                                      HostSurfaceSnapshot)
+        else:
+            from taskplane import taskplane_lite as tp
+            from taskplane.host_native import (ContradictorySnapshotError,
+                                               HostSurfaceSnapshot)
+        authenticated = HostSurfaceSnapshot.from_dict(snapshot.to_dict())
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise StorageIdentityError(
+            f"dashboard snapshot is invalid: {exc}") from exc
+    path = dashboard_snapshot_store_path(workspace)
+    with tp.file_lock(path + ".lock"):
+        prior = load_dashboard_publication(workspace)
+        history = list((prior or {}).get("history") or [])
+        if history:
+            previous = HostSurfaceSnapshot.from_dict(history[-1])
+            stable = (authenticated.workflow_id, authenticated.run_id,
+                      authenticated.target, authenticated.revision)
+            previous_stable = (previous.workflow_id, previous.run_id,
+                               previous.target, previous.revision)
+            if stable == previous_stable and \
+                    authenticated.sequence == previous.sequence:
+                if authenticated.fingerprint != previous.fingerprint:
+                    raise ContradictorySnapshotError(
+                        "contradictory snapshots share one sequence")
+                return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
+                        "current": previous.to_dict(), "history": history,
+                        "replayed": True}
+            if (authenticated.workflow_id, authenticated.run_id,
+                    authenticated.target) == (
+                    previous.workflow_id, previous.run_id, previous.target) \
+                    and authenticated.sequence <= previous.sequence:
+                raise StorageIdentityError(
+                    "dashboard snapshot sequence is not monotonic")
+        history.append(authenticated.to_dict())
+        # Publication history is bounded presentation evidence, not the event
+        # journal. The authoritative workflow journal retains the full run.
+        history = history[-256:]
+        stored = {"schema": DASHBOARD_PUBLICATION_SCHEMA,
+                  "current": authenticated.to_dict(), "history": history}
+        tp.atomic_write_json(path, stored, indent=2, sort_keys=True)
+        return {**stored, "replayed": False}
+
+
+def commit_dashboard_event(workspace: str, event) -> dict:
+    """Durably append one authenticated snapshot event, idempotently."""
+    try:
+        if __package__:
+            from . import taskplane_lite as tp
+            from .host_native import HostSurfaceEvent
+        else:
+            from taskplane import taskplane_lite as tp
+            from taskplane.host_native import HostSurfaceEvent
+        checked = HostSurfaceEvent.from_dict(event.to_dict())
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise StorageIdentityError(f"dashboard event is invalid: {exc}") \
+            from exc
+    root = os.path.dirname(dashboard_snapshot_store_path(workspace))
+    path = os.path.join(root, "events.json")
+    with tp.file_lock(path + ".lock"):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                stored = json.load(handle)
+        except FileNotFoundError:
+            stored = {"schema": "taskplane.dashboard-events/v1",
+                      "events": []}
+        except (OSError, ValueError) as exc:
+            raise StorageIdentityError(
+                f"dashboard event history is unreadable: {exc}") from exc
+        if not isinstance(stored, dict) or stored.get("schema") != \
+                "taskplane.dashboard-events/v1" or \
+                not isinstance(stored.get("events"), list):
+            raise StorageIdentityError("dashboard event history is invalid")
+        events = [HostSurfaceEvent.from_dict(row)
+                  for row in stored["events"]]
+        if any(row.fingerprint == checked.fingerprint for row in events):
+            return {"event": checked.to_dict(), "replayed": True}
+        events.append(checked)
+        value = {"schema": "taskplane.dashboard-events/v1",
+                 "events": [row.to_dict() for row in events[-512:]]}
+        tp.atomic_write_json(path, value, indent=2, sort_keys=True)
+        return {"event": checked.to_dict(), "replayed": False}
