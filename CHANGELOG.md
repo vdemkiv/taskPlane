@@ -38,7 +38,8 @@ lens rewrite and never bumped to.
 redacted, non-cumulative receipt. It binds settings, CI, dashboard publication,
 cleanup, portfolio, token/session/worktree, and dispatch evidence by digest;
 records the approved suite, feedback, critical-path, parallelism, leak, usage,
-and end-to-end baselines/targets; keeps billing, host-observed usage, and archive
+Plan-return churn, and end-to-end baselines/targets; keeps billing,
+host-observed usage, and archive
 upper bounds distinct; names deliberate serialization; and refuses sign-off for
 owned leaks or an unexplained hard-ceiling breach. Dashboard, Retro,
 Engineering, and release projections consume the sealed receipt without

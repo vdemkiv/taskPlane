@@ -42,6 +42,10 @@ def test_wave_receipt_covers_baselines_targets_and_guardrails():
     assert receipt["metrics"]["cleanup_leak_count"]["target"] == 0
     assert receipt["metrics"]["token_total_observed"]["baseline"] == 540_300_000
     assert receipt["metrics"]["end_to_end_wave_hours"]["baseline"] == 40.583
+    assert receipt["metrics"]["plan_returns"]["baseline"] == 21
+    assert receipt["metrics"]["plan_returns"]["target"] == 2
+    assert receipt["metrics"]["plan_returns"]["source_digest"] == \
+        evidence["sources"]["dispatch"]["digest"]
 
     assert set(receipt["sources"]) == set(wave_metrics.SOURCE_NAMES)
     assert all(source["counting"] == "non-cumulative"
@@ -119,6 +123,17 @@ def test_wave_receipt_covers_baselines_targets_and_guardrails():
     billing_conflation["usage_truth"]["billing"]["value"] = 90_000_000
     with pytest.raises(wave_metrics.WaveMetricsError, match="billing"):
         wave_metrics.seal_wave_receipt(billing_conflation)
+    missing_available_billing = _evidence()
+    missing_available_billing["usage_truth"]["billing"]["status"] = "available"
+    with pytest.raises(wave_metrics.WaveMetricsError, match="available iff"):
+        wave_metrics.seal_wave_receipt(missing_available_billing)
+    available_billing = _evidence()
+    available_billing["usage_truth"]["billing"] = {
+        "status": "available", "value": 12_345,
+        "source_digest": evidence["sources"]["token_usage"]["digest"],
+    }
+    assert wave_metrics.seal_wave_receipt(
+        available_billing)["usage_truth"]["billing"]["value"] == 12_345
 
     leaked = _evidence()
     leaked["actuals"]["cleanup_leak_count"] = 1

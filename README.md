@@ -115,9 +115,10 @@ explicit.
   settings, CI, dashboard publication, cleanup, portfolio, token/session,
   worktree, and dispatch evidence by digest. Billing, host-observed usage, and
   cumulative archive bounds stay separate; nonzero owned leaks or unexplained
-  hard-ceiling breaches refuse sign-off. Dashboard, Retro, Engineering, and
-  release consume the same redacted receipt without recounting traces or DOM
-  state. [docs/wave-metrics.md](docs/wave-metrics.md).
+  hard-ceiling breaches refuse sign-off, and Plan-return churn is measured
+  against its 21-return baseline and two-return target. Dashboard, Retro,
+  Engineering, and release consume the same redacted receipt without recounting
+  traces or DOM state. [docs/wave-metrics.md](docs/wave-metrics.md).
 - **Audit cadence + router audits.** Every Nth review (`TASKPLANE_AUDIT_EVERY`) a
   full-catalog sweep diffs its findings against the routing; any finding from an
   `n/a`-routed lens is auto-filed as a router regression that blocks sign-off.

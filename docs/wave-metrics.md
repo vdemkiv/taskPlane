@@ -21,6 +21,8 @@ cases, lines, and redundant families removed; exact/proportional feedback p95;
 CI first-start, matrix/red counts, critical path, runner-minutes and parallelism;
 cleanup leaks and worktree state; tokens and sessions; and active/end-to-end
 delivery duration.
+The delivery-churn row preserves 21 Plan returns as its baseline and permits at
+most two before the separately governed stabilization-successor rule applies.
 
 The historical baseline remains explicit: 258 settings-spread files; 266 test
 files, 4,909 cases, and 95,601 lines; first CI after 31h37m; 12 matrices with 9

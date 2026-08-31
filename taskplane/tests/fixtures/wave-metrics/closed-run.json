@@ -46,7 +46,8 @@
     "token_archive_upper_bound": 1292000000,
     "active_delivery_hours": 7.5,
     "end_to_end_wave_hours": 11.5,
-    "planned_sessions": 20
+    "planned_sessions": 20,
+    "plan_returns": 2
   },
   "samples": {
     "settings_spread_files": {"size": 1, "method": "frozen candidate inventory"},
@@ -75,7 +76,8 @@
     "token_archive_upper_bound": {"size": 1, "method": "separate cumulative archive upper bound"},
     "active_delivery_hours": {"size": 1, "method": "first dispatch to integration-ready interval"},
     "end_to_end_wave_hours": {"size": 1, "method": "run open through Retro-ready interval"},
-    "planned_sessions": {"size": 20, "method": "unique closed-run dispatch session ids"}
+    "planned_sessions": {"size": 20, "method": "unique closed-run dispatch session ids"},
+    "plan_returns": {"size": 2, "method": "closed-run Plan transition receipts"}
   },
   "usage_truth": {
     "billing": {"status": "unavailable", "value": null, "source_digest": "5555555555555555555555555555555555555555555555555555555555555555"},

@@ -135,6 +135,9 @@ METRIC_DEFINITIONS: dict[str, dict[str, Any]] = {
     "planned_sessions": {
         "baseline": None, "target": 24, "comparison": "max",
         "unit": "sessions", "source": "sessions"},
+    "plan_returns": {
+        "baseline": 21, "target": 2, "comparison": "max",
+        "unit": "returns", "source": "dispatch"},
 }
 
 _DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -314,8 +317,10 @@ def seal_wave_receipt(evidence: Mapping[str, Any]) -> dict[str, Any]:
     billing = _mapping(usage["billing"], "billing truth")
     _exact_keys(billing, {"status", "value", "source_digest"}, "billing truth")
     if billing["status"] not in {"available", "unavailable"} or \
-            (billing["status"] == "unavailable" and billing["value"] is not None):
-        raise WaveMetricsError("unavailable billing truth cannot claim a value")
+            ((billing["status"] == "available") !=
+             (billing["value"] is not None)):
+        raise WaveMetricsError(
+            "billing status is available iff its value is numeric")
     if billing["value"] is not None:
         _number(billing["value"], "billing value")
     observed = _mapping(usage["observed"], "observed usage")

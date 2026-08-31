@@ -924,6 +924,11 @@ def refresh_views(ws: str, out: dict) -> dict:
         def presentation(_canonical: str) -> str:
             import dashboard as _dash
             fragment = _dash.report_widget(ws)
+            canonical_model = json.loads(_canonical)
+            canonical_values = canonical_model.get("values") \
+                if isinstance(canonical_model.get("values"), Mapping) else {}
+            fragment += _dash.render_wave_metrics_projection(
+                canonical_values.get("wave_metrics"))
             rendered["fragment"] = fragment
             return fragment
 

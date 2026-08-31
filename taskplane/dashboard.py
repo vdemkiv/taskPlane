@@ -5440,7 +5440,8 @@ def _page_bytes(html: str) -> int:
 # identifiers, deliberately independent of either host's visual vocabulary.
 HOST_DASHBOARD_COMPONENTS = (
     "workflow", "dor", "dependency_impact", "agents", "lenses",
-    "criteria", "findings", "validation", "artifacts", "gate",
+    "criteria", "findings", "validation", "artifacts", "wave_metrics",
+    "gate",
 )
 
 
@@ -5609,6 +5610,36 @@ def _dashboard_value_markup(value, *, omit=(), locale: str | None = None):
     if isinstance(value, bool):
         return _msg("boolean_yes" if value else "boolean_no", locale=locale)
     return html.escape(str(value))
+
+
+def render_wave_metrics_projection(projection: Mapping[str, Any] | None) -> str:
+    """Render only the supplied sealed dashboard projection; perform no reads."""
+    if not isinstance(projection, Mapping) or projection.get("schema") != \
+            "taskplane.wave-metrics-projection/v1" or \
+            projection.get("consumer") != "dashboard":
+        return ""
+    receipt = str(projection.get("receipt_fingerprint") or "")
+    metrics = projection.get("metrics")
+    if not receipt or not isinstance(metrics, Mapping):
+        return ""
+    rows = []
+    for name, metric in metrics.items():
+        if not isinstance(metric, Mapping):
+            continue
+        rows.append(
+            f'<li data-wave-metric="{_attr(name)}"><code>{_esc(name)}</code> · '
+            f'actual {_esc(metric.get("actual"))} {_esc(metric.get("unit"))} · '
+            f'baseline {_esc(metric.get("baseline"))} · target '
+            f'{_esc(metric.get("target"))}</li>')
+    signoff = projection.get("signoff") \
+        if isinstance(projection.get("signoff"), Mapping) else {}
+    return (
+        '<section class="tp-sec" id="tp-wave-metrics" '
+        f'data-wave-metrics-receipt="{_attr(receipt)}">'
+        '<p class="tp-kicker">sealed delivery-wave metrics</p>'
+        f'<p class="tp-lede">receipt <code>{_esc(receipt)}</code> · sign-off '
+        f'{"ready" if signoff.get("ready") is True else "blocked"}</p><ol>'
+        + "".join(rows) + "</ol></section>")
 
 
 def _dashboard_collection_markup(collection, *, locale: str | None = None):

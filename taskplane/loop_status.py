@@ -21,10 +21,12 @@ try:
     from . import host_native
     from . import settings as operational_settings
     from . import storage as runtime_storage
+    from . import wave_metrics
 except (ImportError, ValueError):
     from taskplane import host_native
     from taskplane import settings as operational_settings
     from taskplane import storage as runtime_storage
+    from taskplane import wave_metrics
 
 
 BOUNDED_STAGE_VIEW_SCHEMA = "taskplane.bounded-stage-view/v1"
@@ -556,6 +558,21 @@ def _phase_graph_values(ws: str, state: dict | None) -> dict:
         return {"phase_graph_error": _stage_view_error(exc)}
 
 
+def _wave_metrics_values(state: dict | None) -> dict:
+    """Project the sealed receipt already present in the one selected state."""
+    if not isinstance(state, dict) or state.get("wave_metrics_receipt") is None:
+        return {}
+    try:
+        return {"wave_metrics": wave_metrics.consumer_projection(
+            state["wave_metrics_receipt"], consumer="dashboard")}
+    except wave_metrics.WaveMetricsError as exc:
+        return {"wave_metrics": {
+            "schema": wave_metrics.PROJECTION_SCHEMA,
+            "consumer": "dashboard", "status": "unavailable",
+            "error": _stage_view_error(exc),
+        }}
+
+
 def _next_dashboard_sequence(ws: str, source: dict) -> int:
     prior = runtime_storage.load_dashboard_publication(ws)
     if prior is None:
@@ -612,6 +629,7 @@ def refresh_dashboard_snapshot(
     state = source.get("state") if isinstance(source.get("state"), dict) \
         else None
     stage = str((state or {}).get("step") or source.get("status") or "unknown")
+    metrics_values = _wave_metrics_values(state)
     values = {
         "generated_at": _generated_at(committed_at),
         "settings_digest": settings.digest,
@@ -621,9 +639,17 @@ def refresh_dashboard_snapshot(
         "event_type": str(event_type), "outcome": outcome,
         "loop": _bounded_loop_values(state),
         **_phase_graph_values(ws, state),
+        **metrics_values,
     }
     safe_actions = ()
-    if healthy and stage in {"design_approval", "plan_approval", "signoff"}:
+    metrics_receipt_present = isinstance(state, dict) and \
+        state.get("wave_metrics_receipt") is not None
+    metrics_signoff_ready = not metrics_receipt_present or \
+        ((metrics_values.get("wave_metrics") or {}).get("signoff") or {}).get(
+            "ready") is True
+    if healthy and stage in {"design_approval", "plan_approval"}:
+        safe_actions = ("approve", "reject")
+    elif healthy and stage == "signoff" and metrics_signoff_ready:
         safe_actions = ("approve", "reject")
     elif healthy and stage == "escalated":
         safe_actions = ("retry", "skip", "defer", "abort")
