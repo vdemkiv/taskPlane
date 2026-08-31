@@ -1,0 +1,59 @@
+{
+  "schema": "taskplane.operational-settings/v1",
+  "stages": {
+    "product": {"model": "inherit", "reasoning": "high"},
+    "design": {"model": "inherit", "reasoning": "high"},
+    "plan": {"model": "inherit", "reasoning": "high"},
+    "build": {"model": "inherit", "reasoning": "high"},
+    "evaluate": {"model": "inherit", "reasoning": "high"},
+    "fix": {"model": "inherit", "reasoning": "high"}
+  },
+  "lenses": {
+    "routing": {
+      "product": ["product"],
+      "design": ["design"],
+      "plan": ["plan"],
+      "build": [],
+      "evaluate": [],
+      "fix": []
+    },
+    "counts": {
+      "product": 1,
+      "design": 1,
+      "plan": 1,
+      "build": 0,
+      "evaluate": 0,
+      "fix": 0
+    }
+  },
+  "build": {"shards": 1, "concurrency": "native"},
+  "tests": {
+    "backend": "pytest",
+    "selection": "targeted",
+    "shards": 1,
+    "cache": true
+  },
+  "limits": {
+    "timeouts": {"task_seconds": 600, "subprocess_seconds": 600, "wait_seconds": 60},
+    "budgets": {"max_actions": 60, "max_tokens": null, "max_cost_usd": null}
+  },
+  "workflow": {
+    "transport": "native",
+    "worker_inheritance": {"model": true, "reasoning": true}
+  },
+  "cleanup": {"worktrees": "after-merge", "artifacts_days": 30},
+  "overrides": {
+    "safe_paths": [
+      "stages.*.model",
+      "stages.*.reasoning",
+      "build.shards",
+      "tests.selection",
+      "tests.shards",
+      "tests.cache",
+      "limits.timeouts.*",
+      "limits.budgets.*"
+    ],
+    "governance_paths": ["lenses.*", "build.concurrency", "tests.backend", "workflow.*", "cleanup.*"]
+  },
+  "observability": {"receipt": true, "include_values": false}
+}
