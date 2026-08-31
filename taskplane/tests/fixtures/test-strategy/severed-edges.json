@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.severed-edge-fixtures/v1",
+  "mutations": [
+    {"producer": "dashboard:canonical-snapshot", "consumer": "taskplane/dashboard.py", "operation": "delete-call"},
+    {"producer": "dashboard:phase-graphs", "consumer": "taskplane/views.py", "operation": "metadata-only-substitution"},
+    {"producer": "dashboard:publication", "consumer": "static HTML", "operation": "stale-actionable-page"},
+    {"producer": "validation:test-strategy", "consumer": "all Build slices", "operation": "delete-edge"}
+  ]
+}
