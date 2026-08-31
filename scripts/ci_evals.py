@@ -488,12 +488,12 @@ ROLE_MARKER_PREFIX = "taskplane-role:"
 # never reads in CI as "the quality dropped".
 EXIT_OK, EXIT_BLOCKED, EXIT_USAGE = 0, 1, 2
 
-# Stable logical checks, deliberately independent of mutable workflow step
-# labels.  The workflow records the aggregate compatibility matrix, the
-# focused graph/CLI contract job, and the credential-empty corpus job against
-# one workflow SHA.  A release/delivery caller must provide this exact set.
+# Stable GitHub check-run identities, deliberately independent of mutable step
+# labels and aligned with design/compatibility.json. ``tests (python 3.12)`` is
+# a protected-name alias backed by the exact five-cell terminal matrix and its
+# isolated browser receipt; release callers provide this stable check set.
 PUSHED_GREEN_REQUIRED_CHECKS = (
-    "python compatibility (3.10-3.13)",
+    "tests (python 3.12)",
     "R-0006 graph + CLI contracts",
     "zero-token corpus (credential-empty, no-egress)",
 )

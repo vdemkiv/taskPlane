@@ -26,7 +26,7 @@ EVALS = _load_ci_evals()
 SHA = "a" * 40
 OTHER_SHA = "b" * 40
 EXPECTED_REQUIRED_CHECKS = (
-    "python compatibility (3.10-3.13)",
+    "tests (python 3.12)",
     "R-0006 graph + CLI contracts",
     "zero-token corpus (credential-empty, no-egress)",
 )

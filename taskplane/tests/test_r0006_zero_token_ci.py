@@ -231,7 +231,15 @@ def test_pushed_sha_proof_waits_for_all_required_wave3_checks():
     source = WORKFLOW.read_text(encoding="utf-8")
     job = _job(source, "pushed-sha-proof", "tests-portability")
 
-    assert "needs: [tests, zero-token-corpus, wave3-contracts]" in job
+    assert (
+        "needs: [ci-plan, python-compatibility, tests-authority, zero-token-corpus, wave3-contracts, authoritative-ci, dashboard-browser]"
+        in job
+    )
+    assert "if: always()" in job
+    assert "TERMINAL_RESULT: ${{ needs.authoritative-ci.result }}" in job
+    assert "BROWSER_RESULT: ${{ needs.dashboard-browser.result }}" in job
+    assert "terminal-matrix-${{ needs.ci-plan.outputs.candidate-sha }}" in job
+    assert "ci-cell-${{ needs.ci-plan.outputs.browser-cell }}" in job
     assert "github.event_name == 'push'" in job
     assert "--prove-pushed-sha" in job
     assert "--checked-sha" in job
