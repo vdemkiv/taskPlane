@@ -32,11 +32,17 @@ becoming a first-parent tree (v2.17.17 is the real example).
   C7  every NOT_RELEASED entry names a declared, untagged candidate
 
 Run: python3 scripts/ci_release_tags.py [<repo-root>] [--json]
+     python3 scripts/ci_release_tags.py [<repo-root>] --release-gate <receipt>
+            --authorize-version <version>
 """
+import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFESTS = (".codex-plugin/plugin.json", ".claude-plugin/plugin.json",
@@ -340,6 +346,261 @@ def audit(root=ROOT):
             "problems": problems}
 
 
+def authorize_tag(root, version, protected_main_gate):
+    """Authorize, but never create, one tag for the exact protected-main SHA.
+
+    Tag creation remains an explicit irreversible action.  This function is
+    the fail-closed seam release automation must cross immediately before that
+    action; historical reachability alone is deliberately insufficient.
+    """
+    from taskplane import release_evidence
+
+    repository = os.path.abspath(os.fspath(root))
+    receipt = release_evidence.validate_protected_main_release_gate(
+        protected_main_gate, repository=repository)
+    source_sha = receipt["source_sha"]
+    if version_at(repository, source_sha) != version:
+        raise release_evidence.ReleaseEvidenceError(
+            "release tag version does not match the protected-main source tree")
+    result = audit(repository)
+    if result.get("unavailable") or result.get("problems"):
+        raise release_evidence.ReleaseEvidenceError(
+            "release history audit is unavailable or not clean")
+    existing = release_tags(repository).get("v" + version)
+    if existing is not None and existing != source_sha:
+        raise release_evidence.ReleaseEvidenceError(
+            "release tag already names another source SHA")
+    authorization = {
+        "schema": "taskplane.release-tag-authorization/v1",
+        "tag": "v" + version,
+        "source_sha": source_sha,
+        "protected_main_gate_fingerprint": receipt["fingerprint"],
+        "authorized": True,
+        "cryptographic_authenticity_claimed": False,
+    }
+    authorization["fingerprint"] = hashlib.sha256(
+        (json.dumps(authorization, sort_keys=True, separators=(",", ":")) + "\n")
+        .encode("utf-8")
+    ).hexdigest()
+    return authorization
+
+
+def _read_json_object(path, label):
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is unavailable") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return value
+
+
+def _git_exact(root, *args):
+    rc, output = git(root, *args)
+    if rc != 0 or not output:
+        raise ValueError("protected-main Git topology is unavailable")
+    return output
+
+
+def _sha256_json(value):
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
+                                 terminal, browser, dashboard,
+                                 dashboard_current, wave_metrics, cleanup,
+                                 openai_provenance,
+                                 claude_provenance):
+    """Assemble release truth only from existing sealed producer receipts."""
+    import release_provenance
+    from taskplane import ci_policy, owned_cleanup, release_evidence, views
+    from taskplane import wave_metrics as wave_metrics_module
+
+    repository = Path(root).resolve()
+    source_sha = release_evidence._source_sha(
+        _git_exact(repository, "rev-parse", "HEAD"))
+    main_head = _git_exact(repository, "rev-parse", "refs/heads/main")
+    if main_head != source_sha:
+        raise release_evidence.ReleaseEvidenceError(
+            "release assembly requires the exact protected-main HEAD")
+    pull_head = release_evidence._source_sha(
+        pull_request_head_sha, "pull_request_head_sha")
+    parents = _git_exact(
+        repository, "rev-list", "--parents", "-n", "1", source_sha)
+    parent_rows = parents.split()
+    if len(parent_rows) != 3 or parent_rows[0] != source_sha or \
+            parent_rows[2] != pull_head:
+        raise release_evidence.ReleaseEvidenceError(
+            "release assembly requires the exact merge-created first-parent topology")
+    first_parent = parent_rows[1]
+
+    # The runtime producer validates its own candidate, settings, plan and
+    # fingerprints; writing a lookalike dict cannot cross this boundary.
+    # Avoid any ambient or durable intermediate: validate the already-read
+    # object through the same rules without writing it back to the repository.
+    if runtime.get("schema") != "taskplane.authoritative-ci-runtime/v1":
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI runtime receipt schema is invalid")
+    runtime_projection = {
+        key: value for key, value in runtime.items() if key != "fingerprint"
+    }
+    if runtime.get("fingerprint") != _sha256_json(runtime_projection):
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI runtime receipt is stale")
+    candidate = runtime.get("candidate")
+    plan = runtime.get("plan")
+    settings_receipt = runtime.get("settings_receipt")
+    if not all(isinstance(row, Mapping)
+               for row in (candidate, plan, settings_receipt)):
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI runtime receipt is incomplete")
+    if settings_receipt.get("fingerprint") != _sha256_json({
+        key: value for key, value in settings_receipt.items()
+        if key != "fingerprint"
+    }) or plan.get("fingerprint") != _sha256_json({
+        key: value for key, value in plan.items() if key != "fingerprint"
+    }):
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI runtime child receipt is stale")
+    if candidate.get("source_sha") != source_sha or \
+            plan.get("source_sha") != source_sha or \
+            settings_receipt.get("candidate_sha") != source_sha:
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI runtime names another protected-main SHA")
+    reuse = ci_policy.reuse_terminal_matrix(terminal, candidate)
+    if reuse.get("terminal_reusable") is not True:
+        raise release_evidence.ReleaseEvidenceError(
+            "terminal matrix is not exact-candidate green")
+
+    browser_cell = next(
+        (row for row in plan.get("cells", [])
+         if isinstance(row, Mapping) and row.get("kind") == "browser"), None)
+    if browser_cell is None:
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI plan has no browser cell")
+    browser_material = {
+        key: value for key, value in browser.items() if key != "receipt"
+    }
+    checked_browser = dict(browser)
+    browser_cleanup = browser.get("cleanup")
+    if browser.get("schema") != "taskplane.authoritative-ci-cell/v1" or \
+            browser.get("receipt") != _sha256_json(browser_material) or \
+            browser.get("id") != browser_cell["id"] or \
+            browser.get("kind") != "browser" or \
+            browser.get("status") != "green" or \
+            browser.get("outcome") != "success" or \
+            browser.get("classification") is not None or \
+            browser.get("source_sha") != source_sha or \
+            browser.get("candidate_fingerprint") != candidate["fingerprint"] or \
+            browser.get("plan_fingerprint") != plan["fingerprint"] or \
+            browser.get("settings_receipt_fingerprint") != \
+            settings_receipt["fingerprint"] or \
+            browser.get("browser_fingerprint") != \
+            candidate["browser_fingerprint"] or \
+            browser.get("browser_observation") != candidate["browser"] or \
+            not isinstance(browser_cleanup, Mapping) or \
+            browser_cleanup.get("status") != "clean" or \
+            browser_cleanup.get("leak_count") != 0:
+        raise release_evidence.ReleaseEvidenceError(
+            "browser evidence is invalid")
+    terminal_browser = next(
+        (row for row in terminal.get("cells", [])
+         if isinstance(row, Mapping) and row.get("id") == browser_cell["id"]),
+        None,
+    )
+    if terminal_browser is None or \
+            terminal_browser.get("receipt") != checked_browser.get("receipt"):
+        raise release_evidence.ReleaseEvidenceError(
+            "browser evidence is not the terminal matrix browser receipt")
+
+    try:
+        dashboard_evidence = views.validate_dashboard_publication_receipt(
+            dashboard, current_head=dashboard_current,
+            expected_source_sha=source_sha)
+    except (TypeError, ValueError) as exc:
+        raise release_evidence.ReleaseEvidenceError(
+            "dashboard publication evidence is stale or incomplete") from exc
+
+    try:
+        metrics = wave_metrics_module.validate_wave_receipt(wave_metrics)
+    except wave_metrics_module.WaveMetricsError as exc:
+        raise release_evidence.ReleaseEvidenceError(
+            "sealed wave metrics evidence is invalid") from exc
+    if metrics["run"]["candidate_fingerprint"] != candidate["fingerprint"] or \
+            metrics["signoff"]["ready"] is not True:
+        raise release_evidence.ReleaseEvidenceError(
+            "sealed wave metrics do not bind the exact release candidate")
+    try:
+        cleanup_evidence = owned_cleanup.cleanup_consumer_evidence(cleanup)
+    except owned_cleanup.OwnedCleanupError as exc:
+        raise release_evidence.ReleaseEvidenceError(
+            "owned cleanup evidence is invalid") from exc
+    if cleanup_evidence["cleanup_status"] != "clean" or \
+            cleanup_evidence["leak_count"] != 0:
+        raise release_evidence.ReleaseEvidenceError(
+            "owned cleanup evidence has nonzero leaks")
+
+    packages = []
+    inputs = release_evidence.release_input_digests(repository)
+    for kind, record in (("openai", openai_provenance),
+                         ("claude", claude_provenance)):
+        try:
+            validated = release_provenance.validate(
+                record, expected_source_sha=source_sha,
+                require_release_inputs=True)
+            package = release_provenance.release_gate_record(validated)
+        except release_provenance.ProvenanceError as exc:
+            raise release_evidence.ReleaseEvidenceError(
+                f"{kind} package provenance is invalid") from exc
+        if validated["kind"] != kind or validated["release_inputs"] != inputs:
+            raise release_evidence.ReleaseEvidenceError(
+                f"{kind} package provenance names stale release inputs")
+        packages.append(package)
+
+    supply = release_evidence.release_supply_chain_evidence(repository)
+    evidence = {
+        "schema": release_evidence.PROTECTED_MAIN_RELEASE_EVIDENCE_SCHEMA,
+        "source_sha": source_sha,
+        "protected_branch": "main",
+        "merge_topology": {
+            "event": "push", "ref_kind": "protected-main",
+            "merge_created_sha": source_sha, "checked_sha": source_sha,
+            "first_parent_sha": first_parent,
+            "pull_request_head_sha": pull_head,
+            "topology": "merge-created-first-parent",
+        },
+        "ci": {
+            "event": "push", "ref_kind": "protected-main",
+            "candidate_sha": source_sha, "terminal_status": "green",
+            "required_checks": [row["id"] for row in terminal["cells"]],
+            "conclusions": {row["id"]: "success" for row in terminal["cells"]},
+        },
+        "supply_chain": supply,
+        "receipts": {
+            "settings": {"digest": inputs["settings_digest"]},
+            "candidate": {"digest": candidate["fingerprint"],
+                          "source_sha": source_sha},
+            "matrix": {"digest": terminal["fingerprint"],
+                       "source_sha": source_sha, "status": "green"},
+            "browser": {"digest": checked_browser["receipt"],
+                        "source_sha": source_sha, "status": "green",
+                        "fresh": True},
+            "dashboard": dashboard_evidence,
+            "wave_metrics": {"digest": metrics["fingerprint"],
+                             "source_sha": source_sha, "status": "sealed",
+                             "recounted": False},
+            "cleanup": {"digest": cleanup_evidence["evidence_digest"],
+                        "source_sha": source_sha, "status": "clean",
+                        "leak_count": 0},
+        },
+        "packages": packages,
+    }
+    return release_evidence.create_protected_main_release_gate(
+        evidence, repository=repository)
+
+
 def main():
     # An optional root makes the gate runnable against any checkout — which
     # is what lets its own tests prove the EXIT CODES on synthetic repos
@@ -347,9 +608,81 @@ def main():
     # version of that test ran the script against this repo and asserted
     # exit 0; the main test job checks out without tags, the gate correctly
     # reported CANNOT VERIFY, and the test failed on the gate being right.
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    res = audit(args[0] if args else ROOT)
-    if "--json" in sys.argv:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("root", nargs="?", default=ROOT)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--release-gate")
+    parser.add_argument("--authorize-version")
+    parser.add_argument("--assemble-gate")
+    parser.add_argument("--assembly-manifest")
+    args = parser.parse_args()
+    if bool(args.assemble_gate) != bool(args.assembly_manifest):
+        parser.error(
+            "--assemble-gate and --assembly-manifest must be supplied together")
+    if args.assemble_gate:
+        manifest_path = Path(args.assembly_manifest).resolve()
+        manifest = _read_json_object(manifest_path, "release assembly manifest")
+        expected = {
+            "schema", "pull_request_head_sha", "runtime", "terminal",
+            "browser", "dashboard", "dashboard_current", "wave_metrics",
+            "cleanup",
+            "openai_provenance", "claude_provenance",
+        }
+        if set(manifest) != expected or manifest.get("schema") != \
+                "taskplane.release-gate-assembly/v1":
+            parser.error("release assembly manifest fields are not closed")
+
+        def artifact(name):
+            value = manifest.get(name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"release assembly {name} path is invalid")
+            path = Path(value)
+            if not path.is_absolute():
+                path = manifest_path.parent / path
+            return _read_json_object(path, name.replace("_", " ") + " receipt")
+
+        gate = assemble_protected_main_gate(
+            args.root,
+            pull_request_head_sha=manifest["pull_request_head_sha"],
+            runtime=artifact("runtime"),
+            terminal=artifact("terminal"),
+            browser=artifact("browser"),
+            dashboard=artifact("dashboard"),
+            dashboard_current=artifact("dashboard_current"),
+            wave_metrics=artifact("wave_metrics"),
+            cleanup=artifact("cleanup"),
+            openai_provenance=artifact("openai_provenance"),
+            claude_provenance=artifact("claude_provenance"),
+        )
+        output = Path(args.assemble_gate).resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+        temporary.write_text(
+            json.dumps(gate, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(output)
+        print(f"protected-main release gate: {output}")
+        print(f"source_sha: {gate['source_sha']}")
+        print(f"fingerprint: {gate['fingerprint']}")
+        return 0
+    res = audit(args.root)
+    authorization_error = None
+    if bool(args.release_gate) != bool(args.authorize_version):
+        authorization_error = (
+            "--release-gate and --authorize-version must be supplied together")
+    elif args.release_gate:
+        try:
+            with open(args.release_gate, encoding="utf-8") as stream:
+                receipt = json.load(stream)
+            res["tag_authorization"] = authorize_tag(
+                args.root, args.authorize_version, receipt)
+        except (OSError, ValueError) as exc:
+            authorization_error = str(exc)
+    if authorization_error is not None:
+        res["ok"] = False
+        res["authorization_error"] = authorization_error
+    if args.json:
         print(json.dumps(res, indent=2, sort_keys=True))
         return 0 if res.get("ok") else 1
     if res.get("unavailable"):
@@ -372,6 +705,12 @@ def main():
               f"{', '.join('v' + v for v in res['skipped'])}")
     for p in res["problems"]:
         print(f"  {p['check']} v{p['version']}: {p['detail']}")
+    if authorization_error is not None:
+        print(f"  RELEASE REFUSED: {authorization_error}")
+    elif res.get("tag_authorization"):
+        authorization = res["tag_authorization"]
+        print(f"  authorized {authorization['tag']} at "
+              f"{authorization['source_sha'][:12]} from exact protected-main green")
     print("ok: every shipped version is tagged and every tag names a real "
           "release" if res["ok"] else
           f"FAIL: {len(res['problems'])} release-tag problem(s)")

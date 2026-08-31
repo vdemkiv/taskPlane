@@ -326,6 +326,11 @@ def dashboard_publication_receipt_fingerprint(receipt: Mapping) -> str:
     return _fingerprint_value(payload)
 
 
+def _lowercase_digest(value, length: int) -> bool:
+    return isinstance(value, str) and len(value) == length and all(
+        character in "0123456789abcdef" for character in value)
+
+
 def _snapshot_receipt(model: Mapping, canonical_sha256: str) -> dict:
     identity = model.get("identity") if isinstance(
         model.get("identity"), Mapping) else {}
@@ -341,6 +346,112 @@ def _snapshot_receipt(model: Mapping, canonical_sha256: str) -> dict:
         "revision": str(revision or ""),
         "generated_at": values.get("generated_at"),
         "canonical_sha256": canonical_sha256,
+        "candidate_sha": values.get("candidate_sha"),
+    }
+
+
+def _candidate_receipt(snapshot: Mapping) -> dict:
+    candidate = {
+        "source_sha": snapshot.get("candidate_sha"),
+        "snapshot_fingerprint": snapshot.get("fingerprint"),
+        "canonical_sha256": snapshot.get("canonical_sha256"),
+    }
+    candidate["fingerprint"] = _fingerprint_value(candidate)
+    return candidate
+
+
+def validate_dashboard_publication_receipt(
+        receipt: Mapping, *, current_head: Mapping,
+        expected_source_sha: str) -> dict:
+    """Return release evidence only for the exact durable dashboard head."""
+    receipt_fields = {
+        "schema", "snapshot", "candidate", "graphs", "dom_freshness",
+        "host_acknowledgement", "generation", "bindings", "fingerprint",
+    }
+    if not isinstance(receipt, Mapping) or set(receipt) != receipt_fields or \
+            receipt.get("schema") != \
+            "taskplane.dashboard-publication-receipt/v1" or \
+            receipt.get("fingerprint") != \
+            dashboard_publication_receipt_fingerprint(receipt):
+        raise ValueError("dashboard publication receipt is invalid")
+    if not _lowercase_digest(expected_source_sha, 40):
+        raise ValueError("dashboard expected source SHA is invalid")
+    snapshot = receipt.get("snapshot")
+    if not isinstance(snapshot, Mapping) or set(snapshot) != {
+            "fingerprint", "sequence", "revision", "generated_at",
+            "canonical_sha256", "candidate_sha"} or \
+            not _lowercase_digest(snapshot.get("fingerprint"), 64) or \
+            not _lowercase_digest(snapshot.get("canonical_sha256"), 64) or \
+            snapshot.get("candidate_sha") != expected_source_sha:
+        raise ValueError("dashboard snapshot names another candidate")
+    candidate = receipt.get("candidate")
+    if not isinstance(candidate, Mapping) or set(candidate) != {
+            "source_sha", "snapshot_fingerprint", "canonical_sha256",
+            "fingerprint"} or \
+            candidate.get("source_sha") != expected_source_sha or \
+            candidate.get("snapshot_fingerprint") != snapshot["fingerprint"] or \
+            candidate.get("canonical_sha256") != snapshot["canonical_sha256"] or \
+            candidate.get("fingerprint") != _fingerprint_value({
+                key: candidate[key] for key in candidate
+                if key != "fingerprint"}):
+        raise ValueError("dashboard candidate identity is invalid")
+    graphs = receipt.get("graphs")
+    if not isinstance(graphs, Mapping) or any(
+            not _lowercase_digest(value, 64) for value in graphs.values()):
+        raise ValueError("dashboard graph bindings are invalid")
+    dom = receipt.get("dom_freshness")
+    if not isinstance(dom, Mapping) or set(dom) != {
+            "status", "html_document_count", "canonical_sha256",
+            "actions_enabled", "fingerprint"} or \
+            dom.get("status") != "verified" or \
+            dom.get("html_document_count") != 1 or \
+            dom.get("canonical_sha256") != snapshot["canonical_sha256"] or \
+            dom.get("fingerprint") != _fingerprint_value({
+                key: dom[key] for key in dom if key != "fingerprint"}):
+        raise ValueError("dashboard DOM freshness is invalid")
+    generation = receipt.get("generation")
+    host = receipt.get("host_acknowledgement")
+    if not isinstance(generation, Mapping) or set(generation) != {
+            "id", "artifacts", "complete"} or \
+            generation.get("complete") is not True or \
+            not isinstance(generation.get("artifacts"), Mapping) or \
+            generation.get("id") != _fingerprint_value({
+                "artifacts": generation["artifacts"],
+                "host_acknowledgement": (
+                    host.get("fingerprint") if isinstance(host, Mapping)
+                    else None),
+            }):
+        raise ValueError("dashboard generation identity is invalid")
+    bindings = receipt.get("bindings")
+    if bindings != {
+            "snapshot": snapshot["fingerprint"],
+            "candidate": candidate["fingerprint"],
+            "graphs": dict(graphs),
+            "dom_freshness": dom["fingerprint"],
+            "host_acknowledgement": (
+                host.get("fingerprint") if isinstance(host, Mapping)
+                else None)}:
+        raise ValueError("dashboard receipt bindings are severed")
+    head_fields = {
+        "schema", *_DASHBOARD_HEAD_IDENTITY_KEYS, "sequence",
+        "snapshot_fingerprint", "candidate_sha", "generation_id",
+        "receipt_fingerprint", "html_href",
+    }
+    if not isinstance(current_head, Mapping) or set(current_head) != \
+            head_fields or current_head.get("schema") != \
+            "taskplane.dashboard-current/v1" or \
+            current_head.get("sequence") != snapshot["sequence"] or \
+            current_head.get("snapshot_fingerprint") != \
+            snapshot["fingerprint"] or \
+            current_head.get("candidate_sha") != expected_source_sha or \
+            current_head.get("generation_id") != generation["id"] or \
+            current_head.get("receipt_fingerprint") != receipt["fingerprint"]:
+        raise ValueError("dashboard durable head is stale or contradictory")
+    return {
+        "digest": receipt["fingerprint"],
+        "source_sha": candidate["source_sha"],
+        "status": "published",
+        "fresh": True,
     }
 
 
@@ -514,6 +625,7 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
 
     canonical_sha256 = hashlib.sha256(canonical).hexdigest()
     snapshot_receipt = _snapshot_receipt(model, canonical_sha256)
+    candidate_receipt = _candidate_receipt(snapshot_receipt)
     rendered_head = _rendered_head(model, snapshot_receipt)
     host_receipt = _host_acknowledgement_receipt(
         host_acknowledgement, rendered_head)
@@ -572,6 +684,7 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
     receipt = {
         "schema": "taskplane.dashboard-publication-receipt/v1",
         "snapshot": snapshot_receipt,
+        "candidate": candidate_receipt,
         "graphs": graphs,
         "dom_freshness": dom_freshness,
         "host_acknowledgement": host_receipt,
@@ -581,6 +694,7 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
         },
         "bindings": {
             "snapshot": snapshot_receipt["fingerprint"],
+            "candidate": candidate_receipt["fingerprint"],
             "graphs": graphs,
             "dom_freshness": dom_freshness["fingerprint"],
             "host_acknowledgement": host_receipt["fingerprint"],
@@ -602,6 +716,7 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
                for key in _DASHBOARD_HEAD_IDENTITY_KEYS},
             "sequence": rendered_head["sequence"],
             "snapshot_fingerprint": rendered_head["snapshot_fingerprint"],
+            "candidate_sha": candidate_receipt["source_sha"],
             "generation_id": generation_id,
             "receipt_fingerprint": receipt["fingerprint"],
             "html_href": (

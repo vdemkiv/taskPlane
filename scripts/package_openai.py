@@ -1411,7 +1411,7 @@ def main() -> int:
         import release_provenance as prov
         try:
             prov_path = prov.write(ROOT, output, digest,
-                                   allow_dirty=args.allow_dirty)
+                                   allow_dirty=args.allow_dirty, kind="openai")
         except prov.ProvenanceError as exc:
             output.unlink(missing_ok=True)
             checksum.unlink(missing_ok=True)

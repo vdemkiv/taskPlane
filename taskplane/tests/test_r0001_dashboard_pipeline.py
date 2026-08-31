@@ -159,7 +159,11 @@ def test_publication_receipt_binds_snapshot_graphs_dom_freshness_and_host_ack(
         workflow_id="taskplane-loop", run_id="run-7", target="dashboard",
         revision="revision-7", sequence=7, stage="signoff",
         state="awaiting_approval",
-        values={"generated_at": "2026-08-31T01:00:00Z", **graph_values},
+        values={
+            "generated_at": "2026-08-31T01:00:00Z",
+            "candidate_sha": "a" * 40,
+            **graph_values,
+        },
         evidence=("sha256:evidence",), safe_actions=("approve", "reject"),
     )
     acknowledgement = {
@@ -194,7 +198,12 @@ def test_publication_receipt_binds_snapshot_graphs_dom_freshness_and_host_ack(
         "revision": "revision-7",
         "generated_at": "2026-08-31T01:00:00Z",
         "canonical_sha256": result["semantic_sha256"],
+        "candidate_sha": "a" * 40,
     }
+    assert receipt["candidate"]["source_sha"] == "a" * 40
+    assert receipt["candidate"]["snapshot_fingerprint"] == snapshot.fingerprint
+    assert receipt["candidate"]["canonical_sha256"] == \
+        result["semantic_sha256"]
     assert set(receipt["graphs"]) == set(graph_values)
     assert all(len(digest) == 64 for digest in receipt["graphs"].values())
     assert receipt["dom_freshness"]["status"] == "verified"
@@ -206,6 +215,7 @@ def test_publication_receipt_binds_snapshot_graphs_dom_freshness_and_host_ack(
     }
     assert receipt["bindings"] == {
         "snapshot": snapshot.fingerprint,
+        "candidate": receipt["candidate"]["fingerprint"],
         "graphs": receipt["graphs"],
         "dom_freshness": receipt["dom_freshness"]["fingerprint"],
         "host_acknowledgement": acknowledgement["fingerprint"],
@@ -213,13 +223,23 @@ def test_publication_receipt_binds_snapshot_graphs_dom_freshness_and_host_ack(
     assert views.dashboard_publication_receipt_fingerprint(receipt) == \
         receipt["fingerprint"]
     for binding in (
-            "snapshot", "dom_freshness", "host_acknowledgement"):
+            "snapshot", "candidate", "dom_freshness",
+            "host_acknowledgement"):
         changed = copy.deepcopy(receipt)
         changed["bindings"][binding] = "0" * 64
         assert views.dashboard_publication_receipt_fingerprint(changed) != \
             receipt["fingerprint"]
     assert result["current_head"]["receipt_fingerprint"] == \
         receipt["fingerprint"]
+    assert result["current_head"]["candidate_sha"] == "a" * 40
+    assert views.validate_dashboard_publication_receipt(
+        receipt, current_head=result["current_head"],
+        expected_source_sha="a" * 40) == {
+            "digest": receipt["fingerprint"],
+            "source_sha": "a" * 40,
+            "status": "published",
+            "fresh": True,
+        }
 
 
 def test_wave_metrics_receipt_fingerprint_reaches_dashboard_without_recount(
