@@ -116,6 +116,12 @@ RELEASE_SURFACE_FILES = (
     "CHANGELOG.md",
 )
 
+CANONICAL_AUTHORITY_FILES = (
+    "taskplane/operational-settings.json",
+    "taskplane/settings_inventory.json",
+    "taskplane/test_portfolio.json",
+)
+
 SUPPORTED_HOOK_ROOT_FIELDS = frozenset({"description", "hooks"})
 
 
@@ -183,6 +189,10 @@ def package_files() -> list:
     for relative in REQUIRED_FILES:
         path = ROOT / relative
         require(path.is_file(), f"required file is missing: {relative}")
+        files.add(path)
+    for relative in CANONICAL_AUTHORITY_FILES:
+        path = ROOT / relative
+        require(path.is_file(), f"canonical authority is missing: {relative}")
         files.add(path)
 
     add_tree(files, ROOT / "assets",
@@ -270,6 +280,12 @@ def validate_archive(path: Path, version: str) -> tuple:
         require(marketplace.get("version") == version and
                 marketplace.get("plugins", [{}])[0].get("version") == version,
                 "packaged marketplace and Claude manifest versions disagree")
+        for required in CANONICAL_AUTHORITY_FILES:
+            member = f"{ARCHIVE_ROOT}/{required}"
+            require(member in names,
+                    f"archive is missing canonical authority {required}")
+            require(archive.read(member) == (ROOT / required).read_bytes(),
+                    f"archive has stale canonical authority bytes for {required}")
         for required in RELEASE_SURFACE_FILES:
             member = f"{ARCHIVE_ROOT}/{required}"
             require(member in names,
