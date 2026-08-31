@@ -25,6 +25,87 @@ _BOOTSTRAP_SCHEMA = "taskplane.preflight-bootstrap/v1"
 _KNOWLEDGE_MANIFEST_SCHEMA = \
     "taskplane.knowledge-preservation-manifest/v1"
 _GOVERNANCE_BASELINE_SCHEMA = "taskplane.governance-baseline/v1"
+_ATOMIC_STARTUP_SCHEMA = "taskplane.atomic-governed-startup/v1"
+
+
+def atomic_governed_startup(*, workspace: str, worker_workspace: str,
+                            task_id: str) -> dict:
+    """Prove every alternate-worktree startup input without side effects.
+
+    The caller may create/bind a worker contract only after this complete
+    receipt returns. No directory, locator, worktree, contract, process, or
+    dispatch record is created here.
+    """
+    primary = os.path.realpath(os.path.abspath(workspace))
+    worker = os.path.realpath(os.path.abspath(worker_workspace))
+    if not os.path.isdir(primary) or not os.path.isdir(worker) or \
+            primary == worker:
+        raise PreflightError(
+            "alternate-worktree startup needs two existing canonical roots")
+    try:
+        primary_identity = storage.resolve_repository_identity(primary)
+        worker_identity = storage.resolve_repository_identity(worker)
+    except Exception as exc:
+        raise PreflightError(
+            f"workspace identity is unavailable: {exc}") from exc
+    if primary_identity.repo_id != worker_identity.repo_id:
+        raise PreflightError("worker workspace belongs to another repository")
+    primary_family = storage.resolve_repository_family(primary)
+    worker_family = storage.resolve_repository_family(worker)
+    launcher = str(primary_family.get("launcher") or "")
+    if not launcher or not os.path.isfile(launcher) or \
+            worker_family.get("launcher") != launcher:
+        raise PreflightError(
+            "stable repository-family launcher/hook receipt is unavailable")
+    try:
+        launcher_bytes, launcher_sha256 = _sha256_file(launcher)
+    except OSError as exc:
+        raise PreflightError(f"stable launcher is unreadable: {exc}") from exc
+    session_id = str(
+        os.environ.get("TASKPLANE_SESSION_ID") or
+        os.environ.get("CODEX_THREAD_ID") or
+        os.environ.get("CLAUDE_SESSION_ID") or "").strip()
+    if not session_id or len(session_id.encode("utf-8")) > 256:
+        raise PreflightError("stable host session identity is unavailable")
+    try:
+        if __package__:
+            from . import settings as settings_module
+        else:
+            import settings as settings_module
+        effective = settings_module.load_settings()
+    except Exception as exc:
+        raise PreflightError(
+            f"operational settings validation failed: {exc}") from exc
+    try:
+        locator = storage.load_workspace_locator(primary)
+    except Exception as exc:
+        raise PreflightError(f"store identity is invalid: {exc}") from exc
+    if locator is not None and locator.get("repo_id") != \
+            primary_identity.repo_id:
+        raise PreflightError("store identity belongs to another repository")
+    store_identity = ({
+        "mode": "v4", "run_id": locator["run_id"],
+        "repository_key": locator["repository_key"],
+        "repo_id": locator["repo_id"],
+    } if locator is not None else {
+        "mode": "legacy", "repository_key": primary_identity.key,
+        "repo_id": primary_identity.repo_id,
+    })
+    material = {
+        "schema": _ATOMIC_STARTUP_SCHEMA,
+        "task_id": str(task_id),
+        "repository": primary_identity.repo_id,
+        "workspace": hashlib.sha256(primary.encode("utf-8")).hexdigest(),
+        "worker": hashlib.sha256(worker.encode("utf-8")).hexdigest(),
+        "hook": {"mode": str(os.environ.get("TASKPLANE_HOOK_PATH") or
+                              "configured"),
+                 "launcher_bytes": launcher_bytes,
+                 "launcher_sha256": launcher_sha256},
+        "session": hashlib.sha256(session_id.encode("utf-8")).hexdigest(),
+        "settings_digest": effective.digest,
+        "store": store_identity,
+    }
+    return {**material, "fingerprint": _canonical_digest(material)}
 
 
 def _canonical_digest(value: object) -> str:

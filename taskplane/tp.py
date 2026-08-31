@@ -7371,6 +7371,15 @@ def _render_engine_error(exc: BaseException, envelope: dict, *,
 
 def main(argv=None) -> int:
     _utf8_streams()
+    # Interpret and authenticate the complete operational policy before CLI
+    # construction or any workflow action can create repository state.
+    try:
+        from taskplane import settings as operational_settings
+        operational_settings.load_settings()
+    except Exception as exc:
+        print(f"taskplane: operational settings are invalid: {exc}",
+              file=sys.stderr)
+        return 1
     compatibility_refusal = _enforce_stage_compatibility(argv)
     if compatibility_refusal is not None:
         return compatibility_refusal

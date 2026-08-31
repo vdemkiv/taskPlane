@@ -18,6 +18,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import dashboard  # noqa: E402
 import loop  # noqa: E402
+import loop_status  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 
 
@@ -68,6 +69,49 @@ class TestAutoRender(unittest.TestCase):          # AC1
         out = loop.gate(ws, "pass")
         self.assertIn("error", out)
         self.assertNotIn("dashboard", out)
+
+    def test_every_committed_lifecycle_event_refreshes_exact_snapshot_once(self):
+        calls = []
+        original = loop_status.refresh_dashboard_snapshot
+        loop_status.refresh_dashboard_snapshot = lambda ws, **kw: (
+            calls.append((ws, kw)) or {"snapshot": {"fingerprint": "f"}})
+        try:
+            for name, outcome in (
+                    ("gate", "pass"), ("gate", "failure"),
+                    ("cancel", "cancellation"),
+                    ("interrupt", "interruption"),
+                    ("handoff", "handoff")):
+                def committed(_ws, _outcome=outcome):
+                    return {"step": "execute", "outcome": _outcome}
+                committed.__name__ = name
+                wrapped = loop_status.with_dashboard(committed)
+                before = len(calls)
+                wrapped("/workspace")
+                self.assertEqual(len(calls), before + 1)
+        finally:
+            loop_status.refresh_dashboard_snapshot = original
+
+    def test_replan_resolve_and_committed_secondary_failure_still_refresh(self):
+        calls = []
+        original = loop_status.refresh_dashboard_snapshot
+        loop_status.refresh_dashboard_snapshot = lambda ws, **kw: (
+            calls.append((ws, kw)) or {"snapshot": {"fingerprint": "f"}})
+        try:
+            for name, result in (
+                    ("replan", {"step": "plan"}),
+                    ("resolve", {"step": "execute"}),
+                    ("gate", {"step": "escalated", "worktree_cleanup": {
+                        "status": "preserved",
+                        "reason": "secondary failure"}})):
+                def committed(_ws, _result=result):
+                    return _result
+                committed.__name__ = name
+                loop_status.with_dashboard(committed)("/workspace")
+            self.assertEqual(len(calls), 3)
+            self.assertEqual([row[1]["event_type"] for row in calls],
+                             ["replan", "resolve", "gate"])
+        finally:
+            loop_status.refresh_dashboard_snapshot = original
 
 
 class TestJourney(unittest.TestCase):             # AC2
