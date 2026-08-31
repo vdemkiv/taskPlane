@@ -1,0 +1,52 @@
+[
+  {
+    "id": "failure-product",
+    "class": "product",
+    "reason": "dashboard state differs from the approved contract",
+    "owner": "dashboard-state",
+    "cluster": "dashboard-state",
+    "correction": {
+      "kind": "product-bytes",
+      "condition": "source-fingerprint-changed",
+      "before": "5151515151515151515151515151515151515151515151515151515151515151",
+      "after": "5252525252525252525252525252525252525252525252525252525252525252"
+    }
+  },
+  {
+    "id": "failure-test",
+    "class": "test",
+    "reason": "interface fixture is stale",
+    "owner": "test-contract",
+    "cluster": "fixture-contract",
+    "correction": {
+      "kind": "evidence-bytes",
+      "condition": "fixture-fingerprint-changed",
+      "before": "5353535353535353535353535353535353535353535353535353535353535353",
+      "after": "5454545454545454545454545454545454545454545454545454545454545454"
+    }
+  },
+  {
+    "id": "failure-infrastructure",
+    "class": "infrastructure",
+    "reason": "package cache restore was corrupt",
+    "owner": "ci-infrastructure",
+    "cluster": "package-cache",
+    "correction": {
+      "kind": "infrastructure-recovery",
+      "condition": "cache-generation-replaced",
+      "receipt": "5555555555555555555555555555555555555555555555555555555555555555"
+    }
+  },
+  {
+    "id": "failure-environment",
+    "class": "environment",
+    "reason": "declared browser executable was temporarily unavailable",
+    "owner": "browser-environment",
+    "cluster": "browser-runtime",
+    "correction": {
+      "kind": "environment-recovery",
+      "condition": "browser-executable-restored",
+      "receipt": "5656565656565656565656565656565656565656565656565656565656565656"
+    }
+  }
+]
