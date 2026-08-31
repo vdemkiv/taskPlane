@@ -1,11 +1,11 @@
 {
   "schema": "taskplane.plan/v1",
   "requirement": "R-0001",
-  "design_fingerprint": "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4",
+  "design_fingerprint": "b77e08eb6953e476a6bf76daf8115410b27b62639d1cf5cab831becbee86252e",
   "design_contract_current": true,
   "delivery_mode": "build",
   "automatic_lenses": [],
-  "plan_authority": "human:vdemkiv approved zero-lens Build at the consolidated Plan gate; Taskplane 2.18.2 compatibility projection only",
+  "plan_authority": "human:vdemkiv approved zero-lens Build at the consolidated Plan gate; Taskplane 2.18.3 compatibility projection only",
   "delivery_policy": {
     "plan_lenses": {
       "depth": "QUICK",
@@ -146,7 +146,7 @@
         "mode": "QUICK",
         "verdict": "attention",
         "blockers": 0,
-        "design_fingerprint": "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4",
+        "design_fingerprint": "b77e08eb6953e476a6bf76daf8115410b27b62639d1cf5cab831becbee86252e",
         "incorporated": [
           "42-module/58-edge topology replacement",
           "HostSurfaceSnapshot v1 reuse",
@@ -161,7 +161,7 @@
         "mode": "QUICK",
         "verdict": "pass",
         "blockers": 0,
-        "design_fingerprint": "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4",
+        "design_fingerprint": "b77e08eb6953e476a6bf76daf8115410b27b62639d1cf5cab831becbee86252e",
         "incorporated": [
           "one validated source mode with no fallback",
           "outcome fsync before sequence CAS and snapshot freeze",
@@ -176,7 +176,7 @@
         "mode": "QUICK",
         "verdict": "attention",
         "blockers": 0,
-        "design_fingerprint": "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4",
+        "design_fingerprint": "b77e08eb6953e476a6bf76daf8115410b27b62639d1cf5cab831becbee86252e",
         "incorporated": [
           "all 24 AC-REG selectors resolve",
           "replace contradictory error-skips-dashboard test",
@@ -191,7 +191,7 @@
         "mode": "QUICK",
         "verdict": "attention",
         "blockers": 0,
-        "design_fingerprint": "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4",
+        "design_fingerprint": "b77e08eb6953e476a6bf76daf8115410b27b62639d1cf5cab831becbee86252e",
         "incorporated": [
           "encode canonical bytes once and fan out",
           "bounded source/visible/omitted/truncation truth",

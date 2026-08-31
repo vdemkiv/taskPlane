@@ -14,7 +14,7 @@ import design_contract as canonical_design
 
 ROOT = Path(__file__).resolve().parents[2]
 APPROVED_DESIGN_FINGERPRINT = (
-    "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4"
+    "b77e08eb6953e476a6bf76daf8115410b27b62639d1cf5cab831becbee86252e"
 )
 APPROVED_REQUIREMENT_FINGERPRINT = (
     "96df9e88309a18098026d5b57e4b935e59159f178d4928b4ef673c6e5cf5f712"
@@ -282,8 +282,8 @@ def test_all_approved_modules_edges_contracts_depth_and_acceptance_are_realized(
         row["id"] for row in strategy["acceptance_criteria"]
     } == CRITERION_IDS
 
-    # The Plan authority is current, exact, human-attributed, and historical
-    # compatibility remains 2.18.2 until the separately governed release slice.
+    # The Plan authority is current, exact, human-attributed, and rebound to
+    # the separately governed 2.18.3 release slice.
     assert plan["design_contract_current"] is True
     with mock.patch.object(
         canonical_design,
@@ -308,15 +308,15 @@ def test_all_approved_modules_edges_contracts_depth_and_acceptance_are_realized(
     } == {APPROVED_DESIGN_FINGERPRINT}
     assert plan["plan_authority"] == (
         "human:vdemkiv approved zero-lens Build at the consolidated Plan gate; "
-        "Taskplane 2.18.2 compatibility projection only"
+        "Taskplane 2.18.3 compatibility projection only"
     )
-    assert compatibility["window"]["current"] == "2.18.2"
+    assert compatibility["window"]["current"] == "2.18.3"
     assert compatibility["window"]["unknown_generation"] == "refuse"
-    assert compatibility["baseline_rebind"]["next_generation"] == "2.18.2"
+    assert compatibility["baseline_rebind"]["next_generation"] == "2.18.3"
     assert all(
         row["release"].startswith(("refuse-", "historical-"))
         for row in compatibility["matrix"]
-        if row["plugin"] != "2.18.2" or row["host"] != "2.18.2"
+        if row["plugin"] != "2.18.3" or row["host"] != "2.18.3"
     )
 
     tasks = plan["tasks"]
