@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 
+from taskplane import views
 from taskplane.dashboard import (
     HOST_DASHBOARD_COMPONENTS,
     _TEMPLATE,
@@ -15,6 +16,57 @@ from taskplane.dashboard import (
     render_native_dashboard_surface,
 )
 from taskplane.host_native import HostSurfaceSnapshot
+
+
+def _delivery_head(sequence, fingerprint):
+    return {
+        "workflow_id": "wf", "run_id": "run", "target": "repo",
+        "revision": "abc123", "sequence": sequence,
+        "snapshot_fingerprint": fingerprint,
+    }
+
+
+def test_stale_open_page_disables_actions_and_recovers_only_on_newer_snapshot():
+    rendered = _delivery_head(7, "old" * 21 + "o")
+    newer = _delivery_head(8, "new" * 21 + "n")
+
+    stale = views.dashboard_freshness_state(
+        rendered, newer, page_url="https://example.test/dashboard.html",
+        bridge_available=True, fetch_available=True)
+    assert stale == {
+        "status": "stale", "actions_enabled": False,
+        "reason": "durable dashboard head is newer than this page",
+        "rendered_sequence": 7, "current_sequence": 8,
+    }
+
+    # Replaying an older or same-sequence observation cannot make the stale
+    # document actionable again.  Only a document rendered from the newer
+    # snapshot can prove current and recover actions.
+    replay = views.dashboard_freshness_state(
+        rendered, rendered, page_url="https://example.test/dashboard.html",
+        bridge_available=True, fetch_available=True,
+        previously_stale=True)
+    assert replay["status"] == "stale"
+    assert replay["actions_enabled"] is False
+    recovered = views.dashboard_freshness_state(
+        newer, newer, page_url="https://example.test/dashboard.html",
+        bridge_available=True, fetch_available=True,
+        previously_stale=True, previous_rendered_sequence=7)
+    assert recovered["status"] == "fresh"
+    assert recovered["actions_enabled"] is True
+
+
+def test_file_url_refresh_fails_closed_without_bridge_or_fetch():
+    rendered = _delivery_head(7, "head" * 16)
+    state = views.dashboard_freshness_state(
+        rendered, None, page_url="file:///tmp/dashboard.html",
+        bridge_available=False, fetch_available=False)
+
+    assert state["status"] == "unverified"
+    assert state["actions_enabled"] is False
+    assert state["reason"] == (
+        "file dashboard has no trusted head bridge; network refresh is not "
+        "attempted")
 
 
 def _snapshot(*, item_count=9, actions=("approve", "inspect", "export")):

@@ -36,8 +36,10 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -61,6 +63,13 @@ _HUMAN_DASHBOARD_STEPS = frozenset({
 LARGE_DASHBOARD_INLINE_BYTES = 64 * 1024
 _CANONICAL_START = "<!-- taskplane-canonical-json:start -->"
 _CANONICAL_END = "<!-- taskplane-canonical-json:end -->"
+_DASHBOARD_GRAPH_KEYS = (
+    "design_graph", "plan_task_dag", "plan_waves", "module_impact",
+)
+_DASHBOARD_HEAD_IDENTITY_KEYS = (
+    "workflow_id", "run_id", "target", "revision",
+)
+_NO_EXPECTED_HEAD = object()
 
 
 def canonical_dashboard_bytes(model: Mapping) -> bytes:
@@ -96,24 +105,389 @@ def _artifact_ref(path: str, payload: bytes) -> dict:
             "sha256": hashlib.sha256(payload).hexdigest()}
 
 
-def _embedded_html(body: str, canonical: bytes) -> bytes:
-    encoded = base64.b64encode(canonical).decode("ascii")
+def _fingerprint_value(value: Mapping) -> str:
+    return hashlib.sha256(canonical_dashboard_bytes(value)).hexdigest()
+
+
+class _HtmlShape(HTMLParser):
+    """Count document boundaries without treating script text as markup."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.doctypes = 0
+        self.tags = {"html": 0, "head": 0, "body": 0}
+
+    def handle_decl(self, decl: str) -> None:
+        if decl.casefold().strip() == "doctype html":
+            self.doctypes += 1
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in self.tags:
+            self.tags[tag] += 1
+
+
+def _html_shape(document: str) -> _HtmlShape:
+    parser = _HtmlShape()
+    parser.feed(document)
+    return parser
+
+
+def _disable_unverified_actions(fragment: str) -> str:
+    """Make mutation/approval controls inert before any script executes."""
+    action = re.compile(
+        r"<button\b(?=[^>]*\bdata-dashboard-action(?:\s|=|>))[^>]*>",
+        re.IGNORECASE)
+
+    def closed(match: re.Match) -> str:
+        tag = match.group(0)
+        inspection = re.search(
+            r"\bdata-action-kind\s*=\s*(['\"])inspection\1", tag,
+            re.IGNORECASE)
+        named = re.search(
+            r"\bdata-dashboard-action\s*=\s*(['\"])([^'\"]+)\1", tag,
+            re.IGNORECASE)
+        if inspection or (named and named.group(2).casefold() in {
+                "inspect", "view", "details", "export"}):
+            return tag
+        if re.search(r"\bdisabled(?:\s|=|>)", tag, re.IGNORECASE):
+            return tag
+        return tag[:-1] + ' disabled aria-disabled="true">'
+
+    return action.sub(closed, fragment)
+
+
+def _dashboard_freshness_controller(rendered_head: Mapping,
+                                    *, actions_enabled: bool) -> str:
+    encoded_head = base64.b64encode(canonical_dashboard_bytes(
+        rendered_head)).decode("ascii")
+    initial = "fresh" if actions_enabled else "unverified"
+    # The old document never enables itself from a newer head.  It navigates
+    # to the content-addressed generation, whose own controller must then
+    # prove an exact head match.  file:// never attempts network fetch.
     return (
-        '<!DOCTYPE html><html lang="en"><meta charset="utf-8"><body>'
+        '<script>(function(){'
+        'var root=document.body,rendered=JSON.parse(atob("' + encoded_head + '"));'
+        'var wasStale=false;'
+        'function mutations(){return Array.from(document.querySelectorAll('
+        '"[data-dashboard-action]"))'
+        '.filter(function(item){var kind=(item.getAttribute('
+        '"data-action-kind")||item.getAttribute("data-dashboard-action")||"")'
+        '.toLowerCase();return !["inspect","view","details","export",'
+        '"inspection"].includes(kind);});}'
+        'function state(name,reason,enabled){root.dataset.dashboardFreshness=name;'
+        'root.dataset.dashboardFreshnessReason=reason||"";mutations().forEach('
+        'function(item){item.disabled=!enabled;item.setAttribute("aria-disabled",'
+        'enabled?"false":"true");});}'
+        'function sameIdentity(head){return ["workflow_id","run_id","target",'
+        '"revision"].every(function(key){return String(head[key]||"")==='
+        'String(rendered[key]||"");});}'
+        'function apply(head){if(!head||!sameIdentity(head)){wasStale=true;'
+        'state("stale","dashboard head identity is missing or changed",false);'
+        'return false;}var next=Number(head.sequence),here=Number(rendered.sequence);'
+        'if(next>here){wasStale=true;state("stale",'
+        '"durable dashboard head is newer than this page",false);'
+        'if(head.html_href&&window.location&&typeof window.location.replace==="function")'
+        '{window.location.replace(head.html_href);}return false;}'
+        'if(next!==here||head.snapshot_fingerprint!==rendered.snapshot_fingerprint)'
+        '{wasStale=true;state("stale","dashboard head is contradictory",false);'
+        'return false;}if(wasStale){state("stale",'
+        '"a stale document requires a newer rendered snapshot",false);return false;}'
+        'state("fresh","exact durable head verified",true);return true;}'
+        'window.taskplaneDashboardApplyHead=apply;'
+        'state("' + initial + '","' +
+        ('embedded host acknowledgement verified' if actions_enabled else
+         'dashboard head has not been verified') + '",' +
+        ("true" if actions_enabled else "false") + ');'
+        'var bridge=window.openai&&typeof window.openai.getDashboardHead==="function";'
+        'if(bridge){Promise.resolve(window.openai.getDashboardHead()).then(apply,'
+        'function(){state("unverified","trusted head bridge failed",false);});}'
+        'else if(window.location&&window.location.protocol!=="file:"&&'
+        'typeof window.fetch==="function"){window.fetch("../../current.json",'
+        '{cache:"no-store",credentials:"same-origin"}).then(function(response){'
+        'if(!response.ok)throw new Error("head unavailable");return response.json()'
+        '.then(function(head){if(head.html_href&&typeof URL==="function")'
+        '{head.html_href=new URL(head.html_href,response.url).href;}return head;});})'
+        '.then(apply,function(){state("unverified",'
+        '"durable dashboard head could not be fetched",false);});}'
+        'else{state("unverified",window.location&&window.location.protocol==="file:"?'
+        '"file dashboard has no trusted head bridge; network refresh is not attempted":'
+        '"dashboard head transport is unavailable",false);}'
+        '})();</script>')
+
+
+def _embedded_html(body: str, canonical: bytes, *, rendered_head: Mapping,
+                   actions_enabled: bool) -> bytes:
+    fragment_shape = _html_shape(body)
+    if fragment_shape.doctypes or any(fragment_shape.tags.values()):
+        raise ValueError(
+            "HTML renderer must return a fragment, not a document boundary")
+    if not actions_enabled:
+        body = _disable_unverified_actions(body)
+    encoded = base64.b64encode(canonical).decode("ascii")
+    document = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>Taskplane dashboard</title></head><body '
+        'data-dashboard-delivery-root="true" data-dashboard-freshness="'
+        + ("fresh" if actions_enabled else "unverified") + '">'
         + body
         + '<script type="application/x-taskplane-json-base64" '
           f'data-taskplane-canonical="true">{encoded}</script>'
-          '</body></html>').encode("utf-8")
+        + _dashboard_freshness_controller(
+            rendered_head, actions_enabled=actions_enabled)
+        + '</body></html>')
+    shape = _html_shape(document)
+    if shape.doctypes != 1 or shape.tags != {
+            "html": 1, "head": 1, "body": 1}:
+        raise ValueError("dashboard delivery must contain exactly one document")
+    return document.encode("utf-8")
+
+
+def _normalize_delivery_head(value: Mapping) -> dict:
+    if not isinstance(value, Mapping):
+        raise ValueError("dashboard head must be a mapping")
+    try:
+        sequence = int(value["sequence"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("dashboard head sequence is required") from exc
+    if sequence < 0:
+        raise ValueError("dashboard head sequence is invalid")
+    head = {key: str(value.get(key) or "")
+            for key in _DASHBOARD_HEAD_IDENTITY_KEYS}
+    if not all(head.values()):
+        raise ValueError("dashboard head identity is incomplete")
+    fingerprint = str(value.get("snapshot_fingerprint") or
+                      value.get("fingerprint") or "")
+    if not fingerprint:
+        raise ValueError("dashboard head fingerprint is required")
+    return {**head, "sequence": sequence,
+            "snapshot_fingerprint": fingerprint}
+
+
+def dashboard_freshness_state(
+        rendered_head: Mapping, current_head: "Mapping | None", *,
+        page_url: str, bridge_available: bool, fetch_available: bool,
+        previously_stale: bool = False,
+        previous_rendered_sequence: "int | None" = None) -> dict:
+    """Return the fail-closed action state for one open dashboard page."""
+    rendered = _normalize_delivery_head(rendered_head)
+    base = {"rendered_sequence": rendered["sequence"]}
+    is_file = str(page_url).casefold().startswith("file:")
+    if is_file and not bridge_available:
+        return {
+            "status": "unverified", "actions_enabled": False,
+            "reason": "file dashboard has no trusted head bridge; network "
+                      "refresh is not attempted", **base,
+        }
+    if not bridge_available and not fetch_available:
+        return {
+            "status": "unverified", "actions_enabled": False,
+            "reason": "dashboard head transport is unavailable", **base,
+        }
+    if current_head is None:
+        return {
+            "status": "unverified", "actions_enabled": False,
+            "reason": "durable dashboard head is unavailable", **base,
+        }
+    try:
+        current = _normalize_delivery_head(current_head)
+    except ValueError as exc:
+        return {"status": "unverified", "actions_enabled": False,
+                "reason": str(exc), **base}
+    result_base = {**base, "current_sequence": current["sequence"]}
+    if any(rendered[key] != current[key]
+           for key in _DASHBOARD_HEAD_IDENTITY_KEYS):
+        return {"status": "stale", "actions_enabled": False,
+                "reason": "dashboard head identity changed", **result_base}
+    if current["sequence"] > rendered["sequence"]:
+        return {"status": "stale", "actions_enabled": False,
+                "reason": "durable dashboard head is newer than this page",
+                **result_base}
+    if (current["sequence"] != rendered["sequence"] or
+            current["snapshot_fingerprint"] !=
+            rendered["snapshot_fingerprint"]):
+        return {"status": "stale", "actions_enabled": False,
+                "reason": "dashboard head is stale or contradictory",
+                **result_base}
+    if previously_stale and (previous_rendered_sequence is None or
+                             rendered["sequence"] <=
+                             previous_rendered_sequence):
+        return {"status": "stale", "actions_enabled": False,
+                "reason": "a stale page requires a newer rendered snapshot",
+                **result_base}
+    return {"status": "fresh", "actions_enabled": True,
+            "reason": "exact durable head verified", **result_base}
+
+
+def dashboard_publication_receipt_fingerprint(receipt: Mapping) -> str:
+    """Authenticate a receipt after removing only its self fingerprint."""
+    payload = dict(receipt)
+    payload.pop("fingerprint", None)
+    return _fingerprint_value(payload)
+
+
+def _snapshot_receipt(model: Mapping, canonical_sha256: str) -> dict:
+    identity = model.get("identity") if isinstance(
+        model.get("identity"), Mapping) else {}
+    values = model.get("values") if isinstance(
+        model.get("values"), Mapping) else model
+    sequence = model.get("sequence", identity.get("sequence", 0))
+    if isinstance(sequence, bool) or not isinstance(sequence, int):
+        sequence = 0
+    revision = model.get("revision", identity.get("revision", ""))
+    return {
+        "fingerprint": str(model.get("fingerprint") or canonical_sha256),
+        "sequence": sequence,
+        "revision": str(revision or ""),
+        "generated_at": values.get("generated_at"),
+        "canonical_sha256": canonical_sha256,
+    }
+
+
+def _rendered_head(model: Mapping, snapshot: Mapping) -> dict:
+    identity = model.get("identity") if isinstance(
+        model.get("identity"), Mapping) else {}
+    return {
+        "workflow_id": str(model.get("workflow_id") or
+                           identity.get("workflow_id") or "dashboard"),
+        "run_id": str(model.get("run_id") or identity.get("run_id") or
+                      "standalone"),
+        "target": str(model.get("target") or identity.get("target") or
+                      "dashboard"),
+        "revision": str(model.get("revision") or identity.get("revision") or
+                        snapshot["canonical_sha256"]),
+        "sequence": snapshot["sequence"],
+        "snapshot_fingerprint": snapshot["fingerprint"],
+    }
+
+
+def _graph_fingerprints(model: Mapping) -> dict:
+    source = model.get("values") if isinstance(
+        model.get("values"), Mapping) else model
+    return {key: _fingerprint_value(source[key]) for key in
+            _DASHBOARD_GRAPH_KEYS if isinstance(source.get(key), Mapping)}
+
+
+def _host_acknowledgement_receipt(
+        acknowledgement: "Mapping | None", rendered_head: Mapping) -> dict:
+    if acknowledgement is None:
+        limitation = {
+            "status": "static-limitation",
+            "snapshot_fingerprint": rendered_head["snapshot_fingerprint"],
+            "reason": "no exact host acknowledgement supplied",
+        }
+        limitation["fingerprint"] = _fingerprint_value(limitation)
+        return limitation
+    if not isinstance(acknowledgement, Mapping):
+        raise TypeError("host_acknowledgement must be a mapping")
+    value = dict(acknowledgement)
+    supplied = value.pop("fingerprint", None)
+    computed = _fingerprint_value(value)
+    reasons = []
+    if value.get("schema") != "taskplane.host-native-acknowledgement/v1":
+        reasons.append("host acknowledgement schema mismatch")
+    if not isinstance(supplied, str) or supplied != computed:
+        reasons.append("host acknowledgement fingerprint mismatch")
+    if value.get("snapshot_fingerprint") != \
+            rendered_head["snapshot_fingerprint"]:
+        reasons.append("host acknowledgement names another snapshot")
+    if value.get("sequence") != rendered_head["sequence"]:
+        reasons.append("host acknowledgement names another sequence")
+    identity = value.get("identity") if isinstance(
+        value.get("identity"), Mapping) else {}
+    for key in _DASHBOARD_HEAD_IDENTITY_KEYS:
+        if key not in identity:
+            reasons.append(f"host acknowledgement {key} is missing")
+        elif str(identity[key]) != str(rendered_head[key]):
+            reasons.append(f"host acknowledgement {key} mismatch")
+    if reasons:
+        rejected = {
+            "status": "rejected",
+            "snapshot_fingerprint": rendered_head["snapshot_fingerprint"],
+            "reason": "; ".join(reasons),
+        }
+        rejected["fingerprint"] = _fingerprint_value(rejected)
+        return rejected
+    return {
+        "status": "acknowledged",
+        "snapshot_fingerprint": rendered_head["snapshot_fingerprint"],
+        "fingerprint": supplied,
+    }
+
+
+def _fsync_directory(path: str) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _load_current_head(path: str) -> "dict | None":
+    if not os.path.exists(path):
+        return None
+    if os.path.islink(path):
+        raise ValueError("dashboard current pointer must not be a symlink")
+    with open(path, encoding="utf-8") as stream:
+        value = json.load(stream)
+    if not isinstance(value, dict) or value.get("schema") != \
+            "taskplane.dashboard-current/v1":
+        raise ValueError("dashboard current pointer is invalid")
+    return value
+
+
+def _commit_current_head(root: str, head: Mapping, *, expected_head) -> dict:
+    path = os.path.join(root, "current.json")
+    lock_path = os.path.join(root, ".current.lock")
+    try:
+        lock = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeError("dashboard current-pointer CAS is busy") from exc
+    try:
+        with os.fdopen(lock, "w", encoding="utf-8") as stream:
+            stream.write(str(os.getpid()))
+            stream.flush()
+            os.fsync(stream.fileno())
+        current = _load_current_head(path)
+        if expected_head is not _NO_EXPECTED_HEAD:
+            observed = None if current is None else current.get(
+                "receipt_fingerprint")
+            if observed != expected_head:
+                raise ValueError("dashboard current-pointer expected head changed")
+        if current is not None:
+            same_identity = all(current.get(key) == head.get(key)
+                                for key in _DASHBOARD_HEAD_IDENTITY_KEYS)
+            if same_identity and current.get("sequence", -1) > head["sequence"]:
+                raise ValueError("dashboard current pointer refuses stale sequence")
+            if (same_identity and current.get("sequence") == head["sequence"]
+                    and current.get("snapshot_fingerprint") !=
+                    head["snapshot_fingerprint"]):
+                raise ValueError(
+                    "dashboard current pointer refuses contradictory snapshot")
+            if current.get("receipt_fingerprint") == head[
+                    "receipt_fingerprint"]:
+                return current
+        _write_delivery_artifact(
+            path, canonical_dashboard_bytes(dict(head)))
+        _fsync_directory(root)
+        return dict(head)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(lock_path)
 
 
 def deliver_dashboard(output_dir: str, model: Mapping, *,
                       inline_threshold: int = LARGE_DASHBOARD_INLINE_BYTES,
-                      html_renderer=None) -> dict:
-    """Publish a lossless, size-appropriate dashboard artifact set.
+                      html_renderer=None,
+                      host_acknowledgement: "Mapping | None" = None,
+                      expected_head=_NO_EXPECTED_HEAD) -> dict:
+    """Publish one canonical snapshot through disjoint delivery projections.
 
-    JSON and complete Markdown are required.  Inline is selected only when
-    the canonical semantic bytes fit the declared boundary.  HTML is a
-    best-effort convenience and cannot change publication or gate state.
+    Canonical bytes are encoded once. JSON, complete Markdown, optional HTML,
+    graph bindings, the host acknowledgement, and DOM freshness join in a
+    content-addressed generation before the expected-head current-pointer CAS.
+    Presentation failure cannot change the canonical delivery outcome.
     """
     if isinstance(inline_threshold, bool) or not isinstance(inline_threshold, int) \
             or inline_threshold < 1:
@@ -124,18 +498,11 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
     if os.path.lexists(root) and os.path.islink(root):
         raise ValueError("dashboard output directory must not be a symlink")
     os.makedirs(root, exist_ok=True)
-    json_path = os.path.join(root, "dashboard.json")
-    markdown_path = os.path.join(root, "dashboard.md")
     markdown = (
         "# Taskplane dashboard\n\n"
         "Canonical complete dashboard evidence (JSON):\n\n"
         f"{_CANONICAL_START}\n```json\n{canonical_text}\n```\n"
         f"{_CANONICAL_END}\n").encode("utf-8")
-    _write_delivery_artifact(json_path, canonical)
-    _write_delivery_artifact(markdown_path, markdown)
-    artifacts = {"json": _artifact_ref(json_path, canonical),
-                 "markdown": _artifact_ref(markdown_path, markdown)}
-
     inline = None
     mode = "complete-markdown"
     if len(canonical) <= inline_threshold:
@@ -145,27 +512,117 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
                   "semantic_bytes": len(canonical)}
         mode = "inline"
 
-    html_path = os.path.join(root, "dashboard.html")
+    canonical_sha256 = hashlib.sha256(canonical).hexdigest()
+    snapshot_receipt = _snapshot_receipt(model, canonical_sha256)
+    rendered_head = _rendered_head(model, snapshot_receipt)
+    host_receipt = _host_acknowledgement_receipt(
+        host_acknowledgement, rendered_head)
+    actions_enabled = host_receipt["status"] == "acknowledged"
+    html_payload = None
+    html_error = None
+    structural_error = False
     if html_renderer is None:
-        artifacts["html"] = {"status": "unavailable", "path": html_path,
-                             "reason": "optional HTML was not requested"}
+        html_error = "optional HTML was not requested"
     else:
         try:
             body = str(html_renderer(canonical_text))
-            html_payload = _embedded_html(body, canonical)
-            _write_delivery_artifact(html_path, html_payload)
-            artifacts["html"] = _artifact_ref(html_path, html_payload)
+            html_payload = _embedded_html(
+                body, canonical, rendered_head=rendered_head,
+                actions_enabled=actions_enabled)
         except Exception as exc:
-            artifacts["html"] = {
-                "status": "unavailable", "path": html_path,
-                "reason": f"{exc.__class__.__name__}: {exc}"}
+            html_error = f"{exc.__class__.__name__}: {exc}"
+            structural_error = isinstance(exc, ValueError) and \
+                ("document" in str(exc) or "fragment" in str(exc))
 
+    artifact_hashes = {
+        "json": hashlib.sha256(canonical).hexdigest(),
+        "markdown": hashlib.sha256(markdown).hexdigest(),
+        "html": hashlib.sha256(html_payload).hexdigest()
+        if html_payload is not None else None,
+    }
+    generation_id = _fingerprint_value({
+        "artifacts": artifact_hashes,
+        "host_acknowledgement": host_receipt["fingerprint"],
+    })
+    generation_root = os.path.join(root, "generations", generation_id)
+    os.makedirs(generation_root, exist_ok=True)
+    json_path = os.path.join(generation_root, "dashboard.json")
+    markdown_path = os.path.join(generation_root, "dashboard.md")
+    html_path = os.path.join(generation_root, "dashboard.html")
+    _write_delivery_artifact(json_path, canonical)
+    _write_delivery_artifact(markdown_path, markdown)
+    artifacts = {"json": _artifact_ref(json_path, canonical),
+                 "markdown": _artifact_ref(markdown_path, markdown)}
+    if html_payload is not None:
+        _write_delivery_artifact(html_path, html_payload)
+        artifacts["html"] = _artifact_ref(html_path, html_payload)
+    else:
+        artifacts["html"] = {
+            "status": "unavailable", "path": html_path,
+            "reason": str(html_error)}
+
+    dom_freshness = {
+        "status": "verified" if html_payload is not None else "unavailable",
+        "html_document_count": 1 if html_payload is not None else 0,
+        "canonical_sha256": canonical_sha256,
+        "actions_enabled": bool(html_payload is not None and actions_enabled),
+    }
+    dom_freshness["fingerprint"] = _fingerprint_value(dom_freshness)
+    graphs = _graph_fingerprints(model)
+    receipt = {
+        "schema": "taskplane.dashboard-publication-receipt/v1",
+        "snapshot": snapshot_receipt,
+        "graphs": graphs,
+        "dom_freshness": dom_freshness,
+        "host_acknowledgement": host_receipt,
+        "generation": {
+            "id": generation_id, "artifacts": artifact_hashes,
+            "complete": not structural_error,
+        },
+        "bindings": {
+            "snapshot": snapshot_receipt["fingerprint"],
+            "graphs": graphs,
+            "dom_freshness": dom_freshness["fingerprint"],
+            "host_acknowledgement": host_receipt["fingerprint"],
+        },
+    }
+    receipt["fingerprint"] = dashboard_publication_receipt_fingerprint(receipt)
+    receipt_path = os.path.join(generation_root, "publication-receipt.json")
+    receipt_bytes = canonical_dashboard_bytes(receipt)
+    _write_delivery_artifact(receipt_path, receipt_bytes)
+    _fsync_directory(generation_root)
+    _fsync_directory(os.path.dirname(generation_root))
+
+    current_head = None
+    status = "rejected" if structural_error else "published"
+    if not structural_error:
+        current_head = _commit_current_head(root, {
+            "schema": "taskplane.dashboard-current/v1",
+            **{key: rendered_head[key]
+               for key in _DASHBOARD_HEAD_IDENTITY_KEYS},
+            "sequence": rendered_head["sequence"],
+            "snapshot_fingerprint": rendered_head["snapshot_fingerprint"],
+            "generation_id": generation_id,
+            "receipt_fingerprint": receipt["fingerprint"],
+            "html_href": (
+                f"generations/{generation_id}/dashboard.html"
+                if html_payload is not None else None),
+        }, expected_head=expected_head)
+
+    gate_source = model.get("gate")
+    if not isinstance(gate_source, Mapping) and isinstance(
+            model.get("values"), Mapping):
+        gate_source = model["values"].get("gate")
     return {
-        "schema": "taskplane.dashboard-delivery/v1", "status": "published",
+        "schema": "taskplane.dashboard-delivery/v1", "status": status,
         "mode": mode, "semantic_bytes": len(canonical),
-        "semantic_sha256": hashlib.sha256(canonical).hexdigest(),
-        "gate": dict(model.get("gate") or {}), "inline": inline,
+        "semantic_sha256": canonical_sha256,
+        "gate": dict(gate_source or {}), "inline": inline,
         "artifacts": artifacts,
+        "publication_receipt": receipt,
+        "publication_receipt_artifact": _artifact_ref(
+            receipt_path, receipt_bytes),
+        "current_head": current_head,
     }
 
 
@@ -418,6 +875,34 @@ def publish_report(ws: str, state: dict | None = None) -> "dict | None":
 _VIEW_FAILED_WARNED = False
 
 
+def _delivery_model(out: Mapping) -> dict:
+    publication = out.get("dashboard_snapshot")
+    snapshot = publication.get("snapshot") if isinstance(
+        publication, Mapping) else None
+    if isinstance(snapshot, Mapping):
+        # This is the one frozen HostSurfaceSnapshot assembled by loop_status.
+        # No presentation value or transition reread enters canonical bytes.
+        return dict(snapshot)
+    return {
+        "schema": "taskplane.dashboard-delivery-model/v1",
+        "transition": {key: value for key, value in out.items()
+                       if key not in {"dashboard", "artifacts"}},
+        "gate": dict((out.get("gate") or
+                      ((out.get("status") or {}).get("gate")
+                       if isinstance(out.get("status"), dict) else {}) or {})),
+    }
+
+
+def _delivery_host_acknowledgement(out: Mapping) -> "Mapping | None":
+    for key in ("host_publication", "host_native_publication",
+                "dashboard_host_publication"):
+        publication = out.get(key)
+        if isinstance(publication, Mapping) and isinstance(
+                publication.get("acknowledgement"), Mapping):
+            return publication["acknowledgement"]
+    return None
+
+
 def refresh_views(ws: str, out: dict) -> dict:
     """Render the dashboard and publish the gate snapshot; annotate `out`.
 
@@ -426,79 +911,72 @@ def refresh_views(ws: str, out: dict) -> dict:
     """
     global _VIEW_FAILED_WARNED
     try:
-        import dashboard as _dash
-        frag = _dash.report_widget(ws)
-        # The durable artifact is a real report document, not a raw widget
-        # fragment.  This uses the same 940px canvas, palette, dark-mode
-        # variables and section hierarchy as engineering-review reports, so
-        # Codex/Claude/file delivery all render the same bytes reliably.
-        doc = _dash.standalone_document(
-            [frag], title="taskplane — mission control")
         import storage as _runtime_storage
         p = _runtime_storage.dashboard_path(ws)
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        tmp = f"{p}.tmp.{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
-            f.write(doc)
-        os.replace(tmp, p)
-        fragment_path = os.path.splitext(p)[0] + ".fragment.html"
-        fragment_tmp = f"{fragment_path}.tmp.{os.getpid()}"
-        with open(fragment_tmp, "w", encoding="utf-8", newline="") as f:
-            f.write(frag)
-        os.replace(fragment_tmp, fragment_path)
         step = _transition_step(out)
         human_gate = step in _HUMAN_DASHBOARD_STEPS
         logical_path = (p if _runtime_storage.load_workspace_locator(ws)
                         else ".taskplane/dashboard.html")
-        out["dashboard"] = {
-            # logical pointer, not a path: os.path.join made
-            # this '\\' on Windows and the goldens disagreed
-            "path": logical_path,
-            "inline": {"path": fragment_path},
-            "render": (
+        fragment_path = os.path.splitext(p)[0] + ".fragment.html"
+        delivery_root = os.path.join(os.path.dirname(p), "dashboard-delivery")
+        rendered: dict = {}
+
+        def presentation(_canonical: str) -> str:
+            import dashboard as _dash
+            fragment = _dash.report_widget(ws)
+            rendered["fragment"] = fragment
+            return fragment
+
+        # Canonical JSON/Markdown and the product outcome are committed by
+        # deliver_dashboard even when presentation() raises.  The renderer is
+        # a true output port: it receives canonical bytes and cannot feed
+        # semantic values back into the delivery model.
+        delivery = deliver_dashboard(
+            delivery_root, _delivery_model(out),
+            inline_threshold=LARGE_DASHBOARD_INLINE_BYTES,
+            html_renderer=presentation,
+            host_acknowledgement=_delivery_host_acknowledgement(out))
+        if delivery.get("inline"):
+            inline = dict(delivery["inline"])
+            inline_path = os.path.join(delivery_root, "dashboard.inline.html")
+            _write_delivery_artifact(
+                inline_path, inline.pop("content").encode("utf-8"))
+            inline["path"] = inline_path
+            delivery["inline"] = inline
+
+        out["dashboard"] = {"path": logical_path, "delivery": delivery}
+        html_ref = delivery["artifacts"]["html"]
+        if html_ref["status"] == "available":
+            with open(html_ref["path"], "rb") as stream:
+                _write_delivery_artifact(p, stream.read())
+            fragment = rendered.get("fragment")
+            if isinstance(fragment, str):
+                _write_delivery_artifact(
+                    fragment_path, fragment.encode("utf-8"))
+                out["dashboard"]["inline"] = {"path": fragment_path}
+            out["dashboard"]["render"] = (
                 "human gate — render inline.path with the host widget before "
                 "asking for approval or rejection; path is fallback only"
                 if human_gate else
                 "refreshed for this internal transition — keep using this "
                 "path as the progress reference; do not render or acknowledge "
-                "it until a human gate or explicit status request")}
-        # R-0001: delivery is a production concern, not a test-only helper.
-        # The transition payload is the canonical semantic input; the rendered
-        # fragment is retained as evidence but never replaces canonical JSON.
-        # Very large values bypass inline transport automatically and point to
-        # the complete Markdown artifact instead.
-        delivery_root = os.path.join(os.path.dirname(p), "dashboard-delivery")
-        delivery_model = {
-            "schema": "taskplane.dashboard-delivery-model/v1",
-            "transition": {key: value for key, value in out.items()
-                           if key not in {"dashboard", "artifacts"}},
-            "rendered_dashboard": {"fragment": frag},
-            "gate": dict((out.get("gate") or
-                          ((out.get("status") or {}).get("gate")
-                           if isinstance(out.get("status"), dict) else {}) or
-                          {})),
-        }
-        try:
-            delivery = deliver_dashboard(
-                delivery_root, delivery_model,
-                inline_threshold=LARGE_DASHBOARD_INLINE_BYTES,
-                html_renderer=lambda _canonical: doc)
-            if delivery.get("inline"):
-                inline = dict(delivery["inline"])
-                inline_path = os.path.join(delivery_root, "dashboard.inline.html")
-                _write_delivery_artifact(
-                    inline_path, inline.pop("content").encode("utf-8"))
-                inline["path"] = inline_path
-                delivery["inline"] = inline
-            out["dashboard"]["delivery"] = delivery
-        except Exception as exc:
-            detail = f"{exc.__class__.__name__}: {exc}"
-            out["dashboard"]["delivery"] = {
-                "schema": "taskplane.dashboard-delivery/v1",
-                "status": "unavailable", "gating": False, "reason": detail,
-                "action": "retry artifact delivery"}
+                "it until a human gate or explicit status request")
+        else:
+            detail = str(html_ref.get("reason") or
+                         "HTML presentation is unavailable")
+            out["dashboard"].update({
+                "error": detail,
+                "render": "NOT refreshed — this transition's dashboard is "
+                          "STALE or missing. Canonical JSON/Markdown remain "
+                          "published; do not present the HTML as current."})
             with contextlib.suppress(Exception):
-                tp.trace(ws, "artifact_delivery_unavailable", error=detail)
+                tp.trace(ws, "dashboard_render_failed", error=detail)
+            if not _VIEW_FAILED_WARNED:
+                _VIEW_FAILED_WARNED = True
+                print(f"taskplane: WARNING — dashboard render failed "
+                      f"({detail}); canonical delivery remains available, "
+                      "but the inline view is stale until repaired.",
+                      file=sys.stderr)
         # WS-F: the engine can render, write and point at the artifact, and
         # has no way to see whether it reached a human — which is exactly how
         # "no inline dashboard, no report, nothing" kept happening against a

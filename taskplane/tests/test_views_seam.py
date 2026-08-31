@@ -22,6 +22,7 @@ broken rather than smuggled into function bodies.
 Every assertion here was observed FAILING before it was kept.
 """
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -118,6 +119,46 @@ class TestAFailedRenderIsReported(_Ws):
         self.assertTrue(doc.startswith("<!DOCTYPE html>"))
         self.assertIn("--changed-bg", doc)
         self.assertIn('id="tp-workflow-flow"', doc)
+
+    def test_canonical_delivery_survives_html_renderer_failure(self):
+        """The committed product result is published before presentation.
+
+        A failed HTML renderer may make that optional surface unavailable,
+        but it must not erase or rewrite the canonical transition outcome.
+        """
+        model = {
+            "schema": "taskplane.dashboard-delivery-model/v1",
+            "transition": {
+                "outcome": "pass",
+                "task": "DASHBOARD-DELIVERY",
+                "evidence": ["sha256:canonical-product-outcome"],
+            },
+            "gate": {"status": "complete"},
+        }
+
+        def broken_renderer(_canonical):
+            raise RuntimeError("renderer exploded after commit")
+
+        delivery = views.deliver_dashboard(
+            os.path.join(self.ws, "delivery"), model,
+            html_renderer=broken_renderer)
+
+        self.assertEqual(delivery["status"], "published")
+        self.assertEqual(delivery["artifacts"]["html"]["status"],
+                         "unavailable")
+        self.assertIn("renderer exploded after commit",
+                      delivery["artifacts"]["html"]["reason"])
+        machine = Path(delivery["artifacts"]["json"]["path"]).read_bytes()
+        text = Path(delivery["artifacts"]["markdown"]["path"]).read_bytes()
+        self.assertEqual(views.decode_dashboard_artifact("json", machine),
+                         model)
+        self.assertEqual(views.decode_dashboard_artifact("markdown", text),
+                         model)
+        self.assertEqual(delivery["publication_receipt"]["snapshot"]
+                         ["canonical_sha256"],
+                         delivery["semantic_sha256"])
+        self.assertEqual(delivery["publication_receipt"]["dom_freshness"]
+                         ["status"], "unavailable")
 
 
 class TestTheSeamIsRealNotCosmetic(unittest.TestCase):
