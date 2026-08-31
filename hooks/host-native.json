@@ -5,5 +5,11 @@
   "optionalSurfaces": ["pip", "visualization", "carousel", "approval", "sandbox", "hosting", "browser", "side_panel"],
   "fallback": "accessible_bounded",
   "runtimeReceiptRequired": true,
-  "nativeUiIsAuthority": false
+  "nativeUiIsAuthority": false,
+  "sessionRecovery": {
+    "callback": "taskplane.loop_status.refresh_dashboard_snapshot",
+    "eventType": "session_recovery",
+    "replay": true
+  },
+  "acknowledgement": "taskplane.host-native-acknowledgement/v1"
 }
