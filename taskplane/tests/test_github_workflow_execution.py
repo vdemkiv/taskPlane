@@ -4,6 +4,10 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -12,6 +16,11 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = Path(__file__).with_name("fixtures") / "ci-runtime" / "contract.json"
 SPEC = importlib.util.spec_from_file_location(
     "ci_local_github_contract", ROOT / "scripts" / "ci_local.py",
+)
+SUPPORTED_PYTHONS = ("3.10", "3.11", "3.12", "3.13")
+COMPATIBILITY_SELECTOR = (
+    "taskplane/tests/test_github_workflow_execution.py::"
+    "test_supported_python_matrix_compiles_imports_before_tests"
 )
 
 
@@ -32,6 +41,97 @@ def _browser():
         "dashboard_artifact": "3" * 64,
         "selectors": "4" * 64,
     }
+
+
+def _compatibility_job(workflow: str) -> str:
+    start = workflow.index("  python-compatibility:\n")
+    end = workflow.index("\n  authoritative-tests:", start)
+    return workflow[start:end]
+
+
+def _compile_import_payload(workflow: str) -> str:
+    start_marker = "# R-0006-COMPILE-IMPORT-BEGIN"
+    end_marker = "# R-0006-COMPILE-IMPORT-END"
+    start = workflow.index(start_marker) + len(start_marker)
+    end = workflow.index(end_marker, start)
+    return textwrap.dedent("\n".join(
+        workflow[start:end].splitlines()
+    )).strip()
+
+
+def _copy_shipped_python_surface(destination: Path) -> None:
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "taskplane/*.py", "hooks/*.py"],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+    ).stdout.splitlines()
+    assert tracked
+    for relative in tracked:
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, target)
+    subprocess.run(["git", "init", "-q"], cwd=destination, check=True)
+    subprocess.run(
+        ["git", "add", "taskplane", "hooks"], cwd=destination, check=True
+    )
+
+
+def test_supported_python_matrix_compiles_imports_before_tests(tmp_path):
+    """Keep the 3.10-3.13 matrix and execute its pre-test source gate."""
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    job = _compatibility_job(workflow)
+    versions = tuple(re.findall(
+        r'^          - python: "(3\.\d+)"$', job, flags=re.MULTILINE
+    ))
+    assert versions == SUPPORTED_PYTHONS
+    assert "python-version: ${{ matrix.python }}" in job
+
+    starts = [job.index(f'          - python: "{version}"')
+              for version in SUPPORTED_PYTHONS]
+    ends = starts[1:] + [job.index("    steps:", starts[-1])]
+    for start, end in zip(starts, ends):
+        assert job[start:end].count(COMPATIBILITY_SELECTOR) == 1
+
+    gate_name = "      - name: Compile and import every shipped Python entry point"
+    test_name = "      - name: Run the authoritative suite or compatibility smoke set"
+    gate_at = job.index(gate_name)
+    tests_at = job.index(test_name)
+    assert gate_at < tests_at
+    assert "if: matrix.python" not in job[gate_at:tests_at]
+
+    payload = _compile_import_payload(workflow)
+    assert '"git", "ls-files"' in payload
+    assert '"taskplane/*.py", "hooks/*.py"' in payload
+    assert payload.index("compile(source") < payload.index(
+        "importlib.import_module"
+    )
+    clean = subprocess.run(
+        [sys.executable, "-B", "-c", payload],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    assert clean.returncode == 0, clean.stderr
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _copy_shipped_python_surface(checkout)
+    (checkout / "taskplane" / "stage_entities.py").write_text(
+        "def seeded_syntax_error(:\n", encoding="utf-8"
+    )
+    failed = subprocess.run(
+        [sys.executable, "-B", "-c", payload],
+        cwd=checkout,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    assert failed.returncode != 0
+    assert "stage_entities.py" in failed.stderr
 
 
 def _green_receipt(runner, runtime, cell, owned, *, python_version="3.12.9"):

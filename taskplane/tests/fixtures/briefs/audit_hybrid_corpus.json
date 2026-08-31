@@ -78,7 +78,7 @@
         "taskplane/tests/test_dor_dod.py",
         "taskplane/tests/test_lens_signals.py",
         "taskplane/tests/test_review_wave.py",
-        "taskplane/tests/test_v231_guardrails.py",
+        "taskplane/tests/test_screener_bypasses.py",
         "taskplane/tp.py"
       ],
       "findings": [
@@ -183,7 +183,7 @@
       "files": [
         "taskplane/audit.py",
         "taskplane/loop.py",
-        "taskplane/tests/test_audit_extraction.py"
+        "taskplane/tests/test_audit_sweep.py"
       ],
       "findings": [
         {
@@ -289,7 +289,7 @@
         "taskplane/tests/test_dor_dod.py",
         "taskplane/tests/test_lens_signals.py",
         "taskplane/tests/test_review_wave.py",
-        "taskplane/tests/test_v231_guardrails.py",
+        "taskplane/tests/test_screener_bypasses.py",
         "taskplane/tp.py",
         "workflows/review-wave.js"
       ],

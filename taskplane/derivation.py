@@ -68,9 +68,9 @@ UNKNOWN = "?"
 # absorbed into the verb only if this table already knows it, which is what
 # makes an argument structurally unable to reach a row.
 #
-# taskplane/tests/test_derivation_ledger.py checks this table against the
-# LIVE argparse tree (`tp help --md`): the instrument for "did it invent a
-# CLI surface" must not contain an invented one.
+# Product-level repeat detection stays protected by TestRepeats in
+# test_eval_rubric.py and TestScenarioAwareRecorderBoundaries in
+# test_eval_recorder.py; the instrument must not invent CLI surfaces.
 TP_COMMANDS: dict = {
     "ack": frozenset(),
     "budget": frozenset(),
