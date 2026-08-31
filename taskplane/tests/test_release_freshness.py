@@ -43,6 +43,24 @@ class TestReleaseWindow(unittest.TestCase):
         self.assertEqual(rows[0], current)
         self.assertTrue(set(rows) <= changelog_rows)
 
+    def test_current_version_is_single_sourced_across_runtime_and_manifests(self):
+        expected = "2.18.3"
+        runtime = _read("taskplane/release_evidence.py")
+        codex = json.loads(_read(".codex-plugin/plugin.json"))
+        claude = json.loads(_read(".claude-plugin/plugin.json"))
+        marketplace = json.loads(_read(".claude-plugin/marketplace.json"))
+        compatibility = json.loads(_read("design/compatibility.json"))
+
+        self.assertIn(f'CURRENT_VERSION = "{expected}"', runtime)
+        self.assertEqual(codex["version"], expected)
+        self.assertEqual(claude["version"], expected)
+        self.assertEqual(marketplace["version"], expected)
+        self.assertEqual(marketplace["plugins"][0]["version"], expected)
+        self.assertEqual(compatibility["window"]["current"], expected)
+        self.assertEqual(
+            compatibility["baseline_rebind"]["next_generation"], expected
+        )
+
 
 class TestGeneratedCliReference(unittest.TestCase):
     REFERENCE = "docs/cli-reference.md"
@@ -193,6 +211,7 @@ class TestForwardRepairDocumentation(unittest.TestCase):
             self.assertIn("v2.18.0", prose, path)
             self.assertIn("v2.18.1", prose, path)
             self.assertIn("v2.18.2", prose, path)
+            self.assertIn("v2.18.3", prose, path)
             self.assertIn("not released", prose, path)
             self.assertIn("2757822e", prose, path)
             self.assertIn("inherited limitation", prose, path)

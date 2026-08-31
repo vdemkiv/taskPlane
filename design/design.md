@@ -14,6 +14,11 @@ This directly corrects the dashboard defect discovered at the Design gate. Succe
 
 The work is a contract change, not a configuration cleanup. A partially wired consumer, invalid value, incompatible host, stale digest, or unsafe override stops before any state write, worktree, contract, process, or dispatch.
 
+The governed release projection is now Taskplane 2.18.3. This release rebinds
+the approved Design evidence to the current compatibility policy and
+release-green schema; it does not rewrite the historical 2.18.2 as-built
+baseline below or claim that the superseded 2.18.2 candidate was released.
+
 ## Why this is the smallest sound approach
 
 We compared four settings placements and four real dashboard-delivery options. The selected combination is the canonical document plus incumbent adapters and the existing v1 host snapshot plus sibling native/static adapters:

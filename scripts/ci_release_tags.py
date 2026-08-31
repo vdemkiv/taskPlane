@@ -110,6 +110,13 @@ NOT_RELEASED = {
                   "proof; it was explicitly not released.",
         "superseded_by": "2.18.1",
     },
+    "2.18.2": {
+        "reason": "superseded external-worktree bootstrap repair candidate "
+                  "that preceded the canonical settings, dashboard, cleanup, "
+                  "test-portfolio, and CI delivery release; it was explicitly "
+                  "not released.",
+        "superseded_by": "2.18.3",
+    },
 }
 
 # Version numbers deliberately skipped — never bumped to, never released.
