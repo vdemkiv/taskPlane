@@ -218,8 +218,9 @@ def test_removed_tests_preserve_current_contract_coverage():
         selector for selector in protected
         if not (ROOT / selector.split("::", 1)[0]).is_file()
     }
-    assert missing_protected == future
-    assert len(future_rows) == len(future) == 2
+    assert missing_protected == set()
+    assert future == set()
+    assert future_rows == []
     for row in future_rows:
         assert set(row) == {"selector", "owner_task", "depends_on", "relation"}
         assert row["owner_task"] == "SET-CONFORMANCE"
