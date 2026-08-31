@@ -1278,7 +1278,14 @@ def unwind_owned_failure(
                                          _cleanup_workspace(manifest_path)),
             owner=manifest["owner"], outcome=outcome, publisher=publisher)
         replay = dict(publication["obligation"])
-    except Exception as exc:
+    except BaseException as exc:
+        # A second publication interrupt cannot replace an interruption that
+        # is already being unwound. For an ordinary original failure it stays
+        # authoritative and propagates after terminal sealing.
+        if (isinstance(error, Exception) or
+                not isinstance(error, BaseException)) and not isinstance(
+                exc, Exception):
+            raise
         publication = {"status": "pending", "replay_required": True,
                        "error": str(exc)}
     receipt = owned_cleanup.cleanup_manifest(manifest_path)
@@ -1337,17 +1344,53 @@ def recover_owned_cleanup(
 
 
 def _safe_failure_unwind(context: Mapping[str, object], *, error: object,
-                         process_binding=None) -> dict:
+                         process_binding=None, outcome: str = "failure") -> dict:
     """Keep cleanup evidence secondary to the original production failure."""
     try:
         return unwind_owned_failure(
-            context, error=error, process_binding=process_binding)
-    except Exception as cleanup_error:
+            context, error=error, process_binding=process_binding,
+            outcome=outcome)
+    except BaseException as cleanup_error:
+        # A fresh interrupt during ordinary failure cleanup is authoritative
+        # and must still propagate. When an interruption is already being
+        # unwound, cleanup may never replace that original outcome.
+        if (isinstance(error, Exception) or
+                not isinstance(error, BaseException)) and not isinstance(
+                cleanup_error, Exception):
+            raise
         return {
             "schema": RESULT_SCHEMA, "action": "failure-unwind",
             "error": str(error), "cleanup_status": "attention",
             "cleanup_error": str(cleanup_error),
         }
+
+
+def _created_cleanup_context(workspace: str, token: str,
+                             prepared: Mapping[str, object] | None) \
+        -> Mapping[str, object] | None:
+    """Recover cleanup authority when preparation raised after manifest CAS."""
+    if prepared is not None:
+        return prepared
+    manifest = (Path(workspace).resolve() / ".taskplane" /
+                "owned-cleanup-v1" / "manifests" / f"{token}.json")
+    if not manifest.is_file():
+        return None
+    return {"manifest": str(manifest), "workspace": workspace}
+
+
+def _unwind_created_cleanup(
+        workspace: str, token: str,
+        prepared: Mapping[str, object] | None, *, error: BaseException,
+        process_binding=None) -> dict:
+    """Unwind a fully or partially prepared manifest without masking error."""
+    context = _created_cleanup_context(workspace, token, prepared)
+    if context is None:
+        return {}
+    outcome = "interruption" if isinstance(
+        error, (KeyboardInterrupt, SystemExit)) else "failure"
+    return _safe_failure_unwind(
+        context, error=error, process_binding=process_binding,
+        outcome=outcome)
 
 
 def owned_process_resource(workspace: str, handle: str,
@@ -1512,35 +1555,38 @@ def execute(workspace: str, action: str, request: object) -> dict:
         root = _runtime_root(workspace)
         token = secrets.token_hex(16)
         handoff = root / "handoffs" / f"{token}.json"
-        cleanup_context = _prepare_owned_cleanup(
-            workspace, authorization, run_id=str(value["run_id"]),
-            task_id=str(value["task_id"]), attempt=int(value["attempt"]),
-            token=token)
+        cleanup_context = None
         started: dict[str, object] = {}
         deadline = time.time() + _CHECKPOINT_TIMEOUT_SECONDS
 
-        def launch(command: object, command_cwd: str) -> HostLaunch:
-            del command, command_cwd
-            # The outer broker is subject to the same content binding and
-            # literal environment as the proof it launches.
-            _recheck_regular_file_binding(
-                authority["engine_bindings"]["governed_commands"],
-                label="governed command engine")
-            _recheck_regular_file_binding(
-                authority["executable_binding"], label="runtime executable")
-            process = subprocess.Popen(
-                [str(authority["executable_binding"]["path"]),
-                 str(Path(__file__).resolve()), "_worker", str(handoff)],
-                cwd=sandbox, stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True, close_fds=True,
-                env=dict(authority["runtime_environment"]))
-            binding = detached_process_binding(process, token=token)
-            started.update({"process": process, "binding": binding})
-            _activate_owned_process(cleanup_context, binding)
-            return HostLaunch(binding=binding)
-
         try:
+            cleanup_context = _prepare_owned_cleanup(
+                workspace, authorization, run_id=str(value["run_id"]),
+                task_id=str(value["task_id"]), attempt=int(value["attempt"]),
+                token=token)
+
+            def launch(command: object, command_cwd: str) -> HostLaunch:
+                del command, command_cwd
+                # The outer broker is subject to the same content binding and
+                # literal environment as the proof it launches.
+                _recheck_regular_file_binding(
+                    authority["engine_bindings"]["governed_commands"],
+                    label="governed command engine")
+                _recheck_regular_file_binding(
+                    authority["executable_binding"],
+                    label="runtime executable")
+                process = subprocess.Popen(
+                    [str(authority["executable_binding"]["path"]),
+                     str(Path(__file__).resolve()), "_worker", str(handoff)],
+                    cwd=sandbox, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True, close_fds=True,
+                    env=dict(authority["runtime_environment"]))
+                binding = detached_process_binding(process, token=token)
+                started.update({"process": process, "binding": binding})
+                _activate_owned_process(cleanup_context, binding)
+                return HostLaunch(binding=binding)
+
             adapter = _adapter(
                 workspace, authorization, host="codex", launcher=launch,
                 owned_cleanup_context=
@@ -1594,8 +1640,8 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 })
         except GovernedCommandUnavailable as exc:
             shutil.rmtree(Path(sandbox).parent, ignore_errors=True)
-            unwind = _safe_failure_unwind(
-                cleanup_context, error=exc,
+            unwind = _unwind_created_cleanup(
+                workspace, token, cleanup_context, error=exc,
                 process_binding=(dict(started["binding"])
                                  if "binding" in started else None))
             return {
@@ -1614,8 +1660,8 @@ def execute(workspace: str, action: str, request: object) -> dict:
             }
         except OSError as exc:
             shutil.rmtree(Path(sandbox).parent, ignore_errors=True)
-            unwind = _safe_failure_unwind(
-                cleanup_context, error=exc,
+            unwind = _unwind_created_cleanup(
+                workspace, token, cleanup_context, error=exc,
                 process_binding=(dict(started["binding"])
                                  if "binding" in started else None))
             return {
@@ -1633,14 +1679,15 @@ def execute(workspace: str, action: str, request: object) -> dict:
                     "cleanup_status": "attention"}
                    if "cleanup_error" in unwind else {}),
             }
-        except Exception as exc:
-            unwind = _safe_failure_unwind(
-                cleanup_context, error=exc,
+        except BaseException as exc:
+            shutil.rmtree(Path(sandbox).parent, ignore_errors=True)
+            unwind = _unwind_created_cleanup(
+                workspace, token, cleanup_context, error=exc,
                 process_binding=(dict(started["binding"])
                                  if "binding" in started else None))
             try:
                 exc.cleanup_result = unwind
-            except Exception:
+            except BaseException:
                 pass
             raise
 
@@ -1663,29 +1710,31 @@ def execute(workspace: str, action: str, request: object) -> dict:
             workspace, cwd, list(argv), identity)
         token = secrets.token_hex(16)
         handoff = root / "handoffs" / f"{token}.json"
-        cleanup_context = _prepare_owned_cleanup(
-            workspace, authorization, run_id=str(value["run_id"]),
-            task_id=str(value["task_id"]), attempt=int(value["attempt"]),
-            token=token)
+        cleanup_context = None
         started: dict[str, object] = {}
 
-        def launch(command: object, command_cwd: str) -> HostLaunch:
-            worker_env = dict(os.environ)
-            package_root = str(Path(__file__).resolve().parent.parent)
-            prior_pythonpath = worker_env.get("PYTHONPATH", "")
-            worker_env["PYTHONPATH"] = package_root + (
-                os.pathsep + prior_pythonpath if prior_pythonpath else "")
-            process = subprocess.Popen(
-                [sys.executable, str(Path(__file__).resolve()), "_worker",
-                 str(handoff)], cwd=workspace, stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True, close_fds=True, env=worker_env)
-            binding = detached_process_binding(process, token=token)
-            started.update({"process": process, "binding": binding})
-            _activate_owned_process(cleanup_context, binding)
-            return HostLaunch(binding=binding)
-
         try:
+            cleanup_context = _prepare_owned_cleanup(
+                workspace, authorization, run_id=str(value["run_id"]),
+                task_id=str(value["task_id"]), attempt=int(value["attempt"]),
+                token=token)
+
+            def launch(command: object, command_cwd: str) -> HostLaunch:
+                worker_env = dict(os.environ)
+                package_root = str(Path(__file__).resolve().parent.parent)
+                prior_pythonpath = worker_env.get("PYTHONPATH", "")
+                worker_env["PYTHONPATH"] = package_root + (
+                    os.pathsep + prior_pythonpath if prior_pythonpath else "")
+                process = subprocess.Popen(
+                    [sys.executable, str(Path(__file__).resolve()), "_worker",
+                     str(handoff)], cwd=workspace, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True, close_fds=True, env=worker_env)
+                binding = detached_process_binding(process, token=token)
+                started.update({"process": process, "binding": binding})
+                _activate_owned_process(cleanup_context, binding)
+                return HostLaunch(binding=binding)
+
             adapter = _adapter(
                 workspace, authorization, host=host, launcher=launch,
                 owned_cleanup_context=
@@ -1709,14 +1758,14 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 "identity": identity, "authority": authority,
             })
             return _snapshot_result("launch", adapter, handle)
-        except Exception as exc:
-            unwind = _safe_failure_unwind(
-                cleanup_context, error=exc,
+        except BaseException as exc:
+            unwind = _unwind_created_cleanup(
+                workspace, token, cleanup_context, error=exc,
                 process_binding=(dict(started["binding"])
                                  if "binding" in started else None))
             try:
                 exc.cleanup_result = unwind
-            except Exception:
+            except BaseException:
                 pass
             raise
 

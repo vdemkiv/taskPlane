@@ -164,6 +164,107 @@ def test_cleanup_runs_on_every_terminal_outcome(tmp_path, outcome, monkeypatch):
     assert production["publication_replay"]["trigger"] == (
         "handoff" if outcome == "handoff" else "terminal")
 
+    if outcome == "interruption":
+        # Preparation belongs to the same total unwind boundary as process
+        # launch. Exercise both interruption-class outcomes after the real
+        # manifest/reservation CAS, and prove the exact object is re-raised.
+        original_prepare = governed_commands._prepare_owned_cleanup
+        for index, interrupted in enumerate((
+                KeyboardInterrupt("prepare interrupted"),
+                SystemExit("prepare exited"))):
+            interrupted_workspace = tmp_path / f"prepare-interrupt-{index}"
+            interrupted_workspace.mkdir()
+            contract_engine.activate(
+                str(interrupted_workspace), contract_engine.build_contract(
+                    "owned-cleanup-interrupt", scope=[
+                        str(interrupted_workspace)], tools=["exec_command"],
+                    plan_minted=True), snapshot=None)
+            prepared = {}
+
+            def interrupt_after_prepare(*args, **kwargs):
+                prepared.update(original_prepare(*args, **kwargs))
+                raise interrupted
+
+            with monkeypatch.context() as interruption_patch:
+                interruption_patch.setattr(
+                    governed_commands, "_prepare_owned_cleanup",
+                    interrupt_after_prepare)
+                interruption_patch.setattr(
+                    governed_commands.owned_cleanup, "replay_publication",
+                    original_replay)
+                with pytest.raises(type(interrupted)) as caught:
+                    governed_commands.execute(
+                        str(interrupted_workspace), "launch", {
+                            "authorization": "agent:interrupt",
+                            "run_id": "run-interrupt",
+                            "task_id": f"task-interrupt-{index}",
+                            "attempt": 1,
+                            "argv": ["/usr/bin/printf", "never-launched"],
+                        })
+            assert caught.value is interrupted
+            assert interrupted.cleanup_result[
+                "cleanup_receipt"]["original_outcome"] == "interruption"
+            assert interrupted.cleanup_result[
+                "cleanup_evidence"]["leak_count"] == 0
+            assert cleanup.load_manifest(prepared["manifest"])[
+                "terminal"]["outcome"] == "interruption"
+
+        # Deliberately interrupt the real checkpoint launcher after its owned
+        # manifest exists. The checkpoint sandbox and every reservation must
+        # unwind before the same KeyboardInterrupt propagates.
+        checkpoint_workspace = tmp_path / "checkpoint-interrupt"
+        checkpoint_workspace.mkdir()
+        checkpoint_sandbox = (
+            checkpoint_workspace / ".taskplane" / "checkpoint-sandbox" /
+            "checkout")
+        checkpoint_sandbox.mkdir(parents=True)
+        checkpoint_interrupt = KeyboardInterrupt("checkpoint launch")
+        checkpoint_authority = {
+            "engine_bindings": {"governed_commands": {"path": "engine"}},
+            "executable_binding": {"path": "/usr/bin/python3"},
+            "runtime_environment": {},
+            "fingerprint": "a" * 64,
+        }
+        checkpoint_spec = {"focused_proof": {"argv": ["python3", "proof"]},
+                           "checkpoint_id": "cleanup-interrupt"}
+        with monkeypatch.context() as interruption_patch:
+            interruption_patch.setattr(
+                governed_commands, "detached_process_groups_supported",
+                lambda: True)
+            interruption_patch.setattr(
+                governed_commands,
+                "_consume_semantic_checkpoint_authorization",
+                lambda *_args, **_kwargs:
+                    (checkpoint_spec, checkpoint_authority))
+            interruption_patch.setattr(
+                governed_commands, "_prepare_checkpoint_sandbox",
+                lambda *_args, **_kwargs: str(checkpoint_sandbox))
+            interruption_patch.setattr(
+                governed_commands, "_recheck_regular_file_binding",
+                lambda *_args, **_kwargs: None)
+            interruption_patch.setattr(
+                governed_commands.subprocess, "Popen",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    checkpoint_interrupt))
+            interruption_patch.setattr(
+                governed_commands.owned_cleanup, "replay_publication",
+                original_replay)
+            with pytest.raises(KeyboardInterrupt) as caught:
+                governed_commands.execute(str(checkpoint_workspace),
+                                            "checkpoint", {
+                    "authorization": "checkpoint:interrupt",
+                    "checkpoint_authority": "engine-minted-for-test",
+                    "run_id": "run-checkpoint",
+                    "task_id": "task-checkpoint", "attempt": 1,
+                })
+        assert caught.value is checkpoint_interrupt
+        assert checkpoint_interrupt.cleanup_result.get("cleanup_error") is None
+        assert checkpoint_interrupt.cleanup_result[
+            "cleanup_receipt"]["original_outcome"] == "interruption"
+        assert checkpoint_interrupt.cleanup_result[
+            "cleanup_evidence"]["leak_count"] == 0
+        assert not checkpoint_sandbox.parent.exists()
+
 
 def test_cleanup_preserves_evidence_and_proves_zero_leaks(tmp_path):
     manifest = _manifest(tmp_path)
@@ -440,6 +541,143 @@ def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):
         outcome="success", publisher=verifying_publisher)
     assert identity_publication["source_revision"] == 7
     assert identity_publication["source_fingerprint"] == "c" * 64
+
+    # Exercise the real default publisher: it must authenticate a bound host
+    # snapshot, deliver those exact canonical bytes, and derive its
+    # acknowledgement from the read-back artifact rather than request echo.
+    from taskplane import host_native, loop_status, views
+
+    dashboard_source = {
+        "mode": "legacy", "status": "ready", "run_id": "cleanup-loop",
+        "revision": "loop-revision", "target": "owned-cleanup",
+        "state": {"goal": "cleanup", "step": "execute", "tasks": [],
+                  "current_task": 0},
+        "source_fingerprint": "e" * 64, "evidence": ["cleanup-source"],
+    }
+
+    def default_replay(case: str, revision: int, fingerprint: str):
+        selected_workspace = tmp_path / case
+        selected_workspace.mkdir()
+        selected_manifest = _manifest(selected_workspace)
+        selected_source = _publication(
+            selected_manifest, selected_workspace / "publication.json",
+            outcome="success", revision=revision)
+        obligation = json.loads(selected_source.read_text(encoding="utf-8"))
+        obligation["source_fingerprint"] = fingerprint
+        obligation["fingerprint"] = cleanup._digest({
+            key: value for key, value in obligation.items()
+            if key != "fingerprint"})
+        selected_source.write_text(
+            json.dumps(obligation, sort_keys=True, separators=(",", ":")) +
+            "\n", encoding="utf-8")
+        return (selected_workspace, selected_source,
+                cleanup.load_manifest(selected_manifest)["owner"])
+
+    positive_workspace, positive_source, positive_owner = default_replay(
+        "default-publication", 11, "d" * 64)
+    with monkeypatch.context() as publication_patch:
+        publication_patch.setattr(
+            loop_status, "_select_dashboard_source",
+            lambda _workspace: copy.deepcopy(dashboard_source))
+        # A normal dashboard at the same source sequence may already be the
+        # durable delivery head. The cleanup publication is its own revision
+        # identity and must not collide with that incumbent snapshot.
+        incumbent = loop_status.refresh_dashboard_snapshot(
+            str(positive_workspace), event_type="incumbent", replay=True)
+        incumbent_delivery = views.refresh_views(str(positive_workspace), {
+            "outcome": "running", "dashboard_snapshot": incumbent})
+        assert incumbent_delivery["dashboard"]["delivery"]["status"] == \
+            "published"
+        default_publication = cleanup.replay_publication(
+            positive_source, workspace=str(positive_workspace),
+            owner=positive_owner, outcome="success", mark_published=False)
+    publisher_result = default_publication["publication"]
+    expected_source = {
+        "schema": cleanup.PUBLICATION_SOURCE_SCHEMA,
+        "source_revision": 11, "source_fingerprint": "d" * 64,
+    }
+    assert publisher_result["source_verification"] == {
+        "snapshot": expected_source, "delivery": expected_source,
+    }
+    bound_snapshot = host_native.HostSurfaceSnapshot.from_dict(
+        publisher_result["snapshot_publication"]["snapshot"])
+    assert bound_snapshot.revision == "owned-cleanup:11:" + "d" * 64
+    assert bound_snapshot.values[
+        "owned_cleanup_publication_source"] == expected_source
+    delivered = publisher_result["dashboard_delivery"]["dashboard"][
+        "delivery"]
+    delivered_snapshot = host_native.HostSurfaceSnapshot.from_dict(json.loads(
+        Path(delivered["artifacts"]["json"]["path"]).read_text(
+            encoding="utf-8")))
+    assert delivered_snapshot.values[
+        "owned_cleanup_publication_source"] == expected_source
+    assert delivered["publication_receipt"]["snapshot"]["fingerprint"] == \
+        delivered_snapshot.fingerprint
+
+    # Deliberately sever the snapshot-source edge with an authenticated but
+    # conflicting producer value. The default composition must fail closed.
+    severed_workspace, severed_source, severed_owner = default_replay(
+        "severed-snapshot", 12, "f" * 64)
+    real_snapshot_refresh = loop_status.refresh_dashboard_snapshot
+
+    def conflicting_snapshot(*args, **kwargs):
+        publication = real_snapshot_refresh(*args, **kwargs)
+        snapshot = host_native.HostSurfaceSnapshot.from_dict(
+            publication["snapshot"])
+        values = dict(snapshot.values)
+        values["owned_cleanup_publication_source"] = {
+            "schema": cleanup.PUBLICATION_SOURCE_SCHEMA,
+            "source_revision": 13, "source_fingerprint": "f" * 64,
+        }
+        conflict = host_native.HostSurfaceSnapshot.create(
+            workflow_id=snapshot.workflow_id, run_id=snapshot.run_id,
+            target=snapshot.target, revision=snapshot.revision,
+            sequence=snapshot.sequence, stage=snapshot.stage,
+            state=snapshot.state, values=values, evidence=snapshot.evidence,
+            safe_actions=snapshot.safe_actions)
+        event = host_native.HostSurfaceEvent.from_snapshot(
+            conflict, event_type=publication["event"]["event_type"])
+        return {**publication, "snapshot": conflict.to_dict(),
+                "event": event.to_dict(),
+                "surfaces": {key: conflict.fingerprint
+                             for key in publication["surfaces"]}}
+
+    with monkeypatch.context() as publication_patch:
+        publication_patch.setattr(
+            loop_status, "_select_dashboard_source",
+            lambda _workspace: copy.deepcopy(dashboard_source))
+        publication_patch.setattr(
+            loop_status, "refresh_dashboard_snapshot", conflicting_snapshot)
+        with pytest.raises(cleanup.OwnedCleanupError,
+                           match="names another cleanup source"):
+            cleanup.replay_publication(
+                severed_source, workspace=str(severed_workspace),
+                owner=severed_owner, outcome="success", mark_published=False)
+
+    # Deliberately corrupt the real canonical JSON after refresh_views returns.
+    # Read-back verification must reject it and leave the obligation pending.
+    delivery_workspace, delivery_source, delivery_owner = default_replay(
+        "severed-delivery", 14, "9" * 64)
+    real_views_refresh = views.refresh_views
+
+    def corrupt_delivery(*args, **kwargs):
+        result = real_views_refresh(*args, **kwargs)
+        artifact = result["dashboard"]["delivery"]["artifacts"]["json"]
+        Path(artifact["path"]).write_text("{}\n", encoding="utf-8")
+        return result
+
+    with monkeypatch.context() as publication_patch:
+        publication_patch.setattr(
+            loop_status, "_select_dashboard_source",
+            lambda _workspace: copy.deepcopy(dashboard_source))
+        publication_patch.setattr(views, "refresh_views", corrupt_delivery)
+        with pytest.raises(cleanup.OwnedCleanupError,
+                           match="delivery artifact identity changed"):
+            cleanup.replay_publication(
+                delivery_source, workspace=str(delivery_workspace),
+                owner=delivery_owner, outcome="success", mark_published=False)
+    assert json.loads(delivery_source.read_text(encoding="utf-8"))[
+        "status"] == "pending"
 
     # Deliberately sever publication during failure unwind. Original terminal
     # truth must already be sealed, and the real omitted-attempt execute path
