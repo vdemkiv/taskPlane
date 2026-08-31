@@ -2,7 +2,7 @@
   "settings": {
     "digest": "0303030303030303030303030303030303030303030303030303030303030303",
     "build": {"shards": 5, "concurrency": 5},
-    "tests": {"shards": 5},
+    "tests": {"shards": 2},
     "limits": {"timeouts": {"task_seconds": 600}}
   },
   "run": {

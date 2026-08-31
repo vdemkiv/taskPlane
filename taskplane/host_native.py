@@ -36,6 +36,10 @@ except (ImportError, ValueError):  # direct CLI/module execution
 
 SNAPSHOT_SCHEMA = "taskplane.host-surface-snapshot/v1"
 EVENT_SCHEMA = "taskplane.host-surface-event/v1"
+REVISION_ID_KEYS = (
+    "target_fingerprint", "context_fingerprint", "findings_fingerprint",
+    "canonical_revision",
+)
 
 
 class ContradictorySnapshotError(ValueError):
@@ -1474,7 +1478,7 @@ def canonical_revision_identity(value: dict) -> dict:
     source = value.get("identity") if isinstance(value, dict) \
         and isinstance(value.get("identity"), dict) else value
     source = source if isinstance(source, dict) else {}
-    if any(source.get(key) in (None, "") for key in _REVISION_ID_KEYS):
+    if any(source.get(key) in (None, "") for key in REVISION_ID_KEYS):
         raise ValueError("complete canonical revision identity is required")
     try:
         revision = int(source["canonical_revision"])

@@ -84,7 +84,8 @@ def _declared_browser(config: Mapping[str, Any]) -> tuple[str, str, str]:
 def _browser_version(path: str, source: str) -> tuple[str, str, str]:
     try:
         result = subprocess.run(
-            [path, "--version"], text=True, capture_output=True,
+            [path, "--version"], text=True, encoding="utf-8",
+            errors="replace", capture_output=True,
             timeout=10, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -303,7 +304,7 @@ class _RealBrowser:
         try:
             self.process = subprocess.Popen(
                 command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
             )
         except OSError as exc:
             raise BrowserEnvironmentError(

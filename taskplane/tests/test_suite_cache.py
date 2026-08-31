@@ -228,7 +228,8 @@ class TestEvidenceIsBoundToEngineAndEnv(_CacheCase):
     def test_a_different_governing_env_does_not_share_a_result(self):
         self.dod()
         with mock.patch.dict(os.environ,
-                             {"TASKPLANE_AUDIT_EVERY": "3"}, clear=False):
+                             {"TASKPLANE_SUITE_CACHE_MAX_AGE": "3600"},
+                             clear=False):
             self.dod()
         self.assertEqual(self.runs(), 2,
                          "governing env is part of what the suite proves")

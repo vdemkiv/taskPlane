@@ -80,10 +80,10 @@ jobs:
           pytest_cells = [cell for cell in cells if cell["kind"] == "pytest"]
           quality_cells = [cell for cell in cells if cell["kind"] == "quality-package"]
           browser_cells = [cell for cell in cells if cell["kind"] == "browser"]
-          if len(pytest_cells) != 3 or len(quality_cells) != 1 or len(browser_cells) != 1:
-              raise SystemExit("frozen plan does not contain the exact five CI cells")
-          # One settings-bounded execution timeout plus one publication minute;
-          # five jobs therefore remain at the 30 runner-minute ceiling.
+          if not pytest_cells or len(quality_cells) != 1 or len(browser_cells) != 1:
+              raise SystemExit("frozen plan does not contain pytest plus singleton quality/browser cells")
+          # The settings-bounded execution budgets total at most 30 runner-minutes;
+          # each job gets one additional minute to publish terminal evidence.
           minutes = lambda cell: (int(cell["timeout_seconds"]) + 59) // 60 + 1
           with open(sys.argv[2], "a", encoding="utf-8") as output:
               output.write("pytest-matrix=" + json.dumps({"include": [
@@ -312,7 +312,7 @@ jobs:
         if: matrix.python == '3.12'
         run: python3 scripts/ci_loop_cost.py
 
-  # The complete pytest inventory executes exactly once: three disjoint cells
+  # The complete pytest inventory executes exactly once in disjoint cells
   # emitted by the frozen settings-derived plan. Compatibility legs above keep
   # their interpreter contracts but no longer replay the full 3.12 suite.
   authoritative-tests:
@@ -328,7 +328,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.ci-plan.outputs.candidate-sha }}
-          fetch-depth: 1
+          fetch-depth: 30
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -554,7 +554,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Current import-cycle inventory and bounds
+      - name: Current import-cycle topology
         run: >-
           python3 taskplane/import_cycles.py
           --root .
@@ -1048,9 +1048,9 @@ jobs:
         if: always()
         run: test "$(cat "$RUNNER_TEMP/cell-evidence/${{ needs.ci-plan.outputs.browser-cell }}/exit-code")" = "0"
 
-  # This is the only authority join for the frozen five-cell plan. It runs
+  # This is the only authority join for the frozen settings-derived plan. It runs
   # after green, red, skipped, or cancelled prerequisites, preserves its own
-  # terminal evidence, and refuses authority unless all five receipts match.
+  # terminal evidence, and refuses authority unless every planned receipt matches.
   authoritative-ci:
     name: authoritative CI terminal matrix
     if: always()
@@ -1077,7 +1077,7 @@ jobs:
         with:
           pattern: ci-cell-*-${{ needs.ci-plan.outputs.candidate-sha }}
           path: ${{ runner.temp }}/receipts
-      - name: Aggregate exactly five plan-bound receipts
+      - name: Aggregate every plan-bound receipt
         if: always()
         shell: bash
         run: |
@@ -1104,16 +1104,17 @@ jobs:
           CANDIDATE_SHA: ${{ needs.ci-plan.outputs.candidate-sha }}
         run: |
           test "$(cat "$RUNNER_TEMP/terminal-evidence/exit-code")" = "0"
-          python3 - "$RUNNER_TEMP/terminal-evidence/terminal.json" <<'PY'
+          python3 - "$RUNNER_TEMP/runtime/ci-runtime.json" "$RUNNER_TEMP/terminal-evidence/terminal.json" <<'PY'
           import json, os, sys
-          terminal = json.load(open(sys.argv[1], encoding="utf-8"))
-          expected = ["pytest-1", "pytest-2", "pytest-3", "quality-package", "dashboard-browser"]
+          runtime = json.load(open(sys.argv[1], encoding="utf-8"))
+          terminal = json.load(open(sys.argv[2], encoding="utf-8"))
+          expected = [cell["id"] for cell in runtime["plan"]["cells"]]
           if terminal.get("green") is not True:
               raise SystemExit("terminal matrix is not green")
           if terminal.get("source_sha") != os.environ["CANDIDATE_SHA"]:
               raise SystemExit("terminal matrix names a different candidate")
           if [cell.get("id") for cell in terminal.get("cells", [])] != expected:
-              raise SystemExit("terminal matrix does not join the exact five cells")
+              raise SystemExit("terminal matrix does not join the frozen plan cells")
           PY
 
   # Preserve the established branch-protection identity, now as a receipt-

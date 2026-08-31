@@ -141,6 +141,11 @@ def test_ci_shards_cleanup_and_candidate_freeze_are_authoritative():
     with pytest.raises(CIPolicyError, match="protected-main"):
         build_ci_plan(candidate, unsafe)
 
+    wrong_test_shards = _fixture("ci-plan.json")
+    wrong_test_shards["settings"]["tests"]["shards"] = 3
+    with pytest.raises(CIPolicyError, match="pytest cells"):
+        build_ci_plan(candidate, wrong_test_shards)
+
     stale_plan = _fixture("ci-plan.json")
     stale_plan["cells"][0]["selectors"] = [
         "taskplane/tests/test_loop.py::test_different_selector"

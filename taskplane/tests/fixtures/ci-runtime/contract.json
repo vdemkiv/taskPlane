@@ -5,6 +5,7 @@
     "pytest-1",
     "pytest-2",
     "pytest-3",
+    "pytest-4",
     "quality-package",
     "dashboard-browser"
   ],

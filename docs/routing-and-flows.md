@@ -204,9 +204,9 @@ The rules that make this safe:
 
 - **Claude/Codex semantic parity.** The Task path is mandatory. With `--emit task`
   (or whenever no workflow runtime is detected) the CLI prints today's
-  Task-dispatch payload byte-for-byte — the reference implementation,
-  pinned by CI parity goldens (regenerated only via
-  `taskplane/tests/fixtures/briefs/regen.py`). The workflow path wraps the
+  current Task-dispatch payload — the reference implementation. CI compares
+  its required fields and JSON semantics directly with workflow transport;
+  it does not replay historical whole-payload snapshots. The workflow path wraps the
   *unmodified* payload as a single `workflow {name, args}` invocation;
   agent prompts are consumed verbatim on both rails. Both hosts consume the
   same canonical context/view fingerprints, routing decision, leases,

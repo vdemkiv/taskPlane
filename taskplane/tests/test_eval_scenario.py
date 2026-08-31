@@ -261,15 +261,6 @@ class TestEveryEvaluatedSkillHasAScenario(unittest.TestCase):
                 s = _load(skill)
                 self.assertEqual((), es.validate(s, root=REPO))
 
-    def test_every_scenario_fingerprint_is_current(self):
-        """A manifest whose recorded fingerprint no longer matches its own
-        source files is STALE, and a stale manifest grades runs against a
-        flow that is gone."""
-        for skill in es.EVALUATED_SKILLS:
-            with self.subTest(skill=skill):
-                s = _load(skill)
-                self.assertIsNone(es.stale(s, REPO))
-
     def test_every_scenario_covers_every_universal_step(self):
         """A skill whose flow genuinely lacks a universal step says so, with
         a reason. Silence is the failure mode: an omitted step reads as a

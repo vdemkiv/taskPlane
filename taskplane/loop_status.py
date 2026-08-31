@@ -456,6 +456,11 @@ def with_dashboard(fn):
         settings = operational_settings.load_settings()
         result = fn(ws, *args, **kwargs)
         if isinstance(result, dict):
+            # A stage-native refusal is a proven read-only boundary.  Do not
+            # turn that refusal into dashboard/event/artifact writes against
+            # the mismatched or disabled store it explicitly rejected.
+            if result.get("stage_native") == "read-only" and result.get("error"):
+                return result
             outcome = result.get("outcome")
             if outcome is None:
                 outcome = "failure" if result.get("error") else "success"

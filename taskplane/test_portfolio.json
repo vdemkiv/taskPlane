@@ -15,8 +15,8 @@
   },
   "final": {
     "test_files": 230,
-    "collected_cases": 4104,
-    "test_loc": 85051,
+    "collected_cases": 4086,
+    "test_loc": 84772,
     "removed_files": 57,
     "removed_cases": 916,
     "removed_loc": 16865,
@@ -25,6 +25,52 @@
     "added_contract_loc": 1625,
     "redundant_families_removed": 18,
     "targets": {"test_files_max": 230, "collected_cases_max": 4200, "families_min": 6}
+  },
+  "selector_pruning": {
+    "base_revision": "e0aadf61c60c30996739b9f0e6d6f891384e80d4",
+    "source_diff_sha256": "83ef358d81b3509d4249b3272b6b0c157d4849f5b960fa973c85487acedb1176",
+    "removed_cases": 20,
+    "added_contract_cases": 2,
+    "changed_test_lines": {"deleted": 600, "added": 321},
+    "removed_fixtures": [
+      "taskplane/tests/fixtures/briefs/audit_hybrid_corpus.json",
+      "taskplane/tests/fixtures/briefs/changed_files.json",
+      "taskplane/tests/fixtures/briefs/golden_dispatch_all.json",
+      "taskplane/tests/fixtures/briefs/golden_dispatch_review.json",
+      "taskplane/tests/fixtures/briefs/golden_dispatch_routed.json"
+    ],
+    "removed_selectors": [
+      "taskplane/tests/test_binding_obligations.py::TheEngineStillCannotSeeAnyOfThis::test_an_open_binding_obligation_never_reaches_a_loop_gate",
+      "taskplane/tests/test_ci_local.py::test_import_cycle_check_names_current_checkout_inputs_explicitly",
+      "taskplane/tests/test_debt_burndown.py::TestGoldenRegenProvenance::test_every_golden_carries_regen_banner",
+      "taskplane/tests/test_debt_burndown.py::TestGoldenRegenProvenance::test_regen_script_is_the_documented_path",
+      "taskplane/tests/test_debt_burndown.py::TestHybridMeasurement::test_frozen_corpus_shape",
+      "taskplane/tests/test_debt_burndown.py::TestHybridMeasurement::test_normal_em_adopts_selective_execution",
+      "taskplane/tests/test_dispatch_parity.py::TestCodexEnvParity::test_bare_host_cli_equals_scrubbed_golden_bytes",
+      "taskplane/tests/test_dispatch_parity.py::TestGoldenReplay::test_breadth_all_dispatch_payload_matches_golden",
+      "taskplane/tests/test_dispatch_parity.py::TestGoldenReplay::test_fixture_tree_matches_frozen_changed_files",
+      "taskplane/tests/test_dispatch_parity.py::TestGoldenReplay::test_golden_headers_document_the_regen_command",
+      "taskplane/tests/test_dispatch_parity.py::TestGoldenReplay::test_goldens_are_deterministic_artifacts",
+      "taskplane/tests/test_dispatch_parity.py::TestGoldenReplay::test_routed_dispatch_payload_matches_golden",
+      "taskplane/tests/test_em_h2_quality.py::test_h09_staged_strict_baseline_covers_all_top_level_modules",
+      "taskplane/tests/test_eval_scenario.py::TestEveryEvaluatedSkillHasAScenario::test_every_scenario_fingerprint_is_current",
+      "taskplane/tests/test_lens_routing_integration.py::test_stage_policy_and_accepted_plan_authority_are_one_closed_boundary",
+      "taskplane/tests/test_lens_routing_product_truth.py::test_historical_contract_and_current_plan_route_remain_intact",
+      "taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_equal_fingerprint_gate_is_byte_identical_to_the_pre_a4_flow",
+      "taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_merge_and_byte_identical_reevidence_replaces_worker_engine_stamp",
+      "taskplane/tests/test_model_tiers.py::TestTierResolver::test_defaults_only_cheap_is_pinned",
+      "taskplane/tests/test_stage_waves.py::TestStageKillSwitchMatrix::test_single_detector_the_emitter_never_parses_the_env"
+    ],
+    "added_selectors": [
+      "taskplane/tests/test_ci_local.py::test_import_cycle_gate_protects_topology_not_physical_line_count",
+      "taskplane/tests/test_settings.py::test_one_release_cache_environment_aliases_are_safe_and_receipted"
+    ],
+    "retained_current_contracts": [
+      "taskplane/tests/test_dispatch_parity.py::TestDispatchContract::test_live_dispatch_carries_the_lens_brief_contract_fields",
+      "taskplane/tests/test_dispatch_parity.py::TestWorkflowArgsParity::test_workflow_args_json_equal_task_path_payload",
+      "taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_recorded_t7_skew_is_refused_then_gates_through_after_merge",
+      "taskplane/tests/test_stage_waves.py::TestStageKillSwitchMatrix::test_truthy_spellings_opt_in_to_the_workflow_path"
+    ]
   },
   "inventory_sha256": "685d8555c1fad519efbc2cc2f6fbfd4b56ee5e813b8089aee730b53967365d1d",
   "protected_floors": [

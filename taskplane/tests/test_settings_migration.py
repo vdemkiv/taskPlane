@@ -29,6 +29,7 @@ def test_legacy_and_version_forms_migrate_without_second_authority(tmp_path):
 
     assert migrated.schema == "taskplane.operational-settings/v1"
     assert migrated.build.concurrency == "native"
+    assert migrated.tests.backend == "local"
     assert migrated.receipt["migration"] == {
         "from": "taskplane.operational-settings/v0", "to": migrated.schema}
     assert migrated.receipt["overlay"] is None

@@ -99,8 +99,8 @@ class TestDispatchResolution(unittest.TestCase):
 
     def test_dispatch_payload_uses_only_resolved_arguments(self):
         with mock.patch.dict(os.environ, {
-                "TASKPLANE_MODEL_DEEP": "gpt-5-codex",
-                "TASKPLANE_REASONING_DEEP": "high"}, clear=False):
+                "TASKPLANE_MODEL_STANDARD": "gpt-5-codex",
+                "TASKPLANE_REASONING_STANDARD": "high"}, clear=False):
             fields = tp.dispatch_fields(
                 "step", "tp-executor", "t1", "deep",
                 capability_snapshot=snapshot(), enforcement_mode="warn")
@@ -110,8 +110,8 @@ class TestDispatchResolution(unittest.TestCase):
 
     def test_dispatch_payload_drops_unproved_arguments(self):
         with mock.patch.dict(os.environ, {
-                "TASKPLANE_MODEL_DEEP": "gpt-5-codex",
-                "TASKPLANE_REASONING_DEEP": "high"}, clear=False):
+                "TASKPLANE_MODEL_STANDARD": "gpt-5-codex",
+                "TASKPLANE_REASONING_STANDARD": "high"}, clear=False):
             fields = tp.dispatch_fields(
                 "step", "tp-executor", "t1", "deep",
                 capability_snapshot=snapshot(

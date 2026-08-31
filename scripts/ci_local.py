@@ -8,6 +8,7 @@ every shard is collected even after another fails.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib.util
 import json
@@ -56,8 +57,6 @@ CI_CELL_FIELDS = frozenset((
     "browser_observation", "selectors", "duration_ms", "commands",
     "output_digest", "ownership", "cleanup", "receipt",
 ))
-CI_SHARD_COUNT = 5
-CI_PYTEST_SHARDS = 3
 CI_BROWSER_SELECTORS = (
     "taskplane/tests/test_dashboard_browser.py::"
     "test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale",
@@ -108,13 +107,13 @@ def _files_fingerprint(paths: Sequence[str]) -> str:
     return digest.hexdigest()
 
 
-def _ci_pytest_partitions() -> tuple[tuple[str, ...], ...]:
+def _ci_pytest_partitions(shard_count: int) -> tuple[tuple[str, ...], ...]:
     files = tuple(
         path for path in pytest_inventory()
         if path != "taskplane/tests/test_dashboard_browser.py"
     )
     weights = {path: max(1, (ROOT / path).stat().st_size) for path in files}
-    return partition_pytest_files(files, weights, CI_PYTEST_SHARDS)
+    return partition_pytest_files(files, weights, shard_count)
 
 
 def _browser_identity(
@@ -186,25 +185,17 @@ def _browser_identity(
 def _ci_settings(
     settings_path: str | Path = DEFAULT_SETTINGS_PATH,
 ) -> OperationalSettings:
-    # This is an explicit per-run request through the loader's safe override
-    # boundary. It neither changes the canonical file nor creates a fallback.
-    overlay = {
-        "build": {"shards": CI_SHARD_COUNT},
-        "tests": {"shards": CI_SHARD_COUNT},
-        "limits": {"timeouts": {"subprocess_seconds": 300}},
-    }
     try:
-        settings = load_settings(settings_path, overlay=overlay)
+        settings = load_settings(settings_path, environment={})
     except SettingsError as exc:
         raise RunnerError(f"authoritative CI settings were rejected: {exc}") from exc
     if (
-        settings.build.shards != CI_SHARD_COUNT
-        or settings.tests.shards != CI_SHARD_COUNT
-        or settings.limits.timeouts["subprocess_seconds"] != 300
+        settings.tests.backend != "ci"
+        or settings.tests.shards < 2
         or settings.build.concurrency != "native"
-        or settings.receipt.get("precedence") != ["defaults", "file", "overlay"]
+        or settings.receipt.get("precedence") != ["defaults", "file"]
     ):
-        raise RunnerError("authoritative CI safe overlay was not applied exactly")
+        raise RunnerError("canonical authoritative CI settings are unsupported")
     return settings
 
 
@@ -227,7 +218,7 @@ def _ci_declaration(
         ref_kind = "release"
         group = f"release-{run_id}"
         cancel = False
-    partitions = _ci_pytest_partitions()
+    partitions = _ci_pytest_partitions(settings.tests.shards)
     cell_timeout = settings.limits.timeouts["subprocess_seconds"]
     cells: list[dict[str, Any]] = []
     for index, selectors in enumerate(partitions, start=1):
@@ -352,14 +343,16 @@ def build_authoritative_ci_runtime(
     return {**payload, "fingerprint": _sha256_json(payload)}
 
 
-PYTEST_SHARD_COUNT = 4
+PYTEST_SHARD_COUNT = load_settings(
+    DEFAULT_SETTINGS_PATH, environment={},
+).tests.shards
 PYTEST_CHECK_IDS = tuple(
     f"pytest-shard-{index + 1}" for index in range(PYTEST_SHARD_COUNT)
 )
 # Content address of every repository-relative `path:estimated-byte-weight` row.
 # A file added, removed, renamed, or reweighted must deliberately refresh this
 # pin, so the complete suite cannot silently shrink or use stale balancing data.
-PYTEST_WEIGHT_SHA256 = "ac564b9a0c809f18cdc9628abd34f4160daa4d341de97ba96f26281d25d0d838"
+PYTEST_WEIGHT_SHA256 = "14d02c629049fe230c1bab6496fb2bcbaf8fbd44d0d71c9147df88baa3a124e3"
 
 
 def pytest_inventory() -> tuple[str, ...]:
@@ -450,12 +443,24 @@ INVENTORY = (
     Check("host-platform", (PYTHON, __file__, "--internal", "host-platform")),
 )
 
-SHARDS = (
-    (PYTEST_CHECK_IDS[0], "compile-import", "generated-lens-drift", "ruff"),
-    (PYTEST_CHECK_IDS[1], "version-verify", "release-surface", "generated-cli-drift", "mypy"),
-    (PYTEST_CHECK_IDS[2], "zero-token-corpus", "release-history", "package-openai", "host-platform"),
-    (PYTEST_CHECK_IDS[3], "unittest-canary", "loop-cost", "import-cycle-current", "package-claude"),
+AUXILIARY_CHECK_IDS = (
+    "compile-import", "generated-lens-drift", "ruff", "version-verify",
+    "release-surface", "generated-cli-drift", "mypy", "zero-token-corpus",
+    "release-history", "package-openai", "host-platform", "unittest-canary",
+    "loop-cost", "import-cycle-current", "package-claude",
 )
+
+
+def _local_shards() -> tuple[tuple[str, ...], ...]:
+    if PYTEST_SHARD_COUNT < 2:
+        raise RunnerError("canonical tests.shards must provide parallel feedback")
+    rows = [[check_id] for check_id in PYTEST_CHECK_IDS]
+    for index, check_id in enumerate(AUXILIARY_CHECK_IDS):
+        rows[index % PYTEST_SHARD_COUNT].append(check_id)
+    return tuple(tuple(row) for row in rows)
+
+
+SHARDS = _local_shards()
 CHECKS = {check.id: check for check in INVENTORY}
 
 
@@ -885,10 +890,19 @@ def _owned_cell_root(
 ) -> tuple[Path, dict[str, Any]]:
     owner = owner.resolve(strict=True)
     candidate = runtime["candidate"]
-    name = (
-        f"taskplane-ci-{str(candidate['fingerprint'])[:12]}-"
-        f"{cell_id.replace('_', '-')}"
-    )
+    # Chrome creates a process-singleton Unix socket below TMPDIR.  The old
+    # human-readable name left too little of AF_UNIX's path budget once pytest
+    # added its own temporary-directory segments.  The full candidate and
+    # cell identities remain in the signed registration; this short name is a
+    # deterministic content address, not a second identity authority.
+    name_material = canonical_json({
+        "candidate_fingerprint": candidate["fingerprint"],
+        "cell_id": cell_id,
+    }).encode("utf-8")
+    name_token = base64.urlsafe_b64encode(
+        hashlib.sha256(name_material).digest()[:3]
+    ).decode("ascii")
+    name = f"taskplane-ci-{name_token}"
     target = owner / name
     if target.exists() or target.is_symlink():
         raise RunnerError("owned CI cell root already exists")

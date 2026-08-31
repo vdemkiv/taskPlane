@@ -20,7 +20,7 @@
     "counts": {
       "product": 1,
       "design": 1,
-      "plan": 1,
+      "plan": 3,
       "build": 0,
       "evaluate": 0,
       "fix": 0
@@ -28,15 +28,16 @@
   },
   "build": {"shards": 1, "concurrency": "native"},
   "tests": {
-    "backend": "pytest",
+    "backend": "ci",
     "selection": "targeted",
-    "shards": 1,
-    "cache": true
+    "shards": 4,
+    "cache": true,
+    "cache_max_age_seconds": 86400
   },
   "limits": {
     "timeouts": {
       "task_seconds": 600,
-      "subprocess_seconds": 600,
+      "subprocess_seconds": 300,
       "wait_seconds": 60,
       "lens_wait_seconds": 1800,
       "lens_minimum_wait_seconds": 300
@@ -89,6 +90,7 @@
       "tests.selection",
       "tests.shards",
       "tests.cache",
+      "tests.cache_max_age_seconds",
       "runtime.inline_max_bytes",
       "limits.timeouts.*",
       "limits.budgets.*"

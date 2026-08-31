@@ -11,6 +11,8 @@ import textwrap
 
 import pytest
 
+from taskplane import import_cycles
+
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -154,7 +156,9 @@ def test_complete_pytest_inventory_is_partitioned_exactly_once_and_balanced():
     partitions = runner.PYTEST_PARTITIONS
     assigned = [path for partition in partitions for path in partition]
 
-    assert len(partitions) == len(runner.SHARDS) == 4
+    assert len(partitions) == len(runner.SHARDS) == \
+        runner.load_settings(
+            runner.DEFAULT_SETTINGS_PATH, environment={}).tests.shards
     assert all(partitions)
     assert all(list(partition) == sorted(partition) for partition in partitions)
     assert sorted(assigned) == sorted(files)
@@ -276,10 +280,37 @@ def test_pr_workflow_binds_all_blocking_jobs_to_exact_head_sha():
     assert "pushed SHA delivery proof" in workflow
 
 
-def test_import_cycle_check_names_current_checkout_inputs_explicitly():
-    runner = _runner()
-    check = runner.CHECKS["import-cycle-current"]
-    assert check.argv[2:] == (
-        "--root", ".", "--policy",
-        "taskplane/tests/fixtures/import-cycles.json", "--check",
-    )
+def test_import_cycle_gate_protects_topology_not_physical_line_count():
+    def inventory(revision, members, edges):
+        return {
+            "schema": import_cycles.SCHEMA,
+            "package": "taskplane",
+            "source_revision": revision,
+            "sccs": [{
+                "members": members,
+                "internal_edges": edges,
+                "member_count": len(members),
+                "edge_count": len(edges),
+            }],
+        }
+
+    members = ["taskplane.a", "taskplane.b", "taskplane.c"]
+    edges = [
+        ["taskplane.a", "taskplane.b"],
+        ["taskplane.b", "taskplane.c"],
+        ["taskplane.c", "taskplane.a"],
+    ]
+    policy = inventory("older-source", members, edges)
+
+    unchanged_topology = inventory("new-source-with-more-lines", members, edges)
+    assert import_cycles.check_inventory(
+        policy, unchanged_topology)["status"] == "pass"
+
+    grown = inventory("new-source", members, sorted([
+        *edges, ["taskplane.a", "taskplane.c"],
+    ]))
+    result = import_cycles.check_inventory(policy, grown)
+    assert result["status"] == "fail"
+    assert [row["code"] for row in result["violations"]] == [
+        "new-internal-edge",
+    ]

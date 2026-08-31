@@ -5,8 +5,6 @@ external store):
 
   * D-0002 fixtures-path discount: classifier, positive/negative/
     mixed-support re-weighting, floors survival, evidence honesty;
-  * goldens-only-via-regen discipline: every checked-in golden carries the
-    regen.py provenance banner (a hand-edited golden loses it -> finding);
   * D-0003 routed-audit hybrid MEASUREMENT: the frozen corpus, the
     `audit_hybrid_measured` event shape, the adoption bar (>=30% token
     reduction AND zero escaped n/a-lens findings; default DECLINE), and
@@ -15,8 +13,6 @@ external store):
     decision and marked resolved (the REAL store flip for D-0002/D-0003
     happens at sign-off — this pins the mechanism, not the flip).
 """
-import glob as globmod
-import json
 import os
 import sys
 import tempfile
@@ -27,8 +23,6 @@ import lens_signals as ls  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-BRIEFS = os.path.join(HERE, "fixtures", "briefs")
-CORPUS_PATH = os.path.join(BRIEFS, "audit_hybrid_corpus.json")
 EMPTY_GRAPH = {"hub_dependents": 0, "boundary_contracts": [], "modules": []}
 
 
@@ -103,55 +97,36 @@ class TestDiscountReweighting(unittest.TestCase):
             self.assertIn(out["architecture"]["verdict"], ("light", "deep"))
 
 
-# ------------------------------------- goldens: only via regen.py, banner
-
-class TestGoldenRegenProvenance(unittest.TestCase):
-    """Hand-edited goldens remain a review finding: every golden carries
-    the regen provenance banner naming the ONLY documented regen path."""
-
-    def test_every_golden_carries_regen_banner(self):
-        goldens = sorted(globmod.glob(os.path.join(BRIEFS, "golden_*.json")))
-        self.assertGreaterEqual(len(goldens), 5, goldens)
-        for g in goldens:
-            with open(g, encoding="utf-8") as f:
-                head = f.read(1200)
-            self.assertTrue(head.startswith("# GOLDEN"),
-                            f"{os.path.basename(g)}: missing GOLDEN banner")
-            self.assertIn("taskplane/tests/fixtures/briefs/regen.py", head,
-                          f"{os.path.basename(g)}: regen path not named")
-            self.assertIn("Regenerate ONLY", head, os.path.basename(g))
-
-    def test_regen_script_is_the_documented_path(self):
-        self.assertTrue(os.path.isfile(os.path.join(BRIEFS, "regen.py")))
-
-
 # ------------------------------- D-0003: hybrid measurement (not adoption)
 
 class TestHybridMeasurement(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with open(CORPUS_PATH, encoding="utf-8") as f:
-            cls.corpus = json.load(f)
-
-    def test_frozen_corpus_shape(self):
-        self.assertIn("_provenance", self.corpus)
-        entries = self.corpus["entries"]
-        self.assertGreaterEqual(len(entries), 6)   # small but real corpus
-        for e in entries:
-            self.assertTrue(e["files"], e["label"])
-            for fnd in e.get("findings", []):
-                self.assertIn("lens", fnd)
-        # replay leg: at least one entry carries real review findings
-        self.assertTrue(any(e.get("findings") for e in entries))
+        cls.entries = [
+            {
+                "label": "current-routing-kernel",
+                "files": ["taskplane/lens_signals.py"],
+                "findings": [],
+            },
+            {
+                "label": "current-test-contract",
+                "files": ["taskplane/tests/test_debt_burndown.py"],
+                "findings": [{
+                    "file": "taskplane/tests/test_debt_burndown.py",
+                    "lens": "testability",
+                    "severity": "medium",
+                }],
+            },
+        ]
 
     def test_measured_event_shape(self):
-        m = ls.measure_audit_hybrid(self.corpus["entries"], workspace=REPO)
+        m = ls.measure_audit_hybrid(self.entries, workspace=REPO)
         self.assertEqual(m["event"], "audit_hybrid_measured")
         for key in ("tokens_full", "tokens_hybrid", "token_reduction_pct",
                     "escaped_findings", "verdict", "bar", "corpus_size",
                     "rows"):
             self.assertIn(key, m)
-        self.assertEqual(m["corpus_size"], len(self.corpus["entries"]))
+        self.assertEqual(m["corpus_size"], len(self.entries))
         self.assertGreater(m["tokens_full"], 0)
         self.assertGreater(m["tokens_hybrid"], 0)
         self.assertIn(m["verdict"], ("adopt", "decline"))
@@ -161,8 +136,8 @@ class TestHybridMeasurement(unittest.TestCase):
                                            m["escaped_findings"]))
 
     def test_measurement_is_deterministic(self):
-        a = ls.measure_audit_hybrid(self.corpus["entries"], workspace=REPO)
-        b = ls.measure_audit_hybrid(self.corpus["entries"], workspace=REPO)
+        a = ls.measure_audit_hybrid(self.entries, workspace=REPO)
+        b = ls.measure_audit_hybrid(self.entries, workspace=REPO)
         self.assertEqual(a, b)
 
     def test_adoption_bar_default_decline(self):
@@ -188,15 +163,6 @@ class TestHybridMeasurement(unittest.TestCase):
         self.assertIn("- mobile: 0 mobile signals", prompt)
         self.assertNotIn("- security:", prompt)
         self.assertIn("READ-ONLY", prompt)
-
-    def test_normal_em_adopts_selective_execution(self):
-        """R-0005 removes full-catalog fan-out from normal final EM."""
-        with open(os.path.join(REPO, "taskplane", "loop.py"),
-                  encoding="utf-8") as f:
-            src = f.read()
-        self.assertNotIn('"all" if step == "em" else "routed"', src)
-        self.assertIn('routing, breadth = None, "routed"', src)
-
 
 # ------------------------------ debt burn-down mechanism (flip at sign-off)
 

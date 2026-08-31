@@ -19,6 +19,7 @@
     "tests.selection",
     "tests.shards",
     "tests.cache",
+    "tests.cache_max_age_seconds",
     "limits.timeouts.task_seconds",
     "limits.timeouts.subprocess_seconds",
     "limits.timeouts.wait_seconds",
@@ -227,7 +228,7 @@
       "id": "ci-test-selection-sharding",
       "surfaces": ["taskplane/ci_policy.py", "scripts/ci_local.py", ".github/workflows/**"],
       "initialization": "direct-loader-and-frozen-ci-plan",
-      "proof_markers": ["settings = load_settings(settings_path, overlay=overlay)", "\"settings_digest\": settings.digest"],
+      "proof_markers": ["settings = load_settings(settings_path, environment={})", "\"settings_digest\": settings.digest"],
       "binding": "settings_digest"
     },
     {

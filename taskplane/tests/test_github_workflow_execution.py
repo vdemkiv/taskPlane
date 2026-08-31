@@ -228,14 +228,14 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     )
     assert settings["candidate_sha"] == source_sha
     assert settings["settings_digest"] == plan["settings_digest"]
-    assert settings["precedence"] == ["defaults", "file", "overlay"]
-    assert settings["loader_receipt"]["overlay"]["applied"] == [
-        "build.shards", "limits.timeouts.subprocess_seconds", "tests.shards",
-    ]
+    assert settings["precedence"] == ["defaults", "file"]
+    assert settings["loader_receipt"]["overlay"] is None
     assert settings["effective"]["build"] == {
-        "shards": len(plan["cells"]), "concurrency": "native",
+        "shards": 1, "concurrency": "native",
     }
-    assert settings["effective"]["tests"]["shards"] == len(plan["cells"])
+    assert settings["effective"]["tests"]["shards"] == len([
+        cell for cell in plan["cells"] if cell["kind"] == "pytest"
+    ])
     assert settings["effective"]["limits"]["timeouts"]["subprocess_seconds"] == 300
 
     selectors = [
@@ -292,6 +292,12 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     assert "name: dashboard browser conformance" in workflow
     assert "name: authoritative CI terminal matrix" in workflow
     assert "needs: [ci-plan, authoritative-tests, python-quality, dashboard-browser]" in workflow
+    authoritative_tests = workflow.split("  authoritative-tests:", 1)[1].split(
+        "\n  python-quality:", 1,
+    )[0]
+    assert "fetch-depth: 30" in authoritative_tests
+    assert 'expected = [cell["id"] for cell in runtime["plan"]["cells"]]' in workflow
+    assert 'expected = ["pytest-1"' not in workflow
     assert "--aggregate-ci" in workflow
     assert "pattern: ci-cell-*-${{ needs.ci-plan.outputs.candidate-sha }}" in workflow
     assert "name: terminal-matrix-${{ needs.ci-plan.outputs.candidate-sha }}" in workflow

@@ -239,7 +239,10 @@ def test_claude_plugin_upload_is_deterministic_and_provenanced(
         command = [sys.executable, "scripts/package_claude.py", "--output-dir",
                    str(output_dir), "--allow-dirty"]
         command += ["--ext", "plugin"] if plugin else []
-        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+        result = subprocess.run(
+            command, cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+        )
         assert result.returncode == 0, result.stderr
     assert (tmp_path / "zip" / f"taskplane-{VERSION}-claude.zip").is_file()
     filename = f"taskplane-{VERSION}.plugin"

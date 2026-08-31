@@ -88,12 +88,12 @@ class TestD0008ACitationIsBoundedInTime(_Ws):
         self.assertIsNotNone(tp.suite_cache_lookup(self.ws, self.CMD, {}))
 
     def test_a_stale_citation_is_refused(self):
-        self._store(ts_offset=tp.SUITE_CACHE_MAX_AGE_S + 60)
+        self._store(ts_offset=tp.suite_cache_max_age() + 60)
         self.assertIsNone(tp.suite_cache_lookup(self.ws, self.CMD, {}))
 
     def test_the_refusal_is_traced(self):
         """'Why did my suite run again?' must be answerable."""
-        self._store(ts_offset=tp.SUITE_CACHE_MAX_AGE_S + 60)
+        self._store(ts_offset=tp.suite_cache_max_age() + 60)
         tp.suite_cache_lookup(self.ws, self.CMD, {})
         events = []
         for p in tp.trace_paths(self.ws):
@@ -112,15 +112,13 @@ class TestD0008ACitationIsBoundedInTime(_Ws):
             json.dump(rec, f)
         self.assertIsNone(tp.suite_cache_lookup(self.ws, self.CMD, {}))
 
-    def test_the_window_is_configurable_and_zero_means_never_cite(self):
+    def test_the_safe_compatibility_window_is_configurable_and_fail_closed(self):
         self._store()
         os.environ["TASKPLANE_SUITE_CACHE_MAX_AGE"] = "0"
         self.assertIsNone(tp.suite_cache_lookup(self.ws, self.CMD, {}))
         os.environ["TASKPLANE_SUITE_CACHE_MAX_AGE"] = "not-a-number"
-        self.assertEqual(tp.suite_cache_max_age(),
-                         float(tp.SUITE_CACHE_MAX_AGE_S),
-                         "a garbage value must fall back to the default, "
-                         "never to 'unbounded'")
+        with self.assertRaises(ValueError):
+            tp.suite_cache_max_age()
 
 
 class TestD0008ACitationIsDisclosed(_Ws):

@@ -56,7 +56,9 @@ _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
     ("lenses", "routing"): frozenset(STAGES),
     ("lenses", "counts"): frozenset(STAGES),
     ("build",): frozenset(("shards", "concurrency")),
-    ("tests",): frozenset(("backend", "selection", "shards", "cache")),
+    ("tests",): frozenset((
+        "backend", "selection", "shards", "cache",
+        "cache_max_age_seconds")),
     ("limits",): frozenset(("timeouts", "budgets")),
     ("limits", "timeouts"): frozenset((
         "task_seconds", "subprocess_seconds", "wait_seconds",
@@ -134,10 +136,12 @@ class TestSettings:
     selection: str
     shards: int
     cache: bool
+    cache_max_age_seconds: int | float
 
     def to_dict(self) -> dict[str, Any]:
         return {"backend": self.backend, "selection": self.selection,
-                "shards": self.shards, "cache": self.cache}
+                "shards": self.shards, "cache": self.cache,
+                "cache_max_age_seconds": self.cache_max_age_seconds}
 
 
 @dataclass(frozen=True)
@@ -324,6 +328,15 @@ def _matches(pattern: str, path: str) -> bool:
         left == "*" or left == right for left, right in zip(expected, actual))
 
 
+def _value_at(value: Mapping[str, Any], path: str) -> object:
+    current: object = value
+    for key in path.split("."):
+        if not isinstance(current, Mapping) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
 def _exact_authority(authority: object) -> str | None:
     if not isinstance(authority, Mapping):
         return None
@@ -342,6 +355,18 @@ def _positive_int(value: object, label: str, *, zero: bool = False) -> int:
     minimum = 0 if zero else 1
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise SettingsError(f"{label} must be an integer >= {minimum}")
+    return value
+
+
+def _nonnegative_number(value: object, label: str) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SettingsError(f"{label} must be a finite number >= 0")
+    try:
+        _canonical(value)
+    except SettingsError as exc:
+        raise SettingsError(f"{label} must be a finite number >= 0") from exc
+    if value < 0:
+        raise SettingsError(f"{label} must be a finite number >= 0")
     return value
 
 
@@ -386,13 +411,16 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
 
     tests_raw = _plain_mapping(data.get("tests"), "tests")
     backend = tests_raw.get("backend")
-    if backend not in {"pytest", "command"}:
+    if backend not in {"local", "ci"}:
         raise SettingsError("tests.backend is unsupported")
     selection = tests_raw.get("selection")
     if selection not in TEST_SELECTIONS:
         raise SettingsError("tests.selection is unsupported")
     if not isinstance(tests_raw.get("cache"), bool):
         raise SettingsError("tests.cache must be boolean")
+    cache_max_age_seconds = _nonnegative_number(
+        tests_raw.get("cache_max_age_seconds"),
+        "tests.cache_max_age_seconds")
 
     limits_raw = _plain_mapping(data.get("limits"), "limits")
     timeouts_raw = _plain_mapping(limits_raw.get("timeouts"), "limits.timeouts")
@@ -488,7 +516,8 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         "build": {"shards": build_shards, "concurrency": concurrency},
         "tests": {"backend": backend, "selection": selection,
                   "shards": _positive_int(tests_raw.get("shards"), "tests.shards"),
-                  "cache": tests_raw["cache"]},
+                  "cache": tests_raw["cache"],
+                  "cache_max_age_seconds": cache_max_age_seconds},
         "limits": {"timeouts": timeouts, "budgets": budgets},
         "workflow": {"transport": "native", "worker_inheritance": dict(inheritance_raw)},
         "cleanup": {"worktrees": cleanup_raw["worktrees"], "artifacts_days": artifacts_days},
@@ -515,7 +544,9 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         stages=_freeze(stages),
         lenses=LensSettings(_freeze(routing), _freeze(counts)),
         build=BuildSettings(build_shards, concurrency),
-        tests=TestSettings(backend, selection, normalized["tests"]["shards"], tests_raw["cache"]),
+        tests=TestSettings(
+            backend, selection, normalized["tests"]["shards"],
+            tests_raw["cache"], cache_max_age_seconds),
         limits=LimitSettings(_freeze(timeouts), _freeze(budgets)),
         workflow=WorkflowSettings("native", _freeze(dict(inheritance_raw))),
         cleanup=CleanupSettings(cleanup_raw["worktrees"], artifacts_days),
@@ -568,7 +599,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     precedence = ["defaults", "file"]
     environment_receipt: dict[str, Any] | None = None
     if environment is not None:
-        environment_overlay: dict[str, Any] = {"stages": {}}
+        environment_overlay: dict[str, Any] = {"stages": {}, "tests": {}}
         applied: list[str] = []
         for tier, stages in _LEGACY_ENV_TIERS.items():
             for field, prefix in (("model", "TASKPLANE_MODEL_"),
@@ -628,11 +659,52 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
             applied.append(f"runtime.{field}")
         if runtime_overlay:
             environment_overlay["runtime"] = runtime_overlay
-        if environment_overlay["stages"] or runtime_overlay:
+        if "TASKPLANE_NO_SUITE_CACHE" in environment:
+            raw_value = str(environment["TASKPLANE_NO_SUITE_CACHE"]).strip().lower()
+            aliases = {
+                "1": False, "true": False, "on": False, "yes": False,
+                "0": True, "false": True, "off": True, "no": True,
+            }
+            if raw_value not in aliases:
+                raise SettingsError(
+                    "legacy environment TASKPLANE_NO_SUITE_CACHE is unsupported")
+            environment_overlay["tests"]["cache"] = aliases[raw_value]
+            applied.append("tests.cache")
+        if "TASKPLANE_SUITE_CACHE_MAX_AGE" in environment:
+            raw_value = str(
+                environment["TASKPLANE_SUITE_CACHE_MAX_AGE"]).strip()
+            try:
+                parsed = float(raw_value)
+            except ValueError as exc:
+                raise SettingsError(
+                    "legacy environment TASKPLANE_SUITE_CACHE_MAX_AGE must "
+                    "be a finite number") from exc
+            try:
+                _canonical(parsed)
+            except SettingsError as exc:
+                raise SettingsError(
+                    "legacy environment TASKPLANE_SUITE_CACHE_MAX_AGE must "
+                    "be a finite number") from exc
+            # Historic zero and negative values both meant "never cite".
+            value: int | float = max(0.0, parsed)
+            if value.is_integer():
+                value = int(value)
+            environment_overlay["tests"]["cache_max_age_seconds"] = value
+            applied.append("tests.cache_max_age_seconds")
+        if (environment_overlay["stages"] or environment_overlay["tests"]
+                or runtime_overlay):
             paths = _leaf_paths(environment_overlay)
             safe_patterns = defaults["overrides"]["safe_paths"]
             governance = [path for path in paths if not any(
-                _matches(pattern, path) for pattern in safe_patterns)]
+                _matches(pattern, path) for pattern in safe_patterns)
+                and _value_at(environment_overlay, path) !=
+                _value_at(effective, path)]
+            requested_age = environment_overlay["tests"].get(
+                "cache_max_age_seconds")
+            if requested_age is not None and requested_age > \
+                    effective["tests"]["cache_max_age_seconds"]:
+                governance.append("tests.cache_max_age_seconds")
+            governance = sorted(set(governance))
             authority_fingerprint = None
             if governance:
                 authority_fingerprint = _exact_authority(authority)
@@ -644,7 +716,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
             precedence.append("environment")
             environment_receipt = {
                 "applied": sorted(applied),
-                "adapter": "legacy-tier-environment/v1",
+                "adapter": "legacy-environment/v1",
                 "authority_fingerprint": authority_fingerprint,
             }
     overlay_receipt: dict[str, Any] | None = None
@@ -658,7 +730,18 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         # canonical policy, while the file copy remains observable settings.
         safe_patterns = defaults["overrides"]["safe_paths"]
         governance = [path for path in paths if not any(
-            _matches(pattern, path) for pattern in safe_patterns)]
+            _matches(pattern, path) for pattern in safe_patterns)
+            and _value_at(supplied, path) != _value_at(effective, path)]
+        supplied_tests = supplied.get("tests")
+        requested_age = supplied_tests.get("cache_max_age_seconds") \
+            if isinstance(supplied_tests, Mapping) else None
+        if requested_age is not None and (
+                isinstance(requested_age, bool)
+                or not isinstance(requested_age, (int, float))
+                or requested_age >
+                effective["tests"]["cache_max_age_seconds"]):
+            governance.append("tests.cache_max_age_seconds")
+        governance = sorted(set(governance))
         authority_fingerprint = None
         if governance:
             authority_fingerprint = _exact_authority(authority)

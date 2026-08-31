@@ -35,6 +35,11 @@ def _mapping(value: object, label: str) -> dict[str, Any]:
     return {str(key): item for key, item in value.items()}
 
 
+def _test_execution_backend(value: object) -> object:
+    """Translate the former runner-kind field into execution location."""
+    return "local" if value in {"pytest", "command"} else value
+
+
 def migrate_legacy_settings(raw: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     """Migrate exactly v0, rejecting mixed, future, and unknown forms."""
     source = _mapping(raw, "settings")
@@ -61,6 +66,11 @@ def migrate_legacy_settings(raw: Mapping[str, Any]) -> tuple[dict[str, Any], dic
     if nested:
         migrated = {key: value for key, value in source.items()
                     if key not in {"schema", "version"}}
+        tests = migrated.get("tests")
+        if isinstance(tests, Mapping) and "backend" in tests:
+            migrated["tests"] = dict(tests)
+            migrated["tests"]["backend"] = _test_execution_backend(
+                tests["backend"])
         migrated["schema"] = CURRENT_SCHEMA
     else:
         models = _mapping(source.get("stage_models", {}), "stage_models")
@@ -85,7 +95,8 @@ def migrate_legacy_settings(raw: Mapping[str, Any]) -> tuple[dict[str, Any], dic
                 "concurrency": source.get("build_concurrency"),
             }.items() if value is not None},
             "tests": {key: value for key, value in {
-                "backend": source.get("test_backend"),
+                "backend": _test_execution_backend(
+                    source.get("test_backend")),
                 "selection": source.get("test_selection"),
                 "shards": source.get("test_shards"),
                 "cache": source.get("test_cache"),

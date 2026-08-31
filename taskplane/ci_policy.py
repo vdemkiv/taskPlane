@@ -288,15 +288,19 @@ def build_ci_plan(
     raw_cells = raw.get("cells")
     if not isinstance(raw_cells, list) or not raw_cells:
         raise CIPolicyError("CI plan must contain cells")
-    configured_shards = build.get("shards")
     test_shards = tests.get("shards")
+    pytest_cells = sum(
+        1 for value in raw_cells
+        if isinstance(value, Mapping) and value.get("kind") == "pytest"
+    )
     if (
-        isinstance(configured_shards, bool)
-        or not isinstance(configured_shards, int)
-        or configured_shards != len(raw_cells)
-        or test_shards != len(raw_cells)
+        isinstance(test_shards, bool)
+        or not isinstance(test_shards, int)
+        or test_shards != pytest_cells
     ):
-        raise CIPolicyError("CI cells must equal the settings-derived shard count")
+        raise CIPolicyError(
+            "pytest cells must equal the settings-derived test shard count"
+        )
 
     concurrency = build.get("concurrency")
     if concurrency == "native":

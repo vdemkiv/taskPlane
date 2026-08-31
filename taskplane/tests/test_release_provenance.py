@@ -243,7 +243,8 @@ def test_premerge_first_parent_topology_matches_release_gate(tmp_path):
     subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path,
                    check=True)
     base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path,
-                                   text=True).strip()
+                                   text=True, encoding="utf-8",
+                                   errors="replace").strip()
     subprocess.run(["git", "checkout", "-qb", "feature"], cwd=tmp_path,
                    check=True)
     (tmp_path / "feature").write_text("feature\n", encoding="utf-8")
@@ -251,13 +252,15 @@ def test_premerge_first_parent_topology_matches_release_gate(tmp_path):
     subprocess.run(["git", "commit", "-qm", "feature"], cwd=tmp_path,
                    check=True)
     pull_head = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True,
+        encoding="utf-8", errors="replace").strip()
     subprocess.run(["git", "checkout", "-q", "main"], cwd=tmp_path,
                    check=True)
     subprocess.run(["git", "merge", "-q", "--no-ff", "feature", "-m", "merge"],
                    cwd=tmp_path, check=True)
     protected = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True,
+        encoding="utf-8", errors="replace").strip()
 
     evidence = _protected_main_fixture(tmp_path, protected, base, pull_head)
     receipt = release_evidence.create_protected_main_release_gate(

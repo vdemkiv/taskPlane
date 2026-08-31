@@ -41,6 +41,8 @@ def _tracked_files():
         cwd=ROOT,
         check=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
     )
     return {
@@ -252,6 +254,7 @@ def test_portfolio_targets_are_met_without_count_only_deletion():
     final = portfolio["final"]
     baseline = portfolio["baselines"]["current_pre_prune"]
     families = portfolio["families"]
+    pruning = portfolio["selector_pruning"]
     tracked = _tracked_test_files()
 
     assert len(tracked) == final["test_files"] <= final["targets"]["test_files_max"]
@@ -264,12 +267,25 @@ def test_portfolio_targets_are_met_without_count_only_deletion():
     assert sum(row["before"]["loc"] for row in families) == final["removed_loc"]
     assert (
         baseline["collected_cases"] - final["removed_cases"]
-        + final["added_contract_cases"] == final["collected_cases"]
+        + final["added_contract_cases"] - pruning["removed_cases"]
+        + pruning["added_contract_cases"] == final["collected_cases"]
     )
     assert (
         baseline["test_loc"] - final["removed_loc"]
-        + final["added_contract_loc"] == final["test_loc"]
+        + final["added_contract_loc"]
+        - pruning["changed_test_lines"]["deleted"]
+        + pruning["changed_test_lines"]["added"] == final["test_loc"]
     )
+    assert re.fullmatch(r"[0-9a-f]{40}", pruning["base_revision"])
+    assert DIGEST.fullmatch(pruning["source_diff_sha256"])
+    assert len(pruning["removed_selectors"]) == \
+        pruning["removed_cases"] == len(set(pruning["removed_selectors"]))
+    assert len(pruning["added_selectors"]) == \
+        pruning["added_contract_cases"]
+    assert all(not (ROOT / path).exists()
+               for path in pruning["removed_fixtures"])
+    _assert_exact_nodeids_collect(set(pruning["added_selectors"]))
+    _assert_exact_nodeids_collect(set(pruning["retained_current_contracts"]))
 
     collected = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "taskplane/tests"],

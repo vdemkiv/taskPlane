@@ -1521,6 +1521,22 @@ def _validate_receipt_binding(receipt: Mapping[str, object],
             "cleanup receipt is stale or bound to another manifest revision")
 
 
+def load_completed_cleanup(path: str | os.PathLike[str]) -> dict:
+    """Read and validate one completed cleanup without replaying its actions."""
+    manifest_path = Path(path).absolute()
+    manifest = load_manifest(manifest_path)
+    receipt = _load_receipt(_receipt_path(manifest_path))
+    if receipt is None:
+        raise OwnedCleanupError("completed cleanup receipt is unavailable")
+    _validate_receipt_binding(receipt, manifest)
+    terminal = _validate_terminal(manifest)
+    return {
+        "manifest": copy.deepcopy(manifest),
+        "terminal": copy.deepcopy(terminal),
+        "receipt": copy.deepcopy(receipt),
+    }
+
+
 def cleanup_consumer_evidence(receipt: Mapping[str, object]) -> dict:
     """Expose a closed, redacted proof for metrics/sign-off/release adapters."""
     value = copy.deepcopy(dict(receipt))

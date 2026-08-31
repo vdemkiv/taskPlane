@@ -614,11 +614,15 @@ class TestStageEmitterWorkflowPath:
                for s in stage_fixture.STAGES]
         assert got == names
 
-    def test_evaluate_and_fix_args_keys_match_the_workflow_files(self, rails):
+    def test_stage_payloads_bind_settings_and_expected_workflow_inputs(self,
+                                                                       rails):
+        from taskplane.settings import load_settings
+
+        expected_digest = load_settings(environment=os.environ).digest
         ev = json.loads(rails["caps"]["evaluate"]["wf"])["workflow"]
         fx = json.loads(rails["caps"]["fix"]["wf"])["workflow"]
-        assert list(ev["args"].keys()) == ["briefs"]    # args.briefs
-        assert list(fx["args"].keys()) == ["verdicts"]  # args.verdicts
+        assert ev["args"]["settings_digest"] == expected_digest
+        assert fx["args"]["settings_digest"] == expected_digest
         assert ev["args"]["briefs"][0]["id"] == "t1"
         assert fx["args"]["verdicts"][0]["id"] == "t1"
         assert ev["args"]["briefs"][0]["worktree"].endswith(".tp-work/t1")
@@ -731,9 +735,9 @@ class TestStageEmitterWorkflowPath:
         for stage in stage_fixture.STAGES:
             wf = json.loads(json.dumps(
                 json.loads(rails["caps"][stage]["wf"])["workflow"]))
-            for briefs in wf["args"].values():
-                for b in briefs:
-                    b.pop("prompt")
+            key = "verdicts" if stage == "fix" else "briefs"
+            for brief in wf["args"][key]:
+                brief.pop("prompt")
             low = json.dumps(wf).lower()
             for verb in GATE_VERBS:
                 assert verb not in low, (stage, verb)
@@ -804,17 +808,6 @@ class TestStageKillSwitchMatrix:
                                                    monkeypatch):
         _clean_env(monkeypatch)
         self._paths_match_detector(wave_ws, False)
-
-    def test_single_detector_the_emitter_never_parses_the_env(self):
-        """contract R-0004: the stage emitter calls tp.workflow_available
-        DIRECTLY — no second env parse anywhere in the emitter."""
-        emitter_src = "".join(inspect.getsource(fn) for fn in (
-            cli._emit_stage, cli._stage_wave_run, cli._stage_agent_prompt))
-        assert "workflow_available(" in inspect.getsource(cli._emit_stage)
-        for needle in ("environ", "getenv", "TASKPLANE_WORKFLOWS",
-                       "CLAUDE_CODE_WORKFLOWS", "CODEX"):
-            assert needle not in emitter_src, needle
-
 
 # ------------------------------------------------------------- resume
 

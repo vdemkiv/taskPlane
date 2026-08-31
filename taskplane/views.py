@@ -51,8 +51,9 @@ except (ImportError, ValueError):
     from taskplane import host_native
 
 
-_REVISION_ID_KEYS = ("target_fingerprint", "context_fingerprint",
-                     "findings_fingerprint", "canonical_revision")
+# Compatibility alias; host_native owns the canonical identity schema beside
+# its validator and every presentation facade consumes that single value.
+_REVISION_ID_KEYS = host_native.REVISION_ID_KEYS
 
 # A transition always refreshes the durable dashboard, but only a HUMAN gate
 # needs the model to stop, surface it, and acknowledge delivery.  Issuing and

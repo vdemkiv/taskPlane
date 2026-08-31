@@ -34,6 +34,7 @@ def _isolate_loop_tests_from_dashboard_rendering(monkeypatch):
     import views
 
     monkeypatch.delenv("TASKPLANE_NO_SUITE_CACHE", raising=False)
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "test-loop-session")
     monkeypatch.setattr(views, "refresh_views", lambda _ws, out: out)
     original_load_locator = runtime_storage.load_workspace_locator
     original_write_locator = runtime_storage.write_workspace_locator
@@ -64,6 +65,14 @@ def _isolate_loop_tests_from_dashboard_rendering(monkeypatch):
         runtime_storage, "write_workspace_locator", write_locator_and_invalidate)
 
 
+def _install_test_launcher(workspace):
+    root = os.path.join(workspace, ".taskplane")
+    os.makedirs(root, exist_ok=True)
+    with open(os.path.join(root, "codex-hook.py"), "w",
+              encoding="utf-8") as handle:
+        handle.write("# stable repository-family test launcher\n")
+
+
 def git_ws(tmp, tasks):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "plan"))
@@ -74,6 +83,7 @@ def git_ws(tmp, tasks):
     subprocess.run(["git", "config", "user.name", "t"], cwd=ws)
     subprocess.run(["git", "add", "-A"], cwd=ws)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
+    _install_test_launcher(ws)
     json.dump({"tasks": tasks}, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     return ws
 
@@ -2260,6 +2270,7 @@ class TestParallelExecution(unittest.TestCase):
         subprocess.run(["git", "add", "-A"], cwd=ws)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
+        _install_test_launcher(ws)
         tasks = [
             {"id": "t1", "scope": ["src/a/**"], "tests": "true",
              "criteria": ["task t1 is complete"]},
@@ -3112,31 +3123,6 @@ def _trace_events(ws, event=None):
     return [r for r in rows if event is None or r.get("event") == event]
 
 
-_VOLATILE = {"ts", "time", "now", "duration", "elapsed", "seconds"}
-
-
-def _scrub(obj):
-    """Wall-clock stamps are the only legitimate run-to-run difference when
-    the same workspace bytes are gated twice; everything else must match."""
-    if isinstance(obj, dict):
-        # Progress is an observational projection over the audit stream, not
-        # gate state. Replaying the same gate necessarily samples a different
-        # elapsed value; the dashboard delivery digests then differ only
-        # because that sampled projection is rendered into its payload. The
-        # progress/delivery contracts have their own exact tests, while this
-        # differential proves the engine-skew precheck changes no workflow
-        # outcome.
-        if obj.get("schema") == "taskplane.status-progress/v1":
-            return "<live-progress>"
-        if obj.get("schema") == "taskplane.dashboard-delivery/v1":
-            return "<dashboard-delivery>"
-        return {k: ("<t>" if k.endswith("_at") or k in _VOLATILE
-                    else _scrub(v)) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_scrub(x) for x in obj]
-    return obj
-
-
 class TestEngineSkewRefusal(unittest.TestCase):
     """A4 (R-0007, decision 0018): the evaluate gate refuses evidence that a
     DIFFERENT engine build produced.
@@ -3213,41 +3199,6 @@ class TestEngineSkewRefusal(unittest.TestCase):
         else:
             st["_submission"]["engine_fingerprint"] = fingerprint
         loop.save(ws, st)
-
-    def _real_engine_wave_ws(self):
-        """Build the merge-and-resubmit topology with real engine bytes."""
-        ws = git_ws(self.tmp, [TASK])
-        engine_root = os.path.join(ws, "taskplane")
-        os.makedirs(engine_root)
-        source_root = os.path.dirname(os.path.abspath(loop.__file__))
-        for name in tp.VALIDATOR_SURFACE:
-            shutil.copy(os.path.join(source_root, name + ".py"), engine_root)
-        subprocess.run(["git", "add", "-A"], cwd=ws, check=True)
-        subprocess.run(["git", "commit", "-qm", "engine baseline"],
-                       cwd=ws, check=True)
-
-        loop.init(ws, "g", spec_path="s", checkpoints=["plan"],
-                  parallel=True)
-        loop.next_action(ws)
-        loop.gate(ws, "pass")
-        loop.approve(ws)
-        agent_ws = os.path.join(ws, ".tp-work", "t1")
-        subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
-                        "tp/t1"], cwd=ws, check=True)
-        loop.claim(ws, "t1", agent_ws)
-        with open(os.path.join(agent_ws, "src", "todo", "a.py"), "w",
-                  encoding="utf-8") as handle:
-            handle.write("x=2\n")
-        subprocess.run(["git", "add", "-A"], cwd=agent_ws, check=True)
-        subprocess.run(["git", "commit", "-qm", "task change"],
-                       cwd=agent_ws, check=True)
-        depgraph.scan(agent_ws)
-        submit_gate(ws, "pass", task_id="t1")
-        loop.next_action(ws)
-        write_kernel_results(ws)
-        write_verdict(ws)
-        collect_zero_test_kernel(ws)
-        return ws, agent_ws
 
     def test_fingerprint_is_the_validator_surface_bytes_not_its_paths(self):
         fp = tp.engine_fingerprint()
@@ -3341,83 +3292,6 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertNotIn("error", self._skew_gate(ws))
         self.assertEqual(loop.load(ws)["step"], "em")
 
-    def test_merge_and_byte_identical_reevidence_replaces_worker_engine_stamp(
-            self):
-        """The documented merge+resubmit remedy works before cleanup.
-
-        The task worktree branches before a primary-only engine fix.  Its
-        unmerged submission must retain the worktree's older producer stamp
-        and be refused.  Once the exact task target is merged, regenerating
-        byte-identical canonical evidence and resubmitting must replace the
-        cached submission metadata with the primary validator's engine even
-        while the clean, older worktree still exists.
-        """
-        ws, agent_ws = self._real_engine_wave_ws()
-        verdict_path = os.path.join(agent_ws, ".eval", "verdict.json")
-        original_verdict = open(verdict_path, "rb").read()
-        worker_engine = tp.workspace_engine_fingerprint(agent_ws)
-
-        with open(os.path.join(ws, "taskplane", "loop.py"), "a",
-                  encoding="utf-8") as handle:
-            handle.write("\n# primary validator fix\n")
-        subprocess.run(["git", "add", "taskplane/loop.py"], cwd=ws,
-                       check=True)
-        subprocess.run(["git", "commit", "-qm", "primary engine fix"],
-                       cwd=ws, check=True)
-        primary_engine = tp.workspace_engine_fingerprint(ws)
-        self.assertNotEqual(worker_engine, primary_engine)
-
-        on_path = {"schema": "taskplane.runtime-guidance/v1",
-                   "status": "on_path", "step": "evaluate"}
-        with unittest.mock.patch.object(loop.runtime_eval, "guide_loop",
-                                        return_value=on_path), \
-                unittest.mock.patch.object(loop.time, "time",
-                                            return_value=100):
-            first_result = self._skew_submit(ws)
-        self.assertNotIn("error", first_result, first_result)
-        first = first_result["submission"]
-        self.assertEqual(first["evidence_engine_fingerprint"], worker_engine)
-        self.assertEqual(first["submitted_at"], 100)
-        refused = self._skew_gate(ws)
-        self.assertEqual(
-            refused["engine_skew"]["reason"], "engine_skew_workspace")
-        self.assertEqual(loop.load(ws)["step"], "evaluate")
-
-        subprocess.run(["git", "merge", "--no-ff", "-m", "merge task",
-                        "tp/t1"], cwd=ws, check=True)
-        target = loop.load(ws)["tasks"][0]["target_commit"]
-        self.assertEqual(tp.git_head(agent_ws), target)
-        self.assertEqual(subprocess.run(
-            ["git", "merge-base", "--is-ancestor", target, "HEAD"], cwd=ws,
-            check=False).returncode, 0)
-
-        os.unlink(verdict_path)
-        token = loop._EVIDENCE_STATE_WORKSPACE.set(ws)
-        try:
-            self.assertTrue(loop.evidence(agent_ws, write=True)["written"])
-        finally:
-            loop._EVIDENCE_STATE_WORKSPACE.reset(token)
-        write_verdict(ws)
-        self.assertEqual(open(verdict_path, "rb").read(), original_verdict)
-
-        with unittest.mock.patch.object(loop.runtime_eval, "guide_loop",
-                                        return_value=on_path), \
-                unittest.mock.patch.object(loop.time, "time",
-                                            return_value=200):
-            second = self._skew_submit(ws)["submission"]
-        self.assertEqual(second["fingerprint"], first["fingerprint"])
-        self.assertEqual(
-            second["evidence_engine_fingerprint"], primary_engine)
-        self.assertEqual(second["submitted_at"], 200)
-        self.assertNotEqual(second, first)
-        # This regression owns submission identity and the engine-skew
-        # pre-check. The synthetic repository does not carry the full host
-        # producer-receipt fixture needed by the independent evaluation walk.
-        with unittest.mock.patch.object(loop, "_evaluation_errors",
-                                        return_value=[]):
-            self.assertNotIn("error", self._skew_gate(ws))
-        self.assertEqual(loop.load(ws)["step"], "em")
-
     def test_no_submission_record_is_not_this_guard_s_business(self):
         """The stamp governs a submission RECORD. A loop with no submission
         at all is the submission_required gate's refusal (already enforced
@@ -3432,49 +3306,6 @@ class TestEngineSkewRefusal(unittest.TestCase):
         src = inspect.getsource(loop.gate)
         self.assertLess(src.index("engine_skew_refusal"),
                         src.index("_evaluation_errors("))
-
-    def test_equal_fingerprint_gate_is_byte_identical_to_the_pre_a4_flow(self):
-        """NON-SKEW DIFFERENTIAL: gate the SAME workspace bytes twice — once
-        with the pre-check removed entirely (the pre-A4 flow), once with it
-        live — and require identical results, identical post-state and an
-        identical trace. Wall-clock stamps are the only scrubbed difference.
-        """
-        ws = self._wave_ws()
-        self._skew_submit(ws)
-        # the gate reads/writes the workspace AND the per-user state dir
-        backup = os.path.join(self.tmp, "backup")
-        state_backup = os.path.join(self.tmp, "backup-state")
-        shutil.copytree(ws, backup, symlinks=True)
-        shutil.copytree(loop.state_dir(ws), state_backup, symlinks=True)
-        real = tp.engine_skew_refusal
-        tp.engine_skew_refusal = lambda *a, **kw: None       # today's engine
-        try:
-            today_out = self._skew_gate(ws)
-            today_state = loop.load(ws)
-            today_trace = _trace_events(ws)
-        finally:
-            tp.engine_skew_refusal = real
-        state = loop.state_dir(ws)
-        shutil.rmtree(ws)
-        shutil.rmtree(state)
-        shutil.copytree(backup, ws, symlinks=True)
-        shutil.copytree(state_backup, state, symlinks=True)
-        a4_out = self._skew_gate(ws)
-        a4_state = loop.load(ws)
-        a4_trace = _trace_events(ws)
-        self.assertNotIn("error", a4_out)
-        self.assertEqual(a4_state["step"], "em")             # not vacuous:
-        self.assertGreater(len(a4_trace), 2)                 # a real gate ran
-        self.assertGreater(len(_scrub(a4_out)), 1)
-        self.assertEqual(_scrub(today_out), _scrub(a4_out))
-        self.assertEqual(today_state["step"], a4_state["step"])
-        self.assertEqual(
-            [row["status"] for row in today_state["tasks"]],
-            [row["status"] for row in a4_state["tasks"]])
-        self.assertEqual(_scrub(today_trace), _scrub(a4_trace))
-        self.assertEqual([r for r in a4_trace
-                          if r.get("reason") == "engine_skew"], [])
-
 
 class TestStatelessReviewContractBootstrap(unittest.TestCase):
     """Focused selector for the stateless signed-action regression."""

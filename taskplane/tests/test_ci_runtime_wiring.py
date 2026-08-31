@@ -69,6 +69,10 @@ def test_browser_cell_is_required_isolated_candidate_bound_and_cleanup_safe(
     target, registration = runner._owned_cell_root(
         runtime, browser["id"], tmp_path,
     )
+    assert target.name.startswith("taskplane-ci-")
+    assert len(target.name) <= 18
+    other_target, _ = runner._owned_cell_root(runtime, "pytest-1", tmp_path)
+    assert other_target.name != target.name
     target.mkdir()
     (target / "owned.txt").write_text("owned\n", encoding="utf-8")
     cleanup = runner._cleanup_ci_cell_root(target, registration)

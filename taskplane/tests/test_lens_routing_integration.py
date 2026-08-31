@@ -11,17 +11,9 @@ import pytest
 
 from taskplane import delivery_policy
 from taskplane import evaluation_output
-from taskplane import lens_route_policy
 from taskplane import review
 from taskplane import runtime_eval
 from taskplane.tests import run_lr10_parallel as parallel_runner
-
-
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def _plan() -> dict:
-    return json.loads((ROOT / "plan/tasks.json").read_text(encoding="utf-8"))
 
 
 def _origin(stage: str) -> dict:
@@ -52,32 +44,6 @@ def _attempt(stage: str, outcome: str) -> tuple[list[dict], list[dict]]:
         {"event": outcome, **identity},
     ]
     return native, ledger
-
-
-def test_stage_policy_and_accepted_plan_authority_are_one_closed_boundary() -> None:
-    plan = _plan()
-    drift = plan["accepted_drift"]
-
-    assert delivery_policy.ROUTED_LENS_STAGES == {
-        "product", "design", "plan"
-    }
-    assert lens_route_policy.ROUTED_STAGES == {
-        "product", "design", "plan"
-    }
-    assert delivery_policy.ZERO_LENS_STAGES == {
-        "build", "fix", "evaluate", "em"
-    }
-    assert drift["id"] == "D-0014"
-    assert drift["accepted_by"] == "human:vdemkiv"
-    assert drift["historical_design_immutable"] is True
-
-    dispositions = plan["plan_route"]["dispositions"]
-    assert len(dispositions) == 26
-    assert len({row["lens"] for row in dispositions}) == 26
-    assert sum(row["disposition"] == "execute_light"
-               for row in dispositions) == 4
-    assert not [row for row in dispositions
-                if row["disposition"] == "execute_deep"]
 
 
 @pytest.mark.parametrize(

@@ -200,11 +200,7 @@ def _control_path(root: Path, handle: str) -> Path:
     return root / handle / "control.json"
 
 
-def _read_control(root: Path, handle: str) -> dict:
-    try:
-        value = json.loads(_control_path(root, handle).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise GovernedCommandError("durable command control binding is unavailable") from exc
+def _validated_control(value: object) -> dict:
     required = {"schema", "host", "binding", "binding_digest"}
     if (not isinstance(value, dict) or not required.issubset(value) or
             set(value) - required - {"semantic"} or
@@ -236,10 +232,79 @@ def _read_control(root: Path, handle: str) -> dict:
     return value
 
 
+def _read_control(root: Path, handle: str) -> dict:
+    try:
+        value = json.loads(_control_path(root, handle).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GovernedCommandError(
+            "durable command control binding is unavailable") from exc
+    return _validated_control(value)
+
+
 def _canonical_digest(value: object) -> str:
     return hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":"), default=str
     ).encode("utf-8")).hexdigest()
+
+
+def _sealed_runtime_evidence(root: Path, handle: str) -> dict:
+    """Load one post-cleanup command envelope from independently sealed evidence."""
+    if re.fullmatch(r"[0-9a-f]{32}", str(handle)) is None:
+        raise GovernedCommandError("governed command handle is invalid")
+    manifests = root.parent / "owned-cleanup-v1" / "manifests"
+    matches = []
+    for path in sorted(manifests.glob("*.json")) \
+            if manifests.is_dir() else []:
+        if re.fullmatch(r"[0-9a-f]{32}\.json", path.name) is None:
+            continue
+        try:
+            manifest = owned_cleanup.load_manifest(path)
+        except owned_cleanup.OwnedCleanupError:
+            continue
+        resources = manifest.get("resources") or {}
+        if not any(isinstance(resource, Mapping) and
+                   (resource.get("stable_identity") or {}).get("handle") ==
+                   handle for resource in resources.values()):
+            continue
+        try:
+            completed = owned_cleanup.load_completed_cleanup(path)
+            manifest = completed["manifest"]
+            terminal = completed["terminal"]
+            receipt = completed["receipt"]
+        except (owned_cleanup.OwnedCleanupError, OSError, ValueError) as exc:
+            raise GovernedCommandError(
+                "sealed command cleanup evidence is invalid") from exc
+        if (receipt.get("cleanup_status") != "clean" or
+                receipt.get("leak_count") != 0):
+            raise GovernedCommandError(
+                "sealed command cleanup evidence reports a leak")
+        evidence = {
+            str(row.get("label")): Path(str(row.get("sealed_path")))
+            for row in terminal.get("evidence") or []
+            if isinstance(row, Mapping)
+        }
+        if not {"terminal-state", "command-control"}.issubset(evidence):
+            raise GovernedCommandError(
+                "sealed command replay evidence is incomplete")
+        matches.append({
+            "manifest": manifest, "terminal": terminal,
+            "receipt": receipt, "evidence": evidence,
+        })
+    if len(matches) != 1:
+        raise GovernedCommandError(
+            "sealed command replay binding is unavailable or ambiguous")
+    return matches[0]
+
+
+def _sealed_json(path: Path, *, label: str) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GovernedCommandError(
+            f"sealed {label} evidence is unavailable") from exc
+    if not isinstance(value, dict):
+        raise GovernedCommandError(f"sealed {label} evidence is invalid")
+    return value
 
 
 def _regular_file_binding(path: str | Path, *, label: str) -> dict:
@@ -783,16 +848,31 @@ def semantic_checkpoint_execution_evidence(
             _checkpoint_receipt_path(root, handle).read_text(encoding="utf-8"))
         if not isinstance(receipt, Mapping):
             raise ValueError("receipt is not an object")
-        identity = receipt.get("identity") or {}
-        _spec, authority = _checkpoint_plan_authority(
-            workspace, str(identity.get("run_id") or ""),
-            str(identity.get("task_id") or ""))
         runtime = CommandRuntime(
             str(root), workspace=workspace, authorization=authorization)
         snapshot = runtime.snapshot(handle)
-    except (OSError, ValueError, GovernedCommandError, KeyError) as exc:
-        raise GovernedCommandError(
-            "semantic checkpoint execution receipt is unavailable") from exc
+    except (OSError, ValueError, GovernedCommandError, KeyError):
+        try:
+            bundle = _sealed_runtime_evidence(root, handle)
+            evidence = bundle["evidence"]
+            if "semantic-checkpoint-receipt" not in evidence:
+                raise GovernedCommandError(
+                    "sealed semantic checkpoint evidence is incomplete")
+            control = _validated_control(_sealed_json(
+                evidence["command-control"], label="command control"))
+            receipt = _sealed_json(
+                evidence["semantic-checkpoint-receipt"],
+                label="semantic checkpoint receipt")
+            snapshot = _sealed_json(
+                evidence["terminal-state"], label="command terminal-state")
+        except (OSError, ValueError, GovernedCommandError, KeyError) as exc:
+            raise GovernedCommandError(
+                "semantic checkpoint execution receipt is unavailable") \
+                from exc
+    identity = receipt.get("identity") or {}
+    _spec, authority = _checkpoint_plan_authority(
+        workspace, str(identity.get("run_id") or ""),
+        str(identity.get("task_id") or ""))
     digest = receipt.get("receipt_digest")
     material = {key: value for key, value in receipt.items()
                 if key != "receipt_digest"}
@@ -1191,14 +1271,21 @@ def finalize_owned_result(
             outcome=selected_outcome,
             source_revision=int(snapshot["revision"]),
             source_fingerprint=_canonical_digest(snapshot), trigger=trigger)
+        runtime_root = Path(str(binding["handoff_path"])).parent.parent
+        handle_root = runtime_root / snapshot["handle"]
+        terminal_evidence = {
+            "terminal-state": handle_root / "snapshot.json",
+            "command-control": handle_root / "control.json",
+            "handoff": str(binding["handoff_path"]),
+            "publication-replay": replay_source,
+        }
+        semantic_receipt = handle_root / "semantic-checkpoint-receipt.json"
+        if semantic_receipt.is_file():
+            terminal_evidence["semantic-checkpoint-receipt"] = \
+                semantic_receipt
         owned_cleanup.seal_terminal(
-            manifest_path, outcome=selected_outcome, evidence={
-                "terminal-state": (
-                    Path(str(binding["handoff_path"])).parent.parent /
-                    snapshot["handle"] / "snapshot.json"),
-                "handoff": str(binding["handoff_path"]),
-                "publication-replay": replay_source,
-            })
+            manifest_path, outcome=selected_outcome,
+            evidence=terminal_evidence)
         try:
             publication = owned_cleanup.replay_publication(
                 replay_source, workspace=workspace, owner=manifest["owner"],
@@ -1484,6 +1571,66 @@ def _snapshot_result(action: str, adapter: CommandAdapter, handle: str,
     }
 
 
+def _replay_sealed_result(
+        workspace: str, authorization: str, handle: str, *, action: str,
+        request: Mapping[str, object]) -> dict:
+    """Replay terminal/attention truth after its owned runtime was removed."""
+    bundle = _sealed_runtime_evidence(_runtime_root(workspace), handle)
+    evidence = bundle["evidence"]
+    snapshot = _sealed_json(
+        evidence["terminal-state"], label="command terminal-state")
+    _validated_control(_sealed_json(
+        evidence["command-control"], label="command control"))
+    expected_authorization = hashlib.sha256(
+        authorization.encode("utf-8")).hexdigest()
+    lifecycle = snapshot.get("lifecycle")
+    if (snapshot.get("schema") != "taskplane.command-state/v1" or
+            snapshot.get("handle") != handle or
+            snapshot.get("authorization_fingerprint") !=
+            expected_authorization or not isinstance(lifecycle, list) or
+            not lifecycle or not isinstance(lifecycle[-1], Mapping)):
+        raise GovernedCommandError("sealed command replay binding is invalid")
+    event = dict(lifecycle[-1])
+    if (event.get("handle") != handle or
+            event.get("state") != snapshot.get("state")):
+        raise GovernedCommandError("sealed command terminal event is mixed")
+    if action in {"cancel", "interrupt", "handoff"}:
+        if (snapshot.get("state") == "input_required" and
+                snapshot.get("reason_code") ==
+                "detached_worker_ownership_lost"):
+            raise GovernedCommandError(
+                "process ownership no longer matches the command binding")
+        raise GovernedCommandError(
+            "governed command is already terminal and cleaned")
+    result = {
+        "schema": RESULT_SCHEMA,
+        "action": action,
+        "handle": handle,
+        "identity": snapshot.get("identity"),
+        "lifecycle_states": [row.get("state") for row in lifecycle],
+        "snapshot": snapshot,
+        "cleanup_receipt": bundle["receipt"],
+        "cleanup_evidence": owned_cleanup.cleanup_consumer_evidence(
+            bundle["receipt"]),
+    }
+    if action == "show":
+        result["lifecycle"] = lifecycle
+        return result
+    if action == "wait":
+        delivery_key = event.get("delivery_key")
+        if not isinstance(delivery_key, str) or not delivery_key:
+            raise GovernedCommandError(
+                "sealed command delivery identity is unavailable")
+        event["delivery_receipt"] = {
+            "schema": "taskplane.command-delivery-receipt/v1",
+            "consumer": str(request.get("consumer") or "model"),
+            "delivery_key": delivery_key,
+            "revision": event.get("revision"),
+        }
+    result["event"] = event
+    return result
+
+
 def execute(workspace: str, action: str, request: object) -> dict:
     """Execute one closed lifecycle action through adapter and runtime."""
     workspace = str(Path(workspace).resolve())
@@ -1528,6 +1675,8 @@ def execute(workspace: str, action: str, request: object) -> dict:
             "wave_id": value.get("wave_id"),
             "payload_fingerprint": _canonical_digest(dict(payload)),
             "wait_policy": dict(payload.get("wait_policy") or {}),
+            "fork_turns": payload.get("fork_turns"),
+            "inherited_turns": payload.get("inherited_turns"),
             "evidence": {
                 "authoritative": False,
                 "host_observed": False,
@@ -1796,7 +1945,17 @@ def execute(workspace: str, action: str, request: object) -> dict:
             raise
 
     handle = str(value["handle"])
-    control = _read_control(root, handle)
+    try:
+        control = _read_control(root, handle)
+    except GovernedCommandError as control_error:
+        try:
+            return _replay_sealed_result(
+                workspace, authorization, handle, action=action,
+                request=value)
+        except GovernedCommandError as replay_error:
+            if "unavailable or ambiguous" in str(replay_error):
+                raise control_error
+            raise
     binding = {"handle": handle, "binding": dict(control["binding"])}
     adapter = _adapter(
         workspace, authorization, host=str(control["host"]),

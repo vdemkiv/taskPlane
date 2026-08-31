@@ -3089,7 +3089,8 @@ def _suite_cache_path(key: str) -> str:
 
 def suite_cache_enabled() -> bool:
     """Return the validated per-run cache policy from canonical settings."""
-    return bool(_canonical_operational_settings().tests.cache)
+    return bool(_canonical_operational_settings(
+        legacy_environment=True).tests.cache)
 
 
 # D-0008. `tests_pass` is the gate that says behaviour was verified, and a
@@ -3106,9 +3107,9 @@ def suite_cache_enabled() -> bool:
 # of one per task. Outside it, the environment is no longer a safe
 # assumption and the suite runs again.
 def suite_cache_max_age() -> float:
-    """Derive citation retention from the one artifact-retention policy."""
-    return float(_canonical_operational_settings().cleanup.artifacts_days *
-                 24 * 60 * 60)
+    """Return the canonical freshness bound for cached suite evidence."""
+    return float(_canonical_operational_settings(
+        legacy_environment=True).tests.cache_max_age_seconds)
 
 
 def suite_cache_lookup(workspace: str, command, env: dict) -> "dict | None":

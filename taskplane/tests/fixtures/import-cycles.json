@@ -220,8 +220,7 @@
         "taskplane.review_retry",
         "taskplane.runtime_eval",
         "taskplane.views"
-      ],
-      "physical_loc": 31487
+      ]
     },
     {
       "edge_count": 13,
@@ -288,10 +287,9 @@
         "taskplane.stage_entities",
         "taskplane.stage_handoff",
         "taskplane.taskplane_lite"
-      ],
-      "physical_loc": 16645
+      ]
     }
   ],
-  "schema": "taskplane.import-cycle-ratchet/v1",
+  "schema": "taskplane.import-cycle-topology/v2",
   "source_revision": "110e765ef58fcb7b16916063790b772bf773e175"
 }

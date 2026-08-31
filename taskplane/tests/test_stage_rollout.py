@@ -334,6 +334,7 @@ def test_bound_new_run_refuses_a_cloned_store_with_the_same_run_identity(
 
     assert "stage-native bound run store identity changed" in refused["error"]
     assert refused["stage_native"] == "read-only"
+    assert "dashboard_snapshot" not in refused
     assert state_path.read_bytes() == state_before
     assert _tree_bytes(
         Path(store.home) / "runs" / str(initial["run_id"])) == original_before
@@ -370,6 +371,7 @@ def test_bootstrapped_new_run_refuses_public_mutation_without_run_binding(
 
     assert "stage-native migrated run binding is missing" in refused["error"]
     assert refused["stage_native"] == "read-only"
+    assert "dashboard_snapshot" not in refused
     assert state_path.read_bytes() == state_before
     assert _tree_bytes(
         Path(store.home) / "runs" / str(initial["run_id"])) == store_before
@@ -573,6 +575,7 @@ def test_disabled_migrated_v4_refuses_singleton_resolution_without_writes(
 
     assert "stage-native mutation is disabled" in refused["error"]
     assert refused["stage_native"] == "read-only"
+    assert "dashboard_snapshot" not in refused
     assert state_path.read_bytes() == before_state
     assert _tree_bytes(run_root) == before_run
 

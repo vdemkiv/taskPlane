@@ -5781,18 +5781,6 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     (worktree). From here the worker's PreToolUse hook enforces this task's
     scope/tools/commands — the core invariant: every parallel agent runs
     under the harness, individually."""
-    try:
-        if __package__:
-            from . import preflight as startup_preflight
-        else:
-            import preflight as startup_preflight
-        startup_receipt = startup_preflight.atomic_governed_startup(
-            workspace=ws, worker_workspace=agent_ws, task_id=task_id)
-    except Exception as exc:
-        return {"error": "atomic governed preflight failed before any "
-                         "worker/worktree effect: "
-                         f"{exc.__class__.__name__}: {exc}",
-                "task": task_id}
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
     # v2.3.0 (scalability): DoR preparation shells out to git in the worker's
@@ -5820,6 +5808,18 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         tp.trace(ws, "loop_staged_dispatch_blocked", task=task_id,
                  surface="claim", reason="mandatory_replan_required")
         return staged_refusal
+    try:
+        if __package__:
+            from . import preflight as startup_preflight
+        else:
+            import preflight as startup_preflight
+        startup_receipt = startup_preflight.atomic_governed_startup(
+            workspace=ws, worker_workspace=agent_ws, task_id=task_id)
+    except Exception as exc:
+        return {"error": "atomic governed preflight failed before any "
+                         "worker/worktree effect: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "task": task_id}
     contract = tp.build_contract(
         f"EXECUTE: {t['id']}", scope=t.get("scope"),
         test_command=t.get("tests"), plan_minted=True, regression_gate=True,
