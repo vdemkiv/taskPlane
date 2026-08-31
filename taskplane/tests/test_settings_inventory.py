@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -272,6 +273,26 @@ def test_every_operational_setting_has_one_canonical_owner():
     sources = [path.relative_to(ROOT).as_posix()
                for path in ROOT.rglob("operational-settings.json")]
     assert sources == [authority["canonical_source"]]
+
+    package_authorities = {
+        "taskplane/operational-settings.json",
+        "taskplane/settings_inventory.json",
+        "taskplane/test_portfolio.json",
+    }
+    for script_name in ("package_openai.py", "package_claude.py"):
+        script = ROOT / "scripts" / script_name
+        spec = importlib.util.spec_from_file_location(
+            f"_settings_inventory_{script.stem}", script)
+        assert spec is not None and spec.loader is not None
+        packager = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(packager)
+        files = (packager.package_files(packager.load_manifest())
+                 if script_name == "package_openai.py"
+                 else packager.package_files())
+        members = {
+            path.relative_to(packager.ROOT).as_posix() for path in files
+        }
+        assert package_authorities <= members, script_name
 
     classified: dict[str, list[str]] = {}
     for row in inventory["environment_dispositions"]:
