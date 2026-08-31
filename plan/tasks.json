@@ -1,7 +1,7 @@
 {
   "schema": "taskplane.plan/v1",
   "requirement": "R-0001",
-  "design_fingerprint": "5b84a3d2bf7ff522ffa03c36794232c020ea6ab4e89f9fc8a3b68e22fd62fb89",
+  "design_fingerprint": "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4",
   "design_contract_current": true,
   "delivery_mode": "build",
   "automatic_lenses": [],
@@ -146,7 +146,7 @@
         "mode": "QUICK",
         "verdict": "attention",
         "blockers": 0,
-        "design_fingerprint": "5b84a3d2bf7ff522ffa03c36794232c020ea6ab4e89f9fc8a3b68e22fd62fb89",
+        "design_fingerprint": "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4",
         "incorporated": [
           "42-module/58-edge topology replacement",
           "HostSurfaceSnapshot v1 reuse",
@@ -161,7 +161,7 @@
         "mode": "QUICK",
         "verdict": "pass",
         "blockers": 0,
-        "design_fingerprint": "5b84a3d2bf7ff522ffa03c36794232c020ea6ab4e89f9fc8a3b68e22fd62fb89",
+        "design_fingerprint": "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4",
         "incorporated": [
           "one validated source mode with no fallback",
           "outcome fsync before sequence CAS and snapshot freeze",
@@ -176,7 +176,7 @@
         "mode": "QUICK",
         "verdict": "attention",
         "blockers": 0,
-        "design_fingerprint": "5b84a3d2bf7ff522ffa03c36794232c020ea6ab4e89f9fc8a3b68e22fd62fb89",
+        "design_fingerprint": "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4",
         "incorporated": [
           "all 24 AC-REG selectors resolve",
           "replace contradictory error-skips-dashboard test",
@@ -191,7 +191,7 @@
         "mode": "QUICK",
         "verdict": "attention",
         "blockers": 0,
-        "design_fingerprint": "5b84a3d2bf7ff522ffa03c36794232c020ea6ab4e89f9fc8a3b68e22fd62fb89",
+        "design_fingerprint": "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4",
         "incorporated": [
           "encode canonical bytes once and fan out",
           "bounded source/visible/omitted/truncation truth",

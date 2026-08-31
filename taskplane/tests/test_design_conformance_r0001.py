@@ -3,14 +3,21 @@ import fnmatch
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
+from unittest import mock
+
+import design_contract as canonical_design
 
 
 ROOT = Path(__file__).resolve().parents[2]
 APPROVED_DESIGN_FINGERPRINT = (
-    "5b84a3d2bf7ff522ffa03c36794232c020ea6ab4e89f9fc8a3b68e22fd62fb89"
+    "a76c445f70d493456f98d853e18555575b6c850de8b6e0e7d110305150c9f3a4"
+)
+APPROVED_REQUIREMENT_FINGERPRINT = (
+    "96df9e88309a18098026d5b57e4b935e59159f178d4928b4ef673c6e5cf5f712"
 )
 APPROVED_MODULES_SHA256 = (
     "8e7364e1cc814390d1ae230d238fc5613a5917286d56122c56905da9204438ce"
@@ -172,7 +179,9 @@ def _assert_acyclic(tasks):
         completed.update(ready)
 
 
-def test_all_approved_modules_edges_contracts_depth_and_acceptance_are_realized():
+def test_all_approved_modules_edges_contracts_depth_and_acceptance_are_realized(
+    tmp_path,
+):
     design = _json("design/contract.json")
     compatibility = _json("design/compatibility.json")
     plan = _json("plan/tasks.json")
@@ -276,6 +285,23 @@ def test_all_approved_modules_edges_contracts_depth_and_acceptance_are_realized(
     # The Plan authority is current, exact, human-attributed, and historical
     # compatibility remains 2.18.2 until the separately governed release slice.
     assert plan["design_contract_current"] is True
+    with mock.patch.object(
+        canonical_design,
+        "requirement_fingerprint",
+        return_value=APPROVED_REQUIREMENT_FINGERPRINT,
+    ):
+        canonical_fingerprint = canonical_design.design_evidence_fingerprint(
+            str(ROOT), design
+        )
+        mutation_root = tmp_path / "mutated-design"
+        shutil.copytree(ROOT / "design", mutation_root / "design")
+        narrative = mutation_root / "design" / "design.md"
+        narrative.write_bytes(narrative.read_bytes() + b"\nmutated\n")
+        mutated_fingerprint = canonical_design.design_evidence_fingerprint(
+            str(mutation_root), design
+        )
+    assert canonical_fingerprint == APPROVED_DESIGN_FINGERPRINT
+    assert mutated_fingerprint != canonical_fingerprint
     assert plan["design_fingerprint"] == APPROVED_DESIGN_FINGERPRINT
     assert {
         result["design_fingerprint"] for result in plan["plan_route"]["results"]
