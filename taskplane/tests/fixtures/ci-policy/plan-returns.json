@@ -1,0 +1,17 @@
+[
+  {
+    "id": "return-1",
+    "reason": "dependency overlay and dashboard contract disagree",
+    "coupled_surfaces": ["dependency-overlay", "dashboard-contract"]
+  },
+  {
+    "id": "return-2",
+    "reason": "dispatch policy exposes the same dependency gap",
+    "coupled_surfaces": ["dispatch-policy", "dependency-overlay"]
+  },
+  {
+    "id": "return-3",
+    "reason": "acceptance allocation still spans the coupled surfaces",
+    "coupled_surfaces": ["acceptance-allocation", "dashboard-contract", "dispatch-policy"]
+  }
+]

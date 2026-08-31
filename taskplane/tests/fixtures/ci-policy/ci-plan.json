@@ -1,0 +1,66 @@
+{
+  "settings": {
+    "digest": "0303030303030303030303030303030303030303030303030303030303030303",
+    "build": {"shards": 5, "concurrency": 5},
+    "tests": {"shards": 5},
+    "limits": {"timeouts": {"task_seconds": 600}}
+  },
+  "run": {
+    "event": "pull_request",
+    "ref_kind": "pull-request",
+    "group": "pull-request-482",
+    "cancel_in_progress": true
+  },
+  "matrices": ["primary", "compatibility-quality-package", "browser"],
+  "serializations": [
+    {"name": "package-index", "cells": ["package"]}
+  ],
+  "cells": [
+    {
+      "id": "unit-core",
+      "kind": "pytest",
+      "matrix": "primary",
+      "selectors": ["taskplane/tests/test_loop.py::test_loop_status"],
+      "paths": ["taskplane/loop.py"],
+      "timeout_seconds": 480,
+      "cleanup_resources": ["artifact:unit-core"]
+    },
+    {
+      "id": "compatibility",
+      "kind": "pytest",
+      "matrix": "compatibility-quality-package",
+      "selectors": ["taskplane/tests/test_codex_compat.py::test_native_projection"],
+      "paths": ["taskplane/taskplane_lite.py"],
+      "timeout_seconds": 480,
+      "cleanup_resources": ["artifact:compatibility"]
+    },
+    {
+      "id": "quality",
+      "kind": "quality",
+      "matrix": "compatibility-quality-package",
+      "selectors": ["taskplane/tests/test_release_provenance.py::test_locks_are_hashed"],
+      "paths": ["requirements-dev.lock"],
+      "timeout_seconds": 300,
+      "cleanup_resources": ["artifact:quality"]
+    },
+    {
+      "id": "package",
+      "kind": "package",
+      "matrix": "compatibility-quality-package",
+      "selectors": ["taskplane/tests/test_package.py::test_package_membership"],
+      "paths": ["pyproject.toml"],
+      "timeout_seconds": 300,
+      "cleanup_resources": ["artifact:package"]
+    },
+    {
+      "id": "dashboard-browser",
+      "kind": "browser",
+      "matrix": "browser",
+      "execution": "ci-only",
+      "selectors": ["taskplane/tests/test_dashboard_browser.py::test_current_dashboard_dom"],
+      "paths": ["taskplane/tests/fixtures/dashboard-browser/current.html"],
+      "timeout_seconds": 420,
+      "cleanup_resources": ["process:chromium", "artifact:browser"]
+    }
+  ]
+}
