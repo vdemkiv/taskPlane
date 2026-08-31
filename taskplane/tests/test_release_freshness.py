@@ -33,34 +33,15 @@ class TestReleaseWindow(unittest.TestCase):
     ROW = re.compile(r"^\| \*\*(v\d+\.\d+\.\d+)\*\* \|", re.M)
 
     def test_readme_keeps_exactly_three_current_changelog_rows(self):
-        current = "v" + json.loads(
-            _read(".codex-plugin/plugin.json"))["version"]
-        readme = _read("README.md")
-        section = readme.split("## What's new", 1)[1].split("## Install", 1)[0]
-        rows = self.ROW.findall(section)
-        changelog_rows = set(self.ROW.findall(_read("CHANGELOG.md")))
-        self.assertEqual(len(rows), 3)
-        self.assertEqual(rows[0], current)
-        self.assertTrue(set(rows) <= changelog_rows)
-
-    def test_current_version_is_single_sourced_across_runtime_and_manifests(self):
-        expected = "2.18.3"
-        runtime = _read("taskplane/release_evidence.py")
-        codex = json.loads(_read(".codex-plugin/plugin.json"))
+        expected = "2.18.3"; runtime = _read("taskplane/release_evidence.py"); codex = json.loads(_read(".codex-plugin/plugin.json"))
         claude = json.loads(_read(".claude-plugin/plugin.json"))
         marketplace = json.loads(_read(".claude-plugin/marketplace.json"))
         compatibility = json.loads(_read("design/compatibility.json"))
-
         self.assertIn(f'CURRENT_VERSION = "{expected}"', runtime)
-        self.assertEqual(codex["version"], expected)
-        self.assertEqual(claude["version"], expected)
-        self.assertEqual(marketplace["version"], expected)
-        self.assertEqual(marketplace["plugins"][0]["version"], expected)
-        self.assertEqual(compatibility["window"]["current"], expected)
-        self.assertEqual(
-            compatibility["baseline_rebind"]["next_generation"], expected
-        )
-
+        self.assertEqual({codex["version"], claude["version"], marketplace["version"], marketplace["plugins"][0]["version"], compatibility["window"]["current"], compatibility["baseline_rebind"]["next_generation"]}, {expected})
+        readme = _read("README.md")
+        rows = self.ROW.findall(readme.split("## What's new", 1)[1].split("## Install", 1)[0])
+        self.assertEqual(len(rows), 3); self.assertEqual(rows[0], "v" + expected); self.assertTrue(set(rows) <= set(self.ROW.findall(_read("CHANGELOG.md"))))
 
 class TestGeneratedCliReference(unittest.TestCase):
     REFERENCE = "docs/cli-reference.md"
