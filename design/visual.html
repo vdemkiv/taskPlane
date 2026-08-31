@@ -2,108 +2,75 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Focused dynamic lens routing</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>R-0001 canonical settings, dashboard publication, and lifecycle flow</title>
   <style>
-    :root { color-scheme: light dark; --ink:#14213d; --muted:#64748b;
-      --line:#94a3b8; --panel:#f8fafc; --run:#dbeafe; --zero:#dcfce7;
-      --warn:#ffedd5; --reuse:#ede9fe; --trust:#fce7f3; }
-    @media (prefers-color-scheme: dark) { :root { --ink:#e2e8f0;
-      --muted:#94a3b8; --line:#64748b; --panel:#111827; --run:#172554;
-      --zero:#052e16; --warn:#431407; --reuse:#2e1065; --trust:#500724; } }
-    * { box-sizing:border-box; }
-    body { margin:0; font:15px/1.45 system-ui,sans-serif; color:var(--ink);
-      background:var(--panel); }
-    main { max-width:1180px; margin:auto; padding:32px 22px 48px; }
-    h1 { margin:0 0 6px; font-size:clamp(24px,4vw,38px); }
-    p { color:var(--muted); margin:0 0 24px; }
-    .flow { display:grid; grid-template-columns:repeat(7,minmax(120px,1fr));
-      gap:12px; align-items:stretch; }
-    .box { border:1px solid var(--line); border-radius:12px; padding:14px;
-      background:var(--run); min-height:132px; position:relative; }
-    .box.zero { background:var(--zero); }
-    .box.warn { background:var(--warn); }
-    .box.reuse { background:var(--reuse); }
-    .box.trust { background:var(--trust); }
-    .box:not(:last-child)::after { content:"→"; position:absolute; right:-13px;
-      top:49px; z-index:2; font-size:20px; color:var(--muted); }
-    strong { display:block; font-size:17px; margin-bottom:8px; }
-    small { display:block; color:var(--muted); }
-    code { font:12px ui-monospace,monospace; }
-    .rule { margin:28px 0; border-top:2px solid var(--line); }
-    .lower { display:grid; grid-template-columns:1fr 1.3fr 1fr; gap:16px; }
-    .authority { display:grid; grid-template-columns:1fr auto 1.4fr auto 1fr;
-      gap:12px; align-items:stretch; }
-    .arrow { align-self:center; color:var(--muted); font-size:22px; }
-    .authority .box::after { content:none; }
-    ul { margin:8px 0 0; padding-left:18px; }
-    .legend { display:flex; gap:18px; flex-wrap:wrap; margin-top:24px;
-      color:var(--muted); }
-    .dot { width:12px; height:12px; display:inline-block; border:1px solid
-      var(--line); border-radius:3px; margin-right:6px; vertical-align:-1px; }
-    @media (max-width:900px) { .flow { grid-template-columns:1fr; }
-      .box:not(:last-child)::after { content:"↓"; right:auto; left:50%;
-        top:auto; bottom:-20px; } .lower, .authority { grid-template-columns:1fr; }
-      .authority .box::after { content:none; } .arrow { text-align:center; } }
+    :root{color-scheme:dark;--bg:#0b1020;--card:#151d33;--line:#7184b7;--text:#eef3ff;--muted:#aab6d6;--blue:#64a8ff;--green:#62d5a4;--amber:#f4c76b;--red:#ff8796}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#1c2a52 0,var(--bg) 48%);color:var(--text);font:15px/1.45 ui-sans-serif,system-ui,sans-serif}
+    main{max-width:1180px;margin:auto;padding:32px}h1{font-size:28px;margin:0 0 8px}h2.section{margin:34px 0 10px}p{color:var(--muted);margin:0 0 24px}.grid{display:grid;grid-template-columns:1fr 1.1fr 1fr;gap:18px;align-items:stretch}.col{display:grid;gap:12px}.box{background:linear-gradient(145deg,#18223d,#10182c);border:1px solid #33446f;border-radius:14px;padding:16px;box-shadow:0 10px 30px #0005}.box h2{font-size:15px;margin:0 0 7px;color:var(--blue)}.box strong{color:var(--text)}.source{border-color:var(--amber)}.source h2{color:var(--amber)}.core{border-color:var(--green);min-height:150px}.core h2{color:var(--green)}.danger{border-color:var(--red)}.danger h2{color:var(--red)}.arrow{text-align:center;color:var(--line);font-size:25px;align-self:center}.flow{display:grid;grid-template-columns:1fr 50px 1.1fr 50px 1fr;gap:6px;align-items:center}.stack{display:grid;gap:12px}.foot{margin-top:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.tag{display:inline-block;border:1px solid #516698;border-radius:999px;padding:3px 8px;margin:3px 4px 0 0;color:#d7e2ff;font-size:12px}.graph-meta{margin-top:22px}.graph-meta summary{cursor:pointer;color:var(--green);font-weight:700}.edges{max-height:520px;overflow:auto;padding-right:12px}.edges li{margin:8px 0;color:var(--muted)}code{color:#d9e5ff}.dash{margin-top:18px}.dash .core{min-height:unset}@media(max-width:900px){.flow{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}.foot{grid-template-columns:1fr}.grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body><main>
-  <h1>One policy, stage-specific evidence</h1>
-  <p>All routed stages disposition 26 lenses. Only blue stages execute a
-    focused set; green stages prove zero lens-worker starts.</p>
-  <section class="flow" aria-label="Taskplane stage routing flow">
-    <div class="box"><strong>Product</strong><small>Minimum sufficient from
-      goal, ACs, constraints, and product risks.</small></div>
-    <div class="box"><strong>Design</strong><small>Minimum sufficient from
-      components and boundaries; solution-design is mandatory.</small></div>
-    <div class="box"><strong>Plan</strong><small>Exactly 3–4 for a non-trivial
-      task graph; task and AC coverage is sealed.</small></div>
-    <div class="box zero"><strong>Build</strong><small>No lens workers. Native
-      lifecycle evidence proves zero starts.</small></div>
-    <div class="box"><strong>Evaluate</strong><small>Exactly 3–4 from diff,
-      impact, tests, and unresolved findings.</small></div>
-    <div class="box zero"><strong>Fix</strong><small>No lens workers. Change
-      code and evidence inputs only.</small></div>
-    <div class="box reuse"><strong>Re-evaluate</strong><small>Reuse equal
-      per-lens fingerprints; dispatch only invalidated selections.</small></div>
-  </section>
-
-  <div class="rule"></div>
-  <section class="lower" aria-label="Routing decision outcomes">
-    <div class="box warn"><strong>More than four mandatory risks</strong>
-      <ul><li>split into independently evaluable scopes, or</li>
-      <li>stop for one protected, exact-target expanded route.</li></ul></div>
-    <div class="box"><strong>Canonical policy artifact</strong>
-      <small><code>taskplane.lens-route-policy/v1</code></small>
-      <ul><li>26 complete dispositions</li><li>ordered selected route</li>
-      <li>route and per-lens fingerprints</li><li>bounded redacted evidence</li></ul>
+  <h1>One settings authority, one host snapshot, one cleanup truth</h1>
+  <p>R-0001 proposed data flow. Workflow state remains authoritative; settings and dashboard consumers receive frozen snapshots or sealed projections, never local defaults or reconstructed renderer state.</p>
+  <section class="flow">
+    <div class="stack">
+      <article class="box source"><h2>Sole persisted authority</h2><strong>operational-settings.json</strong><br>Defaults · override classes · stage routes · shards · timeouts · budgets · transport · cleanup</article>
+      <article class="box"><h2>Inputs, not authorities</h2>Safe CLI/environment overlays<br>Legacy aliases (one release)<br>Typed host observations</article>
     </div>
-    <div class="box zero"><strong>EM synthesis</strong><small>No new lens
-      workers. Consume canonical Evaluate evidence, verify Design conformance,
-      and present the final human sign-off.</small></div>
+    <div class="arrow">→</div>
+    <div class="stack">
+      <article class="box core"><h2>Typed fail-closed boundary</h2><strong>settings.py → immutable SettingsContext</strong><br>Closed validation · precedence · portable bytes · effective digest · redacted receipt</article>
+      <article class="box danger"><h2>Stops before side effects</h2>Unknown/malformed/conflicting value · incompatible host · unsafe override · partial wiring · stale digest</article>
+    </div>
+    <div class="arrow">→</div>
+    <div class="stack">
+      <article class="box"><h2>Governed consumers</h2>CLI/preflight/flows · hooks/skills/workflows · worker/handoff · cache/dashboard · package/release</article>
+      <article class="box"><h2>Validation authority</h2>Exact selector → radius → proportional → one frozen-SHA GitHub Actions matrix</article>
+      <article class="box"><h2>Lifecycle authority</h2>Reserve-before-create manifest → all-outcome handlers → cleanup receipt → zero-leak barrier</article>
+    </div>
   </section>
-
-  <div class="rule"></div>
-  <section class="authority" aria-label="Protected expanded-route authority boundary">
-    <div class="box warn"><strong>Worker checkout</strong>
-      <small><code>taskplane_lite.py</code> is request-only. It cannot supply
-      source, clock, verifier, issuance, or consumption state.</small></div>
-    <div class="arrow" aria-hidden="true">→</div>
-    <div class="box trust"><strong>Protected provider process</strong>
-      <small><code>providers/expanded-route/&lt;sha256&gt;/…</code></small>
-      <ul><li>exact immutable source + manifest</li>
-      <li>real clock + exact RSA-PSS verification</li>
-      <li>atomic one-use issue/consume receipt</li></ul></div>
-    <div class="arrow" aria-hidden="true">→</div>
-    <div class="box zero"><strong>ReviewKernel</strong><small>Accepts only the
-      provider-sealed receipt bound to the exact current route and context.
-      Missing or invalid custody means zero expanded dispatch.</small></div>
+  <section class="foot">
+    <article class="box"><h2>Parallel by default</h2><span class="tag">disjoint Build slices</span><span class="tag">CI shards</span><span class="tag">package/quality/graph</span><span class="tag">independent cleanup handlers</span></article>
+    <article class="box"><h2>Serialized only by named authority</h2><span class="tag">schema before adapters</span><span class="tag">reserve before create</span><span class="tag">evidence before delete</span><span class="tag">freeze before CI</span><span class="tag">green main before tag</span></article>
+    <article class="box"><h2>Final proof</h2><span class="tag">0 duplicate defaults</span><span class="tag">≤230 files</span><span class="tag">≤4200 cases</span><span class="tag">≥4× CI</span><span class="tag">0 leaks</span><span class="tag">≤12h phase</span></article>
   </section>
-  <div class="legend" aria-label="Legend">
-    <span><i class="dot" style="background:var(--run)"></i>focused execution</span>
-    <span><i class="dot" style="background:var(--zero)"></i>zero-lens stage</span>
-    <span><i class="dot" style="background:var(--warn)"></i>fail-closed overflow</span>
-    <span><i class="dot" style="background:var(--reuse)"></i>fingerprinted reuse</span>
-    <span><i class="dot" style="background:var(--trust)"></i>protected authority</span>
-  </div>
-</main></body></html>
+  <h2 class="section">Dashboard publication correction</h2>
+  <section class="flow dash" aria-label="Canonical dashboard publication flow">
+    <div class="stack">
+      <article class="box source"><h2>Committed inputs</h2>Loop/stage event · failed or successful gate · worker/lens terminal · cancel/interruption/timeout · handoff/recovery</article>
+      <article class="box"><h2>Phase sources stay distinct</h2>Design proposed graph · Plan task DAG/waves · repository module impact with truthful totals</article>
+    </div>
+    <div class="arrow">→</div>
+    <div class="stack">
+      <article class="box core"><h2>One existing v1 snapshot</h2><strong>loop_status → HostSurfaceSnapshot</strong><br>one source-mode read · revision · monotonic sequence · committed generated_at · settings/graph digests · fingerprint</article>
+      <article class="box danger"><h2>Fail closed before projection</h2>stale · contradictory · identity change · post-terminal · invalid graph · mixed legacy/v4</article>
+    </div>
+    <div class="arrow">→</div>
+    <div class="stack">
+      <article class="box"><h2>Sibling native path</h2>HostNativeRecovery → capability selection → Codex/Claude projection</article>
+      <article class="box"><h2>Sibling static path</h2>JSON + Markdown + one HTML document → generation fsync → atomic current pointer</article>
+      <article class="box"><h2>No silent stale page</h2>Exact host acknowledgement or visible STATIC/UNVERIFIED/STALE alert with actions disabled</article>
+    </div>
+  </section>
+  <details class="box graph-meta">
+    <summary>Complete proposed graph — 42 modules / 58 edges</summary>
+    <p>All proposed modules and every directed edge are enumerated below; this is the visualization of the machine graph in <code>design/contract.json</code>, not the repository blast-radius sample.</p>
+    <div class="module-list">
+      <span class="tag">taskplane/tp.py</span><span class="tag">taskplane/taskplane_lite.py</span><span class="tag">taskplane/loop.py</span><span class="tag">taskplane/loop_status.py</span><span class="tag">taskplane/views.py</span><span class="tag">taskplane/host_native.py</span><span class="tag">hooks/host_native_runtime.py</span><span class="tag">taskplane/depgraph.py</span><span class="tag">taskplane/plan_topology.py</span><span class="tag">taskplane/preflight.py</span><span class="tag">taskplane/storage.py</span><span class="tag">taskplane/host_capabilities.py</span><span class="tag">taskplane/delivery_ports.py</span><span class="tag">taskplane/stage_handoff.py</span><span class="tag">taskplane/worktree_cleanup.py</span><span class="tag">taskplane/command_runtime.py</span><span class="tag">taskplane/governed_commands.py</span><span class="tag">taskplane/release_evidence.py</span><span class="tag">taskplane/dashboard.py</span><span class="tag">taskplane/retro.py</span><span class="tag">hooks</span><span class="tag">agents</span><span class="tag">skills</span><span class="tag">workflows</span><span class="tag">.github/workflows</span><span class="tag">scripts</span><span class="tag">docs</span><span class="tag">specs</span><span class="tag">design</span><span class="tag">plan</span><span class="tag">(root)</span><span class="tag">taskplane/tests</span><span class="tag">taskplane/operational-settings.json</span><span class="tag">taskplane/settings.py</span><span class="tag">taskplane/settings_legacy.py</span><span class="tag">taskplane/settings_inventory.json</span><span class="tag">taskplane/test_strategy.py</span><span class="tag">taskplane/test_portfolio.json</span><span class="tag">taskplane/ci_policy.py</span><span class="tag">taskplane/ci_failure_batching.py</span><span class="tag">taskplane/owned_cleanup.py</span><span class="tag">taskplane/wave_metrics.py</span>
+    </div>
+    <ol class="edges">
+      <li>operational-settings.json —configures→ settings.py</li><li>settings_legacy.py —adapts→ settings.py</li><li>host_capabilities.py —observes→ settings.py</li>
+      <li>settings.py —provides→ effective-settings contract</li><li>settings.py —provides→ effective-settings receipt</li><li>settings.py —initializes→ tp.py</li><li>settings.py —injects→ loop.py</li><li>settings.py —injects→ preflight.py</li><li>settings.py —binds→ stage_handoff.py</li><li>settings.py —provides→ flow-initialization contract</li><li>settings_inventory.json —verifies→ flow-initialization contract</li>
+      <li>test_strategy.py —provides→ test-strategy contract</li><li>test_portfolio.json —adjudicates→ test-strategy contract</li><li>ci_policy.py —provides→ authoritative-CI contract</li><li>ci_failure_batching.py —classifies→ authoritative-CI contract</li><li>.github/workflows —executes→ authoritative-CI contract</li>
+      <li>owned_cleanup.py —provides→ owned-cleanup contract</li><li>worktree_cleanup.py —adapts→ owned_cleanup.py</li><li>command_runtime.py —identifies→ owned_cleanup.py</li><li>owned_cleanup.py —provides→ cleanup receipt</li>
+      <li>release_evidence.py —enforces→ protected-main release contract</li><li>scripts —verifies→ protected-main release contract</li><li>wave_metrics.py —provides→ wave-metrics receipt</li><li>wave_metrics.py —projects→ dashboard.py</li>
+      <li>loop.py —commits→ loop_status.py</li><li>tp.py —notifies→ loop_status.py</li><li>taskplane_lite.py —adapts→ loop_status.py</li><li>storage.py —provides→ loop_status.py</li><li>loop_status.py —assembles→ host_native.py</li><li>host_native.py —provides→ canonical-dashboard-state contract</li><li>loop_status.py —publishes→ views.py</li><li>host_native.py —injects→ views.py</li><li>host_native.py —recovers→ host_native_runtime.py</li><li>host_capabilities.py —selects→ host_native_runtime.py</li><li>host_native_runtime.py —projects→ dashboard.py</li><li>views.py —provides→ dashboard-publication receipt</li><li>dashboard-publication receipt —verifies→ canonical-dashboard-state contract</li>
+      <li>design —provides→ phase-dependency-graphs contract</li><li>plan —provides→ phase-dependency-graphs contract</li><li>depgraph.py —projects→ dashboard.py</li><li>plan_topology.py —projects→ dashboard.py</li><li>dashboard.py —projects→ phase-dependency-graphs contract</li><li>settings.py —binds→ canonical-dashboard-state contract</li><li>tests —verifies→ canonical-dashboard-state contract</li><li>tests —verifies→ phase-dependency-graphs contract</li>
+      <li>tests —verifies→ effective-settings contract</li><li>tests —verifies→ test-strategy contract</li><li>tests —verifies→ authoritative-CI contract</li><li>tests —verifies→ owned-cleanup contract</li><li>tests —verifies→ protected-main release contract</li>
+      <li>specs —declares→ test-strategy contract</li><li>design —declares→ flow-initialization contract</li><li>plan —decomposes→ test-strategy contract</li><li>agents —consumes→ flow-initialization contract</li><li>skills —consumes→ flow-initialization contract</li><li>workflows —consumes→ flow-initialization contract</li><li>hooks —consumes→ flow-initialization contract</li><li>(root) —documents→ wave-metrics receipt</li>
+    </ol>
+    <p>These are the exact 58 directed edges in the adjacent machine contract; full reasons remain there. No edge or module is represented by the repository module-impact sample.</p>
+  </details>
+</main></body>
+</html>
