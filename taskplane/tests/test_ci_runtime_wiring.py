@@ -34,7 +34,7 @@ def _browser():
 
 
 def test_browser_cell_is_required_isolated_candidate_bound_and_cleanup_safe(
-    tmp_path,
+    tmp_path, monkeypatch,
 ):
     runner = _runner()
     contract = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -81,3 +81,40 @@ def test_browser_cell_is_required_isolated_candidate_bound_and_cleanup_safe(
     with pytest.raises(runner.RunnerError, match="ambiguous or unowned"):
         runner._cleanup_ci_cell_root(unsafe, registration)
     assert unsafe.exists()
+
+    runtime_path = tmp_path / "runtime.json"
+    runner._atomic_write_json(runtime_path, runtime)
+    for outcome in ("cancellation", "interruption", "handoff"):
+        outcome_root = tmp_path / outcome
+        outcome_root.mkdir()
+        receipt_path = outcome_root / "receipt.json"
+        assert runner.run_authoritative_ci_cell(
+            runtime_path, "pytest-1", receipt_path,
+            environ={**runner.os.environ, "RUNNER_TEMP": str(outcome_root)},
+            forced_outcome=outcome,
+        ) == 1
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        cell = next(row for row in runtime["plan"]["cells"]
+                    if row["id"] == "pytest-1")
+        runner.validate_authoritative_ci_cell_receipt(receipt, runtime, cell)
+        assert receipt["outcome"] == outcome
+        assert receipt["classification"] is None
+        assert receipt["cleanup"]["outcome"] == outcome
+        assert receipt["cleanup"]["leak_count"] == 0
+        assert all(not Path(path).exists()
+                   for path in receipt["cleanup"]["resources"])
+
+    drifted_browser = {**runtime["candidate"]["browser"], "version": "drifted"}
+    monkeypatch.setattr(runner, "_browser_identity", lambda _env: drifted_browser)
+    browser_root = tmp_path / "browser-drift"
+    browser_root.mkdir()
+    browser_receipt = browser_root / "receipt.json"
+    assert runner.run_authoritative_ci_cell(
+        runtime_path, "dashboard-browser", browser_receipt,
+        environ={**runner.os.environ, "RUNNER_TEMP": str(browser_root)},
+    ) == 1
+    mismatch = json.loads(browser_receipt.read_text(encoding="utf-8"))
+    assert mismatch["classification"] == "environment"
+    assert mismatch["cleanup"]["leak_count"] == 0
+    with pytest.raises(runner.RunnerError, match="executing-runner identity"):
+        runner.validate_authoritative_ci_cell_receipt(mismatch, runtime, browser)

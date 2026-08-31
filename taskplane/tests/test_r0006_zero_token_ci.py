@@ -231,7 +231,10 @@ def test_pushed_sha_proof_waits_for_all_required_wave3_checks():
     source = WORKFLOW.read_text(encoding="utf-8")
     job = _job(source, "pushed-sha-proof", "tests-portability")
 
-    assert "needs: [tests, zero-token-corpus, wave3-contracts]" in job
+    assert (
+        "needs: [tests, zero-token-corpus, wave3-contracts, dashboard-browser]"
+        in job
+    )
     assert "github.event_name == 'push'" in job
     assert "--prove-pushed-sha" in job
     assert "--checked-sha" in job

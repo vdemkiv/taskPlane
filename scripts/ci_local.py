@@ -44,6 +44,18 @@ PYTHON = sys.executable
 SCHEMA = "taskplane.local-ci-equivalent/v1"
 CI_RUNTIME_SCHEMA = "taskplane.authoritative-ci-runtime/v1"
 CI_CELL_SCHEMA = "taskplane.authoritative-ci-cell/v1"
+CI_CLEANUP_SCHEMA = "taskplane.ci-cleanup-receipt/v1"
+CI_FAILURE_CLASSES = frozenset(("product", "test", "infrastructure", "environment"))
+CI_TERMINAL_OUTCOMES = frozenset((
+    "success", "failure", "cancellation", "interruption", "timeout", "handoff",
+))
+CI_CELL_FIELDS = frozenset((
+    "schema", "id", "kind", "status", "outcome", "classification",
+    "candidate_fingerprint", "source_sha", "plan_fingerprint",
+    "settings_receipt_fingerprint", "environment", "browser_fingerprint",
+    "browser_observation", "selectors", "duration_ms", "commands",
+    "output_digest", "ownership", "cleanup", "receipt",
+))
 CI_SHARD_COUNT = 5
 CI_PYTEST_SHARDS = 3
 CI_BROWSER_SELECTORS = (
@@ -343,7 +355,7 @@ PYTEST_CHECK_IDS = tuple(
 # Content address of every repository-relative `path:estimated-byte-weight` row.
 # A file added, removed, renamed, or reweighted must deliberately refresh this
 # pin, so the complete suite cannot silently shrink or use stale balancing data.
-PYTEST_WEIGHT_SHA256 = "1b6ae65af879838874fb91d000f5ddc11b2f62b62e95088198e9fe52bf6bdc54"
+PYTEST_WEIGHT_SHA256 = "f3a8fade7f9b55f7db8b4ee54f7d9bbd79aadb2503b638dedbe765f4c71d4624"
 
 
 def pytest_inventory() -> tuple[str, ...]:
@@ -881,8 +893,10 @@ def _owned_cell_root(
 
 
 def _cleanup_ci_cell_root(
-    target: Path, registration: Mapping[str, Any],
+    target: Path, registration: Mapping[str, Any], *, outcome: str = "success",
 ) -> dict[str, Any]:
+    if outcome not in CI_TERMINAL_OUTCOMES:
+        raise RunnerError("CI cleanup terminal outcome is invalid")
     material = {key: value for key, value in registration.items()
                 if key != "fingerprint"}
     if registration.get("fingerprint") != _sha256_json(material):
@@ -903,8 +917,9 @@ def _cleanup_ci_cell_root(
         shutil.rmtree(target)
     leaks = [str(target)] if target.exists() or target.is_symlink() else []
     receipt = {
-        "schema": "taskplane.ci-cleanup-receipt/v1",
+        "schema": CI_CLEANUP_SCHEMA,
         "registration_fingerprint": registration["fingerprint"],
+        "outcome": outcome,
         "resources": [str(target)],
         "status": "clean" if not leaks else "attention",
         "leak_count": len(leaks),
@@ -919,7 +934,12 @@ def run_authoritative_ci_cell(
     receipt_path: Path,
     *,
     environ: Mapping[str, str] | None = None,
+    forced_outcome: str | None = None,
 ) -> int:
+    if forced_outcome is not None and forced_outcome not in {
+        "cancellation", "interruption", "handoff",
+    }:
+        raise RunnerError("forced CI terminal outcome is unsupported")
     runtime = _load_runtime_plan(runtime_path)
     candidate = runtime["candidate"]
     if _git("rev-parse", "HEAD") != candidate["source_sha"]:
@@ -947,9 +967,10 @@ def run_authoritative_ci_cell(
     deadline = started + int(cell["timeout_seconds"])
     output_parts: list[str] = []
     command_receipts: list[dict[str, Any]] = []
-    outcome = "success"
+    outcome = forced_outcome or "success"
     active: subprocess.Popen[str] | None = None
-    interrupted: str | None = None
+    interrupted: str | None = forced_outcome
+    browser_observation: dict[str, Any] | None = None
 
     def interrupt(signum: int, _frame: object) -> None:
         nonlocal interrupted
@@ -966,7 +987,24 @@ def run_authoritative_ci_cell(
     }
     cleanup_receipt: dict[str, Any]
     try:
-        for command in _ci_cell_commands(cell, target):
+        if cell.get("kind") == "browser" and forced_outcome is None:
+            try:
+                browser_observation = _browser_identity(safe_env)
+            except RunnerError as exc:
+                outcome = "failure"
+                output_parts.append(f"browser environment failure: {exc}\n")
+            else:
+                observed_fingerprint = _sha256_json(browser_observation)
+                if (
+                    browser_observation != candidate["browser"]
+                    or observed_fingerprint != candidate["browser_fingerprint"]
+                ):
+                    outcome = "failure"
+                    output_parts.append(
+                        "browser environment failure: executing runner identity "
+                        "does not match the frozen candidate\n"
+                    )
+        for command in ([] if outcome != "success" else _ci_cell_commands(cell, target)):
             if interrupted:
                 outcome = interrupted
                 break
@@ -1020,7 +1058,9 @@ def run_authoritative_ci_cell(
             except (OSError, AttributeError):
                 active.kill()
             active.wait()
-        cleanup_receipt = _cleanup_ci_cell_root(target, registration)
+        cleanup_receipt = _cleanup_ci_cell_root(
+            target, registration, outcome=outcome,
+        )
 
     output = "".join(output_parts)
     log_path = receipt_path.with_suffix(".log")
@@ -1034,13 +1074,17 @@ def run_authoritative_ci_cell(
         "platform": platform.system(),
         "machine": platform.machine(),
     }
+    classification = (
+        None if outcome in {"cancellation", "interruption", "handoff"}
+        else _classify_ci_failure(status, output)
+    )
     payload = {
         "schema": CI_CELL_SCHEMA,
         "id": cell_id,
         "kind": cell["kind"],
         "status": status,
         "outcome": outcome,
-        "classification": _classify_ci_failure(status, output),
+        "classification": classification,
         "candidate_fingerprint": candidate["fingerprint"],
         "source_sha": candidate["source_sha"],
         "plan_fingerprint": runtime["plan"]["fingerprint"],
@@ -1053,15 +1097,168 @@ def run_authoritative_ci_cell(
         "browser_fingerprint": (
             candidate["browser_fingerprint"] if cell["kind"] == "browser" else None
         ),
+        "browser_observation": browser_observation,
         "selectors": list(cell["selectors"]),
         "duration_ms": int((time.monotonic() - started) * 1000),
         "commands": command_receipts,
         "output_digest": _digest(output),
+        "ownership": registration,
         "cleanup": cleanup_receipt,
     }
     receipt = {**payload, "receipt": _sha256_json(payload)}
     _atomic_write_json(receipt_path, receipt)
+    if status == "green":
+        validate_authoritative_ci_cell_receipt(receipt, runtime, cell)
     return 0 if status == "green" else 1
+
+
+def _valid_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def validate_authoritative_ci_cell_receipt(
+    row: Mapping[str, Any], runtime: Mapping[str, Any], cell: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Authenticate one closed, exact-candidate cell receipt before aggregation."""
+    receipt = dict(row)
+    if set(receipt) != CI_CELL_FIELDS or receipt.get("schema") != CI_CELL_SCHEMA:
+        raise RunnerError("CI cell receipt schema is not closed")
+    material = {key: value for key, value in receipt.items() if key != "receipt"}
+    if receipt.get("receipt") != _sha256_json(material):
+        raise RunnerError("CI cell receipt is stale")
+    candidate = runtime["candidate"]
+    plan = runtime["plan"]
+    if (
+        receipt.get("id") != cell.get("id")
+        or receipt.get("kind") != cell.get("kind")
+        or receipt.get("selectors") != cell.get("selectors")
+        or receipt.get("candidate_fingerprint") != candidate.get("fingerprint")
+        or receipt.get("source_sha") != candidate.get("source_sha")
+        or receipt.get("plan_fingerprint") != plan.get("fingerprint")
+        or receipt.get("settings_receipt_fingerprint")
+        != runtime["settings_receipt"].get("fingerprint")
+        or not _valid_digest(receipt.get("output_digest"))
+    ):
+        raise RunnerError("CI cell receipt exact candidate binding failed")
+    outcome = receipt.get("outcome")
+    status = receipt.get("status")
+    classification = receipt.get("classification")
+    if outcome not in CI_TERMINAL_OUTCOMES or status not in {"green", "red"}:
+        raise RunnerError("CI cell receipt terminal status is invalid")
+    if status == "green":
+        if outcome != "success" or classification is not None:
+            raise RunnerError("green CI cell receipt has non-green terminal evidence")
+    elif outcome in {"cancellation", "interruption", "handoff"}:
+        if classification is not None:
+            raise RunnerError("non-failure terminal outcome cannot invent a failure class")
+    elif classification not in CI_FAILURE_CLASSES:
+        raise RunnerError("red CI cell receipt requires one failure classification")
+    duration = receipt.get("duration_ms")
+    if (
+        isinstance(duration, bool) or not isinstance(duration, int) or duration < 0
+        or duration > (int(cell["timeout_seconds"]) + 10) * 1000
+    ):
+        raise RunnerError("CI cell timing receipt is invalid")
+    environment = receipt.get("environment")
+    if not isinstance(environment, dict) or set(environment) != {
+        "candidate_fingerprint", "observed", "observed_fingerprint",
+    }:
+        raise RunnerError("CI cell environment receipt is incomplete")
+    observed = environment.get("observed")
+    if (
+        environment.get("candidate_fingerprint")
+        != candidate["fingerprints"]["environment"]
+        or not isinstance(observed, dict)
+        or set(observed) != {"implementation", "python", "os", "platform", "machine"}
+        or any(not isinstance(value, str) or not value for value in observed.values())
+        or environment.get("observed_fingerprint") != _sha256_json(observed)
+    ):
+        raise RunnerError("CI cell observed environment receipt is invalid")
+    browser = receipt.get("browser_observation")
+    if cell.get("kind") == "browser":
+        if (
+            not isinstance(browser, dict)
+            or browser != candidate.get("browser")
+            or _sha256_json(browser) != candidate.get("browser_fingerprint")
+            or receipt.get("browser_fingerprint") != candidate.get("browser_fingerprint")
+        ):
+            raise RunnerError("browser cell executing-runner identity is mismatched")
+    elif browser is not None or receipt.get("browser_fingerprint") is not None:
+        raise RunnerError("non-browser cell carries browser authority")
+    ownership = receipt.get("ownership")
+    if not isinstance(ownership, dict) or set(ownership) != {
+        "schema", "candidate_fingerprint", "source_sha", "cell_id",
+        "containment_root", "relative_name", "registered_before_run", "fingerprint",
+    }:
+        raise RunnerError("CI cell ownership evidence is incomplete")
+    ownership_material = {
+        key: value for key, value in ownership.items() if key != "fingerprint"
+    }
+    if (
+        ownership.get("schema") != "taskplane.ci-owned-cell/v1"
+        or ownership.get("fingerprint") != _sha256_json(ownership_material)
+        or ownership.get("candidate_fingerprint") != candidate.get("fingerprint")
+        or ownership.get("source_sha") != candidate.get("source_sha")
+        or ownership.get("cell_id") != cell.get("id")
+        or ownership.get("registered_before_run") is not True
+    ):
+        raise RunnerError("CI cell ownership evidence is invalid")
+    cleanup = receipt.get("cleanup")
+    if not isinstance(cleanup, dict) or set(cleanup) != {
+        "schema", "registration_fingerprint", "outcome", "resources", "status",
+        "leak_count", "leaks", "fingerprint",
+    }:
+        raise RunnerError("CI cell cleanup receipt is incomplete")
+    cleanup_material = {
+        key: value for key, value in cleanup.items() if key != "fingerprint"
+    }
+    if (
+        cleanup.get("schema") != CI_CLEANUP_SCHEMA
+        or cleanup.get("fingerprint") != _sha256_json(cleanup_material)
+        or cleanup.get("registration_fingerprint") != ownership.get("fingerprint")
+        or cleanup.get("outcome") != outcome
+        or cleanup.get("status") != "clean"
+        or cleanup.get("leak_count") != 0
+        or cleanup.get("leaks") != []
+        or not isinstance(cleanup.get("resources"), list)
+        or len(cleanup["resources"]) != 1
+    ):
+        raise RunnerError("CI cell cleanup evidence is invalid or leaking")
+    expected_resource = str(
+        Path(str(ownership["containment_root"])) / str(ownership["relative_name"])
+    )
+    if cleanup["resources"] != [expected_resource]:
+        raise RunnerError("CI cleanup resource does not match exact ownership")
+    commands = receipt.get("commands")
+    if not isinstance(commands, list):
+        raise RunnerError("CI cell command receipts are invalid")
+    if status == "green":
+        expected = _ci_cell_commands(cell, Path(cleanup["resources"][0]))
+        if len(commands) != len(expected):
+            raise RunnerError("green CI cell command receipt count is incomplete")
+    for index, command in enumerate(commands):
+        if not isinstance(command, dict) or set(command) != {
+            "argv", "returncode", "duration_ms", "output_digest",
+        }:
+            raise RunnerError("CI cell command receipt schema is not closed")
+        if (
+            not isinstance(command.get("argv"), list)
+            or not command["argv"]
+            or isinstance(command.get("duration_ms"), bool)
+            or not isinstance(command.get("duration_ms"), int)
+            or command["duration_ms"] < 0
+            or not _valid_digest(command.get("output_digest"))
+        ):
+            raise RunnerError("CI cell command receipt is malformed")
+        if status == "green" and (
+            command.get("returncode") != 0 or command["argv"] != expected[index]
+        ):
+            raise RunnerError("green CI cell command evidence is not exact")
+    return receipt
 
 
 def aggregate_authoritative_ci(
@@ -1080,19 +1277,11 @@ def aggregate_authoritative_ci(
     ids = [str(row.get("id") or "") for row in receipts]
     if set(ids) != expected or len(ids) != len(set(ids)):
         raise RunnerError("terminal aggregate requires exactly one receipt per CI cell")
-    for row in receipts:
-        material = {key: value for key, value in row.items() if key != "receipt"}
-        if row.get("receipt") != _sha256_json(material):
-            raise RunnerError(f"CI cell receipt is stale: {row.get('id')}")
-        if (
-            row.get("candidate_fingerprint") != runtime["candidate"]["fingerprint"]
-            or row.get("source_sha") != runtime["candidate"]["source_sha"]
-            or row.get("plan_fingerprint") != runtime["plan"]["fingerprint"]
-            or row.get("settings_receipt_fingerprint")
-            != runtime["settings_receipt"]["fingerprint"]
-            or (row.get("cleanup") or {}).get("leak_count") != 0
-        ):
-            raise RunnerError(f"CI cell receipt binding failed: {row.get('id')}")
+    cells = {cell["id"]: cell for cell in runtime["plan"]["cells"]}
+    receipts = [
+        validate_authoritative_ci_cell_receipt(row, runtime, cells[row["id"]])
+        for row in receipts
+    ]
     terminal = seal_terminal_matrix(
         runtime["candidate"], runtime["plan"], receipts,
     )

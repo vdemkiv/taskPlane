@@ -14,6 +14,7 @@ LOCK = ROOT / "requirements-dev.lock"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 
 READ_ONLY_PR_JOBS = (
+    "ci-plan",
     "tests",
     "python-quality",
     "zero-token-corpus",
@@ -23,6 +24,7 @@ READ_ONLY_PR_JOBS = (
     "docs-truth",
     "codex-parity",
     "codex-host",
+    "dashboard-browser",
 )
 TEST_JOBS = (
     "tests",
@@ -31,6 +33,7 @@ TEST_JOBS = (
     "codex-parity",
     "codex-host",
     "release-tags",
+    "dashboard-browser",
 )
 TEST_TREE = {
     "pytest": "9.1.1",

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import re
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = Path(__file__).with_name("fixtures") / "ci-runtime" / "contract.json"
@@ -82,16 +84,71 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     runner._atomic_write_json(runtime_path, runtime)
     receipt_root = tmp_path / "receipts"
     for cell in plan["cells"]:
+        owned = tmp_path / "owned" / cell["id"]
+        ownership_material = {
+            "schema": "taskplane.ci-owned-cell/v1",
+            "candidate_fingerprint": runtime["candidate"]["fingerprint"],
+            "source_sha": source_sha,
+            "cell_id": cell["id"],
+            "containment_root": str(owned.parent),
+            "relative_name": owned.name,
+            "registered_before_run": True,
+        }
+        ownership = {
+            **ownership_material,
+            "fingerprint": runner._sha256_json(ownership_material),
+        }
+        cleanup_material = {
+            "schema": runner.CI_CLEANUP_SCHEMA,
+            "registration_fingerprint": ownership["fingerprint"],
+            "outcome": "success",
+            "resources": [str(owned)],
+            "status": "clean",
+            "leak_count": 0,
+            "leaks": [],
+        }
+        cleanup = {
+            **cleanup_material,
+            "fingerprint": runner._sha256_json(cleanup_material),
+        }
+        observed = {
+            "implementation": "CPython", "python": "3.12.9",
+            "os": "posix", "platform": "Linux", "machine": "x86_64",
+        }
+        commands = [{
+            "argv": argv, "returncode": 0, "duration_ms": 0,
+            "output_digest": runner._digest(""),
+        } for argv in runner._ci_cell_commands(cell, owned)]
         payload = {
             "schema": runner.CI_CELL_SCHEMA,
             "id": cell["id"],
             "kind": cell["kind"],
             "status": "green",
+            "outcome": "success",
+            "classification": None,
             "candidate_fingerprint": runtime["candidate"]["fingerprint"],
             "source_sha": source_sha,
             "plan_fingerprint": plan["fingerprint"],
             "settings_receipt_fingerprint": settings["fingerprint"],
-            "cleanup": {"leak_count": 0},
+            "environment": {
+                "candidate_fingerprint": runtime["candidate"]["fingerprints"]["environment"],
+                "observed": observed,
+                "observed_fingerprint": runner._sha256_json(observed),
+            },
+            "browser_fingerprint": (
+                runtime["candidate"]["browser_fingerprint"]
+                if cell["kind"] == "browser" else None
+            ),
+            "browser_observation": (
+                runtime["candidate"]["browser"]
+                if cell["kind"] == "browser" else None
+            ),
+            "selectors": cell["selectors"],
+            "duration_ms": 0,
+            "commands": commands,
+            "output_digest": runner._digest(""),
+            "ownership": ownership,
+            "cleanup": cleanup,
         }
         receipt = {**payload, "receipt": runner._sha256_json(payload)}
         runner._atomic_write_json(
@@ -106,12 +163,35 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     assert terminal["source_sha"] == source_sha
     assert terminal["settings_receipt"]["fingerprint"] == settings["fingerprint"]
 
+    tampered_path = next(receipt_root.rglob("pytest-1.json"))
+    tampered = json.loads(tampered_path.read_text(encoding="utf-8"))
+    tampered["environment"]["observed"]["python"] = "3.13-tampered"
+    tampered["receipt"] = runner._sha256_json({
+        key: value for key, value in tampered.items() if key != "receipt"
+    })
+    runner._atomic_write_json(tampered_path, tampered)
+    with pytest.raises(runner.RunnerError, match="observed environment"):
+        runner.aggregate_authoritative_ci(
+            runtime_path, receipt_root, tmp_path / "refused-terminal.json",
+        )
+
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "--emit-ci-plan" in workflow
-    assert "--ci-cell \"${{ matrix.id }}\"" in workflow
-    assert "--aggregate-ci" in workflow
-    assert "max-parallel: ${{ fromJSON(needs.wave3-contracts.outputs.max-parallel) }}" in workflow
+    assert "name: settings-derived authoritative CI plan" in workflow
+    assert "needs: [ci-plan]" in workflow
+    assert "--ci-cell dashboard-browser" in workflow
+    assert "name: dashboard browser conformance" in workflow
+    assert workflow.count("--ignore=taskplane/tests/test_dashboard_browser.py") == 1
+    assert workflow.count("strategy:") == 2
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow
     assert "permissions:\n  contents: read" in workflow
+    compatibility = json.loads(
+        (ROOT / "design" / "compatibility.json").read_text(encoding="utf-8")
+    )
+    required = compatibility["release_authority"]["required_checks"]
+    assert required[0] == "tests (python 3.12)"
+    assert "name: tests (python ${{ matrix.python }})" in workflow
+    assert '          - python: "3.12"' in workflow
+    assert all(f"name: {name}" in workflow for name in required[1:])
     action_refs = re.findall(r"uses:\s*[^@\s]+@([^\s#]+)", workflow)
     assert action_refs and all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs)
