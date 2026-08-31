@@ -132,9 +132,8 @@ def test_publication_receipt_binds_snapshot_graphs_dom_freshness_and_host_ack(
         tmp_path):
     """The delivery receipt joins every freshness input before publication.
 
-    This selector is the consumer-side contract named by DASHBOARD-DELIVERY.
-    It lives here because the canonical snapshot pipeline owns the input
-    shape, while ``views.deliver_dashboard`` owns the joined receipt.
+    This predecessor-owned selector is landed test-first so the dependent
+    DASHBOARD-DELIVERY slice can implement it without sharing file authority.
     """
     import copy
     import hashlib
