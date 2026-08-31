@@ -1,0 +1,22 @@
+{
+  "schema": "taskplane.design/v1",
+  "requirement": "R-0001",
+  "title": "Dashboard phase graph fixture",
+  "graph": {
+    "baseline_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "proposed_modules": [
+      "taskplane/dashboard.py",
+      "taskplane/plan_topology.py",
+      "taskplane/depgraph.py",
+      "taskplane/views.py",
+      "taskplane/tests"
+    ],
+    "proposed_edges": [
+      {"from": "design", "to": "contract:delivery.phase-dependency-graphs", "kind": "provides", "reason": "Design graph authority"},
+      {"from": "taskplane/plan_topology.py", "to": "taskplane/dashboard.py", "kind": "projects", "reason": "Plan topology projection"},
+      {"from": "taskplane/depgraph.py", "to": "taskplane/dashboard.py", "kind": "projects", "reason": "Repository impact projection"},
+      {"from": "taskplane/dashboard.py", "to": "contract:delivery.phase-dependency-graphs", "kind": "projects", "reason": "Distinct dashboard components"}
+    ],
+    "depth_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1}
+  }
+}

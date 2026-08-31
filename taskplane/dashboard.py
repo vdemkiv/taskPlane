@@ -16,11 +16,13 @@ import hashlib
 import html
 import json
 import os
+from typing import Any, Mapping
 
 import taskplane_lite as tp
 import loop as _loop        # engine owns the state machine; the view derives
 import kb as _kb            # from its public read models (display_pipeline,
 import depgraph as _dg      # STEP_ROLE, kb.counts, depgraph.summary) instead
+import plan_topology as _pt # Plan DAG/waves stay owned by one topology model.
                             # of re-encoding schemas that then drift.
 import text_runtime as _text
 
@@ -3130,6 +3132,403 @@ def _flow_label(value, limit=42):
     return value[:left] + "…" + value[-(limit - left - 1):]
 
 
+_DESIGN_GRAPH_SCHEMA = "taskplane.dashboard-design-graph/v1"
+_MODULE_IMPACT_SCHEMA = "taskplane.dashboard-module-impact/v1"
+_PHASE_GRAPH_SCHEMA = "taskplane.dashboard-phase-graphs/v1"
+_PHASE_ORDER = {
+    "pm": 0,
+    "design": 1,
+    "design_approval": 2,
+    "plan": 3,
+    "plan_approval": 4,
+    "execute": 5,
+    "build": 5,
+    "evaluate": 5,
+    "fix": 5,
+    "em": 6,
+    "signoff": 7,
+    "retro": 8,
+    "done": 9,
+}
+
+
+def _phase_digest(value: object) -> str:
+    try:
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("phase graph source is not canonical JSON") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _read_dashboard_json(path: str) -> dict[str, Any] | None:
+    try:
+        with open(path, encoding="utf-8") as stream:
+            value = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _design_graph_projection(ws: str) -> dict[str, Any] | None:
+    contract = _read_dashboard_json(os.path.join(ws, "design", "contract.json"))
+    if not contract or contract.get("schema") != "taskplane.design/v1":
+        return None
+    graph = contract.get("graph")
+    if not isinstance(graph, dict):
+        return None
+    raw_modules = graph.get("proposed_modules")
+    raw_edges = graph.get("proposed_edges")
+    if not isinstance(raw_modules, list) or not isinstance(raw_edges, list):
+        return None
+    modules = [str(value) for value in raw_modules
+               if isinstance(value, str) and value.strip()]
+    if len(modules) != len(raw_modules) or len(set(modules)) != len(modules):
+        return None
+    edges = []
+    for raw in raw_edges:
+        if not isinstance(raw, dict):
+            return None
+        source = str(raw.get("from") or "").strip()
+        target = str(raw.get("to") or "").strip()
+        kind = str(raw.get("kind") or "").strip()
+        reason = str(raw.get("reason") or "").strip()
+        if not source or not target or not kind or not reason:
+            return None
+        edges.append({"from": source, "to": target,
+                      "kind": kind, "reason": reason})
+    material = {
+        "schema": _DESIGN_GRAPH_SCHEMA,
+        "source": "design/contract.json#/graph",
+        "design_graph_fingerprint": _phase_digest(graph),
+        "modules": modules,
+        "edges": edges,
+        "module_total": len(modules),
+        "edge_total": len(edges),
+        "depth_policy": dict(graph.get("depth_policy") or {}),
+    }
+    return {**material, "fingerprint": _phase_digest(material)}
+
+
+def _module_impact_projection(
+    impact: Mapping[str, Any], *, limit: int,
+) -> dict[str, Any]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("module impact display limit must be a positive integer")
+    rows: list[dict[str, Any]] = []
+    raw_impacted = impact.get("impacted")
+    if isinstance(raw_impacted, Mapping):
+        depths = []
+        for raw_depth, raw_rows in raw_impacted.items():
+            try:
+                depth = int(raw_depth)
+            except (TypeError, ValueError):
+                continue
+            depths.append((depth, raw_rows))
+        for depth, raw_rows in sorted(depths, key=lambda item: item[0]):
+            if not isinstance(raw_rows, (list, tuple)):
+                continue
+            for raw in raw_rows:
+                if not isinstance(raw, Mapping) or not raw.get("module"):
+                    continue
+                rows.append({
+                    "depth": depth,
+                    "module": str(raw.get("module") or ""),
+                    "via": str(raw.get("via") or ""),
+                    "kind": str(raw.get("kind") or ""),
+                })
+    raw_source_total = impact.get("total_impacted", len(rows))
+    source_total = (raw_source_total if isinstance(raw_source_total, int)
+                    and not isinstance(raw_source_total, bool)
+                    and raw_source_total >= 0 else len(rows))
+    visible = rows[:limit]
+    visible_total = len(visible)
+    omitted_total = max(0, source_total - visible_total)
+    unknown = impact.get("unknown")
+    unknown_rows = list(unknown) if isinstance(unknown, (list, tuple)) else []
+    policy_blocked = impact.get("policy_blocked")
+    blocked_rows = (list(policy_blocked)
+                    if isinstance(policy_blocked, (list, tuple)) else [])
+    graph = impact.get("graph")
+    graph_fingerprint = (str(graph.get("content_fingerprint") or
+                             graph.get("fingerprint") or "")
+                         if isinstance(graph, Mapping) else "")
+    material = {
+        "schema": _MODULE_IMPACT_SCHEMA,
+        "source": "taskplane.depgraph.impact",
+        "graph_fingerprint": graph_fingerprint or None,
+        "touched": [str(value) for value in impact.get("touched") or ()],
+        "visible": visible,
+        "available_total": len(rows),
+        "source_total": source_total,
+        "visible_total": visible_total,
+        "omitted_total": omitted_total,
+        "unknown_total": len(unknown_rows),
+        "policy_blocked_total": len(blocked_rows),
+        "source_truncated": bool(impact.get("truncated")),
+        "depth_truncated": bool(impact.get("depth_truncated")),
+        "render_truncated": omitted_total > 0 or len(rows) > visible_total,
+        "depth_limit": impact.get("depth_limit"),
+    }
+    return {**material, "fingerprint": _phase_digest(material)}
+
+
+def _snapshot_component(
+    values: Mapping[str, Any] | None, key: str, schema: str,
+) -> dict[str, Any] | None:
+    if not isinstance(values, Mapping):
+        return None
+    value = values.get(key)
+    if not isinstance(value, Mapping) or value.get("schema") != schema:
+        return None
+    return {str(name): item for name, item in value.items()}
+
+
+def phase_graph_projection(
+    workspace: str,
+    state: Mapping[str, Any] | None = None,
+    *,
+    snapshot_values: Mapping[str, Any] | None = None,
+    impact: Mapping[str, Any] | None = None,
+    module_impact_limit: int = 8,
+) -> dict[str, Any]:
+    """Return distinct stage-aware graph components for every renderer.
+
+    A canonical HostSurfaceSnapshot may supply the four component values;
+    those frozen values win over workspace reads.  The fallback keeps legacy
+    loop dashboards useful while Design/Plan/module owners remain the only
+    authorities for their source data.
+    """
+    state = state if isinstance(state, Mapping) else (_load_loop(workspace) or {})
+    if snapshot_values is None and isinstance(state.get("values"), Mapping):
+        snapshot_values = state.get("values")
+    step = str(state.get("step") or state.get("stage") or "")
+    rank = _PHASE_ORDER.get(step, -1)
+    components: dict[str, dict[str, Any]] = {}
+
+    if rank >= _PHASE_ORDER["design"]:
+        design = _snapshot_component(
+            snapshot_values, "design_graph", _DESIGN_GRAPH_SCHEMA)
+        if design is None:
+            design = _design_graph_projection(workspace)
+        if design is not None:
+            components["design_graph"] = design
+
+    if rank >= _PHASE_ORDER["plan"]:
+        dag = _snapshot_component(
+            snapshot_values, "plan_task_dag", _pt.PLAN_DASHBOARD_SCHEMA)
+        waves = _snapshot_component(
+            snapshot_values, "plan_waves", _pt.PLAN_WAVES_DASHBOARD_SCHEMA)
+        if dag is None or waves is None:
+            plan = _read_dashboard_json(
+                os.path.join(workspace, "plan", "tasks.json"))
+            if plan is not None:
+                try:
+                    projected = _pt.dashboard_plan_projection(
+                        plan,
+                        approval_receipt=(state.get("delivery_mode_receipt")
+                                          if isinstance(state.get(
+                                              "delivery_mode_receipt"), Mapping)
+                                          else None),
+                    )
+                except _pt.PlanTopologyError:
+                    projected = None
+                if projected is not None:
+                    dag = dag or projected["dag"]
+                    waves = waves or projected["waves"]
+        if dag is not None:
+            components["plan_task_dag"] = dag
+        if waves is not None:
+            components["plan_waves"] = waves
+
+    canonical_impact = _snapshot_component(
+        snapshot_values, "module_impact", _MODULE_IMPACT_SCHEMA)
+    if canonical_impact is not None:
+        components["module_impact"] = canonical_impact
+    else:
+        raw_impact = impact
+        if raw_impact is None:
+            tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
+            derived = _current_graph_impact(workspace, tasks or [])
+            raw_impact = derived if isinstance(derived, Mapping) else None
+        if isinstance(raw_impact, Mapping) and raw_impact:
+            components["module_impact"] = _module_impact_projection(
+                raw_impact, limit=module_impact_limit)
+
+    material = {"schema": _PHASE_GRAPH_SCHEMA, "step": step, **components}
+    return {**material, "fingerprint": _phase_digest(material)}
+
+
+def _bounded_graph_svg(
+    component_id: str, title: str, nodes: list[str],
+    edges: list[Mapping[str, Any]], *, node_limit: int = 10,
+) -> str:
+    """Draw one compact graph while disclosing renderer omissions."""
+    selected: list[str] = []
+    for edge in edges:
+        for key in ("from", "to"):
+            value = str(edge.get(key) or "")
+            if value and value not in selected and len(selected) < node_limit:
+                selected.append(value)
+    for value in nodes:
+        if value not in selected and len(selected) < node_limit:
+            selected.append(value)
+    width, box_w, box_h, gap_x, gap_y = 880, 365, 42, 60, 18
+    positions: dict[str, tuple[int, int]] = {}
+    for index, value in enumerate(selected):
+        positions[value] = (
+            55 + (index % 2) * (box_w + gap_x),
+            14 + (index // 2) * (box_h + gap_y),
+        )
+    height = max(92, 28 + ((len(selected) + 1) // 2) * (box_h + gap_y))
+    lines = []
+    for edge in edges:
+        source = str(edge.get("from") or "")
+        target = str(edge.get("to") or "")
+        if source not in positions or target not in positions:
+            continue
+        sx, sy = positions[source]
+        tx, ty = positions[target]
+        lines.append(
+            f'<line x1="{sx + box_w / 2:.1f}" y1="{sy + box_h:.1f}" '
+            f'x2="{tx + box_w / 2:.1f}" y2="{ty:.1f}" '
+            'stroke="var(--line)" stroke-width="1.2"/>')
+    boxes = []
+    for value, (x, y) in positions.items():
+        boxes.append(
+            f'<g><rect x="{x}" y="{y}" width="{box_w}" height="{box_h}" '
+            'rx="6" fill="var(--surface-1)" stroke="var(--line)"/>'
+            f'<text x="{x + 12}" y="{y + 25}" '
+            'font-family="var(--font-mono)" font-size="10.5" '
+            f'fill="var(--text-primary)">{_esc(_flow_label(value, 50))}'
+            '</text></g>')
+    visible_edges = sum(
+        1 for edge in edges
+        if str(edge.get("from") or "") in positions
+        and str(edge.get("to") or "") in positions)
+    description = (
+        f'{len(nodes)} source nodes and {len(edges)} source edges; '
+        f'{len(selected)} nodes and {visible_edges} edges visible in this '
+        'bounded rendering.')
+    return (
+        f'<svg data-phase-graph="{_attr(component_id)}" '
+        f'viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-labelledby="{component_id}-svg-title {component_id}-svg-desc">'
+        f'<title id="{component_id}-svg-title">{_esc(title)}</title>'
+        f'<desc id="{component_id}-svg-desc">{_esc(description)}</desc>'
+        + "".join(lines) + "".join(boxes) + '</svg>')
+
+
+def _render_design_graph(component: Mapping[str, Any]) -> str:
+    modules = [str(value) for value in component.get("modules") or ()]
+    edges = [row for row in component.get("edges") or ()
+             if isinstance(row, Mapping)]
+    return (
+        '<section class="tp-phase-graph" id="tp-design-graph" '
+        f'data-schema="{_attr(component.get("schema", ""))}" '
+        f'data-source="{_attr(component.get("source", ""))}">'
+        '<p class="tp-kicker">Design proposed module &amp; edge graph</p>'
+        f'<p class="tp-lede">source {int(component.get("module_total", 0))} '
+        f'modules · {int(component.get("edge_total", 0))} edges · '
+        f'<code>{_esc(component.get("source", ""))}</code></p>'
+        + _bounded_graph_svg("tp-design-graph", "Design proposed graph",
+                             modules, edges) + '</section>')
+
+
+def _render_plan_dag(component: Mapping[str, Any]) -> str:
+    tasks = [row for row in component.get("tasks") or ()
+             if isinstance(row, Mapping)]
+    nodes = [str(row.get("id") or "") for row in tasks]
+    edges = [row for row in component.get("edges") or ()
+             if isinstance(row, Mapping)]
+    order = " → ".join(str(value)
+                         for value in component.get("topological_order") or ())
+    return (
+        '<section class="tp-phase-graph" id="tp-plan-task-dag" '
+        f'data-schema="{_attr(component.get("schema", ""))}" '
+        f'data-source="{_attr(component.get("source", ""))}">'
+        '<p class="tp-kicker">Plan task dependency DAG</p>'
+        f'<p class="tp-lede">source {int(component.get("task_total", 0))} '
+        f'tasks · {int(component.get("edge_total", 0))} dependency edges</p>'
+        + _bounded_graph_svg("tp-plan-task-dag", "Plan task dependency DAG",
+                             nodes, edges)
+        + f'<p class="tp-lede">topological order · {_esc(order)}</p></section>')
+
+
+def _render_plan_waves(component: Mapping[str, Any]) -> str:
+    approval = ("approved" if component.get("approval") == "approved"
+                else "planned")
+    rows = []
+    for wave in component.get("waves") or ():
+        if not isinstance(wave, Mapping):
+            continue
+        tasks = ", ".join(str(value) for value in wave.get("tasks") or ())
+        rows.append(
+            '<li style="padding:4px 0" '
+            f'data-wave-approval="{approval}"><code>{_esc(wave.get("id", ""))}'
+            f'</code> · {_esc(tasks)} · {approval}</li>')
+    receipt = component.get("approval_receipt_fingerprint")
+    receipt_text = (f' · receipt <code>{_esc(str(receipt)[:16])}</code>'
+                    if approval == "approved" and receipt else "")
+    return (
+        '<section class="tp-phase-graph" id="tp-plan-waves" '
+        f'data-schema="{_attr(component.get("schema", ""))}" '
+        f'data-source="{_attr(component.get("source", ""))}" '
+        f'data-plan-approval="{approval}">'
+        '<p class="tp-kicker">Plan waves</p>'
+        f'<p class="tp-lede">source {int(component.get("wave_total", 0))} '
+        f'waves · {approval}{receipt_text}</p><ol>'
+        + "".join(rows) + '</ol></section>')
+
+
+def _render_module_impact(component: Mapping[str, Any]) -> str:
+    rows = []
+    for row in component.get("visible") or ():
+        if not isinstance(row, Mapping):
+            continue
+        rows.append(
+            f'<li><code>{_esc(row.get("module", ""))}</code> · depth '
+            f'{_esc(row.get("depth", ""))} · {_esc(row.get("kind", ""))} '
+            f'{_arrow(back=True)} {_esc(row.get("via", ""))}</li>')
+    yes_no = lambda value: "yes" if value else "no"
+    return (
+        '<section class="tp-phase-graph" id="tp-repository-module-impact" '
+        f'data-schema="{_attr(component.get("schema", ""))}" '
+        f'data-source="{_attr(component.get("source", ""))}" '
+        f'data-source-total="{int(component.get("source_total", 0))}" '
+        f'data-visible-total="{int(component.get("visible_total", 0))}" '
+        f'data-omitted-total="{int(component.get("omitted_total", 0))}">'
+        '<p class="tp-kicker">Repository module impact</p>'
+        f'<p class="tp-lede">source {int(component.get("source_total", 0))} · '
+        f'visible {int(component.get("visible_total", 0))} · omitted '
+        f'{int(component.get("omitted_total", 0))} · unknown '
+        f'{int(component.get("unknown_total", 0))} · policy stopped '
+        f'{int(component.get("policy_blocked_total", 0))}</p>'
+        f'<p class="tp-lede">source truncated '
+        f'{yes_no(component.get("source_truncated"))} · depth truncated '
+        f'{yes_no(component.get("depth_truncated"))} · render truncated '
+        f'{yes_no(component.get("render_truncated"))}</p><ol>'
+        + "".join(rows) + '</ol></section>')
+
+
+def render_phase_dependency_graphs(projection: Mapping[str, Any]) -> str:
+    """Render four separately labelled canonical graph components."""
+    if not isinstance(projection, Mapping) or projection.get("schema") != \
+            _PHASE_GRAPH_SCHEMA:
+        return ""
+    renderers = (
+        ("design_graph", _render_design_graph),
+        ("plan_task_dag", _render_plan_dag),
+        ("plan_waves", _render_plan_waves),
+        ("module_impact", _render_module_impact),
+    )
+    return "".join(renderer(projection[key])
+                   for key, renderer in renderers
+                   if isinstance(projection.get(key), Mapping))
+
+
 def _current_graph_impact(ws, tasks, supplied=None):
     """Use canonical impact when present; otherwise derive one display view."""
     if isinstance(supplied, dict) and supplied.get("touched"):
@@ -3514,12 +3913,18 @@ def render_review_workflow(*, status: str, slots=None,
         'revision before the human gate.</p></div>')
 
 
-def _graph_panel(ws, tasks):
+def _graph_panel(ws, tasks, state=None, snapshot_values=None):
     """Graph tab: module/edge summary, most-connected hubs, and the blast
     radius of the current tasks' scope — all from the committed graph."""
+    state = state if isinstance(state, Mapping) else (_load_loop(ws) or {})
+    current_impact = _current_graph_impact(ws, tasks)
+    phase_html = render_phase_dependency_graphs(phase_graph_projection(
+        ws, state, snapshot_values=snapshot_values,
+        impact=current_impact if current_impact else None))
     g = _dg.load(ws)          # external store, via the graph owner's loader
     if not (g.get("modules") or g.get("edges")):
-        return ('<div style="font-size:13px;color:var(--text-muted)">no '
+        return (phase_html
+                + '<div style="font-size:13px;color:var(--text-muted)">no '
                 'dependency graph yet — scanned at loop start, or run '
                 '<code style="font-family:var(--font-mono)">tp graph scan'
                 '</code>. In a polyglot repo the scanner follows in-language '
@@ -3568,7 +3973,6 @@ def _graph_panel(ws, tasks):
         f'<div style="font-size:11px;color:var(--text-muted)">external deps'
         f'</div></div></div>')
     imp_html = ""
-    current_impact = _current_graph_impact(ws, tasks)
     scope = sorted({s.rstrip("*").rstrip("/") for t in tasks
                     for s in t.get("scope", []) if s})
     if scope:
@@ -3655,7 +4059,8 @@ def _graph_panel(ws, tasks):
             f'letter-spacing:1.2px;color:var(--text-muted);margin-bottom:'
             f'8px">product layer — requirements ↔ modules</div>'
             f'{"".join(rows)}{shared_html}</div>')
-    return (render_dependency_flow(ws, impact=current_impact, tasks=tasks)
+    return (phase_html
+            + render_dependency_flow(ws, impact=current_impact, tasks=tasks)
             + '<div class="tp-sec"><p class="tp-kicker">module-level graph — what the engine computed</p>'
             + tile3
             + f'<div style="background:none;border:1px solid '
@@ -4838,7 +5243,7 @@ def _widget_parts(ws: str) -> dict:
 
     # graph + context merged into one "map" tab — the codebase context
     # (hubs, blast radius) above the work context (requirement, lenses, KB)
-    graph_html = _graph_panel(ws, tasks)
+    graph_html = _graph_panel(ws, tasks, state=state)
     workflow_html = render_workflow_flow(state, step, tasks)
     context_html = (
         _context_panel(ws, state, full_trace)

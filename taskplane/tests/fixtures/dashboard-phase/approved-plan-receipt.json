@@ -1,0 +1,11 @@
+{
+  "automatic_lenses": [],
+  "fingerprint": "7d2db315ffb6f2a03e0c499a3889da0e955605b1fdfa745431d6abcc0575558a",
+  "mode": "build",
+  "plan_authority": "human:test approved the exact fixture Plan",
+  "plan_fingerprint": "05e879aa3e6b7a30a7f4adfe6a8ea6ca7e080c454bdaa4499e79e8cdab632596",
+  "predecessor_fingerprint": null,
+  "requirement": "R-0001",
+  "schema": "taskplane.delivery-mode-receipt/v1",
+  "source_sha": "dddddddddddddddddddddddddddddddddddddddd"
+}
