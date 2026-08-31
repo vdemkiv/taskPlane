@@ -473,8 +473,12 @@ def recover_session_dashboard(
         recovery: HostNativeRecovery | None = None) -> dict:
     """Republish the callback-owned committed head during SessionStart."""
     from taskplane import loop_status
+    from taskplane.settings import load_settings
+    settings = load_settings()
+    refresh_policy = settings.dashboard.refresh
     refresh = loop_status.refresh_dashboard_snapshot(
-        workspace, event_type="session_recovery", replay=True)
+        workspace, event_type=refresh_policy.session_event,
+        replay=refresh_policy.replay_on_session_start)
     if isinstance(refresh, Mapping) and refresh.get("status") == "no_active":
         if refresh.get("snapshot") is not None or refresh.get("event") is not None:
             raise ValueError("no-active dashboard replay carried canonical state")
@@ -498,6 +502,8 @@ def recover_session_dashboard(
 
 def _main(argv: list[str]) -> int:
     """Fail closed when a packaged hook cannot resolve its declaration."""
+    from taskplane.settings import load_settings
+    load_settings()
     if len(argv) != 3 or argv[0] != "check" or argv[1] != "--host":
         raise SystemExit("usage: host_native_runtime.py check --host HOST")
     host = argv[2]

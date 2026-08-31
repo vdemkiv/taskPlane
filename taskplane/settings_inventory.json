@@ -1,0 +1,284 @@
+{
+  "schema": "taskplane.operational-settings-inventory/v1",
+  "owner": "SET-CONFORMANCE",
+  "authority": {
+    "canonical_source": "taskplane/operational-settings.json",
+    "typed_loader": "taskplane/settings.py:load_settings",
+    "legacy_adapter": "taskplane/settings_legacy.py:migrate_legacy_settings",
+    "digest_field": "settings_digest",
+    "rule": "A configurable operational default exists only in canonical_source. Consumers load the typed value or verify a digest-bound projection; observations, derived values, protocol constants, and non-settings never own defaults."
+  },
+  "canonical_keys": [
+    "stages.*.model",
+    "stages.*.reasoning",
+    "lenses.routing.*",
+    "lenses.counts.*",
+    "build.shards",
+    "build.concurrency",
+    "tests.backend",
+    "tests.selection",
+    "tests.shards",
+    "tests.cache",
+    "limits.timeouts.task_seconds",
+    "limits.timeouts.subprocess_seconds",
+    "limits.timeouts.wait_seconds",
+    "limits.budgets.max_actions",
+    "limits.budgets.max_tokens",
+    "limits.budgets.max_cost_usd",
+    "workflow.transport",
+    "workflow.worker_inheritance.model",
+    "workflow.worker_inheritance.reasoning",
+    "cleanup.worktrees",
+    "cleanup.artifacts_days",
+    "runtime.audit_every",
+    "runtime.inline_max_bytes",
+    "runtime.orphan_ttl_seconds",
+    "runtime.obligations",
+    "runtime.runnability",
+    "runtime.review_max_attempts",
+    "dashboard.refresh.lifecycle_events",
+    "dashboard.refresh.session_event",
+    "dashboard.refresh.replay_on_session_start",
+    "overrides.safe_paths",
+    "overrides.governance_paths",
+    "observability.receipt",
+    "observability.include_values"
+  ],
+  "prohibited_direct_environment": [
+    "TASKPLANE_AUTO_WORKTREE_CLEANUP",
+    "TASKPLANE_AUDIT_EVERY",
+    "TASKPLANE_INLINE_MAX",
+    "TASKPLANE_MODEL_CHEAP",
+    "TASKPLANE_MODEL_STANDARD",
+    "TASKPLANE_MODEL_DEEP",
+    "TASKPLANE_REASONING_CHEAP",
+    "TASKPLANE_REASONING_STANDARD",
+    "TASKPLANE_REASONING_DEEP",
+    "TASKPLANE_NO_SUITE_CACHE",
+    "TASKPLANE_OBLIGATIONS",
+    "TASKPLANE_ORPHAN_TTL",
+    "TASKPLANE_ORPHAN_TTL_SECONDS",
+    "TASKPLANE_RUNNABILITY",
+    "TASKPLANE_SUITE_CACHE_MAX_AGE"
+  ],
+  "prohibited_default_symbols": [
+    "DEFAULT_TEST_TIMEOUT_SECONDS",
+    "DEFAULT_MAX_ACTIONS",
+    "AUDIT_EVERY_DEFAULT",
+    "DEFAULT_ORPHAN_TTL",
+    "SUITE_CACHE_MAX_AGE_S",
+    "DASHBOARD_SESSION_EVENT",
+    "DASHBOARD_REPLAY_ON_SESSION_START"
+  ],
+  "environment_dispositions": [
+    {
+      "id": "host-session-capability-facts",
+      "disposition": "runtime-observation",
+      "names": [
+        "CLAUDE_CODE_VERSION", "CLAUDE_CODE_WORKFLOWS", "CLAUDE_SESSION_ID",
+        "CODEX_HOME", "CODEX_THREAD_ID", "CODEX_VERSION",
+        "TASKPLANE_AGENT_PID", "TASKPLANE_BRIDGE_HOOKS_LOADED",
+        "TASKPLANE_CODEX_PRODUCER_EVENT_FILE", "TASKPLANE_EFFORT_SELECTION",
+        "TASKPLANE_HOST", "TASKPLANE_HOST_SESSION_EVENT",
+        "TASKPLANE_HOST_RECEIPT_AT", "TASKPLANE_HOST_RECEIPT_REASON",
+        "TASKPLANE_HOST_VERSION", "TASKPLANE_INSTALL_CONTEXT",
+        "TASKPLANE_MANAGED_HOOK_POLICY", "TASKPLANE_NATIVE_HOOKS_LOADED",
+        "TASKPLANE_SESSION_ID",
+        "TASKPLANE_STABLE_HOOK_EVENT_ID", "TASKPLANE_WORKFLOWS",
+        "TASKPLANE_WORKSPACE"
+      ],
+      "justification": "Observed host identity, capability, lifecycle, and invocation facts have no repository default and cannot be selected by settings."
+    },
+    {
+      "id": "filesystem-process-facts",
+      "disposition": "runtime-observation",
+      "names": [
+        "BASH_ENV", "CI", "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT",
+        "COMSPEC", "ENV", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
+        "GIT_TERMINAL_PROMPT", "HOME", "LANG", "LC_ALL", "LC_CTYPE",
+        "LC_MESSAGES", "PATH", "PATHEXT", "PYTEST_ADDOPTS",
+        "PYTEST_PLUGINS", "PYTHONHASHSEED", "PYTHONIOENCODING",
+        "PYTHONHOME", "PYTHONPATH", "PYTHONUTF8", "PLUGIN_ROOT",
+        "SHELLOPTS", "SYSTEMROOT", "SystemRoot", "TEMP", "TERM", "TMP",
+        "TZ", "VIRTUAL_ENV", "WINDIR", "TASKPLANE_BARE_ROOT", "TASKPLANE_HOME",
+        "TASKPLANE_HOOK_PATH", "TASKPLANE_LOCALE", "TASKPLANE_TASK",
+        "TMPDIR", "ZDOTDIR"
+      ],
+      "justification": "OS paths, locale, process slot, and hook invocation identity are observations. They are normalized and bounded rather than defaulted."
+    },
+    {
+      "id": "credential-and-ci-facts",
+      "disposition": "runtime-observation",
+      "names": [
+        "GH_ENTERPRISE_TOKEN", "GH_TOKEN", "GITHUB_ACTIONS", "GITHUB_API_TOKEN",
+        "GITHUB_OUTPUT", "GITHUB_TOKEN", "RUNNER_TEMP"
+      ],
+      "justification": "Credential presence and runner facts are redacted runtime inputs; secrets are forbidden from canonical settings."
+    },
+    {
+      "id": "one-release-compatibility-controls",
+      "disposition": "justified-non-setting",
+      "names": [
+        "TASKPLANE_COLLISION_SCREEN",
+        "TASKPLANE_CONSOLIDATED_FLOW", "TASKPLANE_DEBUG",
+        "TASKPLANE_ENFORCE_DISPATCH", "TASKPLANE_ENFORCE_SCREEN",
+        "TASKPLANE_PUBLISH_REVIEW",
+        "TASKPLANE_QA_BASELINE", "TASKPLANE_R0013_CODEX_AUDIT",
+        "TASKPLANE_SKILL_ALLOW",
+        "TASKPLANE_SKILL_STRICT", "TASKPLANE_STAGE_NATIVE",
+        "TASKPLANE_STORE"
+      ],
+      "justification": "Released compatibility or stricter-only diagnostic controls remain bounded protocol inputs for one compatibility window; they own no new default and cannot weaken the canonical settings contract."
+    },
+    {
+      "id": "test-harness-controls",
+      "disposition": "justified-non-setting",
+      "names": [
+        "TASKPLANE_BROWSER_COMMAND", "TASKPLANE_BROWSER_EXECUTABLE",
+        "TASKPLANE_COMPAT_WORKSPACE", "TASKPLANE_EXPANDED_ROUTE_CLOCK",
+        "TASKPLANE_EXPANDED_ROUTE_PROVIDER", "TASKPLANE_HOSTING_COMMAND",
+        "TASKPLANE_LOCAL_CI_ACTIVE", "TASKPLANE_MODEL_SELECTION",
+        "TASKPLANE_NATIVE_APPROVAL", "TASKPLANE_NATIVE_BROWSER",
+        "TASKPLANE_NATIVE_CAROUSEL", "TASKPLANE_NATIVE_HOSTING",
+        "TASKPLANE_NATIVE_PIP", "TASKPLANE_NATIVE_SANDBOX",
+        "TASKPLANE_NATIVE_SIDE_PANEL", "TASKPLANE_NATIVE_STRUCTURED_OUTPUT",
+        "TASKPLANE_NATIVE_VISUALIZATION", "TASKPLANE_PACKAGE_TEMP_ROOT",
+        "TASKPLANE_PICKUP_TEST_OUTPUT_BYTES", "TASKPLANE_PORTFOLIO_PROOF_CHILD",
+        "TASKPLANE_REGRESSION_TIMEOUT_SECONDS", "TASKPLANE_REPOSITORY_TRUST",
+        "TASKPLANE_REVIEW_ACTION_ID", "TASKPLANE_REVIEW_CONTRACT_ACTION",
+        "TASKPLANE_REVIEW_CONTRACT_EXPECTED", "TASKPLANE_SIDE_PANEL_COMMAND",
+        "TASKPLANE_SUPPORTED_EFFORT_VALUES", "TASKPLANE_SUPPORTED_MODEL_ALIASES",
+        "TASKPLANE_WORKFLOWS_AVAILABLE", "TP_SCRATCH_CLEAN", "TP_SCRATCH_LEAK"
+      ],
+      "justification": "Injected test doubles, failure fixtures, and ephemeral CI adapter facts are never production defaults."
+    }
+  ],
+  "non_environment_dispositions": [
+    {
+      "id": "protocol-safety-bounds",
+      "disposition": "immutable-protocol",
+      "symbols": [
+        "DEFAULT_MAX_ACTIONS_RO", "DEFAULT_MAX_TEST_TIMEOUT_SECONDS",
+        "MAX_TEST_TIMEOUT_SECONDS", "MAX_MANIFEST_BYTES",
+        "MAX_ARTIFACT_REFERENCES", "MAX_PLATFORM_PROOF_AGE_SECONDS"
+      ],
+      "justification": "Closed least-privilege or parser/resource safety limits constrain settings and cannot be raised by an override."
+    },
+    {
+      "id": "derived-retention-and-routing",
+      "disposition": "derived-value",
+      "symbols": [
+        "suite_cache_max_age", "STEP_DEFAULT_TIER", "STAGE_WAVE_NAMES",
+        "TERMINAL_STEPS", "VALIDATION_LAYERS"
+      ],
+      "justification": "Values are computed from the effective snapshot or name immutable protocol states; they are not configurable defaults."
+    },
+    {
+      "id": "schemas-and-product-acceptance",
+      "disposition": "justified-non-setting",
+      "symbols": [
+        "SCHEMA", "RECEIPT_SCHEMA", "DECLARED_TARGETS", "METRIC_DEFINITIONS",
+        "CURRENT_VERSION", "PREVIOUS_VERSION"
+      ],
+      "justification": "Wire schemas, signed product acceptance targets, and release identity are versioned contracts, not runtime operational knobs."
+    }
+  ],
+  "consumers": [
+    {
+      "id": "cli-and-loop",
+      "surfaces": ["taskplane/tp.py", "taskplane/loop.py", "taskplane/loop_status.py"],
+      "initialization": "direct-loader-before-transition",
+      "proof_markers": ["operational_settings.load_settings()", "settings = operational_settings.load_settings()"],
+      "binding": "settings_digest"
+    },
+    {
+      "id": "preflight-storage-handoff",
+      "surfaces": ["taskplane/preflight.py", "taskplane/storage.py", "taskplane/stage_handoff.py"],
+      "initialization": "preflight-loader-and-sealed-projection",
+      "proof_markers": ["effective = settings_module.load_settings()", "\"settings_digest\": effective.digest"],
+      "binding": "settings_digest"
+    },
+    {
+      "id": "hooks-agents-skills-flows",
+      "surfaces": ["hooks/**", "agents/**", "skills/**/SKILL.md", "skills/**/flow.json"],
+      "initialization": "loader-or-digest-bound-flow-projection",
+      "proof_markers": ["taskplane.settings.load_settings", "settings_digest"],
+      "binding": "settings_digest"
+    },
+    {
+      "id": "workflow-transport-and-dispatch",
+      "surfaces": ["workflows/**", "taskplane/taskplane_lite.py", "taskplane/command_runtime.py", "taskplane/command_wave.py"],
+      "initialization": "dispatch-loader-and-verbatim-bounded-transport",
+      "proof_markers": ["_canonical_operational_settings", "\"settings_digest\": settings.digest"],
+      "binding": "settings_digest"
+    },
+    {
+      "id": "dashboard-state-projection-delivery-host",
+      "surfaces": ["taskplane/loop_status.py", "taskplane/host_native.py", "taskplane/views.py", "taskplane/dashboard.py", "hooks/host_native_runtime.py", "hooks/host-native.json"],
+      "initialization": "direct-loader-and-snapshot-projection",
+      "proof_markers": ["settings = operational_settings.load_settings()", "\"settings_digest\": settings.digest", "\"settingsKey\": \"dashboard.refresh\""],
+      "binding": "settings_digest"
+    },
+    {
+      "id": "ci-test-selection-sharding",
+      "surfaces": ["taskplane/ci_policy.py", "scripts/ci_local.py", ".github/workflows/**"],
+      "initialization": "direct-loader-and-frozen-ci-plan",
+      "proof_markers": ["settings = load_settings(settings_path, overlay=overlay)", "\"settings_digest\": settings.digest"],
+      "binding": "settings_digest"
+    },
+    {
+      "id": "cleanup",
+      "surfaces": ["taskplane/owned_cleanup.py", "taskplane/worktree_cleanup.py", "taskplane/governed_commands.py"],
+      "initialization": "loader-owner-and-manifest-binding",
+      "proof_markers": ["\"settings_digest\": load_settings().digest", "settings_digest"],
+      "binding": "settings_digest"
+    },
+    {
+      "id": "metrics",
+      "surfaces": ["taskplane/wave_metrics.py", "taskplane/retro.py"],
+      "initialization": "sealed-settings-source-receipt",
+      "proof_markers": ["\"settings\"", "consumer_projection"],
+      "binding": "source receipt fingerprint"
+    },
+    {
+      "id": "release-and-packages",
+      "surfaces": ["taskplane/release_evidence.py", "scripts/release_provenance.py", "scripts/ci_release_tags.py", "scripts/package_openai.py", "scripts/package_claude.py", ".codex-plugin/**", ".claude-plugin/**"],
+      "initialization": "direct-loader-and-package-manifest-verification",
+      "proof_markers": ["settings_digest = load_settings(settings_path).digest", "settings_receipt"],
+      "binding": "settings_digest"
+    },
+    {
+      "id": "legacy-and-cache",
+      "surfaces": ["taskplane/settings_legacy.py", "taskplane/taskplane_lite.py", "taskplane/tests/test_settings_migration.py"],
+      "initialization": "zero-default-adapter-and-effective-settings-derivation",
+      "proof_markers": ["migrate_legacy_settings", "_canonical_operational_settings"],
+      "binding": "settings_digest"
+    },
+    {
+      "id": "tests-fixtures-generators-graph-excluded",
+      "surfaces": ["taskplane/tests/**", "corpus/**", "evals/**", "scripts/gen_*", "scripts/**/regen.py"],
+      "initialization": "non-authoritative-test-input",
+      "proof_markers": ["TASKPLANE_SUITE_CACHE_MAX_AGE"],
+      "binding": "negative mutation evidence"
+    },
+    {
+      "id": "repository-docs-and-release-tooling",
+      "surfaces": ["docs/**", "specs/**", "design/**", "plan/**", "assets/**", "lenses/**", "discipline/**", "exports/**", "README.md", "CHANGELOG.md"],
+      "initialization": "justified-non-setting-or-digest-referenced-artifact",
+      "proof_markers": ["taskplane/operational-settings.json"],
+      "binding": "documentation reference or immutable evidence"
+    }
+  ],
+  "negative_fixtures": [
+    "taskplane/tests/fixtures/settings-inventory/direct-governed-environment.py.txt",
+    "taskplane/tests/fixtures/settings-inventory/duplicate-authority.json",
+    "taskplane/tests/fixtures/settings-inventory/duplicate-default.py.txt",
+    "taskplane/tests/fixtures/settings-inventory/graph-excluded-generator.py.txt",
+    "taskplane/tests/fixtures/settings-inventory/indirect-mapping-environment.py.txt",
+    "taskplane/tests/fixtures/settings-inventory/missing-digest-flow.json",
+    "taskplane/tests/fixtures/settings-inventory/stale-dashboard-refresh.json",
+    "taskplane/tests/fixtures/settings-inventory/dashboard-missing-required-event.json",
+    "taskplane/tests/fixtures/settings-inventory/worker-terminal-bypass.py.txt",
+    "taskplane/tests/fixtures/settings-inventory/workflow-js-default.js.txt"
+  ]
+}

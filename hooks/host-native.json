@@ -8,8 +8,7 @@
   "nativeUiIsAuthority": false,
   "sessionRecovery": {
     "callback": "taskplane.loop_status.refresh_dashboard_snapshot",
-    "eventType": "session_recovery",
-    "replay": true
+    "settingsKey": "dashboard.refresh"
   },
   "acknowledgement": "taskplane.host-native-acknowledgement/v1"
 }

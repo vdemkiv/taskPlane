@@ -42,6 +42,33 @@
     "worker_inheritance": {"model": true, "reasoning": true}
   },
   "cleanup": {"worktrees": "after-merge", "artifacts_days": 30},
+  "runtime": {
+    "audit_every": 5,
+    "inline_max_bytes": 24000,
+    "orphan_ttl_seconds": 3600,
+    "obligations": "enforce",
+    "runnability": "probe",
+    "review_max_attempts": 2
+  },
+  "dashboard": {
+    "refresh": {
+      "lifecycle_events": [
+        "gate",
+        "submit",
+        "next_action",
+        "approve",
+        "select",
+        "resolve",
+        "replan",
+        "handle_host_input",
+        "cleanup_replay",
+        "retro",
+        "worker_terminal"
+      ],
+      "session_event": "session_recovery",
+      "replay_on_session_start": true
+    }
+  },
   "overrides": {
     "safe_paths": [
       "stages.*.model",
@@ -50,10 +77,11 @@
       "tests.selection",
       "tests.shards",
       "tests.cache",
+      "runtime.inline_max_bytes",
       "limits.timeouts.*",
       "limits.budgets.*"
     ],
-    "governance_paths": ["lenses.*", "build.concurrency", "tests.backend", "workflow.*", "cleanup.*"]
+    "governance_paths": ["lenses.*", "build.concurrency", "tests.backend", "workflow.*", "cleanup.*", "runtime.audit_every", "runtime.orphan_ttl_seconds", "runtime.obligations", "runtime.runnability", "runtime.review_max_attempts"]
   },
   "observability": {"receipt": true, "include_values": false}
 }

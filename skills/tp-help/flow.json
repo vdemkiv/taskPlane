@@ -2,6 +2,7 @@
   "schema": "taskplane.skill-flow/v1",
   "skill": "tp-help",
   "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "settings": {"source": "taskplane/operational-settings.json", "loader": "taskplane.settings.load_settings", "binding": "settings_digest"},
   "nodes": [
     {"id": "ask", "label": "help request", "kind": "input"},
     {"id": "mental_model", "label": "taskPlane mental model", "kind": "stage"},

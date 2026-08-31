@@ -25,8 +25,18 @@ export const meta = {
   description: 'Run the routed lens review wave as a resumable workflow',
   phases: [{ title: 'Lenses' }, { title: 'Merge' }],
 };
+const SETTINGS_DIGEST = /^[0-9a-f]{64}$/;
+
+function requireSettings(args) {
+  const digest = args && args.settings_digest;
+  if (typeof digest !== 'string' || !SETTINGS_DIGEST.test(digest)) {
+    throw new Error('review workflow lacks canonical settings digest');
+  }
+  return { digest };
+}
 
 export default async function reviewWave({ args, agent, parallel, phase }) {
+  const settings = requireSettings(args);
   phase('Lenses');
   const slots = args.slots || [];
   const lensRuns = slots.map((b) => () =>
@@ -37,12 +47,13 @@ export default async function reviewWave({ args, agent, parallel, phase }) {
       resumeKey: b.resume_identity,
       resultPath: b.result_path,
       lease: b.lease,
-      maxAttempts: b.max_attempts || 2,
+      maxAttempts: b.max_attempts,
     }));
   const results = await parallel(lensRuns);
 
   phase('Merge');
   // Canonical collection consumes the sealed, validated result files. Host
   // receipts are attribution telemetry; the workflow never remaps findings.
-  return { receipts: results.filter(Boolean) };
+  return { receipts: results.filter(Boolean),
+    settings_digest: settings.digest };
 }

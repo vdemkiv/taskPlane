@@ -3624,6 +3624,8 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
         return None
     step = payload.get("step")
     instruction = payload.get("instruction") or ""
+    from taskplane.settings import load_settings
+    settings_digest = load_settings(environment=os.environ).digest
     if step == "execute" and payload.get("parallel") and "wave" in payload:
         entries = payload.get("wave") or []
         if not entries:
@@ -3637,7 +3639,8 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
                                                  instruction, e)}
                   for e in entries]
         return ("execute", {"name": "execute-wave",
-                            "args": {"briefs": briefs}}, None)
+                            "args": {"briefs": briefs,
+                                     "settings_digest": settings_digest}}, None)
     if step in STAGE_WAVE_NAMES and "task" in payload:
         # same validation on the single-task step shapes (A6/E5): a
         # payload CARRYING a task that is malformed degrades to the Task
@@ -3660,7 +3663,8 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
                     brief[field] = payload[field]
         key = "verdicts" if step == "fix" else "briefs"
         return (step, {"name": STAGE_WAVE_NAMES[step],
-                       "args": {key: [brief]}}, None)
+                       "args": {key: [brief],
+                                "settings_digest": settings_digest}}, None)
     return None
 
 
@@ -4043,7 +4047,12 @@ def cmd_lens(a) -> int:
             out["reason"] = reason
             # args IS the unmodified dispatch payload — the workflow and
             # the Task path consume the identical contract:lens-brief set.
-            out["workflow"] = {"name": "review-wave", "args": briefs}
+            from taskplane.settings import load_settings
+            workflow_args = dict(briefs)
+            workflow_args["settings_digest"] = load_settings(
+                environment=os.environ).digest
+            out["workflow"] = {"name": "review-wave",
+                               "args": workflow_args}
             print(json.dumps(out, indent=2))
             return 0
         print(json.dumps(briefs, indent=2))
@@ -6205,11 +6214,8 @@ def _inline_max() -> int:
     retyped. 24k is roughly where a fragment stops being a message and
     starts being a document; TASKPLANE_INLINE_MAX overrides it, and 0
     disables reference mode entirely."""
-    raw = (os.environ.get("TASKPLANE_INLINE_MAX") or "").strip()
-    try:
-        return int(raw) if raw else 24_000
-    except ValueError:
-        return 24_000
+    from taskplane.settings import load_settings
+    return load_settings(environment=os.environ).runtime.inline_max_bytes
 
 
 def cmd_findings(a) -> int:
@@ -7375,7 +7381,7 @@ def main(argv=None) -> int:
     # construction or any workflow action can create repository state.
     try:
         from taskplane import settings as operational_settings
-        operational_settings.load_settings()
+        operational_settings.load_settings(environment=os.environ)
     except Exception as exc:
         print(f"taskplane: operational settings are invalid: {exc}",
               file=sys.stderr)

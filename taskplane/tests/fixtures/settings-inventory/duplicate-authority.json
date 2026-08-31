@@ -1,0 +1,5 @@
+{
+  "schema": "example.second-operational-settings/v1",
+  "build": {"shards": 4},
+  "tests": {"backend": "local"}
+}

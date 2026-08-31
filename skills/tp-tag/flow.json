@@ -2,6 +2,7 @@
   "schema": "taskplane.skill-flow/v1",
   "skill": "tp-tag",
   "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "settings": {"source": "taskplane/operational-settings.json", "loader": "taskplane.settings.load_settings", "binding": "settings_digest"},
   "title": "Claude Tag / Slack governed delivery",
   "nodes": [
     {"id": "thread", "label": "Slack thread goal", "kind": "input"},

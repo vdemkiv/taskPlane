@@ -2689,9 +2689,27 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
 
 # --------------------------------------------------------------- DoD
 
-DEFAULT_TEST_TIMEOUT_SECONDS = 600
+# Safety ceilings are immutable protocol bounds, not configurable defaults.
 DEFAULT_MAX_TEST_TIMEOUT_SECONDS = 3600
 MAX_TEST_TIMEOUT_SECONDS = 14400
+
+
+def _canonical_operational_settings(*, legacy_environment: bool = False,
+                                    authority: dict | None = None):
+    """Load one immutable settings snapshot without creating a local cache.
+
+    The lite kernel is imported both as ``taskplane.taskplane_lite`` and as a
+    direct sibling module by the CLI.  Keep the import lazy to preserve those
+    two supported entry paths and to avoid turning settings into mutable
+    process-global state.
+    """
+    try:
+        from .settings import load_settings
+    except (ImportError, ValueError):
+        from settings import load_settings
+    return load_settings(
+        environment=os.environ if legacy_environment else None,
+        authority=authority)
 
 
 def validate_test_timeout_seconds(value, *, field: str,
@@ -2715,7 +2733,8 @@ def task_test_timeout_seconds(task: dict) -> int:
     if not isinstance(task, dict):
         raise ValueError(f"{field} task container must be an object")
     if "verification_runner" not in task:
-        return DEFAULT_TEST_TIMEOUT_SECONDS
+        return int(_canonical_operational_settings().limits.timeouts[
+            "task_seconds"])
     runner = task.get("verification_runner")
     if not isinstance(runner, dict):
         raise ValueError(f"{field} parent containers must be objects")
@@ -2923,9 +2942,8 @@ SUITE_CACHE_ENV_KEYS = frozenset({
     "CI", "LANG", "LC_ALL", "TZ",
     "PYTHONHASHSEED", "PYTHONPATH", "PYTHONUTF8", "PYTHONIOENCODING",
     "PYTEST_ADDOPTS", "PYTEST_PLUGINS",
-    "TASKPLANE_AUDIT_EVERY", "TASKPLANE_ENFORCE_DISPATCH",
-    "TASKPLANE_INLINE_MAX", "TASKPLANE_PUBLISH_REVIEW",
-    "TASKPLANE_QA_BASELINE", "TASKPLANE_RUNNABILITY",
+    "TASKPLANE_ENFORCE_DISPATCH", "TASKPLANE_PUBLISH_REVIEW",
+    "TASKPLANE_QA_BASELINE",
 })
 
 _TRANSPORT_SHIM_AST = ast.dump(ast.parse(
@@ -3066,6 +3084,9 @@ def _suite_cache_key(workspace: str, command, env: dict) -> "str | None":
     h.update(b"\0cmd\0" + str(command).encode())
     try:
         h.update(b"\0engine\0" + engine_fingerprint().encode())
+        settings = _canonical_operational_settings(
+            legacy_environment=True)
+        h.update(b"\0settings\0" + settings.digest.encode())
     except Exception:
         return None            # can't bind evidence to an engine → run it
     for key, value in _suite_env_identity(workspace, env):
@@ -3078,9 +3099,8 @@ def _suite_cache_path(key: str) -> str:
 
 
 def suite_cache_enabled() -> bool:
-    """Off with TASKPLANE_NO_SUITE_CACHE=1 — the escape hatch for a host
-    that suspects environmental nondeterminism."""
-    return os.environ.get("TASKPLANE_NO_SUITE_CACHE", "") not in ("1", "true")
+    """Return the validated per-run cache policy from canonical settings."""
+    return bool(_canonical_operational_settings().tests.cache)
 
 
 # D-0008. `tests_pass` is the gate that says behaviour was verified, and a
@@ -3096,22 +3116,10 @@ def suite_cache_enabled() -> bool:
 # hours ago, which is what makes a parallel wave cost one suite run instead
 # of one per task. Outside it, the environment is no longer a safe
 # assumption and the suite runs again.
-SUITE_CACHE_MAX_AGE_S = 24 * 3600
-
-
 def suite_cache_max_age() -> float:
-    """Window in seconds; TASKPLANE_SUITE_CACHE_MAX_AGE overrides.
-
-    0 or negative disables citation entirely (always re-run), which is the
-    stricter direction and therefore always safe to set.
-    """
-    raw = os.environ.get("TASKPLANE_SUITE_CACHE_MAX_AGE", "").strip()
-    if not raw:
-        return float(SUITE_CACHE_MAX_AGE_S)
-    try:
-        return float(raw)
-    except ValueError:
-        return float(SUITE_CACHE_MAX_AGE_S)
+    """Derive citation retention from the one artifact-retention policy."""
+    return float(_canonical_operational_settings().cleanup.artifacts_days *
+                 24 * 60 * 60)
 
 
 def suite_cache_lookup(workspace: str, command, env: dict) -> "dict | None":
@@ -3379,7 +3387,9 @@ def dod_check(contract: dict, workspace: str,
     dod = coding.get("dod") or {}
     try:
         test_timeout_seconds = validate_test_timeout_seconds(
-            dod.get("test_timeout_seconds", DEFAULT_TEST_TIMEOUT_SECONDS),
+            dod.get("test_timeout_seconds", int(
+                _canonical_operational_settings().limits.timeouts[
+                    "task_seconds"])),
             field="coding.dod.test_timeout_seconds",
             plan_minted=bool(coding.get("plan_minted")))
     except ValueError as exc:
@@ -4531,7 +4541,6 @@ DEFAULT_OUT_OF_SCOPE = [".git/**", ".github/**", "deploy/**", "*.lock",
                         "components.yaml"]
 
 
-DEFAULT_MAX_ACTIONS = 60          # build contracts: hook-enforced ceiling
 DEFAULT_MAX_ACTIONS_RO = 40       # read-only review contracts
 
 
@@ -4595,7 +4604,8 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
     import uuid
     if max_actions is None:
         max_actions = DEFAULT_MAX_ACTIONS_RO if read_only \
-            else DEFAULT_MAX_ACTIONS
+            else _canonical_operational_settings().limits.budgets[
+                "max_actions"]
     max_actions = int(max_actions)
     if max_actions < 0:
         raise ValueError(
@@ -5841,6 +5851,11 @@ def _refresh_dashboard_lifecycle(
     Dashboard failure is secondary evidence and may never rewrite or prevent
     the worker's authenticated terminal outcome.
     """
+    settings = _canonical_operational_settings()
+    if event_type not in settings.dashboard.refresh.lifecycle_events:
+        raise ValueError(
+            "dashboard lifecycle event is absent from canonical settings: "
+            + str(event_type))
     try:
         if __package__:
             from . import loop_status
@@ -6313,11 +6328,9 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-DEFAULT_ORPHAN_TTL = 3600   # seconds of NO screening activity → orphaned
-
-
 def orphan_status(workspace: str, contract: dict,
-                  now: float | None = None) -> tuple[bool, str]:
+                  now: float | None = None, *,
+                  settings_authority: dict | None = None) -> tuple[bool, str]:
     """Is the active contract ORPHANED — its owner gone, nobody to clear it?
 
     Two guards, in order (v0.9.6):
@@ -6337,8 +6350,9 @@ def orphan_status(workspace: str, contract: dict,
          * NOT exhausted -> idle backstop for an agent that CRASHED mid-work,
            measured from the last time it was SEEN screening (any call — a
            working agent keeps generating approvals; a dead one makes none).
-           Fires after the TTL (contract `orphan_ttl_seconds`, env
-           TASKPLANE_ORPHAN_TTL, default DEFAULT_ORPHAN_TTL).
+           Fires after the positive canonical TTL (a per-contract
+           `orphan_ttl_seconds` remains an explicit contract value; the
+           compatibility environment aliases require exact authority).
 
     The screener auto-clears an orphaned contract and abstains."""
     import time
@@ -6424,14 +6438,13 @@ def orphan_status(workspace: str, contract: dict,
     # last_seen); one that died makes no calls, so its clock goes stale and
     # the contract releases — recovering a genuine leak WITHOUT ever releasing
     # a live, on-budget, actively-screening agent.
-    try:
-        ttl = float(contract.get("orphan_ttl_seconds")
-                    or os.environ.get("TASKPLANE_ORPHAN_TTL")
-                    or DEFAULT_ORPHAN_TTL)
-    except (TypeError, ValueError):
-        ttl = DEFAULT_ORPHAN_TTL
+    settings = _canonical_operational_settings(
+        legacy_environment=True, authority=settings_authority)
+    ttl = float(contract["orphan_ttl_seconds"]
+                if "orphan_ttl_seconds" in contract
+                else settings.runtime.orphan_ttl_seconds)
     if ttl <= 0:
-        return False, "orphan TTL disabled"
+        return False, "invalid non-positive orphan TTL — governed"
     last = max(float(contract.get("activated_at") or 0), last_seen)
     if last and (now - last) > ttl:
         idle = int(now - last)
@@ -6715,14 +6728,15 @@ def _ensure_self_ignored(d: str) -> None:
 MODEL_TIERS = ("cheap", "standard", "deep")
 REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 
-# Default tier -> model. Claude keeps the historical cheap=haiku mapping;
-# Codex inherits for every tier so no provider-specific id crosses hosts.
-# `standard`/`deep` always inherit unless an operator opts in. Override via
-# TASKPLANE_MODEL_CHEAP / _STANDARD / _DEEP (value "inherit" or "" => inherit).
+# Legacy tiers are projections only. Their values come from stage settings;
+# legacy environment aliases are interpreted by the typed loader for one
+# compatibility release and never become another default authority.
 def _default_tier_models() -> dict:
-    """Return defaults that never send another host's model identifier."""
-    return {"cheap": None if host() == "codex" else "haiku",
-            "standard": None, "deep": None}
+    """Compatibility tier projection of the canonical stage settings."""
+    settings = _canonical_operational_settings(legacy_environment=True)
+    return {"cheap": settings.stages["evaluate"].model,
+            "standard": settings.stages["build"].model,
+            "deep": settings.stages["design"].model}
 
 
 def reasoning_for_tier(tier: str | None) -> str:
@@ -6734,10 +6748,10 @@ def reasoning_for_tier(tier: str | None) -> str:
     injecting an unsupported value into a host tool call.
     """
     t = (tier or "standard").strip().lower()
-    default = {"cheap": "low", "standard": "medium", "deep": "high"}.get(
-        t, "medium")
-    value = (os.environ.get("TASKPLANE_REASONING_" + t.upper()) or "").strip()
-    return value if value in REASONING_EFFORTS else default
+    settings = _canonical_operational_settings(legacy_environment=True)
+    stage = {"cheap": "evaluate", "standard": "build", "deep": "design"}.get(
+        t, "build")
+    return settings.stages[stage].reasoning
 
 
 def dispatch_task_name(kind: str, agent: str, ref: str | None = None) -> str:
@@ -6772,8 +6786,19 @@ def dispatch_fields(kind: str, agent: str, ref: str,
     """Host-neutral dispatch identity carried by every Codex task brief."""
     role_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "agents", agent + ".md"))
-    requested_model = model_for_tier(model_tier)
-    requested_effort = reasoning_for_tier(model_tier)
+    settings = _canonical_operational_settings(legacy_environment=True)
+    stage = {
+        "tp-product": "product", "tp-designer": "design",
+        "tp-planner": "plan", "tp-executor": "build",
+        "tp-evaluator": "evaluate", "tp-fixer": "fix",
+        "tp-engineering": "evaluate",
+    }.get(agent)
+    if stage is None:
+        requested_model = model_for_tier(model_tier)
+        requested_effort = reasoning_for_tier(model_tier)
+    else:
+        requested_model = settings.stages[stage].model
+        requested_effort = settings.stages[stage].reasoning
     route = None
     if capability_snapshot is not None:
         import host_capabilities
@@ -6795,6 +6820,7 @@ def dispatch_fields(kind: str, agent: str, ref: str,
                   else requested_model),
         "reasoning_effort": (route["effective_effort"] if route is not None
                              else requested_effort),
+        "settings_digest": settings.digest,
     }
     if route is not None:
         fields["dispatch_route"] = route
@@ -7081,15 +7107,10 @@ STEP_DEFAULT_TIER = {
 
 def model_for_tier(tier: str | None) -> str | None:
     """Resolve an abstract capability tier to a concrete model id for the Agent
-    tool's `model` param, or None meaning "inherit the session model". Env
-    TASKPLANE_MODEL_<TIER> overrides the default ("inherit"/"" => None). An
-    unknown tier degrades to inherit (None) rather than raising, so a bad tier
-    never blocks the loop."""
+    tool's `model` param, or None meaning "inherit the session model". The
+    one-release alias is resolved inside the canonical loader. An unknown tier
+    degrades to inherit (None) rather than raising."""
     t = (tier or "standard").strip().lower()
-    env = os.environ.get("TASKPLANE_MODEL_" + t.upper())
-    if env is not None:
-        env = env.strip()
-        return None if env in ("", "inherit") else env
     return _default_tier_models().get(t)
 
 

@@ -3106,8 +3106,10 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
     """Allocate one immutable lease/producer slot per selected sweep lens."""
     import lens as lensmod
     import review_evidence as evidence
+    from taskplane.settings import load_settings
 
     full = lensmod.dispatch_briefs(routing, base=base, runnability=runnability)
+    review_max_attempts = load_settings().runtime.review_max_attempts
     deep = [lid for lid, row in sorted(decision.items())
             if row["verdict"] == "deep"]
     light = [lid for lid, row in sorted(decision.items())
@@ -3168,7 +3170,8 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             producer_contract=producer_contract, result_path=result_path)
         role = {key: source.get(key) for key in
                 ("agent", "model_tier", "reasoning_effort",
-                 "task_name", "role_marker") if source.get(key) is not None}
+                 "task_name", "role_marker", "settings_digest")
+                if source.get(key) is not None}
         base_task_name = str(role.get("task_name") or "tp_lens")
         # Native Codex task paths are stable for the life of a conversation.
         # A lease-specific suffix makes every retry a fresh legal child instead
@@ -3184,7 +3187,8 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             "view": _portable_ref(view_ref), "lease": _portable_ref(lease_ref),
             "canonical_revision": revision, "result_path": result_path,
             "authored_by": RESULT_AUTHOR, "result_schema": result_schema,
-            "resume_identity": resume_identity, "max_attempts": 2,
+            "resume_identity": resume_identity,
+            "max_attempts": review_max_attempts,
             "producer_contract": producer_contract,
             # Compatibility alias, deliberately identical to the canonical
             # producer contract.  Two different task_slot values in one

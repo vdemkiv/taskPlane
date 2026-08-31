@@ -685,12 +685,19 @@ def publish_artifacts(ws: str) -> "str | None":
 
 def with_dashboard(fn):
     def wrapped(ws, *args, **kwargs):
+        # Load before the wrapped transition so malformed settings cannot
+        # follow a state write with a merely stale dashboard warning.
+        settings = operational_settings.load_settings()
         result = fn(ws, *args, **kwargs)
         if isinstance(result, dict):
             outcome = result.get("outcome")
             if outcome is None:
                 outcome = "failure" if result.get("error") else "success"
             try:
+                if fn.__name__ not in settings.dashboard.refresh.lifecycle_events:
+                    raise ValueError(
+                        "dashboard lifecycle event is absent from canonical "
+                        f"settings: {fn.__name__}")
                 publication = refresh_dashboard_snapshot(
                     ws, event_type=fn.__name__, outcome=str(outcome))
                 if publication.get("status") != "no_active":
