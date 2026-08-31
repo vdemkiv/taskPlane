@@ -113,6 +113,14 @@ def _assert_exact_nodeids_collect(selectors):
         ), selector
 
 
+def _deleted_reference_kind(content, deleted):
+    if deleted.encode("utf-8") in content:
+        return "full-path"
+    if Path(deleted).name.encode("utf-8") in content:
+        return "basename"
+    return None
+
+
 def _dangling_consumers(removed):
     dangling = []
     for path in sorted(_tracked_files()):
@@ -122,8 +130,9 @@ def _dangling_consumers(removed):
             continue
         content = (ROOT / path).read_bytes()
         for deleted in removed:
-            if deleted.encode("utf-8") in content:
-                dangling.append((path, deleted))
+            reference_kind = _deleted_reference_kind(content, deleted)
+            if reference_kind is not None:
+                dangling.append((path, deleted, reference_kind))
     return dangling
 
 
@@ -198,6 +207,9 @@ def test_removed_tests_preserve_current_contract_coverage():
         assert fixture_edges["consumers"] and fixture_edges["disposition"].strip()
 
     assert all(not (ROOT / path).exists() for path in removed)
+    deleted_path = "taskplane/tests/" + "test_" + "views_seam.py"
+    basename_reference = b"retained test_" + b"views_seam.py"
+    assert _deleted_reference_kind(basename_reference, deleted_path) == "basename"
     assert _dangling_consumers(removed) == []
 
     plan = json.loads(PLAN_PATH.read_text(encoding="utf-8"))
