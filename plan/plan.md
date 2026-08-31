@@ -55,6 +55,7 @@ The dashboard ownership is explicit:
 - `DASHBOARD-PROJECTION` owns native rendering plus separately truthful Design graph, current Plan task DAG/waves/approval, and repository module-impact components.
 - `DASHBOARD-HOST-SURFACES` owns `HostNativeRecovery`, host acknowledgement/fallback, hooks, and declarative host flow surfaces; it consumes but does not edit the capability interface.
 - `DASHBOARD-DELIVERY` owns static delivery, single-document HTML, decoded equality, content-addressed generation, current-pointer CAS, publication receipt, and stale/unverified/static action disabling.
+- Replan correction: `DASHBOARD-DELIVERY` also owns the already-declared publication-receipt selector in `taskplane/tests/test_r0001_dashboard_pipeline.py`; the original task scope omitted that exact test file even though its DoD required it.
 - `DASHBOARD-CONFORMANCE` owns the isolated real-browser DOM/SVG proof and its fixtures.
 - `PLAN-STABILIZATION` alone edits `depgraph.py`; dashboard projection consumes repository-impact facts without redefining them.
 
