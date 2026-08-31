@@ -1,0 +1,195 @@
+{
+  "schema": "taskplane.test-strategy/v1",
+  "acceptance_criteria": [
+    {
+      "id": "AC-SET1",
+      "selectors": [
+        "taskplane/tests/test_settings_inventory.py::test_every_operational_setting_has_one_canonical_owner"
+      ]
+    },
+    {
+      "id": "AC-SET2",
+      "selectors": [
+        "taskplane/tests/test_settings.py::test_valid_canonical_settings_load_typed",
+        "taskplane/tests/test_settings.py::test_invalid_or_unknown_settings_fail_closed"
+      ]
+    },
+    {
+      "id": "AC-SET3",
+      "selectors": [
+        "taskplane/tests/test_settings.py::test_precedence_migration_and_safe_override_contract"
+      ]
+    },
+    {
+      "id": "AC-SET4",
+      "selectors": [
+        "taskplane/tests/test_settings_flow_wiring.py::test_every_flow_initializes_from_canonical_settings"
+      ]
+    },
+    {
+      "id": "AC-SET5",
+      "selectors": [
+        "taskplane/tests/test_settings_cross_host.py::test_effective_settings_are_portable_and_safely_observable",
+        "taskplane/tests/test_settings_migration.py::test_legacy_and_version_forms_migrate_without_second_authority"
+      ]
+    },
+    {
+      "id": "AC-TST1",
+      "selectors": [
+        "taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete"
+      ]
+    },
+    {
+      "id": "AC-TST2",
+      "selectors": [
+        "taskplane/tests/test_test_portfolio_contract.py::test_removed_tests_preserve_current_contract_coverage",
+        "taskplane/tests/test_test_portfolio_contract.py::test_portfolio_targets_are_met_without_count_only_deletion"
+      ]
+    },
+    {
+      "id": "AC-TST3",
+      "selectors": [
+        "taskplane/tests/test_ci_execution_policy.py::test_validation_progression_and_terminal_matrix_reuse"
+      ]
+    },
+    {
+      "id": "AC-CI1",
+      "selectors": [
+        "taskplane/tests/test_ci_execution_policy.py::test_ci_shards_cleanup_and_candidate_freeze_are_authoritative",
+        "taskplane/tests/test_ci_execution_policy.py::test_ci_metrics_meet_declared_targets"
+      ]
+    },
+    {
+      "id": "AC-CI2",
+      "selectors": [
+        "taskplane/tests/test_ci_failure_batching.py::test_red_matrix_is_classified_once_and_corrected_as_one_wave",
+        "taskplane/tests/test_ci_failure_batching.py::test_third_plan_return_consolidates_coupled_surfaces"
+      ]
+    },
+    {
+      "id": "AC-CLN1",
+      "selectors": [
+        "taskplane/tests/test_owned_cleanup.py::test_cleanup_runs_on_every_terminal_outcome",
+        "taskplane/tests/test_owned_cleanup.py::test_cleanup_preserves_evidence_and_proves_zero_leaks"
+      ]
+    },
+    {
+      "id": "AC-CLN2",
+      "selectors": [
+        "taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets",
+        "taskplane/tests/test_owned_cleanup.py::test_cleanup_replay_is_exact_and_idempotent"
+      ]
+    },
+    {
+      "id": "AC-P0",
+      "selectors": [
+        "taskplane/tests/test_atomic_governed_preflight.py::test_preflight_is_atomic_before_any_worker_or_worktree",
+        "taskplane/tests/test_stage_bounded_handoff.py::test_worker_receives_no_inherited_conversation_turns"
+      ]
+    },
+    {
+      "id": "AC-REL",
+      "selectors": [
+        "taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green",
+        "taskplane/tests/test_release_provenance.py::test_premerge_first_parent_topology_matches_release_gate"
+      ]
+    },
+    {
+      "id": "AC-MET",
+      "selectors": [
+        "taskplane/tests/test_wave_metrics.py::test_wave_receipt_covers_baselines_targets_and_guardrails"
+      ]
+    },
+    {
+      "id": "AC-REG",
+      "selectors": [
+        "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied",
+        "taskplane/tests/test_host_native_dashboard.py::test_codex_and_claude_project_equal_semantics_for_all_components",
+        "taskplane/tests/test_status_and_large_delivery.py::test_large_dashboard_automatically_delivers_complete_markdown",
+        "taskplane/tests/test_worker_contract_lifecycle.py::test_authenticated_release_refuses_before_terminal_and_tampering",
+        "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"
+      ]
+    }
+  ],
+  "producers": [
+    {
+      "id": "dashboard:canonical-snapshot",
+      "path": "taskplane/host_native.py",
+      "slice": "DASHBOARD-CONTRACT",
+      "consumers": ["taskplane/dashboard.py", "hooks/host_native_runtime.py", "taskplane/views.py"],
+      "freshness_inputs": ["source", "settings", "snapshot", "runner", "environment"],
+      "severed_edges": [
+        {
+          "consumer": "taskplane/dashboard.py",
+          "mutation": "delete snapshot-to-dashboard call",
+          "selector": "taskplane/tests/test_r0001_dashboard_pipeline.py::test_committed_events_publish_fresh_snapshot"
+        }
+      ],
+      "interface_fixtures": [
+        {"path": "taskplane/tests/fixtures/test-strategy/dashboard-snapshot.json", "slice": "DASHBOARD-CONTRACT"}
+      ]
+    },
+    {
+      "id": "dashboard:phase-graphs",
+      "path": "taskplane/dashboard.py",
+      "slice": "DASHBOARD-PROJECTION",
+      "consumers": ["taskplane/views.py", "taskplane/host_native.py"],
+      "freshness_inputs": ["design-graph", "plan-dag", "waves", "module-impact", "selector"],
+      "severed_edges": [
+        {
+          "consumer": "taskplane/views.py",
+          "mutation": "replace executable graph projection with metadata-only presence",
+          "selector": "taskplane/tests/test_dashboard_phase_graphs.py::test_design_plan_and_impact_graphs_remain_distinct"
+        }
+      ],
+      "interface_fixtures": [
+        {"path": "taskplane/tests/fixtures/test-strategy/dashboard-phase-graphs.json", "slice": "DASHBOARD-PROJECTION"}
+      ]
+    },
+    {
+      "id": "dashboard:publication",
+      "path": "taskplane/views.py",
+      "slice": "DASHBOARD-DELIVERY",
+      "consumers": ["Codex native panel", "Claude native panel", "static HTML", "dashboard publication receipt"],
+      "freshness_inputs": ["event", "revision", "snapshot", "artifact", "graph", "host-acknowledgement"],
+      "severed_edges": [
+        {
+          "consumer": "static HTML",
+          "mutation": "leave stale page actionable after publisher failure",
+          "selector": "taskplane/tests/test_dashboard_delivery_html.py::test_stale_publication_is_read_only"
+        }
+      ],
+      "interface_fixtures": [
+        {"path": "taskplane/tests/fixtures/test-strategy/dashboard-publication.json", "slice": "DASHBOARD-DELIVERY"}
+      ]
+    },
+    {
+      "id": "validation:test-strategy",
+      "path": "taskplane/test_strategy.py",
+      "slice": "TEST-STRATEGY",
+      "consumers": ["Design acceptance map", "Plan tasks", "all Build slices", "CI policy", "ci_failure_batching.py", "portfolio ledger", "Evaluate evidence", "Engineering evidence"],
+      "freshness_inputs": ["acceptance-criteria", "selectors", "producer", "consumer", "fixture", "freshness", "severed-edge", "radius", "runner", "browser-environment", "failure-class"],
+      "severed_edges": [
+        {
+          "consumer": "all Build slices",
+          "mutation": "delete producer/consumer edge",
+          "selector": "taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete"
+        }
+      ],
+      "interface_fixtures": [
+        {"path": "taskplane/tests/fixtures/test-strategy/r0001.json", "slice": "TEST-STRATEGY"}
+      ]
+    }
+  ],
+  "failure_policy": {
+    "classes": ["product", "test", "infrastructure", "environment"],
+    "correction_requires": ["class", "reason", "owner", "cluster"]
+  },
+  "validation": {
+    "layers": ["static", "exact-selector", "changed-radius", "proportional-suite", "authoritative-ci"],
+    "fingerprint_inputs": ["source", "tests", "settings", "inventory", "selector", "radius", "shard-plan", "runner", "environment"],
+    "reuse_unchanged_green": "cite",
+    "broad_local_default": "refuse",
+    "authoritative_matrix_runs": 1
+  }
+}
