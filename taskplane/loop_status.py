@@ -32,6 +32,15 @@ except (ImportError, ValueError):
 
 BOUNDED_STAGE_VIEW_SCHEMA = "taskplane.bounded-stage-view/v1"
 BOUNDED_STAGE_VIEW_MAX_ITEMS = 100
+_PHASE_GRAPH_PROJECTOR = None
+
+
+def configure_phase_graph_projector(projector) -> None:
+    """Inject the pure graph projector from a presentation composition root."""
+    global _PHASE_GRAPH_PROJECTOR
+    if projector is not None and not callable(projector):
+        raise TypeError("phase graph projector must be callable")
+    _PHASE_GRAPH_PROJECTOR = projector
 
 
 def _empty_stage_view(*, limit: int, mode: str, status: str,
@@ -390,23 +399,7 @@ def user_summary(ws: str, host: str | None = None,
     }
 
 
-DASHBOARD_PUBLICATION_SCHEMA = "taskplane.dashboard-publication/v1"
-_DASHBOARD_SURFACES = ("native", "json", "markdown", "html")
-
-
-def _canonical_fingerprint(value: object) -> str:
-    material = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False).encode("utf-8")
-    return hashlib.sha256(material).hexdigest()
-
-
-def _generated_at(value: float | str | None) -> str:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    timestamp = time.time() if value is None else float(value)
-    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace(
-        "+00:00", "Z")
+DASHBOARD_PUBLICATION_SCHEMA = host_native.DASHBOARD_PUBLICATION_SCHEMA
 
 
 def _load_legacy_state(ws: str) -> dict | None:
@@ -420,263 +413,36 @@ def _load_v4_manifest(ws: str, locator: dict) -> dict:
     return store.load(str(locator["run_id"]))
 
 
-def _v4_dashboard_source(manifest: dict, run_id: str) -> dict:
+def _validate_v4_manifest(manifest: dict) -> None:
     try:
-        try:
-            if __package__:
-                from . import run_store as stage_run_store
-            else:
-                import run_store as stage_run_store
-        except ImportError:
-            import run_store as stage_run_store
-        if manifest.get("schema") != "taskplane.run/v4" or \
-                manifest.get("run_id") != run_id:
-            raise stage_run_store.RunStoreError(
-                "run manifest identity/schema is not taskplane.run/v4")
-        stage_run_store._validate_stage_index(manifest)
-        projection = manifest["active_stage_projection"]
-        active_ids = list(projection["active_stage_ids"])
-        foreground = projection["foreground_stage_id"]
-        if foreground is None and len(active_ids) > 1:
-            return {
-                "mode": "v4", "status": "ambiguous", "run_id": run_id,
-                "revision": str(manifest.get("revision") or "unknown"),
-                "target": "active-stage", "state": None,
-                "source_fingerprint": _canonical_fingerprint(manifest),
-                "evidence": [
-                    "active stage projection has several active stages and "
-                    "no foreground stage"],
-            }
-        stage_id = foreground or (active_ids[0] if active_ids else None)
-        heads = manifest["stage_heads"]
-        summary = copy.deepcopy(heads[stage_id]["summary"]) \
-            if stage_id is not None else None
-        state = {
-            "step": ((summary or {}).get("stage_kind") or
-                     ("done" if not active_ids else "unknown")),
-            "stage_view": {
-                "schema": BOUNDED_STAGE_VIEW_SCHEMA,
-                "mode": "v4", "status": "v4", "available": True,
-                "run_id": run_id, "revision": manifest.get("revision"),
-                "current_stage": summary,
-                "active_stage_ids": active_ids,
-            },
-        }
-        return {
-            "mode": "v4", "status": "ready", "run_id": run_id,
-            "revision": str(manifest.get("revision") or "unknown"),
-            "target": str(stage_id or "run"), "state": state,
-            "source_fingerprint": _canonical_fingerprint(manifest),
-            "evidence": [
-                "run-manifest:" + _canonical_fingerprint(manifest)],
-        }
-    except Exception as exc:
-        return {
-            "mode": "v4", "status": "corrupt", "run_id": run_id,
-            "revision": str(manifest.get("revision") or "unknown"),
-            "target": "active-stage", "state": None,
-            "source_fingerprint": _canonical_fingerprint(manifest),
-            "evidence": [_stage_view_error(exc)],
-        }
+        from . import run_store as stage_run_store
+    except (ImportError, ValueError):
+        from taskplane import run_store as stage_run_store
+    stage_run_store._validate_stage_index(manifest)
 
 
 def _select_dashboard_source(ws: str) -> dict:
-    """Select legacy or v4 once, then perform exactly one state read."""
-    try:
-        locator = runtime_storage.load_workspace_locator(ws)
-    except Exception as exc:
-        return {
-            "mode": "v4", "status": "corrupt", "run_id": "unknown-v4",
-            "revision": "unknown", "target": "active-stage", "state": None,
-            "source_fingerprint": _canonical_fingerprint(
-                {"locator_error": _stage_view_error(exc)}),
-            "evidence": [_stage_view_error(exc)],
-        }
-    if isinstance(locator, dict):
-        run_id = str(locator.get("run_id") or "unknown-v4")
-        try:
-            manifest = _load_v4_manifest(ws, locator)
-        except Exception as exc:
-            return {
-                "mode": "v4", "status": "corrupt", "run_id": run_id,
-                "revision": "unknown", "target": "active-stage",
-                "state": None,
-                "source_fingerprint": _canonical_fingerprint(
-                    {"run_id": run_id, "error": _stage_view_error(exc)}),
-                "evidence": [_stage_view_error(exc)],
-            }
-        return _v4_dashboard_source(manifest, run_id)
-    state = _load_legacy_state(ws)
-    if state is None:
-        return {"mode": "none", "status": "no_active", "state": None,
-                "evidence": []}
-    fingerprint = _canonical_fingerprint(state)
-    task = None
-    tasks = state.get("tasks") or []
-    index = state.get("current_task")
-    if isinstance(index, int) and 0 <= index < len(tasks):
-        task = tasks[index]
-    run_id = str(state.get("run_id") or "legacy-" + _canonical_fingerprint({
-        "goal": state.get("goal"), "baseline": state.get("baseline"),
-    })[:24])
-    return {
-        "mode": "legacy", "status": "ready", "run_id": run_id,
-        "revision": str(state.get("baseline") or fingerprint),
-        "target": str((task or {}).get("id") or state.get("step") or "run"),
-        "state": state, "source_fingerprint": fingerprint,
-        "evidence": ["loop-state:" + fingerprint],
-    }
-
-
-def _bounded_loop_values(state: dict | None) -> dict:
-    if not isinstance(state, dict):
-        return {}
-    tasks = [
-        {key: row.get(key) for key in
-         ("id", "status", "fix_cycles", "variant") if row.get(key) is not None}
-        for row in (state.get("tasks") or []) if isinstance(row, dict)
-    ]
-    return {
-        "goal": state.get("goal"), "step": state.get("step"),
-        "current_task": state.get("current_task"), "tasks": tasks,
-        **({"stage_view": copy.deepcopy(state["stage_view"])}
-           if isinstance(state.get("stage_view"), dict) else {}),
-    }
-
-
-def _phase_graph_values(ws: str, state: dict | None) -> dict:
-    """Consume the projection slice when present; never invent graph truth."""
-    try:
-        import dashboard
-        project = getattr(dashboard, "phase_graph_projection", None)
-        if not callable(project):
-            return {}
-        values = project(ws, state=state)
-        return {key: copy.deepcopy(values[key]) for key in (
-            "design_graph", "plan_task_dag", "plan_waves", "module_impact")
-            if key in values}
-    except Exception as exc:
-        return {"phase_graph_error": _stage_view_error(exc)}
-
-
-def _wave_metrics_values(state: dict | None) -> dict:
-    """Project the sealed receipt already present in the one selected state."""
-    if not isinstance(state, dict) or state.get("wave_metrics_receipt") is None:
-        return {}
-    try:
-        return {"wave_metrics": wave_metrics.consumer_projection(
-            state["wave_metrics_receipt"], consumer="dashboard")}
-    except wave_metrics.WaveMetricsError as exc:
-        return {"wave_metrics": {
-            "schema": wave_metrics.PROJECTION_SCHEMA,
-            "consumer": "dashboard", "status": "unavailable",
-            "error": _stage_view_error(exc),
-        }}
-
-
-def _next_dashboard_sequence(ws: str, source: dict) -> int:
-    prior = runtime_storage.load_dashboard_publication(ws)
-    if prior is None:
-        return 1
-    current = host_native.HostSurfaceSnapshot.from_dict(prior["current"])
-    same_run = (current.workflow_id == "taskplane-loop" and
-                current.run_id == source["run_id"] and
-                current.target == source["target"])
-    return current.sequence + 1 if same_run else 1
-
-
-def _publication(snapshot, event, *, source_mode: str,
-                 replayed: bool, status: str) -> dict:
-    fingerprint = snapshot.fingerprint if snapshot is not None else None
-    return {
-        "schema": DASHBOARD_PUBLICATION_SCHEMA, "status": status,
-        "snapshot": snapshot.to_dict() if snapshot is not None else None,
-        "event": event.to_dict() if event is not None else None,
-        "replayed": bool(replayed), "source_mode": source_mode,
-        "surfaces": ({name: fingerprint for name in _DASHBOARD_SURFACES}
-                     if fingerprint is not None else {}),
-    }
+    return host_native.select_dashboard_source(
+        ws, locator_loader=runtime_storage.load_workspace_locator,
+        legacy_loader=_load_legacy_state, manifest_loader=_load_v4_manifest,
+        manifest_validator=_validate_v4_manifest,
+        error_formatter=_stage_view_error)
 
 
 def refresh_dashboard_snapshot(
         ws: str, *, event_type: str, outcome: str | None = None,
         committed_at: float | str | None = None, replay: bool = False) -> dict:
-    """Freeze or idempotently replay the sole canonical dashboard snapshot."""
-    if not str(event_type or "").strip():
-        raise ValueError("dashboard event_type is required")
     settings = operational_settings.load_settings()
-    source = _select_dashboard_source(ws)
-    if source["status"] == "no_active":
-        return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
-                "status": "no_active", "snapshot": None, "event": None,
-                "replayed": False, "source_mode": "none", "surfaces": {}}
-    source_fingerprint = str(source.get("source_fingerprint") or
-                             _canonical_fingerprint(source))
-    source["source_fingerprint"] = source_fingerprint
-    prior = runtime_storage.load_dashboard_publication(ws)
-    if replay and prior is not None:
-        current = host_native.HostSurfaceSnapshot.from_dict(prior["current"])
-        if current.values.get("source_fingerprint") == source.get(
-                "source_fingerprint") and current.values.get(
-                    "settings_digest") == settings.digest:
-            event = host_native.HostSurfaceEvent.from_snapshot(
-                current, event_type=str(event_type))
-            runtime_storage.commit_dashboard_event(ws, event)
-            return _publication(
-                current, event, source_mode=str(source["mode"]),
-                replayed=True, status=str(source["status"]))
-    evidence = tuple(str(item) for item in source.get("evidence") or [])
-    healthy = source.get("status") == "ready"
-    state = source.get("state") if isinstance(source.get("state"), dict) \
-        else None
-    stage = str((state or {}).get("step") or source.get("status") or "unknown")
-    metrics_values = _wave_metrics_values(state)
-    candidate_sha = (state or {}).get("baseline")
-    candidate_value = ({"candidate_sha": candidate_sha}
-                       if isinstance(candidate_sha, str) and
-                       re.fullmatch(r"[0-9a-f]{40}", candidate_sha)
-                       else {})
-    values = {
-        "generated_at": _generated_at(committed_at),
-        "settings_digest": settings.digest,
-        "source_mode": source["mode"],
-        "source_status": source["status"],
-        "source_fingerprint": source_fingerprint,
-        "event_type": str(event_type), "outcome": outcome,
-        **candidate_value,
-        "loop": _bounded_loop_values(state),
-        **_phase_graph_values(ws, state),
-        **metrics_values,
-    }
-    safe_actions = ()
-    metrics_receipt_present = isinstance(state, dict) and \
-        state.get("wave_metrics_receipt") is not None
-    metrics_signoff_ready = not metrics_receipt_present or \
-        ((metrics_values.get("wave_metrics") or {}).get("signoff") or {}).get(
-            "ready") is True
-    if healthy and stage in {"design_approval", "plan_approval"}:
-        safe_actions = ("approve", "reject")
-    elif healthy and stage == "signoff" and metrics_signoff_ready:
-        safe_actions = ("approve", "reject")
-    elif healthy and stage == "escalated":
-        safe_actions = ("retry", "skip", "defer", "abort")
-    revision = str(source.get("revision") or source_fingerprint)
-    snapshot = host_native.HostSurfaceSnapshot.create(
-        workflow_id="taskplane-loop", run_id=str(source["run_id"]),
-        target=str(source["target"]), revision=revision,
-        sequence=_next_dashboard_sequence(ws, source), stage=stage,
-        state=stage if healthy else str(source["status"]), values=values,
-        evidence=evidence, safe_actions=safe_actions)
-    committed = runtime_storage.commit_dashboard_snapshot(ws, snapshot)
-    frozen = host_native.HostSurfaceSnapshot.from_dict(committed["current"])
-    event = host_native.HostSurfaceEvent.from_snapshot(
-        frozen, event_type=str(event_type))
-    runtime_storage.commit_dashboard_event(ws, event)
-    return _publication(
-        frozen, event, source_mode=str(source["mode"]),
-        replayed=bool(committed.get("replayed")),
-        status=str(source["status"]))
-
+    return host_native.refresh_dashboard_snapshot(
+        ws, event_type=event_type, outcome=outcome,
+        committed_at=committed_at, replay=replay,
+        settings_digest=settings.digest, source_loader=_select_dashboard_source,
+        graph_projector=_PHASE_GRAPH_PROJECTOR,
+        metrics_projector=wave_metrics.consumer_projection,
+        publication_loader=runtime_storage.load_dashboard_publication,
+        snapshot_committer=runtime_storage.commit_dashboard_snapshot,
+        event_committer=runtime_storage.commit_dashboard_event,
+        error_formatter=_stage_view_error)
 
 def publish_artifacts(ws: str) -> "str | None":
     import views

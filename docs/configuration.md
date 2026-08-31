@@ -152,21 +152,22 @@ unchanged sealed passing evidence.
 
 | Variable | Default | Effect | Enforcement-relevant |
 | --- | --- | --- | --- |
-| `TASKPLANE_MODEL_CHEAP` | Claude: `haiku`; Codex: inherit | Model id for the `cheap` tier (lens sweep, planner-marked simple tasks). `""` or `inherit` → inherit the session model. | No (cost/quality routing). |
-| `TASKPLANE_MODEL_STANDARD` | inherit | Model id for the `standard` tier (execute / evaluate / fix). | No. |
-| `TASKPLANE_MODEL_DEEP` | inherit | Model id for the `deep` tier (spec, plan, engineering review, hard lenses). | No. |
-| `TASKPLANE_REASONING_CHEAP` | `low` | Native Codex reasoning effort for the `cheap` tier. Invalid values fall back to `low`. | No (cost/quality routing). |
-| `TASKPLANE_REASONING_STANDARD` | `medium` | Native Codex reasoning effort for the `standard` tier. | No. |
-| `TASKPLANE_REASONING_DEEP` | `high` | Native Codex reasoning effort for the `deep` tier. | No. |
+| `TASKPLANE_MODEL_CHEAP` | canonical Evaluate-stage model (`inherit`) | One-release alias for the `cheap` compatibility tier. The canonical prepopulated value lives in `taskplane/operational-settings.json`; `""` or `inherit` means inherit the session model. | No (cost/quality routing). |
+| `TASKPLANE_MODEL_STANDARD` | canonical Build-stage model (`inherit`) | One-release alias for the `standard` compatibility tier. | No. |
+| `TASKPLANE_MODEL_DEEP` | canonical Design-stage model (`inherit`) | One-release alias for the `deep` compatibility tier. | No. |
+| `TASKPLANE_REASONING_CHEAP` | canonical Evaluate-stage effort (`high`) | One-release alias for the `cheap` compatibility tier. Invalid values fail loader validation. | No (cost/quality routing). |
+| `TASKPLANE_REASONING_STANDARD` | canonical Build-stage effort (`high`) | One-release alias for the `standard` compatibility tier. | No. |
+| `TASKPLANE_REASONING_DEEP` | canonical Design-stage effort (`high`) | One-release alias for the `deep` compatibility tier. | No. |
 | `TASKPLANE_ENFORCE_DISPATCH` | *(unset — inert)* | Turns on the dispatch-time check in the PreToolUse agent hook: `warn` reports a mismatch; `strict` blocks it and fails closed when verification state/input is corrupt. Native Codex checks the exact emitted task name, taskplane role marker in the delegated message, model, and reasoning effort; a rejected attempt remains pending for an exact retry. Legacy Claude Task dispatch keeps model-tier compatibility. `tp loop verify-dispatch` audits after the fact either way. | **Yes** (`strict`) — it mechanically enforces emitted dispatch identity/routing when enabled. |
 | `TASKPLANE_COLLISION_SCREEN` | `on` | `on` blocks registry-known competing delivery skills/agents during exact-workspace governed work; `strict` also blocks unknown foreign identities; `off` is the rollback mode and records an observation without claiming a denial. Format/document helpers remain silently allowed. | **Yes** (`on`/`strict`) — the Skill/Agent hook decision changes. |
 | `TASKPLANE_SKILL_ALLOW` | *(format helpers only)* | Comma-separated list of additional non-delivery Skill identities to allow silently. It cannot allow an agent or change the known-competitor registry. | **Yes** — additional Skill identities bypass collision advice. |
 | `TASKPLANE_SKILL_STRICT` | *(unset)* | `1`, `true`, `yes`, or `strict` upgrades unknown foreign Skill/agent advice to denial while a governed run is active. | **Yes** — unknown foreign invocations are denied. |
 | `TASKPLANE_AUTO_WORKTREE_CLEANUP` | `on` | After an orchestrator-owned Evaluate PASS, merge the exact registered non-variant task branch, persist the merge receipt, retain canonical evidence, and attempt one no-force cleanup. `off`/`manual` returns to manual merge/cleanup and never fabricates a receipt. | **Yes** — enables the post-merge mutation boundary. |
 
-An unknown tier or model value degrades to "inherit" rather than blocking
-the loop. `tp onboard --json` reports the resolved `model_tiers` and
-`reasoning_tiers` maps.
+Unknown settings, conflicting aliases, and unsupported reasoning values fail
+closed in the typed loader. `tp onboard --json` reports the resolved
+compatibility projections and every dispatch carries the effective settings
+digest.
 
 ## Diagnostics
 
@@ -178,7 +179,7 @@ the loop. `tp onboard --json` reports the resolved `model_tiers` and
 
 | Variable | Set by | Effect |
 | --- | --- | --- |
-| `CODEX_HOME`, `CODEX_THREAD_ID` | Codex | Presence marks the host as Codex: model tiers inherit by default, reasoning tiers map to low/medium/high, native subagent task dispatch applies, and `workflow_available()` always answers no for Claude Dynamic Workflows. |
+| `CODEX_HOME`, `CODEX_THREAD_ID` | Codex | Presence marks the host as Codex for native task transport; model and reasoning defaults still come only from the canonical settings file. `workflow_available()` always answers no for Claude Dynamic Workflows. |
 | `CLAUDE_CODE_WORKFLOWS` | Claude Code | Truthy presence marks a Dynamic Workflow runtime; consulted by `workflow_available()` only when `TASKPLANE_WORKFLOWS` is unset. |
 | `PLUGIN_ROOT`, `CLAUDE_PLUGIN_ROOT` | the host's plugin runtime | Optional first-run plugin location supplied by some hosts. Codex hooks first use the current checkout's `.taskplane/codex-hook.py`, then the primary checkout launcher resolved through Git's common directory so external linked worktrees remain operable. That stable launcher validates the installation family and resolves its newest semantic version on every call. Direct `${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py` execution is only the first-setup/other-host fallback; an empty fallback fails with a bounded bootstrap error and is never interpreted as `/taskplane/tp.py`. |
 

@@ -128,11 +128,13 @@
           "may_satisfy_delivery_gate": false,
           "may_satisfy_execution_gate": false
         },
+        "fork_turns": "none",
         "identity": {
           "run_id": "<SHA>",
           "schema": "taskplane.governed-command-identity/v1",
           "task_id": "t1"
         },
+        "inherited_turns": 0,
         "intended_consumer": "tp-executor:t1",
         "intent_id": "<INTENT>",
         "kind": "dispatch_intent",
@@ -215,27 +217,27 @@
       "knowledge": "Prior decisions relevant to this work (from the knowledge base):\n  [0001] Plan approved: stage wave fixture (accepted, <DATE>) \u2014 tags: plan-approval\nHonor these unless you have a concrete reason to supersede one.",
       "language_references": [
         {
-          "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "code-quality",
           "path": "lenses/references/python-code-quality.md"
         },
         {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "qa",
           "path": "lenses/references/python-engineering.md",
           "section": "QA"
         },
         {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "security",
           "path": "lenses/references/python-engineering.md",
           "section": "Security"
         },
         {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "testability",
           "path": "lenses/references/python-engineering.md",
@@ -253,7 +255,7 @@
           "id": "security",
           "language_references": [
             {
-              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+              "content_sha256": "<SHA>",
               "language": "python",
               "lens": "security",
               "path": "lenses/references/python-engineering.md",
@@ -278,7 +280,7 @@
           "id": "code-quality",
           "language_references": [
             {
-              "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
+              "content_sha256": "<SHA>",
               "language": "python",
               "lens": "code-quality",
               "path": "lenses/references/python-code-quality.md"
@@ -299,7 +301,7 @@
           "id": "testability",
           "language_references": [
             {
-              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+              "content_sha256": "<SHA>",
               "language": "python",
               "lens": "testability",
               "path": "lenses/references/python-engineering.md",
@@ -330,7 +332,7 @@
           "id": "qa",
           "language_references": [
             {
-              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+              "content_sha256": "<SHA>",
               "language": "python",
               "lens": "qa",
               "path": "lenses/references/python-engineering.md",
@@ -361,7 +363,7 @@
       "merge_on_pass": true,
       "model": null,
       "model_tier": "standard",
-      "reasoning_effort": "medium",
+      "reasoning_effort": "high",
       "requirement": null,
       "role": "tp-executor",
       "role_instructions": "<PLUGIN>/agents/tp-executor.md",
@@ -396,6 +398,7 @@
         "mode": "guide-and-recover",
         "schema": "taskplane.runtime-guidance/v1"
       },
+      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
       "task": {
         "deps": [],
         "id": "t1",
@@ -432,11 +435,13 @@
           "may_satisfy_delivery_gate": false,
           "may_satisfy_execution_gate": false
         },
+        "fork_turns": "none",
         "identity": {
           "run_id": "<SHA>",
           "schema": "taskplane.governed-command-identity/v1",
           "task_id": "t2"
         },
+        "inherited_turns": 0,
         "intended_consumer": "tp-executor:t2",
         "intent_id": "<INTENT>",
         "kind": "dispatch_intent",
@@ -519,27 +524,27 @@
       "knowledge": "Prior decisions relevant to this work (from the knowledge base):\n  [0001] Plan approved: stage wave fixture (accepted, <DATE>) \u2014 tags: plan-approval\nHonor these unless you have a concrete reason to supersede one.",
       "language_references": [
         {
-          "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "code-quality",
           "path": "lenses/references/python-code-quality.md"
         },
         {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "qa",
           "path": "lenses/references/python-engineering.md",
           "section": "QA"
         },
         {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "security",
           "path": "lenses/references/python-engineering.md",
           "section": "Security"
         },
         {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "testability",
           "path": "lenses/references/python-engineering.md",
@@ -557,7 +562,7 @@
           "id": "security",
           "language_references": [
             {
-              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+              "content_sha256": "<SHA>",
               "language": "python",
               "lens": "security",
               "path": "lenses/references/python-engineering.md",
@@ -582,7 +587,7 @@
           "id": "code-quality",
           "language_references": [
             {
-              "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
+              "content_sha256": "<SHA>",
               "language": "python",
               "lens": "code-quality",
               "path": "lenses/references/python-code-quality.md"
@@ -603,7 +608,7 @@
           "id": "testability",
           "language_references": [
             {
-              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+              "content_sha256": "<SHA>",
               "language": "python",
               "lens": "testability",
               "path": "lenses/references/python-engineering.md",
@@ -634,7 +639,7 @@
           "id": "qa",
           "language_references": [
             {
-              "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+              "content_sha256": "<SHA>",
               "language": "python",
               "lens": "qa",
               "path": "lenses/references/python-engineering.md",
@@ -665,7 +670,7 @@
       "merge_on_pass": true,
       "model": null,
       "model_tier": "standard",
-      "reasoning_effort": "medium",
+      "reasoning_effort": "high",
       "requirement": null,
       "role": "tp-executor",
       "role_instructions": "<PLUGIN>/agents/tp-executor.md",
@@ -700,6 +705,7 @@
         "mode": "guide-and-recover",
         "schema": "taskplane.runtime-guidance/v1"
       },
+      "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
       "task": {
         "deps": [],
         "id": "t2",

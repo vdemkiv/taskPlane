@@ -314,8 +314,7 @@ def test_session_recovery_republishes_committed_unpublished_snapshot_without_new
         (ROOT / "hooks" / "host-native.json").read_text(encoding="utf-8"))
     assert declaration["sessionRecovery"] == {
         "callback": "taskplane.loop_status.refresh_dashboard_snapshot",
-        "eventType": "session_recovery",
-        "replay": True,
+        "settingsKey": "dashboard.refresh",
     }
     assert declaration["acknowledgement"] == \
         "taskplane.host-native-acknowledgement/v1"

@@ -43,8 +43,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 TASKPLANE = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 PLUGIN_ROOT = os.path.dirname(TASKPLANE)
-sys.path.insert(0, TASKPLANE)
-sys.path.insert(0, HERE)          # stage_fixture.py lives next to this file
+sys.path.insert(0, PLUGIN_ROOT)
+sys.path[:0] = [TASKPLANE, HERE]  # direct modules + stage_fixture.py
 
 # env scrub (see module docstring) — the capture must not inherit host state
 for var in ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_MODEL_CHEAP",
@@ -52,7 +52,7 @@ for var in ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_MODEL_CHEAP",
             "TASKPLANE_REASONING_CHEAP", "TASKPLANE_REASONING_STANDARD",
             "TASKPLANE_REASONING_DEEP",
             "TASKPLANE_WORKFLOWS", "CLAUDE_CODE_WORKFLOWS",
-            "TASKPLANE_TASK"):
+            "TASKPLANE_TASK", "TASKPLANE_SESSION_ID"):
     os.environ.pop(var, None)
 
 import lens  # noqa: E402

@@ -7,8 +7,6 @@ opaque Taskplane handles and canonical command events.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import ctypes
-import ctypes.util
 import hashlib
 import json
 import os
@@ -27,6 +25,7 @@ except ImportError:  # pragma: no cover - Windows fail-closed path
     _resource = None
 
 from taskplane.command_runtime import CommandRuntime, TERMINAL_STATES
+from taskplane.host_native import process_start_identity as _pid_start_identity
 from taskplane.review_session import (
     ReviewSessionError,
     sandbox_transport_binding,
@@ -83,26 +82,6 @@ _STARTUP_TIMEOUT_SECONDS = 0.15
 _TEARDOWN_GRACE_SECONDS = 0.5
 _PREVIEW_PROCESSES: dict[str, list[object]] = {}
 _PREVIEW_PROCESS_LOCK = threading.Lock()
-
-
-def _pid_start_identity(pid: int) -> str:
-    proc_stat = Path(f"/proc/{pid}/stat")
-    if proc_stat.is_file():
-        fields = proc_stat.read_text(encoding="utf-8").split()
-        if len(fields) > 21:
-            return f"linux-proc:{fields[21]}"
-    if sys.platform == "darwin":
-        library = ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"
-        libproc = ctypes.CDLL(library, use_errno=True)
-        buffer = ctypes.create_string_buffer(256)
-        size = int(libproc.proc_pidinfo(
-            int(pid), 3, 0, ctypes.byref(buffer), ctypes.sizeof(buffer)))
-        # proc_bsdinfo's immutable pbi_start_tvsec/usec occupy bytes
-        # 120..135. Hashing the full struct would include mutable status and
-        # create false PID-reuse alarms during ordinary lifecycle changes.
-        if size >= 136:
-            return "darwin-start:" + buffer.raw[120:136].hex()
-    raise OSError("preview process start identity is unavailable")
 
 
 def _process_identity(process: object, *, role: str,

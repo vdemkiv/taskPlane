@@ -63,10 +63,42 @@ import collision as collision_kernel  # noqa: E402
 import storage as runtime_storage  # noqa: E402
 import run_store as repository_run_store  # noqa: E402
 import governed_commands as governed_command_engine  # noqa: E402
+import loop_status as loop_status_runtime  # noqa: E402
 if __package__:
     from .delivery_ports import DeliveryPortError  # noqa: E402
 else:  # pragma: no cover - direct CLI execution
     from delivery_ports import DeliveryPortError  # noqa: E402
+
+
+def _publish_worker_dashboard_refresh(workspace: str, **kwargs):
+    """Composition-root adapter for the enforcement kernel's refresh intent."""
+    import loop_status
+    return loop_status.refresh_dashboard_snapshot(workspace, **kwargs)
+
+
+tp.configure_dashboard_refresh_publisher(_publish_worker_dashboard_refresh)
+
+
+def _project_dashboard_phase_graph(workspace: str, **kwargs):
+    import dashboard
+    return dashboard.phase_graph_projection(workspace, **kwargs)
+
+
+loop_status_runtime.configure_phase_graph_projector(
+    _project_dashboard_phase_graph)
+
+
+def _publish_cleanup_dashboard(workspace: str, **kwargs):
+    """Compose cleanup publication without coupling cleanup to renderers."""
+    import loop_status
+    import views
+    return governed_command_engine.owned_cleanup.publish_canonical_dashboard(
+        workspace, snapshot_publisher=loop_status.refresh_dashboard_snapshot,
+        delivery_publisher=views.refresh_views, **kwargs)
+
+
+governed_command_engine.owned_cleanup.configure_publication_publisher(
+    _publish_cleanup_dashboard)
 
 
 # Closed user-layer refusal protocol. Only errors whose failure is an
@@ -4047,10 +4079,7 @@ def cmd_lens(a) -> int:
             out["reason"] = reason
             # args IS the unmodified dispatch payload — the workflow and
             # the Task path consume the identical contract:lens-brief set.
-            from taskplane.settings import load_settings
-            workflow_args = dict(briefs)
-            workflow_args["settings_digest"] = load_settings(
-                environment=os.environ).digest
+            workflow_args = briefs
             out["workflow"] = {"name": "review-wave",
                                "args": workflow_args}
             print(json.dumps(out, indent=2))

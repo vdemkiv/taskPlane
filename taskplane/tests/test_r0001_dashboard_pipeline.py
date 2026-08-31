@@ -307,7 +307,8 @@ def test_wave_metrics_receipt_fingerprint_reaches_dashboard_without_recount(
     # assembler omits the supplied sealed projection, the exact assertion fails.
     severed_workspace = tmp_path / "severed"
     severed_workspace.mkdir()
-    monkeypatch.setattr(loop_status, "_wave_metrics_values", lambda _state: {})
+    monkeypatch.setattr(
+        host_native, "_wave_metrics_values", lambda _state, **_kwargs: {})
     severed = loop_status.refresh_dashboard_snapshot(
         str(severed_workspace), event_type="metrics_sealed",
         committed_at="2026-08-30T11:30:00Z")

@@ -44,17 +44,30 @@
     "delivery": {
       "artifacts": {
         "html": {
-          "path": "<WS>/.taskplane/dashboard-delivery/dashboard.html",
+          "path": "<WS>/.taskplane/dashboard-delivery/generations/<SHA>/dashboard.html",
           "status": "available"
         },
         "json": {
-          "path": "<WS>/.taskplane/dashboard-delivery/dashboard.json",
+          "path": "<WS>/.taskplane/dashboard-delivery/generations/<SHA>/dashboard.json",
           "status": "available"
         },
         "markdown": {
-          "path": "<WS>/.taskplane/dashboard-delivery/dashboard.md",
+          "path": "<WS>/.taskplane/dashboard-delivery/generations/<SHA>/dashboard.md",
           "status": "available"
         }
+      },
+      "current_head": {
+        "candidate_sha": "<SHA>",
+        "generation_id": "<SHA>",
+        "html_href": "generations/<SHA>/dashboard.html",
+        "receipt_fingerprint": "<SHA>",
+        "revision": "<SHA>",
+        "run_id": "<SHA>",
+        "schema": "taskplane.dashboard-current/v1",
+        "sequence": 9,
+        "snapshot_fingerprint": "<SHA>",
+        "target": "t1",
+        "workflow_id": "taskplane-loop"
       },
       "gate": {},
       "inline": {
@@ -63,6 +76,64 @@
         "path": "<WS>/.taskplane/dashboard-delivery/dashboard.inline.html"
       },
       "mode": "inline",
+      "publication_receipt": {
+        "bindings": {
+          "candidate": "<SHA>",
+          "dom_freshness": "<SHA>",
+          "graphs": {
+            "module_impact": "<SHA>"
+          },
+          "host_acknowledgement": "<SHA>",
+          "snapshot": "<SHA>"
+        },
+        "candidate": {
+          "canonical_sha256": "<SHA>",
+          "fingerprint": "<SHA>",
+          "snapshot_fingerprint": "<SHA>",
+          "source_sha": "<SHA>"
+        },
+        "dom_freshness": {
+          "actions_enabled": false,
+          "canonical_sha256": "<SHA>",
+          "fingerprint": "<SHA>",
+          "html_document_count": 1,
+          "status": "verified"
+        },
+        "fingerprint": "<SHA>",
+        "generation": {
+          "artifacts": {
+            "html": "<SHA>",
+            "json": "<SHA>",
+            "markdown": "<SHA>"
+          },
+          "complete": true,
+          "id": "<SHA>"
+        },
+        "graphs": {
+          "module_impact": "<SHA>"
+        },
+        "host_acknowledgement": {
+          "fingerprint": "<SHA>",
+          "reason": "no exact host acknowledgement supplied",
+          "snapshot_fingerprint": "<SHA>",
+          "status": "static-limitation"
+        },
+        "schema": "taskplane.dashboard-publication-receipt/v1",
+        "snapshot": {
+          "candidate_sha": "<SHA>",
+          "canonical_sha256": "<SHA>",
+          "fingerprint": "<SHA>",
+          "generated_at": "<TIME>",
+          "revision": "<SHA>",
+          "sequence": 9
+        }
+      },
+      "publication_receipt_artifact": {
+        "bytes": 2216,
+        "path": "<WS>/.taskplane/dashboard-delivery/generations/<SHA>/publication-receipt.json",
+        "sha256": "<SHA>",
+        "status": "available"
+      },
       "schema": "taskplane.dashboard-delivery/v1",
       "status": "published"
     },
@@ -72,6 +143,90 @@
     "obligation": "o-d452794682",
     "path": ".taskplane/dashboard.html",
     "render": "refreshed for this internal transition \u2014 keep using this path as the progress reference; do not render or acknowledge it until a human gate or explicit status request"
+  },
+  "dashboard_snapshot": {
+    "event": {
+      "event_type": "next_action",
+      "fingerprint": "<SHA>",
+      "revision": "<SHA>",
+      "run_id": "<SHA>",
+      "schema": "taskplane.host-surface-event/v1",
+      "sequence": 9,
+      "snapshot_fingerprint": "<SHA>",
+      "workflow_id": "taskplane-loop"
+    },
+    "replayed": false,
+    "schema": "taskplane.dashboard-publication/v1",
+    "snapshot": {
+      "evidence": [
+        "loop-state:<SHA>"
+      ],
+      "fingerprint": "<SHA>",
+      "revision": "<SHA>",
+      "run_id": "<SHA>",
+      "safe_actions": [],
+      "schema": "taskplane.host-surface-snapshot/v1",
+      "sequence": 9,
+      "stage": "fix",
+      "state": "fix",
+      "target": "t1",
+      "values": {
+        "candidate_sha": "<SHA>",
+        "event_type": "next_action",
+        "generated_at": "<TIME>",
+        "loop": {
+          "current_task": 0,
+          "goal": "stage wave fixture",
+          "step": "fix",
+          "tasks": [
+            {
+              "fix_cycles": 1,
+              "id": "t1",
+              "status": "built"
+            },
+            {
+              "fix_cycles": 0,
+              "id": "t2",
+              "status": "built"
+            }
+          ]
+        },
+        "module_impact": {
+          "available_total": 0,
+          "depth_limit": 3,
+          "depth_truncated": false,
+          "fingerprint": "<SHA>",
+          "graph_fingerprint": "<SHA>",
+          "omitted_total": 0,
+          "policy_blocked_total": 0,
+          "render_truncated": false,
+          "schema": "taskplane.dashboard-module-impact/v1",
+          "source": "taskplane.depgraph.impact",
+          "source_total": 0,
+          "source_truncated": false,
+          "touched": [
+            "src"
+          ],
+          "unknown_total": 1,
+          "visible": [],
+          "visible_total": 0
+        },
+        "outcome": "success",
+        "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
+        "source_fingerprint": "<SHA>",
+        "source_mode": "legacy",
+        "source_status": "ready"
+      },
+      "workflow_id": "taskplane-loop"
+    },
+    "source_mode": "legacy",
+    "status": "ready",
+    "surfaces": {
+      "html": "<SHA>",
+      "json": "<SHA>",
+      "markdown": "<SHA>",
+      "native": "<SHA>"
+    }
   },
   "design": null,
   "design_graph": null,
@@ -84,11 +239,13 @@
       "may_satisfy_delivery_gate": false,
       "may_satisfy_execution_gate": false
     },
+    "fork_turns": "none",
     "identity": {
       "run_id": "<SHA>",
       "schema": "taskplane.governed-command-identity/v1",
       "task_id": "t1"
     },
+    "inherited_turns": 0,
     "intended_consumer": "tp-fixer:t1",
     "intent_id": "<INTENT>",
     "kind": "dispatch_intent",
@@ -265,27 +422,27 @@
   },
   "language_references": [
     {
-      "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
+      "content_sha256": "<SHA>",
       "language": "python",
       "lens": "code-quality",
       "path": "lenses/references/python-code-quality.md"
     },
     {
-      "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+      "content_sha256": "<SHA>",
       "language": "python",
       "lens": "qa",
       "path": "lenses/references/python-engineering.md",
       "section": "QA"
     },
     {
-      "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+      "content_sha256": "<SHA>",
       "language": "python",
       "lens": "security",
       "path": "lenses/references/python-engineering.md",
       "section": "Security"
     },
     {
-      "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+      "content_sha256": "<SHA>",
       "language": "python",
       "lens": "testability",
       "path": "lenses/references/python-engineering.md",
@@ -303,7 +460,7 @@
       "id": "security",
       "language_references": [
         {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "security",
           "path": "lenses/references/python-engineering.md",
@@ -328,7 +485,7 @@
       "id": "code-quality",
       "language_references": [
         {
-          "content_sha256": "8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "code-quality",
           "path": "lenses/references/python-code-quality.md"
@@ -349,7 +506,7 @@
       "id": "testability",
       "language_references": [
         {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "testability",
           "path": "lenses/references/python-engineering.md",
@@ -380,7 +537,7 @@
       "id": "qa",
       "language_references": [
         {
-          "content_sha256": "cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7",
+          "content_sha256": "<SHA>",
           "language": "python",
           "lens": "qa",
           "path": "lenses/references/python-engineering.md",
@@ -410,7 +567,7 @@
   ],
   "model": null,
   "model_tier": "standard",
-  "reasoning_effort": "medium",
+  "reasoning_effort": "high",
   "requirement": null,
   "review_kernel": null,
   "role": "tp-fixer",
@@ -446,6 +603,7 @@
     "mode": "guide-and-recover",
     "schema": "taskplane.runtime-guidance/v1"
   },
+  "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
   "step": "fix",
   "task": {
     "blast": {
@@ -475,6 +633,9 @@
       "local_depth": 3,
       "requirement_depth": 1
     },
+    "new_modules": [
+      "alpha"
+    ],
     "scope": [
       "src/alpha/**"
     ],

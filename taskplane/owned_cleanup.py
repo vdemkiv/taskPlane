@@ -45,10 +45,19 @@ _RESOURCE_KINDS = frozenset({
     "generated-state", "test-artifact",
 })
 _DIGEST = frozenset("0123456789abcdef")
+_PUBLICATION_PUBLISHER = None
 
 
 class OwnedCleanupError(RuntimeError):
     """The cleanup protocol could not establish exact destructive authority."""
+
+
+def configure_publication_publisher(publisher) -> None:
+    """Inject the canonical dashboard adapter at a composition root."""
+    global _PUBLICATION_PUBLISHER
+    if publisher is not None and not callable(publisher):
+        raise TypeError("cleanup publication publisher must be callable")
+    _PUBLICATION_PUBLISHER = publisher
 
 
 def _canonical(value: object) -> bytes:
@@ -872,6 +881,46 @@ def _verify_publication_source_envelope(
     return copy.deepcopy(dict(receipt["source"]))
 
 
+def publish_canonical_dashboard(
+        selected_workspace: str, *, obligation: Mapping[str, object],
+        snapshot_publisher: Callable[..., Mapping[str, object]],
+        delivery_publisher: Callable[[str, dict], Mapping[str, object]],
+        **kwargs) -> dict:
+    """Bind injected snapshot/delivery ports to one sealed cleanup source."""
+    source_revision = kwargs["source_revision"]
+    source_fingerprint = kwargs["source_fingerprint"]
+    expected = _publication_source_identity(
+        source_revision, source_fingerprint)
+    publication = snapshot_publisher(
+        selected_workspace,
+        **{key: value for key, value in kwargs.items()
+           if key not in {"source_revision", "source_fingerprint"}})
+    durable = _load_durable_publication(selected_workspace, publication)
+    attestation = _publication_source_attestation(obligation, durable)
+    delivered = delivery_publisher(selected_workspace, {
+        "outcome": obligation["outcome"],
+        "dashboard_snapshot": publication,
+    })
+    reloaded = _load_durable_publication(selected_workspace, publication)
+    if (reloaded["snapshot_fingerprint"] != durable["snapshot_fingerprint"] or
+            reloaded["event_fingerprint"] != durable["event_fingerprint"]):
+        raise OwnedCleanupError(
+            "durable dashboard identity changed during delivery")
+    delivery = _verify_durable_delivery(delivered, durable=reloaded)
+    receipt = _publication_source_receipt(attestation, delivery)
+    source_identity = _verify_publication_source_envelope(
+        attestation, receipt, expected=expected, durable=reloaded)
+    return {
+        "source_revision": source_identity["source_revision"],
+        "source_fingerprint": source_identity["source_fingerprint"],
+        "source_verification": {"attestation": attestation,
+                                "receipt": receipt},
+        "snapshot_publication": copy.deepcopy(dict(publication)),
+        "durable_publication": reloaded,
+        "dashboard_delivery": delivered,
+    }
+
+
 def replay_publication(path: str | os.PathLike[str], *, workspace: str,
                        owner: Mapping[str, object], outcome: str,
                        publisher: Callable[..., Mapping[str, object]] | None =
@@ -885,65 +934,17 @@ def replay_publication(path: str | os.PathLike[str], *, workspace: str,
     replay_path = Path(path).absolute()
     obligation = _validate_publication_replay(
         replay_path, _closed_owner(dict(owner)), outcome=outcome)
+    publisher = publisher or _PUBLICATION_PUBLISHER
     if publisher is None:
-        try:
-            from taskplane import loop_status
-            from taskplane import views
-        except ImportError:
-            import loop_status
-            import views
-
-        def canonical_publisher(selected_workspace: str, **kwargs):
-            source_revision = kwargs["source_revision"]
-            source_fingerprint = kwargs["source_fingerprint"]
-            expected = _publication_source_identity(
-                source_revision, source_fingerprint)
-            publication = loop_status.refresh_dashboard_snapshot(
-                selected_workspace,
-                **{key: value for key, value in kwargs.items()
-                   if key not in {"source_revision", "source_fingerprint"}})
-            durable = _load_durable_publication(
-                selected_workspace, publication)
-            attestation = _publication_source_attestation(
-                obligation, durable)
-            payload = {
-                "outcome": obligation["outcome"],
-                "dashboard_snapshot": publication,
-            }
-            delivered = views.refresh_views(selected_workspace, payload)
-            reloaded = _load_durable_publication(
-                selected_workspace, publication)
-            if (reloaded["snapshot_fingerprint"] !=
-                    durable["snapshot_fingerprint"] or
-                    reloaded["event_fingerprint"] !=
-                    durable["event_fingerprint"]):
-                raise OwnedCleanupError(
-                    "durable dashboard identity changed during delivery")
-            delivery = _verify_durable_delivery(
-                delivered, durable=reloaded)
-            receipt = _publication_source_receipt(attestation, delivery)
-            source_identity = _verify_publication_source_envelope(
-                attestation, receipt, expected=expected, durable=reloaded)
-            # Return source truth extracted from the authenticated cleanup
-            # envelope, never the publisher request arguments.
-            return {
-                "source_revision": source_identity["source_revision"],
-                "source_fingerprint": source_identity["source_fingerprint"],
-                "source_verification": {
-                    "attestation": attestation, "receipt": receipt,
-                },
-                "snapshot_publication": copy.deepcopy(dict(publication)),
-                "durable_publication": reloaded,
-                "dashboard_delivery": delivered,
-            }
-
-        publisher = canonical_publisher
+        raise OwnedCleanupError(
+            "canonical dashboard publisher is not configured")
     published = publisher(
         str(Path(workspace).resolve()),
         event_type="owned_cleanup_" + str(obligation["trigger"]),
         outcome=str(obligation["outcome"]), replay=True,
         source_revision=int(obligation["source_revision"]),
-        source_fingerprint=str(obligation["source_fingerprint"]))
+        source_fingerprint=str(obligation["source_fingerprint"]),
+        obligation=copy.deepcopy(obligation))
     if (not isinstance(published, Mapping) or
             type(published.get("source_revision")) is not int or
             published.get("source_revision") != obligation["source_revision"] or
@@ -1118,10 +1119,10 @@ def _ordered_resources(resources: Mapping[str, dict]) -> list[dict]:
 
 def _current_process_started(pid: int) -> str:
     try:
-        from command_adapters import _pid_start_identity
+        from taskplane.host_native import process_start_identity
     except ImportError:
-        from taskplane.command_adapters import _pid_start_identity
-    return str(_pid_start_identity(pid))
+        from host_native import process_start_identity
+    return str(process_start_identity(pid))
 
 
 def _process_status(binding: Mapping[str, object]) -> str:

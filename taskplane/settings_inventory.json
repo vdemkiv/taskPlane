@@ -207,16 +207,16 @@
     },
     {
       "id": "workflow-transport-and-dispatch",
-      "surfaces": ["workflows/**", "taskplane/taskplane_lite.py", "taskplane/command_runtime.py", "taskplane/command_wave.py"],
+      "surfaces": ["workflows/**", "taskplane/delivery_ports.py", "taskplane/lens.py", "taskplane/taskplane_lite.py", "taskplane/command_runtime.py", "taskplane/command_wave.py"],
       "initialization": "dispatch-loader-and-verbatim-bounded-transport",
-      "proof_markers": ["_canonical_operational_settings", "\"settings_digest\": settings.digest"],
+      "proof_markers": ["_canonical_operational_settings", "settings_digest=settings.digest"],
       "binding": "settings_digest"
     },
     {
       "id": "dashboard-state-projection-delivery-host",
       "surfaces": ["taskplane/loop_status.py", "taskplane/host_native.py", "taskplane/views.py", "taskplane/dashboard.py", "hooks/host_native_runtime.py", "hooks/host-native.json"],
       "initialization": "direct-loader-and-snapshot-projection",
-      "proof_markers": ["settings = operational_settings.load_settings()", "\"settings_digest\": settings.digest", "\"settingsKey\": \"dashboard.refresh\""],
+      "proof_markers": ["settings = operational_settings.load_settings()", "settings_digest=settings.digest", "\"settingsKey\": \"dashboard.refresh\""],
       "binding": "settings_digest"
     },
     {

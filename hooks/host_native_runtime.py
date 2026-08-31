@@ -19,8 +19,10 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-if str(PLUGIN_ROOT) not in sys.path:
-    sys.path.insert(0, str(PLUGIN_ROOT))
+TASKPLANE_RUNTIME_ROOT = PLUGIN_ROOT / "taskplane"
+for runtime_root in (PLUGIN_ROOT, TASKPLANE_RUNTIME_ROOT):
+    if str(runtime_root) not in sys.path:
+        sys.path.insert(0, str(runtime_root))
 
 from taskplane import progress, storage
 from taskplane.host_capabilities import (
@@ -36,6 +38,7 @@ from taskplane.host_native import (
     ContradictorySnapshotError,
     HostSurfaceEvent,
     HostSurfaceSnapshot,
+    native_dashboard_projection,
     ordered_snapshots,
 )
 
@@ -309,11 +312,10 @@ class HostNativeRecovery:
         # hosts.  The generic projection above remains the complete accessible
         # fallback and retains the canonical bytes when native UI is absent.
         if host in {"codex", "claude"}:
-            from taskplane import dashboard
-            native = dashboard.native_dashboard_projection(
-                snapshot, host=host)
+            native = native_dashboard_projection(snapshot, host=host)
             host_views["dashboard"]["dashboard_projection"] = native
             if selections["visualization"].selected_surface == "native":
+                from taskplane import dashboard
                 host_views["dashboard"]["native_surface"] = \
                     dashboard.render_native_dashboard_surface(native)
 

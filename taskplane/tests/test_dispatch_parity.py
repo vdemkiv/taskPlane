@@ -231,14 +231,16 @@ class TestGoldenReplay:
                 "lens", "tp-lens", b["id"])
             assert b["role_marker"] == "taskplane-role:tp-lens"
             assert b["role_instructions"].endswith("agents/tp-lens.md")
-            assert b["reasoning_effort"] in tp.REASONING_EFFORTS
+            assert b["reasoning_effort"] in tp.REASONING_EFFORTS and \
+                b["settings_digest"] == payload["settings_digest"]
             assert b["task_slot"] == f"lens-{b['id']}"
             assert b["contract"]["read_only"] is True
             assert b["contract"]["task_slot"] == b["task_slot"]
             assert b["output"] == f".em-review/lens-{b['id']}/findings.json"
             assert f"export TASKPLANE_TASK={b['task_slot']}" in b["prompt"]
         assert payload["sweep"]["model_tier"] == "cheap"
-        assert payload["sweep"]["reasoning_effort"] == "low"
+        assert payload["sweep"]["reasoning_effort"] == "high" and \
+            payload["sweep"]["settings_digest"] == payload["settings_digest"]
         assert payload["sweep"]["task_name"] == tp.dispatch_task_name(
             "lens", "tp-lens", "sweep")
 

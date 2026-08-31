@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import dashboard  # noqa: E402
 import loop  # noqa: E402
 import loop_status  # noqa: E402
+import settings as operational_settings  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 
 
@@ -76,13 +77,9 @@ class TestAutoRender(unittest.TestCase):          # AC1
         loop_status.refresh_dashboard_snapshot = lambda ws, **kw: (
             calls.append((ws, kw)) or {"snapshot": {"fingerprint": "f"}})
         try:
-            for name, outcome in (
-                    ("gate", "pass"), ("gate", "failure"),
-                    ("cancel", "cancellation"),
-                    ("interrupt", "interruption"),
-                    ("handoff", "handoff")):
-                def committed(_ws, _outcome=outcome):
-                    return {"step": "execute", "outcome": _outcome}
+            for name in operational_settings.REQUIRED_DASHBOARD_LIFECYCLE_EVENTS:
+                def committed(_ws):
+                    return {"step": "execute", "outcome": "success"}
                 committed.__name__ = name
                 wrapped = loop_status.with_dashboard(committed)
                 before = len(calls)

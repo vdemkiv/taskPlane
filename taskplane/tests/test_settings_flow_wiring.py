@@ -81,7 +81,7 @@ def test_every_flow_initializes_from_canonical_settings():
         wrapped.index("result = fn(ws, *args, **kwargs)")
     dispatch = (ROOT / "taskplane" / "taskplane_lite.py").read_text(
         encoding="utf-8")
-    assert '"settings_digest": settings.digest' in dispatch
+    assert "settings_digest=settings.digest" in dispatch
 
     workflow_paths = sorted((ROOT / "workflows").glob("*-wave.js"))
     assert {path.name for path in workflow_paths} == {

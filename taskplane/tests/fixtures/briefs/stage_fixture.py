@@ -62,7 +62,7 @@ SCRUB_VARS = ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_MODEL_CHEAP",
               "TASKPLANE_REASONING_CHEAP", "TASKPLANE_REASONING_STANDARD",
               "TASKPLANE_REASONING_DEEP",
               "TASKPLANE_WORKFLOWS", "CLAUDE_CODE_WORKFLOWS",
-              "TASKPLANE_TASK")
+              "TASKPLANE_TASK", "TASKPLANE_SESSION_ID")
 
 STAGES = ("execute", "evaluate", "fix")
 GOLDENS = {stage: f"golden_stage_{stage}.json" for stage in STAGES}
@@ -71,16 +71,17 @@ GOLDENS = {stage: f"golden_stage_{stage}.json" for stage in STAGES}
 GOAL = "stage wave fixture"
 TASKS = [
     {"id": "t1", "scope": ["src/alpha/**"], "tests": "true",
-     "criteria": ["alpha updated"]},
+     "criteria": ["alpha updated"], "new_modules": ["alpha"]},
     {"id": "t2", "scope": ["src/beta/**"], "tests": "true",
-     "criteria": ["beta updated"]},
+     "criteria": ["beta updated"], "new_modules": ["beta"]},
 ]
 
 _ZERO_KEYS = ("updated_at", "scanned_at", "submitted_at")
 _SHA_KEYS = ("scanned_head", "content_fingerprint", "snapshot",
              "fingerprint", "baseline", "run_id", "evidence_id",
              "revision", "scanned_revision", "target_commit",
-             "resume_identity")
+             "resume_identity", "candidate_sha", "generation_id",
+             "source_sha")
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _HEX64_RE = re.compile(r"\b[0-9a-f]{64}\b")
 _REVIEW_SLOT_RE = re.compile(r"\breview-[0-9a-f]{20}\b")
@@ -188,11 +189,15 @@ def build_repo(tmp: str) -> str:
         os.makedirs(os.path.join(ws, d))
         with open(os.path.join(ws, d, "m.py"), "w") as f:
             f.write("x = 1\n")
+    os.makedirs(os.path.join(ws, ".taskplane"))
+    os.environ["TASKPLANE_SESSION_ID"] = "stage-fixture"
     with open(os.path.join(ws, "plan", "tasks.json"), "w") as f:
         json.dump({"tasks": TASKS}, f, indent=2)
     _git(ws, "init", "-q")
     _git(ws, "add", "-A")
     _git(ws, "commit", "-qm", "base")
+    with open(os.path.join(ws, ".taskplane", "codex-hook.py"), "w") as f:
+        f.write("#!/usr/bin/env python3\n")
     return ws
 
 
@@ -325,11 +330,17 @@ def scrub(payload, ws: str, store: "str | None" = None):
             for k, v in obj.items():
                 if k in _ZERO_KEYS and isinstance(v, (int, float)):
                     out[k] = 0
-                elif k == "observed_at" and isinstance(v, str) and v:
+                elif k in {"observed_at", "generated_at"} and \
+                        isinstance(v, str) and v:
                     out[k] = "<TIME>"
                 elif (k in _SHA_KEYS or k.endswith("_fingerprint")) \
                         and isinstance(v, str) and v:
                     out[k] = "<SHA>"
+                elif k != "settings_digest" and isinstance(v, str) and \
+                        _HEX64_RE.fullmatch(v):
+                    out[k] = "<SHA>"
+                elif k == "settings_digest" and isinstance(v, str):
+                    out[k] = v
                 elif k == "result_path" and isinstance(v, str):
                     out[k] = _HEX64_RE.sub("<SHA>", v)
                 else:
@@ -340,6 +351,7 @@ def scrub(payload, ws: str, store: "str | None" = None):
         if isinstance(obj, str):
             for real, token in subs:
                 obj = obj.replace(real, token)
+            obj = _HEX64_RE.sub("<SHA>", obj)
             obj = _TASK_SLOT_RE.sub("task_<SLOT>", obj)
             obj = _WORKER_ATTEMPT_RE.sub(r"\1<N>_<ATTEMPT>", obj)
             obj = _WORKER_SUFFIX_RE.sub(r"\1_<WORKER>", obj)

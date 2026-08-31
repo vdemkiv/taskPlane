@@ -1380,14 +1380,12 @@ def _lens_prompt(entry: dict, base: str) -> str:
 # `.em-review/lens-<id>/**` and still cannot touch reviewed source. An
 # explicit `max_actions` overrides every tier, so callers that pin a number
 # (the parity fixtures) keep getting exactly that number.
-DEEP_ACTIONS = 45
-SWEEP_ACTIONS = 30
+DEEP_ACTIONS, SWEEP_ACTIONS = 45, 30
 
 
 def actions_for(tier: str, override=None) -> int:
-    if override is not None:
-        return int(override)
-    return DEEP_ACTIONS if tier == "deep" else SWEEP_ACTIONS
+    return int(override) if override is not None else (
+        DEEP_ACTIONS if tier == "deep" else SWEEP_ACTIONS)
 
 
 def dispatch_briefs(routing: dict, base: str = "HEAD",
@@ -1404,6 +1402,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     the harness/guardrails are preserved: a lens-agent can read the diff but
     never modify code, and it's budget-capped.
     """
+    settings_context = tp._canonical_operational_settings(legacy_environment=True)
     # v2 routings carry per-lens verdicts: "deep" fans out one governed agent
     # each, "light" batches into the single sweep-style brief, and "n/a"
     # lenses get NO brief — they do not run. The full disposition set
@@ -1498,7 +1497,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     for x in deep:
         lid = x["id"]
         mtier = _lens_tier(lid, "deep")
-        brief = {**tp.dispatch_fields("lens", "tp-lens", lid, mtier),
+        brief = {**tp.dispatch_fields("lens", "tp-lens", lid, mtier,
+                                      settings_context=settings_context),
             "id": lid, "name": x["name"], "tier": "deep", "agent": "tp-lens",
             "task_slot": f"lens-{lid}",
             "output": f".em-review/lens-{lid}/findings.json",
@@ -1536,8 +1536,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                 if key not in seen_refs:
                     sweep_refs.append(ref)
                     seen_refs.add(key)
-        sweep_brief = {**tp.dispatch_fields(
-            "lens", "tp-lens", "sweep", "cheap"),
+        sweep_brief = {**tp.dispatch_fields("lens", "tp-lens", "sweep", "cheap",
+                                            settings_context=settings_context),
             "ids": [s["id"] for s in sweep], "agent": "tp-lens",
             **({"tier": "light", "depth": "quick"}
                if review_policy and
@@ -1605,7 +1605,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         # dispatch agents that don't exist. Signal "nothing to review".
         out = {
             "base": base,
-            "changed_files": routing["context"].get("changed_files", 0),
+            "changed_files": routing["context"].get("changed_files", 0), "settings_digest": settings_context.digest,
             "deep": [], "sweep": None,
             "nothing_to_review": True,
             "instruction": (
@@ -1621,7 +1621,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         return out
     out = {
         "base": base,
-        "changed_files": routing["context"].get("changed_files", 0),
+        "changed_files": routing["context"].get("changed_files", 0), "settings_digest": settings_context.digest,
         "deep": briefs, "sweep": sweep_brief,
         "nothing_to_review": False,
         "instruction": (

@@ -8,6 +8,7 @@ path it happens to use.
 from __future__ import annotations
 
 from collections.abc import MutableMapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import hashlib
 import json
@@ -261,12 +262,72 @@ def _atomic_json(path: str, value: dict) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        try:
+            directory_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:  # directory fsync is unavailable on some hosts
+            pass
     finally:
         try:
             if os.path.exists(temporary):
                 os.unlink(temporary)
         except OSError:
             pass
+
+
+@contextmanager
+def _storage_file_lock(path: str, *, timeout: float = 10.0):
+    """Cross-host storage lock with a fail-closed mkdir fallback."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    handle = None
+    try:
+        handle = open(path, "a+b")
+        try:
+            import fcntl
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            handle.close()
+            handle = None
+    except OSError:
+        handle = None
+    if handle is not None:
+        try:
+            yield
+        finally:
+            handle.close()
+        return
+    lockdir = path + ".lockdir"
+    deadline = time.monotonic() + max(0.1, timeout)
+    while True:
+        try:
+            os.mkdir(lockdir)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - os.stat(lockdir).st_mtime > 120.0:
+                    os.rmdir(lockdir)
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                raise StorageIdentityError(
+                    "could not acquire dashboard storage lock")
+            time.sleep(0.01)
+        except OSError as exc:
+            raise StorageIdentityError(
+                f"could not acquire dashboard storage lock: {exc}") from exc
+    try:
+        yield
+    finally:
+        try:
+            os.rmdir(lockdir)
+        except OSError as exc:
+            raise StorageIdentityError(
+                f"could not release dashboard storage lock: {exc}") from exc
 
 
 def _locator_path(checkout: str) -> str:
@@ -1272,11 +1333,9 @@ def commit_dashboard_snapshot(workspace: str, snapshot) -> dict:
     """
     try:
         if __package__:
-            from . import taskplane_lite as tp
             from .host_native import (ContradictorySnapshotError,
                                       HostSurfaceSnapshot)
         else:
-            from taskplane import taskplane_lite as tp
             from taskplane.host_native import (ContradictorySnapshotError,
                                                HostSurfaceSnapshot)
         authenticated = HostSurfaceSnapshot.from_dict(snapshot.to_dict())
@@ -1284,7 +1343,7 @@ def commit_dashboard_snapshot(workspace: str, snapshot) -> dict:
         raise StorageIdentityError(
             f"dashboard snapshot is invalid: {exc}") from exc
     path = dashboard_snapshot_store_path(workspace)
-    with tp.file_lock(path + ".lock"):
+    with _storage_file_lock(path + ".lock"):
         prior = load_dashboard_publication(workspace)
         history = list((prior or {}).get("history") or [])
         if history:
@@ -1313,7 +1372,7 @@ def commit_dashboard_snapshot(workspace: str, snapshot) -> dict:
         history = history[-256:]
         stored = {"schema": DASHBOARD_PUBLICATION_SCHEMA,
                   "current": authenticated.to_dict(), "history": history}
-        tp.atomic_write_json(path, stored, indent=2, sort_keys=True)
+        _atomic_json(path, stored)
         return {**stored, "replayed": False}
 
 
@@ -1321,10 +1380,8 @@ def commit_dashboard_event(workspace: str, event) -> dict:
     """Durably append one authenticated snapshot event, idempotently."""
     try:
         if __package__:
-            from . import taskplane_lite as tp
             from .host_native import HostSurfaceEvent
         else:
-            from taskplane import taskplane_lite as tp
             from taskplane.host_native import HostSurfaceEvent
         checked = HostSurfaceEvent.from_dict(event.to_dict())
     except (AttributeError, TypeError, ValueError) as exc:
@@ -1332,7 +1389,7 @@ def commit_dashboard_event(workspace: str, event) -> dict:
             from exc
     root = os.path.dirname(dashboard_snapshot_store_path(workspace))
     path = os.path.join(root, "events.json")
-    with tp.file_lock(path + ".lock"):
+    with _storage_file_lock(path + ".lock"):
         try:
             with open(path, encoding="utf-8") as handle:
                 stored = json.load(handle)
@@ -1353,5 +1410,5 @@ def commit_dashboard_event(workspace: str, event) -> dict:
         events.append(checked)
         value = {"schema": "taskplane.dashboard-events/v1",
                  "events": [row.to_dict() for row in events[-512:]]}
-        tp.atomic_write_json(path, value, indent=2, sort_keys=True)
+        _atomic_json(path, value)
         return {"event": checked.to_dict(), "replayed": False}

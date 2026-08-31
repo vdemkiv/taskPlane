@@ -70,6 +70,11 @@ except (ImportError, ValueError):  # direct ``taskplane_lite`` import
         _sanitize_audit_value, audit_record,
     )
 
+try:
+    from . import delivery_ports as _delivery_ports
+except (ImportError, ValueError):  # direct ``taskplane_lite`` import
+    import delivery_ports as _delivery_ports
+
 
 # ---------------------------------------------------------------------------
 # Durable-state primitives (v2.3.0). Governance files that more than one
@@ -2729,25 +2734,9 @@ def validate_test_timeout_seconds(value, *, field: str,
 
 def task_test_timeout_seconds(task: dict) -> int:
     """Derive the approved aggregate test timeout from one plan task."""
-    field = "verification_runner.gate_timeout.aggregate_seconds"
-    if not isinstance(task, dict):
-        raise ValueError(f"{field} task container must be an object")
-    if "verification_runner" not in task:
-        return int(_canonical_operational_settings().limits.timeouts[
-            "task_seconds"])
-    runner = task.get("verification_runner")
-    if not isinstance(runner, dict):
-        raise ValueError(f"{field} parent containers must be objects")
-    if "gate_timeout" not in runner:
-        raise ValueError(f"{field} is required when verification_runner is present")
-    gate_timeout = runner.get("gate_timeout")
-    if not isinstance(gate_timeout, dict):
-        raise ValueError(f"{field} parent containers must be objects")
-    if "aggregate_seconds" not in gate_timeout:
-        raise ValueError(f"{field} is required when gate_timeout is present")
-    return validate_test_timeout_seconds(
-        gate_timeout.get("aggregate_seconds"), field=field,
-        plan_minted=True)
+    return _delivery_ports.task_test_timeout_seconds(
+        task, default_seconds=int(_canonical_operational_settings().limits.timeouts[
+            "task_seconds"]), validator=validate_test_timeout_seconds)
 
 
 def _run(cmd, cwd, shell=False, timeout=600, env=None):
@@ -5826,48 +5815,26 @@ def load_active_for_event(workspace: str, event: dict) -> dict | None:
     return load_active(workspace)
 
 
-def normalize_worker_terminal_outcome(value: object) -> str:
-    text = str(value or "success").strip().lower()
-    if "handoff" in text or "transfer" in text:
-        return "handoff"
-    if "cancel" in text:
-        return "cancellation"
-    if "interrupt" in text or "abort" in text or "killed" in text:
-        return "interruption"
-    if "fail" in text or "error" in text or "exception" in text:
-        return "failure"
-    return "success"
+normalize_worker_terminal_outcome = \
+    _delivery_ports.normalize_worker_terminal_outcome
 
 
 def _worker_terminal_path(workspace: str, slot: str) -> str:
     return os.path.join(tp_dir(workspace), "worker-terminals", f"{slot}.json")
 
 
+def configure_dashboard_refresh_publisher(publisher) -> None:
+    _delivery_ports.configure_dashboard_refresh_publisher(publisher)
+
+
 def _refresh_dashboard_lifecycle(
         workspace: str, *, event_type: str, outcome: str,
-        member_terminal: bool = False) -> None:
-    """Best-effort publication after the terminal receipt is durable.
-
-    Dashboard failure is secondary evidence and may never rewrite or prevent
-    the worker's authenticated terminal outcome.
-    """
+        member_terminal: bool = False, publisher=None) -> None:
     settings = _canonical_operational_settings()
-    if event_type not in settings.dashboard.refresh.lifecycle_events:
-        raise ValueError(
-            "dashboard lifecycle event is absent from canonical settings: "
-            + str(event_type))
-    try:
-        if __package__:
-            from . import loop_status
-        else:
-            import loop_status
-        loop_status.refresh_dashboard_snapshot(
-            workspace, event_type=event_type, outcome=outcome)
-    except Exception as exc:
-        trace(workspace, "dashboard_publication_deferred",
-              event_type=event_type, outcome=outcome,
-              member_terminal=member_terminal,
-              error=f"{exc.__class__.__name__}: {exc}")
+    _delivery_ports.publish_dashboard_refresh(
+        workspace, event_type=event_type, outcome=outcome,
+        lifecycle_events=settings.dashboard.refresh.lifecycle_events,
+        trace=trace, member_terminal=member_terminal, publisher=publisher)
 
 
 def record_worker_terminal(
@@ -6754,78 +6721,44 @@ def reasoning_for_tier(tier: str | None) -> str:
     return settings.stages[stage].reasoning
 
 
-def dispatch_task_name(kind: str, agent: str, ref: str | None = None) -> str:
-    """Stable Codex task identity (lowercase letters/digits/underscores).
-
-    The human-facing taskplane role remains separate in ``agent``. Keeping
-    both fields prevents a generic Codex worker name from erasing who owns
-    the contract while still satisfying Codex's task-name grammar.
-    """
-    role = (agent or "agent").removeprefix("tp-")
-    parts = ["tp", kind]
-    if role != kind:
-        parts.append(role)
-    if ref:
-        parts.append(str(ref))
-    identity = "\0".join((str(kind), str(agent), str(ref or "")))
-    raw = "_".join(parts).lower()
-    name = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "tp_agent"
-    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
-    return name[:55].rstrip("_") + "_" + digest
-
-
-def role_marker(agent: str) -> str:
-    """Exact marker native Codex messages bind to a taskplane role."""
-    return "taskplane-role:" + str(agent)
+dispatch_task_name = _delivery_ports.dispatch_task_name
+role_marker = _delivery_ports.role_marker
 
 
 def dispatch_fields(kind: str, agent: str, ref: str,
                     model_tier: str, *, capability_snapshot=None,
                     enforcement_mode: str | None = None,
-                    observed_route: dict | None = None) -> dict:
-    """Host-neutral dispatch identity carried by every Codex task brief."""
-    role_path = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), "..", "agents", agent + ".md"))
-    settings = _canonical_operational_settings(legacy_environment=True)
+                    observed_route: dict | None = None,
+                    settings_context=None) -> dict:
+    """Resolve one settings snapshot, then delegate pure brief assembly."""
+    settings = settings_context or _canonical_operational_settings(
+        legacy_environment=True)
     stage = {
         "tp-product": "product", "tp-designer": "design",
         "tp-planner": "plan", "tp-executor": "build",
         "tp-evaluator": "evaluate", "tp-fixer": "fix",
         "tp-engineering": "evaluate",
     }.get(agent)
-    if stage is None:
-        requested_model = model_for_tier(model_tier)
-        requested_effort = reasoning_for_tier(model_tier)
-    else:
-        requested_model = settings.stages[stage].model
-        requested_effort = settings.stages[stage].reasoning
+    selected = stage or {
+        "cheap": "evaluate", "standard": "build", "deep": "design",
+    }.get((model_tier or "standard").strip().lower(), "build")
     route = None
     if capability_snapshot is not None:
         import host_capabilities
-
         route = host_capabilities.resolve_dispatch_route(
             capability_snapshot, tier=model_tier,
-            requested_model=requested_model,
-            requested_effort=requested_effort,
+            requested_model=settings.stages[selected].model,
+            requested_effort=settings.stages[selected].reasoning,
             mode=enforcement_mode or os.environ.get(
                 "TASKPLANE_ENFORCE_DISPATCH", "default"),
             observed=observed_route)
-    fields = {
-        "role": agent,
-        "role_marker": role_marker(agent),
-        "role_instructions": to_posix(role_path),
-        "task_name": dispatch_task_name(kind, agent, ref),
-        "model_tier": model_tier,
-        "model": (route["effective_model"] if route is not None
-                  else requested_model),
-        "reasoning_effort": (route["effective_effort"] if route is not None
-                             else requested_effort),
-        "settings_digest": settings.digest,
-    }
-    if route is not None:
-        fields["dispatch_route"] = route
-        fields["dispatch_blocked"] = route["block_before_dispatch"]
-    return fields
+    return _delivery_ports.dispatch_envelope(
+        kind, agent, ref, model_tier,
+        role_instructions=to_posix(os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "agents", agent + ".md"))),
+        requested_model=settings.stages[selected].model,
+        requested_effort=settings.stages[selected].reasoning,
+        settings_digest=settings.digest, route=route)
 
 
 # --- dispatch verification (tier routing is only real if the driver passes

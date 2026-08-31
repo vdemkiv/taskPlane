@@ -788,6 +788,12 @@ def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):
     # snapshot, deliver those exact canonical bytes, and derive its
     # acknowledgement from the read-back artifact rather than request echo.
     from taskplane import host_native, loop_status, storage, views
+    monkeypatch.setattr(
+        cleanup, "_PUBLICATION_PUBLISHER",
+        lambda selected_workspace, **kwargs: cleanup.publish_canonical_dashboard(
+            selected_workspace,
+            snapshot_publisher=loop_status.refresh_dashboard_snapshot,
+            delivery_publisher=views.refresh_views, **kwargs))
 
     dashboard_source = {
         "mode": "legacy", "status": "ready", "run_id": "cleanup-loop",

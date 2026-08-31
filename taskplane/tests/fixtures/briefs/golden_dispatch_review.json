@@ -224,6 +224,7 @@
       "verdict": "n/a"
     }
   },
+  "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
   "sweep": {
     "agent": "tp-lens",
     "contract": {
@@ -262,14 +263,15 @@
         "section": "Security"
       }
     ],
-    "model": "haiku",
+    "model": null,
     "model_tier": "cheap",
     "output": ".em-review/lens-sweep/findings.json",
     "prompt": "FIRST \u2014 before you activate any contract \u2014 export your unique per-task contract slot so parallel lens agents cannot overwrite each other's governance: `export TASKPLANE_TASK=lens-sweep`. Keep it set for every `tp.py` call you make (new / screen / clear).\nQuick SWEEP of these lenses against the diff vs `HEAD`: System design & architecture, Code quality, Security, Technical writing, Back-end engineering. Run each lens's top checks only \u2014 flag or clear in one line each. READ-ONLY: write findings (each with a `lens` field and a `class` field \u2014 regression|pre-existing|observation) to `.em-review/lens-sweep/findings.json`, change no code.\n\nLANGUAGE REFERENCES: read and apply lenses/references/python-code-quality.md sha256=8a44717dabef5c596c17b28d44bca364664fa48b2b7d5c2c3cce6a5d8db643b7, lenses/references/python-engineering.md#Security sha256=cb9e7ebda7fd7ac1ed00ab45d9121957aae55c328b3ee72b74a8aded6aa216b7. Resolve these plugin-relative paths against the plugin root that contains your role_instructions file. These pinned standards are part of this brief; do not substitute model memory for them. Copy the exact reference records into references_applied in the leased result.\n\nSHARED REVIEW CONTEXT \u2014 already on disk, read it, do NOT re-derive it:\n  .em-review/context/diff.patch  \u2014 the full diff under review (do not run `git diff` again)\n  Every lens agent in this wave reads the SAME files. They were written once, before dispatch.\nFINALLY \u2014 ALWAYS, in every outcome (done, error, or blocked): release your contract as your LAST action, with your slot still exported: `TASKPLANE_TASK=$TASKPLANE_TASK python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py\" clear`. Treat this as the finally-block of your whole task \u2014 a leaked contract locks the workspace for everyone after you. If the clear itself is blocked (budget exhausted), STOP and report the leaked contract in your final message so the dispatcher/human can release it (`tp.py clear --workspace <ws>` from an ungoverned context); never try to work around the block.",
-    "reasoning_effort": "low",
+    "reasoning_effort": "high",
     "role": "tp-lens",
     "role_instructions": "<PLUGIN>/agents/tp-lens.md",
     "role_marker": "taskplane-role:tp-lens",
+    "settings_digest": "f6e0833b35ffac5fa63ca7107de8e9f799337063ebdfcf77646f461d12b0eec2",
     "task_name": "tp_lens_sweep_94e23878",
     "task_slot": "lens-sweep",
     "wait_policy": {
