@@ -365,6 +365,43 @@ def _workflow_supply_chain(workflow_bytes: bytes) -> dict[str, object]:
         raise ReleaseEvidenceError(
             "workflow supply-chain must declare only contents: read globally")
 
+    lines = executable.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^(\s+)permissions\s*:\s*(.*?)\s*$", line)
+        if match is None:
+            continue
+        indentation = len(match.group(1).replace("\t", "        "))
+        inline = match.group(2)
+        if inline == "{}":
+            continue
+        if inline:
+            if not (inline.startswith("{") and inline.endswith("}")):
+                raise ReleaseEvidenceError(
+                    "workflow job permissions must be explicit read or none")
+            entries = [entry.strip() for entry in inline[1:-1].split(",")
+                       if entry.strip()]
+            if not entries or any(
+                not re.fullmatch(r"[A-Za-z0-9_-]+\s*:\s*(?:read|none)", entry)
+                for entry in entries
+            ):
+                raise ReleaseEvidenceError(
+                    "workflow job permissions must be explicit read or none")
+            continue
+        entries = []
+        for nested in lines[index + 1:]:
+            if not nested.strip():
+                continue
+            nested_indent = len(nested) - len(nested.lstrip(" \t"))
+            if nested_indent <= indentation:
+                break
+            entries.append(nested.strip())
+        if not entries or any(
+            not re.fullmatch(r"[A-Za-z0-9_-]+\s*:\s*(?:read|none)", entry)
+            for entry in entries
+        ):
+            raise ReleaseEvidenceError(
+                "workflow job permissions must be explicit read or none")
+
     uses = re.findall(r"(?m)^\s*-?\s*uses\s*:\s*([^\s]+)\s*$", executable)
     if not uses or any(
         not re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", action)
@@ -373,7 +410,6 @@ def _workflow_supply_chain(workflow_bytes: bytes) -> dict[str, object]:
         raise ReleaseEvidenceError(
             "workflow supply-chain contains an unpinned or mutable action reference")
 
-    lines = executable.splitlines()
     checkout_rows = [
         index for index, line in enumerate(lines)
         if re.search(r"uses\s*:\s*actions/checkout@[0-9a-f]{40}\s*$", line)
@@ -423,11 +459,31 @@ def _lock_is_hash_pinned(lock_bytes: bytes) -> bool:
         pending = ""
     if pending:
         statements.append(pending)
-    requirements = [row for row in statements if "==" in row]
-    return bool(requirements) and all(
-        re.search(r"--hash=sha256:[0-9a-f]{64}(?:\s|$)", row)
-        for row in requirements
-    )
+    if not statements:
+        return False
+    for row in statements:
+        lowered = row.casefold()
+        if re.match(
+            r"^(?:-r(?:\s|=)|--requirement(?:\s|=)|"
+            r"-c(?:\s|=)|--constraint(?:\s|=)|"
+            r"-e(?:\s|=)|--editable(?:\s|=))",
+            lowered,
+        ):
+            return False
+        if " @ " in row or re.search(
+            r"(?:^|\s)(?:git\+|https?://|file:|\.\.?/|/|~\/)",
+            lowered,
+        ):
+            return False
+        if not re.match(
+            r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?"
+            r"==[^\s;\\]+(?:\s|;|$)",
+            row,
+        ):
+            return False
+        if re.search(r"--hash=sha256:[0-9a-f]{64}(?:\s|$)", row) is None:
+            return False
+    return True
 
 
 def release_supply_chain_evidence(repository: str | Path) -> dict[str, object]:

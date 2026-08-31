@@ -409,8 +409,9 @@ def _sha256_json(value):
 
 
 def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
-                                 terminal, browser, dashboard, wave_metrics,
-                                 cleanup, openai_provenance,
+                                 terminal, browser, dashboard,
+                                 dashboard_current, wave_metrics, cleanup,
+                                 openai_provenance,
                                  claude_provenance):
     """Assemble release truth only from existing sealed producer receipts."""
     import release_provenance
@@ -514,14 +515,13 @@ def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
         raise release_evidence.ReleaseEvidenceError(
             "browser evidence is not the terminal matrix browser receipt")
 
-    if dashboard.get("schema") != \
-            "taskplane.dashboard-publication-receipt/v1" or \
-            dashboard.get("fingerprint") != \
-            views.dashboard_publication_receipt_fingerprint(dashboard) or \
-            (dashboard.get("dom_freshness") or {}).get("status") != "verified" or \
-            (dashboard.get("generation") or {}).get("complete") is not True:
+    try:
+        dashboard_evidence = views.validate_dashboard_publication_receipt(
+            dashboard, current_head=dashboard_current,
+            expected_source_sha=source_sha)
+    except (TypeError, ValueError) as exc:
         raise release_evidence.ReleaseEvidenceError(
-            "dashboard publication evidence is stale or incomplete")
+            "dashboard publication evidence is stale or incomplete") from exc
 
     try:
         metrics = wave_metrics_module.validate_wave_receipt(wave_metrics)
@@ -587,9 +587,7 @@ def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
             "browser": {"digest": checked_browser["receipt"],
                         "source_sha": source_sha, "status": "green",
                         "fresh": True},
-            "dashboard": {"digest": dashboard["fingerprint"],
-                          "source_sha": source_sha, "status": "published",
-                          "fresh": True},
+            "dashboard": dashboard_evidence,
             "wave_metrics": {"digest": metrics["fingerprint"],
                              "source_sha": source_sha, "status": "sealed",
                              "recounted": False},
@@ -619,13 +617,15 @@ def main():
     parser.add_argument("--assembly-manifest")
     args = parser.parse_args()
     if bool(args.assemble_gate) != bool(args.assembly_manifest):
-        parser.error("--assemble-gate and --assembly-manifest must be supplied together")
+        parser.error(
+            "--assemble-gate and --assembly-manifest must be supplied together")
     if args.assemble_gate:
         manifest_path = Path(args.assembly_manifest).resolve()
         manifest = _read_json_object(manifest_path, "release assembly manifest")
         expected = {
             "schema", "pull_request_head_sha", "runtime", "terminal",
-            "browser", "dashboard", "wave_metrics", "cleanup",
+            "browser", "dashboard", "dashboard_current", "wave_metrics",
+            "cleanup",
             "openai_provenance", "claude_provenance",
         }
         if set(manifest) != expected or manifest.get("schema") != \
@@ -648,6 +648,7 @@ def main():
             terminal=artifact("terminal"),
             browser=artifact("browser"),
             dashboard=artifact("dashboard"),
+            dashboard_current=artifact("dashboard_current"),
             wave_metrics=artifact("wave_metrics"),
             cleanup=artifact("cleanup"),
             openai_provenance=artifact("openai_provenance"),

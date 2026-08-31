@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
 import time
 
 import progress
@@ -630,6 +631,11 @@ def refresh_dashboard_snapshot(
         else None
     stage = str((state or {}).get("step") or source.get("status") or "unknown")
     metrics_values = _wave_metrics_values(state)
+    candidate_sha = (state or {}).get("baseline")
+    candidate_value = ({"candidate_sha": candidate_sha}
+                       if isinstance(candidate_sha, str) and
+                       re.fullmatch(r"[0-9a-f]{40}", candidate_sha)
+                       else {})
     values = {
         "generated_at": _generated_at(committed_at),
         "settings_digest": settings.digest,
@@ -637,6 +643,7 @@ def refresh_dashboard_snapshot(
         "source_status": source["status"],
         "source_fingerprint": source_fingerprint,
         "event_type": str(event_type), "outcome": outcome,
+        **candidate_value,
         "loop": _bounded_loop_values(state),
         **_phase_graph_values(ws, state),
         **metrics_values,

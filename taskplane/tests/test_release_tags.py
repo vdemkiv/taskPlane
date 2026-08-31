@@ -30,7 +30,9 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import ci_release_tags as gate     # noqa: E402
 import release_provenance as provenance  # noqa: E402
 from taskplane import release_evidence  # noqa: E402
-from taskplane import ci_policy, owned_cleanup, views, wave_metrics  # noqa: E402
+from taskplane import (  # noqa: E402
+    ci_policy, host_native, owned_cleanup, views, wave_metrics,
+)
 
 
 def _git(root, *args, check=True):
@@ -223,6 +225,35 @@ def test_unsafe_workflow_bytes_cannot_be_laundered_by_digest_and_booleans(
             evidence, repository=tmp_path)
 
 
+def test_workflow_supply_chain_rejects_job_level_write_permissions():
+    workflow = (Path(ROOT) / ".github/workflows/ci.yml").read_text(
+        encoding="utf-8")
+    unsafe = workflow.replace(
+        "    runs-on: ubuntu-latest",
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write",
+        1,
+    )
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="job permissions"):
+        release_evidence._workflow_supply_chain(unsafe.encode("utf-8"))
+
+
+@pytest.mark.parametrize("unsafe_row", [
+    "package @ https://example.invalid/package.whl --hash=sha256:" + "1" * 64,
+    "git+https://example.invalid/package.git#egg=package --hash=sha256:" +
+    "1" * 64,
+    "../package.whl --hash=sha256:" + "1" * 64,
+    "unhashed==1.0",
+    "-r other.lock",
+    "--requirement other.lock",
+    "-c constraints.lock",
+])
+def test_lock_validator_rejects_every_unsafe_executable_row(unsafe_row):
+    good = "safe==1.0 --hash=sha256:" + "0" * 64
+    assert release_evidence._lock_is_hash_pinned(
+        f"{good}\n{unsafe_row}\n".encode("utf-8")) is False
+
+
 def test_post_merge_release_cli_assembles_and_authorizes_from_sealed_receipts(
         tmp_path):
     repository = tmp_path / "repository"
@@ -329,16 +360,18 @@ def test_post_merge_release_cli_assembles_and_authorizes_from_sealed_receipts(
     ]
     terminal = ci_policy.seal_terminal_matrix(candidate, plan, cells)
 
-    dashboard = {
-        "schema": "taskplane.dashboard-publication-receipt/v1",
-        "snapshot": {"fingerprint": "1" * 64},
-        "graphs": {"design": "2" * 64, "plan": "3" * 64},
-        "dom_freshness": {"status": "verified"},
-        "host_acknowledgement": {"status": "acknowledged"},
-        "generation": {"complete": True}, "bindings": {},
-    }
-    dashboard["fingerprint"] = views.dashboard_publication_receipt_fingerprint(
-        dashboard)
+    dashboard_snapshot = host_native.HostSurfaceSnapshot.create(
+        workflow_id="taskplane-loop", run_id="release-run",
+        target="signoff", revision=source, sequence=1, stage="signoff",
+        state="complete", values={
+            "candidate_sha": source,
+            "generated_at": "2026-08-31T01:00:00Z",
+        }, evidence=("release-gate",), safe_actions=())
+    dashboard_delivery = views.deliver_dashboard(
+        str(artifacts / "dashboard"), dashboard_snapshot.to_dict(),
+        html_renderer=lambda _canonical: "<main>release dashboard</main>")
+    dashboard = dashboard_delivery["publication_receipt"]
+    dashboard_current = dashboard_delivery["current_head"]
     metrics_input = json.loads((
         Path(ROOT) / "taskplane/tests/fixtures/wave-metrics/closed-run.json"
     ).read_text(encoding="utf-8"))
@@ -373,12 +406,44 @@ def test_post_merge_release_cli_assembles_and_authorizes_from_sealed_receipts(
     release_gate = gate.assemble_protected_main_gate(
         repository, pull_request_head_sha=pull_head, runtime=runtime,
         terminal=terminal, browser=browser, dashboard=dashboard,
+        dashboard_current=dashboard_current,
         wave_metrics=metrics, cleanup=cleanup_receipt,
         openai_provenance=archives[0], claude_provenance=archives[1])
     authorization = gate.authorize_tag(
         repository, "1.1.0", release_gate)
     assert release_gate["source_sha"] == source
     assert authorization["authorized"] is True
+
+    missing_sha = deepcopy(dashboard)
+    missing_sha["candidate"].pop("source_sha")
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="dashboard publication evidence"):
+        gate.assemble_protected_main_gate(
+            repository, pull_request_head_sha=pull_head, runtime=runtime,
+            terminal=terminal, browser=browser, dashboard=missing_sha,
+            dashboard_current=dashboard_current,
+            wave_metrics=metrics, cleanup=cleanup_receipt,
+            openai_provenance=archives[0], claude_provenance=archives[1])
+
+    wrong_snapshot = host_native.HostSurfaceSnapshot.create(
+        workflow_id="taskplane-loop", run_id="release-run",
+        target="signoff", revision="f" * 40, sequence=2, stage="signoff",
+        state="complete", values={
+            "candidate_sha": "f" * 40,
+            "generated_at": "2026-08-31T01:01:00Z",
+        }, evidence=("release-gate",), safe_actions=())
+    wrong_delivery = views.deliver_dashboard(
+        str(artifacts / "wrong-dashboard"), wrong_snapshot.to_dict(),
+        html_renderer=lambda _canonical: "<main>wrong dashboard</main>")
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="dashboard publication evidence"):
+        gate.assemble_protected_main_gate(
+            repository, pull_request_head_sha=pull_head, runtime=runtime,
+            terminal=terminal, browser=browser,
+            dashboard=wrong_delivery["publication_receipt"],
+            dashboard_current=wrong_delivery["current_head"],
+            wave_metrics=metrics, cleanup=cleanup_receipt,
+            openai_provenance=archives[0], claude_provenance=archives[1])
 
 
 class TestThisRepoIsClean(unittest.TestCase):
