@@ -20,12 +20,41 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import NamedTuple, Sequence
+from typing import Any, Mapping, NamedTuple, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from taskplane.ci_policy import (  # noqa: E402
+    BROWSER_INPUTS,
+    build_ci_plan,
+    freeze_candidate,
+    seal_terminal_matrix,
+)
+from taskplane.settings import (  # noqa: E402
+    DEFAULT_SETTINGS_PATH,
+    OperationalSettings,
+    SettingsError,
+    load_settings,
+)
+
 PYTHON = sys.executable
 SCHEMA = "taskplane.local-ci-equivalent/v1"
+CI_RUNTIME_SCHEMA = "taskplane.authoritative-ci-runtime/v1"
+CI_CELL_SCHEMA = "taskplane.authoritative-ci-cell/v1"
+CI_SHARD_COUNT = 5
+CI_PYTEST_SHARDS = 3
+CI_BROWSER_SELECTORS = (
+    "taskplane/tests/test_dashboard_browser.py::"
+    "test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale",
+    "taskplane/tests/test_dashboard_browser.py::"
+    "test_real_browser_svg_graphs_and_single_document_are_truthful",
+)
+CI_MATRICES = ("tests", "quality-package", "browser")
+CI_TIMEOUTS = {"pytest": 300, "quality-package": 300, "browser": 420}
+CI_RUNNER_MINUTES_CEILING = 30
 INVENTORY_VERSION = "REL-2181/2"
 RECURSION_GUARD = "TASKPLANE_LOCAL_CI_ACTIVE"
 PACKAGE_TEMP_ROOT = "TASKPLANE_PACKAGE_TEMP_ROOT"
@@ -45,6 +74,268 @@ class Check(NamedTuple):
     missing_tool: str | None = None
 
 
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _sha256_json(value: object) -> str:
+    return _sha256_bytes(canonical_json(value).encode("utf-8"))
+
+
+def _files_fingerprint(paths: Sequence[str]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(paths):
+        path = ROOT / name
+        if not path.is_file():
+            raise RunnerError(f"CI inventory path is unavailable: {name}")
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _ci_pytest_partitions() -> tuple[tuple[str, ...], ...]:
+    files = tuple(
+        path for path in pytest_inventory()
+        if path != "taskplane/tests/test_dashboard_browser.py"
+    )
+    weights = {path: max(1, (ROOT / path).stat().st_size) for path in files}
+    return partition_pytest_files(files, weights, CI_PYTEST_SHARDS)
+
+
+def _browser_identity(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    env = os.environ if environ is None else environ
+    fixture_path = (
+        ROOT / "taskplane" / "tests" / "fixtures" /
+        "dashboard-browser" / "environment.json"
+    )
+    try:
+        config = json.loads(fixture_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RunnerError("browser runtime declaration is unavailable") from exc
+    executable = ""
+    for name in config.get("executable_environment", []):
+        if env.get(str(name)):
+            executable = os.path.abspath(env[str(name)])
+            break
+    if not executable:
+        executable = next(
+            (
+                os.path.abspath(str(path))
+                for path in config.get("executable_candidates", [])
+                if os.path.isfile(str(path)) and os.access(str(path), os.X_OK)
+            ),
+            "",
+        )
+    if not executable or not os.path.isfile(executable) or not os.access(
+        executable, os.X_OK
+    ):
+        raise RunnerError(
+            "browser environment failure: no declared Chrome/Chromium "
+            "executable is available"
+        )
+    try:
+        result = subprocess.run(
+            [executable, "--version"], text=True, encoding="utf-8",
+            errors="replace", capture_output=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RunnerError("browser environment version probe failed") from exc
+    version = (result.stdout or result.stderr).strip()
+    if result.returncode or not version:
+        raise RunnerError("browser environment version is unavailable")
+    fixture_server = _sha256_json(config.get("fixture_server"))
+    selectors = _sha256_json(config.get("selectors"))
+    snapshot = _files_fingerprint((
+        "taskplane/tests/fixtures/dashboard-browser/environment.json",
+        "taskplane/tests/fixtures/dashboard-browser/topology.json",
+    ))
+    dashboard_artifact = _files_fingerprint((
+        "taskplane/dashboard.py", "taskplane/views.py",
+    ))
+    identity = {
+        "executable": executable,
+        "version": version,
+        "flags": list(config.get("flags") or []),
+        "fixture_server": fixture_server,
+        "snapshot": snapshot,
+        "dashboard_artifact": dashboard_artifact,
+        "selectors": selectors,
+    }
+    if set(identity) != set(BROWSER_INPUTS):
+        raise RunnerError("browser environment declaration is incomplete")
+    return identity
+
+
+def _ci_settings(
+    settings_path: str | Path = DEFAULT_SETTINGS_PATH,
+) -> OperationalSettings:
+    # This is an explicit per-run request through the loader's safe override
+    # boundary. It neither changes the canonical file nor creates a fallback.
+    overlay = {
+        "build": {"shards": CI_SHARD_COUNT},
+        "tests": {"shards": CI_SHARD_COUNT},
+    }
+    try:
+        settings = load_settings(settings_path, overlay=overlay)
+    except SettingsError as exc:
+        raise RunnerError(f"authoritative CI settings were rejected: {exc}") from exc
+    if (
+        settings.build.shards != CI_SHARD_COUNT
+        or settings.tests.shards != CI_SHARD_COUNT
+        or settings.build.concurrency != "native"
+        or settings.receipt.get("precedence") != ["defaults", "file", "overlay"]
+    ):
+        raise RunnerError("authoritative CI safe overlay was not applied exactly")
+    return settings
+
+
+def _ci_declaration(
+    settings: OperationalSettings,
+    *,
+    event: str,
+    ref: str,
+    run_id: str,
+) -> dict[str, Any]:
+    if event == "pull_request":
+        ref_kind = "pull-request"
+        group = f"pull-request-{ref}"
+        cancel = True
+    elif ref == "refs/heads/main":
+        ref_kind = "protected-main"
+        group = f"protected-main-{run_id}"
+        cancel = False
+    else:
+        ref_kind = "release"
+        group = f"release-{run_id}"
+        cancel = False
+    partitions = _ci_pytest_partitions()
+    cells: list[dict[str, Any]] = []
+    for index, selectors in enumerate(partitions, start=1):
+        cells.append({
+            "id": f"pytest-{index}",
+            "kind": "pytest",
+            "matrix": "tests",
+            "selectors": list(selectors),
+            "paths": list(selectors),
+            "timeout_seconds": CI_TIMEOUTS["pytest"],
+            "cleanup_resources": [f"generated-state:pytest-{index}"],
+        })
+    cells.extend((
+        {
+            "id": "quality-package",
+            "kind": "quality-package",
+            "matrix": "quality-package",
+            "selectors": [
+                "command:compile-import", "command:ruff", "command:mypy",
+                "command:release-surface", "command:package-openai",
+                "command:package-claude",
+            ],
+            "paths": [
+                "requirements-dev.lock", "pyproject.toml",
+                "scripts/package_openai.py", "scripts/package_claude.py",
+            ],
+            "timeout_seconds": CI_TIMEOUTS["quality-package"],
+            "cleanup_resources": ["generated-state:quality-package"],
+        },
+        {
+            "id": "dashboard-browser",
+            "kind": "browser",
+            "matrix": "browser",
+            "execution": "ci-only",
+            "selectors": list(CI_BROWSER_SELECTORS),
+            "paths": [
+                "taskplane/tests/test_dashboard_browser.py",
+                "taskplane/tests/fixtures/dashboard-browser",
+            ],
+            "timeout_seconds": CI_TIMEOUTS["browser"],
+            "cleanup_resources": [
+                "process:dashboard-browser", "generated-state:dashboard-browser",
+            ],
+        },
+    ))
+    return {
+        "settings": {**settings.to_dict(), "digest": settings.digest},
+        "run": {
+            "event": event,
+            "ref_kind": ref_kind,
+            "group": group,
+            "cancel_in_progress": cancel,
+        },
+        "matrices": list(CI_MATRICES),
+        "serializations": [],
+        "cells": cells,
+    }
+
+
+def build_authoritative_ci_runtime(
+    *,
+    source_sha: str,
+    event: str,
+    ref: str,
+    run_id: str,
+    settings_path: str | Path = DEFAULT_SETTINGS_PATH,
+    browser: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if source_sha != _git("rev-parse", "HEAD"):
+        raise RunnerError("authoritative CI source SHA is not the checked out HEAD")
+    settings = _ci_settings(settings_path)
+    declaration = _ci_declaration(
+        settings, event=event, ref=ref, run_id=run_id,
+    )
+    tracked_tests = pytest_inventory()
+    fingerprints = {
+        "source": _sha256_json({"source_sha": source_sha}),
+        "tests": _files_fingerprint(tracked_tests),
+        "settings": settings.digest,
+        "inventory": _sha256_json(tracked_tests),
+        "selector": _sha256_json([
+            cell["selectors"] for cell in declaration["cells"]
+        ]),
+        "radius": _sha256_json({
+            "selection": settings.tests.selection,
+            "paths": [cell["paths"] for cell in declaration["cells"]],
+        }),
+        "shard-plan": _sha256_json(declaration),
+        "runner": _sha256_json({
+            "implementation": platform.python_implementation(),
+            "python": platform.python_version(),
+            "platform": platform.system(),
+        }),
+        "environment": _sha256_json({"event": event, "ref": ref}),
+    }
+    candidate = freeze_candidate({
+        "source_sha": source_sha,
+        "fingerprints": fingerprints,
+        "browser": dict(browser) if browser is not None else _browser_identity(),
+    })
+    plan = build_ci_plan(candidate, declaration)
+    if sum(cell["timeout_seconds"] for cell in plan["cells"]) > (
+        CI_RUNNER_MINUTES_CEILING * 60
+    ):
+        raise RunnerError("authoritative CI runner-minute ceiling was exceeded")
+    settings_receipt = {
+        "schema": "taskplane.authoritative-ci-settings-receipt/v1",
+        "source": str(Path(settings_path).resolve()),
+        "precedence": list(settings.receipt["precedence"]),
+        "candidate_sha": source_sha,
+        "settings_digest": settings.digest,
+        "effective": settings.to_dict(),
+        "loader_receipt": dict(settings.receipt),
+    }
+    settings_receipt["fingerprint"] = _sha256_json(settings_receipt)
+    payload = {
+        "schema": CI_RUNTIME_SCHEMA,
+        "candidate": candidate,
+        "settings_receipt": settings_receipt,
+        "plan": plan,
+    }
+    return {**payload, "fingerprint": _sha256_json(payload)}
+
+
 PYTEST_SHARD_COUNT = 4
 PYTEST_CHECK_IDS = tuple(
     f"pytest-shard-{index + 1}" for index in range(PYTEST_SHARD_COUNT)
@@ -52,7 +343,7 @@ PYTEST_CHECK_IDS = tuple(
 # Content address of every repository-relative `path:estimated-byte-weight` row.
 # A file added, removed, renamed, or reweighted must deliberately refresh this
 # pin, so the complete suite cannot silently shrink or use stale balancing data.
-PYTEST_WEIGHT_SHA256 = "38d2f2d79356058a5696434dfcb66bc95c7b1e1df14ab5fd46aae8790b2eb6d9"
+PYTEST_WEIGHT_SHA256 = "1b6ae65af879838874fb91d000f5ddc11b2f62b62e95088198e9fe52bf6bdc54"
 
 
 def pytest_inventory() -> tuple[str, ...]:
@@ -497,6 +788,320 @@ def _internal(action: str) -> int:
     raise RunnerError(f"unknown internal action: {action}")
 
 
+def _load_runtime_plan(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RunnerError("authoritative CI runtime plan is unavailable") from exc
+    if not isinstance(value, dict) or value.get("schema") != CI_RUNTIME_SCHEMA:
+        raise RunnerError("authoritative CI runtime plan schema is invalid")
+    expected = _sha256_json({
+        key: item for key, item in value.items() if key != "fingerprint"
+    })
+    if value.get("fingerprint") != expected:
+        raise RunnerError("authoritative CI runtime plan is stale or tampered")
+    candidate = value.get("candidate")
+    plan = value.get("plan")
+    receipt = value.get("settings_receipt")
+    if not all(isinstance(item, dict) for item in (candidate, plan, receipt)):
+        raise RunnerError("authoritative CI runtime plan is incomplete")
+    if (
+        plan.get("candidate_fingerprint") != candidate.get("fingerprint")
+        or plan.get("source_sha") != candidate.get("source_sha")
+        or receipt.get("candidate_sha") != candidate.get("source_sha")
+        or receipt.get("settings_digest") != plan.get("settings_digest")
+    ):
+        raise RunnerError("CI plan, candidate, and settings receipt do not match")
+    return value
+
+
+def _atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(canonical_json(value) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _ci_cell_commands(cell: Mapping[str, Any], root: Path) -> list[list[str]]:
+    kind = cell.get("kind")
+    selectors = [str(item) for item in cell.get("selectors") or []]
+    if kind in {"pytest", "browser"}:
+        return [[PYTHON, "-m", "pytest", "-q", *selectors]]
+    if kind == "quality-package":
+        return [
+            [PYTHON, __file__, "--internal", "compile-import"],
+            [PYTHON, "-m", "ruff", "check", "taskplane", "hooks", "scripts"],
+            [PYTHON, "-m", "mypy", "--strict", "--config-file", "pyproject.toml"],
+            [PYTHON, "scripts/ci_evals.py", "--verify-release-surface", "--json"],
+            [PYTHON, "scripts/package_openai.py", "--output-dir", str(root / "openai")],
+            [PYTHON, "scripts/package_claude.py", "--output-dir", str(root / "claude")],
+        ]
+    raise RunnerError(f"unsupported authoritative CI cell kind: {kind}")
+
+
+def _classify_ci_failure(status: str, output: str) -> str | None:
+    if status == "green":
+        return None
+    folded = output.casefold()
+    if "environment failure" in folded or "no declared chrome" in folded:
+        return "environment"
+    if any(term in folded for term in (
+        "no space left", "runner", "network", "temporary failure",
+        "connection reset", "infrastructure failure",
+    )):
+        return "infrastructure"
+    if any(term in folded for term in ("fixture", "assertionerror: test", "collection error")):
+        return "test"
+    return "product"
+
+
+def _owned_cell_root(
+    runtime: Mapping[str, Any], cell_id: str, owner: Path,
+) -> tuple[Path, dict[str, Any]]:
+    owner = owner.resolve(strict=True)
+    candidate = runtime["candidate"]
+    name = (
+        f"taskplane-ci-{str(candidate['fingerprint'])[:12]}-"
+        f"{cell_id.replace('_', '-')}"
+    )
+    target = owner / name
+    if target.exists() or target.is_symlink():
+        raise RunnerError("owned CI cell root already exists")
+    registration = {
+        "schema": "taskplane.ci-owned-cell/v1",
+        "candidate_fingerprint": candidate["fingerprint"],
+        "source_sha": candidate["source_sha"],
+        "cell_id": cell_id,
+        "containment_root": str(owner),
+        "relative_name": name,
+        "registered_before_run": True,
+    }
+    registration["fingerprint"] = _sha256_json(registration)
+    return target, registration
+
+
+def _cleanup_ci_cell_root(
+    target: Path, registration: Mapping[str, Any],
+) -> dict[str, Any]:
+    material = {key: value for key, value in registration.items()
+                if key != "fingerprint"}
+    if registration.get("fingerprint") != _sha256_json(material):
+        raise RunnerError("CI cleanup ownership registration is invalid")
+    root = Path(str(registration.get("containment_root") or ""))
+    try:
+        root = root.resolve(strict=True)
+    except OSError as exc:
+        raise RunnerError("CI cleanup containment root is unavailable") from exc
+    if target.is_symlink():
+        raise RunnerError("CI cleanup target is a symlink")
+    expected = root / str(registration.get("relative_name") or "")
+    if target != expected or target.parent != root or not target.name.startswith(
+        "taskplane-ci-"
+    ):
+        raise RunnerError("CI cleanup target is ambiguous or unowned")
+    if target.exists():
+        shutil.rmtree(target)
+    leaks = [str(target)] if target.exists() or target.is_symlink() else []
+    receipt = {
+        "schema": "taskplane.ci-cleanup-receipt/v1",
+        "registration_fingerprint": registration["fingerprint"],
+        "resources": [str(target)],
+        "status": "clean" if not leaks else "attention",
+        "leak_count": len(leaks),
+        "leaks": leaks,
+    }
+    return {**receipt, "fingerprint": _sha256_json(receipt)}
+
+
+def run_authoritative_ci_cell(
+    runtime_path: Path,
+    cell_id: str,
+    receipt_path: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> int:
+    runtime = _load_runtime_plan(runtime_path)
+    candidate = runtime["candidate"]
+    if _git("rev-parse", "HEAD") != candidate["source_sha"]:
+        raise RunnerError("CI cell checkout is not the frozen candidate")
+    matches = [cell for cell in runtime["plan"]["cells"]
+               if cell.get("id") == cell_id]
+    if len(matches) != 1:
+        raise RunnerError("CI cell is absent or ambiguous in the frozen plan")
+    cell = matches[0]
+    env = dict(os.environ if environ is None else environ)
+    runner_temp = Path(env.get("RUNNER_TEMP") or tempfile.gettempdir())
+    runner_temp.mkdir(parents=True, exist_ok=True)
+    target, registration = _owned_cell_root(runtime, cell_id, runner_temp)
+    registration_path = receipt_path.with_suffix(".ownership.json")
+    _atomic_write_json(registration_path, registration)
+    target.mkdir()
+    (target / "home").mkdir()
+    (target / "tmp").mkdir()
+    safe_env = _safe_env(target)
+    if cell.get("kind") == "browser":
+        safe_env["TASKPLANE_BROWSER_EXECUTABLE"] = str(
+            candidate["browser"]["executable"]
+        )
+    started = time.monotonic()
+    deadline = started + int(cell["timeout_seconds"])
+    output_parts: list[str] = []
+    command_receipts: list[dict[str, Any]] = []
+    outcome = "success"
+    active: subprocess.Popen[str] | None = None
+    interrupted: str | None = None
+
+    def interrupt(signum: int, _frame: object) -> None:
+        nonlocal interrupted
+        interrupted = "cancellation" if signum == signal.SIGTERM else "interruption"
+        if active is not None and active.poll() is None:
+            try:
+                os.killpg(active.pid, signal.SIGTERM)
+            except (OSError, AttributeError):
+                active.terminate()
+
+    previous = {
+        signum: signal.signal(signum, interrupt)
+        for signum in (signal.SIGTERM, signal.SIGINT)
+    }
+    cleanup_receipt: dict[str, Any]
+    try:
+        for command in _ci_cell_commands(cell, target):
+            if interrupted:
+                outcome = interrupted
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                outcome = "timeout"
+                break
+            command_started = time.monotonic()
+            active = subprocess.Popen(
+                command, cwd=ROOT, env=safe_env, text=True, encoding="utf-8",
+                errors="replace", stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, start_new_session=True,
+            )
+            try:
+                output, _ = active.communicate(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                outcome = "timeout"
+                try:
+                    os.killpg(active.pid, signal.SIGTERM)
+                except (OSError, AttributeError):
+                    active.terminate()
+                try:
+                    output, _ = active.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(active.pid, signal.SIGKILL)
+                    except (OSError, AttributeError):
+                        active.kill()
+                    output, _ = active.communicate()
+            output_parts.append(output or "")
+            command_receipts.append({
+                "argv": command,
+                "returncode": active.returncode,
+                "duration_ms": int((time.monotonic() - command_started) * 1000),
+                "output_digest": _digest(output or ""),
+            })
+            if interrupted:
+                outcome = interrupted
+                break
+            if outcome == "timeout" or active.returncode != 0:
+                if outcome != "timeout":
+                    outcome = "failure"
+                break
+            active = None
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        if active is not None and active.poll() is None:
+            try:
+                os.killpg(active.pid, signal.SIGKILL)
+            except (OSError, AttributeError):
+                active.kill()
+            active.wait()
+        cleanup_receipt = _cleanup_ci_cell_root(target, registration)
+
+    output = "".join(output_parts)
+    log_path = receipt_path.with_suffix(".log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(output, encoding="utf-8", errors="replace")
+    status = "green" if outcome == "success" and cleanup_receipt["leak_count"] == 0 else "red"
+    observed_environment = {
+        "implementation": platform.python_implementation(),
+        "python": platform.python_version(),
+        "os": os.name,
+        "platform": platform.system(),
+        "machine": platform.machine(),
+    }
+    payload = {
+        "schema": CI_CELL_SCHEMA,
+        "id": cell_id,
+        "kind": cell["kind"],
+        "status": status,
+        "outcome": outcome,
+        "classification": _classify_ci_failure(status, output),
+        "candidate_fingerprint": candidate["fingerprint"],
+        "source_sha": candidate["source_sha"],
+        "plan_fingerprint": runtime["plan"]["fingerprint"],
+        "settings_receipt_fingerprint": runtime["settings_receipt"]["fingerprint"],
+        "environment": {
+            "candidate_fingerprint": candidate["fingerprints"]["environment"],
+            "observed": observed_environment,
+            "observed_fingerprint": _sha256_json(observed_environment),
+        },
+        "browser_fingerprint": (
+            candidate["browser_fingerprint"] if cell["kind"] == "browser" else None
+        ),
+        "selectors": list(cell["selectors"]),
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "commands": command_receipts,
+        "output_digest": _digest(output),
+        "cleanup": cleanup_receipt,
+    }
+    receipt = {**payload, "receipt": _sha256_json(payload)}
+    _atomic_write_json(receipt_path, receipt)
+    return 0 if status == "green" else 1
+
+
+def aggregate_authoritative_ci(
+    runtime_path: Path, receipt_root: Path, output_path: Path,
+) -> int:
+    runtime = _load_runtime_plan(runtime_path)
+    receipts: list[dict[str, Any]] = []
+    for path in sorted(receipt_root.rglob("*.json")):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(row, dict) and row.get("schema") == CI_CELL_SCHEMA:
+            receipts.append(row)
+    expected = {cell["id"] for cell in runtime["plan"]["cells"]}
+    ids = [str(row.get("id") or "") for row in receipts]
+    if set(ids) != expected or len(ids) != len(set(ids)):
+        raise RunnerError("terminal aggregate requires exactly one receipt per CI cell")
+    for row in receipts:
+        material = {key: value for key, value in row.items() if key != "receipt"}
+        if row.get("receipt") != _sha256_json(material):
+            raise RunnerError(f"CI cell receipt is stale: {row.get('id')}")
+        if (
+            row.get("candidate_fingerprint") != runtime["candidate"]["fingerprint"]
+            or row.get("source_sha") != runtime["candidate"]["source_sha"]
+            or row.get("plan_fingerprint") != runtime["plan"]["fingerprint"]
+            or row.get("settings_receipt_fingerprint")
+            != runtime["settings_receipt"]["fingerprint"]
+            or (row.get("cleanup") or {}).get("leak_count") != 0
+        ):
+            raise RunnerError(f"CI cell receipt binding failed: {row.get('id')}")
+    terminal = seal_terminal_matrix(
+        runtime["candidate"], runtime["plan"], receipts,
+    )
+    terminal["settings_receipt"] = runtime["settings_receipt"]
+    terminal["runtime_fingerprint"] = runtime["fingerprint"]
+    _atomic_write_json(output_path, terminal)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = None) -> int:
     argsv = list(sys.argv[1:] if argv is None else argv)
     env = os.environ if environ is None else environ
@@ -506,6 +1111,16 @@ def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = 
     parser.add_argument("--shard-root", type=Path)
     parser.add_argument("--result", type=Path)
     parser.add_argument("--internal")
+    parser.add_argument("--emit-ci-plan", type=Path)
+    parser.add_argument("--runtime-plan", type=Path)
+    parser.add_argument("--ci-cell")
+    parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--aggregate-ci", type=Path)
+    parser.add_argument("--receipt-root", type=Path)
+    parser.add_argument("--source-sha")
+    parser.add_argument("--event")
+    parser.add_argument("--ref")
+    parser.add_argument("--run-id")
     args = parser.parse_args(argsv)
     if args.internal:
         return _internal(args.internal)
@@ -513,6 +1128,37 @@ def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = 
         if args.shard_root is None or args.result is None or not 0 <= args.worker < len(SHARDS):
             raise RunnerError("malformed worker invocation")
         return _worker(args.worker, args.shard_root, args.result)
+    if args.emit_ci_plan is not None:
+        runtime = build_authoritative_ci_runtime(
+            source_sha=args.source_sha or _git("rev-parse", "HEAD"),
+            event=args.event or "pull_request",
+            ref=args.ref or "local",
+            run_id=args.run_id or "local",
+        )
+        _atomic_write_json(args.emit_ci_plan, runtime)
+        print(canonical_json({
+            "runtime_fingerprint": runtime["fingerprint"],
+            "candidate_fingerprint": runtime["candidate"]["fingerprint"],
+            "plan_fingerprint": runtime["plan"]["fingerprint"],
+            "matrix": {"include": [
+                {"id": cell["id"], "kind": cell["kind"]}
+                for cell in runtime["plan"]["cells"]
+            ]},
+            "max_parallel": runtime["plan"]["max_parallel"],
+        }))
+        return 0
+    if args.ci_cell is not None:
+        if args.runtime_plan is None or args.receipt is None:
+            raise RunnerError("CI cell requires --runtime-plan and --receipt")
+        return run_authoritative_ci_cell(
+            args.runtime_plan, args.ci_cell, args.receipt, environ=env,
+        )
+    if args.aggregate_ci is not None:
+        if args.runtime_plan is None or args.receipt_root is None:
+            raise RunnerError("CI aggregate requires --runtime-plan and --receipt-root")
+        return aggregate_authoritative_ci(
+            args.runtime_plan, args.receipt_root, args.aggregate_ci,
+        )
     if env.get(RECURSION_GUARD):
         raise RunnerError("recursive top-level ci_local invocation refused")
     before = _git("status", "--porcelain=v1", "--untracked-files=all")

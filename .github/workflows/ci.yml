@@ -6,871 +6,184 @@ on:
   pull_request:
     branches: [main]
 
-# Least privilege: CI only reads the checkout. Without this block the jobs
-# would inherit the repository default GITHUB_TOKEN scope (often read-write).
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('pull-request-{0}', github.event.pull_request.number) || format('protected-main-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  tests:
-    name: tests (python ${{ matrix.python }})
+  # Historical key retained for branch-protection compatibility. This is now
+  # the read-only, settings-derived plan rather than an independent test job.
+  wave3-contracts:
+    name: freeze exact candidate and authoritative CI plan
     runs-on: ubuntu-latest
-    # This matrix is the host-neutral contract. Keep Codex markers explicitly
-    # empty so a runner image or caller environment cannot silently switch the
-    # workflow detector/model defaults under the portable suite.
-    env:
-      CODEX_HOME: ""
-      CODEX_THREAD_ID: ""
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - python: "3.10"
-            tests: >-
-              taskplane/tests/test_r0002_reviewkernel_regression_floor.py
-              taskplane/tests/test_repository_preflight.py
-              taskplane/tests/test_storage_kernel.py
-              taskplane/tests/test_windows_portability.py
-              taskplane/tests/test_stage_non_build_handoffs.py
-              taskplane/tests/test_stage_cross_host.py
-              taskplane/tests/test_stage_rollout.py
-              taskplane/tests/test_stage_r0003_preservation.py
-              taskplane/tests/test_stage_release_matrix.py
-              taskplane/tests/test_stage_loop_integration.py
-              taskplane/tests/test_stage_cli.py
-              taskplane/tests/test_r0006_python_matrix.py
-          - python: "3.11"
-            tests: >-
-              taskplane/tests/test_r0002_reviewkernel_regression_floor.py
-              taskplane/tests/test_repository_preflight.py
-              taskplane/tests/test_storage_kernel.py
-              taskplane/tests/test_windows_portability.py
-              taskplane/tests/test_stage_non_build_handoffs.py
-              taskplane/tests/test_stage_cross_host.py
-              taskplane/tests/test_stage_rollout.py
-              taskplane/tests/test_stage_r0003_preservation.py
-              taskplane/tests/test_stage_release_matrix.py
-              taskplane/tests/test_stage_loop_integration.py
-              taskplane/tests/test_stage_cli.py
-              taskplane/tests/test_r0006_python_matrix.py
-          - python: "3.12"
-            tests: >-
-              taskplane/tests
-              --ignore=taskplane/tests/test_codex_compat.py
-              --ignore=taskplane/tests/test_dispatch_parity.py
-              --ignore=taskplane/tests/test_lens_signals_fixtures.py
-              --ignore=taskplane/tests/test_stage_waves.py
-          - python: "3.13"
-            tests: >-
-              taskplane/tests/test_r0002_reviewkernel_regression_floor.py
-              taskplane/tests/test_repository_preflight.py
-              taskplane/tests/test_storage_kernel.py
-              taskplane/tests/test_windows_portability.py
-              taskplane/tests/test_stage_non_build_handoffs.py
-              taskplane/tests/test_stage_cross_host.py
-              taskplane/tests/test_stage_rollout.py
-              taskplane/tests/test_stage_r0003_preservation.py
-              taskplane/tests/test_stage_release_matrix.py
-              taskplane/tests/test_stage_loop_integration.py
-              taskplane/tests/test_stage_cli.py
-              taskplane/tests/test_r0006_python_matrix.py
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      max-parallel: ${{ steps.plan.outputs.max-parallel }}
+      artifact-days: ${{ steps.plan.outputs.artifact-days }}
+      candidate-sha: ${{ steps.plan.outputs.candidate-sha }}
     steps:
-      # Third-party actions are pinned to full commit SHAs (tag as comment) so
-      # a moved/compromised tag cannot change what runs in the release-trust path.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Install hash-locked sealed test dependency tree
-        shell: bash
-        run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
-
-      - name: Configure git (the gates and tests need commit identity)
-        run: |
-          git config --global user.email "ci@taskplane"
-          git config --global user.name "taskplane-ci"
-
-      # P2 is intentionally one unconditional step in the matrix job. A
-      # syntax/import failure therefore stops its Python leg before pytest,
-      # while the representative commands prove the public entry surfaces on
-      # the same interpreter that will run that leg's tests.
-      - name: Compile and import every shipped Python entry point
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-          TASKPLANE_HOME: ${{ runner.temp }}/taskplane-python-${{ matrix.python }}-state
-          TASKPLANE_COMPAT_WORKSPACE: ${{ runner.temp }}/taskplane-python-${{ matrix.python }}-workspace
-        run: |
-          python - <<'PY'
-          # R-0006-COMPILE-IMPORT-BEGIN
-          from __future__ import annotations
-          import importlib
-          from pathlib import Path
-          import subprocess
-          import sys
-
-          root = Path.cwd()
-          tracked = subprocess.run(
-              ["git", "ls-files", "--", "taskplane/*.py", "hooks/*.py"],
-              text=True, encoding="utf-8", capture_output=True, check=True,
-          ).stdout.splitlines()
-          shipped = sorted(
-              Path(row) for row in tracked
-              if Path(row).suffix == ".py" and len(Path(row).parts) == 2
-              and Path(row).parts[0] in {"taskplane", "hooks"}
-          )
-          if not shipped or Path("taskplane/tp.py") not in shipped \
-                  or Path("hooks/host_native_runtime.py") not in shipped:
-              raise SystemExit("tracked shipped Python surface is incomplete")
-          for relative in shipped:
-              source = (root / relative).read_text(encoding="utf-8")
-              compile(source, str(relative), "exec")
-          sys.path[:0] = [str(root / "taskplane"), str(root)]
-          loaded = []
-          for relative in shipped:
-              module_name = ".".join(relative.with_suffix("").parts)
-              importlib.import_module(module_name)
-              loaded.append(module_name)
-          print(f"compiled and imported {len(loaded)} tracked shipped "
-                "Python entry points")
-          # R-0006-COMPILE-IMPORT-END
-          PY
-          python taskplane/tp.py version --verify
-          python taskplane/tp.py --help >/dev/null
-          mkdir -p "$TASKPLANE_COMPAT_WORKSPACE"
-          git -C "$TASKPLANE_COMPAT_WORKSPACE" init -q
-          python taskplane/tp.py graph --workspace "$TASKPLANE_COMPAT_WORKSPACE" scan >/dev/null
-          python taskplane/tp.py status --workspace "$TASKPLANE_COMPAT_WORKSPACE" >/dev/null
-          python scripts/ci_evals.py --corpus
-
-      # Run from the repo ROOT (not `working-directory: taskplane`): conftest.py
-      # imports the `taskplane` package for shared store isolation, which only
-      # resolves when the repo root is on sys.path. Running inside taskplane/
-      # aborted collection with ModuleNotFoundError (v2.3.1 fix).
-      - name: Run the authoritative suite or compatibility smoke set
-        run: python -m pytest ${{ matrix.tests }} -q
-
-      # R-0001 forward-only release integration. The 3.12 leg already owns
-      # the complete suite, so this adds one deterministic package/runtime
-      # proof without replaying it on the compatibility smoke legs.
-      - name: Verify forward-release manifests, archives, and runtime
-        if: matrix.python == '3.12'
-        run: python scripts/ci_evals.py --verify-release-surface --json
-
-      # One public unittest canary retains second-runner/store-isolation
-      # coverage without executing the entire pytest-owned suite twice.
-      - name: Unittest runner/store-isolation canary
-        if: matrix.python == '3.12'
-        run: >-
-          python -m unittest
-          taskplane.tests.test_runner_isolation.TestUnittestRunnerIsolation
-          -v
-
-      # ENCODING PORTABILITY, made gateable on the fast runner.
-      #
-      # Every `open()` without an explicit encoding, and every print of an
-      # arrow or em dash, uses the HOST's default text encoding. On Linux
-      # that is UTF-8 and the defect is invisible; on Windows it is cp1252
-      # and taskplane crashed on its own output — `tp kb migrate` and
-      # `tp northstar` died mid-print, requirement files could not be
-      # written at all. Those failures only ever appeared on the advisory
-      # windows-latest leg, which is slow, times out, and cannot block.
-      #
-      # A C locale gives Python an ASCII default — strictly NARROWER than
-      # cp1252 — so this leg reproduces the whole class in about two
-      # minutes on ubuntu, and blocks. Two cases skip themselves here
-      # because they carry non-ASCII through argv and filesystem paths,
-      # which a C-locale host cannot represent at all; that is a harness
-      # limit rather than a product one (Windows paths are UTF-16).
-      - name: Encoding-sensitive boundaries under a non-UTF-8 locale
-        if: matrix.python == '3.12'
-        env:
-          LC_ALL: C
-          LANG: C
-          PYTHONUTF8: "0"
-          PYTHONCOERCECLOCALE: "0"
-        run: >-
-          python -m pytest -q
-          taskplane/tests/test_subprocess_encoding.py
-          taskplane/tests/test_windows_portability.py
-
-      # Per-task cost ratchet (P3, R-0012). Between mid-July and v3 phase 3
-      # the loop's per-task cost grew about thirteenfold with no single
-      # change to blame: four defensible local decisions multiplied, and
-      # governance was the only part of this system without a budget. This
-      # leg drives a complete miniature loop and pins what the engine
-      # MANDATES per task. Raising a pin is allowed and expected — it just
-      # has to be a decision someone records, not drift nobody sees.
-      - name: Per-task cost ratchet (governance has a budget too)
-        if: matrix.python == '3.12'
-        run: python3 scripts/ci_loop_cost.py
-
-  # H-09: one blocking, non-matrix quality job owns the repository's pinned
-  # Python lint/type policy.  Keeping it outside the test matrix avoids paying
-  # for the same static analysis on every compatibility interpreter.
-  python-quality:
-    name: Python quality (ruff + strict mypy)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.14"
-      - name: Install hash-locked Python quality tools
-        run: >-
-          python -m pip install --disable-pip-version-check
-          --require-hashes -r requirements-dev.lock
-      - name: Reject Python correctness lint failures
-        run: python -m ruff check --output-format=github taskplane hooks scripts
-      - name: Enforce the strict typed-boundary policy
-        run: python -m mypy --strict --config-file pyproject.toml
-
-  # V1 is deliberately separate from the ordinary test matrix.  The scorer
-  # starts with no inherited credentials/proxies and a sitecustomize guard
-  # installed before any scorer import, so a green receipt proves the frozen
-  # corpus used zero tokens and made no egress attempt.
-  zero-token-corpus:
-    name: zero-token corpus (credential-empty, no-egress)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Prove no-egress guard and deterministic corpus
+      - name: Emit one settings-derived read-only plan
+        id: plan
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EXACT_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+          RUN_ID: ${{ github.run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          guard_dir="$RUNNER_TEMP/taskplane-no-egress"
-          isolated_home="$RUNNER_TEMP/taskplane-zero-home"
-          corrupt_root="$RUNNER_TEMP/taskplane-corrupt-corpus"
-          mkdir -p "$guard_dir" "$isolated_home" "$corrupt_root"
-          cat >"$guard_dir/sitecustomize.py" <<'PY'
-          """CI-only, pre-import network denial for the zero-token corpus."""
-          import socket
-          try:
-              import _socket
-          except ImportError:  # pragma: no cover - CPython always has it
-              _socket = None
-
-          ATTEMPTS = []
-
-          class NoEgressError(OSError):
-              pass
-
-          def deny(label):
-              def blocked(*_args, **_kwargs):
-                  ATTEMPTS.append(label)
-                  raise NoEgressError("network denied before scorer import: " + label)
-              return blocked
-
-          class DeniedSocket:
-              def __new__(cls, *_args, **_kwargs):
-                  return deny("socket.socket")()
-
-              def connect(self, *_args, **_kwargs):
-                  return deny("socket.connect")()
-
-              def connect_ex(self, *_args, **_kwargs):
-                  return deny("socket.connect_ex")()
-
-          socket.socket = DeniedSocket
-          socket.SocketType = DeniedSocket
-          socket.create_connection = deny("socket.create_connection")
-          if hasattr(socket, "socketpair"):
-              socket.socketpair = deny("socket.socketpair")
-          if hasattr(socket, "fromfd"):
-              socket.fromfd = deny("socket.fromfd")
-          if _socket is not None:
-              _socket.socket = DeniedSocket
-
-          for name in (
-              "getaddrinfo", "gethostbyname", "gethostbyname_ex",
-              "gethostbyaddr", "getnameinfo",
-          ):
-              blocked = deny("socket." + name)
-              if hasattr(socket, name):
-                  setattr(socket, name, blocked)
-              if _socket is not None and hasattr(_socket, name):
-                  setattr(_socket, name, blocked)
+          python3 scripts/ci_local.py \
+            --emit-ci-plan "$RUNNER_TEMP/ci-runtime.json" \
+            --source-sha "$CANDIDATE_SHA" --event "$EVENT_NAME" \
+            --ref "$EXACT_REF" --run-id "$RUN_ID"
+          python3 - "$RUNNER_TEMP/ci-runtime.json" "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          runtime = json.load(open(sys.argv[1], encoding="utf-8"))
+          plan = runtime["plan"]
+          matrix = {"include": [
+              {"id": row["id"], "kind": row["kind"]}
+              for row in plan["cells"]
+          ]}
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write("matrix=" + json.dumps(matrix, separators=(",", ":")) + "\n")
+              output.write(f"max-parallel={plan['max_parallel']}\n")
+              output.write("artifact-days=" + str(
+                  runtime["settings_receipt"]["effective"]["cleanup"]["artifacts_days"]
+              ) + "\n")
+              output.write(f"candidate-sha={runtime['candidate']['source_sha']}\n")
           PY
+      - name: Preserve frozen plan and settings receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-runtime-${{ steps.plan.outputs.candidate-sha }}
+          path: ${{ runner.temp }}/ci-runtime.json
+          if-no-files-found: error
+          retention-days: ${{ fromJSON(steps.plan.outputs.artifact-days) }}
 
-          env -i PATH="$PATH" HOME="$isolated_home" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONPATH="$guard_dir" python3 -B - <<'PY'
-          import os
-          import sitecustomize
-          import socket
-
-          assert set(os.environ) == {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"}
-          probes = (
-              ("socket.socket", lambda: socket.socket()),
-              ("socket.connect",
-               lambda: socket.socket.connect(None, ("example.invalid", 443))),
-              ("socket.connect_ex",
-               lambda: socket.socket.connect_ex(None, ("example.invalid", 443))),
-              ("socket.create_connection",
-               lambda: socket.create_connection(("example.invalid", 443))),
-              ("socket.getaddrinfo",
-               lambda: socket.getaddrinfo("example.invalid", 443)),
-          )
-          for label, probe in probes:
-              try:
-                  probe()
-              except sitecustomize.NoEgressError:
-                  pass
-              else:
-                  raise SystemExit("no-egress probe unexpectedly succeeded: " + label)
-          assert sitecustomize.ATTEMPTS == [label for label, _ in probes]
-          PY
-
-          env -i PATH="$PATH" HOME="$isolated_home" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONPATH="$guard_dir" python3 -B scripts/ci_evals.py --corpus >"$RUNNER_TEMP/corpus-1.txt" 2>&1
-          env -i PATH="$PATH" HOME="$isolated_home" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONPATH="$guard_dir" python3 -B scripts/ci_evals.py --corpus >"$RUNNER_TEMP/corpus-2.txt" 2>&1
-          cmp "$RUNNER_TEMP/corpus-1.txt" "$RUNNER_TEMP/corpus-2.txt"
-
-          cp -R evals "$corrupt_root/evals"
-          env -i PATH="$PATH" HOME="$isolated_home" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONPATH="$guard_dir" python3 -B - "$corrupt_root/evals/compliant/expected.json" <<'PY'
-          import json
-          import sys
-          path = sys.argv[1]
-          with open(path, encoding="utf-8") as handle:
-              expected = json.load(handle)
-          expected["rates"]["artifact_surfacing"] = 0.0
-          with open(path, "w", encoding="utf-8") as handle:
-              json.dump(expected, handle, sort_keys=True)
-          PY
-          if env -i PATH="$PATH" HOME="$isolated_home" LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONPATH="$guard_dir" python3 -B scripts/ci_evals.py --corpus --root "$corrupt_root" >"$RUNNER_TEMP/corpus-corrupt.txt" 2>&1; then
-            echo "corrupted expected.json was incorrectly accepted" >&2
-            exit 1
-          fi
-          grep -F "MISMATCH artifact_surfacing" "$RUNNER_TEMP/corpus-corrupt.txt"
-
-  wave3-contracts:
-    name: R-0006 graph + CLI contracts
+  authoritative:
+    name: authoritative (${{ matrix.id }})
+    needs: [wave3-contracts]
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.kind == 'browser' && 7 || 5 }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.wave3-contracts.outputs.max-parallel) }}
+      matrix: ${{ fromJSON(needs.wave3-contracts.outputs.matrix) }}
+    env:
+      CODEX_HOME: ""
+      CODEX_THREAD_ID: ""
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ needs.wave3-contracts.outputs.candidate-sha }}
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Current import-cycle inventory and bounds
-        run: >-
-          python3 taskplane/import_cycles.py
-          --root .
-          --policy taskplane/tests/fixtures/import-cycles.json
-          --check
-      - name: Install hash-locked sealed test dependency tree
+      - name: Restore the immutable candidate plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ci-runtime-${{ needs.wave3-contracts.outputs.candidate-sha }}
+          path: ${{ runner.temp }}/runtime
+      - name: Install hash-locked sealed validation dependencies
         shell: bash
         run: |
+          set -euo pipefail
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
-      - name: Cycle, graph quality, and public CLI recovery contracts
+          python -m pip install --disable-pip-version-check --require-hashes --no-deps \
+            -r "$RUNNER_TEMP/requirements-test.lock"
+      - name: Install hash-locked quality tools only in their owning cell
+        if: matrix.kind == 'quality-package'
         run: >-
-          python3 -m pytest -q
-          taskplane/tests/test_r0006_import_cycle_ratchet.py
-          taskplane/tests/test_r0006_graph_quality.py
-          taskplane/tests/test_r0006_cli_errors.py
+          python -m pip install --disable-pip-version-check
+          --require-hashes -r requirements-dev.lock
+      - name: Configure exact-checkout git identity
+        run: |
+          git config --global user.email "ci@taskplane"
+          git config --global user.name "taskplane-ci"
+      - name: Execute only this disjoint candidate-bound cell
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/cell-evidence"
+          python3 scripts/ci_local.py \
+            --runtime-plan "$RUNNER_TEMP/runtime/ci-runtime.json" \
+            --ci-cell "${{ matrix.id }}" \
+            --receipt "$RUNNER_TEMP/cell-evidence/${{ matrix.id }}.json"
+          code=$?
+          echo "$code" > "$RUNNER_TEMP/cell-evidence/exit-code"
+          exit 0
+      - name: Preserve candidate, environment, timing, failure class, and cleanup receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-cell-${{ matrix.id }}-${{ needs.wave3-contracts.outputs.candidate-sha }}
+          path: ${{ runner.temp }}/cell-evidence
+          if-no-files-found: error
+          retention-days: ${{ fromJSON(needs.wave3-contracts.outputs.artifact-days) }}
+      - name: Enforce cell result after durable receipt upload
+        if: always()
+        shell: bash
+        run: test "$(cat "$RUNNER_TEMP/cell-evidence/exit-code")" = "0"
 
-  # P1 is push-only: pull_request uses a synthetic merge/branch SHA and must
-  # remain local_green.  The three needs are one workflow-run receipt set;
-  # the proof then performs its own fetch and checks repository topology.
+  # Branch-protection key retained. This is both the pushed SHA delivery proof
+  # and the exact PR head SHA blocking proof; synthetic_merge_substitutes=false.
   pushed-sha-proof:
-    name: pushed SHA delivery proof
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [tests, zero-token-corpus, wave3-contracts]
+    name: terminal authoritative receipt aggregate
+    if: always()
+    needs: [wave3-contracts, authoritative]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Bind required check results to this workflow SHA
-        env:
-          CHECKED_SHA: ${{ github.sha }}
-          COMPAT_RESULT: ${{ needs.tests.result }}
-          GRAPH_CLI_RESULT: ${{ needs.wave3-contracts.result }}
-          ZERO_TOKEN_RESULT: ${{ needs.zero-token-corpus.result }}
-        run: |
-          python3 - "$RUNNER_TEMP/required-checks.json" <<'PY'
-          import importlib.util
-          import json
-          import os
-          import sys
-
-          spec = importlib.util.spec_from_file_location("ci_evals", "scripts/ci_evals.py")
-          ci_evals = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(ci_evals)
-          conclusions = (
-              os.environ["COMPAT_RESULT"],
-              os.environ["GRAPH_CLI_RESULT"],
-              os.environ["ZERO_TOKEN_RESULT"],
-          )
-          receipts = [
-              {"name": name, "sha": os.environ["CHECKED_SHA"],
-               "conclusion": conclusion}
-              for name, conclusion in zip(
-                  ci_evals.PUSHED_GREEN_REQUIRED_CHECKS, conclusions)
-          ]
-          with open(sys.argv[1], "w", encoding="utf-8") as handle:
-              json.dump(receipts, handle, sort_keys=True)
-          PY
-          python3 scripts/ci_evals.py --prove-pushed-sha \
-            --checked-sha "$CHECKED_SHA" \
-            --check-receipts "$RUNNER_TEMP/required-checks.json" --json
-
-  # Host portability without a second full-suite tax. Windows runs the
-  # cross-host contract plus the two integration files that previously found
-  # real Windows-only failures. Those defects are also reproduced on Linux by
-  # test_windows_portability.py, so the hosted leg validates the actual host
-  # boundary rather than spending ~27 minutes duplicating the full suite.
-  # Both native host legs are blocking release boundaries.
-  tests-portability:
-    name: tests portability (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            advisory: false
-            tests: >-
-              taskplane/tests/test_windows_portability.py
-              taskplane/tests/test_loop_context_traces.py
-              taskplane/tests/test_eval_recorder.py
-              taskplane/tests/test_em_h1_sandbox.py
-          - os: macos-latest
-            advisory: false
-            tests: >-
-              taskplane/tests/test_repository_preflight.py
-              taskplane/tests/test_storage_kernel.py
-              taskplane/tests/test_loop_context_traces.py
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Install hash-locked sealed test dependency tree
-        shell: bash
-        run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
-      - name: Configure git (the gates and tests need commit identity)
-        run: |
-          git config --global user.email "ci@taskplane"
-          git config --global user.name "taskplane-ci"
-      - name: Run the suite
-        run: python -m pytest ${{ matrix.tests }} -q
-
-  validate-plugin:
-    name: plugin manifest validation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - name: JSON manifests parse and versions agree
-        run: |
-          python - <<'PY'
-          import json, re, sys, glob
-          pj = json.load(open(".claude-plugin/plugin.json"))
-          cj = json.load(open(".codex-plugin/plugin.json"))
-          mp = json.load(open(".claude-plugin/marketplace.json"))
-          hooks = json.load(open("hooks/hooks.json"))
-          versions = {pj["version"], cj["version"],
-                      mp["plugins"][0]["version"], mp["version"]}
-          assert len(versions) == 1, f"version drift: {sorted(versions)}"
-          assert cj["name"] == pj["name"] == mp["plugins"][0]["name"]
-          assert cj["skills"] == "./skills/"
-          assert set(hooks) <= {"description", "hooks"}, \
-              f"Codex-rejected hooks root fields: {sorted(set(hooks) - {'description', 'hooks'})}"
-          assert "hostNative" not in hooks
-          assert "PreToolUse" in hooks["hooks"]
-          for f in glob.glob("skills/*/SKILL.md"):
-              desc = re.search(r'description:\s*"(.*)"', open(f).read())
-              if desc and ("<" in desc.group(1) or ">" in desc.group(1)):
-                  sys.exit(f"{f}: XML tags in description break plugin validation")
-          print("manifests ok:", pj["name"], pj["version"])
-          PY
-
-      # Makes the CHANGELOG's 'single-source versioning, CI-gated' claim
-      # literally true (v2.3.1): the single source is .codex-plugin/plugin.json
-      # and every other surface is verified against it here, independently of
-      # the pytest jobs.
-      - name: Version is single-sourced (tp version --verify)
-        run: python3 taskplane/tp.py version --verify
-
-      - name: Generated lens artifacts match their sources (no drift)
-        run: |
-          python3 lenses/_generate_catalog.py
-          python3 lenses/_generate_lens_prompts.py
-          python3 scripts/gen_lens_catalog.py
-          git diff --exit-code -- lenses/ docs/lens-catalog.md
-
-      # t8 (R-0010 / D5): the CLI reference is GENERATED from tp.py's live
-      # argparse tree, on the same generated-artifacts pattern as the lens
-      # drift check above. This leg is what makes the flag documentation
-      # structural instead of remembered: add a flag without help text and
-      # the generator REFUSES (nonzero, reason on stderr); add a flag and
-      # forget to regenerate, and git diff --exit-code fails here. It is
-      # also why taskplane/tests/test_release_freshness.py could burn its
-      # 34-flag _LEGACY_UNDOCUMENTED exemption list down to empty — the
-      # freshness corpus globs docs/*.md, so the reference documents every
-      # flag mechanically. Remedy on failure is one command: run the regen
-      # line below and commit docs/cli-reference.md.
-      - name: Generated CLI reference matches tp.py's argparse tree (no drift)
-        run: |
-          python3 taskplane/tp.py help --md > docs/cli-reference.md
-          git diff --exit-code -- docs/cli-reference.md
-
-      - name: Build and validate OpenAI marketplace package
-        run: python scripts/package_openai.py
-
-      # dist/ is gitignored (submission artifacts never live in the repo), so
-      # there is no committed zip to compare against; what release provenance
-      # relies on instead is DETERMINISM — the published .sha256 must be
-      # reproducible from the tree. Build twice and require identical bytes.
-      - name: OpenAI package build is deterministic (release provenance)
-        run: |
-          python3 scripts/package_openai.py --output-dir /tmp/tp-pkg-a
-          python3 scripts/package_openai.py --output-dir /tmp/tp-pkg-b
-          a=$(sha256sum /tmp/tp-pkg-a/*.zip | cut -d' ' -f1)
-          b=$(sha256sum /tmp/tp-pkg-b/*.zip | cut -d' ' -f1)
-          echo "build A: $a"; echo "build B: $b"
-          test "$a" = "$b"
-
-      # The Claude package was hand-assembled every release until 2.7.2, so
-      # its membership was whoever built it — undiffable, unreproducible, and
-      # unable to fail. Same two legs as the OpenAI archive above: build with
-      # validation, then prove determinism.
-      - name: Build and validate Claude plugin package
-        run: python scripts/package_claude.py
-
-      - name: Build and validate Claude file-upload plugin
-        run: python scripts/package_claude.py --ext plugin
-
-      - name: Claude package build is deterministic (release provenance)
-        run: |
-          python3 scripts/package_claude.py --output-dir /tmp/tp-claude-a
-          python3 scripts/package_claude.py --output-dir /tmp/tp-claude-b
-          a=$(sha256sum /tmp/tp-claude-a/*.zip | cut -d' ' -f1)
-          b=$(sha256sum /tmp/tp-claude-b/*.zip | cut -d' ' -f1)
-          echo "build A: $a"; echo "build B: $b"
-          test "$a" = "$b"
-
-      - name: Claude file-upload plugin is deterministic (release provenance)
-        run: |
-          python3 scripts/package_claude.py --ext plugin --output-dir /tmp/tp-claude-plugin-a
-          python3 scripts/package_claude.py --ext plugin --output-dir /tmp/tp-claude-plugin-b
-          a=$(sha256sum /tmp/tp-claude-plugin-a/*.plugin | cut -d' ' -f1)
-          b=$(sha256sum /tmp/tp-claude-plugin-b/*.plugin | cut -d' ' -f1)
-          echo "build A: $a"; echo "build B: $b"
-          test "$a" = "$b"
-
-      # D-0010. Determinism proves an archive is reproducible FROM SOME TREE.
-      # It never said WHICH tree, so nothing tied a shipped artifact to a
-      # commit, let alone a green one. Each archive now carries a
-      # provenance record naming its source commit; this leg is the other
-      # half — it binds that commit to the tree THIS run verified, so an
-      # artifact built in the release path cannot have come from anywhere
-      # else. `verified_source` false means the build saw uncommitted edits,
-      # which must never happen on a CI checkout.
-      - name: Packages name the commit this run verified
-        run: |
-          python3 - <<'PY'
-          import glob, json, subprocess, sys
-          head = subprocess.run(["git", "rev-parse", "HEAD"],
-                                capture_output=True, text=True).stdout.strip()
-          found = sorted(glob.glob("/tmp/tp-pkg-a/*.provenance.json")
-                         + glob.glob("/tmp/tp-claude-a/*.provenance.json")
-                         + glob.glob(
-                             "/tmp/tp-claude-plugin-a/*.provenance.json"))
-          if len(found) != 3:
-              sys.exit(f"expected a provenance record per archive, got {found}")
-          for path in found:
-              rec = json.load(open(path))
-              print(f"{rec['archive']}: commit {rec['commit']} "
-                    f"verified_source={rec['verified_source']}")
-              if rec["commit"] != head:
-                  sys.exit(f"{path}: built from {rec['commit']}, this run "
-                           f"verified {head} — the artifact is not the tree "
-                           "that was tested")
-              if not rec["verified_source"] or rec["dirty"]:
-                  sys.exit(f"{path}: dirty CI checkout {rec['dirty']}")
-          print("ok: every archive names the commit this run verified")
-          PY
-
-  # Install-truth scan that needs no test runner: org/Team members cannot
-  # install plugins from GitHub themselves, so public copy must not claim
-  # otherwise. Behavioral onboarding and static link checks remain in the
-  # authoritative Python 3.12 pytest suite.
-  docs-truth:
-    name: docs truth (install paths + links)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: No public copy claims org members can install from GitHub (repo-wide)
-        run: |
-          python3 - <<'PY'
-          import glob, re, sys
-          # Keep these regexes in sync with FORBIDDEN_MEMBER_CLAIMS in
-          # taskplane/tests/test_onboarding_docs.py (which self-tests them).
-          PATTERNS = [
-              r"(?i)\bmembers?\s+can\s+(?:also\s+|simply\s+|just\s+)?"
-              r"(?:install|add|sync)\b[^.\n]{0,80}"
-              r"(?:git\s?hub|marketplace|repository)",
-              r"(?i)\bmembers?\s+(?:may|are\s+able\s+to)\s+"
-              r"(?:install|add|sync)\b[^.\n]{0,80}"
-              r"(?:git\s?hub|marketplace|repository)",
-              r"(?i)\bany\s+member\b[^.\n]{0,40}\binstall\b",
-          ]
-          files = (["README.md", "CHANGELOG.md"]
-                   + glob.glob(".claude-plugin/*.json")
-                   + glob.glob(".codex-plugin/*.json")
-                   + glob.glob("docs/**/*.md", recursive=True)
-                   + glob.glob("skills/**/*.md", recursive=True)
-                   + glob.glob("agents/**/*.md", recursive=True))
-          bad = []
-          for f in files:
-              text = open(f, encoding="utf-8").read()
-              for p in PATTERNS:
-                  bad += [(f, h) for h in re.findall(p, text)]
-          if bad:
-              sys.exit("member-installs-from-GitHub claim in public copy: "
-                       f"{bad}")
-          print(f"clean: {len(files)} public-copy files scanned")
-          PY
-  # t6 (R-0002): the Codex-parity guard, REQUIRED and independent of the
-  # workflow-path tests. Frozen brief fixtures replay through the dispatch
-  # path and byte-compare against checked-in goldens, so a deliberate (or
-  # accidental) change to the Task-dispatch payload shape fails THIS leg
-  # even when the workflow path still works. A second named step runs t1's
-  # detector-fixture completeness discipline (every catalog lens must keep
-  # positive+negative fixtures) as an explicit CI signal rather than a line
-  # lost inside the full-suite run. Kept out of validate-plugin on purpose:
-  # that job is stdlib-only by design and this one needs pytest.
-  codex-parity:
-    name: codex dispatch parity + detector fixtures
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Install hash-locked sealed test dependency tree
-        shell: bash
-        run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
-      - name: Configure git (the parity tests build throwaway fixture repos)
-        run: |
-          git config --global user.email "ci@taskplane"
-          git config --global user.name "taskplane-ci"
-      # Run from the repo ROOT (same rule as the tests job): conftest.py
-      # resolves the taskplane package only when the root is on sys.path.
-      - name: Codex dispatch parity (frozen briefs vs goldens)
-        run: python3 -m pytest taskplane/tests/test_dispatch_parity.py -q
-      - name: Detector-fixture completeness (positive+negative per lens)
-        run: python3 -m pytest taskplane/tests/test_lens_signals_fixtures.py -q
-      # t4 (R-0004): the STAGE-wave half of the parity guard. The three
-      # governed stage dispatches (execute/evaluate/fix) replay through the
-      # real CLI and byte-compare against checked-in goldens (regenerated
-      # only via taskplane/tests/fixtures/briefs/regen.py — the documented
-      # single regen path); the same file carries the kill-switch matrix,
-      # the Codex stage cases (task bytes + no workflow path chosen,
-      # trace-verified), the killed-mid-stage resume fixture, and the
-      # every-gate-reachable-without-workflows adversarial walk.
-      - name: Stage-wave parity + kill-switch matrix + Codex stage cases
-        run: python3 -m pytest taskplane/tests/test_stage_waves.py -q
-
-  # Required native-host leg. Unlike codex-parity's frozen payload replay,
-  # this runs the hook lifecycle, strict spawn screening, hashed native task
-  # identities, reasoning-effort routing, and execute-wave registration with
-  # real Codex host markers present.
-  codex-host:
-    name: Codex native hooks + subagent workflow
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Install hash-locked sealed test dependency tree
-        shell: bash
-        run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
-      - name: Configure git (native-wave tests build throwaway repos)
-        run: |
-          git config --global user.email "ci@taskplane"
-          git config --global user.name "taskplane-ci"
-      - name: Codex lifecycle and strict native dispatch
-        env:
-          # The runner context is available at step evaluation time, not while
-          # GitHub is validating job-level env expressions.
-          CODEX_HOME: ${{ runner.temp }}/codex-home
-          CODEX_THREAD_ID: ci-codex-host
-          TASKPLANE_HOME: ${{ runner.temp }}/taskplane-store
-          TASKPLANE_WORKFLOWS: "0"
-        run: >-
-          python3 -m pytest -q
-          taskplane/tests/test_codex_compat.py
-          taskplane/tests/test_v101_fixes.py
-
-  # Release-history truth. Five releases (v2.5.0, v2.5.1, v2.6.0, v2.8.1,
-  # v2.8.2) shipped with NO tag and nobody noticed for months, because
-  # tagging lived in a human's memory of the release routine — and two
-  # CHANGELOG rows (v2.4.0, v2.3.0) name versions no tree ever declared.
-  # This job makes the manifest history the source of truth and verifies
-  # both claims against it. It needs the FULL history and the tags: a
-  # shallow or tagless checkout cannot see what it is checking, so the gate
-  # fails closed rather than passing on a misconfigured runner.
-  release-tags:
-    name: release history (every shipped version is tagged)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-          fetch-tags: true
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Install hash-locked sealed test dependency tree
-        shell: bash
-        run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
-      - name: Configure git (the gate's fixtures build throwaway repos)
-        run: |
-          git config --global user.email "ci@taskplane"
-          git config --global user.name "taskplane-ci"
-      # actions/checkout leaves a detached HEAD with no refs/heads/main on
-      # push builds; the gate resolves the mainline by name, so give it one.
-      - name: Make the mainline resolvable by name
-        run: git rev-parse --verify refs/remotes/origin/main || git fetch --no-tags origin main:refs/remotes/origin/main
-      - name: Every shipped version is tagged, every tag names a release
-        run: python3 scripts/ci_release_tags.py
-      - name: The gate itself catches planted drift (it is not a no-op)
-        run: python3 -m pytest taskplane/tests/test_release_tags.py -q
-
-  # This is the single blocking pull-request proof. Every prerequisite above
-  # checks out the actual PR head; the aggregate then binds their conclusions
-  # and its own checkout to that same immutable SHA. GitHub's synthetic merge
-  # ref may be validated separately, but can never satisfy this proof.
-  pr-head-sha-proof:
-    name: exact PR head SHA blocking proof
-    if: always() && github.event_name == 'pull_request'
-    needs:
-      - tests
-      - python-quality
-      - zero-token-corpus
-      - wave3-contracts
-      - tests-portability
-      - validate-plugin
-      - docs-truth
-      - codex-parity
-      - codex-host
-      - release-tags
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout exact pull-request head
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Bind every blocking result to the exact PR head SHA
-        env:
-          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          TESTS_RESULT: ${{ needs.tests.result }}
-          QUALITY_RESULT: ${{ needs.python-quality.result }}
-          CORPUS_RESULT: ${{ needs.zero-token-corpus.result }}
-          GRAPH_RESULT: ${{ needs.wave3-contracts.result }}
-          PORTABILITY_RESULT: ${{ needs.tests-portability.result }}
-          PLUGIN_RESULT: ${{ needs.validate-plugin.result }}
-          DOCS_RESULT: ${{ needs.docs-truth.result }}
-          PARITY_RESULT: ${{ needs.codex-parity.result }}
-          HOST_RESULT: ${{ needs.codex-host.result }}
-          HISTORY_RESULT: ${{ needs.release-tags.result }}
-        run: |
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          import subprocess
-
-          expected = os.environ["EXPECTED_HEAD_SHA"]
-          checked = subprocess.run(
-              ["git", "rev-parse", "HEAD"], check=True, capture_output=True,
-              text=True, encoding="utf-8",
-          ).stdout.strip()
-          names = (
-              "tests", "python-quality", "zero-token-corpus",
-              "wave3-contracts", "tests-portability", "validate-plugin",
-              "docs-truth", "codex-parity", "codex-host", "release-tags",
-          )
-          conclusions = (
-              os.environ["TESTS_RESULT"], os.environ["QUALITY_RESULT"],
-              os.environ["CORPUS_RESULT"], os.environ["GRAPH_RESULT"],
-              os.environ["PORTABILITY_RESULT"], os.environ["PLUGIN_RESULT"],
-              os.environ["DOCS_RESULT"], os.environ["PARITY_RESULT"],
-              os.environ["HOST_RESULT"], os.environ["HISTORY_RESULT"],
-          )
-          receipts = [
-              {"name": name, "sha": expected, "conclusion": conclusion}
-              for name, conclusion in zip(names, conclusions)
-          ]
-          proof = {
-              "schema": "taskplane.pr-head-ci-proof/v1",
-              "event": "pull_request",
-              "pr_head_sha": expected,
-              "checked_sha": checked,
-              "synthetic_merge_substitutes": False,
-              "receipts": receipts,
-          }
-          proof["fingerprint"] = hashlib.sha256(
-              json.dumps(proof, sort_keys=True, separators=(",", ":")).encode()
-          ).hexdigest()
-          print(json.dumps(proof, sort_keys=True))
-          if checked != expected:
-              raise SystemExit("checkout is not github.event.pull_request.head.sha")
-          failed = [row for row in receipts if row["conclusion"] != "success"]
-          if failed:
-              raise SystemExit(f"blocking PR-head checks are not green: {failed}")
-          PY
+      - name: Checkout exact protected-main push
+        if: github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Restore frozen plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ci-runtime-${{ needs.wave3-contracts.outputs.candidate-sha }}
+          path: ${{ runner.temp }}/runtime
+      - name: Restore every disjoint cell receipt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ci-cell-*-${{ needs.wave3-contracts.outputs.candidate-sha }}
+          path: ${{ runner.temp }}/receipts
+      - name: Seal matching all-green terminal matrix
+        run: >-
+          python3 scripts/ci_local.py
+          --runtime-plan "$RUNNER_TEMP/runtime/ci-runtime.json"
+          --receipt-root "$RUNNER_TEMP/receipts"
+          --aggregate-ci "$RUNNER_TEMP/terminal-matrix.json"
+      - name: Preserve terminal matrix
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terminal-matrix-${{ needs.wave3-contracts.outputs.candidate-sha }}
+          path: ${{ runner.temp }}/terminal-matrix.json
+          if-no-files-found: error
+          retention-days: ${{ fromJSON(needs.wave3-contracts.outputs.artifact-days) }}
