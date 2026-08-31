@@ -19,7 +19,7 @@ TEST_STEP_NAME = "Run the authoritative suite or compatibility smoke set"
 
 
 def _primary_test_job(workflow: str) -> str:
-    start = workflow.index("  tests:\n")
+    start = workflow.index("  python-compatibility:\n")
     end = workflow.index("\n  tests-portability:", start)
     return workflow[start:end]
 

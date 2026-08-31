@@ -61,12 +61,13 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     assert settings["settings_digest"] == plan["settings_digest"]
     assert settings["precedence"] == ["defaults", "file", "overlay"]
     assert settings["loader_receipt"]["overlay"]["applied"] == [
-        "build.shards", "tests.shards",
+        "build.shards", "limits.timeouts.subprocess_seconds", "tests.shards",
     ]
     assert settings["effective"]["build"] == {
         "shards": len(plan["cells"]), "concurrency": "native",
     }
     assert settings["effective"]["tests"]["shards"] == len(plan["cells"])
+    assert settings["effective"]["limits"]["timeouts"]["subprocess_seconds"] == 300
 
     selectors = [
         selector for cell in plan["cells"] for selector in cell["selectors"]
@@ -179,10 +180,23 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     assert "--emit-ci-plan" in workflow
     assert "name: settings-derived authoritative CI plan" in workflow
     assert "needs: [ci-plan]" in workflow
-    assert "--ci-cell dashboard-browser" in workflow
+    assert 'matrix: ${{ fromJSON(needs.ci-plan.outputs.pytest-matrix) }}' in workflow
+    assert 'max-parallel: ${{ fromJSON(needs.ci-plan.outputs.max-parallel) }}' in workflow
+    assert '--ci-cell "${{ matrix.cell }}"' in workflow
+    assert workflow.count('--ci-cell "$cell"') == 2
+    assert workflow.count("--ci-cell") == 3
     assert "name: dashboard browser conformance" in workflow
-    assert workflow.count("--ignore=taskplane/tests/test_dashboard_browser.py") == 1
-    assert workflow.count("strategy:") == 2
+    assert "name: authoritative CI terminal matrix" in workflow
+    assert "needs: [ci-plan, authoritative-tests, python-quality, dashboard-browser]" in workflow
+    assert "--aggregate-ci" in workflow
+    assert "pattern: ci-cell-*-${{ needs.ci-plan.outputs.candidate-sha }}" in workflow
+    assert "name: terminal-matrix-${{ needs.ci-plan.outputs.candidate-sha }}" in workflow
+    assert workflow.count("TERMINAL_RESULT:") == 3
+    assert workflow.count("BROWSER_RESULT:") == 3
+    assert workflow.count("Restore terminal receipt evidence") == 3
+    assert workflow.count("Restore browser receipt evidence") == 3
+    assert "--ignore=taskplane/tests/test_dashboard_browser.py" not in workflow
+    assert workflow.count("strategy:") == 3
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow
     assert "permissions:\n  contents: read" in workflow
     compatibility = json.loads(
@@ -190,7 +204,8 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     )
     required = compatibility["release_authority"]["required_checks"]
     assert required[0] == "tests (python 3.12)"
-    assert "name: tests (python ${{ matrix.python }})" in workflow
+    assert "name: tests (python 3.12)" in workflow
+    assert "name: Python compatibility (${{ matrix.python }})" in workflow
     assert '          - python: "3.12"' in workflow
     assert all(f"name: {name}" in workflow for name in required[1:])
     action_refs = re.findall(r"uses:\s*[^@\s]+@([^\s#]+)", workflow)

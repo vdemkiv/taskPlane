@@ -489,9 +489,9 @@ ROLE_MARKER_PREFIX = "taskplane-role:"
 EXIT_OK, EXIT_BLOCKED, EXIT_USAGE = 0, 1, 2
 
 # Stable GitHub check-run identities, deliberately independent of mutable step
-# labels and aligned with design/compatibility.json. The tests matrix result is
-# an aggregate whose success includes its actual ``tests (python 3.12)`` row;
-# release/delivery callers must provide this exact protected-check set.
+# labels and aligned with design/compatibility.json. ``tests (python 3.12)`` is
+# a protected-name alias backed by the exact five-cell terminal matrix and its
+# isolated browser receipt; release callers provide this stable check set.
 PUSHED_GREEN_REQUIRED_CHECKS = (
     "tests (python 3.12)",
     "R-0006 graph + CLI contracts",

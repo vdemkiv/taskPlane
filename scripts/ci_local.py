@@ -65,8 +65,8 @@ CI_BROWSER_SELECTORS = (
     "test_real_browser_svg_graphs_and_single_document_are_truthful",
 )
 CI_MATRICES = ("tests", "quality-package", "browser")
-CI_TIMEOUTS = {"pytest": 300, "quality-package": 300, "browser": 420}
 CI_RUNNER_MINUTES_CEILING = 30
+CI_RECEIPT_RESERVE_SECONDS = 60
 INVENTORY_VERSION = "REL-2181/2"
 RECURSION_GUARD = "TASKPLANE_LOCAL_CI_ACTIVE"
 PACKAGE_TEMP_ROOT = "TASKPLANE_PACKAGE_TEMP_ROOT"
@@ -190,6 +190,7 @@ def _ci_settings(
     overlay = {
         "build": {"shards": CI_SHARD_COUNT},
         "tests": {"shards": CI_SHARD_COUNT},
+        "limits": {"timeouts": {"subprocess_seconds": 300}},
     }
     try:
         settings = load_settings(settings_path, overlay=overlay)
@@ -198,6 +199,7 @@ def _ci_settings(
     if (
         settings.build.shards != CI_SHARD_COUNT
         or settings.tests.shards != CI_SHARD_COUNT
+        or settings.limits.timeouts["subprocess_seconds"] != 300
         or settings.build.concurrency != "native"
         or settings.receipt.get("precedence") != ["defaults", "file", "overlay"]
     ):
@@ -225,6 +227,7 @@ def _ci_declaration(
         group = f"release-{run_id}"
         cancel = False
     partitions = _ci_pytest_partitions()
+    cell_timeout = settings.limits.timeouts["subprocess_seconds"]
     cells: list[dict[str, Any]] = []
     for index, selectors in enumerate(partitions, start=1):
         cells.append({
@@ -233,7 +236,7 @@ def _ci_declaration(
             "matrix": "tests",
             "selectors": list(selectors),
             "paths": list(selectors),
-            "timeout_seconds": CI_TIMEOUTS["pytest"],
+            "timeout_seconds": cell_timeout,
             "cleanup_resources": [f"generated-state:pytest-{index}"],
         })
     cells.extend((
@@ -250,7 +253,7 @@ def _ci_declaration(
                 "requirements-dev.lock", "pyproject.toml",
                 "scripts/package_openai.py", "scripts/package_claude.py",
             ],
-            "timeout_seconds": CI_TIMEOUTS["quality-package"],
+            "timeout_seconds": cell_timeout,
             "cleanup_resources": ["generated-state:quality-package"],
         },
         {
@@ -263,7 +266,7 @@ def _ci_declaration(
                 "taskplane/tests/test_dashboard_browser.py",
                 "taskplane/tests/fixtures/dashboard-browser",
             ],
-            "timeout_seconds": CI_TIMEOUTS["browser"],
+            "timeout_seconds": cell_timeout,
             "cleanup_resources": [
                 "process:dashboard-browser", "generated-state:dashboard-browser",
             ],
@@ -355,7 +358,7 @@ PYTEST_CHECK_IDS = tuple(
 # Content address of every repository-relative `path:estimated-byte-weight` row.
 # A file added, removed, renamed, or reweighted must deliberately refresh this
 # pin, so the complete suite cannot silently shrink or use stale balancing data.
-PYTEST_WEIGHT_SHA256 = "f3a8fade7f9b55f7db8b4ee54f7d9bbd79aadb2503b638dedbe765f4c71d4624"
+PYTEST_WEIGHT_SHA256 = "49a61e2fc1d9046f0b606954664f709f19be9e9dd8eb542aea13061345ace165"
 
 
 def pytest_inventory() -> tuple[str, ...]:
@@ -842,7 +845,8 @@ def _ci_cell_commands(cell: Mapping[str, Any], root: Path) -> list[list[str]]:
     if kind == "quality-package":
         return [
             [PYTHON, __file__, "--internal", "compile-import"],
-            [PYTHON, "-m", "ruff", "check", "taskplane", "hooks", "scripts"],
+            [PYTHON, "-m", "ruff", "check", "--output-format=github",
+             "taskplane", "hooks", "scripts"],
             [PYTHON, "-m", "mypy", "--strict", "--config-file", "pyproject.toml"],
             [PYTHON, "scripts/ci_evals.py", "--verify-release-surface", "--json"],
             [PYTHON, "scripts/package_openai.py", "--output-dir", str(root / "openai")],
@@ -964,7 +968,12 @@ def run_authoritative_ci_cell(
             candidate["browser"]["executable"]
         )
     started = time.monotonic()
-    deadline = started + int(cell["timeout_seconds"])
+    # Leave a settings-bounded minute for cleanup, receipt publication, and
+    # the workflow artifact step before GitHub reaches the same job timeout.
+    timeout_seconds = int(cell["timeout_seconds"])
+    if timeout_seconds <= CI_RECEIPT_RESERVE_SECONDS:
+        raise RunnerError("CI cell timeout leaves no receipt publication reserve")
+    deadline = started + timeout_seconds - CI_RECEIPT_RESERVE_SECONDS
     output_parts: list[str] = []
     command_receipts: list[dict[str, Any]] = []
     outcome = forced_outcome or "success"
