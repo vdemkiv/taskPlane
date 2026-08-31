@@ -421,7 +421,7 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
     inline_max_bytes = _positive_int(runtime_raw.get("inline_max_bytes"),
                                      "runtime.inline_max_bytes", zero=True)
     orphan_ttl_seconds = _positive_int(runtime_raw.get("orphan_ttl_seconds"),
-                                       "runtime.orphan_ttl_seconds", zero=True)
+                                       "runtime.orphan_ttl_seconds")
     obligations = runtime_raw.get("obligations")
     if obligations not in {"enforce", "advisory"}:
         raise SettingsError("runtime.obligations is unsupported")
@@ -577,6 +577,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
             "TASKPLANE_AUDIT_EVERY": "audit_every",
             "TASKPLANE_INLINE_MAX": "inline_max_bytes",
             "TASKPLANE_ORPHAN_TTL": "orphan_ttl_seconds",
+            "TASKPLANE_ORPHAN_TTL_SECONDS": "orphan_ttl_seconds",
         }
         for name, field in integer_aliases.items():
             if name not in environment:
@@ -587,6 +588,10 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
             except ValueError as exc:
                 raise SettingsError(
                     f"legacy environment {name} must be an integer") from exc
+            if field in runtime_overlay:
+                raise SettingsError(
+                    "duplicate legacy environment aliases for runtime." +
+                    field)
             runtime_overlay[field] = value
             applied.append(f"runtime.{field}")
         enum_aliases = {

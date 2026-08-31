@@ -6350,8 +6350,9 @@ def orphan_status(workspace: str, contract: dict,
          * NOT exhausted -> idle backstop for an agent that CRASHED mid-work,
            measured from the last time it was SEEN screening (any call — a
            working agent keeps generating approvals; a dead one makes none).
-           Fires after the TTL (contract `orphan_ttl_seconds`, env
-           TASKPLANE_ORPHAN_TTL, default DEFAULT_ORPHAN_TTL).
+           Fires after the positive canonical TTL (a per-contract
+           `orphan_ttl_seconds` remains an explicit contract value; the
+           compatibility environment aliases require exact authority).
 
     The screener auto-clears an orphaned contract and abstains."""
     import time
@@ -6443,7 +6444,7 @@ def orphan_status(workspace: str, contract: dict,
                 if "orphan_ttl_seconds" in contract
                 else settings.runtime.orphan_ttl_seconds)
     if ttl <= 0:
-        return False, "orphan TTL disabled"
+        return False, "invalid non-positive orphan TTL — governed"
     last = max(float(contract.get("activated_at") or 0), last_seen)
     if last and (now - last) > ttl:
         idle = int(now - last)

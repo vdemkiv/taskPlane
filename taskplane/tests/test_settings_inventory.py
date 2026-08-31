@@ -248,6 +248,26 @@ def test_every_operational_setting_has_one_canonical_owner():
     assert weakened.runtime.obligations == "advisory"
     assert weakened.runtime.runnability == "disabled"
     assert weakened.receipt["environment"]["authority_fingerprint"]
+    governed_runtime_aliases = {
+        "TASKPLANE_AUDIT_EVERY": "7",
+        "TASKPLANE_ORPHAN_TTL_SECONDS": "7200",
+    }
+    with pytest.raises(SettingsError, match="exact authority"):
+        load_settings(environment=governed_runtime_aliases)
+    governed_runtime = load_settings(
+        environment=governed_runtime_aliases, authority=authority_receipt)
+    assert governed_runtime.runtime.audit_every == 7
+    assert governed_runtime.runtime.orphan_ttl_seconds == 7200
+    assert governed_runtime.receipt["environment"][
+        "authority_fingerprint"]
+    with pytest.raises(SettingsError, match="exact authority"):
+        load_settings(environment={"TASKPLANE_ORPHAN_TTL_SECONDS": "0"})
+    with pytest.raises(SettingsError, match="integer >= 1"):
+        load_settings(
+            environment={"TASKPLANE_ORPHAN_TTL_SECONDS": "0"},
+            authority=authority_receipt)
+    with pytest.raises(SettingsError, match="exact authority"):
+        load_settings(environment={"TASKPLANE_ORPHAN_TTL": "7200"})
     assert effective.digest == settings_digest(effective)
     sources = [path.relative_to(ROOT).as_posix()
                for path in ROOT.rglob("operational-settings.json")]
@@ -299,3 +319,42 @@ def test_every_operational_setting_has_one_canonical_owner():
         set(negative)
     assert all(_fixture_has_inventory_violation(ROOT / path, inventory)
                for path in negative)
+
+
+def test_governed_runtime_consumers_require_exact_authority(
+        tmp_path, monkeypatch):
+    from taskplane import audit
+    from taskplane import taskplane_lite as lite
+
+    authority = {
+        "schema": DECISION_SCHEMA,
+        "authorized": True,
+        "authority_requested": "gate_weakening",
+        "actor": "human:test",
+        "thread": "settings-consumers",
+        "revision": "1",
+    }
+    monkeypatch.setenv("TASKPLANE_AUDIT_EVERY", "7")
+    with pytest.raises(SettingsError, match="exact authority"):
+        audit.audit_every()
+    assert audit.audit_every(authority=authority) == 7
+    monkeypatch.delenv("TASKPLANE_AUDIT_EVERY")
+
+    monkeypatch.setenv("TASKPLANE_ORPHAN_TTL_SECONDS", "7200")
+    contract = {
+        "task_id": "t1",
+        "activated_at": 1000,
+        "budget": {"max_actions": 10},
+    }
+    with pytest.raises(SettingsError, match="exact authority"):
+        lite.orphan_status(str(tmp_path), contract, now=5000)
+    assert lite.orphan_status(
+        str(tmp_path), contract, now=5000,
+        settings_authority=authority)[0] is False
+    monkeypatch.delenv("TASKPLANE_ORPHAN_TTL_SECONDS")
+
+    invalid_contract = dict(contract, orphan_ttl_seconds=0)
+    orphaned, reason = lite.orphan_status(
+        str(tmp_path), invalid_contract, now=5000)
+    assert orphaned is False
+    assert "invalid non-positive" in reason

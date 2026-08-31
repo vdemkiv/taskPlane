@@ -77,13 +77,11 @@
       "tests.selection",
       "tests.shards",
       "tests.cache",
-      "runtime.audit_every",
       "runtime.inline_max_bytes",
-      "runtime.orphan_ttl_seconds",
       "limits.timeouts.*",
       "limits.budgets.*"
     ],
-    "governance_paths": ["lenses.*", "build.concurrency", "tests.backend", "workflow.*", "cleanup.*", "runtime.obligations", "runtime.runnability", "runtime.review_max_attempts"]
+    "governance_paths": ["lenses.*", "build.concurrency", "tests.backend", "workflow.*", "cleanup.*", "runtime.audit_every", "runtime.orphan_ttl_seconds", "runtime.obligations", "runtime.runnability", "runtime.review_max_attempts"]
   },
   "observability": {"receipt": true, "include_values": false}
 }
