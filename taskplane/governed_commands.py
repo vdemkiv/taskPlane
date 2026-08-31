@@ -1123,6 +1123,19 @@ def _cleanup_workspace(manifest_path: str) -> str:
     return str(path.parents[3])
 
 
+def _finish_terminal_publication(
+        result: dict, error: BaseException | None) -> dict:
+    """Attach completed cleanup and preserve an interruption-class failure."""
+    if error is None or isinstance(error, Exception):
+        return result
+    try:
+        setattr(error, "cleanup_result", result)
+    except Exception:
+        # Attribute attachment is secondary; never mask the original signal.
+        pass
+    raise error
+
+
 def finalize_owned_result(
         result: dict, *, trigger: str, outcome: str | None = None,
         publisher=None) -> dict:
@@ -1137,6 +1150,7 @@ def finalize_owned_result(
             not isinstance(binding, Mapping):
         return result
     manifest_path = str(binding["manifest"])
+    publication_error: BaseException | None = None
     try:
         manifest = owned_cleanup.load_manifest(manifest_path)
         workspace = _cleanup_workspace(manifest_path)
@@ -1144,11 +1158,12 @@ def finalize_owned_result(
             try:
                 publication = owned_cleanup.replay_terminal_publication(
                     manifest_path, workspace=workspace, publisher=publisher)
-            except Exception as exc:
+            except BaseException as exc:
+                publication_error = exc
                 publication = {"status": "pending", "replay_required": True,
                                "error": str(exc)}
             receipt = owned_cleanup.cleanup_manifest(manifest_path)
-            return {
+            completed = {
                 **result, "cleanup_receipt": receipt,
                 "cleanup_evidence":
                     owned_cleanup.cleanup_consumer_evidence(receipt),
@@ -1156,6 +1171,7 @@ def finalize_owned_result(
                 "publication_replay": dict(
                     manifest["terminal"]["publication_replay"]),
             }
+            return _finish_terminal_publication(completed, publication_error)
         worker_id = str(binding["worker_resource_id"])
         worker = manifest["resources"].get(worker_id) or {}
         if worker.get("policy") == {"active": True}:
@@ -1188,22 +1204,25 @@ def finalize_owned_result(
                 replay_source, workspace=workspace, owner=manifest["owner"],
                 outcome=selected_outcome, publisher=publisher)
             replay = dict(publication["obligation"])
-        except Exception as exc:
+        except BaseException as exc:
+            publication_error = exc
             publication = {"status": "pending", "replay_required": True,
                            "error": str(exc)}
         receipt = owned_cleanup.cleanup_manifest(manifest_path)
-        return {
+        completed = {
             **result, "cleanup_receipt": receipt,
             "cleanup_evidence": owned_cleanup.cleanup_consumer_evidence(
                 receipt),
             "publication_result": publication,
             "publication_replay": replay,
         }
+        return _finish_terminal_publication(completed, publication_error)
     except (owned_cleanup.OwnedCleanupError, OSError, ValueError, KeyError) as exc:
         # The command terminal result remains authoritative. Cleanup failure
         # is explicit secondary attention evidence for recovery/sign-off.
-        return {**result, "cleanup_error": str(exc),
-                "cleanup_status": "attention"}
+        attention = {**result, "cleanup_error": str(exc),
+                     "cleanup_status": "attention"}
+        return _finish_terminal_publication(attention, publication_error)
 
 
 _finalize_owned_result = finalize_owned_result

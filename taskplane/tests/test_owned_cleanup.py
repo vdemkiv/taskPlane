@@ -21,6 +21,17 @@ OUTCOMES = (
     "success", "failure", "cancellation", "interruption", "timeout",
     "handoff",
 )
+TERMINAL_OUTCOME_CASES = (
+    *(pytest.param(outcome, None, None, id=outcome) for outcome in OUTCOMES),
+    pytest.param("success", "fresh", KeyboardInterrupt,
+                 id="fresh-publication-keyboard-interrupt"),
+    pytest.param("success", "fresh", SystemExit,
+                 id="fresh-publication-system-exit"),
+    pytest.param("success", "already-terminal", KeyboardInterrupt,
+                 id="terminal-replay-keyboard-interrupt"),
+    pytest.param("success", "already-terminal", SystemExit,
+                 id="terminal-replay-system-exit"),
+)
 
 
 def _manifest(tmp_path: Path, name: str = "manifest.json") -> Path:
@@ -76,8 +87,78 @@ def _owned_file(manifest: Path, root: Path, name: str = "artifact.txt", *,
     return resource_id
 
 
-@pytest.mark.parametrize("outcome", OUTCOMES)
-def test_cleanup_runs_on_every_terminal_outcome(tmp_path, outcome, monkeypatch):
+@pytest.mark.parametrize(
+    "outcome,publication_phase,publication_exception", TERMINAL_OUTCOME_CASES)
+def test_cleanup_runs_on_every_terminal_outcome(
+        tmp_path, outcome, publication_phase, publication_exception,
+        monkeypatch):
+    if publication_phase is not None:
+        workspace = tmp_path / (
+            f"publication-{publication_phase}-" +
+            publication_exception.__name__.lower())
+        workspace.mkdir()
+        contract_engine.activate(
+            str(workspace), contract_engine.build_contract(
+                "owned-cleanup-publication-interrupt",
+                scope=[str(workspace)], tools=["exec_command"],
+                plan_minted=True), snapshot=None)
+        launched = governed_commands.execute(str(workspace), "launch", {
+            "authorization": "agent:publication-interrupt",
+            "run_id": "run-publication-interrupt",
+            "task_id": "task-publication-interrupt", "attempt": 1,
+            "argv": ["/bin/sleep", "5"],
+        })
+        manifest_path = launched["snapshot"]["owned_cleanup"]["manifest"]
+        runtime = CommandRuntime(
+            str(governed_commands.command_runtime_root(str(workspace))),
+            workspace=str(workspace),
+            authorization="agent:publication-interrupt")
+        runtime.transition(launched["handle"], "succeeded", exit_code=0)
+        if publication_phase == "already-terminal":
+            terminal_result = governed_commands.execute(
+                str(workspace), "wait", {
+                    "authorization": "agent:publication-interrupt",
+                    "handle": launched["handle"],
+                    "consumer": "owned-cleanup:terminal-replay",
+                    "timeout": 1,
+                })
+        interrupted = publication_exception(
+            f"{publication_phase} publication interrupted")
+
+        def interrupt_publication(*_args, **_kwargs):
+            raise interrupted
+
+        with monkeypatch.context() as publication_patch:
+            publication_patch.setattr(
+                governed_commands.owned_cleanup,
+                ("replay_publication" if publication_phase == "fresh" else
+                 "replay_terminal_publication"),
+                interrupt_publication)
+            with pytest.raises(publication_exception) as caught:
+                if publication_phase == "fresh":
+                    governed_commands.execute(str(workspace), "wait", {
+                        "authorization": "agent:publication-interrupt",
+                        "handle": launched["handle"],
+                        "consumer": "owned-cleanup:fresh-publication",
+                        "timeout": 1,
+                    })
+                else:
+                    governed_commands.finalize_owned_result(
+                        terminal_result, trigger="terminal")
+        assert caught.value is interrupted
+        cleanup_result = interrupted.cleanup_result
+        assert cleanup_result["cleanup_receipt"]["cleanup_status"] == "clean"
+        assert cleanup_result["cleanup_receipt"]["original_outcome"] == \
+            "success"
+        assert cleanup_result["cleanup_evidence"]["leak_count"] == 0
+        assert cleanup_result["publication_result"] == {
+            "status": "pending", "replay_required": True,
+            "error": str(interrupted),
+        }
+        assert cleanup.load_manifest(manifest_path)["terminal"]["outcome"] == \
+            "success"
+        return
+
     manifest = _manifest(tmp_path, f"{outcome}.json")
     git_fixture = tmp_path / "git"
     git_fixture.mkdir()
@@ -545,7 +626,7 @@ def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):
     # Exercise the real default publisher: it must authenticate a bound host
     # snapshot, deliver those exact canonical bytes, and derive its
     # acknowledgement from the read-back artifact rather than request echo.
-    from taskplane import host_native, loop_status, views
+    from taskplane import host_native, loop_status, storage, views
 
     dashboard_source = {
         "mode": "legacy", "status": "ready", "run_id": "cleanup-loop",
@@ -596,39 +677,55 @@ def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):
         "schema": cleanup.PUBLICATION_SOURCE_SCHEMA,
         "source_revision": 11, "source_fingerprint": "d" * 64,
     }
-    assert publisher_result["source_verification"] == {
-        "snapshot": expected_source, "delivery": expected_source,
-    }
-    bound_snapshot = host_native.HostSurfaceSnapshot.from_dict(
+    source_verification = publisher_result["source_verification"]
+    attestation = source_verification["attestation"]
+    source_receipt = source_verification["receipt"]
+    assert attestation["schema"] == cleanup.PUBLICATION_ATTESTATION_SCHEMA
+    assert attestation["source"] == expected_source
+    assert source_receipt["schema"] == cleanup.PUBLICATION_RECEIPT_SCHEMA
+    assert source_receipt["source"] == expected_source
+    assert source_receipt["attestation_fingerprint"] == \
+        attestation["fingerprint"]
+    canonical_snapshot = host_native.HostSurfaceSnapshot.from_dict(
         publisher_result["snapshot_publication"]["snapshot"])
-    assert bound_snapshot.revision == "owned-cleanup:11:" + "d" * 64
-    assert bound_snapshot.values[
-        "owned_cleanup_publication_source"] == expected_source
+    durable_snapshot = host_native.HostSurfaceSnapshot.from_dict(
+        storage.load_dashboard_publication(str(positive_workspace))["current"])
+    assert canonical_snapshot.to_dict() == durable_snapshot.to_dict()
+    assert publisher_result["durable_publication"]["snapshot"] == \
+        durable_snapshot.to_dict()
+    canonical_event = host_native.HostSurfaceEvent.from_dict(
+        publisher_result["snapshot_publication"]["event"])
+    durable_events = json.loads((
+        Path(storage.dashboard_snapshot_store_path(str(positive_workspace)))
+        .parent / "events.json").read_text(encoding="utf-8"))["events"]
+    assert canonical_event.to_dict() in durable_events
+    assert attestation["snapshot_fingerprint"] == \
+        durable_snapshot.fingerprint
+    assert attestation["event_fingerprint"] == canonical_event.fingerprint
     delivered = publisher_result["dashboard_delivery"]["dashboard"][
         "delivery"]
     delivered_snapshot = host_native.HostSurfaceSnapshot.from_dict(json.loads(
         Path(delivered["artifacts"]["json"]["path"]).read_text(
             encoding="utf-8")))
-    assert delivered_snapshot.values[
-        "owned_cleanup_publication_source"] == expected_source
+    assert delivered_snapshot.to_dict() == durable_snapshot.to_dict()
     assert delivered["publication_receipt"]["snapshot"]["fingerprint"] == \
         delivered_snapshot.fingerprint
+    assert source_receipt["snapshot_fingerprint"] == \
+        delivered_snapshot.fingerprint
 
-    # Deliberately sever the snapshot-source edge with an authenticated but
-    # conflicting producer value. The default composition must fail closed.
+    # Named durable-return mismatch: substitute an authenticated return value
+    # after loop_status committed its one canonical snapshot/event. The
+    # obligation must remain pending and publication must refuse the mismatch.
     severed_workspace, severed_source, severed_owner = default_replay(
         "severed-snapshot", 12, "f" * 64)
     real_snapshot_refresh = loop_status.refresh_dashboard_snapshot
 
-    def conflicting_snapshot(*args, **kwargs):
+    def durable_snapshot_mismatch(*args, **kwargs):
         publication = real_snapshot_refresh(*args, **kwargs)
         snapshot = host_native.HostSurfaceSnapshot.from_dict(
             publication["snapshot"])
         values = dict(snapshot.values)
-        values["owned_cleanup_publication_source"] = {
-            "schema": cleanup.PUBLICATION_SOURCE_SCHEMA,
-            "source_revision": 13, "source_fingerprint": "f" * 64,
-        }
+        values["durable_mismatch_severance"] = True
         conflict = host_native.HostSurfaceSnapshot.create(
             workflow_id=snapshot.workflow_id, run_id=snapshot.run_id,
             target=snapshot.target, revision=snapshot.revision,
@@ -647,35 +744,53 @@ def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):
             loop_status, "_select_dashboard_source",
             lambda _workspace: copy.deepcopy(dashboard_source))
         publication_patch.setattr(
-            loop_status, "refresh_dashboard_snapshot", conflicting_snapshot)
+            loop_status, "refresh_dashboard_snapshot",
+            durable_snapshot_mismatch)
         with pytest.raises(cleanup.OwnedCleanupError,
-                           match="names another cleanup source"):
+                           match="durable dashboard snapshot does not match"):
             cleanup.replay_publication(
                 severed_source, workspace=str(severed_workspace),
-                owner=severed_owner, outcome="success", mark_published=False)
+                owner=severed_owner, outcome="success")
+    assert json.loads(severed_source.read_text(encoding="utf-8"))[
+        "status"] == "pending"
 
-    # Deliberately corrupt the real canonical JSON after refresh_views returns.
-    # Read-back verification must reject it and leave the obligation pending.
+    # Named delivery substitution: replace canonical JSON with a different,
+    # authenticated HostSurfaceSnapshot and internally correct artifact hash.
+    # Cross-checking against durable loop_status truth must still refuse it.
     delivery_workspace, delivery_source, delivery_owner = default_replay(
         "severed-delivery", 14, "9" * 64)
     real_views_refresh = views.refresh_views
 
-    def corrupt_delivery(*args, **kwargs):
+    def substitute_delivery(*args, **kwargs):
         result = real_views_refresh(*args, **kwargs)
-        artifact = result["dashboard"]["delivery"]["artifacts"]["json"]
-        Path(artifact["path"]).write_text("{}\n", encoding="utf-8")
+        delivery = result["dashboard"]["delivery"]
+        artifact = delivery["artifacts"]["json"]
+        original = host_native.HostSurfaceSnapshot.from_dict(json.loads(
+            Path(artifact["path"]).read_text(encoding="utf-8")))
+        substituted = host_native.HostSurfaceSnapshot.create(
+            workflow_id=original.workflow_id, run_id=original.run_id,
+            target=original.target, revision=original.revision + ":substitute",
+            sequence=original.sequence, stage=original.stage,
+            state=original.state, values=original.values,
+            evidence=original.evidence, safe_actions=original.safe_actions)
+        payload = views.canonical_dashboard_bytes(substituted.to_dict())
+        Path(artifact["path"]).write_bytes(payload)
+        artifact["bytes"] = len(payload)
+        artifact["sha256"] = cleanup.file_sha256(artifact["path"])
+        delivery["semantic_bytes"] = len(payload)
+        delivery["semantic_sha256"] = artifact["sha256"]
         return result
 
     with monkeypatch.context() as publication_patch:
         publication_patch.setattr(
             loop_status, "_select_dashboard_source",
             lambda _workspace: copy.deepcopy(dashboard_source))
-        publication_patch.setattr(views, "refresh_views", corrupt_delivery)
+        publication_patch.setattr(views, "refresh_views", substitute_delivery)
         with pytest.raises(cleanup.OwnedCleanupError,
-                           match="delivery artifact identity changed"):
+                           match="delivery substituted the durable snapshot"):
             cleanup.replay_publication(
                 delivery_source, workspace=str(delivery_workspace),
-                owner=delivery_owner, outcome="success", mark_published=False)
+                owner=delivery_owner, outcome="success")
     assert json.loads(delivery_source.read_text(encoding="utf-8"))[
         "status"] == "pending"
 

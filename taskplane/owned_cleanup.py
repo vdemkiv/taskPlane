@@ -33,7 +33,9 @@ RECEIPT_SCHEMA = "taskplane.cleanup-receipt/v1"
 PUBLICATION_REPLAY_SCHEMA = "taskplane.dashboard-publication-replay/v1"
 CLEANUP_EVIDENCE_SCHEMA = "taskplane.cleanup-consumer-evidence/v1"
 PUBLICATION_SOURCE_SCHEMA = "taskplane.cleanup-publication-source/v1"
-_PUBLICATION_SOURCE_KEY = "owned_cleanup_publication_source"
+PUBLICATION_ATTESTATION_SCHEMA = \
+    "taskplane.owned-cleanup-publication-attestation/v1"
+PUBLICATION_RECEIPT_SCHEMA = "taskplane.owned-cleanup-publication-receipt/v1"
 _TERMINAL_OUTCOMES = frozenset({
     "success", "failure", "cancellation", "interruption", "timeout",
     "handoff", "recovery",
@@ -56,6 +58,12 @@ def _canonical(value: object) -> bytes:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def _dashboard_digest(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def file_sha256(path: str | os.PathLike[str]) -> str:
@@ -667,10 +675,9 @@ def _host_surface_types():
     return host_native.HostSurfaceSnapshot, host_native.HostSurfaceEvent
 
 
-def _bind_publication_source(publication: Mapping[str, object], *,
-                             source_revision: int,
-                             source_fingerprint: str) -> dict:
-    """Create an authenticated snapshot that carries cleanup source truth."""
+def _load_durable_publication(workspace: str,
+                              publication: Mapping[str, object]) -> dict:
+    """Authenticate returned snapshot/event against their durable stores."""
     if publication.get("status") == "no_active":
         raise OwnedCleanupError(
             "canonical dashboard publisher has no snapshot for source identity")
@@ -687,67 +694,62 @@ def _bind_publication_source(publication: Mapping[str, object], *,
     except ValueError as exc:
         raise OwnedCleanupError(
             "canonical dashboard snapshot authentication failed") from exc
-    expected = _publication_source_identity(
-        source_revision, source_fingerprint)
-    existing = snapshot.values.get(_PUBLICATION_SOURCE_KEY)
-    if existing is not None and existing != expected:
+    if event.snapshot_fingerprint != snapshot.fingerprint:
         raise OwnedCleanupError(
-            "canonical dashboard snapshot names another cleanup source")
-    values = dict(snapshot.values)
-    values[_PUBLICATION_SOURCE_KEY] = expected
-    publication_revision = (
-        f"owned-cleanup:{source_revision}:{source_fingerprint}")
-    bound = HostSurfaceSnapshot.create(
-        workflow_id=snapshot.workflow_id, run_id=snapshot.run_id,
-        target=snapshot.target, revision=publication_revision,
-        sequence=snapshot.sequence, stage=snapshot.stage,
-        state=snapshot.state, values=values, evidence=snapshot.evidence,
-        safe_actions=snapshot.safe_actions)
-    bound_event = HostSurfaceEvent.from_snapshot(
-        bound, event_type=event.event_type)
-    result = copy.deepcopy(dict(publication))
-    result["snapshot"] = bound.to_dict()
-    result["event"] = bound_event.to_dict()
-    result["surfaces"] = {
-        str(name): bound.fingerprint
-        for name in (publication.get("surfaces") or {})
-    }
-    return result
-
-
-def _verify_bound_snapshot(publication: Mapping[str, object], *,
-                           expected: Mapping[str, object]) -> dict:
-    """Authenticate the adapter snapshot and extract, rather than echo, source."""
-    snapshot_value = publication.get("snapshot")
-    event_value = publication.get("event")
-    if not isinstance(snapshot_value, Mapping) or not isinstance(
-            event_value, Mapping):
-        raise OwnedCleanupError(
-            "canonical dashboard snapshot source identity is unavailable")
-    HostSurfaceSnapshot, HostSurfaceEvent = _host_surface_types()
-    try:
-        snapshot = HostSurfaceSnapshot.from_dict(snapshot_value)
-        event = HostSurfaceEvent.from_dict(event_value)
-    except ValueError as exc:
-        raise OwnedCleanupError(
-            "canonical dashboard snapshot source identity is unauthenticated") \
-            from exc
-    identity = snapshot.values.get(_PUBLICATION_SOURCE_KEY)
-    if identity != expected or event.snapshot_fingerprint != \
-            snapshot.fingerprint:
-        raise OwnedCleanupError(
-            "canonical dashboard snapshot did not verify source identity")
+            "canonical dashboard event does not name returned snapshot")
     surfaces = publication.get("surfaces")
     if not isinstance(surfaces, Mapping) or not surfaces or any(
             value != snapshot.fingerprint for value in surfaces.values()):
         raise OwnedCleanupError(
-            "canonical dashboard surfaces did not verify source identity")
-    return copy.deepcopy(dict(identity))
+            "canonical dashboard surfaces do not name returned snapshot")
+    try:
+        try:
+            from taskplane import storage as runtime_storage
+        except ImportError:
+            import storage as runtime_storage
+        durable = runtime_storage.load_dashboard_publication(workspace)
+        durable_value = durable.get("current") if isinstance(
+            durable, Mapping) else None
+        if not isinstance(durable_value, Mapping):
+            raise OwnedCleanupError(
+                "durable dashboard snapshot is unavailable")
+        durable_snapshot = HostSurfaceSnapshot.from_dict(durable_value)
+        event_path = Path(runtime_storage.dashboard_snapshot_store_path(
+            workspace)).parent / "events.json"
+        event_store = json.loads(event_path.read_text(encoding="utf-8"))
+        event_values = event_store.get("events") if isinstance(
+            event_store, Mapping) else None
+        if (not isinstance(event_store, Mapping) or
+                event_store.get("schema") != "taskplane.dashboard-events/v1" or
+                not isinstance(event_values, list)):
+            raise OwnedCleanupError(
+                "durable dashboard event journal is invalid")
+        durable_events = [HostSurfaceEvent.from_dict(row)
+                          for row in event_values]
+    except OwnedCleanupError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise OwnedCleanupError(
+            "durable dashboard publication authentication failed") \
+            from exc
+    if durable_snapshot.to_dict() != snapshot.to_dict():
+        raise OwnedCleanupError(
+            "durable dashboard snapshot does not match returned publication")
+    durable_event = next((row for row in durable_events
+                          if row.fingerprint == event.fingerprint), None)
+    if durable_event is None or durable_event.to_dict() != event.to_dict():
+        raise OwnedCleanupError(
+            "durable dashboard event does not match returned publication")
+    return {
+        "snapshot": snapshot.to_dict(), "event": event.to_dict(),
+        "snapshot_fingerprint": snapshot.fingerprint,
+        "event_fingerprint": event.fingerprint,
+    }
 
 
-def _verify_bound_delivery(delivered: Mapping[str, object], *,
-                           expected: Mapping[str, object]) -> dict:
-    """Read back canonical delivery bytes and independently extract source."""
+def _verify_durable_delivery(delivered: Mapping[str, object], *,
+                             durable: Mapping[str, object]) -> dict:
+    """Read back delivery and prove it is the exact durable loop snapshot."""
     dashboard = delivered.get("dashboard")
     delivery = dashboard.get("delivery") if isinstance(
         dashboard, Mapping) else None
@@ -781,19 +783,93 @@ def _verify_bound_delivery(delivered: Mapping[str, object], *,
     except ValueError as exc:
         raise OwnedCleanupError(
             "canonical dashboard delivery snapshot is unauthenticated") from exc
-    identity = snapshot.values.get(_PUBLICATION_SOURCE_KEY)
     receipt = delivery.get("publication_receipt")
     receipt_snapshot = receipt.get("snapshot") if isinstance(
         receipt, Mapping) else None
     current = delivery.get("current_head")
-    if (identity != expected or not isinstance(receipt_snapshot, Mapping) or
+    if snapshot.to_dict() != durable.get("snapshot"):
+        raise OwnedCleanupError(
+            "canonical dashboard delivery substituted the durable snapshot")
+    if (delivery.get("status") != "published" or
+            not isinstance(receipt_snapshot, Mapping) or
             receipt_snapshot.get("fingerprint") != snapshot.fingerprint or
             receipt_snapshot.get("canonical_sha256") != digest or
+            receipt.get("fingerprint") != _dashboard_digest({
+                key: copy.deepcopy(item) for key, item in receipt.items()
+                if key != "fingerprint"
+            }) or
             not isinstance(current, Mapping) or
-            current.get("snapshot_fingerprint") != snapshot.fingerprint):
+            current.get("snapshot_fingerprint") != snapshot.fingerprint or
+            current.get("receipt_fingerprint") != receipt.get("fingerprint")):
         raise OwnedCleanupError(
-            "canonical dashboard delivery did not verify source identity")
-    return copy.deepcopy(dict(identity))
+            "canonical dashboard delivery did not verify durable identity")
+    return {
+        "snapshot_fingerprint": snapshot.fingerprint,
+        "canonical_sha256": digest,
+        "publication_receipt_fingerprint": receipt["fingerprint"],
+    }
+
+
+def _publication_source_attestation(
+        obligation: Mapping[str, object], durable: Mapping[str, object]) -> dict:
+    """Bind cleanup source truth to the canonical durable publication."""
+    material = {
+        "schema": PUBLICATION_ATTESTATION_SCHEMA,
+        "source": _publication_source_identity(
+            int(obligation["source_revision"]),
+            str(obligation["source_fingerprint"])),
+        "obligation_fingerprint": str(obligation["fingerprint"]),
+        "snapshot_fingerprint": str(durable["snapshot_fingerprint"]),
+        "event_fingerprint": str(durable["event_fingerprint"]),
+    }
+    return {**material, "fingerprint": _digest(material)}
+
+
+def _publication_source_receipt(
+        attestation: Mapping[str, object],
+        delivered: Mapping[str, object]) -> dict:
+    """Acknowledge exact delivery without injecting source into the snapshot."""
+    material = {
+        "schema": PUBLICATION_RECEIPT_SCHEMA,
+        "source": copy.deepcopy(attestation["source"]),
+        "attestation_fingerprint": str(attestation["fingerprint"]),
+        "snapshot_fingerprint": str(delivered["snapshot_fingerprint"]),
+        "canonical_sha256": str(delivered["canonical_sha256"]),
+        "publication_receipt_fingerprint": str(
+            delivered["publication_receipt_fingerprint"]),
+    }
+    return {**material, "fingerprint": _digest(material)}
+
+
+def _verify_publication_source_envelope(
+        attestation: Mapping[str, object], receipt: Mapping[str, object], *,
+        expected: Mapping[str, object], durable: Mapping[str, object]) -> dict:
+    """Authenticate both OWNED-CLEANUP records and extract bound source."""
+    attestation_material = {
+        key: copy.deepcopy(value) for key, value in attestation.items()
+        if key != "fingerprint"
+    }
+    receipt_material = {
+        key: copy.deepcopy(value) for key, value in receipt.items()
+        if key != "fingerprint"
+    }
+    if (attestation.get("schema") != PUBLICATION_ATTESTATION_SCHEMA or
+            attestation.get("fingerprint") != _digest(attestation_material) or
+            receipt.get("schema") != PUBLICATION_RECEIPT_SCHEMA or
+            receipt.get("fingerprint") != _digest(receipt_material) or
+            receipt.get("attestation_fingerprint") !=
+            attestation.get("fingerprint") or
+            attestation.get("source") != expected or
+            receipt.get("source") != expected or
+            attestation.get("snapshot_fingerprint") !=
+            durable.get("snapshot_fingerprint") or
+            attestation.get("event_fingerprint") !=
+            durable.get("event_fingerprint") or
+            receipt.get("snapshot_fingerprint") !=
+            durable.get("snapshot_fingerprint")):
+        raise OwnedCleanupError(
+            "owned cleanup publication envelope did not verify source identity")
+    return copy.deepcopy(dict(receipt["source"]))
 
 
 def replay_publication(path: str | os.PathLike[str], *, workspace: str,
@@ -826,32 +902,38 @@ def replay_publication(path: str | os.PathLike[str], *, workspace: str,
                 selected_workspace,
                 **{key: value for key, value in kwargs.items()
                    if key not in {"source_revision", "source_fingerprint"}})
-            bound_publication = _bind_publication_source(
-                publication, source_revision=source_revision,
-                source_fingerprint=source_fingerprint)
-            snapshot_identity = _verify_bound_snapshot(
-                bound_publication, expected=expected)
+            durable = _load_durable_publication(
+                selected_workspace, publication)
+            attestation = _publication_source_attestation(
+                obligation, durable)
             payload = {
                 "outcome": obligation["outcome"],
-                "dashboard_snapshot": bound_publication,
+                "dashboard_snapshot": publication,
             }
             delivered = views.refresh_views(selected_workspace, payload)
-            delivery_identity = _verify_bound_delivery(
-                delivered, expected=expected)
-            if snapshot_identity != delivery_identity:
+            reloaded = _load_durable_publication(
+                selected_workspace, publication)
+            if (reloaded["snapshot_fingerprint"] !=
+                    durable["snapshot_fingerprint"] or
+                    reloaded["event_fingerprint"] !=
+                    durable["event_fingerprint"]):
                 raise OwnedCleanupError(
-                    "canonical publisher source identity changed in delivery")
-            # Return the independently extracted delivery identity, never the
-            # request arguments, as the publisher acknowledgement.
+                    "durable dashboard identity changed during delivery")
+            delivery = _verify_durable_delivery(
+                delivered, durable=reloaded)
+            receipt = _publication_source_receipt(attestation, delivery)
+            source_identity = _verify_publication_source_envelope(
+                attestation, receipt, expected=expected, durable=reloaded)
+            # Return source truth extracted from the authenticated cleanup
+            # envelope, never the publisher request arguments.
             return {
-                "source_revision": delivery_identity["source_revision"],
-                "source_fingerprint":
-                    delivery_identity["source_fingerprint"],
+                "source_revision": source_identity["source_revision"],
+                "source_fingerprint": source_identity["source_fingerprint"],
                 "source_verification": {
-                    "snapshot": snapshot_identity,
-                    "delivery": delivery_identity,
+                    "attestation": attestation, "receipt": receipt,
                 },
-                "snapshot_publication": bound_publication,
+                "snapshot_publication": copy.deepcopy(dict(publication)),
+                "durable_publication": reloaded,
                 "dashboard_delivery": delivered,
             }
 
