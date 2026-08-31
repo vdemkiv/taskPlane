@@ -16,8 +16,8 @@ jobs:
     name: settings-derived authoritative CI plan
     runs-on: ubuntu-latest
     outputs:
-      candidate-sha: ${{ steps.plan.outputs.candidate-sha }}
-      artifact-days: ${{ steps.plan.outputs.artifact-days }}
+      candidate-sha: ${{ steps.bootstrap.outputs.candidate-sha }}
+      artifact-days: ${{ steps.bootstrap.outputs.artifact-days }}
       pytest-matrix: ${{ steps.plan.outputs.pytest-matrix }}
       max-parallel: ${{ steps.plan.outputs.max-parallel }}
       quality-cell: ${{ steps.plan.outputs.quality-cell }}
@@ -33,6 +33,32 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - name: Bootstrap exact candidate and canonical evidence retention
+        id: bootstrap
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_OUTPUT" <<'PY'
+          import os
+          import subprocess
+          import sys
+
+          from taskplane.settings import load_settings
+
+          candidate_sha = os.environ["CANDIDATE_SHA"].strip()
+          checkout_sha = subprocess.run(
+              ["git", "rev-parse", "HEAD"], check=True, capture_output=True,
+              text=True, encoding="utf-8",
+          ).stdout.strip()
+          if candidate_sha != checkout_sha:
+              raise SystemExit("checked-out candidate is not the exact event SHA")
+          settings = load_settings(environment={})
+          with open(sys.argv[1], "a", encoding="utf-8") as output:
+              output.write(f"candidate-sha={candidate_sha}\n")
+              output.write(f"artifact-days={settings.cleanup.artifacts_days}\n")
+          PY
       - name: Emit one typed, validated, read-only candidate plan
         id: plan
         env:
@@ -60,10 +86,6 @@ jobs:
           # five jobs therefore remain at the 30 runner-minute ceiling.
           minutes = lambda cell: (int(cell["timeout_seconds"]) + 59) // 60 + 1
           with open(sys.argv[2], "a", encoding="utf-8") as output:
-              output.write(f"candidate-sha={runtime['candidate']['source_sha']}\n")
-              output.write("artifact-days=" + str(
-                  runtime["settings_receipt"]["effective"]["cleanup"]["artifacts_days"]
-              ) + "\n")
               output.write("pytest-matrix=" + json.dumps({"include": [
                   {"cell": cell["id"], "timeout_minutes": minutes(cell)}
                   for cell in pytest_cells
@@ -77,10 +99,10 @@ jobs:
       - name: Preserve frozen candidate, settings, allocation, and budget receipts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ci-runtime-${{ steps.plan.outputs.candidate-sha }}
+          name: ci-runtime-${{ steps.bootstrap.outputs.candidate-sha }}
           path: ${{ runner.temp }}/ci-runtime.json
           if-no-files-found: error
-          retention-days: ${{ fromJSON(steps.plan.outputs.artifact-days) }}
+          retention-days: ${{ fromJSON(steps.bootstrap.outputs.artifact-days) }}
 
   python-compatibility:
     name: Python compatibility (${{ matrix.python }})
