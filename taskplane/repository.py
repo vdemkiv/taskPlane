@@ -1278,6 +1278,37 @@ class RepositoryManager:
             primary, task_id=task_id,
             run_id=run_id or registration.get("run_id"))
 
+    def owned_worktree_resource(self, primary_checkout: str, *, task_id: str,
+                                merge_receipt: Mapping,
+                                lifecycle: Mapping) -> dict:
+        """Adapt exact repository registration into cleanup manifest facts."""
+        primary = os.path.realpath(primary_checkout)
+        registration = storage.load_task_worktree_registration(primary, task_id)
+        if registration is None:
+            raise RepositoryAcquisitionError(
+                "identity", "task worktree has no managed registration")
+        managed = os.path.abspath(str(registration.get("path") or ""))
+        root, relative = os.path.split(managed)
+        if (not root or not relative or merge_receipt.get("managed_path") != managed or
+                merge_receipt.get("receipt_id") is None):
+            raise RepositoryAcquisitionError(
+                "identity", "task worktree cleanup identity is ambiguous")
+        return {
+            "kind": "worktree",
+            "containment_root": root,
+            "relative_name": relative,
+            "stable_identity": {
+                "registration_path": managed,
+                "branch_ref": registration.get("branch_ref"),
+                "branch_tip": registration.get("branch_tip"),
+                "run_id": registration.get("run_id"),
+                "task_id": registration.get("task_id"),
+                "merge_receipt_id": merge_receipt.get("receipt_id"),
+            },
+            "policy": {"merge_receipt": copy.deepcopy(dict(merge_receipt)),
+                       "lifecycle": copy.deepcopy(dict(lifecycle))},
+        }
+
     def accept_pickup_revision(self, primary_checkout: str, *, task_id: str,
                                revision: str) -> dict:
         """Accept an exact already-current revision at the merge boundary."""

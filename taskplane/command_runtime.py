@@ -879,6 +879,40 @@ class CommandRuntime:
     def snapshot(self, handle: str) -> dict:
         return self._load(handle)
 
+    def owned_resource_descriptor(self, handle: str, *,
+                                  kind: str = "worker-contract") -> dict:
+        """Identify one runtime directory for reserve-before-use cleanup.
+
+        The orchestrator supplies repository/settings ownership when it
+        appends this descriptor to the manifest.  This method contributes
+        only facts owned by the command runtime and never deletes the path.
+        """
+        if kind not in {"worker-contract", "generated-state",
+                        "test-artifact"}:
+            raise ValueError("command runtime resource kind is invalid")
+        snapshot = self._load(handle)
+        identity = snapshot.get("identity") or {}
+        if (identity.get("schema") !=
+                "taskplane.governed-command-identity/v1" or
+                not identity.get("run_id") or not identity.get("task_id")):
+            raise CommandRuntimeError(
+                "owned runtime resource requires exact run/task identity")
+        return {
+            "kind": kind,
+            "containment_root": str(self.root.resolve()),
+            "relative_name": str(handle),
+            "stable_identity": {
+                "handle": str(handle),
+                "run_id": str(identity["run_id"]),
+                "task_id": str(identity["task_id"]),
+                "workspace_fingerprint": self._workspace,
+                "authorization_fingerprint": self._authorization,
+                "command_fingerprint": snapshot["command_fingerprint"],
+                "binding_digest": snapshot.get("binding_digest"),
+                "created_at": snapshot["created_at"],
+            },
+        }
+
     def record_recovery(self, handle: str, *, failure_class: str,
                         detail: str, progress: float | None = None,
                         safe: bool = True,

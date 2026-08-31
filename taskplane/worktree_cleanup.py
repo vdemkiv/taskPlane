@@ -136,12 +136,12 @@ def _retention_reason(lifecycle: dict) -> str | None:
             row.get("selected_variant"):
         return "variant worktrees are retained"
     status = str(row.get("status") or "")
-    if status in {"failed", "error", "cancelled"} or row.get("failed"):
-        return "failed task worktrees are retained"
     if row.get("active") or status in {"active", "running", "claimed"}:
         return "active task worktrees are retained"
-    if row.get("released") is not True or status != "passed":
-        return "task lifecycle is not passed and released"
+    terminal = {"passed", "failed", "error", "cancelled", "interrupted",
+                "timed_out", "handoff", "recovery"}
+    if row.get("released") is not True or status not in terminal:
+        return "task lifecycle is not terminal and released"
     if row.get("evidence_needed") or row.get("retain_evidence"):
         return "review evidence still requires this worktree"
     return None
@@ -235,7 +235,9 @@ def eligibility(receipt: dict, *, lifecycle: dict) -> dict:
         mode = os.lstat(candidate).st_mode
         if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
             raise CleanupError("candidate is not a real directory")
-        if not os.path.isfile(os.path.join(candidate, ".git")):
+        git_link = os.path.join(candidate, ".git")
+        if not os.path.isfile(git_link) or stat.S_ISLNK(os.lstat(git_link).st_mode) \
+                or os.lstat(git_link).st_nlink != 1:
             raise CleanupError("candidate is not a linked worktree")
         row = matches[0]
         if row.get("locked") or row.get("prunable"):
@@ -275,7 +277,7 @@ def eligibility(receipt: dict, *, lifecycle: dict) -> dict:
             raise CleanupError("recorded branch tip is not in current primary")
         checks.update({"branch_ref": live_branch, "branch_tip": live_tip,
                        "primary_ref": primary_ref, "clean": True,
-                       "lifecycle": "passed_released", "ancestor": True})
+                       "lifecycle": "terminal_released", "ancestor": True})
     except (CleanupError, storage.StorageIdentityError, OSError) as exc:
         return _result(receipt, "preserved", reason=str(exc), checks=checks)
     return _result(receipt, "pending", reason="eligible", checks=checks)

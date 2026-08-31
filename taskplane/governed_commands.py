@@ -958,6 +958,38 @@ def _runtime(workspace: str, authorization: str) -> CommandRuntime:
                           authorization=authorization)
 
 
+def owned_process_resource(workspace: str, handle: str,
+                           binding: Mapping[str, object], *,
+                           run_id: str, task_id: str) -> dict:
+    """Return exact process/control identity for orchestrator reservation.
+
+    PID, process name, or the runtime path alone are deliberately
+    insufficient.  The descriptor binds the reconnect token, process start
+    generation, group, run/task identity, handle, and control location.
+    """
+    required = {"schema", "pid", "pgid", "started", "token"}
+    value = dict(binding)
+    if (set(value) != required or value.get("schema") !=
+            "taskplane.detached-command-binding/v1" or
+            not str(value.get("token") or "") or
+            not str(value.get("started") or "")):
+        raise GovernedCommandError("owned process binding is invalid")
+    if not re.fullmatch(r"[0-9a-f]{32}", str(handle)):
+        raise GovernedCommandError("owned process handle is invalid")
+    root = _runtime_root(str(Path(workspace).resolve()))
+    return {
+        "kind": "process-group",
+        "containment_root": str(root),
+        "relative_name": str(handle),
+        "stable_identity": {
+            "handle": str(handle), "run_id": str(run_id),
+            "task_id": str(task_id), "binding_digest":
+                _canonical_digest(value),
+        },
+        "observed_identity": value,
+    }
+
+
 def _adapter(workspace: str, authorization: str, *, host: str,
              launcher, binding: Mapping[str, object] | None = None) \
         -> CommandAdapter:
