@@ -2492,8 +2492,28 @@ def scope_modules(ws: str, scope_globs) -> list:
     argument is easy to forget, and forgetting it is silent: the scope
     resolves to a path-derived id the graph does not contain, so the blast
     radius comes back empty and the gate reads that as "nothing impacted".
+
+    Exact file paths may also be approved graph-module overlays. Preserve
+    those identities in addition to their owning directory module. Globs,
+    directories, unknown paths, absolute paths, and traversal never acquire
+    overlay coverage: callers must name each approved file exactly.
     """
-    return modules_for_scope(scope_globs, declared_module_ids(load(ws)))
+    graph = load(ws)
+    modules = set(modules_for_scope(
+        scope_globs, declared_module_ids(graph)))
+    declared = set(graph.get("modules") or {})
+    for raw_scope in scope_globs or []:
+        scope = str(raw_scope or "").replace("\\", "/")
+        parts = scope.split("/")
+        if not scope or scope != scope.strip() or scope.endswith("/") or \
+                posixpath.isabs(scope) or any(part in ("", ".", "..")
+                                               for part in parts) or \
+                any(token in scope for token in ("*", "?", "[")) or \
+                not posixpath.splitext(posixpath.basename(scope))[1]:
+            continue
+        if scope in declared:
+            modules.add(scope)
+    return sorted(modules)
 
 
 def req_node(rid: str) -> str:

@@ -1032,6 +1032,40 @@ def design_approval_notices(ws: str, contract: dict | None = None) -> list:
     return notices
 
 
+def _plan_stabilization_errors(state: Mapping, tasks: list) -> list[str]:
+    """Require one bounded successor after two governed Plan returns.
+
+    The initial Plan plus two append-only replan-history rows is the third
+    Plan presentation.  Reuse that existing history as authority rather than
+    adding a second counter or changing the approved Plan artifact.
+    """
+    history = state.get("replan_history")
+    if not isinstance(history, list) or len(history) < 2:
+        return []
+    candidates = [
+        task for task in tasks
+        if isinstance(task, Mapping)
+        and str(task.get("type") or "").strip() == "stabilization"
+    ]
+    if len(candidates) != 1:
+        return ["third Plan return requires exactly one pending successor "
+                "task with type=stabilization"]
+    candidate = candidates[0]
+    candidate_id = str(candidate.get("id") or "").strip()
+    id_owners = [
+        task for task in tasks
+        if isinstance(task, Mapping)
+        and str(task.get("id") or "").strip() == candidate_id
+    ]
+    if not candidate_id or len(id_owners) != 1:
+        return ["third Plan return has an ambiguous stabilization successor; "
+                "exactly one uniquely named pending task is required"]
+    if candidate.get("status", "pending") != "pending":
+        return ["third Plan return requires the stabilization successor to "
+                "be pending"]
+    return []
+
+
 def design_plan_errors(ws: str, state: dict) -> list:
     """Approved Design Contract → implementation plan conformance."""
     errors = design_current_errors(ws, state)
@@ -1046,6 +1080,7 @@ def design_plan_errors(ws: str, state: dict) -> list:
     except DesignAcceptanceError as exc:
         return ["design acceptance tests are invalid: " + str(exc)]
     tasks = state.get("tasks") or []
+    errors.extend(_plan_stabilization_errors(state, tasks))
     if contract.get("requirement") == "R-0013":
         errors.extend(acceptance_wave_errors(contract, tasks))
     planned_modules = set()
