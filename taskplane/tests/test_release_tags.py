@@ -12,6 +12,7 @@ always passes is worse than no check, because it reads as evidence. So most
 of this file builds throwaway git repos with a specific defect planted in
 each, and asserts the gate names that defect.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -27,7 +28,9 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import ci_release_tags as gate     # noqa: E402
+import release_provenance as provenance  # noqa: E402
 from taskplane import release_evidence  # noqa: E402
+from taskplane import ci_policy, owned_cleanup, views, wave_metrics  # noqa: E402
 
 
 def _git(root, *args, check=True):
@@ -143,7 +146,8 @@ def test_tag_requires_exact_protected_main_green(tmp_path):
 
     evidence = _protected_main_evidence(
         tmp_path, protected_head, base, pull_head)
-    receipt = release_evidence.create_protected_main_release_gate(evidence)
+    receipt = release_evidence.create_protected_main_release_gate(
+        evidence, repository=tmp_path)
     authorization = gate.authorize_tag(tmp_path, "1.1.0", receipt)
     assert authorization["authorized"] is True
     assert authorization["source_sha"] == protected_head
@@ -160,7 +164,7 @@ def test_tag_requires_exact_protected_main_green(tmp_path):
     for package in branch_evidence["packages"]:
         package["source_sha"] = pull_head
     branch_receipt = release_evidence.create_protected_main_release_gate(
-        branch_evidence)
+        branch_evidence, repository=tmp_path)
     with pytest.raises(release_evidence.ReleaseEvidenceError,
                        match="protected branch head"):
         gate.authorize_tag(tmp_path, "1.1.0", branch_receipt)
@@ -169,7 +173,212 @@ def test_tag_requires_exact_protected_main_green(tmp_path):
     red["ci"]["conclusions"]["terminal-matrix"] = "failure"
     with pytest.raises(release_evidence.ReleaseEvidenceError,
                        match="required check"):
-        release_evidence.create_protected_main_release_gate(red)
+        release_evidence.create_protected_main_release_gate(
+            red, repository=tmp_path)
+
+
+def test_unsafe_workflow_bytes_cannot_be_laundered_by_digest_and_booleans(
+        tmp_path):
+    repo = _Repo(str(tmp_path))
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    shutil.copy(Path(ROOT) / ".github/workflows/ci.yml",
+                tmp_path / ".github/workflows/ci.yml")
+    shutil.copy(Path(ROOT) / "requirements-dev.lock",
+                tmp_path / "requirements-dev.lock")
+    (tmp_path / "taskplane").mkdir()
+    shutil.copy(Path(ROOT) / "taskplane/operational-settings.json",
+                tmp_path / "taskplane/operational-settings.json")
+    base = repo.release("1.0.0")
+    repo.tag("1.0.0", base)
+    _git(str(tmp_path), "checkout", "-q", "-b", "feature")
+    pull_head = repo.release("1.1.0")
+    _git(str(tmp_path), "checkout", "-q", "main")
+    _git(str(tmp_path), "merge", "-q", "--no-ff", "feature", "-m", "merge")
+    protected = _git(str(tmp_path), "rev-parse", "HEAD")
+    evidence = _protected_main_evidence(tmp_path, protected, base, pull_head)
+
+    workflow = tmp_path / ".github/workflows/ci.yml"
+    unsafe = workflow.read_text(encoding="utf-8")
+    unsafe = unsafe.replace("permissions:\n  contents: read", "permissions: write-all")
+    unsafe = unsafe.replace(
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "actions/checkout@main",
+        1,
+    )
+    unsafe += "\nenv:\n  RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}\n"
+    workflow.write_text(unsafe, encoding="utf-8")
+    # A malicious caller recomputes the digest and repeats all of the old
+    # trusted booleans. The release boundary must inspect the bytes itself.
+    evidence["supply_chain"]["workflow_digest"] = hashlib.sha256(
+        workflow.read_bytes()).hexdigest()
+    evidence["supply_chain"].update({
+        "permissions": "contents:read",
+        "immutable_actions": True,
+        "hash_locked_dependencies": True,
+        "credential_empty_untrusted_jobs": True,
+    })
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="workflow supply-chain"):
+        release_evidence.create_protected_main_release_gate(
+            evidence, repository=tmp_path)
+
+
+def test_post_merge_release_cli_assembles_and_authorizes_from_sealed_receipts(
+        tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    repo = _Repo(str(repository))
+    (repository / ".github/workflows").mkdir(parents=True)
+    shutil.copy(Path(ROOT) / ".github/workflows/ci.yml",
+                repository / ".github/workflows/ci.yml")
+    shutil.copy(Path(ROOT) / "requirements-dev.lock",
+                repository / "requirements-dev.lock")
+    (repository / "taskplane").mkdir()
+    shutil.copy(Path(ROOT) / "taskplane/operational-settings.json",
+                repository / "taskplane/operational-settings.json")
+    base = repo.release("1.0.0")
+    repo.tag("1.0.0", base)
+    _git(str(repository), "checkout", "-q", "-b", "feature")
+    pull_head = repo.release("1.1.0")
+    _git(str(repository), "checkout", "-q", "main")
+    _git(str(repository), "merge", "-q", "--no-ff", "feature", "-m", "merge")
+    source = _git(str(repository), "rev-parse", "HEAD")
+
+    candidate_input = json.loads((
+        Path(ROOT) / "taskplane/tests/fixtures/ci-policy/candidate.json"
+    ).read_text(encoding="utf-8"))
+    candidate_input["source_sha"] = source
+    candidate = ci_policy.freeze_candidate(candidate_input)
+    plan_input = json.loads((
+        Path(ROOT) / "taskplane/tests/fixtures/ci-policy/ci-plan.json"
+    ).read_text(encoding="utf-8"))
+    plan = ci_policy.build_ci_plan(candidate, plan_input)
+    settings_receipt = {
+        "schema": "taskplane.authoritative-ci-settings-receipt/v1",
+        "source": "canonical-loader",
+        "precedence": ["defaults", "file", "overlay"],
+        "candidate_sha": source,
+        "settings_digest": plan["settings_digest"],
+        "effective": {},
+        "loader_receipt": {},
+    }
+    settings_receipt["fingerprint"] = gate._sha256_json(settings_receipt)
+    runtime_payload = {
+        "schema": "taskplane.authoritative-ci-runtime/v1",
+        "candidate": candidate,
+        "settings_receipt": settings_receipt,
+        "plan": plan,
+    }
+    runtime = {**runtime_payload,
+               "fingerprint": gate._sha256_json(runtime_payload)}
+    browser_cell = next(row for row in plan["cells"]
+                        if row["kind"] == "browser")
+    observed = {"implementation": "CPython", "python": "3.13.0",
+                "os": "posix", "platform": "Darwin", "machine": "arm64"}
+    ownership = {
+        "schema": "taskplane.ci-owned-cell/v1",
+        "candidate_fingerprint": candidate["fingerprint"],
+        "source_sha": source,
+        "cell_id": browser_cell["id"],
+        "containment_root": str(artifacts),
+        "relative_name": "browser-owned",
+        "registered_before_run": True,
+    }
+    ownership["fingerprint"] = gate._sha256_json(ownership)
+    resource = str(artifacts / "browser-owned")
+    cleanup_payload = {
+        "schema": "taskplane.ci-cleanup-receipt/v1",
+        "registration_fingerprint": ownership["fingerprint"],
+        "outcome": "success", "resources": [resource], "status": "clean",
+        "leak_count": 0, "leaks": [],
+    }
+    cleanup_cell = {**cleanup_payload,
+                    "fingerprint": gate._sha256_json(cleanup_payload)}
+    commands = [{
+        "argv": ["taskplane-python", "-m", "pytest", "-q",
+                 *browser_cell["selectors"]],
+        "returncode": 0, "duration_ms": 1, "output_digest": "d" * 64,
+    }]
+    browser_payload = {
+        "schema": "taskplane.authoritative-ci-cell/v1",
+        "id": browser_cell["id"], "kind": "browser", "status": "green",
+        "outcome": "success", "classification": None,
+        "candidate_fingerprint": candidate["fingerprint"],
+        "source_sha": source, "plan_fingerprint": plan["fingerprint"],
+        "settings_receipt_fingerprint": settings_receipt["fingerprint"],
+        "environment": {
+            "candidate_fingerprint": candidate["fingerprints"]["environment"],
+            "observed": observed,
+            "observed_fingerprint": gate._sha256_json(observed),
+        },
+        "browser_fingerprint": candidate["browser_fingerprint"],
+        "browser_observation": candidate["browser"],
+        "selectors": browser_cell["selectors"], "duration_ms": 1,
+        "commands": commands, "output_digest": "e" * 64,
+        "ownership": ownership, "cleanup": cleanup_cell,
+    }
+    browser = {**browser_payload,
+               "receipt": gate._sha256_json(browser_payload)}
+    cells = [
+        {"id": cell["id"], "status": "green",
+         "receipt": browser["receipt"] if cell["id"] == browser_cell["id"]
+         else hashlib.sha256(cell["id"].encode()).hexdigest()}
+        for cell in plan["cells"]
+    ]
+    terminal = ci_policy.seal_terminal_matrix(candidate, plan, cells)
+
+    dashboard = {
+        "schema": "taskplane.dashboard-publication-receipt/v1",
+        "snapshot": {"fingerprint": "1" * 64},
+        "graphs": {"design": "2" * 64, "plan": "3" * 64},
+        "dom_freshness": {"status": "verified"},
+        "host_acknowledgement": {"status": "acknowledged"},
+        "generation": {"complete": True}, "bindings": {},
+    }
+    dashboard["fingerprint"] = views.dashboard_publication_receipt_fingerprint(
+        dashboard)
+    metrics_input = json.loads((
+        Path(ROOT) / "taskplane/tests/fixtures/wave-metrics/closed-run.json"
+    ).read_text(encoding="utf-8"))
+    metrics_input["run"]["candidate_fingerprint"] = candidate["fingerprint"]
+    for row in metrics_input["sources"].values():
+        row["candidate_fingerprint"] = candidate["fingerprint"]
+    metrics = wave_metrics.seal_wave_receipt(metrics_input)
+
+    manifest = artifacts / "cleanup.json"
+    owned_cleanup.create_manifest(
+        manifest, repository_id="repo", workspace_fingerprint="4" * 64,
+        settings_digest="5" * 64, run_id="release", task_id="release",
+        attempt=1, evidence_root=artifacts / "cleanup-evidence")
+    owner = owned_cleanup.load_manifest(manifest)["owner"]
+    replay = artifacts / "publication-replay.json"
+    owned_cleanup.write_publication_replay(
+        replay, owner=owner, outcome="success", source_revision=1,
+        source_fingerprint="6" * 64, trigger="terminal")
+    cleanup_receipt = owned_cleanup.seal_and_cleanup(
+        manifest, outcome="success", evidence={"publication-replay": replay})
+
+    archives = []
+    for kind in ("openai", "claude"):
+        archive = artifacts / f"{kind}.zip"
+        archive.write_bytes(kind.encode())
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        record = json.loads(provenance.write(
+            repository, archive, digest, kind=kind
+        ).read_text(encoding="utf-8"))
+        archives.append(record)
+
+    release_gate = gate.assemble_protected_main_gate(
+        repository, pull_request_head_sha=pull_head, runtime=runtime,
+        terminal=terminal, browser=browser, dashboard=dashboard,
+        wave_metrics=metrics, cleanup=cleanup_receipt,
+        openai_provenance=archives[0], claude_provenance=archives[1])
+    authorization = gate.authorize_tag(
+        repository, "1.1.0", release_gate)
+    assert release_gate["source_sha"] == source
+    assert authorization["authorized"] is True
 
 
 class TestThisRepoIsClean(unittest.TestCase):

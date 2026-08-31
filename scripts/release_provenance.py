@@ -41,12 +41,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
 
 PROVENANCE_SCHEMA = "taskplane.package-provenance/v1"
+_GIT_SHA = re.compile(r"[0-9a-f]{40}")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 _FIELDS = {
     "schema", "kind", "archive", "sha256", "commit", "tree", "branch",
     "dirty", "verified_source", "release_inputs", "note", "fingerprint",
@@ -126,8 +129,13 @@ def validate(record: Mapping[str, Any], *, expected_source_sha: str | None = Non
     for field in ("archive", "sha256", "commit", "tree", "branch", "note"):
         if not isinstance(value.get(field), str) or not value[field]:
             raise ProvenanceError(f"package provenance {field} is required")
-    if len(value["commit"]) != 40 or len(value["tree"]) != 40:
-        raise ProvenanceError("package provenance Git identity is invalid")
+    if _GIT_SHA.fullmatch(value["commit"]) is None or \
+            _GIT_SHA.fullmatch(value["tree"]) is None:
+        raise ProvenanceError(
+            "package provenance Git identity must be 40-character lowercase hex")
+    if _SHA256.fullmatch(value["sha256"]) is None:
+        raise ProvenanceError(
+            "package provenance archive digest must be lowercase SHA-256")
     dirty = value.get("dirty")
     if not isinstance(dirty, list) or any(
         not isinstance(path, str) or not path for path in dirty
@@ -141,14 +149,16 @@ def validate(record: Mapping[str, Any], *, expected_source_sha: str | None = Non
     if inputs is not None:
         expected = {"workflow_digest", "lock_digest", "settings_digest"}
         if not isinstance(inputs, Mapping) or set(inputs) != expected or any(
-            not isinstance(digest, str) or len(digest) != 64
+            not isinstance(digest, str) or _SHA256.fullmatch(digest) is None
             for digest in inputs.values()
         ):
             raise ProvenanceError("package release-input digests are invalid")
     if require_release_inputs and inputs is None:
         raise ProvenanceError("package release-input provenance is missing")
     projection = {key: value[key] for key in _FIELDS - {"fingerprint"}}
-    if value.get("fingerprint") != _fingerprint(projection):
+    if not isinstance(value.get("fingerprint"), str) or \
+            _SHA256.fullmatch(value["fingerprint"]) is None or \
+            value["fingerprint"] != _fingerprint(projection):
         raise ProvenanceError("package provenance fingerprint mismatch")
     return json.loads(json.dumps(value, sort_keys=True))
 
@@ -160,8 +170,6 @@ def release_gate_record(record: Mapping[str, Any]) -> dict[str, Any]:
         raise ProvenanceError("local package provenance cannot authorize release")
     if not value["verified_source"]:
         raise ProvenanceError("dirty package provenance cannot authorize release")
-    if len(value["sha256"]) != 64:
-        raise ProvenanceError("release archive digest must be SHA-256")
     return {
         "kind": value["kind"],
         "source_sha": value["commit"],
@@ -182,6 +190,9 @@ def write(root: Path, archive: Path, digest: str, *,
     looking like an identifiable one.
     """
     state = source_state(root)
+    if _SHA256.fullmatch(digest) is None:
+        raise ProvenanceError(
+            "archive digest must be a 64-character lowercase SHA-256")
     if state["dirty"] and not allow_dirty:
         listed = ", ".join(state["dirty"][:8])
         more = (f" (+{len(state['dirty']) - 8} more)"

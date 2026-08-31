@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import re
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -262,18 +263,18 @@ def _fingerprint(value: Any, field_name: str, *, optional: bool = False) -> str 
     text = _text(value, field_name)
     if len(text) != 64 or any(character not in "0123456789abcdef" for character in text):
         raise ReleaseEvidenceError(
-            f"{field_name} must be a lowercase SHA-256 fingerprint"
+            f"{field_name} must be a 64-character lowercase SHA-256 fingerprint"
         )
     return text
 
 
 def _source_sha(value: Any, field_name: str = "source_sha") -> str:
     text = _text(value, field_name)
-    if len(text) not in {40, 64} or any(
+    if len(text) != 40 or any(
         character not in "0123456789abcdef" for character in text
     ):
         raise ReleaseEvidenceError(
-            f"{field_name} must be an exact lowercase Git SHA"
+            f"{field_name} must be an exact 40-character lowercase Git SHA"
         )
     return text
 
@@ -343,6 +344,113 @@ def _no_authenticity_claim(value: Any, name: str) -> None:
         )
 
 
+def _workflow_supply_chain(workflow_bytes: bytes) -> dict[str, object]:
+    try:
+        text = workflow_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ReleaseEvidenceError(
+            "workflow supply-chain bytes must be UTF-8") from exc
+    executable = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    if re.search(r"(?im)^\s*permissions\s*:\s*write-all\s*$", executable):
+        raise ReleaseEvidenceError(
+            "workflow supply-chain grants write-all permission")
+    permission = re.search(
+        r"(?m)^permissions\s*:\s*\n((?:^[ \t]+[^\n]*(?:\n|$))*)",
+        executable + "\n",
+    )
+    permission_rows = [] if permission is None else [
+        row.strip() for row in permission.group(1).splitlines() if row.strip()
+    ]
+    if permission_rows != ["contents: read"]:
+        raise ReleaseEvidenceError(
+            "workflow supply-chain must declare only contents: read globally")
+
+    uses = re.findall(r"(?m)^\s*-?\s*uses\s*:\s*([^\s]+)\s*$", executable)
+    if not uses or any(
+        not re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", action)
+        for action in uses if not action.startswith("./")
+    ):
+        raise ReleaseEvidenceError(
+            "workflow supply-chain contains an unpinned or mutable action reference")
+
+    lines = executable.splitlines()
+    checkout_rows = [
+        index for index, line in enumerate(lines)
+        if re.search(r"uses\s*:\s*actions/checkout@[0-9a-f]{40}\s*$", line)
+    ]
+    if not checkout_rows:
+        raise ReleaseEvidenceError(
+            "workflow supply-chain has no immutable checkout action")
+    for index in checkout_rows:
+        following: list[str] = []
+        for line in lines[index + 1:]:
+            if re.match(r"^\s*-\s+(?:name|uses|run)\s*:", line):
+                break
+            following.append(line)
+        if not any(re.search(r"persist-credentials\s*:\s*false\s*$", line)
+                   for line in following):
+            raise ReleaseEvidenceError(
+                "workflow supply-chain checkout must set persist-credentials:false")
+    if re.search(
+        r"(?i)(?:\$\{\{\s*secrets\.|\$\{\{\s*github\.token\b|"
+        r"\bGITHUB_TOKEN\s*:|persist-credentials\s*:\s*true)",
+        executable,
+    ):
+        raise ReleaseEvidenceError(
+            "workflow supply-chain exposes credentials or secrets to jobs")
+    return {
+        "permissions": "contents:read",
+        "immutable_actions": True,
+        "credential_empty_untrusted_jobs": True,
+    }
+
+
+def _lock_is_hash_pinned(lock_bytes: bytes) -> bool:
+    try:
+        lines = lock_bytes.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return False
+    statements: list[str] = []
+    pending = ""
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        pending += (" " if pending else "") + stripped.removesuffix("\\").strip()
+        if stripped.endswith("\\"):
+            continue
+        statements.append(pending)
+        pending = ""
+    if pending:
+        statements.append(pending)
+    requirements = [row for row in statements if "==" in row]
+    return bool(requirements) and all(
+        re.search(r"--hash=sha256:[0-9a-f]{64}(?:\s|$)", row)
+        for row in requirements
+    )
+
+
+def release_supply_chain_evidence(repository: str | Path) -> dict[str, object]:
+    """Derive release posture from the exact bound workflow and lock bytes."""
+    root = Path(repository).resolve()
+    try:
+        workflow_bytes = (root / ".github/workflows/ci.yml").read_bytes()
+        lock_bytes = (root / "requirements-dev.lock").read_bytes()
+    except OSError as exc:
+        raise ReleaseEvidenceError(
+            "release workflow or dependency lock is unavailable") from exc
+    posture = _workflow_supply_chain(workflow_bytes)
+    if not _lock_is_hash_pinned(lock_bytes):
+        raise ReleaseEvidenceError(
+            "workflow supply-chain dependency lock is not fully hash pinned")
+    return {
+        **posture,
+        "hash_locked_dependencies": True,
+        "workflow_digest": content_fingerprint(workflow_bytes),
+        "lock_digest": content_fingerprint(lock_bytes),
+    }
+
+
 def release_input_digests(repository: str | Path) -> dict[str, str]:
     """Read the three mutable inputs whose drift invalidates release proof.
 
@@ -352,12 +460,9 @@ def release_input_digests(repository: str | Path) -> dict[str, str]:
     changes the code or dependency supply chain that CI executed.
     """
     root = Path(repository).resolve()
-    workflow = root / ".github" / "workflows" / "ci.yml"
-    lock = root / "requirements-dev.lock"
     settings_path = root / "taskplane" / "operational-settings.json"
     try:
-        workflow_digest = content_fingerprint(workflow.read_bytes())
-        lock_digest = content_fingerprint(lock.read_bytes())
+        supply = release_supply_chain_evidence(root)
         from taskplane.settings import load_settings
         settings_digest = load_settings(settings_path).digest
     except (OSError, UnicodeError, ValueError) as exc:
@@ -365,8 +470,8 @@ def release_input_digests(repository: str | Path) -> dict[str, str]:
             "release workflow, lock, or canonical settings input is unavailable"
         ) from exc
     return {
-        "workflow_digest": workflow_digest,
-        "lock_digest": lock_digest,
+        "workflow_digest": str(supply["workflow_digest"]),
+        "lock_digest": str(supply["lock_digest"]),
         "settings_digest": settings_digest,
     }
 
@@ -541,15 +646,31 @@ def _protected_main_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     return json.loads(canonical_json(value))
 
 
-def create_protected_main_release_gate(
+def _seal_protected_main_release_gate(
     evidence: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Seal the sole tag/package release prerequisite for an exact main SHA."""
     normalized = _protected_main_evidence(evidence)
     normalized["schema"] = PROTECTED_MAIN_RELEASE_GATE_SCHEMA
     normalized["status"] = "protected-main-green"
     normalized["cryptographic_authenticity_claimed"] = False
     return _seal(normalized)
+
+
+def create_protected_main_release_gate(
+    evidence: Mapping[str, Any], *, repository: str | Path,
+) -> dict[str, Any]:
+    """Seal the sole tag/package release prerequisite for an exact main SHA."""
+    normalized = _protected_main_evidence(evidence)
+    derived = release_supply_chain_evidence(repository)
+    if normalized["supply_chain"] != derived:
+        raise ReleaseEvidenceError(
+            "workflow supply-chain claims do not match bound workflow and lock bytes")
+    inputs = release_input_digests(repository)
+    if normalized["receipts"]["settings"]["digest"] != \
+            inputs["settings_digest"]:
+        raise ReleaseEvidenceError(
+            "canonical release settings digest does not match bound settings")
+    return _seal_protected_main_release_gate(normalized)
 
 
 def _git_value(runner: GitRunner, repository: Path, *args: str) -> str:
@@ -578,7 +699,7 @@ def validate_protected_main_release_gate(
         for key in _PROTECTED_MAIN_EVIDENCE_FIELDS
     }
     evidence["schema"] = PROTECTED_MAIN_RELEASE_EVIDENCE_SCHEMA
-    normalized = create_protected_main_release_gate(evidence)
+    normalized = _seal_protected_main_release_gate(evidence)
     if dict(receipt) != normalized:
         raise ReleaseEvidenceError(
             "protected-main release gate fingerprint mismatch")
