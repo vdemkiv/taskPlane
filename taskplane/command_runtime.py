@@ -799,11 +799,19 @@ class CommandRuntime:
         now = float(self._clock())
         if identity is not None:
             identity = dict(identity)
-            if (set(identity) != {"schema", "run_id", "task_id"} or
+            required_identity = {"schema", "run_id", "task_id"}
+            if (not required_identity.issubset(identity) or
+                    set(identity) - required_identity - {"attempt"} or
                     identity.get("schema") !=
                     "taskplane.governed-command-identity/v1" or
                     not all(str(identity.get(key) or "").strip()
-                            for key in ("run_id", "task_id"))):
+                            for key in ("run_id", "task_id")) or
+                    ("attempt" in identity and (
+                        isinstance(identity["attempt"], bool) or
+                        not isinstance(identity["attempt"], int) or
+                        identity["attempt"] < 1)) or
+                    (self._owned_cleanup_context is not None and
+                     "attempt" not in identity)):
                 raise ValueError("governed command identity is invalid")
         if review_session is not None:
             review_session = dict(review_session)
@@ -902,6 +910,7 @@ class CommandRuntime:
                     "command_fingerprint": snapshot["command_fingerprint"],
                     "binding_digest": snapshot.get("binding_digest"),
                     "created_at": snapshot["created_at"],
+                    "attempt": (identity or {}).get("attempt"),
                 },
                 evidence_refs=(
                     "terminal-state", "handoff", "publication-replay"),
@@ -913,15 +922,37 @@ class CommandRuntime:
             }
         event = self._build_event(snapshot)
         snapshot["lifecycle"].append(event)
-        self._save(handle, snapshot, event)
-        if cleanup_resource_id is not None:
-            owned_cleanup.activate_resource(
-                str(self._owned_cleanup_context["manifest"]),
-                cleanup_resource_id)
-            owned_cleanup.bind_resource_dependency(
-                str(self._owned_cleanup_context["manifest"]),
-                str(self._owned_cleanup_context["process_resource_id"]),
-                cleanup_resource_id)
+        try:
+            self._save(handle, snapshot, event)
+            if cleanup_resource_id is not None:
+                owned_cleanup.activate_resource(
+                    str(self._owned_cleanup_context["manifest"]),
+                    cleanup_resource_id)
+                owned_cleanup.bind_resource_dependency(
+                    str(self._owned_cleanup_context["manifest"]),
+                    str(self._owned_cleanup_context["process_resource_id"]),
+                    cleanup_resource_id)
+        except Exception:
+            if cleanup_resource_id is not None:
+                try:
+                    manifest = owned_cleanup.load_manifest(
+                        str(self._owned_cleanup_context["manifest"]))
+                    resource = manifest["resources"][cleanup_resource_id]
+                    target = self.root / handle
+                    if resource.get("state") == "reserved":
+                        if target.exists() and (target / "snapshot.json").is_file():
+                            owned_cleanup.activate_resource(
+                                str(self._owned_cleanup_context["manifest"]),
+                                cleanup_resource_id)
+                        elif not target.exists():
+                            owned_cleanup.abandon_resource(
+                                str(self._owned_cleanup_context["manifest"]),
+                                cleanup_resource_id)
+                except Exception:
+                    # The governed composition owns terminal unwind and will
+                    # emit an exact leak when activation cannot be proven.
+                    pass
+            raise
         return handle
 
     def snapshot(self, handle: str) -> dict:
@@ -960,6 +991,65 @@ class CommandRuntime:
                 "created_at": snapshot["created_at"],
             },
         }
+
+    def reserve_owned_path(
+            self, manifest: str, *, kind: str, relative_name: str,
+            producer: str, version: str, input_identity: object,
+            creator_nonce: str, evidence_refs=(), dependencies=()) -> str:
+        """Reserve a cache/generated/test/browser/CI artifact before create."""
+        if kind not in {"cache", "generated-state", "test-artifact"}:
+            raise ValueError("owned runtime artifact kind is invalid")
+        target = self.root / relative_name
+        if os.path.lexists(target):
+            raise CommandRuntimeError(
+                "owned runtime artifact must be reserved before creation")
+        if not str(producer).strip() or not str(version).strip():
+            raise ValueError("owned runtime producer identity is invalid")
+        try:
+            import owned_cleanup
+        except ImportError:
+            from taskplane import owned_cleanup
+        return owned_cleanup.reserve_resource(
+            manifest, kind=kind, containment_root=str(self.root.resolve()),
+            relative_name=relative_name, creator_nonce=creator_nonce,
+            stable_identity={
+                "producer": str(producer), "version": str(version),
+                "input_digest": _canonical_digest(input_identity),
+            }, evidence_refs=evidence_refs, dependencies=dependencies)
+
+    @staticmethod
+    def activate_owned_path(manifest: str, resource_id: str) -> dict:
+        """Activate a reserved runtime artifact with exact live content."""
+        try:
+            import owned_cleanup
+        except ImportError:
+            from taskplane import owned_cleanup
+        manifest_value = owned_cleanup.load_manifest(manifest)
+        resource = manifest_value["resources"].get(resource_id) or {}
+        if resource.get("kind") == "cache":
+            target = (Path(str(resource["containment_root"])) /
+                      str(resource["relative_name"]))
+            if not target.is_dir() or target.is_symlink():
+                raise CommandRuntimeError(
+                    "owned cache target must be a real directory")
+            identity = {
+                "schema": "taskplane.owned-cache-live-identity/v1",
+                **dict(resource["stable_identity"]),
+            }
+            identity["fingerprint"] = _canonical_digest(identity)
+            marker = target / ".taskplane-owned-cache-identity.json"
+            if marker.exists():
+                try:
+                    current = json.loads(marker.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    raise CommandRuntimeError(
+                        "owned cache live identity is unreadable") from exc
+                if current != identity:
+                    raise CommandRuntimeError(
+                        "owned cache live identity conflicts")
+            else:
+                _atomic_json(marker, identity)
+        return owned_cleanup.activate_resource(manifest, resource_id)
 
     def record_recovery(self, handle: str, *, failure_class: str,
                         detail: str, progress: float | None = None,

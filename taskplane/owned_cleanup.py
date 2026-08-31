@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - exercised by windows-latest
 MANIFEST_SCHEMA = "taskplane.owned-resource-manifest/v1"
 RECEIPT_SCHEMA = "taskplane.cleanup-receipt/v1"
 PUBLICATION_REPLAY_SCHEMA = "taskplane.dashboard-publication-replay/v1"
+CLEANUP_EVIDENCE_SCHEMA = "taskplane.cleanup-consumer-evidence/v1"
 _TERMINAL_OUTCOMES = frozenset({
     "success", "failure", "cancellation", "interruption", "timeout",
     "handoff", "recovery",
@@ -222,7 +223,37 @@ def _assert_no_symlink_path(root: str, target: str) -> None:
             raise OwnedCleanupError("resource path is symlinked")
 
 
-def _path_identity(path: str) -> dict:
+def _directory_content_identity(path: str) -> str:
+    """Hash an immutable owned directory without following any links."""
+    rows = []
+    for root, directories, files in os.walk(path, topdown=True,
+                                            followlinks=False):
+        directories.sort()
+        files.sort()
+        for name in [*directories, *files]:
+            candidate = os.path.join(root, name)
+            info = os.lstat(candidate)
+            if stat.S_ISLNK(info.st_mode):
+                raise OwnedCleanupError("owned directory contains a symlink")
+            relative = os.path.relpath(candidate, path)
+            if stat.S_ISDIR(info.st_mode):
+                rows.append({"path": relative, "type": "directory",
+                             "mode": stat.S_IMODE(info.st_mode)})
+            elif stat.S_ISREG(info.st_mode):
+                if info.st_nlink > 1:
+                    raise OwnedCleanupError(
+                        "owned directory contains a hard link")
+                rows.append({"path": relative, "type": "file",
+                             "mode": stat.S_IMODE(info.st_mode),
+                             "bytes": info.st_size,
+                             "sha256": file_sha256(candidate)})
+            else:
+                raise OwnedCleanupError(
+                    "owned directory contains an unsupported target")
+    return _digest(rows)
+
+
+def _path_identity(path: str, *, include_directory_content: bool = False) -> dict:
     info = os.lstat(path)
     if stat.S_ISLNK(info.st_mode):
         raise OwnedCleanupError("resource target is symlinked")
@@ -245,6 +276,8 @@ def _path_identity(path: str) -> dict:
     }
     if kind == "file":
         value.update(size=info.st_size, sha256=file_sha256(path))
+    elif include_directory_content:
+        value["content_digest"] = _directory_content_identity(path)
     return value
 
 
@@ -418,7 +451,11 @@ def activate_resource(path: str | os.PathLike[str], resource_id: str, *,
         _assert_no_symlink_path(str(resource["containment_root"]), target)
         if not os.path.lexists(target):
             raise OwnedCleanupError("reserved resource was not created")
-        path_identity = _path_identity(target)
+        path_identity = _path_identity(
+            target,
+            include_directory_content=resource["kind"] in {
+                "cache", "generated-state", "test-artifact"},
+        )
         if resource["kind"] == "process-group":
             if not isinstance(observed_identity, Mapping):
                 raise OwnedCleanupError(
@@ -449,6 +486,36 @@ def activate_resource(path: str | os.PathLike[str], resource_id: str, *,
 
     _mutate_manifest(manifest_path, mutate)
     return activated
+
+
+def abandon_resource(path: str | os.PathLike[str], resource_id: str) -> dict:
+    """Close a reservation proven never to have created its target.
+
+    This is the failure-before-create half of reserve-before-use.  An existing
+    path is never inferred to be owned and must instead be activated with its
+    exact kind-specific identity before cleanup can touch it.
+    """
+    manifest_path = Path(path).absolute()
+    abandoned: dict = {}
+
+    def mutate(manifest: dict) -> None:
+        nonlocal abandoned
+        resource = manifest["resources"].get(resource_id)
+        if not isinstance(resource, dict) or resource.get("state") != "reserved":
+            raise OwnedCleanupError("resource reservation is unavailable")
+        target = _target(resource)
+        _assert_no_symlink_path(str(resource["containment_root"]), target)
+        if os.path.lexists(target):
+            raise OwnedCleanupError(
+                "existing reserved resource requires exact activation")
+        resource["state"] = "absent"
+        manifest["journal"].append({
+            "event": "reservation-absent", "resource_id": resource_id,
+        })
+        abandoned = copy.deepcopy(resource)
+
+    _mutate_manifest(manifest_path, mutate)
+    return abandoned
 
 
 def bind_resource_dependency(path: str | os.PathLike[str], resource_id: str,
@@ -579,6 +646,92 @@ def _validate_publication_replay(path: Path,
             })):
         raise OwnedCleanupError("publication replay evidence is invalid")
     return value
+
+
+def replay_publication(path: str | os.PathLike[str], *, workspace: str,
+                       owner: Mapping[str, object], outcome: str,
+                       publisher: Callable[..., Mapping[str, object]] | None =
+                       None, mark_published: bool = True) -> dict:
+    """Replay through the canonical snapshot publisher, never a local copy.
+
+    The obligation remains immutable evidence.  Publication is an idempotent
+    side effect keyed by its committed source revision/fingerprint; recovery
+    can therefore call this again after the cleanup targets are gone.
+    """
+    replay_path = Path(path).absolute()
+    obligation = _validate_publication_replay(
+        replay_path, _closed_owner(dict(owner)), outcome=outcome)
+    if publisher is None:
+        try:
+            from taskplane import loop_status
+            from taskplane import views
+        except ImportError:
+            import loop_status
+            import views
+
+        def canonical_publisher(selected_workspace: str, **kwargs):
+            publication = loop_status.refresh_dashboard_snapshot(
+                selected_workspace, **kwargs)
+            delivery = None
+            if publication.get("status") != "no_active":
+                payload = {
+                    "outcome": obligation["outcome"],
+                    "dashboard_snapshot": publication,
+                }
+                delivery = views.refresh_views(selected_workspace, payload)
+            return {"snapshot_publication": publication,
+                    "dashboard_delivery": delivery}
+
+        publisher = canonical_publisher
+    published = publisher(
+        str(Path(workspace).resolve()),
+        event_type="owned_cleanup_" + str(obligation["trigger"]),
+        outcome=str(obligation["outcome"]), replay=True)
+    if not isinstance(published, Mapping):
+        raise OwnedCleanupError(
+            "canonical dashboard publisher returned invalid evidence")
+    if mark_published:
+        with _manifest_lock(replay_path, suffix=".publication.lock"):
+            current = _validate_publication_replay(
+                replay_path, owner, outcome=outcome)
+            current_material = {
+                key: copy.deepcopy(value) for key, value in current.items()
+                if key not in {"fingerprint", "publication_fingerprint"}
+            }
+            current_material["status"] = "published"
+            current_material["publication_fingerprint"] = _digest(
+                dict(published))
+            obligation = {
+                **current_material, "fingerprint": _digest(current_material),
+            }
+            _atomic_json(replay_path, obligation)
+    material = {
+        "schema": "taskplane.cleanup-publication-replay-result/v1",
+        "obligation_fingerprint": obligation["fingerprint"],
+        "source_revision": obligation["source_revision"],
+        "source_fingerprint": obligation["source_fingerprint"],
+        "outcome": obligation["outcome"],
+        "publication": copy.deepcopy(dict(published)),
+    }
+    return {**material, "fingerprint": _digest(material),
+            "obligation": copy.deepcopy(obligation)}
+
+
+def replay_terminal_publication(path: str | os.PathLike[str], *,
+                                workspace: str,
+                                publisher: Callable[..., Mapping[str, object]] |
+                                None = None) -> dict:
+    """Replay the sealed obligation for one terminal manifest at startup."""
+    manifest = load_manifest(path)
+    terminal = _validate_terminal(manifest)
+    evidence = next((row for row in terminal["evidence"]
+                     if row.get("label") == "publication-replay"), None)
+    if not isinstance(evidence, Mapping):
+        raise OwnedCleanupError("sealed publication replay is unavailable")
+    return replay_publication(
+        str(evidence["sealed_path"]), workspace=workspace,
+        owner=manifest["owner"], outcome=str(terminal["outcome"]),
+        publisher=publisher, mark_published=False)
 
 
 def seal_terminal(path: str | os.PathLike[str], *, outcome: str,
@@ -747,7 +900,8 @@ def _verify_stable_identity(resource: Mapping[str, object], target: str) -> None
             if "binding_digest" in stable else
             stable.get("token") == binding.get("token") and
             stable.get("run_id") == resource.get("owner", {}).get("run_id") and
-            stable.get("task_id") == resource.get("owner", {}).get("task_id")
+            stable.get("task_id") == resource.get("owner", {}).get("task_id") and
+            stable.get("attempt") == resource.get("owner", {}).get("attempt")
         )
         if not binding_matches:
             raise OwnedCleanupError("process stable identity changed")
@@ -769,23 +923,68 @@ def _verify_stable_identity(resource: Mapping[str, object], target: str) -> None
             "command_fingerprint": snapshot.get("command_fingerprint"),
             "binding_digest": snapshot.get("binding_digest"),
             "created_at": snapshot.get("created_at"),
+            **({"attempt": identity.get("attempt")}
+               if "attempt" in stable else {}),
         }
         if stable != live:
             raise OwnedCleanupError("worker contract stable identity changed")
     elif kind == "worktree":
-        receipt = (resource.get("policy") or {}).get("merge_receipt") or {}
-        comparisons = {
-            "registration_path": target,
-            "branch_tip": receipt.get("branch_tip"),
-            "run_id": receipt.get("run_id"),
-            "task_id": receipt.get("task_id"),
-            "merge_receipt_id": receipt.get("receipt_id"),
+        try:
+            import worktree_cleanup
+        except ImportError:
+            from taskplane import worktree_cleanup
+        policy = resource.get("policy") or {}
+        try:
+            live = worktree_cleanup.resource_identity(
+                policy.get("merge_receipt") or {},
+                lifecycle=policy.get("lifecycle") or {})
+        except (ValueError, worktree_cleanup.CleanupError) as exc:
+            raise OwnedCleanupError(
+                "worktree stable identity is unavailable") from exc
+        if stable != live or live.get("registration_path") != target:
+            raise OwnedCleanupError("worktree stable identity changed")
+    elif kind == "generated-state" and {
+            "token", "run_id", "task_id", "attempt", "handle",
+    }.issubset(stable):
+        try:
+            live_value = json.loads(Path(target).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise OwnedCleanupError(
+                "generated-state stable identity is unavailable") from exc
+        identity = live_value.get("identity") or {}
+        live = {
+            "token": Path(target).stem,
+            "run_id": identity.get("run_id"),
+            "task_id": identity.get("task_id"),
+            "attempt": identity.get("attempt"),
+            "handle": live_value.get("handle"),
         }
-        for key, expected in comparisons.items():
-            if key in stable and stable[key] != expected:
-                raise OwnedCleanupError("worktree stable identity changed")
-    elif "sha256" in stable:
-        if not Path(target).is_file() or stable["sha256"] != file_sha256(target):
+        if stable != live:
+            raise OwnedCleanupError("generated-state stable identity changed")
+    elif kind == "cache":
+        marker = Path(target) / ".taskplane-owned-cache-identity.json"
+        try:
+            live = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise OwnedCleanupError(
+                "cache producer/version/input identity is unavailable") from exc
+        material = {"schema": "taskplane.owned-cache-live-identity/v1",
+                    **stable}
+        expected = {**material, "fingerprint": _digest(material)}
+        if live != expected:
+            raise OwnedCleanupError(
+                "cache producer/version/input identity changed")
+    elif kind in {"generated-state", "test-artifact"}:
+        identity_keys = {"producer", "version"}
+        if not identity_keys.issubset(stable) or not any(
+                key in stable for key in ("input", "input_digest")) or any(
+                not str(stable.get(key) or "").strip()
+                for key in identity_keys):
+            raise OwnedCleanupError(
+                "filesystem producer/version/input identity is incomplete")
+        if "sha256" in stable and (
+                not Path(target).is_file() or
+                stable["sha256"] != file_sha256(target)):
             raise OwnedCleanupError("filesystem stable identity changed")
 
 
@@ -812,6 +1011,11 @@ def _precheck(resource: Mapping[str, object], owner: Mapping[str, object],
             raise OwnedCleanupError("resource has a foreign owner")
         if resource.get("kind") not in _RESOURCE_KINDS:
             raise OwnedCleanupError("resource kind is invalid")
+        if resource.get("state") == "absent":
+            target = _target(resource)
+            if os.path.lexists(target):
+                raise OwnedCleanupError("abandoned resource target appeared")
+            return True, "reserved target proven never created", False
         if resource.get("state") != "active":
             raise OwnedCleanupError("resource is not activated")
         _assert_activation_binding(resource, journal)
@@ -825,7 +1029,11 @@ def _precheck(resource: Mapping[str, object], owner: Mapping[str, object],
         observed = resource.get("observed_identity")
         path_observed = (observed or {}).get("path") \
             if resource.get("kind") == "process-group" else observed
-        current_identity = _path_identity(target)
+        current_identity = _path_identity(
+            target,
+            include_directory_content=resource.get("kind") in {
+                "cache", "generated-state", "test-artifact"},
+        )
         if resource.get("kind") == "worker-contract" and \
                 current_identity.get("type") == "directory":
             # Runtime delivery/artifact subdirectories legitimately change a
@@ -907,6 +1115,10 @@ def _remove_filesystem_target(target: str) -> None:
 
 
 def _clean_resource(resource: Mapping[str, object]) -> str:
+    if resource.get("state") == "absent":
+        if os.path.lexists(_target(resource)):
+            raise OwnedCleanupError("abandoned resource target appeared")
+        return "never-created"
     target = _target(resource)
     kind = str(resource["kind"])
     if kind == "worktree":
@@ -972,7 +1184,8 @@ def _resource_is_absent(resource: Mapping[str, object]) -> bool:
         target_absent = not os.path.lexists(_target(resource))
     except OwnedCleanupError:
         return False
-    if resource.get("kind") != "process-group":
+    if resource.get("kind") != "process-group" or \
+            resource.get("state") == "absent":
         return target_absent
     binding = (resource.get("observed_identity") or {}).get("process") or {}
     return target_absent and _process_status(binding) == "absent"
@@ -1044,6 +1257,33 @@ def _validate_receipt_binding(receipt: Mapping[str, object],
             })):
         raise OwnedCleanupError(
             "cleanup receipt is stale or bound to another manifest revision")
+
+
+def cleanup_consumer_evidence(receipt: Mapping[str, object]) -> dict:
+    """Expose a closed, redacted proof for metrics/sign-off/release adapters."""
+    value = copy.deepcopy(dict(receipt))
+    if (value.get("schema") != RECEIPT_SCHEMA or
+            value.get("receipt_digest") != receipt_digest(value) or
+            value.get("cleanup_status") not in {"clean", "attention"} or
+            isinstance(value.get("leak_count"), bool) or
+            not isinstance(value.get("leak_count"), int) or
+            value["leak_count"] < 0 or
+            value["leak_count"] != len(value.get("leaks") or [])):
+        raise OwnedCleanupError("cleanup consumer receipt is invalid")
+    material = {
+        "schema": CLEANUP_EVIDENCE_SCHEMA,
+        "receipt_digest": value["receipt_digest"],
+        "manifest_digest": value["manifest_digest"],
+        "manifest_revision": value["manifest_revision"],
+        "terminal_digest": value["terminal_digest"],
+        "owner": copy.deepcopy(value["owner"]),
+        "original_outcome": value["original_outcome"],
+        "cleanup_status": value["cleanup_status"],
+        "leak_count": value["leak_count"],
+        "leaks_digest": _digest(value.get("leaks") or []),
+        "resource_results_digest": _digest(value.get("resources") or []),
+    }
+    return {**material, "evidence_digest": _digest(material)}
 
 
 def cleanup_manifest(path: str | os.PathLike[str]) -> dict:
@@ -1168,7 +1408,8 @@ def _cleanup_manifest_locked(path: str | os.PathLike[str]) -> dict:
         live = bool(target and os.path.lexists(target))
         result = next(row for row in results
                       if row["resource_id"] == resource["resource_id"])
-        if resource.get("kind") == "process-group":
+        if resource.get("kind") == "process-group" and \
+                resource.get("state") != "absent":
             binding = (resource.get("observed_identity") or {}).get("process") or {}
             live = live or _process_status(binding) != "absent"
         # An unresolved/refused identity is a leak even when its former exact

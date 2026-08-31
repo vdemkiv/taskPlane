@@ -283,6 +283,27 @@ def eligibility(receipt: dict, *, lifecycle: dict) -> dict:
     return _result(receipt, "pending", reason="eligible", checks=checks)
 
 
+def resource_identity(receipt: dict, *, lifecycle: dict) -> dict:
+    """Return the exact live identity consumed by the owned-cleanup adapter."""
+    checked = validate_merge_receipt(receipt)
+    proof = eligibility(checked, lifecycle=lifecycle)
+    if proof.get("outcome") != "pending":
+        raise CleanupError(
+            "worktree identity is not cleanup-eligible: " +
+            str(proof.get("reason") or proof.get("outcome")))
+    return {
+        "schema": "taskplane.owned-worktree-identity/v1",
+        "registration_path": os.path.abspath(checked["managed_path"]),
+        "branch_ref": checked["branch_ref"],
+        "branch_tip": checked["branch_tip"],
+        "run_id": checked["run_id"],
+        "task_id": checked["task_id"],
+        "merge_receipt_id": checked["receipt_id"],
+        "repository_id": checked["repository"]["repo_id"],
+        "lifecycle_fingerprint": _fingerprint(lifecycle),
+    }
+
+
 def cleanup(receipt: dict, *, lifecycle: dict) -> dict:
     """Revalidate under a receipt lock, then remove once without force."""
     receipt = validate_merge_receipt(receipt)

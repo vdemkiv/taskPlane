@@ -84,17 +84,20 @@ _ACTION_FIELDS = {
     }),
     "launch": frozenset({
         "authorization", "argv", "cwd", "deadline", "host", "run_id",
-        "task_id", "wave_id",
+        "task_id", "attempt", "wave_id",
     }),
     # Deliberately semantic: no caller-authored argv, cwd, environment,
     # executable, receipt, or sandbox path crosses this boundary.
     "checkpoint": frozenset({
         "authorization", "checkpoint_authority", "run_id", "task_id",
+        "attempt",
     }),
     "wait": _HANDLE_FIELDS | {"consumer", "timeout"},
     "reconnect": _HANDLE_FIELDS,
     "show": _HANDLE_FIELDS,
     "cancel": _HANDLE_FIELDS,
+    "interrupt": _HANDLE_FIELDS,
+    "handoff": _HANDLE_FIELDS,
 }
 _IDENTITY_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 
@@ -129,6 +132,11 @@ def _runtime_root(workspace: str) -> Path:
     return Path(workspace).resolve() / ".taskplane" / "command-runtime-v1"
 
 
+def command_runtime_root(workspace: str) -> Path:
+    """Public path adapter used by runtime/resource lifecycle composition."""
+    return _runtime_root(workspace)
+
+
 def _dispatch_intent_root(workspace: str) -> Path:
     return (Path(workspace).resolve() / ".taskplane" /
             "dispatch-intent-telemetry-v1")
@@ -147,7 +155,9 @@ def _closed_request(action: str, request: object) -> dict:
             "governed command request has unknown fields: " +
             ", ".join(sorted(unknown)))
     if action in {"launch", "checkpoint"}:
-        missing = {"authorization", "argv", "run_id", "task_id"} - set(value)
+        missing = {
+            "authorization", "argv", "run_id", "task_id",
+        } - set(value)
         if action == "checkpoint":
             missing.discard("argv")
     elif action == "dispatch":
@@ -168,6 +178,11 @@ def _closed_request(action: str, request: object) -> dict:
                     _IDENTITY_COMPONENT.fullmatch(identity) is None):
                 raise GovernedCommandError(
                     f"governed command {field} is invalid")
+    if action in {"launch", "checkpoint"} and "attempt" in value and (
+            isinstance(value["attempt"], bool) or
+            not isinstance(value["attempt"], int) or
+            int(value["attempt"]) < 1):
+        raise GovernedCommandError("governed command attempt is invalid")
     return value
 
 
@@ -963,9 +978,34 @@ def _runtime(workspace: str, authorization: str, *,
                           owned_cleanup_context=owned_cleanup_context)
 
 
-def _prepare_owned_cleanup(workspace: str, authorization: str, *,
-                           run_id: str, task_id: str, token: str) -> dict:
+def _resolved_cleanup_attempt(workspace: str, *, run_id: str, task_id: str,
+                              supplied: object = None) -> int:
+    """Use caller lineage when present, otherwise advance durable manifests."""
+    if supplied is not None:
+        if isinstance(supplied, bool) or not isinstance(supplied, int) or \
+                supplied < 1:
+            raise GovernedCommandError("owned cleanup attempt is invalid")
+        return supplied
+    manifests = (Path(workspace).resolve() / ".taskplane" /
+                 "owned-cleanup-v1" / "manifests")
+    attempts = []
+    for candidate in sorted(manifests.glob("*.json")) \
+            if manifests.is_dir() else []:
+        if re.fullmatch(r"[0-9a-f]{32}\.json", candidate.name) is None:
+            continue
+        manifest = owned_cleanup.load_manifest(candidate)
+        owner = manifest["owner"]
+        if owner.get("run_id") == run_id and owner.get("task_id") == task_id:
+            attempts.append(int(owner["attempt"]))
+    return max(attempts, default=0) + 1
+
+
+def prepare_owned_cleanup(workspace: str, authorization: str, *,
+                          run_id: str, task_id: str, attempt: int,
+                          token: str) -> dict:
     """Reserve the process marker before the detached process is created."""
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+        raise GovernedCommandError("owned cleanup attempt is invalid")
     workspace_path = Path(workspace).resolve()
     root = workspace_path / ".taskplane" / "owned-cleanup-v1"
     manifest = root / "manifests" / f"{token}.json"
@@ -977,7 +1017,7 @@ def _prepare_owned_cleanup(workspace: str, authorization: str, *,
         "settings_digest": load_settings().digest,
         "run_id": str(run_id),
         "task_id": str(task_id),
-        "attempt": 1,
+        "attempt": attempt,
     }
     owned_cleanup.create_manifest(
         manifest, evidence_root=evidence_root, **owner)
@@ -990,6 +1030,7 @@ def _prepare_owned_cleanup(workspace: str, authorization: str, *,
         creator_nonce="governed-command:" + token,
         stable_identity={
             "token": token, "run_id": str(run_id), "task_id": str(task_id),
+            "attempt": attempt,
         },
         evidence_refs=("terminal-state", "handoff", "publication-replay"),
     )
@@ -1001,11 +1042,15 @@ def _prepare_owned_cleanup(workspace: str, authorization: str, *,
         "handoff_path": str(
             _runtime_root(str(workspace_path)) / "handoffs" / f"{token}.json"),
         "authorization": authorization,
+        "workspace": str(workspace_path),
     }
 
 
-def _activate_owned_process(context: Mapping[str, object],
-                            binding: Mapping[str, object]) -> None:
+_prepare_owned_cleanup = prepare_owned_cleanup
+
+
+def activate_owned_process(context: Mapping[str, object],
+                           binding: Mapping[str, object]) -> None:
     marker = Path(str(context["process_marker"]))
     _atomic_json(marker, {
         "schema": "taskplane.owned-process-marker/v1",
@@ -1017,6 +1062,9 @@ def _activate_owned_process(context: Mapping[str, object],
         observed_identity=dict(binding))
 
 
+_activate_owned_process = activate_owned_process
+
+
 def _runtime_cleanup_context(context: Mapping[str, object]) -> dict:
     return {
         "manifest": str(context["manifest"]),
@@ -1025,9 +1073,9 @@ def _runtime_cleanup_context(context: Mapping[str, object]) -> dict:
     }
 
 
-def _reserve_owned_handoff(context: Mapping[str, object], *,
-                           token: str, run_id: str, task_id: str,
-                           handle: str) -> str:
+def reserve_owned_handoff(context: Mapping[str, object], *,
+                          token: str, run_id: str, task_id: str,
+                          attempt: int, handle: str) -> str:
     handoff = Path(str(context["handoff_path"]))
     return owned_cleanup.reserve_resource(
         str(context["manifest"]), kind="generated-state",
@@ -1035,37 +1083,76 @@ def _reserve_owned_handoff(context: Mapping[str, object], *,
         creator_nonce="governed-handoff:" + token,
         stable_identity={
             "token": token, "run_id": run_id, "task_id": task_id,
-            "handle": handle,
+            "attempt": attempt, "handle": handle,
         },
         evidence_refs=("terminal-state", "handoff", "publication-replay"),
         dependencies=(str(context["process_resource_id"]),),
     )
 
 
+_reserve_owned_handoff = reserve_owned_handoff
+
+
+def publish_owned_handoff(context: Mapping[str, object], *, token: str,
+                          run_id: str, task_id: str, attempt: int,
+                          handle: str, payload: Mapping[str, object]) -> str:
+    """Reserve-before-write and activate one durable handoff resource."""
+    resource_id = reserve_owned_handoff(
+        context, token=token, run_id=run_id, task_id=task_id,
+        attempt=attempt, handle=handle)
+    _atomic_json(Path(str(context["handoff_path"])), payload)
+    owned_cleanup.activate_resource(str(context["manifest"]), resource_id)
+    return resource_id
+
+
 def _terminal_outcome(state: str) -> str:
     return {
         "succeeded": "success", "failed": "failure",
         "timed_out": "timeout", "cancelled": "cancellation",
+        "interrupted": "interruption", "handed_off": "handoff",
     }[state]
 
 
-def _finalize_owned_result(result: dict, *, trigger: str) -> dict:
+def _cleanup_workspace(manifest_path: str) -> str:
+    path = Path(manifest_path).resolve()
+    if path.parent.name != "manifests" or \
+            path.parent.parent.name != "owned-cleanup-v1" or \
+            path.parent.parent.parent.name != ".taskplane":
+        raise owned_cleanup.OwnedCleanupError(
+            "owned cleanup manifest workspace is ambiguous")
+    return str(path.parents[3])
+
+
+def finalize_owned_result(
+        result: dict, *, trigger: str, outcome: str | None = None,
+        publisher=None) -> dict:
+    """Seal, canonically publish, clean, and expose one terminal result."""
     snapshot = dict(result.get("snapshot") or {})
     state = str(snapshot.get("state") or "")
     binding = snapshot.get("owned_cleanup")
     recovery_lost = (trigger == "recovery" and state == "input_required" and
                      snapshot.get("reason_code") ==
                      "detached_worker_ownership_lost")
-    if (state not in TERMINAL_STATES and not recovery_lost) or \
+    if (state not in TERMINAL_STATES and not recovery_lost and outcome is None) or \
             not isinstance(binding, Mapping):
         return result
     manifest_path = str(binding["manifest"])
     try:
         manifest = owned_cleanup.load_manifest(manifest_path)
+        workspace = _cleanup_workspace(manifest_path)
         if manifest.get("terminal") is not None:
+            try:
+                publication = owned_cleanup.replay_terminal_publication(
+                    manifest_path, workspace=workspace, publisher=publisher)
+            except Exception as exc:
+                publication = {"status": "pending", "replay_required": True,
+                               "error": str(exc)}
             receipt = owned_cleanup.cleanup_manifest(manifest_path)
             return {
                 **result, "cleanup_receipt": receipt,
+                "cleanup_evidence":
+                    owned_cleanup.cleanup_consumer_evidence(receipt),
+                "publication_result": publication,
                 "publication_replay": dict(
                     manifest["terminal"]["publication_replay"]),
             }
@@ -1080,14 +1167,24 @@ def _finalize_owned_result(result: dict, *, trigger: str) -> dict:
                 "worker cleanup policy is unavailable or ambiguous")
         replay_source = (Path(manifest_path).parent.parent / "publication" /
                          (snapshot["handle"] + ".json"))
-        outcome = "recovery" if recovery_lost else _terminal_outcome(state)
+        selected_outcome = (str(outcome) if outcome is not None else
+                            "recovery" if recovery_lost else
+                            _terminal_outcome(state))
         replay = owned_cleanup.write_publication_replay(
             replay_source, owner=manifest["owner"],
-            outcome=outcome,
+            outcome=selected_outcome,
             source_revision=int(snapshot["revision"]),
             source_fingerprint=_canonical_digest(snapshot), trigger=trigger)
+        try:
+            publication = owned_cleanup.replay_publication(
+                replay_source, workspace=workspace, owner=manifest["owner"],
+                outcome=selected_outcome, publisher=publisher)
+            replay = dict(publication["obligation"])
+        except Exception as exc:
+            publication = {"status": "pending", "replay_required": True,
+                           "error": str(exc)}
         receipt = owned_cleanup.seal_and_cleanup(
-            manifest_path, outcome=outcome, evidence={
+            manifest_path, outcome=selected_outcome, evidence={
                 "terminal-state": (
                     Path(str(binding["handoff_path"])).parent.parent /
                     snapshot["handle"] / "snapshot.json"),
@@ -1096,6 +1193,9 @@ def _finalize_owned_result(result: dict, *, trigger: str) -> dict:
             })
         return {
             **result, "cleanup_receipt": receipt,
+            "cleanup_evidence": owned_cleanup.cleanup_consumer_evidence(
+                receipt),
+            "publication_result": publication,
             "publication_replay": replay,
         }
     except (owned_cleanup.OwnedCleanupError, OSError, ValueError, KeyError) as exc:
@@ -1105,9 +1205,152 @@ def _finalize_owned_result(result: dict, *, trigger: str) -> dict:
                 "cleanup_status": "attention"}
 
 
+_finalize_owned_result = finalize_owned_result
+
+
+def unwind_owned_failure(
+        context: Mapping[str, object], *, error: object,
+        outcome: str = "failure", trigger: str = "terminal",
+        process_binding: Mapping[str, object] | None = None,
+        publisher=None) -> dict:
+    """Durably unwind every reservation after a preparation/launch failure."""
+    manifest_path = str(context["manifest"])
+    manifest = owned_cleanup.load_manifest(manifest_path)
+    if manifest.get("terminal") is not None:
+        receipt = owned_cleanup.cleanup_manifest(manifest_path)
+        return {"schema": RESULT_SCHEMA, "action": "failure-unwind",
+                "error": str(error), "cleanup_receipt": receipt,
+                "cleanup_evidence":
+                    owned_cleanup.cleanup_consumer_evidence(receipt)}
+    for resource_id, resource in list(manifest["resources"].items()):
+        if resource.get("state") != "reserved":
+            continue
+        target = Path(str(resource["containment_root"])) / str(
+            resource["relative_name"])
+        if resource.get("kind") == "process-group" and \
+                process_binding is not None:
+            activate_owned_process(context, process_binding)
+        elif not os.path.lexists(target):
+            owned_cleanup.abandon_resource(manifest_path, resource_id)
+        else:
+            owned_cleanup.activate_resource(manifest_path, resource_id)
+        manifest = owned_cleanup.load_manifest(manifest_path)
+    manifest = owned_cleanup.load_manifest(manifest_path)
+    for resource_id, resource in list(manifest["resources"].items()):
+        if resource.get("kind") == "worker-contract" and \
+                resource.get("state") == "active" and \
+                resource.get("policy") == {"active": True}:
+            owned_cleanup.update_resource_policy(
+                manifest_path, resource_id, expected={"active": True},
+                replacement={"active": False})
+    manifest = owned_cleanup.load_manifest(manifest_path)
+    root = Path(manifest_path).parent.parent
+    token = Path(manifest_path).stem
+    failure_root = root / "recovery" / token
+    terminal_source = failure_root / "terminal-state.json"
+    handoff_source = failure_root / "handoff.json"
+    _atomic_json(terminal_source, {
+        "schema": "taskplane.owned-cleanup-failure/v1",
+        "owner": manifest["owner"], "outcome": outcome,
+        "error": str(error),
+    })
+    _atomic_json(handoff_source, {
+        "schema": "taskplane.owned-cleanup-recovery-handoff/v1",
+        "owner": manifest["owner"], "trigger": trigger,
+    })
+    replay_source = root / "publication" / f"{token}-recovery.json"
+    replay = owned_cleanup.write_publication_replay(
+        replay_source, owner=manifest["owner"], outcome=outcome,
+        source_revision=max(1, int(manifest["revision"])),
+        source_fingerprint=_canonical_digest({
+            "owner": manifest["owner"], "outcome": outcome,
+            "error": str(error), "revision": manifest["revision"],
+        }), trigger=trigger)
+    try:
+        publication = owned_cleanup.replay_publication(
+            replay_source, workspace=str(context.get("workspace") or
+                                         _cleanup_workspace(manifest_path)),
+            owner=manifest["owner"], outcome=outcome, publisher=publisher)
+        replay = dict(publication["obligation"])
+    except Exception as exc:
+        publication = {"status": "pending", "replay_required": True,
+                       "error": str(exc)}
+    receipt = owned_cleanup.seal_and_cleanup(
+        manifest_path, outcome=outcome, evidence={
+            "terminal-state": terminal_source, "handoff": handoff_source,
+            "publication-replay": replay_source,
+        })
+    return {
+        "schema": RESULT_SCHEMA, "action": "failure-unwind",
+        "error": str(error), "cleanup_receipt": receipt,
+        "cleanup_evidence": owned_cleanup.cleanup_consumer_evidence(receipt),
+        "publication_replay": replay, "publication_result": publication,
+    }
+
+
+def recover_owned_cleanup(
+        workspace: str, *, run_id: str, task_id: str, before_attempt: int,
+        publisher=None) -> dict:
+    """Recover older-attempt manifests at the governed startup boundary."""
+    if isinstance(before_attempt, bool) or not isinstance(before_attempt, int) \
+            or before_attempt < 1:
+        raise GovernedCommandError("owned cleanup recovery attempt is invalid")
+    root = (Path(workspace).resolve() / ".taskplane" /
+            "owned-cleanup-v1" / "manifests")
+    recovered = []
+    for manifest_path in sorted(root.glob("*.json")) if root.is_dir() else []:
+        if re.fullmatch(r"[0-9a-f]{32}\.json", manifest_path.name) is None:
+            continue
+        manifest = owned_cleanup.load_manifest(manifest_path)
+        owner = manifest["owner"]
+        if (owner.get("run_id") != run_id or owner.get("task_id") != task_id or
+                int(owner.get("attempt") or 0) >= before_attempt):
+            continue
+        if manifest.get("terminal") is None:
+            row = unwind_owned_failure(
+                {"manifest": str(manifest_path), "workspace": workspace},
+                error="startup recovered an abandoned older attempt",
+                outcome="recovery", trigger="recovery", publisher=publisher)
+        else:
+            try:
+                publication = owned_cleanup.replay_terminal_publication(
+                    manifest_path, workspace=workspace, publisher=publisher)
+            except Exception as exc:
+                publication = {"status": "pending", "replay_required": True,
+                               "error": str(exc)}
+            receipt = owned_cleanup.cleanup_manifest(manifest_path)
+            row = {
+                "schema": RESULT_SCHEMA, "action": "startup-recovery",
+                "cleanup_receipt": receipt,
+                "cleanup_evidence":
+                    owned_cleanup.cleanup_consumer_evidence(receipt),
+                "publication_result": publication,
+            }
+        recovered.append(row)
+    return {"schema": "taskplane.owned-cleanup-recovery/v1",
+            "run_id": run_id, "task_id": task_id,
+            "before_attempt": before_attempt, "recovered": recovered,
+            "leak_count": sum(int(row["cleanup_receipt"]["leak_count"])
+                              for row in recovered)}
+
+
+def _safe_failure_unwind(context: Mapping[str, object], *, error: object,
+                         process_binding=None) -> dict:
+    """Keep cleanup evidence secondary to the original production failure."""
+    try:
+        return unwind_owned_failure(
+            context, error=error, process_binding=process_binding)
+    except Exception as cleanup_error:
+        return {
+            "schema": RESULT_SCHEMA, "action": "failure-unwind",
+            "error": str(error), "cleanup_status": "attention",
+            "cleanup_error": str(cleanup_error),
+        }
+
+
 def owned_process_resource(workspace: str, handle: str,
                            binding: Mapping[str, object], *,
-                           run_id: str, task_id: str) -> dict:
+                           run_id: str, task_id: str, attempt: int) -> dict:
     """Return exact process/control identity for orchestrator reservation.
 
     PID, process name, or the runtime path alone are deliberately
@@ -1123,6 +1366,8 @@ def owned_process_resource(workspace: str, handle: str,
         raise GovernedCommandError("owned process binding is invalid")
     if not re.fullmatch(r"[0-9a-f]{32}", str(handle)):
         raise GovernedCommandError("owned process handle is invalid")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+        raise GovernedCommandError("owned process attempt is invalid")
     root = _runtime_root(str(Path(workspace).resolve()))
     return {
         "kind": "process-group",
@@ -1130,7 +1375,7 @@ def owned_process_resource(workspace: str, handle: str,
         "relative_name": str(handle),
         "stable_identity": {
             "handle": str(handle), "run_id": str(run_id),
-            "task_id": str(task_id), "binding_digest":
+            "task_id": str(task_id), "attempt": attempt, "binding_digest":
                 _canonical_digest(value),
         },
         "observed_identity": value,
@@ -1172,6 +1417,16 @@ def execute(workspace: str, action: str, request: object) -> dict:
     """Execute one closed lifecycle action through adapter and runtime."""
     workspace = str(Path(workspace).resolve())
     value = _closed_request(action, request)
+    if action in {"launch", "checkpoint"}:
+        supplied_attempt = value.get("attempt")
+        value["attempt"] = _resolved_cleanup_attempt(
+            workspace, run_id=str(value["run_id"]),
+            task_id=str(value["task_id"]), supplied=supplied_attempt)
+        if supplied_attempt is not None and int(value["attempt"]) > 1:
+            recover_owned_cleanup(
+                workspace, run_id=str(value["run_id"]),
+                task_id=str(value["task_id"]),
+                before_attempt=int(value["attempt"]))
     authorization = str(value["authorization"])
     root = _runtime_root(workspace)
 
@@ -1247,6 +1502,7 @@ def execute(workspace: str, action: str, request: object) -> dict:
             "schema": IDENTITY_SCHEMA,
             "run_id": value["run_id"],
             "task_id": value["task_id"],
+            "attempt": value["attempt"],
         }
         authorization = str(value["authorization"])
         checkpoint_authorization_fingerprint = hashlib.sha256(
@@ -1256,7 +1512,8 @@ def execute(workspace: str, action: str, request: object) -> dict:
         handoff = root / "handoffs" / f"{token}.json"
         cleanup_context = _prepare_owned_cleanup(
             workspace, authorization, run_id=str(value["run_id"]),
-            task_id=str(value["task_id"]), token=token)
+            task_id=str(value["task_id"]), attempt=int(value["attempt"]),
+            token=token)
         started: dict[str, object] = {}
         deadline = time.time() + _CHECKPOINT_TIMEOUT_SECONDS
 
@@ -1277,22 +1534,19 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 start_new_session=True, close_fds=True,
                 env=dict(authority["runtime_environment"]))
             binding = detached_process_binding(process, token=token)
-            _activate_owned_process(cleanup_context, binding)
             started.update({"process": process, "binding": binding})
+            _activate_owned_process(cleanup_context, binding)
             return HostLaunch(binding=binding)
 
-        adapter = _adapter(
-            workspace, authorization, host="codex", launcher=launch,
-            owned_cleanup_context=_runtime_cleanup_context(cleanup_context))
         try:
+            adapter = _adapter(
+                workspace, authorization, host="codex", launcher=launch,
+                owned_cleanup_context=
+                    _runtime_cleanup_context(cleanup_context))
             handle = adapter.launch(
                 list(spec["focused_proof"]["argv"]), cwd=sandbox,
                 deadline=deadline, identity=identity)
             binding = dict(started["binding"])
-            handoff_resource_id = _reserve_owned_handoff(
-                cleanup_context, token=token,
-                run_id=str(value["run_id"]), task_id=str(value["task_id"]),
-                handle=handle)
             control = {
                 "schema": "taskplane.governed-command-control/v1",
                 "host": "codex", "binding": binding,
@@ -1313,7 +1567,10 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 },
             }
             _atomic_json(_control_path(root, handle), control)
-            _atomic_json(handoff, {
+            publish_owned_handoff(
+                cleanup_context, token=token,
+                run_id=str(value["run_id"]), task_id=str(value["task_id"]),
+                attempt=int(value["attempt"]), handle=handle, payload={
                 "schema": "taskplane.governed-command-handoff/v1",
                 "kind": "semantic-checkpoint",
                 "workspace": workspace,
@@ -1325,8 +1582,6 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 "checkpoint_authorization_fingerprint":
                     checkpoint_authorization_fingerprint,
             })
-            owned_cleanup.activate_resource(
-                str(cleanup_context["manifest"]), handoff_resource_id)
             return _snapshot_result(
                 "checkpoint", adapter, handle,
                 semantic={
@@ -1337,15 +1592,30 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 })
         except GovernedCommandUnavailable as exc:
             shutil.rmtree(Path(sandbox).parent, ignore_errors=True)
+            unwind = _safe_failure_unwind(
+                cleanup_context, error=exc,
+                process_binding=(dict(started["binding"])
+                                 if "binding" in started else None))
             return {
                 "schema": RESULT_SCHEMA,
                 "action": "checkpoint",
                 "status": "unavailable",
                 "reason_code": exc.reason_code,
                 "error": str(exc),
+                **{key: unwind[key] for key in (
+                    "cleanup_receipt", "cleanup_evidence",
+                    "publication_replay", "publication_result")
+                   if key in unwind},
+                **({"cleanup_error": unwind["cleanup_error"],
+                    "cleanup_status": "attention"}
+                   if "cleanup_error" in unwind else {}),
             }
-        except OSError:
+        except OSError as exc:
             shutil.rmtree(Path(sandbox).parent, ignore_errors=True)
+            unwind = _safe_failure_unwind(
+                cleanup_context, error=exc,
+                process_binding=(dict(started["binding"])
+                                 if "binding" in started else None))
             return {
                 "schema": RESULT_SCHEMA,
                 "action": "checkpoint",
@@ -1353,7 +1623,24 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 "reason_code": "checkpoint_process_launch_unavailable",
                 "error": ("semantic checkpoint process boundary could not "
                           "be established; no proof process was started"),
+                **{key: unwind[key] for key in (
+                    "cleanup_receipt", "cleanup_evidence",
+                    "publication_replay", "publication_result")
+                   if key in unwind},
+                **({"cleanup_error": unwind["cleanup_error"],
+                    "cleanup_status": "attention"}
+                   if "cleanup_error" in unwind else {}),
             }
+        except Exception as exc:
+            unwind = _safe_failure_unwind(
+                cleanup_context, error=exc,
+                process_binding=(dict(started["binding"])
+                                 if "binding" in started else None))
+            try:
+                exc.cleanup_result = unwind
+            except Exception:
+                pass
+            raise
 
     if action == "launch":
         argv = value.get("argv")
@@ -1368,14 +1655,16 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 "no process was started")
         identity = {"schema": IDENTITY_SCHEMA,
                     "run_id": value["run_id"],
-                    "task_id": value["task_id"]}
+                    "task_id": value["task_id"],
+                    "attempt": value["attempt"]}
         authority = _governed_launch_authority(
             workspace, cwd, list(argv), identity)
         token = secrets.token_hex(16)
         handoff = root / "handoffs" / f"{token}.json"
         cleanup_context = _prepare_owned_cleanup(
             workspace, authorization, run_id=str(value["run_id"]),
-            task_id=str(value["task_id"]), token=token)
+            task_id=str(value["task_id"]), attempt=int(value["attempt"]),
+            token=token)
         started: dict[str, object] = {}
 
         def launch(command: object, command_cwd: str) -> HostLaunch:
@@ -1390,34 +1679,44 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 start_new_session=True, close_fds=True, env=worker_env)
             binding = detached_process_binding(process, token=token)
-            _activate_owned_process(cleanup_context, binding)
             started.update({"process": process, "binding": binding})
+            _activate_owned_process(cleanup_context, binding)
             return HostLaunch(binding=binding)
 
-        adapter = _adapter(
-            workspace, authorization, host=host, launcher=launch,
-            owned_cleanup_context=_runtime_cleanup_context(cleanup_context))
-        handle = adapter.launch(
-            list(argv), cwd=cwd, deadline=value.get("deadline"),
-            wave_id=value.get("wave_id"), identity=identity)
-        binding = dict(started["binding"])
-        handoff_resource_id = _reserve_owned_handoff(
-            cleanup_context, token=token, run_id=str(value["run_id"]),
-            task_id=str(value["task_id"]), handle=handle)
-        control = {"schema": "taskplane.governed-command-control/v1",
-                   "host": host, "binding": binding,
-                   "binding_digest": _canonical_digest(binding)}
-        _atomic_json(_control_path(root, handle), control)
-        _atomic_json(handoff, {
-            "schema": "taskplane.governed-command-handoff/v1",
-            "workspace": workspace, "authorization": authorization,
-            "root": str(root), "handle": handle, "argv": list(argv),
-            "cwd": cwd, "deadline": value.get("deadline"),
-            "identity": identity, "authority": authority,
-        })
-        owned_cleanup.activate_resource(
-            str(cleanup_context["manifest"]), handoff_resource_id)
-        return _snapshot_result("launch", adapter, handle)
+        try:
+            adapter = _adapter(
+                workspace, authorization, host=host, launcher=launch,
+                owned_cleanup_context=
+                    _runtime_cleanup_context(cleanup_context))
+            handle = adapter.launch(
+                list(argv), cwd=cwd, deadline=value.get("deadline"),
+                wave_id=value.get("wave_id"), identity=identity)
+            binding = dict(started["binding"])
+            control = {"schema": "taskplane.governed-command-control/v1",
+                       "host": host, "binding": binding,
+                       "binding_digest": _canonical_digest(binding)}
+            _atomic_json(_control_path(root, handle), control)
+            publish_owned_handoff(
+                cleanup_context, token=token, run_id=str(value["run_id"]),
+                task_id=str(value["task_id"]),
+                attempt=int(value["attempt"]), handle=handle, payload={
+                "schema": "taskplane.governed-command-handoff/v1",
+                "workspace": workspace, "authorization": authorization,
+                "root": str(root), "handle": handle, "argv": list(argv),
+                "cwd": cwd, "deadline": value.get("deadline"),
+                "identity": identity, "authority": authority,
+            })
+            return _snapshot_result("launch", adapter, handle)
+        except Exception as exc:
+            unwind = _safe_failure_unwind(
+                cleanup_context, error=exc,
+                process_binding=(dict(started["binding"])
+                                 if "binding" in started else None))
+            try:
+                exc.cleanup_result = unwind
+            except Exception:
+                pass
+            raise
 
     handle = str(value["handle"])
     control = _read_control(root, handle)
@@ -1441,22 +1740,27 @@ def execute(workspace: str, action: str, request: object) -> dict:
             if not receipt_path.is_file():
                 raise GovernedCommandError(
                     "semantic checkpoint terminal receipt is unavailable")
-        return _finalize_owned_result(
+        return finalize_owned_result(
             _snapshot_result("wait", adapter, handle, event=event),
             trigger="terminal")
     if action == "reconnect":
         event = adapter.reconnect(
             handle, binding=dict(control["binding"]),
             ownership_check=detached_process_is_live)
-        return _finalize_owned_result(
+        return finalize_owned_result(
             _snapshot_result("reconnect", adapter, handle, event=event),
             trigger="recovery")
-    if action == "cancel":
+    if action in {"cancel", "interrupt", "handoff"}:
         event = adapter.cancel(handle)
-        return _finalize_owned_result(
-            _snapshot_result("cancel", adapter, handle, event=event),
-            trigger="terminal")
-    return _finalize_owned_result(
+        selected_outcome = {
+            "cancel": "cancellation", "interrupt": "interruption",
+            "handoff": "handoff",
+        }[action]
+        return finalize_owned_result(
+            _snapshot_result(action, adapter, handle, event=event),
+            trigger="handoff" if action == "handoff" else "terminal",
+            outcome=selected_outcome)
+    return finalize_owned_result(
         _snapshot_result(
             "show", adapter, handle,
             lifecycle=adapter.snapshot(handle).get("lifecycle") or []),
