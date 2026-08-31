@@ -24,6 +24,7 @@ from taskplane.delivery_ports import (
     GitRunner,
     PlatformCiQuery,
     PreparedEvidence,
+    SubprocessGitRunner,
     canonical_json,
     content_fingerprint,
 )
@@ -39,6 +40,10 @@ MIXED_VERSION_MATRIX_SCHEMA = "taskplane.mixed-version-matrix-receipt/v1"
 PROTECTED_RELEASE_AUTHORIZATION_SCHEMA = (
     "taskplane.protected-release-authorization/v1"
 )
+PROTECTED_MAIN_RELEASE_EVIDENCE_SCHEMA = (
+    "taskplane.protected-main-release-evidence/v1"
+)
+PROTECTED_MAIN_RELEASE_GATE_SCHEMA = "taskplane.protected-main-release-gate/v1"
 
 CURRENT_VERSION = "2.18.2"
 PREVIOUS_VERSION = "2.17.20"
@@ -172,6 +177,23 @@ _HUMAN_RECHECK_FIELDS = frozenset(
         "confirmed",
         "cryptographic_authenticity_claimed",
     }
+)
+_PROTECTED_MAIN_EVIDENCE_FIELDS = frozenset(
+    {
+        "schema",
+        "source_sha",
+        "protected_branch",
+        "merge_topology",
+        "ci",
+        "supply_chain",
+        "receipts",
+        "packages",
+    }
+)
+_PROTECTED_MAIN_GATE_FIELDS = frozenset(
+    set(_PROTECTED_MAIN_EVIDENCE_FIELDS).union(
+        {"status", "cryptographic_authenticity_claimed", "fingerprint"}
+    )
 )
 
 
@@ -319,6 +341,279 @@ def _no_authenticity_claim(value: Any, name: str) -> None:
         raise ReleaseEvidenceError(
             f"{name} must state cryptographic_authenticity_claimed=false"
         )
+
+
+def release_input_digests(repository: str | Path) -> dict[str, str]:
+    """Read the three mutable inputs whose drift invalidates release proof.
+
+    The settings value is loaded through the canonical typed loader; release
+    tooling must never reinterpret that file or calculate a second effective
+    value.  Workflow and lock bytes are exact because changing either one
+    changes the code or dependency supply chain that CI executed.
+    """
+    root = Path(repository).resolve()
+    workflow = root / ".github" / "workflows" / "ci.yml"
+    lock = root / "requirements-dev.lock"
+    settings_path = root / "taskplane" / "operational-settings.json"
+    try:
+        workflow_digest = content_fingerprint(workflow.read_bytes())
+        lock_digest = content_fingerprint(lock.read_bytes())
+        from taskplane.settings import load_settings
+        settings_digest = load_settings(settings_path).digest
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ReleaseEvidenceError(
+            "release workflow, lock, or canonical settings input is unavailable"
+        ) from exc
+    return {
+        "workflow_digest": workflow_digest,
+        "lock_digest": lock_digest,
+        "settings_digest": settings_digest,
+    }
+
+
+def _protected_main_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    _closed(value, _PROTECTED_MAIN_EVIDENCE_FIELDS,
+            "protected-main release evidence")
+    if value.get("schema") != PROTECTED_MAIN_RELEASE_EVIDENCE_SCHEMA:
+        raise ReleaseEvidenceError(
+            "protected-main release evidence schema is invalid")
+    source_sha = _source_sha(value.get("source_sha"))
+    if value.get("protected_branch") != "main":
+        raise ReleaseEvidenceError("protected release branch must be main")
+
+    topology = _closed(
+        value.get("merge_topology"),
+        frozenset({
+            "event", "ref_kind", "merge_created_sha", "checked_sha",
+            "first_parent_sha", "pull_request_head_sha", "topology",
+        }),
+        "merge topology",
+    )
+    if topology.get("event") != "push" or \
+            topology.get("ref_kind") != "protected-main" or \
+            topology.get("topology") != "merge-created-first-parent":
+        raise ReleaseEvidenceError(
+            "release evidence must be a merge-created protected-main push")
+    if topology.get("merge_created_sha") != source_sha or \
+            topology.get("checked_sha") != source_sha:
+        raise ReleaseEvidenceError(
+            "merge-created and checked SHA must bind the release source SHA")
+    first_parent = _source_sha(
+        topology.get("first_parent_sha"), "first_parent_sha")
+    pull_head = _source_sha(
+        topology.get("pull_request_head_sha"), "pull_request_head_sha")
+    if source_sha in {first_parent, pull_head} or first_parent == pull_head:
+        raise ReleaseEvidenceError(
+            "merge-created source and pre-merge parents must be distinct")
+
+    ci = _closed(
+        value.get("ci"),
+        frozenset({
+            "event", "ref_kind", "candidate_sha", "terminal_status",
+            "required_checks", "conclusions",
+        }),
+        "protected-main CI",
+    )
+    if ci.get("event") != "push" or ci.get("ref_kind") != "protected-main":
+        raise ReleaseEvidenceError(
+            "branch or pre-merge CI cannot authorize a release")
+    if ci.get("candidate_sha") != source_sha or \
+            ci.get("terminal_status") != "green":
+        raise ReleaseEvidenceError(
+            "terminal CI must be green for the exact protected-main SHA")
+    checks = _strings(ci.get("required_checks"), "required_checks")
+    conclusions = ci.get("conclusions")
+    if not isinstance(conclusions, Mapping) or set(conclusions) != set(checks):
+        raise ReleaseEvidenceError("required check conclusions are incomplete")
+    if any(conclusions[name] != "success" for name in checks):
+        raise ReleaseEvidenceError("a protected-main required check is not successful")
+
+    supply = _closed(
+        value.get("supply_chain"),
+        frozenset({
+            "permissions", "immutable_actions", "hash_locked_dependencies",
+            "credential_empty_untrusted_jobs", "workflow_digest", "lock_digest",
+        }),
+        "release supply-chain evidence",
+    )
+    if supply.get("permissions") != "contents:read" or \
+            supply.get("immutable_actions") is not True or \
+            supply.get("hash_locked_dependencies") is not True or \
+            supply.get("credential_empty_untrusted_jobs") is not True:
+        raise ReleaseEvidenceError(
+            "release CI must retain least privilege, immutable pins, hashed locks, "
+            "and credential-empty untrusted jobs")
+    _fingerprint(supply.get("workflow_digest"), "workflow_digest")
+    _fingerprint(supply.get("lock_digest"), "lock_digest")
+
+    receipts = _closed(
+        value.get("receipts"),
+        frozenset({
+            "settings", "candidate", "matrix", "browser", "dashboard",
+            "wave_metrics", "cleanup",
+        }),
+        "release prerequisite receipts",
+    )
+
+    settings = _closed(receipts.get("settings"), frozenset({"digest"}),
+                       "settings receipt")
+    _fingerprint(settings.get("digest"), "settings digest")
+    candidate = _closed(
+        receipts.get("candidate"), frozenset({"digest", "source_sha"}),
+        "candidate receipt")
+    _fingerprint(candidate.get("digest"), "candidate digest")
+    if candidate.get("source_sha") != source_sha:
+        raise ReleaseEvidenceError("candidate receipt names another source SHA")
+
+    matrix = _closed(
+        receipts.get("matrix"), frozenset({"digest", "source_sha", "status"}),
+        "terminal matrix receipt")
+    _fingerprint(matrix.get("digest"), "matrix digest")
+    if matrix.get("source_sha") != source_sha or matrix.get("status") != "green":
+        raise ReleaseEvidenceError("terminal matrix is not exact-source green")
+
+    for name, status in (("browser", "green"), ("dashboard", "published")):
+        observation = _closed(
+            receipts.get(name),
+            frozenset({"digest", "source_sha", "status", "fresh"}),
+            f"{name} receipt",
+        )
+        _fingerprint(observation.get("digest"), f"{name} digest")
+        if observation.get("source_sha") != source_sha or \
+                observation.get("status") != status or \
+                observation.get("fresh") is not True:
+            raise ReleaseEvidenceError(
+                f"{name} receipt is stale or bound to another source SHA")
+
+    metrics = _closed(
+        receipts.get("wave_metrics"),
+        frozenset({"digest", "source_sha", "status", "recounted"}),
+        "wave metrics receipt",
+    )
+    _fingerprint(metrics.get("digest"), "wave metrics digest")
+    if metrics.get("source_sha") != source_sha or \
+            metrics.get("status") != "sealed" or \
+            metrics.get("recounted") is not False:
+        raise ReleaseEvidenceError(
+            "release requires the sealed exact-source wave metrics receipt without re-count")
+
+    cleanup = _closed(
+        receipts.get("cleanup"),
+        frozenset({"digest", "source_sha", "status", "leak_count"}),
+        "cleanup receipt",
+    )
+    _fingerprint(cleanup.get("digest"), "cleanup digest")
+    if cleanup.get("source_sha") != source_sha or \
+            cleanup.get("status") != "clean" or \
+            cleanup.get("leak_count") != 0:
+        raise ReleaseEvidenceError(
+            "release cleanup must be exact-source clean with zero leaks")
+
+    packages = value.get("packages")
+    if isinstance(packages, (str, bytes, bytearray)) or not isinstance(
+        packages, Sequence
+    ) or len(packages) != 2:
+        raise ReleaseEvidenceError(
+            "release requires exactly two package provenance records")
+    package_fields = frozenset({
+        "kind", "source_sha", "archive_digest", "provenance_digest",
+        "verified_source", "dirty",
+    })
+    kinds: set[str] = set()
+    for package in packages:
+        row = _closed(package, package_fields, "package provenance")
+        kind = row.get("kind")
+        if kind not in {"openai", "claude"} or kind in kinds:
+            raise ReleaseEvidenceError(
+                "package provenance must contain OpenAI and Claude exactly once")
+        kinds.add(str(kind))
+        if row.get("source_sha") != source_sha or \
+                row.get("verified_source") is not True or row.get("dirty") != []:
+            raise ReleaseEvidenceError(
+                "dirty, unverifiable, or wrong-source package cannot be released")
+        _fingerprint(row.get("archive_digest"), "archive digest")
+        _fingerprint(row.get("provenance_digest"), "provenance digest")
+    if kinds != {"openai", "claude"}:
+        raise ReleaseEvidenceError("package provenance is incomplete")
+
+    # Canonical round-trip prevents a caller-owned mapping from mutating after
+    # validation and keeps the receipt byte-identical across supported hosts.
+    return json.loads(canonical_json(value))
+
+
+def create_protected_main_release_gate(
+    evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Seal the sole tag/package release prerequisite for an exact main SHA."""
+    normalized = _protected_main_evidence(evidence)
+    normalized["schema"] = PROTECTED_MAIN_RELEASE_GATE_SCHEMA
+    normalized["status"] = "protected-main-green"
+    normalized["cryptographic_authenticity_claimed"] = False
+    return _seal(normalized)
+
+
+def _git_value(runner: GitRunner, repository: Path, *args: str) -> str:
+    result = runner.run(args, cwd=repository)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise ReleaseEvidenceError(
+            "protected-main Git topology is unavailable")
+    return result.stdout.strip()
+
+
+def validate_protected_main_release_gate(
+    receipt: Mapping[str, Any], *, repository: str | Path | None = None,
+    git_runner: GitRunner | None = None,
+) -> dict[str, Any]:
+    """Validate the sealed gate and, for release use, rederive mutable facts."""
+    _closed(receipt, _PROTECTED_MAIN_GATE_FIELDS,
+            "protected-main release gate")
+    if receipt.get("schema") != PROTECTED_MAIN_RELEASE_GATE_SCHEMA or \
+            receipt.get("status") != "protected-main-green":
+        raise ReleaseEvidenceError("protected-main release gate is not green")
+    _no_authenticity_claim(
+        receipt.get("cryptographic_authenticity_claimed"),
+        "protected-main release gate")
+    evidence = {
+        key: receipt[key]
+        for key in _PROTECTED_MAIN_EVIDENCE_FIELDS
+    }
+    evidence["schema"] = PROTECTED_MAIN_RELEASE_EVIDENCE_SCHEMA
+    normalized = create_protected_main_release_gate(evidence)
+    if dict(receipt) != normalized:
+        raise ReleaseEvidenceError(
+            "protected-main release gate fingerprint mismatch")
+
+    if repository is not None:
+        root = Path(repository).resolve()
+        runner = git_runner or SubprocessGitRunner()
+        source_sha = normalized["source_sha"]
+        branch_head = _git_value(
+            runner, root, "rev-parse", "refs/heads/main")
+        if branch_head != source_sha:
+            raise ReleaseEvidenceError(
+                "release source is not the exact protected branch head")
+        topology = normalized["merge_topology"]
+        parents = _git_value(
+            runner, root, "rev-list", "--parents", "-n", "1", source_sha
+        ).split()
+        expected = [
+            source_sha,
+            topology["first_parent_sha"],
+            topology["pull_request_head_sha"],
+        ]
+        if parents != expected:
+            raise ReleaseEvidenceError(
+                "merge-created first-parent topology does not match release gate")
+        inputs = release_input_digests(root)
+        if normalized["supply_chain"]["workflow_digest"] != \
+                inputs["workflow_digest"]:
+            raise ReleaseEvidenceError("release workflow pin evidence drifted")
+        if normalized["supply_chain"]["lock_digest"] != inputs["lock_digest"]:
+            raise ReleaseEvidenceError("release dependency lock evidence drifted")
+        if normalized["receipts"]["settings"]["digest"] != \
+                inputs["settings_digest"]:
+            raise ReleaseEvidenceError("canonical release settings digest drifted")
+    return normalized
 
 
 def create_feature_green(

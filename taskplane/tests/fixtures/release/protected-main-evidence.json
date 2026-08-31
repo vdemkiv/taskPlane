@@ -1,0 +1,47 @@
+{
+  "schema": "taskplane.protected-main-release-evidence/v1",
+  "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "protected_branch": "main",
+  "merge_topology": {
+    "event": "push",
+    "ref_kind": "protected-main",
+    "merge_created_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "checked_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "first_parent_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "pull_request_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "topology": "merge-created-first-parent"
+  },
+  "ci": {
+    "event": "push",
+    "ref_kind": "protected-main",
+    "candidate_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "terminal_status": "green",
+    "required_checks": ["terminal-matrix", "dashboard-browser", "release-tags"],
+    "conclusions": {
+      "terminal-matrix": "success",
+      "dashboard-browser": "success",
+      "release-tags": "success"
+    }
+  },
+  "supply_chain": {
+    "permissions": "contents:read",
+    "immutable_actions": true,
+    "hash_locked_dependencies": true,
+    "credential_empty_untrusted_jobs": true,
+    "workflow_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "lock_digest": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "receipts": {
+    "settings": {"digest": "3333333333333333333333333333333333333333333333333333333333333333"},
+    "candidate": {"digest": "4444444444444444444444444444444444444444444444444444444444444444", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "matrix": {"digest": "5555555555555555555555555555555555555555555555555555555555555555", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "green"},
+    "browser": {"digest": "6666666666666666666666666666666666666666666666666666666666666666", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "green", "fresh": true},
+    "dashboard": {"digest": "7777777777777777777777777777777777777777777777777777777777777777", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "published", "fresh": true},
+    "wave_metrics": {"digest": "8888888888888888888888888888888888888888888888888888888888888888", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "sealed", "recounted": false},
+    "cleanup": {"digest": "9999999999999999999999999999999999999999999999999999999999999999", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "clean", "leak_count": 0}
+  },
+  "packages": [
+    {"kind": "openai", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "archive_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "provenance_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "verified_source": true, "dirty": []},
+    {"kind": "claude", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "archive_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "provenance_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "verified_source": true, "dirty": []}
+  ]
+}

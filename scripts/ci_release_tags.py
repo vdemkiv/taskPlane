@@ -32,7 +32,11 @@ becoming a first-parent tree (v2.17.17 is the real example).
   C7  every NOT_RELEASED entry names a declared, untagged candidate
 
 Run: python3 scripts/ci_release_tags.py [<repo-root>] [--json]
+     python3 scripts/ci_release_tags.py [<repo-root>] --release-gate <receipt>
+            --authorize-version <version>
 """
+import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -340,6 +344,45 @@ def audit(root=ROOT):
             "problems": problems}
 
 
+def authorize_tag(root, version, protected_main_gate):
+    """Authorize, but never create, one tag for the exact protected-main SHA.
+
+    Tag creation remains an explicit irreversible action.  This function is
+    the fail-closed seam release automation must cross immediately before that
+    action; historical reachability alone is deliberately insufficient.
+    """
+    from taskplane import release_evidence
+
+    repository = os.path.abspath(os.fspath(root))
+    receipt = release_evidence.validate_protected_main_release_gate(
+        protected_main_gate, repository=repository)
+    source_sha = receipt["source_sha"]
+    if version_at(repository, source_sha) != version:
+        raise release_evidence.ReleaseEvidenceError(
+            "release tag version does not match the protected-main source tree")
+    result = audit(repository)
+    if result.get("unavailable") or result.get("problems"):
+        raise release_evidence.ReleaseEvidenceError(
+            "release history audit is unavailable or not clean")
+    existing = release_tags(repository).get("v" + version)
+    if existing is not None and existing != source_sha:
+        raise release_evidence.ReleaseEvidenceError(
+            "release tag already names another source SHA")
+    authorization = {
+        "schema": "taskplane.release-tag-authorization/v1",
+        "tag": "v" + version,
+        "source_sha": source_sha,
+        "protected_main_gate_fingerprint": receipt["fingerprint"],
+        "authorized": True,
+        "cryptographic_authenticity_claimed": False,
+    }
+    authorization["fingerprint"] = hashlib.sha256(
+        (json.dumps(authorization, sort_keys=True, separators=(",", ":")) + "\n")
+        .encode("utf-8")
+    ).hexdigest()
+    return authorization
+
+
 def main():
     # An optional root makes the gate runnable against any checkout — which
     # is what lets its own tests prove the EXIT CODES on synthetic repos
@@ -347,9 +390,29 @@ def main():
     # version of that test ran the script against this repo and asserted
     # exit 0; the main test job checks out without tags, the gate correctly
     # reported CANNOT VERIFY, and the test failed on the gate being right.
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    res = audit(args[0] if args else ROOT)
-    if "--json" in sys.argv:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("root", nargs="?", default=ROOT)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--release-gate")
+    parser.add_argument("--authorize-version")
+    args = parser.parse_args()
+    res = audit(args.root)
+    authorization_error = None
+    if bool(args.release_gate) != bool(args.authorize_version):
+        authorization_error = (
+            "--release-gate and --authorize-version must be supplied together")
+    elif args.release_gate:
+        try:
+            with open(args.release_gate, encoding="utf-8") as stream:
+                receipt = json.load(stream)
+            res["tag_authorization"] = authorize_tag(
+                args.root, args.authorize_version, receipt)
+        except (OSError, ValueError) as exc:
+            authorization_error = str(exc)
+    if authorization_error is not None:
+        res["ok"] = False
+        res["authorization_error"] = authorization_error
+    if args.json:
         print(json.dumps(res, indent=2, sort_keys=True))
         return 0 if res.get("ok") else 1
     if res.get("unavailable"):
@@ -372,6 +435,12 @@ def main():
               f"{', '.join('v' + v for v in res['skipped'])}")
     for p in res["problems"]:
         print(f"  {p['check']} v{p['version']}: {p['detail']}")
+    if authorization_error is not None:
+        print(f"  RELEASE REFUSED: {authorization_error}")
+    elif res.get("tag_authorization"):
+        authorization = res["tag_authorization"]
+        print(f"  authorized {authorization['tag']} at "
+              f"{authorization['source_sha'][:12]} from exact protected-main green")
     print("ok: every shipped version is tagged and every tag names a real "
           "release" if res["ok"] else
           f"FAIL: {len(res['problems'])} release-tag problem(s)")

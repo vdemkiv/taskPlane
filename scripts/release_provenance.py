@@ -39,9 +39,18 @@ artifact built in the release path is bound to the tree that leg verified.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
+from typing import Any, Mapping
+
+
+PROVENANCE_SCHEMA = "taskplane.package-provenance/v1"
+_FIELDS = {
+    "schema", "kind", "archive", "sha256", "commit", "tree", "branch",
+    "dirty", "verified_source", "release_inputs", "note", "fingerprint",
+}
 
 
 class ProvenanceError(RuntimeError):
@@ -69,8 +78,9 @@ def _git(root: Path, *args: str, strip: bool = True) -> str:
 
 
 def source_state(root: Path) -> dict:
-    """{'commit', 'branch', 'dirty': [paths]} for the tree being packaged."""
+    """Exact commit/tree/branch and dirty paths for the packaged checkout."""
     commit = _git(root, "rev-parse", "HEAD")
+    tree = _git(root, "rev-parse", "HEAD^{tree}")
     try:
         branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
     except ProvenanceError:
@@ -78,11 +88,92 @@ def source_state(root: Path) -> dict:
     status = _git(root, "status", "--porcelain", strip=False)
     dirty = sorted(line[2:].strip() for line in status.splitlines()
                    if line.strip())
-    return {"commit": commit, "branch": branch, "dirty": dirty}
+    return {"commit": commit, "tree": tree, "branch": branch, "dirty": dirty}
+
+
+def _fingerprint(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+        .encode("utf-8")
+    ).hexdigest()
+
+
+def _release_inputs(root: Path) -> dict[str, str] | None:
+    required = (
+        root / ".github/workflows/ci.yml",
+        root / "requirements-dev.lock",
+        root / "taskplane/operational-settings.json",
+    )
+    if not all(path.is_file() for path in required):
+        return None
+    try:
+        from taskplane.release_evidence import release_input_digests
+        return release_input_digests(root)
+    except (ImportError, ValueError) as exc:
+        raise ProvenanceError("canonical release inputs are invalid") from exc
+
+
+def validate(record: Mapping[str, Any], *, expected_source_sha: str | None = None,
+             require_release_inputs: bool = False) -> dict[str, Any]:
+    """Validate a closed provenance record without granting CI authority."""
+    if not isinstance(record, Mapping) or set(record) != _FIELDS:
+        raise ProvenanceError("package provenance fields are not closed")
+    value = dict(record)
+    if value.get("schema") != PROVENANCE_SCHEMA:
+        raise ProvenanceError("package provenance schema is invalid")
+    if value.get("kind") not in {"openai", "claude", "local"}:
+        raise ProvenanceError("package provenance kind is invalid")
+    for field in ("archive", "sha256", "commit", "tree", "branch", "note"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            raise ProvenanceError(f"package provenance {field} is required")
+    if len(value["commit"]) != 40 or len(value["tree"]) != 40:
+        raise ProvenanceError("package provenance Git identity is invalid")
+    dirty = value.get("dirty")
+    if not isinstance(dirty, list) or any(
+        not isinstance(path, str) or not path for path in dirty
+    ):
+        raise ProvenanceError("package provenance dirty paths are invalid")
+    if value.get("verified_source") is not (not dirty):
+        raise ProvenanceError("package provenance clean-source claim is invalid")
+    if expected_source_sha is not None and value["commit"] != expected_source_sha:
+        raise ProvenanceError("package provenance names another source SHA")
+    inputs = value.get("release_inputs")
+    if inputs is not None:
+        expected = {"workflow_digest", "lock_digest", "settings_digest"}
+        if not isinstance(inputs, Mapping) or set(inputs) != expected or any(
+            not isinstance(digest, str) or len(digest) != 64
+            for digest in inputs.values()
+        ):
+            raise ProvenanceError("package release-input digests are invalid")
+    if require_release_inputs and inputs is None:
+        raise ProvenanceError("package release-input provenance is missing")
+    projection = {key: value[key] for key in _FIELDS - {"fingerprint"}}
+    if value.get("fingerprint") != _fingerprint(projection):
+        raise ProvenanceError("package provenance fingerprint mismatch")
+    return json.loads(json.dumps(value, sort_keys=True))
+
+
+def release_gate_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one package into the protected-main release gate."""
+    value = validate(record, require_release_inputs=True)
+    if value["kind"] not in {"openai", "claude"}:
+        raise ProvenanceError("local package provenance cannot authorize release")
+    if not value["verified_source"]:
+        raise ProvenanceError("dirty package provenance cannot authorize release")
+    if len(value["sha256"]) != 64:
+        raise ProvenanceError("release archive digest must be SHA-256")
+    return {
+        "kind": value["kind"],
+        "source_sha": value["commit"],
+        "archive_digest": value["sha256"],
+        "provenance_digest": value["fingerprint"],
+        "verified_source": True,
+        "dirty": [],
+    }
 
 
 def write(root: Path, archive: Path, digest: str, *,
-          allow_dirty: bool = False) -> Path:
+          allow_dirty: bool = False, kind: str = "local") -> Path:
     """Write `<archive>.provenance.json`; refuse a dirty tree by default.
 
     Raises ProvenanceError when the source cannot be identified (no git) or
@@ -103,17 +194,23 @@ def write(root: Path, archive: Path, digest: str, *,
             "--allow-dirty for a local test build (which is stamped "
             "verified_source: false and must not be released).")
     record = {
+        "schema": PROVENANCE_SCHEMA,
+        "kind": kind,
         "archive": archive.name,
         "sha256": digest,
         "commit": state["commit"],
+        "tree": state["tree"],
         "branch": state["branch"],
         "dirty": state["dirty"],
         "verified_source": not state["dirty"],
+        "release_inputs": _release_inputs(root),
         "note": ("`verified_source` means the archive is exactly this commit. "
                  "It does NOT assert that CI passed — a local build cannot "
                  "know that. Check `commit` against the CI status for that "
                  "SHA; the release leg asserts they match."),
     }
+    record["fingerprint"] = _fingerprint(record)
+    validate(record)
     path = archive.with_suffix(archive.suffix + ".provenance.json")
     path.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n",
                     encoding="utf-8")

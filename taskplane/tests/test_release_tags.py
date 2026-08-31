@@ -19,10 +19,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import ci_release_tags as gate     # noqa: E402
+from taskplane import release_evidence  # noqa: E402
 
 
 def _git(root, *args, check=True):
@@ -86,6 +91,85 @@ class _RepoCase(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def _protected_main_evidence(root, source_sha, first_parent_sha, pull_head_sha):
+    fixture = Path(ROOT) / "taskplane/tests/fixtures/release/protected-main-evidence.json"
+    evidence = json.loads(fixture.read_text(encoding="utf-8"))
+    for row in (
+        evidence["merge_topology"], evidence["ci"],
+        evidence["receipts"]["candidate"],
+        evidence["receipts"]["matrix"],
+        evidence["receipts"]["browser"],
+        evidence["receipts"]["dashboard"],
+        evidence["receipts"]["wave_metrics"],
+        evidence["receipts"]["cleanup"],
+    ):
+        for key in ("source_sha", "candidate_sha", "merge_created_sha",
+                    "checked_sha"):
+            if key in row:
+                row[key] = source_sha
+    evidence["source_sha"] = source_sha
+    evidence["merge_topology"]["first_parent_sha"] = first_parent_sha
+    evidence["merge_topology"]["pull_request_head_sha"] = pull_head_sha
+    for package in evidence["packages"]:
+        package["source_sha"] = source_sha
+    inputs = release_evidence.release_input_digests(root)
+    evidence["supply_chain"]["workflow_digest"] = inputs["workflow_digest"]
+    evidence["supply_chain"]["lock_digest"] = inputs["lock_digest"]
+    evidence["receipts"]["settings"]["digest"] = inputs["settings_digest"]
+    return evidence
+
+
+def test_tag_requires_exact_protected_main_green(tmp_path):
+    """No branch/pre-merge green result can authorize a release tag."""
+    repo = _Repo(str(tmp_path))
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    shutil.copy(Path(ROOT) / ".github/workflows/ci.yml",
+                tmp_path / ".github/workflows/ci.yml")
+    shutil.copy(Path(ROOT) / "requirements-dev.lock",
+                tmp_path / "requirements-dev.lock")
+    (tmp_path / "taskplane").mkdir()
+    shutil.copy(Path(ROOT) / "taskplane/operational-settings.json",
+                tmp_path / "taskplane/operational-settings.json")
+    base = repo.release("1.0.0")
+    repo.tag("1.0.0", base)
+    _git(str(tmp_path), "checkout", "-q", "-b", "feature")
+    pull_head = repo.release("1.1.0")
+    _git(str(tmp_path), "checkout", "-q", "main")
+    _git(str(tmp_path), "merge", "-q", "--no-ff", "feature",
+         "-m", "merge release candidate")
+    protected_head = _git(str(tmp_path), "rev-parse", "HEAD")
+
+    evidence = _protected_main_evidence(
+        tmp_path, protected_head, base, pull_head)
+    receipt = release_evidence.create_protected_main_release_gate(evidence)
+    authorization = gate.authorize_tag(tmp_path, "1.1.0", receipt)
+    assert authorization["authorized"] is True
+    assert authorization["source_sha"] == protected_head
+
+    branch_evidence = deepcopy(evidence)
+    branch_evidence["source_sha"] = pull_head
+    branch_evidence["merge_topology"]["merge_created_sha"] = pull_head
+    branch_evidence["merge_topology"]["checked_sha"] = pull_head
+    branch_evidence["merge_topology"]["pull_request_head_sha"] = "c" * 40
+    branch_evidence["ci"]["candidate_sha"] = pull_head
+    for name, row in branch_evidence["receipts"].items():
+        if name != "settings":
+            row["source_sha"] = pull_head
+    for package in branch_evidence["packages"]:
+        package["source_sha"] = pull_head
+    branch_receipt = release_evidence.create_protected_main_release_gate(
+        branch_evidence)
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="protected branch head"):
+        gate.authorize_tag(tmp_path, "1.1.0", branch_receipt)
+
+    red = deepcopy(evidence)
+    red["ci"]["conclusions"]["terminal-matrix"] = "failure"
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="required check"):
+        release_evidence.create_protected_main_release_gate(red)
 
 
 class TestThisRepoIsClean(unittest.TestCase):
