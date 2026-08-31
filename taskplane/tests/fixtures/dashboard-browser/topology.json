@@ -1,0 +1,62 @@
+{
+  "schema": "taskplane.dashboard-phase-graphs/v1",
+  "step": "execute",
+  "design_graph": {
+    "schema": "taskplane.dashboard-design-graph/v1",
+    "source": "design/contract.json#/graph",
+    "modules": [
+      "taskplane/host_native.py",
+      "taskplane/views.py",
+      "taskplane/dashboard.py",
+      "contract:delivery.canonical-dashboard-state"
+    ],
+    "edges": [
+      {
+        "from": "taskplane/host_native.py",
+        "to": "taskplane/views.py",
+        "kind": "injects"
+      },
+      {
+        "from": "taskplane/views.py",
+        "to": "taskplane/dashboard.py",
+        "kind": "projects"
+      },
+      {
+        "from": "taskplane/dashboard.py",
+        "to": "contract:delivery.canonical-dashboard-state",
+        "kind": "verifies"
+      }
+    ],
+    "module_total": 4,
+    "edge_total": 3
+  },
+  "plan_task_dag": {
+    "schema": "taskplane.dashboard-plan-task-dag/v1",
+    "source": "plan/tasks.json#/tasks",
+    "tasks": [
+      {"id": "snapshot", "deps": []},
+      {"id": "delivery", "deps": ["snapshot"]},
+      {"id": "browser", "deps": ["delivery"]},
+      {"id": "proof", "deps": ["browser"]}
+    ],
+    "edges": [
+      {"from": "snapshot", "to": "delivery"},
+      {"from": "delivery", "to": "browser"},
+      {"from": "browser", "to": "proof"}
+    ],
+    "task_total": 4,
+    "edge_total": 3,
+    "topological_order": ["snapshot", "delivery", "browser", "proof"]
+  },
+  "plan_waves": {
+    "schema": "taskplane.dashboard-plan-waves/v1",
+    "source": "plan/tasks.json#/waves",
+    "approval": "planned",
+    "wave_total": 3,
+    "waves": [
+      {"id": "W0", "tasks": ["snapshot"]},
+      {"id": "W1", "tasks": ["delivery"]},
+      {"id": "W2", "tasks": ["browser", "proof"]}
+    ]
+  }
+}

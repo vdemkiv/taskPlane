@@ -1,0 +1,45 @@
+{
+  "schema": "taskplane.browser-fixture/v1",
+  "executable_environment": [
+    "TASKPLANE_BROWSER_EXECUTABLE",
+    "CHROME_BIN",
+    "CHROMIUM_BIN"
+  ],
+  "executable_candidates": [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium"
+  ],
+  "flags": [
+    "--headless=new",
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-default-apps",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--disable-gpu",
+    "--disable-sync",
+    "--hide-scrollbars",
+    "--metrics-recording-only",
+    "--no-default-browser-check",
+    "--no-first-run",
+    "--no-proxy-server",
+    "--remote-allow-origins=*",
+    "--window-size=1280,1000"
+  ],
+  "fixture_server": {
+    "host": "127.0.0.1",
+    "scheme": "http",
+    "transport": "python-stdlib-loopback"
+  },
+  "selectors": [
+    "body[data-dashboard-freshness]",
+    "[data-dashboard-action]",
+    "#tp-design-graph svg[data-phase-graph='tp-design-graph']",
+    "#tp-plan-task-dag svg[data-phase-graph='tp-plan-task-dag']",
+    "#tp-plan-waves[data-plan-approval]"
+  ]
+}
