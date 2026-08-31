@@ -1,13 +1,17 @@
 """Canonical dashboard-state pipeline regressions for R-0001."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from taskplane import host_native
+from taskplane import dashboard
 from taskplane import loop_status
 from taskplane import storage
+from taskplane import views
+from taskplane import wave_metrics
 
 
 def _legacy_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -216,3 +220,77 @@ def test_publication_receipt_binds_snapshot_graphs_dom_freshness_and_host_ack(
             receipt["fingerprint"]
     assert result["current_head"]["receipt_fingerprint"] == \
         receipt["fingerprint"]
+
+
+def test_wave_metrics_receipt_fingerprint_reaches_dashboard_without_recount(
+        tmp_path, monkeypatch):
+    fixture = Path(__file__).parent / "fixtures" / "wave-metrics" / \
+        "closed-run.json"
+    sealed = wave_metrics.seal_wave_receipt(json.loads(
+        fixture.read_text(encoding="utf-8")))
+    expected = wave_metrics.consumer_projection(sealed, consumer="dashboard")
+    state = {
+        "goal": "project sealed metrics", "step": "signoff",
+        "baseline": "candidate-revision", "tasks": [],
+        "wave_metrics_receipt": sealed,
+        # A stale caller-supplied recount must never replace the sealed receipt.
+        "wave_metrics_projection": {"suite_files": 999999},
+    }
+    source = {
+        "mode": "legacy", "status": "ready", "run_id": "metrics-run",
+        "revision": "candidate-revision", "target": "signoff",
+        "state": state, "evidence": ["receipt:" + sealed["fingerprint"]],
+    }
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(loop_status, "_select_dashboard_source", lambda _ws: source)
+    publication = loop_status.refresh_dashboard_snapshot(
+        str(workspace), event_type="metrics_sealed",
+        committed_at="2026-08-30T11:30:00Z")
+    snapshot = host_native.HostSurfaceSnapshot.from_dict(
+        publication["snapshot"])
+    assert snapshot.safe_actions == ("approve", "reject")
+
+    def assert_exact_projection(value):
+        projected = value.to_dict()["values"]["wave_metrics"]
+        assert projected == expected
+        assert projected["receipt_fingerprint"] == sealed["fingerprint"]
+        assert "999999" not in json.dumps(projected)
+        native = dashboard.native_dashboard_projection(value, host="codex")
+        component = next(row for row in native["components"]
+                         if row["id"] == "wave_metrics")
+        assert component["value"]["receipt_fingerprint"] == sealed["fingerprint"]
+        markup = dashboard.render_native_dashboard_surface(native)
+        assert sealed["fingerprint"] in markup
+        assert sealed["fingerprint"] in \
+            dashboard.render_wave_metrics_projection(projected)
+        return markup
+
+    markup = assert_exact_projection(snapshot)
+    delivered = views.deliver_dashboard(
+        str(tmp_path / "delivery"), snapshot.to_dict(),
+        html_renderer=lambda _canonical: markup)
+    decoded = views.decode_dashboard_artifact(
+        "html", Path(delivered["artifacts"]["html"]["path"]).read_bytes())
+    assert decoded["values"]["wave_metrics"]["receipt_fingerprint"] == \
+        sealed["fingerprint"]
+    monkeypatch.setattr(dashboard, "report_widget",
+                        lambda _ws: '<main data-dashboard-component="gate"></main>')
+    refreshed = {"step": "signoff", "dashboard_snapshot": publication}
+    views.refresh_views(str(workspace), refreshed)
+    refreshed_html = Path(
+        refreshed["dashboard"]["delivery"]["artifacts"]["html"]["path"]
+    ).read_text(encoding="utf-8")
+    assert sealed["fingerprint"] in refreshed_html
+
+    # Mutation proof for the producer-consumer edge: if the canonical snapshot
+    # assembler omits the supplied sealed projection, the exact assertion fails.
+    severed_workspace = tmp_path / "severed"
+    severed_workspace.mkdir()
+    monkeypatch.setattr(loop_status, "_wave_metrics_values", lambda _state: {})
+    severed = loop_status.refresh_dashboard_snapshot(
+        str(severed_workspace), event_type="metrics_sealed",
+        committed_at="2026-08-30T11:30:00Z")
+    with pytest.raises((AssertionError, KeyError)):
+        assert_exact_projection(host_native.HostSurfaceSnapshot.from_dict(
+            severed["snapshot"]))
