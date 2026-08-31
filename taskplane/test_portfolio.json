@@ -15,18 +15,18 @@
   },
   "final": {
     "test_files": 230,
-    "collected_cases": 4109,
-    "test_loc": 84393,
-    "removed_files": 54,
-    "removed_cases": 906,
-    "removed_loc": 16498,
-    "added_contract_files": 1,
-    "added_contract_cases": 6,
-    "added_contract_loc": 600,
-    "redundant_families_removed": 15,
+    "collected_cases": 4104,
+    "test_loc": 84996,
+    "removed_files": 57,
+    "removed_cases": 916,
+    "removed_loc": 16865,
+    "added_contract_files": 4,
+    "added_contract_cases": 11,
+    "added_contract_loc": 1570,
+    "redundant_families_removed": 18,
     "targets": {"test_files_max": 230, "collected_cases_max": 4200, "families_min": 6}
   },
-  "inventory_sha256": "358107e75bac9f0bcf0ea973bebde0da7a20f4a2990adc667316f98a9a9663e7",
+  "inventory_sha256": "685d8555c1fad519efbc2cc2f6fbfd4b56ee5e813b8089aee730b53967365d1d",
   "protected_floors": [
     "security-and-authority",
     "cross-host-portability",
@@ -35,20 +35,7 @@
     "ci-supply-chain",
     "large-delivery-and-native-accessibility"
   ],
-  "future_selectors": [
-    {
-      "selector": "taskplane/tests/test_settings_inventory.py::test_every_operational_setting_has_one_canonical_owner",
-      "owner_task": "SET-CONFORMANCE",
-      "depends_on": "TEST-PORTFOLIO",
-      "relation": "ordered-successor"
-    },
-    {
-      "selector": "taskplane/tests/test_settings_flow_wiring.py::test_every_flow_initializes_from_canonical_settings",
-      "owner_task": "SET-CONFORMANCE",
-      "depends_on": "TEST-PORTFOLIO",
-      "relation": "ordered-successor"
-    }
-  ],
+  "future_selectors": [],
   "executable_proofs": [
     "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied",
     "taskplane/tests/test_host_native_dashboard.py::test_codex_and_claude_project_equal_semantics_for_all_components",
@@ -376,6 +363,57 @@
       ],
       "mutation_proof": {"kind": "severed-edge", "operator": "remove dedicated skill screen from one packaged manifest", "selector": "taskplane/tests/test_collision_integration.py::test_both_manifests_route_skill_to_dedicated_screen"},
       "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["collision registry", "Codex manifest", "Claude manifest"], "disposition": "no fixture or generator edge"}
+    },
+    {
+      "id": "r0001-test-harness-implementation-detail",
+      "classification": "implementation-detail",
+      "authority": "Test-double self-tests are superseded by current native wait and atomic release/review publication contracts.",
+      "removed_files": ["taskplane/tests/test_r0001_test_harness.py"],
+      "source_sha256": "7f972a2c5fb6f65c22b51c9770f64eb8f6def5a0472ba2372ad3639600ab8dc9",
+      "before": {"files": 1, "cases": 3, "loc": 67},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_r0013_native_dispatch.py::test_one_native_wait_wakes_on_completion_or_attention",
+        "taskplane/tests/test_r0001_release_green.py::test_release_evidence_atomic_publication_recovers_each_fault",
+        "taskplane/tests/test_r0001_review_authority.py::test_override_publication_recovers_each_atomic_fault_without_fork"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "remove completion and attention outcomes from native wait", "selector": "taskplane/tests/test_r0013_native_dispatch.py::test_one_native_wait_wakes_on_completion_or_attention"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["native wait", "release evidence publisher", "review authority publisher"], "disposition": "unused test doubles have no live product or fixture consumer"}
+    },
+    {
+      "id": "review-summary-recovery-duplicate",
+      "classification": "duplicate",
+      "authority": "Helper-level summary recovery checks duplicate current collector and recovery integration contracts for normalization, targeted retry, and idempotence.",
+      "removed_files": ["taskplane/tests/test_review_summary_recovery.py"],
+      "source_sha256": "1a9bc238364b710b5eac24ef592e3b0d379ed8635b7cb1fe1313f560453b4c7f",
+      "before": {"files": 1, "cases": 4, "loc": 113},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_r0002_reviewkernel_regression_floor.py::test_blocker_only_summary_is_normalized_once_without_rewriting_findings",
+        "taskplane/tests/test_review_evidence_lifecycle.py::test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_producer_rerun",
+        "taskplane/tests/test_review_recovery.py::test_retry_plan_calls_only_affected_producers_and_preserves_valid_results",
+        "taskplane/tests/test_review_recovery.py::test_retry_and_repair_are_idempotent_and_never_duplicate_findings"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "rerun every producer for one derivable summary contradiction", "selector": "taskplane/tests/test_review_evidence_lifecycle.py::test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_producer_rerun"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["review collector", "review recovery planner"], "disposition": "removed helper fixture was private to duplicate unit coverage"}
+    },
+    {
+      "id": "em-loop-docs-history-replay",
+      "classification": "history-replay",
+      "authority": "Closed M-22, M-27, and M-28 prose replays are superseded by runtime unavailable handling, conservative migration, and native ownership contracts.",
+      "removed_files": ["taskplane/tests/test_em_mx_loop_docs.py"],
+      "source_sha256": "5995ffd149f16a3eb121e47f80ab892675239d819bc0a0c6fef928a4a615756a",
+      "before": {"files": 1, "cases": 3, "loc": 187},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_evidence_bundle.py::TestUnavailableModelEvaluationDoesNotOpenAProductFix::test_unavailable_advances_with_warning_without_a_fix_cycle",
+        "taskplane/tests/test_evidence_bundle.py::TestUnavailableModelEvaluationDoesNotOpenAProductFix::test_product_failure_cannot_be_disguised_as_unavailable",
+        "taskplane/tests/test_stage_migration.py::test_unambiguous_migration_is_atomic_idempotent_and_conservative",
+        "taskplane/tests/test_stage_migration.py::test_ambiguous_migration_commits_unknown_receipt_without_lifecycle_guess",
+        "taskplane/tests/test_r0013_native_authority.py::test_loop_wave_never_calls_stage_split_resume_or_execution_root_claim"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "let loop wave reclaim native execution ownership", "selector": "taskplane/tests/test_r0013_native_authority.py::test_loop_wave_never_calls_stage_split_resume_or_execution_root_claim"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["evaluation lifecycle", "stage migrator", "native authority boundary"], "disposition": "exact wording replay has no live fixture or generator consumer"}
     }
   ]
 }
