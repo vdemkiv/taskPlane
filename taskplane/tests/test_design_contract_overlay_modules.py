@@ -10,13 +10,14 @@ def _edge_key(row: dict[str, str]) -> str:
     return f"{row['from']}->{row['to']}:{row['kind']}"
 
 
-def _isolate_plan_validation(monkeypatch, contract: dict) -> None:
+def _isolate_plan_validation(monkeypatch, contract: dict,
+                             declared_tests=None) -> None:
     monkeypatch.setattr(design_contract, "design_current_errors",
                         lambda _ws, _state: [])
     monkeypatch.setattr(design_contract, "design_contract",
                         lambda _ws: (deepcopy(contract), []))
     monkeypatch.setattr(design_contract, "acceptance_test_map",
-                        lambda _contract: None)
+                        lambda _contract: declared_tests)
 
 
 def test_file_granular_overlay_modules_are_covered_by_exact_scopes(
@@ -134,3 +135,72 @@ def test_third_plan_return_requires_one_stabilization_successor(
     below_threshold["replan_history"] = [{"reason": "first"}]
     assert design_contract.design_plan_errors(
         "/workspace", below_threshold) == []
+
+
+def test_task_local_criteria_use_exact_acceptance_refs_for_design_ownership(
+        monkeypatch) -> None:
+    policy = {
+        "local_depth": 0, "boundary_mode": "contract-only",
+        "contract_depth": 0, "requirement_depth": 0,
+    }
+    contract = {
+        "requirement": "R-0001", "contracts": [],
+        "graph": {"proposed_modules": [], "proposed_edges": [],
+                  "depth_policy": policy},
+    }
+    declared = {"release outcome": ["tests/test_release.py::test_release"]}
+    _isolate_plan_validation(monkeypatch, contract, declared)
+    monkeypatch.setattr(depgraph, "scope_modules",
+                        lambda _ws, _scope: [])
+    task = {
+        "id": "incremental", "scope": ["taskplane/incremental.py"],
+        "criteria": ["scoped behavior is complete"],
+        "acceptance_refs": ["release outcome"],
+        "impact_policy": policy, "status": "pending",
+    }
+    state = {"design_required": True, "tasks": [task]}
+
+    assert design_contract.design_plan_errors("/workspace", state) == []
+
+    unknown = deepcopy(state)
+    unknown["tasks"][0]["acceptance_refs"] = ["invented outcome"]
+    errors = design_contract.design_plan_errors("/workspace", unknown)
+    assert any("acceptance_refs" in error and "invented outcome" in error
+               for error in errors)
+
+    for malformed in ("release outcome", [""], [None],
+                      ["release outcome", "release outcome"]):
+        invalid = deepcopy(state)
+        invalid["tasks"][0]["acceptance_refs"] = malformed
+        errors = design_contract.design_plan_errors("/workspace", invalid)
+        assert any("acceptance_refs" in error and "malformed" in error
+                   for error in errors)
+
+
+def test_design_criterion_without_acceptance_refs_remains_compatible(
+        monkeypatch) -> None:
+    policy = {
+        "local_depth": 0, "boundary_mode": "contract-only",
+        "contract_depth": 0, "requirement_depth": 0,
+    }
+    contract = {
+        "requirement": "R-0001", "contracts": [],
+        "graph": {"proposed_modules": [], "proposed_edges": [],
+                  "depth_policy": policy},
+    }
+    declared = {"release outcome": ["tests/test_release.py::test_release"]}
+    _isolate_plan_validation(monkeypatch, contract, declared)
+    monkeypatch.setattr(depgraph, "scope_modules",
+                        lambda _ws, _scope: [])
+    task = {
+        "id": "legacy", "scope": ["taskplane/legacy.py"],
+        "criteria": ["release outcome"],
+        "impact_policy": policy, "status": "pending",
+    }
+
+    assert design_contract.design_plan_errors(
+        "/workspace", {"design_required": True, "tasks": [task]}) == []
+
+    task["criteria"] = ["task-local incremental behavior"]
+    assert design_contract.design_plan_errors(
+        "/workspace", {"design_required": True, "tasks": [task]}) == []

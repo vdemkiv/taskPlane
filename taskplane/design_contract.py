@@ -1066,6 +1066,34 @@ def _plan_stabilization_errors(state: Mapping, tasks: list) -> list[str]:
     return []
 
 
+def _task_acceptance_reference_errors(
+        task: Mapping, declared_tests: Mapping | None) -> list[str]:
+    """Validate optional requirement/Design ownership separately from DoD.
+
+    ``criteria`` is the task-local incremental completion contract.  Exact
+    top-level acceptance ownership belongs in ``acceptance_refs``; when that
+    field is absent, criteria equal to Design keys retain their legacy
+    ownership meaning through ``requirement_coverage_errors``.
+    """
+    if declared_tests is None or "acceptance_refs" not in task:
+        return []
+    refs = task.get("acceptance_refs")
+    if not isinstance(refs, list):
+        return [f"plan task {task.get('id') or '?'} acceptance_refs is "
+                "malformed: expected a list of exact Design acceptance "
+                "criteria"]
+    if any(not isinstance(ref, str) or not ref.strip()
+           or ref != ref.strip() for ref in refs) or \
+            len(set(refs)) != len(refs):
+        return [f"plan task {task.get('id') or '?'} acceptance_refs is "
+                "malformed: values must be unique nonempty exact strings"]
+    unknown = sorted(set(refs) - set(declared_tests))
+    if unknown:
+        return [f"plan task {task.get('id') or '?'} acceptance_refs are not "
+                "Design-declared: " + "; ".join(unknown)]
+    return []
+
+
 def design_plan_errors(ws: str, state: dict) -> list:
     """Approved Design Contract → implementation plan conformance."""
     errors = design_current_errors(ws, state)
@@ -1100,12 +1128,8 @@ def design_plan_errors(ws: str, state: dict) -> list:
                     edge_key(row))
             elif str(row or "").strip():
                 planned_edges.add(str(row))
-        if declared_tests is not None:
-            for criterion in task.get("criteria") or []:
-                if criterion not in declared_tests:
-                    errors.append(
-                        f"plan task {task.get('id') or '?'} criterion has no "
-                        "Design-declared exact test selector: " + str(criterion))
+        errors.extend(_task_acceptance_reference_errors(
+            task, declared_tests))
     graph = contract.get("graph") or {}
     expected_modules = {str(x) for x in graph.get("proposed_modules") or []}
     missing_modules = sorted(expected_modules - planned_modules)
