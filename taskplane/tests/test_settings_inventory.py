@@ -3,8 +3,14 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+import re
 
-from taskplane.settings import DEFAULT_SETTINGS_PATH, load_settings, settings_digest
+import pytest
+
+from taskplane.authority import DECISION_SCHEMA
+from taskplane.settings import (
+    DEFAULT_SETTINGS_PATH, SettingsError, load_settings, settings_digest,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,20 +46,103 @@ def _literal_environment_reads(path: Path) -> set[str]:
     except (OSError, SyntaxError):
         return set()
     names: set[str] = set()
+
+    def scope_nodes(scope: ast.AST) -> list[ast.AST]:
+        result: list[ast.AST] = []
+
+        def descend(node: ast.AST) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (
+                        ast.FunctionDef, ast.AsyncFunctionDef,
+                        ast.ClassDef, ast.Lambda)):
+                    continue
+                result.append(child)
+                descend(child)
+
+        descend(scope)
+        return result
+
+    scopes: list[ast.AST] = [tree]
+    scopes.extend(node for node in ast.walk(tree) if isinstance(
+        node, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    for scope in scopes:
+        nodes = scope_nodes(scope)
+        aliases = {"environ"}
+        assignments = [node for node in nodes
+                       if isinstance(node, (ast.Assign, ast.AnnAssign))]
+        changed = True
+        while changed:
+            changed = False
+            for node in assignments:
+                targets = (node.targets if isinstance(node, ast.Assign)
+                           else [node.target])
+                if node.value is None:
+                    continue
+                candidates = ([node.value.body, node.value.orelse]
+                              if isinstance(node.value, ast.IfExp)
+                              else list(node.value.values)
+                              if isinstance(node.value, ast.BoolOp)
+                              else [node.value])
+                source_is_environment = any(
+                    (isinstance(candidate, ast.Attribute) and
+                     candidate.attr == "environ") or
+                    (isinstance(candidate, ast.Name) and
+                     candidate.id in aliases)
+                    for candidate in candidates)
+                if not source_is_environment:
+                    continue
+                for target in targets:
+                    if isinstance(target, ast.Name) and \
+                            target.id not in aliases:
+                        aliases.add(target.id)
+                        changed = True
+        for node in nodes:
+            if isinstance(node, ast.Call) and \
+                    isinstance(node.func, ast.Attribute) and \
+                    node.func.attr == "get" and node.args:
+                target = node.func.value
+                if ((isinstance(target, ast.Attribute) and
+                     target.attr == "environ") or
+                        (isinstance(target, ast.Name) and
+                         target.id in aliases)) and \
+                        isinstance(node.args[0], ast.Constant) and \
+                        isinstance(node.args[0].value, str):
+                    names.add(node.args[0].value)
+            if isinstance(node, ast.Subscript) and (
+                    (isinstance(node.value, ast.Attribute) and
+                     node.value.attr == "environ") or
+                    (isinstance(node.value, ast.Name) and
+                     node.value.id in aliases)):
+                key = node.slice
+                if isinstance(key, ast.Constant) and \
+                        isinstance(key.value, str):
+                    names.add(key.value)
+    # Adapter-owned dynamic tables are reads even though the lookup key is a
+    # loop variable. Treat every environment-shaped table member as a read.
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-                and node.func.attr == "get" and node.args:
-            target = node.func.value
-            if isinstance(target, ast.Attribute) and target.attr == "environ" \
-                    and isinstance(node.args[0], ast.Constant) \
-                    and isinstance(node.args[0].value, str):
-                names.add(node.args[0].value)
-        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) \
-                and node.value.attr == "environ":
-            key = node.slice
-            if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                names.add(key.value)
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        target_names = {target.id for target in targets
+                        if isinstance(target, ast.Name)}
+        if not any("ENV" in name for name in target_names):
+            continue
+        for child in ast.walk(node.value):
+            if isinstance(child, ast.Constant) and isinstance(child.value, str) \
+                    and re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", child.value):
+                names.add(child.value)
     return names
+
+
+def _javascript_operational_defaults(path: Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    pattern = re.compile(
+        r"\b(?:maxAttempts|timeout(?:Seconds)?|shards|concurrency)\s*:"
+        r"[^\n]*(?:\|\||\?\?)\s*(?:\d+|true|false|['\"])")
+    return [match.group(0) for match in pattern.finditer(text)]
 
 
 def _assigned_names(path: Path) -> set[str]:
@@ -92,6 +181,15 @@ def _fixture_has_inventory_violation(path: Path, inventory: dict) -> bool:
         if path.name == "stale-dashboard-refresh.json":
             recovery = value.get("sessionRecovery") or {}
             return "eventType" in recovery or "replay" in recovery
+        if path.name == "dashboard-missing-required-event.json":
+            return value["dashboard"]["refresh"]["lifecycle_events"] != \
+                json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))[
+                    "dashboard"]["refresh"]["lifecycle_events"]
+    if path.name == "workflow-js-default.js.txt":
+        return bool(re.search(r"maxAttempts\s*:[^\n]+\|\|\s*\d+", text))
+    if path.name == "worker-terminal-bypass.py.txt":
+        return "event_type=\"worker_terminal\"" in text and \
+            "settings.dashboard.refresh" not in text
     return any(name in text for name in (
         inventory["prohibited_direct_environment"] +
         inventory["prohibited_default_symbols"]))
@@ -114,6 +212,42 @@ def test_every_operational_setting_has_one_canonical_owner():
     effective = load_settings(DEFAULT_SETTINGS_PATH)
     assert _semantic_leaf_paths(effective.to_dict()) == set(
         inventory["canonical_keys"])
+    expected = json.loads(json.dumps(canonical))
+    for stage in expected["stages"].values():
+        if stage["model"] == "inherit":
+            stage["model"] = None
+    assert effective.to_dict() == expected
+    assert effective.receipt["precedence"] == ["defaults", "file"]
+    assert effective.receipt["environment"] is None
+    assert effective.receipt["overlay"] is None
+    assert effective.runtime.to_dict() == canonical["runtime"]
+    canonical_bytes = DEFAULT_SETTINGS_PATH.read_bytes()
+    overlaid = load_settings(
+        DEFAULT_SETTINGS_PATH,
+        overlay={"runtime": {"inline_max_bytes": 12000}})
+    assert overlaid.runtime.inline_max_bytes == 12000
+    assert overlaid.runtime.audit_every == canonical["runtime"]["audit_every"]
+    assert overlaid.receipt["precedence"] == ["defaults", "file", "overlay"]
+    assert DEFAULT_SETTINGS_PATH.read_bytes() == canonical_bytes
+    weakening = {
+        "TASKPLANE_OBLIGATIONS": "off",
+        "TASKPLANE_RUNNABILITY": "off",
+    }
+    with pytest.raises(SettingsError, match="exact authority"):
+        load_settings(environment=weakening)
+    authority_receipt = {
+        "schema": DECISION_SCHEMA,
+        "authorized": True,
+        "authority_requested": "gate_weakening",
+        "actor": "human:test",
+        "thread": "settings-conformance",
+        "revision": "1",
+    }
+    weakened = load_settings(
+        environment=weakening, authority=authority_receipt)
+    assert weakened.runtime.obligations == "advisory"
+    assert weakened.runtime.runnability == "disabled"
+    assert weakened.receipt["environment"]["authority_fingerprint"]
     assert effective.digest == settings_digest(effective)
     sources = [path.relative_to(ROOT).as_posix()
                for path in ROOT.rglob("operational-settings.json")]
@@ -152,6 +286,13 @@ def test_every_operational_setting_has_one_canonical_owner():
         inventory["prohibited_default_symbols"])
     assert not duplicate_defaults, {
         name: assigned[name] for name in sorted(duplicate_defaults)}
+    javascript_defaults = {
+        path.relative_to(ROOT).as_posix():
+            _javascript_operational_defaults(path)
+        for path in sorted((ROOT / "workflows").glob("*.js"))
+        if _javascript_operational_defaults(path)
+    }
+    assert not javascript_defaults
 
     negative = inventory["negative_fixtures"]
     assert {path.relative_to(ROOT).as_posix() for path in FIXTURES.iterdir()} == \

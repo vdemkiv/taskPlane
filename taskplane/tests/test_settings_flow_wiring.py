@@ -5,8 +5,10 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from taskplane import loop_status
-from taskplane.settings import DEFAULT_SETTINGS_PATH, load_settings
+from taskplane.settings import DEFAULT_SETTINGS_PATH, SettingsError, load_settings
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,7 +71,8 @@ def test_every_flow_initializes_from_canonical_settings():
             path.read_text(encoding="utf-8"))), path
 
     tp_source = (ROOT / "taskplane" / "tp.py").read_text(encoding="utf-8")
-    assert tp_source.index("operational_settings.load_settings()") < \
+    assert tp_source.index(
+        "operational_settings.load_settings(environment=os.environ)") < \
         tp_source.index("argparse.ArgumentParser(prog=\"tp.py\")")
     loop_source = (ROOT / "taskplane" / "loop_status.py").read_text(
         encoding="utf-8")
@@ -80,6 +83,17 @@ def test_every_flow_initializes_from_canonical_settings():
         encoding="utf-8")
     assert '"settings_digest": settings.digest' in dispatch
 
+    workflow_paths = sorted((ROOT / "workflows").glob("*-wave.js"))
+    assert {path.name for path in workflow_paths} == {
+        "execute-wave.js", "evaluate-wave.js", "fix-wave.js",
+        "review-wave.js"}
+    for path in workflow_paths:
+        source = path.read_text(encoding="utf-8")
+        assert "requireSettings(args)" in source, path
+        assert "settings_digest" in source, path
+        assert "settings_digest: settings.digest" in source, path
+        assert not re.search(r"maxAttempts\s*:[^\n]+\|\|\s*\d+", source), path
+
     bad_flow = json.loads((FIXTURES / "missing-digest-flow.json").read_text(
         encoding="utf-8"))
     assert _flow_binding_violation(bad_flow)
@@ -88,6 +102,12 @@ def test_every_flow_initializes_from_canonical_settings():
     assert "TASKPLANE_SUITE_CACHE_MAX_AGE" in graph_excluded
     assert "TASKPLANE_SUITE_CACHE_MAX_AGE" in \
         INVENTORY["prohibited_direct_environment"]
+    indirect = (FIXTURES / "indirect-mapping-environment.py.txt").read_text(
+        encoding="utf-8")
+    assert "environment.get(\"TASKPLANE_OBLIGATIONS\"" in indirect
+    js_default = (FIXTURES / "workflow-js-default.js.txt").read_text(
+        encoding="utf-8")
+    assert re.search(r"maxAttempts\s*:[^\n]+\|\|\s*\d+", js_default)
 
 
 def test_dashboard_refresh_policy_has_one_settings_owner_and_digest(
@@ -96,6 +116,7 @@ def test_dashboard_refresh_policy_has_one_settings_owner_and_digest(
     assert settings.dashboard.refresh.session_event == "session_recovery"
     assert settings.dashboard.refresh.replay_on_session_start is True
     assert "gate" in settings.dashboard.refresh.lifecycle_events
+    assert "worker_terminal" in settings.dashboard.refresh.lifecycle_events
     assert _DIGEST.fullmatch(settings.digest)
 
     host_contract = json.loads((ROOT / "hooks" / "host-native.json").read_text(
@@ -120,10 +141,24 @@ def test_dashboard_refresh_policy_has_one_settings_owner_and_digest(
     changed_path.write_text(json.dumps(changed), encoding="utf-8")
     assert load_settings(changed_path).digest != settings.digest
 
+    missing = copy.deepcopy(changed)
+    missing["dashboard"]["refresh"]["lifecycle_events"].remove(
+        "worker_terminal")
+    missing_path = tmp_path / "missing-dashboard-event.json"
+    missing_path.write_text(json.dumps(missing), encoding="utf-8")
+    with pytest.raises(SettingsError, match="lifecycle_events"):
+        load_settings(missing_path)
+
     stale = json.loads((FIXTURES / "stale-dashboard-refresh.json").read_text(
         encoding="utf-8"))
     assert "eventType" in stale["sessionRecovery"]
     assert "replay" in stale["sessionRecovery"]
+    worker_source = (ROOT / "taskplane" / "taskplane_lite.py").read_text(
+        encoding="utf-8")
+    lifecycle = worker_source[
+        worker_source.index("def _refresh_dashboard_lifecycle("):
+        worker_source.index("def record_worker_terminal(")]
+    assert "settings.dashboard.refresh.lifecycle_events" in lifecycle
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -138,4 +173,3 @@ def test_dashboard_refresh_policy_has_one_settings_owner_and_digest(
         settings.digest
     assert set(publication["surfaces"].values()) == {
         publication["snapshot"]["fingerprint"]}
-

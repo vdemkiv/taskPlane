@@ -1,0 +1,3 @@
+def publish(workspace):
+    return refresh_dashboard_snapshot(
+        workspace, event_type="worker_terminal", outcome="success")

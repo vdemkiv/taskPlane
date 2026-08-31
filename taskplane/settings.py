@@ -38,10 +38,15 @@ _LEGACY_ENV_TIERS = {
     "STANDARD": ("build",),
     "DEEP": ("product", "design", "plan"),
 }
+REQUIRED_DASHBOARD_LIFECYCLE_EVENTS = (
+    "gate", "submit", "next_action", "approve", "select", "resolve",
+    "replan", "handle_host_input", "cleanup_replay", "retro",
+    "worker_terminal",
+)
 
 _TOP = frozenset({
     "schema", "stages", "lenses", "build", "tests", "limits", "workflow",
-    "cleanup", "dashboard", "overrides", "observability",
+    "cleanup", "runtime", "dashboard", "overrides", "observability",
 })
 _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
     (): _TOP,
@@ -58,6 +63,9 @@ _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
     ("workflow",): frozenset(("transport", "worker_inheritance")),
     ("workflow", "worker_inheritance"): frozenset(("model", "reasoning")),
     ("cleanup",): frozenset(("worktrees", "artifacts_days")),
+    ("runtime",): frozenset((
+        "audit_every", "inline_max_bytes", "orphan_ttl_seconds",
+        "obligations", "runnability", "review_max_attempts")),
     ("dashboard",): frozenset(("refresh",)),
     ("dashboard", "refresh"): frozenset((
         "lifecycle_events", "session_event", "replay_on_session_start")),
@@ -157,6 +165,26 @@ class CleanupSettings:
 
 
 @dataclass(frozen=True)
+class RuntimeSettings:
+    audit_every: int
+    inline_max_bytes: int
+    orphan_ttl_seconds: int
+    obligations: str
+    runnability: str
+    review_max_attempts: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "audit_every": self.audit_every,
+            "inline_max_bytes": self.inline_max_bytes,
+            "orphan_ttl_seconds": self.orphan_ttl_seconds,
+            "obligations": self.obligations,
+            "runnability": self.runnability,
+            "review_max_attempts": self.review_max_attempts,
+        }
+
+
+@dataclass(frozen=True)
 class DashboardRefreshSettings:
     lifecycle_events: tuple[str, ...]
     session_event: str
@@ -206,6 +234,7 @@ class OperationalSettings:
     limits: LimitSettings
     workflow: WorkflowSettings
     cleanup: CleanupSettings
+    runtime: RuntimeSettings
     dashboard: DashboardSettings
     overrides: OverrideSettings
     observability: ObservabilitySettings
@@ -220,6 +249,7 @@ class OperationalSettings:
             "lenses": self.lenses.to_dict(), "build": self.build.to_dict(),
             "tests": self.tests.to_dict(), "limits": self.limits.to_dict(),
             "workflow": self.workflow.to_dict(), "cleanup": self.cleanup.to_dict(),
+            "runtime": self.runtime.to_dict(),
             "dashboard": self.dashboard.to_dict(),
             "overrides": self.overrides.to_dict(),
             "observability": self.observability.to_dict(),
@@ -385,6 +415,22 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         raise SettingsError("cleanup.worktrees is unsupported")
     artifacts_days = _positive_int(cleanup_raw.get("artifacts_days"), "cleanup.artifacts_days", zero=True)
 
+    runtime_raw = _plain_mapping(data.get("runtime"), "runtime")
+    audit_every = _positive_int(runtime_raw.get("audit_every"),
+                                "runtime.audit_every")
+    inline_max_bytes = _positive_int(runtime_raw.get("inline_max_bytes"),
+                                     "runtime.inline_max_bytes", zero=True)
+    orphan_ttl_seconds = _positive_int(runtime_raw.get("orphan_ttl_seconds"),
+                                       "runtime.orphan_ttl_seconds", zero=True)
+    obligations = runtime_raw.get("obligations")
+    if obligations not in {"enforce", "advisory"}:
+        raise SettingsError("runtime.obligations is unsupported")
+    runnability = runtime_raw.get("runnability")
+    if runnability not in {"probe", "disabled"}:
+        raise SettingsError("runtime.runnability is unsupported")
+    review_max_attempts = _positive_int(runtime_raw.get("review_max_attempts"),
+                                        "runtime.review_max_attempts")
+
     dashboard_raw = _plain_mapping(data.get("dashboard"), "dashboard")
     refresh_raw = _plain_mapping(dashboard_raw.get("refresh"),
                                  "dashboard.refresh")
@@ -397,6 +443,11 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
     if len(set(lifecycle_events)) != len(lifecycle_events):
         raise SettingsError(
             "dashboard.refresh.lifecycle_events contains duplicates")
+    if frozenset(lifecycle_events) != frozenset(
+            REQUIRED_DASHBOARD_LIFECYCLE_EVENTS):
+        raise SettingsError(
+            "dashboard.refresh.lifecycle_events must exactly match required "
+            "governed transitions")
     session_event = refresh_raw.get("session_event")
     if not isinstance(session_event, str) or not session_event.strip():
         raise SettingsError("dashboard.refresh.session_event must be a string")
@@ -428,6 +479,14 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         "limits": {"timeouts": timeouts, "budgets": budgets},
         "workflow": {"transport": "native", "worker_inheritance": dict(inheritance_raw)},
         "cleanup": {"worktrees": cleanup_raw["worktrees"], "artifacts_days": artifacts_days},
+        "runtime": {
+            "audit_every": audit_every,
+            "inline_max_bytes": inline_max_bytes,
+            "orphan_ttl_seconds": orphan_ttl_seconds,
+            "obligations": obligations,
+            "runnability": runnability,
+            "review_max_attempts": review_max_attempts,
+        },
         "dashboard": {"refresh": {
             "lifecycle_events": list(lifecycle_events),
             "session_event": session_event,
@@ -447,6 +506,9 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         limits=LimitSettings(_freeze(timeouts), _freeze(budgets)),
         workflow=WorkflowSettings("native", _freeze(dict(inheritance_raw))),
         cleanup=CleanupSettings(cleanup_raw["worktrees"], artifacts_days),
+        runtime=RuntimeSettings(
+            audit_every, inline_max_bytes, orphan_ttl_seconds, obligations,
+            runnability, review_max_attempts),
         dashboard=DashboardSettings(DashboardRefreshSettings(
             tuple(lifecycle_events), session_event, replay_on_session_start)),
         overrides=OverrideSettings(tuple(safe_paths), tuple(governance_paths)),
@@ -510,12 +572,62 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                     environment_overlay["stages"].setdefault(stage, {})[
                         field] = value
                     applied.append(f"stages.{stage}.{field}")
-        if environment_overlay["stages"]:
+        runtime_overlay: dict[str, Any] = {}
+        integer_aliases = {
+            "TASKPLANE_AUDIT_EVERY": "audit_every",
+            "TASKPLANE_INLINE_MAX": "inline_max_bytes",
+            "TASKPLANE_ORPHAN_TTL": "orphan_ttl_seconds",
+        }
+        for name, field in integer_aliases.items():
+            if name not in environment:
+                continue
+            raw_value = str(environment[name]).strip()
+            try:
+                value = int(raw_value)
+            except ValueError as exc:
+                raise SettingsError(
+                    f"legacy environment {name} must be an integer") from exc
+            runtime_overlay[field] = value
+            applied.append(f"runtime.{field}")
+        enum_aliases = {
+            "TASKPLANE_OBLIGATIONS": (
+                "obligations", {"on": "enforce", "enforce": "enforce",
+                                "off": "advisory", "0": "advisory",
+                                "false": "advisory", "advisory": "advisory"}),
+            "TASKPLANE_RUNNABILITY": (
+                "runnability", {"on": "probe", "probe": "probe",
+                                "off": "disabled", "0": "disabled",
+                                "false": "disabled", "no": "disabled"}),
+        }
+        for name, (field, aliases) in enum_aliases.items():
+            if name not in environment:
+                continue
+            raw_value = str(environment[name]).strip().lower()
+            if raw_value not in aliases:
+                raise SettingsError(
+                    f"legacy environment {name} is unsupported")
+            runtime_overlay[field] = aliases[raw_value]
+            applied.append(f"runtime.{field}")
+        if runtime_overlay:
+            environment_overlay["runtime"] = runtime_overlay
+        if environment_overlay["stages"] or runtime_overlay:
+            paths = _leaf_paths(environment_overlay)
+            safe_patterns = defaults["overrides"]["safe_paths"]
+            governance = [path for path in paths if not any(
+                _matches(pattern, path) for pattern in safe_patterns)]
+            authority_fingerprint = None
+            if governance:
+                authority_fingerprint = _exact_authority(authority)
+                if authority_fingerprint is None:
+                    raise SettingsError(
+                        "governance-weakening environment override requires "
+                        "exact authority")
             effective = _merge(effective, environment_overlay)
             precedence.append("environment")
             environment_receipt = {
                 "applied": sorted(applied),
                 "adapter": "legacy-tier-environment/v1",
+                "authority_fingerprint": authority_fingerprint,
             }
     overlay_receipt: dict[str, Any] | None = None
     if overlay is not None:
@@ -567,7 +679,8 @@ __all__ = [
     "BuildSettings", "CleanupSettings", "DashboardRefreshSettings",
     "DashboardSettings", "DEFAULT_SETTINGS_PATH",
     "LensSettings", "LimitSettings", "ObservabilitySettings",
-    "OperationalSettings", "OverrideSettings", "SettingsError",
+    "OperationalSettings", "OverrideSettings", "RuntimeSettings",
+    "REQUIRED_DASHBOARD_LIFECYCLE_EVENTS", "SettingsError",
     "StageSettings", "TestSettings", "WorkflowSettings", "load_settings",
     "settings_digest", "settings_receipt",
 ]

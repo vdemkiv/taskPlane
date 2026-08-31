@@ -8130,7 +8130,6 @@ from evidence import EVIDENCE_JUDGMENT_KEYS, evidence  # noqa: E402,F401
 # late-binds those via _loop() (audit.py:41-51) every call, so a patched
 # loop.finding_blocks does govern the gate. TestPatchSeams pins both halves.
 from audit import (  # noqa: E402,F401 — re-exports, not dead imports
-    AUDIT_EVERY_DEFAULT,
     AUDIT_FILE,
     _audit_brief,
     _audit_path,

@@ -2694,7 +2694,8 @@ DEFAULT_MAX_TEST_TIMEOUT_SECONDS = 3600
 MAX_TEST_TIMEOUT_SECONDS = 14400
 
 
-def _canonical_operational_settings(*, legacy_environment: bool = False):
+def _canonical_operational_settings(*, legacy_environment: bool = False,
+                                    authority: dict | None = None):
     """Load one immutable settings snapshot without creating a local cache.
 
     The lite kernel is imported both as ``taskplane.taskplane_lite`` and as a
@@ -2706,7 +2707,9 @@ def _canonical_operational_settings(*, legacy_environment: bool = False):
         from .settings import load_settings
     except (ImportError, ValueError):
         from settings import load_settings
-    return load_settings(environment=os.environ if legacy_environment else None)
+    return load_settings(
+        environment=os.environ if legacy_environment else None,
+        authority=authority)
 
 
 def validate_test_timeout_seconds(value, *, field: str,
@@ -2939,9 +2942,8 @@ SUITE_CACHE_ENV_KEYS = frozenset({
     "CI", "LANG", "LC_ALL", "TZ",
     "PYTHONHASHSEED", "PYTHONPATH", "PYTHONUTF8", "PYTHONIOENCODING",
     "PYTEST_ADDOPTS", "PYTEST_PLUGINS",
-    "TASKPLANE_AUDIT_EVERY", "TASKPLANE_ENFORCE_DISPATCH",
-    "TASKPLANE_INLINE_MAX", "TASKPLANE_PUBLISH_REVIEW",
-    "TASKPLANE_QA_BASELINE", "TASKPLANE_RUNNABILITY",
+    "TASKPLANE_ENFORCE_DISPATCH", "TASKPLANE_PUBLISH_REVIEW",
+    "TASKPLANE_QA_BASELINE",
 })
 
 _TRANSPORT_SHIM_AST = ast.dump(ast.parse(
@@ -3082,6 +3084,9 @@ def _suite_cache_key(workspace: str, command, env: dict) -> "str | None":
     h.update(b"\0cmd\0" + str(command).encode())
     try:
         h.update(b"\0engine\0" + engine_fingerprint().encode())
+        settings = _canonical_operational_settings(
+            legacy_environment=True)
+        h.update(b"\0settings\0" + settings.digest.encode())
     except Exception:
         return None            # can't bind evidence to an engine → run it
     for key, value in _suite_env_identity(workspace, env):
@@ -5846,6 +5851,11 @@ def _refresh_dashboard_lifecycle(
     Dashboard failure is secondary evidence and may never rewrite or prevent
     the worker's authenticated terminal outcome.
     """
+    settings = _canonical_operational_settings()
+    if event_type not in settings.dashboard.refresh.lifecycle_events:
+        raise ValueError(
+            "dashboard lifecycle event is absent from canonical settings: "
+            + str(event_type))
     try:
         if __package__:
             from . import loop_status
@@ -6318,11 +6328,9 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-DEFAULT_ORPHAN_TTL = 3600   # seconds of NO screening activity → orphaned
-
-
 def orphan_status(workspace: str, contract: dict,
-                  now: float | None = None) -> tuple[bool, str]:
+                  now: float | None = None, *,
+                  settings_authority: dict | None = None) -> tuple[bool, str]:
     """Is the active contract ORPHANED — its owner gone, nobody to clear it?
 
     Two guards, in order (v0.9.6):
@@ -6429,12 +6437,11 @@ def orphan_status(workspace: str, contract: dict,
     # last_seen); one that died makes no calls, so its clock goes stale and
     # the contract releases — recovering a genuine leak WITHOUT ever releasing
     # a live, on-budget, actively-screening agent.
-    try:
-        ttl = float(contract.get("orphan_ttl_seconds")
-                    or os.environ.get("TASKPLANE_ORPHAN_TTL")
-                    or DEFAULT_ORPHAN_TTL)
-    except (TypeError, ValueError):
-        ttl = DEFAULT_ORPHAN_TTL
+    settings = _canonical_operational_settings(
+        legacy_environment=True, authority=settings_authority)
+    ttl = float(contract["orphan_ttl_seconds"]
+                if "orphan_ttl_seconds" in contract
+                else settings.runtime.orphan_ttl_seconds)
     if ttl <= 0:
         return False, "orphan TTL disabled"
     last = max(float(contract.get("activated_at") or 0), last_seen)

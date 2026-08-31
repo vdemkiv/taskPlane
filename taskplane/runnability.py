@@ -82,11 +82,12 @@ SPECS = (
 _BY_ID = {s["id"]: s for s in SPECS}
 
 
-def enabled() -> bool:
+def enabled(*, authority: dict | None = None) -> bool:
     """`TASKPLANE_RUNNABILITY=off` skips the probe entirely (air-gapped hosts,
     or anyone who would rather pay the six-agent tax than a subprocess)."""
-    return (os.environ.get("TASKPLANE_RUNNABILITY", "") or "").strip().lower() \
-        not in ("off", "0", "false", "no")
+    from taskplane.settings import load_settings
+    settings = load_settings(environment=os.environ, authority=authority)
+    return settings.runtime.runnability == "probe"
 
 
 def detect(root: str) -> list:
@@ -266,12 +267,13 @@ def store(workspace: str, result: dict) -> dict:
 
 
 def probe_once(workspace: str, root: str | None = None, *,
-               timeout: int = DEFAULT_TIMEOUT, refresh: bool = False) -> dict:
+               timeout: int = DEFAULT_TIMEOUT, refresh: bool = False,
+               settings_authority: dict | None = None) -> dict:
     """The entry point every caller should use: probe at most once per tree
     state per checkout. This is the whole point of the module — six lens
     agents dispatched in the same wave share ONE answer."""
     root = root or workspace
-    if not enabled():
+    if not enabled(authority=settings_authority):
         return {"fingerprint": fingerprint(root), "checks": [],
                 "skipped": "TASKPLANE_RUNNABILITY=off",
                 "summary": "runnability probe disabled"}

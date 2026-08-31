@@ -20,7 +20,8 @@ _FLAT_KEYS = frozenset({
 })
 _NESTED_KEYS = frozenset({
     "schema", "version", "stages", "lenses", "build", "tests", "limits",
-    "workflow", "cleanup", "overrides", "observability",
+    "workflow", "cleanup", "runtime", "dashboard", "overrides",
+    "observability",
 })
 
 

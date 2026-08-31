@@ -30,6 +30,12 @@
     "workflow.worker_inheritance.reasoning",
     "cleanup.worktrees",
     "cleanup.artifacts_days",
+    "runtime.audit_every",
+    "runtime.inline_max_bytes",
+    "runtime.orphan_ttl_seconds",
+    "runtime.obligations",
+    "runtime.runnability",
+    "runtime.review_max_attempts",
     "dashboard.refresh.lifecycle_events",
     "dashboard.refresh.session_event",
     "dashboard.refresh.replay_on_session_start",
@@ -40,6 +46,8 @@
   ],
   "prohibited_direct_environment": [
     "TASKPLANE_AUTO_WORKTREE_CLEANUP",
+    "TASKPLANE_AUDIT_EVERY",
+    "TASKPLANE_INLINE_MAX",
     "TASKPLANE_MODEL_CHEAP",
     "TASKPLANE_MODEL_STANDARD",
     "TASKPLANE_MODEL_DEEP",
@@ -47,11 +55,16 @@
     "TASKPLANE_REASONING_STANDARD",
     "TASKPLANE_REASONING_DEEP",
     "TASKPLANE_NO_SUITE_CACHE",
+    "TASKPLANE_OBLIGATIONS",
+    "TASKPLANE_ORPHAN_TTL",
+    "TASKPLANE_RUNNABILITY",
     "TASKPLANE_SUITE_CACHE_MAX_AGE"
   ],
   "prohibited_default_symbols": [
     "DEFAULT_TEST_TIMEOUT_SECONDS",
     "DEFAULT_MAX_ACTIONS",
+    "AUDIT_EVERY_DEFAULT",
+    "DEFAULT_ORPHAN_TTL",
     "SUITE_CACHE_MAX_AGE_S",
     "DASHBOARD_SESSION_EVENT",
     "DASHBOARD_REPLAY_ON_SESSION_START"
@@ -63,9 +76,13 @@
       "names": [
         "CLAUDE_CODE_VERSION", "CLAUDE_CODE_WORKFLOWS", "CLAUDE_SESSION_ID",
         "CODEX_HOME", "CODEX_THREAD_ID", "CODEX_VERSION",
-        "TASKPLANE_AGENT_PID", "TASKPLANE_CODEX_PRODUCER_EVENT_FILE",
+        "TASKPLANE_AGENT_PID", "TASKPLANE_BRIDGE_HOOKS_LOADED",
+        "TASKPLANE_CODEX_PRODUCER_EVENT_FILE", "TASKPLANE_EFFORT_SELECTION",
         "TASKPLANE_HOST", "TASKPLANE_HOST_SESSION_EVENT",
-        "TASKPLANE_HOST_VERSION", "TASKPLANE_SESSION_ID",
+        "TASKPLANE_HOST_RECEIPT_AT", "TASKPLANE_HOST_RECEIPT_REASON",
+        "TASKPLANE_HOST_VERSION", "TASKPLANE_INSTALL_CONTEXT",
+        "TASKPLANE_MANAGED_HOOK_POLICY", "TASKPLANE_NATIVE_HOOKS_LOADED",
+        "TASKPLANE_SESSION_ID",
         "TASKPLANE_STABLE_HOOK_EVENT_ID", "TASKPLANE_WORKFLOWS",
         "TASKPLANE_WORKSPACE"
       ],
@@ -75,10 +92,16 @@
       "id": "filesystem-process-facts",
       "disposition": "runtime-observation",
       "names": [
-        "BASH_ENV", "ENV", "HOME", "LANG", "LC_ALL", "LC_CTYPE",
-        "LC_MESSAGES", "PATH", "PATHEXT", "PYTEST_ADDOPTS", "SHELLOPTS",
-        "SystemRoot", "TASKPLANE_BARE_ROOT", "TASKPLANE_HOME",
-        "TASKPLANE_HOOK_PATH", "TASKPLANE_TASK", "TMPDIR", "ZDOTDIR"
+        "BASH_ENV", "CI", "CLAUDE_CONFIG_DIR", "CLAUDE_PLUGIN_ROOT",
+        "COMSPEC", "ENV", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
+        "GIT_TERMINAL_PROMPT", "HOME", "LANG", "LC_ALL", "LC_CTYPE",
+        "LC_MESSAGES", "PATH", "PATHEXT", "PYTEST_ADDOPTS",
+        "PYTEST_PLUGINS", "PYTHONHASHSEED", "PYTHONIOENCODING",
+        "PYTHONHOME", "PYTHONPATH", "PYTHONUTF8", "PLUGIN_ROOT",
+        "SHELLOPTS", "SYSTEMROOT", "SystemRoot", "TEMP", "TERM", "TMP",
+        "TZ", "VIRTUAL_ENV", "WINDIR", "TASKPLANE_BARE_ROOT", "TASKPLANE_HOME",
+        "TASKPLANE_HOOK_PATH", "TASKPLANE_LOCALE", "TASKPLANE_TASK",
+        "TMPDIR", "ZDOTDIR"
       ],
       "justification": "OS paths, locale, process slot, and hook invocation identity are observations. They are normalized and bounded rather than defaulted."
     },
@@ -95,13 +118,12 @@
       "id": "one-release-compatibility-controls",
       "disposition": "justified-non-setting",
       "names": [
-        "TASKPLANE_AUDIT_EVERY", "TASKPLANE_COLLISION_SCREEN",
+        "TASKPLANE_COLLISION_SCREEN",
         "TASKPLANE_CONSOLIDATED_FLOW", "TASKPLANE_DEBUG",
         "TASKPLANE_ENFORCE_DISPATCH", "TASKPLANE_ENFORCE_SCREEN",
-        "TASKPLANE_INLINE_MAX", "TASKPLANE_OBLIGATIONS",
-        "TASKPLANE_ORPHAN_TTL", "TASKPLANE_PUBLISH_REVIEW",
+        "TASKPLANE_PUBLISH_REVIEW",
         "TASKPLANE_QA_BASELINE", "TASKPLANE_R0013_CODEX_AUDIT",
-        "TASKPLANE_RUNNABILITY", "TASKPLANE_SKILL_ALLOW",
+        "TASKPLANE_SKILL_ALLOW",
         "TASKPLANE_SKILL_STRICT", "TASKPLANE_STAGE_NATIVE",
         "TASKPLANE_STORE"
       ],
@@ -251,7 +273,11 @@
     "taskplane/tests/fixtures/settings-inventory/duplicate-authority.json",
     "taskplane/tests/fixtures/settings-inventory/duplicate-default.py.txt",
     "taskplane/tests/fixtures/settings-inventory/graph-excluded-generator.py.txt",
+    "taskplane/tests/fixtures/settings-inventory/indirect-mapping-environment.py.txt",
     "taskplane/tests/fixtures/settings-inventory/missing-digest-flow.json",
-    "taskplane/tests/fixtures/settings-inventory/stale-dashboard-refresh.json"
+    "taskplane/tests/fixtures/settings-inventory/stale-dashboard-refresh.json",
+    "taskplane/tests/fixtures/settings-inventory/dashboard-missing-required-event.json",
+    "taskplane/tests/fixtures/settings-inventory/worker-terminal-bypass.py.txt",
+    "taskplane/tests/fixtures/settings-inventory/workflow-js-default.js.txt"
   ]
 }
