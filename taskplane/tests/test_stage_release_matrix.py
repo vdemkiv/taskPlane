@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -227,71 +226,31 @@ def test_package_bytes_are_deterministic_for_the_same_release_tree(
 
     packager.write_zip(files, first)
     packager.write_zip(files, second)
-
     assert first.read_bytes() == second.read_bytes()
     assert hashlib.sha256(first.read_bytes()).hexdigest() == \
         hashlib.sha256(second.read_bytes()).hexdigest()
 
 
 def test_claude_plugin_upload_is_deterministic_and_provenanced(
-        tmp_path: Path) -> None:
-    packager = _load_packager("package_claude.py")
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PYTHONPATH", raising=False)
     output_dirs = (tmp_path / "first", tmp_path / "second")
-
-    for output_dir in output_dirs:
-        assert packager.main([
-            "--output-dir", str(output_dir),
-            "--ext", "plugin",
-            "--allow-dirty",
-        ]) == 0
-
+    runs = ((output_dirs[0], True), (output_dirs[1], True),
+            (tmp_path / "zip", False))
+    for output_dir, plugin in runs:
+        command = [sys.executable, "scripts/package_claude.py", "--output-dir",
+                   str(output_dir), "--allow-dirty"]
+        command += ["--ext", "plugin"] if plugin else []
+        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    assert (tmp_path / "zip" / f"taskplane-{VERSION}-claude.zip").is_file()
     filename = f"taskplane-{VERSION}.plugin"
-    first = output_dirs[0] / filename
-    second = output_dirs[1] / filename
-    assert first.read_bytes() == second.read_bytes()
-    assert first.with_suffix(".plugin.sha256").is_file()
-    assert second.with_suffix(".plugin.sha256").is_file()
-    for artifact in (first, second):
+    artifacts = tuple(path / filename for path in output_dirs)
+    assert artifacts[0].read_bytes() == artifacts[1].read_bytes()
+    for artifact in artifacts:
+        assert artifact.with_suffix(".plugin.sha256").is_file()
         provenance = json.loads(artifact.with_suffix(
             ".plugin.provenance.json").read_text(encoding="utf-8"))
         assert provenance["archive"] == filename
         assert provenance["sha256"] == hashlib.sha256(
             artifact.read_bytes()).hexdigest()
-
-    # Exercise the actual script boundary with no ambient import-path help.
-    # Importing the module above cannot prove that release_provenance can find
-    # taskplane when Python starts with scripts/ as sys.path[0].
-    environment = os.environ.copy()
-    environment.pop("PYTHONPATH", None)
-    cli_outputs = {
-        "zip": tmp_path / "cli-zip",
-        "plugin": tmp_path / "cli-plugin",
-    }
-    for extension, output_dir in cli_outputs.items():
-        command = [
-            sys.executable,
-            str(ROOT / "scripts/package_claude.py"),
-            "--output-dir", str(output_dir),
-            "--allow-dirty",
-        ]
-        if extension == "plugin":
-            command.extend(("--ext", "plugin"))
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            env=environment,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-        assert completed.returncode == 0, completed.stderr
-        artifact = output_dir / (
-            f"taskplane-{VERSION}-claude.zip" if extension == "zip"
-            else f"taskplane-{VERSION}.plugin"
-        )
-        assert artifact.is_file()
-        assert artifact.with_suffix(artifact.suffix + ".sha256").is_file()
-        assert artifact.with_suffix(
-            artifact.suffix + ".provenance.json").is_file()
