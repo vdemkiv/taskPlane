@@ -1,0 +1,4 @@
+import os
+
+def regenerate_fixture():
+    return os.environ["TASKPLANE_SUITE_CACHE_MAX_AGE"]

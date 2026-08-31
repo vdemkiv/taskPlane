@@ -3707,9 +3707,12 @@ TERMINAL_STEPS = ("done", "failed")
 
 
 def automatic_cleanup_enabled() -> bool:
-    """Rollback switch: default on; false returns to manual cleanup."""
-    return (os.environ.get("TASKPLANE_AUTO_WORKTREE_CLEANUP") or "on").strip() \
-        .lower() not in {"0", "false", "no", "off", "manual"}
+    """Use the one canonical worktree-cleanup policy."""
+    if __package__:
+        from .settings import load_settings
+    else:
+        from settings import load_settings
+    return load_settings().cleanup.worktrees == "after-merge"
 
 
 def _cleanup_lifecycle(task: dict) -> dict:

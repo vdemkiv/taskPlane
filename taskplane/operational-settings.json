@@ -42,6 +42,25 @@
     "worker_inheritance": {"model": true, "reasoning": true}
   },
   "cleanup": {"worktrees": "after-merge", "artifacts_days": 30},
+  "dashboard": {
+    "refresh": {
+      "lifecycle_events": [
+        "gate",
+        "submit",
+        "next_action",
+        "approve",
+        "select",
+        "resolve",
+        "replan",
+        "handle_host_input",
+        "cleanup_replay",
+        "retro",
+        "worker_terminal"
+      ],
+      "session_event": "session_recovery",
+      "replay_on_session_start": true
+    }
+  },
   "overrides": {
     "safe_paths": [
       "stages.*.model",

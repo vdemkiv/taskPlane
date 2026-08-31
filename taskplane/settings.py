@@ -33,10 +33,15 @@ _LEGACY_FLAT_MARKERS = frozenset({
     "test_shards", "test_cache", "timeouts", "budgets",
     "workflow_transport", "worker_inheritance",
 })
+_LEGACY_ENV_TIERS = {
+    "CHEAP": ("evaluate", "fix"),
+    "STANDARD": ("build",),
+    "DEEP": ("product", "design", "plan"),
+}
 
 _TOP = frozenset({
     "schema", "stages", "lenses", "build", "tests", "limits", "workflow",
-    "cleanup", "overrides", "observability",
+    "cleanup", "dashboard", "overrides", "observability",
 })
 _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
     (): _TOP,
@@ -53,6 +58,9 @@ _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
     ("workflow",): frozenset(("transport", "worker_inheritance")),
     ("workflow", "worker_inheritance"): frozenset(("model", "reasoning")),
     ("cleanup",): frozenset(("worktrees", "artifacts_days")),
+    ("dashboard",): frozenset(("refresh",)),
+    ("dashboard", "refresh"): frozenset((
+        "lifecycle_events", "session_event", "replay_on_session_start")),
     ("overrides",): frozenset(("safe_paths", "governance_paths")),
     ("observability",): frozenset(("receipt", "include_values")),
 }
@@ -149,6 +157,28 @@ class CleanupSettings:
 
 
 @dataclass(frozen=True)
+class DashboardRefreshSettings:
+    lifecycle_events: tuple[str, ...]
+    session_event: str
+    replay_on_session_start: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "lifecycle_events": list(self.lifecycle_events),
+            "session_event": self.session_event,
+            "replay_on_session_start": self.replay_on_session_start,
+        }
+
+
+@dataclass(frozen=True)
+class DashboardSettings:
+    refresh: DashboardRefreshSettings
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"refresh": self.refresh.to_dict()}
+
+
+@dataclass(frozen=True)
 class OverrideSettings:
     safe_paths: tuple[str, ...]
     governance_paths: tuple[str, ...]
@@ -176,6 +206,7 @@ class OperationalSettings:
     limits: LimitSettings
     workflow: WorkflowSettings
     cleanup: CleanupSettings
+    dashboard: DashboardSettings
     overrides: OverrideSettings
     observability: ObservabilitySettings
     digest: str
@@ -189,6 +220,7 @@ class OperationalSettings:
             "lenses": self.lenses.to_dict(), "build": self.build.to_dict(),
             "tests": self.tests.to_dict(), "limits": self.limits.to_dict(),
             "workflow": self.workflow.to_dict(), "cleanup": self.cleanup.to_dict(),
+            "dashboard": self.dashboard.to_dict(),
             "overrides": self.overrides.to_dict(),
             "observability": self.observability.to_dict(),
         }
@@ -353,6 +385,26 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         raise SettingsError("cleanup.worktrees is unsupported")
     artifacts_days = _positive_int(cleanup_raw.get("artifacts_days"), "cleanup.artifacts_days", zero=True)
 
+    dashboard_raw = _plain_mapping(data.get("dashboard"), "dashboard")
+    refresh_raw = _plain_mapping(dashboard_raw.get("refresh"),
+                                 "dashboard.refresh")
+    lifecycle_events = refresh_raw.get("lifecycle_events")
+    if not isinstance(lifecycle_events, list) or not lifecycle_events or not all(
+            isinstance(item, str) and item.strip()
+            for item in lifecycle_events):
+        raise SettingsError(
+            "dashboard.refresh.lifecycle_events must be a non-empty string list")
+    if len(set(lifecycle_events)) != len(lifecycle_events):
+        raise SettingsError(
+            "dashboard.refresh.lifecycle_events contains duplicates")
+    session_event = refresh_raw.get("session_event")
+    if not isinstance(session_event, str) or not session_event.strip():
+        raise SettingsError("dashboard.refresh.session_event must be a string")
+    replay_on_session_start = refresh_raw.get("replay_on_session_start")
+    if not isinstance(replay_on_session_start, bool):
+        raise SettingsError(
+            "dashboard.refresh.replay_on_session_start must be boolean")
+
     overrides_raw = _plain_mapping(data.get("overrides"), "overrides")
     safe_paths = overrides_raw.get("safe_paths")
     governance_paths = overrides_raw.get("governance_paths")
@@ -376,6 +428,11 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         "limits": {"timeouts": timeouts, "budgets": budgets},
         "workflow": {"transport": "native", "worker_inheritance": dict(inheritance_raw)},
         "cleanup": {"worktrees": cleanup_raw["worktrees"], "artifacts_days": artifacts_days},
+        "dashboard": {"refresh": {
+            "lifecycle_events": list(lifecycle_events),
+            "session_event": session_event,
+            "replay_on_session_start": replay_on_session_start,
+        }},
         "overrides": {"safe_paths": list(safe_paths), "governance_paths": list(governance_paths)},
         "observability": dict(observable_raw),
     }
@@ -390,6 +447,8 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         limits=LimitSettings(_freeze(timeouts), _freeze(budgets)),
         workflow=WorkflowSettings("native", _freeze(dict(inheritance_raw))),
         cleanup=CleanupSettings(cleanup_raw["worktrees"], artifacts_days),
+        dashboard=DashboardSettings(DashboardRefreshSettings(
+            tuple(lifecycle_events), session_event, replay_on_session_start)),
         overrides=OverrideSettings(tuple(safe_paths), tuple(governance_paths)),
         observability=ObservabilitySettings(observable_raw["receipt"], False),
         digest=digest, receipt=_freeze(sealed_receipt),
@@ -406,13 +465,15 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                   overlay: Mapping[str, Any] | None = None,
+                  environment: Mapping[str, str] | None = None,
                   authority: Mapping[str, Any] | None = None,
                   host_capabilities: object | None = None) -> OperationalSettings:
-    """Load defaults < file < receipted overlay with no environmental input.
+    """Load defaults < file < legacy environment < receipted overlay.
 
     ``host_capabilities`` is accepted to make the boundary explicit, but does
     not alter settings or receipts. Host support is negotiated later by the
-    existing capability authority, preserving cross-host portability.
+    existing capability authority, preserving cross-host portability. Only
+    the closed one-release environment alias table is interpreted here.
     """
     del host_capabilities
     defaults = _read_json(DEFAULT_SETTINGS_PATH)
@@ -430,6 +491,32 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     _validate_keys(raw)
     effective = _merge(defaults, raw)
     precedence = ["defaults", "file"]
+    environment_receipt: dict[str, Any] | None = None
+    if environment is not None:
+        environment_overlay: dict[str, Any] = {"stages": {}}
+        applied: list[str] = []
+        for tier, stages in _LEGACY_ENV_TIERS.items():
+            for field, prefix in (("model", "TASKPLANE_MODEL_"),
+                                  ("reasoning", "TASKPLANE_REASONING_")):
+                name = prefix + tier
+                if name not in environment:
+                    continue
+                value = str(environment[name]).strip()
+                if field == "model" and value in {"", "inherit"}:
+                    value = "inherit"
+                if not value:
+                    continue
+                for stage in stages:
+                    environment_overlay["stages"].setdefault(stage, {})[
+                        field] = value
+                    applied.append(f"stages.{stage}.{field}")
+        if environment_overlay["stages"]:
+            effective = _merge(effective, environment_overlay)
+            precedence.append("environment")
+            environment_receipt = {
+                "applied": sorted(applied),
+                "adapter": "legacy-tier-environment/v1",
+            }
     overlay_receipt: dict[str, Any] | None = None
     if overlay is not None:
         supplied = _plain_mapping(overlay, "overlay")
@@ -457,6 +544,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         "schema": RECEIPT_SCHEMA,
         "precedence": precedence,
         "migration": migration,
+        "environment": environment_receipt,
         "overlay": overlay_receipt,
     }
     return _validate_and_type(effective, receipt)
@@ -476,7 +564,8 @@ def settings_receipt(settings: OperationalSettings) -> dict[str, Any]:
 
 
 __all__ = [
-    "BuildSettings", "CleanupSettings", "DEFAULT_SETTINGS_PATH",
+    "BuildSettings", "CleanupSettings", "DashboardRefreshSettings",
+    "DashboardSettings", "DEFAULT_SETTINGS_PATH",
     "LensSettings", "LimitSettings", "ObservabilitySettings",
     "OperationalSettings", "OverrideSettings", "SettingsError",
     "StageSettings", "TestSettings", "WorkflowSettings", "load_settings",

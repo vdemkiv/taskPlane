@@ -1,0 +1,8 @@
+{
+  "schema": "taskplane.skill-flow/v1",
+  "skill": "bad-flow",
+  "settings": {
+    "source": "taskplane/operational-settings.json",
+    "loader": "taskplane.settings.load_settings"
+  }
+}
