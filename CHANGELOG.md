@@ -34,6 +34,16 @@ lens rewrite and never bumped to.
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
+**Unreleased R-0001 delivery note.** Delivery metrics now have one closed,
+redacted, non-cumulative receipt. It binds settings, CI, dashboard publication,
+cleanup, portfolio, token/session/worktree, and dispatch evidence by digest;
+records the approved suite, feedback, critical-path, parallelism, leak, usage,
+and end-to-end baselines/targets; keeps billing, host-observed usage, and archive
+upper bounds distinct; names deliberate serialization; and refuses sign-off for
+owned leaks or an unexplained hard-ceiling breach. Dashboard, Retro,
+Engineering, and release projections consume the sealed receipt without
+recounting archived traces, reruns, canceled heads, render output, or DOM state.
+
 | Version | Highlights |
 | --- | --- |
 | **v2.18.2** | **External-worktree Codex hook bootstrap repair — not released.** Codex hooks now resolve the primary checkout's validated launcher from Git's common directory when an external linked worktree lacks its ignored local bridge, route the host-native probe through the same stable engine, fail with an actionable error when no launcher or host plugin root exists, and restore a missing runner before attempting any required hook-config rewrite. Repository-family resolution now uses Git's absolute top-level and common-directory facts so all linked worktrees share the same durable Taskplane state. Exact external-worktree regressions cover PreToolUse, SessionStart, and Stop in both native and bridge manifests. A local reinstall and generated upload artifact are development actions, not Marketplace publication or a public release. |

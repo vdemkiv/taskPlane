@@ -111,6 +111,13 @@ explicit.
   dependency-graph blast radius at the DoD gate: Tier 1 blocks a was-green-now-red
   test against the change's baseline; Tier 2 flags a changed enforcement/public
   entry point with no covering test. [docs/regression-gate-design.md](docs/regression-gate-design.md).
+- **One measurable delivery receipt.** A closed candidate/run interval binds
+  settings, CI, dashboard publication, cleanup, portfolio, token/session,
+  worktree, and dispatch evidence by digest. Billing, host-observed usage, and
+  cumulative archive bounds stay separate; nonzero owned leaks or unexplained
+  hard-ceiling breaches refuse sign-off. Dashboard, Retro, Engineering, and
+  release consume the same redacted receipt without recounting traces or DOM
+  state. [docs/wave-metrics.md](docs/wave-metrics.md).
 - **Audit cadence + router audits.** Every Nth review (`TASKPLANE_AUDIT_EVERY`) a
   full-catalog sweep diffs its findings against the routing; any finding from an
   `n/a`-routed lens is auto-filed as a router regression that blocks sign-off.

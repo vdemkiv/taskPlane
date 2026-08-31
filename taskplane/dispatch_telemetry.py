@@ -44,6 +44,7 @@ CYCLE_DECISION_SCHEMA = "taskplane.fix-evaluate-cycle-decision/v1"
 TRANSCRIPT_PROJECTION_SCHEMA = "taskplane.transcript-usage-checkpoint/v1"
 USAGE_CAPABILITY_SCHEMA = "taskplane.host-usage-capability/v1"
 LENS_ROUTE_TELEMETRY_SCHEMA = "taskplane.lens-route-telemetry/v1"
+WAVE_METRICS_SOURCE_SCHEMA = "taskplane.wave-metrics-dispatch-source/v1"
 
 MAX_LENS_ROUTE_REASON_BYTES = 512
 MAX_LENS_ROUTE_ARTIFACT_BYTES = 128 * 1024
@@ -1143,6 +1144,102 @@ def ledger_usage_capability(ledger: Mapping[str, Any]) -> dict[str, Any]:
         field: sum(row[field] for row in normalized)
         for field in _USAGE_FIELDS
     })
+
+
+def closed_wave_metrics_source(
+        ledger: Mapping[str, Any], clock: Clock, *,
+        candidate_fingerprint: str,
+        billing_total_tokens: int | None = None,
+        archive_upper_bound_tokens: int | None = None) -> dict[str, Any]:
+    """Project one closed ledger for the wave-metrics sealing boundary.
+
+    Dispatch, session, and usage identities remain inside their producer.  The
+    receipt exposes aggregate facts and content digests only.  Provider usage
+    is explicitly *observed*, optional billing is explicitly *billing*, and an
+    optional cumulative archive number is labelled as an upper bound; callers
+    cannot substitute one truth class for another.
+    """
+    identity = validate_ledger(ledger)
+    if not isinstance(candidate_fingerprint, str) or re.fullmatch(
+            r"[0-9a-f]{64}", candidate_fingerprint) is None:
+        raise DispatchTelemetryError(
+            "wave metrics candidate fingerprint must be a sha256 digest")
+    finalized_ids = {
+        str(row.get("dispatch_id") or "")
+        for row in ledger.get("dispatches") or []
+    }
+    active = [
+        row for row in ledger.get("bindings") or []
+        if not row.get("finalized_receipt_fingerprint") and
+        str(row.get("dispatch_id") or "") not in finalized_ids
+    ]
+    if active:
+        raise DispatchTelemetryError(
+            "wave metrics require a closed dispatch ledger")
+    usage = wave_usage(ledger, clock)
+    capability = ledger_usage_capability(ledger)
+    if capability.get("status") != "available":
+        raise DispatchTelemetryError(
+            "wave metrics require host-observed token usage")
+
+    def optional_tokens(value: int | None, label: str) -> int | None:
+        if value is None:
+            return None
+        return _nonnegative_integer(value, label)
+
+    dispatch_receipts = [
+        str(row.get("fingerprint") or "")
+        for row in ledger.get("dispatches") or []
+    ]
+    session_pseudonyms = sorted({
+        content_fingerprint({"thread_id": str(row.get("thread_id") or "")})
+        for row in ledger.get("dispatches") or []
+        if str(row.get("thread_id") or "")
+    })
+    material = {
+        "schema": WAVE_METRICS_SOURCE_SCHEMA,
+        "candidate_fingerprint": candidate_fingerprint,
+        "source_sha_digest": content_fingerprint(identity["source_sha"]),
+        "interval": {"opened_at": ledger["started_at"],
+                     "closed_at": clock.wall_time(), "status": "closed"},
+        "digests": {
+            "dispatch": content_fingerprint(dispatch_receipts),
+            "token_usage": content_fingerprint({
+                "dispatch_receipts": dispatch_receipts,
+                "usage_capability": capability,
+            }),
+            "sessions": content_fingerprint(session_pseudonyms),
+        },
+        "observed": {
+            "sessions": usage["sessions"],
+            "total_tokens": usage["total_tokens"],
+            "uncached_input_tokens": usage["uncached_input_tokens"],
+            "elapsed_seconds": usage["elapsed_seconds"],
+        },
+        "billing": {
+            "status": ("available" if billing_total_tokens is not None
+                       else "unavailable"),
+            "total_tokens": optional_tokens(
+                billing_total_tokens, "billing total tokens"),
+        },
+        "archive_upper_bound": {
+            "status": ("available" if archive_upper_bound_tokens is not None
+                       else "unavailable"),
+            "total_tokens": optional_tokens(
+                archive_upper_bound_tokens, "archive upper-bound tokens"),
+            "relation": "upper-bound-not-billing",
+        },
+        "ceilings": {
+            "active_delivery_hours":
+                WAVE_BUDGET_CEILINGS["elapsed_seconds"] / 3600,
+            "sessions": WAVE_BUDGET_CEILINGS["sessions"],
+            "total_tokens": WAVE_BUDGET_CEILINGS["total_tokens"],
+            "uncached_input_tokens":
+                WAVE_BUDGET_CEILINGS["uncached_input_tokens"],
+        },
+    }
+    material["fingerprint"] = content_fingerprint(material)
+    return material
 
 
 
