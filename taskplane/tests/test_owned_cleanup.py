@@ -6,16 +6,14 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
 import owned_cleanup as cleanup
 from taskplane import governed_commands
-from taskplane.command_adapters import detached_process_binding
 from taskplane.command_runtime import CommandRuntime
 from taskplane.repository import RepositoryManager
+from taskplane import taskplane_lite as contract_engine
 from taskplane.tests.test_worktree_cleanup import _fixture as _worktree_fixture
 
 
@@ -79,7 +77,7 @@ def _owned_file(manifest: Path, root: Path, name: str = "artifact.txt", *,
 
 
 @pytest.mark.parametrize("outcome", OUTCOMES)
-def test_cleanup_runs_on_every_terminal_outcome(tmp_path, outcome):
+def test_cleanup_runs_on_every_terminal_outcome(tmp_path, outcome, monkeypatch):
     manifest = _manifest(tmp_path, f"{outcome}.json")
     git_fixture = tmp_path / "git"
     git_fixture.mkdir()
@@ -115,61 +113,56 @@ def test_cleanup_runs_on_every_terminal_outcome(tmp_path, outcome):
     # Exercise the public production composition for every declared outcome.
     workspace = tmp_path / "command-workspace"
     workspace.mkdir()
-    token = ("%x" % (OUTCOMES.index(outcome) + 10)) * 32
-    context = governed_commands.prepare_owned_cleanup(
-        str(workspace), "agent:test", run_id="run-prod",
-        task_id="task-prod", attempt=3, token=token)
-    process = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(5)"],
-        start_new_session=True)
-    binding = detached_process_binding(process, token=token)
-    governed_commands.activate_owned_process(context, binding)
+    contract_engine.activate(
+        str(workspace), contract_engine.build_contract(
+            "owned-cleanup-production", scope=[str(workspace)],
+            tools=["exec_command"], plan_minted=True), snapshot=None)
+    launched = governed_commands.execute(str(workspace), "launch", {
+        "authorization": "agent:test", "run_id": "run-prod",
+        "task_id": "task-prod", "attempt": 3,
+        "argv": ["/bin/sleep", "5"],
+    })
+    handle = launched["handle"]
+    assert launched["snapshot"]["identity"]["attempt"] == 3
     runtime = CommandRuntime(
         str(governed_commands.command_runtime_root(str(workspace))),
-        workspace=str(workspace), authorization="agent:test",
-        owned_cleanup_context=governed_commands._runtime_cleanup_context(
-            context))
-    identity = {"schema": "taskplane.governed-command-identity/v1",
-                "run_id": "run-prod", "task_id": "task-prod",
-                "attempt": 3}
-    handle = runtime.create(
-        command_fingerprint="production-terminal", binding=binding,
-        identity=identity)
-    runtime.transition(handle, "running")
-    governed_commands.publish_owned_handoff(
-        context, token=token, run_id="run-prod", task_id="task-prod",
-        attempt=3, handle=handle, payload={
-            "schema": "taskplane.governed-command-handoff/v1",
-            "workspace": str(workspace), "authorization": "agent:test",
-            "root": str(runtime.root), "handle": handle, "argv": ["proof"],
-            "cwd": str(workspace), "deadline": None,
-            "identity": identity, "authority": {"fingerprint": "proof"},
+        workspace=str(workspace), authorization="agent:test")
+    production_cleanup = governed_commands.owned_cleanup
+    original_replay = production_cleanup.replay_publication
+    publication_order = []
+
+    def require_sealed_terminal(*args, **kwargs):
+        manifest_path = launched["snapshot"]["owned_cleanup"]["manifest"]
+        terminal_row = production_cleanup.load_manifest(
+            manifest_path).get("terminal")
+        publication_order.append(
+            terminal_row.get("outcome") if terminal_row else None)
+        return original_replay(*args, **kwargs)
+
+    monkeypatch.setattr(
+        production_cleanup, "replay_publication", require_sealed_terminal)
+    if outcome in {"success", "failure", "timeout"}:
+        state = {"success": "succeeded", "failure": "failed",
+                 "timeout": "timed_out"}[outcome]
+        runtime.transition(
+            handle, state, exit_code=0 if state == "succeeded" else 1)
+        production = governed_commands.execute(str(workspace), "wait", {
+            "authorization": "agent:test", "handle": handle,
+            "consumer": "owned-cleanup:" + outcome, "timeout": 1,
         })
-    state = {
-        "success": "succeeded", "failure": "failed",
-        "cancellation": "cancelled", "interruption": "cancelled",
-        "timeout": "timed_out", "handoff": "cancelled",
-    }[outcome]
-    runtime.transition(handle, state, exit_code=0 if state == "succeeded" else 1)
-    production = governed_commands.finalize_owned_result({
-        "schema": governed_commands.RESULT_SCHEMA,
-        "action": "terminal", "handle": handle,
-        "snapshot": runtime.snapshot(handle),
-    }, trigger="handoff" if outcome == "handoff" else "terminal",
-        outcome=outcome)
+    else:
+        action = {"cancellation": "cancel", "interruption": "interrupt",
+                  "handoff": "handoff"}[outcome]
+        production = governed_commands.execute(str(workspace), action, {
+            "authorization": "agent:test", "handle": handle,
+        })
+    assert publication_order == [outcome]
     assert production["cleanup_receipt"]["cleanup_status"] == "clean", \
         production["cleanup_receipt"]["resources"]
     assert production["cleanup_evidence"]["leak_count"] == 0
     assert production["cleanup_receipt"]["original_outcome"] == outcome
     assert production["publication_replay"]["trigger"] == (
         "handoff" if outcome == "handoff" else "terminal")
-    recovered = governed_commands.finalize_owned_result({
-        "schema": governed_commands.RESULT_SCHEMA,
-        "action": "reconnect", "handle": handle,
-        "snapshot": production["snapshot"],
-    }, trigger="recovery")
-    assert recovered["cleanup_receipt"] == production["cleanup_receipt"]
-    process.wait(timeout=3)
 
 
 def test_cleanup_preserves_evidence_and_proves_zero_leaks(tmp_path):
@@ -409,16 +402,59 @@ def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):
     assert cleanup.load_manifest(race_manifest)["terminal"]["outcome"] in {
         "failure", "timeout"}
 
-    # Deliberately sever the publisher edge during failure unwind. Cleanup
-    # remains secondary and completes, while the durable obligation is then
-    # replayed by the public next-attempt startup recovery adapter.
+    # The public publisher must receive and verify the exact immutable source
+    # identity before it may mark an obligation published.
+    identity_manifest = _manifest(tmp_path, "publication-identity.json")
+    identity_source = _publication(
+        identity_manifest, tmp_path / "publication-identity-replay.json",
+        outcome="success", revision=7)
+    identity_owner = cleanup.load_manifest(identity_manifest)["owner"]
+    publisher_calls = []
+
+    def mismatched_publisher(selected_workspace, **kwargs):
+        publisher_calls.append((selected_workspace, kwargs))
+        return {
+            "source_revision": kwargs["source_revision"] + 1,
+            "source_fingerprint": kwargs["source_fingerprint"],
+        }
+
+    with pytest.raises(cleanup.OwnedCleanupError,
+                       match="did not verify source identity"):
+        cleanup.replay_publication(
+            identity_source, workspace=str(tmp_path), owner=identity_owner,
+            outcome="success", publisher=mismatched_publisher)
+    assert json.loads(identity_source.read_text(encoding="utf-8"))["status"] \
+        == "pending"
+    assert publisher_calls[0][1]["source_revision"] == 7
+    assert publisher_calls[0][1]["source_fingerprint"] == "c" * 64
+
+    def verifying_publisher(_selected_workspace, **kwargs):
+        return {
+            "source_revision": kwargs["source_revision"],
+            "source_fingerprint": kwargs["source_fingerprint"],
+            "status": "published",
+        }
+
+    identity_publication = cleanup.replay_publication(
+        identity_source, workspace=str(tmp_path), owner=identity_owner,
+        outcome="success", publisher=verifying_publisher)
+    assert identity_publication["source_revision"] == 7
+    assert identity_publication["source_fingerprint"] == "c" * 64
+
+    # Deliberately sever publication during failure unwind. Original terminal
+    # truth must already be sealed, and the real omitted-attempt execute path
+    # must later discover/recover only this run/task's older manifests.
     workspace = tmp_path / "recovery-workspace"
     workspace.mkdir()
     context = governed_commands.prepare_owned_cleanup(
         str(workspace), "agent:recovery", run_id="run-recovery",
         task_id="task-recovery", attempt=1, token="9" * 32)
+    terminal_at_publication = []
 
     def severed_publisher(_workspace, **_kwargs):
+        terminal = cleanup.load_manifest(context["manifest"]).get("terminal")
+        terminal_at_publication.append(
+            terminal.get("outcome") if terminal else None)
         raise RuntimeError("publisher edge severed")
 
     unwind = governed_commands.unwind_owned_failure(
@@ -427,24 +463,40 @@ def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):
     assert unwind["cleanup_receipt"]["cleanup_status"] == "clean"
     assert unwind["publication_result"]["replay_required"] is True
     assert unwind["cleanup_evidence"]["leak_count"] == 0
+    assert terminal_at_publication == ["failure"]
     orphan = governed_commands.prepare_owned_cleanup(
         str(workspace), "agent:recovery", run_id="run-recovery",
         task_id="task-recovery", attempt=1, token="8" * 32)
     assert cleanup.load_manifest(orphan["manifest"])["terminal"] is None
-    published = []
+    foreign_run = governed_commands.prepare_owned_cleanup(
+        str(workspace), "agent:foreign", run_id="run-foreign",
+        task_id="task-recovery", attempt=1, token="7" * 32)
+    foreign_task = governed_commands.prepare_owned_cleanup(
+        str(workspace), "agent:foreign", run_id="run-recovery",
+        task_id="task-foreign", attempt=1, token="6" * 32)
+    foreign_before = {
+        row["manifest"]: cleanup.load_manifest(row["manifest"])
+        for row in (foreign_run, foreign_task)
+    }
 
-    def canonical_publisher(selected_workspace, **kwargs):
-        published.append((selected_workspace, kwargs))
-        return {"status": "published", "event": kwargs["event_type"]}
+    with pytest.raises(governed_commands.GovernedCommandError,
+                       match="exact active contract"):
+        governed_commands.execute(str(workspace), "launch", {
+            "authorization": "agent:recovery", "run_id": "run-recovery",
+            "task_id": "task-recovery",
+            "argv": ["/usr/bin/printf", "recovered"],
+        })
 
-    recovery = governed_commands.recover_owned_cleanup(
-        str(workspace), run_id="run-recovery", task_id="task-recovery",
-        before_attempt=2, publisher=canonical_publisher)
-    assert recovery["leak_count"] == 0
-    assert len(recovery["recovered"]) == 2
-    assert unwind["cleanup_receipt"] in [
-        row["cleanup_receipt"] for row in recovery["recovered"]]
-    assert all(row["cleanup_receipt"]["cleanup_status"] == "clean"
-               for row in recovery["recovered"])
-    assert len(published) == 2
-    assert all(call[1]["replay"] is True for call in published)
+    for recovered_context in (context, orphan):
+        recovered_manifest = cleanup.load_manifest(
+            recovered_context["manifest"])
+        assert recovered_manifest["terminal"] is not None
+        receipt_path = Path(recovered_context["manifest"]).with_name(
+            Path(recovered_context["manifest"]).name +
+            ".cleanup-receipt.json")
+        recovered_receipt = json.loads(
+            receipt_path.read_text(encoding="utf-8"))
+        assert recovered_receipt["cleanup_status"] == "clean"
+        assert recovered_receipt["leak_count"] == 0
+    assert all(cleanup.load_manifest(path) == value
+               for path, value in foreign_before.items())

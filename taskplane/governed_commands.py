@@ -1175,6 +1175,14 @@ def finalize_owned_result(
             outcome=selected_outcome,
             source_revision=int(snapshot["revision"]),
             source_fingerprint=_canonical_digest(snapshot), trigger=trigger)
+        owned_cleanup.seal_terminal(
+            manifest_path, outcome=selected_outcome, evidence={
+                "terminal-state": (
+                    Path(str(binding["handoff_path"])).parent.parent /
+                    snapshot["handle"] / "snapshot.json"),
+                "handoff": str(binding["handoff_path"]),
+                "publication-replay": replay_source,
+            })
         try:
             publication = owned_cleanup.replay_publication(
                 replay_source, workspace=workspace, owner=manifest["owner"],
@@ -1183,14 +1191,7 @@ def finalize_owned_result(
         except Exception as exc:
             publication = {"status": "pending", "replay_required": True,
                            "error": str(exc)}
-        receipt = owned_cleanup.seal_and_cleanup(
-            manifest_path, outcome=selected_outcome, evidence={
-                "terminal-state": (
-                    Path(str(binding["handoff_path"])).parent.parent /
-                    snapshot["handle"] / "snapshot.json"),
-                "handoff": str(binding["handoff_path"]),
-                "publication-replay": replay_source,
-            })
+        receipt = owned_cleanup.cleanup_manifest(manifest_path)
         return {
             **result, "cleanup_receipt": receipt,
             "cleanup_evidence": owned_cleanup.cleanup_consumer_evidence(
@@ -1266,6 +1267,11 @@ def unwind_owned_failure(
             "owner": manifest["owner"], "outcome": outcome,
             "error": str(error), "revision": manifest["revision"],
         }), trigger=trigger)
+    owned_cleanup.seal_terminal(
+        manifest_path, outcome=outcome, evidence={
+            "terminal-state": terminal_source, "handoff": handoff_source,
+            "publication-replay": replay_source,
+        })
     try:
         publication = owned_cleanup.replay_publication(
             replay_source, workspace=str(context.get("workspace") or
@@ -1275,11 +1281,7 @@ def unwind_owned_failure(
     except Exception as exc:
         publication = {"status": "pending", "replay_required": True,
                        "error": str(exc)}
-    receipt = owned_cleanup.seal_and_cleanup(
-        manifest_path, outcome=outcome, evidence={
-            "terminal-state": terminal_source, "handoff": handoff_source,
-            "publication-replay": replay_source,
-        })
+    receipt = owned_cleanup.cleanup_manifest(manifest_path)
     return {
         "schema": RESULT_SCHEMA, "action": "failure-unwind",
         "error": str(error), "cleanup_receipt": receipt,
@@ -1422,7 +1424,7 @@ def execute(workspace: str, action: str, request: object) -> dict:
         value["attempt"] = _resolved_cleanup_attempt(
             workspace, run_id=str(value["run_id"]),
             task_id=str(value["task_id"]), supplied=supplied_attempt)
-        if supplied_attempt is not None and int(value["attempt"]) > 1:
+        if int(value["attempt"]) > 1:
             recover_owned_cleanup(
                 workspace, run_id=str(value["run_id"]),
                 task_id=str(value["task_id"]),

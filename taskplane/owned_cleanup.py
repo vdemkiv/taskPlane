@@ -670,6 +670,8 @@ def replay_publication(path: str | os.PathLike[str], *, workspace: str,
             import views
 
         def canonical_publisher(selected_workspace: str, **kwargs):
+            source_revision = kwargs.pop("source_revision")
+            source_fingerprint = kwargs.pop("source_fingerprint")
             publication = loop_status.refresh_dashboard_snapshot(
                 selected_workspace, **kwargs)
             delivery = None
@@ -677,19 +679,29 @@ def replay_publication(path: str | os.PathLike[str], *, workspace: str,
                 payload = {
                     "outcome": obligation["outcome"],
                     "dashboard_snapshot": publication,
+                    "source_revision": source_revision,
+                    "source_fingerprint": source_fingerprint,
                 }
                 delivery = views.refresh_views(selected_workspace, payload)
-            return {"snapshot_publication": publication,
+            return {"source_revision": source_revision,
+                    "source_fingerprint": source_fingerprint,
+                    "snapshot_publication": publication,
                     "dashboard_delivery": delivery}
 
         publisher = canonical_publisher
     published = publisher(
         str(Path(workspace).resolve()),
         event_type="owned_cleanup_" + str(obligation["trigger"]),
-        outcome=str(obligation["outcome"]), replay=True)
-    if not isinstance(published, Mapping):
+        outcome=str(obligation["outcome"]), replay=True,
+        source_revision=int(obligation["source_revision"]),
+        source_fingerprint=str(obligation["source_fingerprint"]))
+    if (not isinstance(published, Mapping) or
+            type(published.get("source_revision")) is not int or
+            published.get("source_revision") != obligation["source_revision"] or
+            published.get("source_fingerprint") !=
+            obligation["source_fingerprint"]):
         raise OwnedCleanupError(
-            "canonical dashboard publisher returned invalid evidence")
+            "canonical dashboard publisher did not verify source identity")
     if mark_published:
         with _manifest_lock(replay_path, suffix=".publication.lock"):
             current = _validate_publication_replay(
