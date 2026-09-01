@@ -83,6 +83,13 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.18.3": {
+        "reason": "superseded local Marketplace candidate. Its final Plan "
+                  "dependency graph replayed Plan-time pending status after "
+                  "the governed loop had completed; 2.18.4 corrects the "
+                  "live execution-status join before upload.",
+        "superseded_by": "2.18.4",
+    },
     "2.17.22": {
         "reason": "superseded Marketplace candidate with a bootstrap locator "
                   "defect; it was never promoted, installed as released "

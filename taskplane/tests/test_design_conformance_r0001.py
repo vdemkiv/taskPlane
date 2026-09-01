@@ -247,15 +247,15 @@ def test_all_approved_modules_edges_contracts_depth_and_acceptance_are_realized(
     assert plan["design_contract_current"] is True
     assert plan["plan_authority"] == (
         "human:vdemkiv approved zero-lens Build at the consolidated Plan gate; "
-        "Taskplane 2.18.3 compatibility projection only"
+        "Taskplane 2.18.4 compatibility projection only"
     )
-    assert compatibility["window"]["current"] == "2.18.3"
+    assert compatibility["window"]["current"] == "2.18.4"
     assert compatibility["window"]["unknown_generation"] == "refuse"
-    assert compatibility["baseline_rebind"]["next_generation"] == "2.18.3"
+    assert compatibility["baseline_rebind"]["next_generation"] == "2.18.4"
     assert all(
         row["release"].startswith(("refuse-", "historical-"))
         for row in compatibility["matrix"]
-        if row["plugin"] != "2.18.3" or row["host"] != "2.18.3"
+        if row["plugin"] != "2.18.4" or row["host"] != "2.18.4"
     )
 
     tasks = plan["tasks"]

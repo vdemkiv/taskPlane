@@ -5,7 +5,7 @@
   "design_contract_current": true,
   "delivery_mode": "build",
   "automatic_lenses": [],
-  "plan_authority": "human:vdemkiv approved zero-lens Build at the consolidated Plan gate; Taskplane 2.18.3 compatibility projection only",
+  "plan_authority": "human:vdemkiv approved zero-lens Build at the consolidated Plan gate; Taskplane 2.18.4 compatibility projection only",
   "delivery_policy": {
     "plan_lenses": {
       "depth": "QUICK",

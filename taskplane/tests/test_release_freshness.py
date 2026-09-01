@@ -33,7 +33,7 @@ class TestReleaseWindow(unittest.TestCase):
     ROW = re.compile(r"^\| \*\*(v\d+\.\d+\.\d+)\*\* \|", re.M)
 
     def test_readme_keeps_exactly_three_current_changelog_rows(self):
-        expected = "2.18.3"; runtime = _read("taskplane/release_evidence.py"); codex = json.loads(_read(".codex-plugin/plugin.json"))
+        expected = "2.18.4"; runtime = _read("taskplane/release_evidence.py"); codex = json.loads(_read(".codex-plugin/plugin.json"))
         claude = json.loads(_read(".claude-plugin/plugin.json"))
         marketplace = json.loads(_read(".claude-plugin/marketplace.json"))
         compatibility = json.loads(_read("design/compatibility.json"))
@@ -193,6 +193,7 @@ class TestForwardRepairDocumentation(unittest.TestCase):
             self.assertIn("v2.18.1", prose, path)
             self.assertIn("v2.18.2", prose, path)
             self.assertIn("v2.18.3", prose, path)
+            self.assertIn("v2.18.4", prose, path)
             self.assertIn("not released", prose, path)
             self.assertIn("2757822e", prose, path)
             self.assertIn("inherited limitation", prose, path)

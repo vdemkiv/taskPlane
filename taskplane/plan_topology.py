@@ -272,6 +272,7 @@ def _topological_order(
 def _dashboard_waves(
     raw_waves: object, *, task_ids: Sequence[str],
     dependencies: Mapping[str, Sequence[str]], approval: str,
+    task_statuses: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     """Validate and normalize the Plan-authored wave partition."""
     if not isinstance(raw_waves, list) or not raw_waves:
@@ -322,6 +323,12 @@ def _dashboard_waves(
         for task_id in members:
             task_wave[task_id] = index
         seen_tasks.update(members)
+        status_counts: dict[str, int] = {}
+        for task_id in members:
+            status = task_statuses[task_id]
+            status_counts[status] = status_counts.get(status, 0) + 1
+        execution = _execution_status(
+            [task_statuses[task_id] for task_id in members])
         normalized.append({
             "id": wave_id,
             "index": index,
@@ -329,6 +336,8 @@ def _dashboard_waves(
             "after": after_ids,
             "serialization": str(raw.get("serialization") or ""),
             "approval": approval,
+            "execution": execution,
+            "status_counts": status_counts,
         })
     missing = sorted(known - seen_tasks)
     if missing:
@@ -340,6 +349,44 @@ def _dashboard_waves(
                 raise PlanTopologyError(
                     f"Plan dashboard wave order violates {dependency}->{task_id}")
     return normalized
+
+
+def _execution_status(statuses: Sequence[str]) -> str:
+    if statuses and all(status == "passed" for status in statuses):
+        return "passed"
+    if any(status == "running" for status in statuses):
+        return "running"
+    if any(status in {"failed", "blocked", "cancelled"}
+           for status in statuses):
+        return "blocked"
+    if any(status == "unknown" for status in statuses):
+        return "unavailable"
+    return "pending"
+
+
+def _execution_task_statuses(
+    rows: Sequence[Mapping[str, Any]],
+    runtime_tasks: Sequence[Mapping[str, Any]] | None,
+) -> tuple[dict[str, str], str, str | None]:
+    """Join live execution status to the immutable Plan task identity set."""
+    plan_statuses = {
+        str(row["id"]): str(row.get("status") or "pending") for row in rows
+    }
+    if runtime_tasks is None:
+        return plan_statuses, "plan", None
+    runtime_ids = [str(row.get("id") or "") for row in runtime_tasks]
+    plan_ids = set(plan_statuses)
+    if (any(not task_id for task_id in runtime_ids)
+            or len(runtime_ids) != len(set(runtime_ids))
+            or set(runtime_ids) != plan_ids):
+        return ({task_id: "unknown" for task_id in plan_statuses},
+                "unavailable",
+                "governed loop task identities do not match the Plan")
+    statuses = {
+        task_id: str(row.get("status") or "unknown")
+        for task_id, row in zip(runtime_ids, runtime_tasks)
+    }
+    return statuses, "governed-loop", None
 
 
 def _exact_plan_approval(
@@ -372,6 +419,7 @@ def _exact_plan_approval(
 def dashboard_plan_projection(
     plan: Mapping[str, Any], *,
     approval_receipt: Mapping[str, Any] | None = None,
+    runtime_tasks: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Project the current Plan DAG and waves without becoming authority.
 
@@ -398,15 +446,22 @@ def dashboard_plan_projection(
         for row in rows for dependency in row["deps"]
     ]
     edges.sort(key=lambda row: (row["from"], row["to"]))
+    task_statuses, status_source, status_error = _execution_task_statuses(
+        rows, runtime_tasks)
     tasks = [{
         "id": row["id"],
         "deps": list(row["deps"]),
         "scope": list(row["scope"]),
-        "status": str(row.get("status") or "pending"),
+        "status": task_statuses[row["id"]],
     } for row in rows]
     waves = _dashboard_waves(
         plan.get("waves"), task_ids=[row["id"] for row in rows],
-        dependencies=dependencies, approval=approval)
+        dependencies=dependencies, approval=approval,
+        task_statuses=task_statuses)
+    status_counts: dict[str, int] = {}
+    for status in task_statuses.values():
+        status_counts[status] = status_counts.get(status, 0) + 1
+    execution = _execution_status(list(task_statuses.values()))
     dag_material = {
         "schema": PLAN_DASHBOARD_SCHEMA,
         "source": "plan/tasks.json#/tasks",
@@ -416,6 +471,9 @@ def dashboard_plan_projection(
         "task_total": len(tasks),
         "edge_total": len(edges),
         "topological_order": order,
+        "status_source": status_source,
+        "status_counts": status_counts,
+        **({"status_error": status_error} if status_error else {}),
     }
     wave_material = {
         "schema": PLAN_WAVES_DASHBOARD_SCHEMA,
@@ -425,6 +483,10 @@ def dashboard_plan_projection(
         "wave_total": len(waves),
         "approval": approval,
         "approval_receipt_fingerprint": receipt_fingerprint,
+        "execution": execution,
+        "status_source": status_source,
+        "status_counts": status_counts,
+        **({"status_error": status_error} if status_error else {}),
     }
     return {
         "dag": {**dag_material,
@@ -654,6 +716,9 @@ def phase_graph_projection(
                                           if isinstance(state.get(
                                               "delivery_mode_receipt"), Mapping)
                                           else None),
+                        runtime_tasks=(state.get("tasks")
+                                       if isinstance(state.get("tasks"), list)
+                                       else None),
                     )
                 except PlanTopologyError:
                     projected = None
@@ -687,6 +752,7 @@ def phase_graph_projection(
 def _bounded_graph_svg(
     component_id: str, title: str, nodes: list[str],
     edges: list[Mapping[str, Any]], *, node_limit: int = 10,
+    node_labels: Mapping[str, str] | None = None,
 ) -> str:
     """Draw one compact graph while disclosing renderer omissions."""
     selected: list[str] = []
@@ -720,12 +786,13 @@ def _bounded_graph_svg(
             'stroke="var(--line)" stroke-width="1.2"/>')
     boxes = []
     for value, (x, y) in positions.items():
+        label = node_labels.get(value, value) if node_labels else value
         boxes.append(
             f'<g><rect x="{x}" y="{y}" width="{box_w}" height="{box_h}" '
             'rx="6" fill="var(--surface-1)" stroke="var(--line)"/>'
             f'<text x="{x + 12}" y="{y + 25}" '
             'font-family="var(--font-mono)" font-size="10.5" '
-            f'fill="var(--text-primary)">{_phase_escape(_flow_label(value, 50))}'
+            f'fill="var(--text-primary)">{_phase_escape(_flow_label(label, 50))}'
             '</text></g>')
     visible_edges = sum(
         1 for edge in edges
@@ -768,15 +835,27 @@ def _render_plan_dag(component: Mapping[str, Any]) -> str:
              if isinstance(row, Mapping)]
     order = " → ".join(str(value)
                          for value in component.get("topological_order") or ())
+    node_labels = {
+        str(row.get("id") or ""): (
+            f'{row.get("id", "")} · {row.get("status", "unknown")}')
+        for row in tasks
+    }
+    counts = " · ".join(
+        f'{_phase_escape(status)} {int(count)}'
+        for status, count in sorted(
+            (component.get("status_counts") or {}).items()))
     return (
         '<section class="tp-phase-graph" id="tp-plan-task-dag" '
         f'data-schema="{_phase_escape(component.get("schema", ""))}" '
-        f'data-source="{_phase_escape(component.get("source", ""))}">'
+        f'data-source="{_phase_escape(component.get("source", ""))}" '
+        f'data-status-source="{_phase_escape(component.get("status_source", ""))}">'
         '<p class="tp-kicker">Plan task dependency DAG</p>'
         f'<p class="tp-lede">source {int(component.get("task_total", 0))} '
-        f'tasks · {int(component.get("edge_total", 0))} dependency edges</p>'
+        f'tasks · {int(component.get("edge_total", 0))} dependency edges · '
+        f'status {_phase_escape(component.get("status_source", "unknown"))}'
+        f'{(" · " + counts) if counts else ""}</p>'
         + _bounded_graph_svg("tp-plan-task-dag", "Plan task dependency DAG",
-                             nodes, edges)
+                             nodes, edges, node_labels=node_labels)
         + f'<p class="tp-lede">topological order · {_phase_escape(order)}</p></section>')
 
 
@@ -788,10 +867,14 @@ def _render_plan_waves(component: Mapping[str, Any]) -> str:
         if not isinstance(wave, Mapping):
             continue
         tasks = ", ".join(str(value) for value in wave.get("tasks") or ())
+        execution = str(wave.get("execution") or "unavailable")
         rows.append(
             '<li style="padding:4px 0" '
-            f'data-wave-approval="{approval}"><code>{_phase_escape(wave.get("id", ""))}'
-            f'</code> · {_phase_escape(tasks)} · {approval}</li>')
+            f'data-wave-approval="{approval}" '
+            f'data-wave-execution="{_phase_escape(execution)}"><code>'
+            f'{_phase_escape(wave.get("id", ""))}</code> · '
+            f'{_phase_escape(tasks)} · approval {approval} · execution '
+            f'{_phase_escape(execution)}</li>')
     receipt = component.get("approval_receipt_fingerprint")
     receipt_text = (f' · receipt <code>{_phase_escape(str(receipt)[:16])}</code>'
                     if approval == "approved" and receipt else "")
@@ -799,10 +882,12 @@ def _render_plan_waves(component: Mapping[str, Any]) -> str:
         '<section class="tp-phase-graph" id="tp-plan-waves" '
         f'data-schema="{_phase_escape(component.get("schema", ""))}" '
         f'data-source="{_phase_escape(component.get("source", ""))}" '
-        f'data-plan-approval="{approval}">'
+        f'data-plan-approval="{approval}" '
+        f'data-wave-execution="{_phase_escape(component.get("execution", "unavailable"))}">'
         '<p class="tp-kicker">Plan waves</p>'
         f'<p class="tp-lede">source {int(component.get("wave_total", 0))} '
-        f'waves · {approval}{receipt_text}</p><ol>'
+        f'waves · approval {approval}{receipt_text} · execution '
+        f'{_phase_escape(component.get("execution", "unavailable"))}</p><ol>'
         + "".join(rows) + '</ol></section>')
 
 
