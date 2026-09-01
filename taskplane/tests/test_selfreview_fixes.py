@@ -290,7 +290,6 @@ class TestEngine(unittest.TestCase):
 class TestKernelFailClosed(unittest.TestCase):
     def test_corrupt_contract_blocks(self):
         ws = _repo()
-        os.makedirs(os.path.join(ws, ".taskplane"))
         open(os.path.join(ws, ".taskplane", "active_contract.json"), "w", encoding="utf-8").write("{bad")
         r = subprocess.run(
             [sys.executable, os.path.join(

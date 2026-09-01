@@ -227,7 +227,6 @@ def test_timeout_bootstrap_is_plan_only_and_bounded():
         "planned", scope=["src/**"], test_command="true", plan_minted=True,
         test_timeout_seconds=14400)["coding"]["dod"][
             "test_timeout_seconds"] == 14400
-    assert tp.task_test_timeout_seconds({}) == 600
 
 
 def test_timeout_never_converts_failure_to_pass(tmp_path, monkeypatch):

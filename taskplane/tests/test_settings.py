@@ -29,6 +29,7 @@ def test_valid_canonical_settings_load_typed():
     assert settings.lenses.counts["plan"] == 3
     assert settings.tests.cache is True
     assert settings.tests.cache_max_age_seconds == 24 * 60 * 60
+    assert settings.limits.timeouts["task_seconds"] == 1200
     assert settings.limits.budgets["lens_deep_max_actions"] == 45
     assert settings.limits.budgets["lens_sweep_max_actions"] == 30
     assert settings.limits.timeouts["lens_wait_seconds"] == 1800

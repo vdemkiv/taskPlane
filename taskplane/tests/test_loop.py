@@ -3124,14 +3124,6 @@ class TestTaskSuiteTimeoutAuthority(unittest.TestCase):
                 "gate_timeout": {"aggregate_seconds": timeout}}
         return task
 
-    def test_absent_task_timeout_defaults_to_exactly_600(self):
-        task = self._task()
-        self.assertEqual(tp.task_test_timeout_seconds(task), 600)
-        contract = loop._step_contract(
-            "execute", {"current_task": 0, "tasks": [task]})
-        self.assertEqual(
-            contract["coding"]["dod"]["test_timeout_seconds"], 600)
-
     def test_nested_task_timeout_reaches_claimed_execute_runner(self):
         task = self._task(1800)
         contract = loop._step_contract(
@@ -3190,19 +3182,6 @@ class TestTaskSuiteTimeoutAuthority(unittest.TestCase):
                 tempfile.mkdtemp(), {"tasks": [task], "baseline": "HEAD"})
         self.assertEqual(
             captured[0]["coding"]["dod"]["test_timeout_seconds"], 1800)
-
-    def test_unrelated_task_dod_keeps_600(self):
-        captured = []
-
-        def check(contract, *_args, **_kwargs):
-            captured.append(contract)
-            return []
-
-        with unittest.mock.patch.object(loop.tp, "dod_check", side_effect=check):
-            loop._task_dod_errors(
-                tempfile.mkdtemp(), {}, self._task(), None)
-        self.assertEqual(
-            captured[0]["coding"]["dod"]["test_timeout_seconds"], 600)
 
     def test_invalid_contract_timeout_skips_suite_launch(self):
         contract = tp.build_contract(

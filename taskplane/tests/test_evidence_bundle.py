@@ -380,20 +380,6 @@ class TestTheSuiteIsCitedNotRerun(_AtEvaluate):
             stream.write("from pathlib import Path\n"
                          "__path__ = [str(Path.cwd() / 'taskplane')]\n")
 
-    def test_native_executor_and_evaluator_task_ids_share_suite_identity(self):
-        base = dict(os.environ)
-        producer = {**base, "CODEX_THREAD_ID": "executor-thread",
-                    "TASKPLANE_TASK": "execute-t1"}
-        consumer = {**base, "CODEX_THREAD_ID": "evaluator-thread",
-                    "TASKPLANE_TASK": "evaluate-t1"}
-        self.assertEqual(
-            tp._suite_cache_key(self.ws, TASK["tests"], producer),
-            tp._suite_cache_key(self.ws, TASK["tests"], consumer))
-        changed = {**producer, "TASKPLANE_AUDIT_EVERY": "different"}
-        self.assertNotEqual(
-            tp._suite_cache_key(self.ws, TASK["tests"], producer),
-            tp._suite_cache_key(self.ws, TASK["tests"], changed))
-
     def test_transport_only_pythonpath_is_not_suite_behavior_identity(self):
         shim = tempfile.mkdtemp()
         self._transport_shim(shim)

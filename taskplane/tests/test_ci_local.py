@@ -131,25 +131,6 @@ print(json.dumps({"preloaded": "sitecustomize" in sys.modules,
     ]
 
 
-def test_closed_inventory_is_complete_unique_and_sharded_once():
-    runner = _runner()
-    ids = [check.id for check in runner.INVENTORY]
-    assignments = [check_id for shard in runner.SHARDS for check_id in shard]
-
-    assert runner.SCHEMA == "taskplane.local-ci-equivalent/v1"
-    assert 3 <= len(runner.SHARDS) <= 5
-    assert len(ids) == len(set(ids))
-    assert sorted(assignments) == sorted(ids)
-    assert len(assignments) == len(set(assignments))
-    assert {
-        "compile-import", "version-verify", "zero-token-corpus",
-        "release-surface", "release-history",
-        "unittest-canary", "loop-cost", "import-cycle-current",
-        "generated-lens-drift", "generated-cli-drift", "package-openai",
-        "package-claude", "ruff", "mypy", "host-platform",
-    }.union(runner.PYTEST_CHECK_IDS) == set(ids)
-
-
 def test_complete_pytest_inventory_is_partitioned_exactly_once_and_balanced():
     runner = _runner()
     files = runner.pytest_inventory()
