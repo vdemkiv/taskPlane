@@ -84,6 +84,16 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.18.7": {
+        "reason": "superseded local Marketplace candidate. It restored "
+                  "terminal Design visibility and private artifact "
+                  "preservation, but a real migrated run whose mutable Plan "
+                  "file no longer matched its approval receipt still hid "
+                  "the canonical task DAG and waves. 2.18.8 projects that "
+                  "graph from governed loop state and labels derived waves "
+                  "unverified; 2.18.7 was never promoted to released truth.",
+        "superseded_by": "2.18.8",
+    },
     "2.18.6": {
         "reason": "superseded local Marketplace candidate. Its terminal-only "
                   "legacy migration closed the run truthfully, but terminal "

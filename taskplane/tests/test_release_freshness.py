@@ -48,7 +48,7 @@ def test_current_version_authority_agrees_across_runtime_and_manifests() -> None
     compatibility = json.loads((ROOT / "design/compatibility.json").read_text(
         encoding="utf-8"))
 
-    assert current == "2.18.7"
+    assert current == "2.18.8"
     assert {
         release_evidence.CURRENT_VERSION,
         claude["version"],
