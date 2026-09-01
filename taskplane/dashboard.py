@@ -3189,28 +3189,11 @@ def phase_graph_projection(
     module_impact_limit: int = 8,
     require_bound: bool = False,
 ) -> dict[str, Any]:
-    """Compatibility facade over the canonical acyclic phase projector."""
-    design_artifact_fingerprint = None
-    if require_bound and isinstance(state, Mapping) and isinstance(
-            state.get("design_fingerprint"), str):
-        try:
-            import design_contract as _design_contract
-            contract, errors = _design_contract.design_contract(workspace)
-            if not errors and isinstance(contract, dict):
-                design_artifact_fingerprint = \
-                    _design_contract.design_evidence_fingerprint(
-                        workspace, contract)
-        except Exception:
-            # Strict projection treats unavailable proof as unbound.  The
-            # dashboard must not convert an evidence failure into permission
-            # to reuse a workspace artifact from another run.
-            design_artifact_fingerprint = None
-    return _pt.phase_graph_projection(
+    """Compatibility facade over the canonical read-model composition."""
+    import loop_status
+    return loop_status.phase_graph_projection(
         workspace, state, snapshot_values=snapshot_values, impact=impact,
-        module_impact_limit=module_impact_limit, loop_loader=_load_loop,
-        impact_loader=lambda ws, tasks: _current_graph_impact(ws, tasks),
-        require_bound=require_bound,
-        design_artifact_fingerprint=design_artifact_fingerprint)
+        module_impact_limit=module_impact_limit, require_bound=require_bound)
 
 
 render_phase_dependency_graphs = _pt.render_phase_dependency_graphs

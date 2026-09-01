@@ -7,6 +7,7 @@ their historical signatures without creating an import cycle.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 import copy
 from datetime import datetime, timezone
 import hashlib
@@ -14,17 +15,20 @@ import json
 import os
 import re
 import time
+from typing import Any
 
 import progress
 import taskplane_lite as tp
 
 try:
     from . import host_native
+    from . import plan_topology
     from . import settings as operational_settings
     from . import storage as runtime_storage
     from . import wave_metrics
 except (ImportError, ValueError):
     from taskplane import host_native
+    from taskplane import plan_topology
     from taskplane import settings as operational_settings
     from taskplane import storage as runtime_storage
     from taskplane import wave_metrics
@@ -543,6 +547,62 @@ def _select_dashboard_source(ws: str) -> dict:
         error_formatter=_stage_view_error)
 
 
+def _phase_graph_impact(
+        ws: str, tasks: list[dict[str, Any]], supplied: object = None) \
+        -> Mapping[str, Any]:
+    """Compose the graph owner's current impact without a renderer import."""
+    if isinstance(supplied, Mapping) and supplied.get("touched"):
+        return supplied
+    scope = sorted({str(path).rstrip("*").rstrip("/")
+                    for task in tasks
+                    for path in task.get("scope") or () if path})
+    if not scope:
+        return supplied if isinstance(supplied, Mapping) else {}
+    try:
+        # ``loop`` is already this read model's state/engine boundary.  Reuse
+        # its canonical depgraph owner instead of coupling presentation back
+        # to dashboard.py or creating another impact implementation.
+        import loop
+        return loop.depgraph.impact(
+            ws, scope, policy=loop.depgraph.aggregate_impact_policy(tasks))
+    except Exception:
+        return supplied if isinstance(supplied, Mapping) else {}
+
+
+def phase_graph_projection(
+        workspace: str, state: Mapping[str, Any] | None = None, *,
+        snapshot_values: Mapping[str, Any] | None = None,
+        impact: Mapping[str, Any] | None = None,
+        module_impact_limit: int = 8,
+        require_bound: bool = False) -> dict[str, Any]:
+    """Compose the pure phase projector with current approval evidence.
+
+    Design remains the owner of approval truth and Plan topology remains the
+    graph projector.  This read boundary supplies their already-established
+    loop adapters so neither presentation module needs to import the other.
+    """
+    design_artifact_fingerprint = None
+    if require_bound and isinstance(state, Mapping) and isinstance(
+            state.get("design_fingerprint"), str):
+        try:
+            import loop
+            contract, errors = loop._design_contract(workspace)  # noqa: SLF001
+            if not errors and isinstance(contract, dict):
+                design_artifact_fingerprint = \
+                    loop._design_evidence_fingerprint(  # noqa: SLF001
+                        workspace, contract)
+        except Exception:
+            # Strict publication treats unavailable proof as unbound.  Never
+            # reuse mutable Design files merely because rendering must proceed.
+            design_artifact_fingerprint = None
+    return plan_topology.phase_graph_projection(
+        workspace, state, snapshot_values=snapshot_values, impact=impact,
+        module_impact_limit=module_impact_limit, loop_loader=_load_legacy_state,
+        impact_loader=lambda ws, tasks: _phase_graph_impact(ws, tasks),
+        require_bound=require_bound,
+        design_artifact_fingerprint=design_artifact_fingerprint)
+
+
 def refresh_dashboard_snapshot(
         ws: str, *, event_type: str, outcome: str | None = None,
         committed_at: float | str | None = None, replay: bool = False) -> dict:
@@ -553,8 +613,7 @@ def refresh_dashboard_snapshot(
         # composition root in tp.py. Resolve the same canonical projector at
         # call time so direct governed transitions cannot silently publish a
         # graph-less snapshot.
-        import dashboard
-        projector = dashboard.phase_graph_projection
+        projector = phase_graph_projection
     return host_native.refresh_dashboard_snapshot(
         ws, event_type=event_type, outcome=outcome,
         committed_at=committed_at, replay=replay,

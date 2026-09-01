@@ -14,22 +14,18 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from taskplane import failure_routing
+    from taskplane.test_strategy import VALIDATION_LAYERS
 elif __package__:
     from . import failure_routing
+    from .test_strategy import VALIDATION_LAYERS
 else:  # pragma: no cover - direct CLI module loading
     import failure_routing
+    from test_strategy import VALIDATION_LAYERS
 
 
 BUILD_QUALITY_RECEIPT_SCHEMA_ID = "taskplane.build-quality-receipt/v1"
 LAYER_EVIDENCE_SCHEMA_ID = "taskplane.build-quality-layer-evidence/v1"
 VALIDATION_SCHEMA = "taskplane.ci-validation/v1"
-VALIDATION_LAYERS = (
-    "static",
-    "exact-selector",
-    "changed-radius",
-    "proportional-suite",
-    "authoritative-ci",
-)
 BUILD_REQUIRED_LAYERS = VALIDATION_LAYERS[:-1]
 
 _DIGEST_FIELDS = ("settings_digest", "runtime_digest", "environment_digest")

@@ -11,17 +11,17 @@ import copy
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Any, Mapping
-
-if TYPE_CHECKING:
-    from taskplane.build_quality import VALIDATION_LAYERS
-elif __package__:
-    from .build_quality import VALIDATION_LAYERS
-else:  # pragma: no cover - direct CLI module loading
-    from build_quality import VALIDATION_LAYERS
+from typing import Any, Mapping
 
 
 SCHEMA = "taskplane.test-strategy/v1"
+VALIDATION_LAYERS = (
+    "static",
+    "exact-selector",
+    "changed-radius",
+    "proportional-suite",
+    "authoritative-ci",
+)
 FAILURE_CLASSES = ("product", "test", "infrastructure", "environment")
 CORRECTION_FIELDS = ("class", "reason", "owner", "cluster")
 FINGERPRINT_INPUTS = (
