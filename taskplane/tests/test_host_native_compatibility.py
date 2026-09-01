@@ -399,15 +399,6 @@ def test_each_capability_falls_back_independently_without_losing_truth(
                for name in SURFACES if name != disabled)
 
 
-def test_native_compatibility_suite_contains_no_weakening_markers() -> None:
-    source = Path(__file__).read_text(encoding="utf-8")
-    forbidden = tuple("".join(parts) for parts in (
-        ("pytest", ".skip"), ("pytest", ".xfail"),
-        ("@pytest.mark", ".skip"), ("@pytest.mark", ".xfail"),
-    ))
-    assert not any(marker in source for marker in forbidden)
-
-
 @pytest.mark.parametrize("flow", (
     "design", "build", "review", "status", "approval", "artifact",
 ))

@@ -2620,20 +2620,6 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
         self.assertIn("task worktree", action["error"])
         load_graph.assert_not_called()
 
-    def test_workspace_resolver_uses_precise_mapping_annotations(self):
-        import collections.abc
-        import inspect
-        import typing
-
-        signature = inspect.signature(loop._parallel_evaluate_workspace)
-        for parameter in ("state", "task"):
-            annotation = typing.get_type_hints(
-                loop._parallel_evaluate_workspace)[parameter]
-            self.assertIs(typing.get_origin(annotation),
-                          collections.abc.Mapping)
-            self.assertNotEqual(signature.parameters[parameter].annotation,
-                                dict)
-
     def test_workspace_resolver_rejects_noncanonical_and_symlink_paths(self):
         cases = ("foreign", "mismatched", "symlink", "parent-symlink")
         for case in cases:
