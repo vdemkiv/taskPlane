@@ -862,7 +862,7 @@ def _walk_repo(tmp: str) -> str:
     return ws
 
 
-def _walk_design_contract(ws, req):
+def _walk_design_contract(ws, req, monkeypatch):
     """A minimal COMPLETE Design Contract (the test_design_workflow.py
     recipe) so the design gate + human approval are reachable."""
     import depgraph
@@ -932,10 +932,34 @@ def _walk_design_contract(ws, req):
         expectation = tp_lite.peek_expectation(
             ws, worker["task_name"], strict=True)
         assert expectation is not None
-        tp_lite.record_design_dispatch_assignment_activity(ws, expectation)
-        assert tp_lite.commit_dispatch_verification(
-            ws, worker["task_name"], worker["model"], expectation, True,
-            worker["reasoning_effort"], strict=True)
+        hook_event = {
+            "cwd": ws,
+            "tool_input": {
+                "task_name": worker["task_name"],
+                "model": worker["model"],
+                "reasoning_effort": worker["reasoning_effort"],
+                "message": worker["role_marker"],
+            },
+        }
+        hook_output = io.StringIO()
+        with monkeypatch.context() as hook:
+            hook.setenv("TASKPLANE_ENFORCE_DISPATCH", "strict")
+            hook.setattr(cli.sys, "stdin", io.StringIO(json.dumps(hook_event)))
+            with contextlib.redirect_stdout(hook_output):
+                assert cli.cmd_screen_dispatch(None) == 0
+        emitted = [json.loads(line) for line in hook_output.getvalue().splitlines()
+                   if line.strip()]
+        assert not any(
+            (row.get("hookSpecificOutput") or {}).get(
+                "permissionDecision") == "deny"
+            for row in emitted
+        ), emitted
+        telemetry = loop.load(ws)["dispatch_telemetry"]
+        observed = next(
+            row for row in telemetry["bindings"]
+            if row["dispatch_id"] == expectation["intent_id"])
+        assert observed["thread_type"] == "lens"
+        assert observed["task_id"] == worker["lens"]
         worker_contract = tp_lite.build_contract(
             f"DESIGN LENS: {worker['lens']}", read_only=True,
             write_allow=[worker["output"]], tools=["Read", "Write"])
@@ -950,14 +974,19 @@ def _walk_design_contract(ws, req):
             ws, worker_contract, snapshot=tp_lite.git_head(ws),
             task_slot_override=worker["task_slot"])
         event = {
-            "cwd": ws, "session_id": "stage-walk-design-session",
+            "hook_event_name": "SubagentStart", "cwd": ws,
+            "session_id": "stage-walk-design-session",
             "agent_id": f"stage-walk-design-agent-{index}",
             "agent_type": worker["task_name"],
             "task_name": worker["task_name"],
             "turn_id": f"stage-walk-design-turn-{index}",
         }
-        host_binding = tp_lite.bind_worker_contract_event(ws, event)
-        tp_lite.record_design_worker_start_activity(ws, host_binding, event)
+        start_output = io.StringIO()
+        with monkeypatch.context() as hook:
+            hook.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+            with contextlib.redirect_stdout(start_output):
+                assert cli.cmd_subagent_start(None) == 0
+        assert "permissionDecision\": \"deny" not in start_output.getvalue()
         result = {
             "schema": "taskplane.design-lens-result/v1",
             "lens": worker["lens"],
@@ -973,9 +1002,35 @@ def _walk_design_contract(ws, req):
         os.makedirs(os.path.dirname(result_path), exist_ok=True)
         with open(result_path, "w", encoding="utf-8") as stream:
             json.dump(result, stream)
-        tp_lite.terminalize_worker_contract(
-            ws, {**event, "outcome": "success"}, outcome="success",
-            submission_status="not_required")
+        transcript = os.path.join(
+            ws, ".taskplane", "test-transcripts", f"design-{index}.jsonl")
+        os.makedirs(os.path.dirname(transcript), exist_ok=True)
+        with open(transcript, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps({"message": {
+                "id": f"design-usage-{index}",
+                "usage": {
+                    "input_tokens": 10,
+                    "input_tokens_details": {"cached_tokens": 4},
+                    "output_tokens": 2,
+                    "total_tokens": 12,
+                },
+            }}) + "\n")
+        stop_event = {
+            **event, "hook_event_name": "SubagentStop",
+            "outcome": "success", "agent_transcript_path": transcript,
+        }
+        stop_output = io.StringIO()
+        with monkeypatch.context() as hook:
+            hook.setattr(cli.sys, "stdin", io.StringIO(json.dumps(stop_event)))
+            with contextlib.redirect_stdout(stop_output):
+                assert cli.cmd_subagent_stop(None) == 0
+        assert "permissionDecision\": \"deny" not in stop_output.getvalue()
+        terminal = next(
+            row for row in loop.load(ws)["dispatch_telemetry"]["dispatches"]
+            if row["dispatch_id"] == expectation["intent_id"])
+        assert terminal["thread_type"] == "lens"
+        assert terminal["events"][-1]["kind"] == "complete"
+        assert terminal["total_tokens"] == 12
         contract["lens_evidence"].append({
             "lens": worker["lens"], "verdict": "pass", "blockers": 0,
             "evidence": "the assigned Design concern was checked",
@@ -1243,7 +1298,7 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
     assert loop.gate(ws, "pass").get("step") != "pm"          # pm gate
     assert loop.load(ws)["step"] == "design"
     nxt("design")
-    _walk_design_contract(ws, req)
+    _walk_design_contract(ws, req, monkeypatch)
     assert loop.gate(ws, "pass")["step"] == "design_approval"  # design gate
     assert nxt("design_approval")["paused"]                    # human gate
     assert loop.approve(ws, by="human — walk")["step"] == "plan"
@@ -1290,7 +1345,8 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
     assert _walk_pass_em(ws, loop.load(ws))["step"] == "signoff"  # em gate
     assert nxt("signoff")["paused"]                            # human gate
     assert loop.approve(ws, by="human — walk")["step"] == "retro"
-    assert loop.retro(ws)["graph_true_up"]["content_fingerprint"]
+    retro = loop.retro(ws)
+    assert retro.get("graph_true_up", {}).get("content_fingerprint"), retro
     assert loop.load(ws)["step"] == "done"
     # every stage_dispatch_path choice on this walk was the task rail,
     # forced by the kill-switch

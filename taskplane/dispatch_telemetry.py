@@ -1021,14 +1021,18 @@ def observe_usage(
                     if row["dispatch_id"] == str(dispatch_id)), None)
     if binding is None:
         raise DispatchTelemetryError("observed usage has no live dispatch binding")
-    if binding.get("finalized_receipt_fingerprint"):
-        raise DispatchTelemetryError("dispatch usage is already finalized")
     source_fingerprint = _sha256_fingerprint(
         source_fingerprint, "usage source fingerprint")
+    normalized = _usage(usage)
+    if binding.get("finalized_receipt_fingerprint"):
+        if binding.get("usage_source_fingerprint") != source_fingerprint or \
+                binding.get("usage") != normalized:
+            raise DispatchTelemetryError(
+                "finalized dispatch usage replay conflicts")
+        return dict(binding)
     prior_source = binding.get("usage_source_fingerprint")
     if prior_source not in (None, source_fingerprint):
         raise DispatchTelemetryError("dispatch usage source changed")
-    normalized = _usage(usage)
     prior = binding.get("usage")
     if isinstance(prior, Mapping) and any(
             normalized[field] < int(prior[field]) for field in _USAGE_FIELDS):
@@ -1080,6 +1084,71 @@ def finalize_usage(
     return result
 
 
+def terminalize_unavailable(
+        ledger: MutableMapping[str, Any], *, dispatch_id: str,
+        ended_at: int | float, outcome: str,
+        reason: str = "provider usage observation is unavailable" \
+        ) -> dict[str, Any]:
+    """Close lifecycle identity when provider usage is unavailable.
+
+    No token counters or positive budget claim are created.  The terminal
+    event remains attributable in Retro, while measured sealing continues to
+    fail because this binding has no authenticated usage receipt.
+    """
+    validate_ledger(ledger)
+    terminal = str(outcome or "").strip()
+    unavailable_reason = str(reason or "").strip()[:1024]
+    if terminal not in TERMINAL_EVENT_KINDS:
+        raise DispatchTelemetryError(
+            "unavailable dispatch terminal outcome is invalid")
+    binding = next((row for row in ledger.get("bindings", [])
+                    if row["dispatch_id"] == str(dispatch_id)), None)
+    if binding is None:
+        raise DispatchTelemetryError(
+            "unavailable terminal outcome has no live dispatch binding")
+    if binding.get("finalized_receipt_fingerprint"):
+        receipt = next((row for row in ledger.get("dispatches", [])
+                        if row.get("fingerprint") == binding.get(
+                            "finalized_receipt_fingerprint")), None)
+        if receipt is None:
+            raise DispatchTelemetryError(
+                "finalized usage receipt is missing")
+        return {"status": "duplicate", "receipt": dict(receipt)}
+    terminal_events = [
+        event for event in binding.get("events") or []
+        if event.get("kind") in TERMINAL_EVENT_KINDS
+    ]
+    if terminal_events:
+        if terminal_events[-1].get("kind") != terminal:
+            raise DispatchTelemetryError(
+                "dispatch terminal outcome conflicts with prior observation")
+        prior_reason = str((terminal_events[-1].get("payload") or {}).get(
+            "unavailable_reason") or "")
+        if prior_reason and prior_reason != unavailable_reason:
+            raise DispatchTelemetryError(
+                "dispatch unavailable reason conflicts with prior observation")
+        return {"status": "duplicate-unavailable",
+                "binding": dict(binding)}
+    binding["ended_at"] = _nonnegative_number(ended_at, "ended_at")
+    binding["events"] = [
+        *list(binding.get("events") or []),
+        dispatch_event(
+            dispatch_id=str(binding["dispatch_id"]),
+            thread_id=str(binding["thread_id"]),
+            thread_type=str(binding["thread_type"]),
+            task_id=str(binding["task_id"]), sequence=len(
+                binding.get("events") or []) + 1,
+            kind=terminal, at=binding["ended_at"], payload={
+                "usage_status": "unavailable",
+                "unavailable_reason": unavailable_reason,
+            }),
+    ]
+    ledger["revision"] = int(ledger["revision"]) + 1
+    validate_ledger(ledger)
+    return {"status": "unavailable", "binding": dict(binding),
+            "reason": unavailable_reason}
+
+
 def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float]:
     """Return the exact four binding counters consumed before dispatch.
 
@@ -1102,6 +1171,9 @@ def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float
     for binding in bindings:
         if binding.get("finalized_receipt_fingerprint") or \
                 str(binding.get("dispatch_id") or "") in receipt_dispatch_ids:
+            continue
+        if any(event.get("kind") in TERMINAL_EVENT_KINDS
+               for event in binding.get("events") or []):
             continue
         usage = binding.get("usage")
         if usage is None:
@@ -1127,6 +1199,16 @@ def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float
 def ledger_usage_capability(ledger: Mapping[str, Any]) -> dict[str, Any]:
     """Project whether this ledger has any real host-token observation."""
     validate_ledger(ledger)
+    terminal_unavailable = [
+        row for row in ledger.get("bindings") or []
+        if row.get("usage") is None and any(
+            event.get("kind") in TERMINAL_EVENT_KINDS
+            for event in row.get("events") or [])
+    ]
+    if terminal_unavailable:
+        return usage_capability(
+            None, reason="one or more terminal attempts have no host token "
+            "totals")
     finalized_ids = {
         str(row.get("dispatch_id") or "")
         for row in ledger.get("dispatches") or []
@@ -1177,7 +1259,9 @@ def closed_wave_metrics_source(
     active = [
         row for row in ledger.get("bindings") or []
         if not row.get("finalized_receipt_fingerprint") and
-        str(row.get("dispatch_id") or "") not in finalized_ids
+        str(row.get("dispatch_id") or "") not in finalized_ids and
+        not any(event.get("kind") in TERMINAL_EVENT_KINDS
+                for event in row.get("events") or [])
     ]
     if active:
         raise DispatchTelemetryError(
@@ -1349,7 +1433,9 @@ def terminal_attempt_attribution(
             if receipt is not None else None
         reason = None
         if not isinstance(usage, Mapping):
-            reason = "provider-usage-unavailable"
+            reason = str(((terminal[-1].get("payload") or {}).get(
+                "unavailable_reason") if terminal else None) or
+                "provider-usage-unavailable")
         elif receipt is None:
             reason = "terminal-receipt-unavailable"
         elif not isinstance(source, str):
@@ -1685,7 +1771,7 @@ def admit(ledger: MutableMapping[str, Any], dispatch: Mapping[str, Any],
         return {
             "schema": "taskplane.dispatch-telemetry-admission/v1",
             "status": "duplicate", "receipt": dict(existing),
-            "budget": budget_projection(ledger, clock),
+            "budget": _post_admission_budget(ledger, clock),
         }
     evidence_fingerprint = None
     if evidence_store is not None:
@@ -1703,5 +1789,24 @@ def admit(ledger: MutableMapping[str, Any], dispatch: Mapping[str, Any],
     return {
         "schema": "taskplane.dispatch-telemetry-admission/v1",
         "status": "admitted", "receipt": dict(receipt),
-        "budget": budget_projection(ledger, clock),
+        "budget": _post_admission_budget(ledger, clock),
     }
+
+
+def _post_admission_budget(ledger: Mapping[str, Any], clock: Clock) \
+        -> dict[str, Any]:
+    """Never roll back a terminal receipt because a sibling is still live."""
+    try:
+        return budget_projection(ledger, clock)
+    except DispatchTelemetryError as exc:
+        return {
+            "schema": BUDGET_SCHEMA,
+            "status": "telemetry_unavailable",
+            "dispatch_allowed": False,
+            "budget_claim": False,
+            "measurement_status": "unavailable",
+            "usage_capability": usage_capability(None, reason=str(exc)),
+            "usage": None,
+            "ceilings": dict(WAVE_BUDGET_CEILINGS),
+            "triggered": [],
+        }

@@ -6836,7 +6836,7 @@ def _default_tier_models() -> dict:
             "deep": settings.stages["design"].model}
 
 
-def reasoning_for_tier(tier: str | None) -> str:
+def reasoning_for_tier(tier: str | None) -> str | None:
     """Resolve a capability tier to Codex's native reasoning effort.
 
     Unlike model ids, reasoning effort is provider-neutral metadata: every
@@ -6867,7 +6867,7 @@ def dispatch_fields(kind: str, agent: str, ref: str,
         "tp-product": "product", "tp-designer": "design",
         "tp-planner": "plan", "tp-executor": "build",
         "tp-evaluator": "evaluate", "tp-fixer": "fix",
-        "tp-engineering": "evaluate",
+        "tp-engineering": "engineering",
     }.get(agent)
     selected = stage or {
         "cheap": "evaluate", "standard": "build", "deep": "design",
@@ -6960,7 +6960,8 @@ def record_expected_dispatch(workspace: str, kind: str, agent: str,
                              reasoning_effort: str | None = None,
                              role_marker_value: str | None = None,
                              dispatch_route: dict | None = None,
-                             intent_id: str | None = None) -> None:
+                             intent_id: str | None = None,
+                             intent_run_id: str | None = None) -> None:
     """Called when a brief is emitted (`loop next` / `lens dispatch`): what
     agent SHOULD be dispatched next, on what model. A queue, not a scalar —
     a parallel wave emits many briefs with different tiers at once."""
@@ -6976,6 +6977,7 @@ def record_expected_dispatch(workspace: str, kind: str, agent: str,
                  reasoning_for_tier(model_tier), "matched": False}
         if intent_id is not None:
             entry["intent_id"] = intent_id
+            entry["intent_run_id"] = intent_run_id
         if isinstance(dispatch_route, dict):
             entry["dispatch_route"] = dispatch_route
         # Emission is observational and may be repeated (refreshing a wave,
@@ -7038,6 +7040,30 @@ def mark_expectation(workspace: str, expected: dict,
                 _save_queue(path, q)
                 return True
     return False
+
+
+def cancel_expected_dispatch(workspace: str, intent_id: str, *,
+                             reason: str) -> bool:
+    """Cancel one never-launched intent after its prepared slot fails."""
+    intent_id = str(intent_id or "").strip()
+    if not intent_id:
+        raise ValueError("dispatch cancellation requires an intent id")
+    path = _dispatch_path(workspace, "expected_dispatch.json")
+    with _file_lock(path):
+        queue = _load_queue_strict(path)
+        matches = [row for row in queue
+                   if row.get("intent_id") == intent_id]
+        if len(matches) != 1:
+            raise StateError(
+                path, "dispatch cancellation is absent or ambiguous")
+        row = matches[0]
+        if row.get("matched") and not row.get("cancelled"):
+            raise StateError(path, "started dispatch cannot be cancelled")
+        row["matched"] = True
+        row["cancelled"] = True
+        row["cancellation_reason"] = str(reason or "")[:512]
+        _save_queue(path, queue)
+    return True
 
 
 def record_observed_dispatch(workspace: str, agent: str, model: str | None,
@@ -7151,6 +7177,54 @@ def dispatch_report(workspace: str) -> dict:
             "dropped, so 'unobserved' and 'mismatches' are a LOWER BOUND "
             "for this run")
     return rep
+
+
+def dispatch_intent_census(workspace: str, run_id: str) -> dict:
+    """Return the emitted native intents for one exact governed run.
+
+    The dispatch audit queue is the live PreToolUse source, not a reconstructed
+    history.  A capped queue cannot prove completeness and is reported as
+    truncated so terminal metrics fail toward unavailable instead of silently
+    undercounting attempts.
+    """
+    run_id = str(run_id or "").strip()
+    if not run_id:
+        raise ValueError("dispatch intent census requires a run id")
+    path = _dispatch_path(workspace, "expected_dispatch.json")
+    with _file_lock(path):
+        queue = _load_queue_strict(path)
+        dropped = _queue_dropped(path)
+    rows = [
+        {
+            "intent_id": str(row.get("intent_id") or ""),
+            "matched": bool(row.get("matched")),
+            "kind": str(row.get("kind") or ""),
+            "ref": str(row.get("ref") or ""),
+            "task_name": str(row.get("task_name") or ""),
+        }
+        for row in queue
+        if row.get("intent_id") and row.get("intent_run_id") == run_id and
+        not row.get("cancelled")
+    ]
+    cancelled = sorted({
+        str(row.get("intent_id")) for row in queue
+        if row.get("intent_id") and row.get("intent_run_id") == run_id and
+        row.get("cancelled")
+    })
+    intent_ids = [row["intent_id"] for row in rows]
+    return {
+        "run_id": run_id,
+        "rows": rows,
+        "intent_ids": sorted(set(intent_ids)),
+        "unmatched_intent_ids": sorted({
+            row["intent_id"] for row in rows if not row["matched"]}),
+        "duplicate_intent_ids": sorted({
+            intent_id for intent_id in intent_ids
+            if intent_ids.count(intent_id) > 1}),
+        "truncated": bool(dropped or len(queue) >= _QUEUE_CAP),
+        "dropped": dropped,
+        "cancelled_intent_ids": cancelled,
+    }
 
 
 def _now() -> float:

@@ -535,11 +535,6 @@ _FOCUSED_STAGE_LENSES = {
         "data-safety", "privacy-compliance",
     }),
 }
-_FOCUSED_STAGE_DEFAULTS = {
-    "product": ("product",),
-    "design": ("solution-design",),
-    "plan": ("architecture", "project-management", "testability"),
-}
 _FOCUSED_STAGE_KEYWORDS = {
     "architecture": ("architecture", "canonical", "control plane", "modular"),
     "backend": ("loader", "orchestrator", "state machine", "typed"),
@@ -611,8 +606,15 @@ def _focused_stage_route(
     definitions = list(catalog.get("lenses") or [])
     known = {str(row.get("id") or "") for row in definitions}
     explicit = mandatory_lenses is not None
-    mandatory = tuple(str(lens_id) for lens_id in (
-        mandatory_lenses if explicit else _FOCUSED_STAGE_DEFAULTS[stage]))
+    if mandatory_lenses is None:
+        effective = operational_settings.load_settings(
+            environment=os.environ)
+        policy = effective.lenses.policy_for(
+            stage, catalog_ids=known)
+        mandatory_lenses = policy.mandatory
+        if maximum_lenses is None:
+            maximum_lenses = policy.max_count
+    mandatory = tuple(str(lens_id) for lens_id in mandatory_lenses)
     if not mandatory or len(set(mandatory)) != len(mandatory) or \
             not set(mandatory) <= known:
         raise lens_route_policy.LensRoutePolicyError(
@@ -1308,7 +1310,7 @@ def _design_control_plane_errors(ws: str, state: Mapping[str, object]) \
 
 def _design_team_plan(
     ws: str, state: Mapping[str, object], focused_route: Mapping[str, object],
-    dispatch: Mapping[str, object],
+    dispatch: Mapping[str, object], *, effective_settings=None,
 ) -> dict:
     """Compile and authorize one native quick worker per selected lens."""
     del dispatch  # Design workers resolve one canonical settings snapshot.
@@ -1325,7 +1327,8 @@ def _design_team_plan(
     if any(value is None for value in briefs.values()):
         raise ValueError("Design lens team contains an unknown catalog lens")
     role_reference = tp.portable_role_reference("tp-lens")
-    effective = operational_settings.load_settings(environment=os.environ)
+    effective = effective_settings or operational_settings.load_settings(
+        environment=os.environ)
     design_stage = effective.stages["design"]
     workers = []
     for lens_id in selected:
@@ -5809,12 +5812,27 @@ def _ensure_dispatch_telemetry(ws: str) -> dict:
         return dict(ledger)
 
 
-def _dispatch_binding_for_task(
-        ledger: Mapping[str, object], task_id: str) -> dict | None:
-    return next((dict(row) for row in reversed(
-        list(ledger.get("bindings") or []))
-        if row.get("task_id") == task_id and
-        not row.get("finalized_receipt_fingerprint")), None)
+def _dispatch_binding_for_attempt(
+        ledger: Mapping[str, object], task_id: str,
+        native_task_name: str | None = None,
+        dispatch_id: str | None = None) -> dict | None:
+    matches = [dict(row) for row in ledger.get("bindings") or []
+               if row.get("task_id") == task_id and
+               (dispatch_id is None or row.get("dispatch_id") == dispatch_id) and
+               (native_task_name is None or
+                row.get("thread_id") == native_task_name)]
+    if len(matches) > 1:
+        raise dispatch_telemetry.DispatchTelemetryError(
+            "native dispatch attempt binding is ambiguous")
+    return matches[0] if matches else None
+
+
+def _invalidate_terminal_metrics(state: dict) -> None:
+    """A later authenticated observation supersedes cached terminal absence."""
+    for field in (
+            "wave_metrics_evidence", "wave_metrics_receipt",
+            "wave_metrics_unavailable", "terminal_metrics"):
+        state.pop(field, None)
 
 
 
@@ -5823,8 +5841,8 @@ def record_native_dispatch_observation(
         native_task_name: str) -> dict:
     """Bind one actual Codex spawn to its emitted native intent."""
     intent_id = str(expected.get("intent_id") or "").strip()
-    task_id = str(expected.get("ref") or "").strip()
-    if not intent_id or not task_id:
+    dispatch_ref = str(expected.get("ref") or "").strip()
+    if not intent_id or not dispatch_ref:
         return {"status": "unavailable",
                 "reason": "native dispatch intent identity is unavailable"}
     _ensure_dispatch_telemetry(ws)
@@ -5833,11 +5851,77 @@ def record_native_dispatch_observation(
             raise dispatch_telemetry.DispatchTelemetryError("no active loop")
         ledger = locked.get("dispatch_telemetry")
         dispatch_telemetry.validate_ledger(ledger)
-        task = next((row for row in locked.get("tasks") or []
-                     if str(row.get("id") or "") == task_id), None)
-        if not isinstance(task, Mapping):
+        if str(expected.get("intent_run_id") or "") != str(
+                locked.get("run_id") or ""):
             raise dispatch_telemetry.DispatchTelemetryError(
-                "native dispatch task is absent from the active Plan")
+                "native dispatch intent belongs to another governed run")
+        design_authority = expected.get("design_host_authority")
+        if design_authority is not None:
+            if not isinstance(design_authority, Mapping) or \
+                    design_authority.get("schema") != \
+                    tp.DESIGN_LENS_HOST_AUTHORITY_SCHEMA:
+                raise dispatch_telemetry.DispatchTelemetryError(
+                    "native Design dispatch authority is invalid")
+            worker = design_authority.get("worker_binding")
+            intent = design_authority.get("dispatch_intent")
+            team_plan = str(design_authority.get(
+                "team_plan_fingerprint") or "")
+            if not isinstance(worker, Mapping) or \
+                    not isinstance(intent, Mapping):
+                raise dispatch_telemetry.DispatchTelemetryError(
+                    "native Design dispatch binding is incomplete")
+            task_slot = str(worker.get("task_slot") or "").strip()
+            lens = str(worker.get("lens") or "").strip()
+            task_name = str(worker.get("task_name") or "").strip()
+            if (expected.get("kind") != "design-lens" or
+                    expected.get("agent") != "tp-lens" or
+                    not task_slot or not lens or not team_plan or
+                    dispatch_ref != f"{team_plan}:{lens}" or
+                    task_name != str(native_task_name or "") or
+                    expected.get("task_name") != task_name or
+                    intent.get("fingerprint") != intent_id or
+                    intent.get("task_slot") != task_slot or
+                    intent.get("lens") != lens or
+                    intent.get("task_name") != task_name or
+                    intent.get("model") != worker.get("model") or
+                    intent.get("reasoning_effort") !=
+                    worker.get("reasoning_effort")):
+                raise dispatch_telemetry.DispatchTelemetryError(
+                    "native Design dispatch identity is severed")
+            task_id = lens
+            dependencies: list[str] = []
+            correction_count = 0
+            thread_type = "lens"
+        elif expected.get("kind") == "step":
+            active_step = str(locked.get("step") or "")
+            if active_step not in STEP_ROLE or \
+                    expected.get("agent") != STEP_ROLE[active_step]:
+                raise dispatch_telemetry.DispatchTelemetryError(
+                    "native stage dispatch does not match the active loop step")
+            task = next((row for row in locked.get("tasks") or []
+                         if str(row.get("id") or "") == dispatch_ref), None)
+            if task is None and dispatch_ref != active_step:
+                raise dispatch_telemetry.DispatchTelemetryError(
+                    "native stage dispatch task is absent from the active loop")
+            task_id = dispatch_ref
+            dependencies = ([str(value) for value in task.get("deps") or []]
+                            if isinstance(task, Mapping) else [])
+            correction_count = (int(task.get("fix_cycles") or 0)
+                                if isinstance(task, Mapping) else 0)
+            thread_type = {
+                "evaluate": "evaluator",
+                "em": "guardian",
+            }.get(active_step, "worker")
+        else:
+            task_id = dispatch_ref
+            task = next((row for row in locked.get("tasks") or []
+                         if str(row.get("id") or "") == task_id), None)
+            if not isinstance(task, Mapping):
+                raise dispatch_telemetry.DispatchTelemetryError(
+                    "native dispatch task is absent from the active Plan")
+            dependencies = [str(value) for value in task.get("deps") or []]
+            correction_count = int(task.get("fix_cycles") or 0)
+            thread_type = "worker"
         existing = next((row for row in ledger.get("bindings") or []
                          if row.get("dispatch_id") == intent_id), None)
         observed_at = ((existing or {}).get(
@@ -5845,59 +5929,91 @@ def record_native_dispatch_observation(
         return dispatch_telemetry.bind_dispatch(ledger, {
             "dispatch_id": intent_id,
             "thread_id": str(native_task_name or intent_id),
-            "thread_type": "worker",
+            "thread_type": thread_type,
             "task_id": task_id,
-            "dependencies": [str(value) for value in task.get("deps") or []],
+            "dependencies": dependencies,
             "shared_owner": None,
             "started_at": observed_at,
             "ended_at": ((existing or {}).get("ended_at", observed_at)),
             "wait_duration_seconds": 0,
-            "correction_count": int(task.get("fix_cycles") or 0),
+            "correction_count": correction_count,
             "events": list((existing or {}).get("events") or []),
         })
 
 def record_observed_dispatch_usage(
         ws: str, *, task_id: str, normalized_usage: Mapping[str, object],
-        source: str) -> dict:
+        source: str | None = None, source_fingerprint: str | None = None,
+        native_task_name: str | None = None,
+        dispatch_id: str | None = None) -> dict:
     """Production hook adapter: persist observed cumulative provider usage."""
     usage = spend.dispatch_usage(dict(normalized_usage))
-    source_fingerprint = hashlib.sha256(
-        os.path.realpath(str(source or "")).encode("utf-8")).hexdigest()
+    observed_source = str(source_fingerprint or "").strip()
+    if not observed_source:
+        observed_source = hashlib.sha256(
+            os.path.realpath(str(source or "")).encode("utf-8")).hexdigest()
     with mutate(ws) as locked:
         if locked is None:
             raise dispatch_telemetry.DispatchTelemetryError("no active loop")
         ledger = locked.get("dispatch_telemetry")
         dispatch_telemetry.validate_ledger(ledger)
-        binding = _dispatch_binding_for_task(ledger, str(task_id))
+        binding = _dispatch_binding_for_attempt(
+            ledger, str(task_id), native_task_name, dispatch_id)
         if binding is None:
             raise dispatch_telemetry.DispatchTelemetryError(
                 "observed usage has no task dispatch binding")
-        return dispatch_telemetry.observe_usage(
+        result = dispatch_telemetry.observe_usage(
             ledger, dispatch_id=str(binding["dispatch_id"]), usage=usage,
-            source_fingerprint=source_fingerprint)
+            source_fingerprint=observed_source)
+        _invalidate_terminal_metrics(locked)
+        return result
 
 
 def finalize_observed_dispatch_usage(
-        ws: str, *, task_id: str, ended_at: float | None = None) -> dict:
+        ws: str, *, task_id: str, ended_at: float | None = None,
+        outcome: str = "complete", native_task_name: str | None = None,
+        usage_unavailable: bool = False,
+        unavailable_reason: str | None = None,
+        dispatch_id: str | None = None) -> dict:
     """Finalize one hook-observed dispatch into the binding budget ledger."""
+    terminal_kind = {
+        "success": "complete", "complete": "complete",
+        "failure": "failed", "failed": "failed",
+        "cancellation": "cancelled", "cancelled": "cancelled",
+        "interruption": "interrupted", "interrupted": "interrupted",
+        "handoff": "handoff",
+    }.get(str(outcome or "").strip().lower())
+    if terminal_kind is None:
+        raise dispatch_telemetry.DispatchTelemetryError(
+            "dispatch terminal outcome is invalid")
     clock = SystemClock()
     with mutate(ws) as locked:
         if locked is None:
             raise dispatch_telemetry.DispatchTelemetryError("no active loop")
         ledger = locked.get("dispatch_telemetry")
         dispatch_telemetry.validate_ledger(ledger)
-        binding = _dispatch_binding_for_task(ledger, str(task_id))
+        binding = _dispatch_binding_for_attempt(
+            ledger, str(task_id), native_task_name, dispatch_id)
         if binding is None:
             return {"status": "unavailable", "reason":
                     "task dispatch binding is unavailable"}
         if binding.get("usage") is None:
-            return {"status": "unavailable", "reason":
-                    "provider usage observation is unavailable"}
-        return dispatch_telemetry.finalize_usage(
-            ledger, dispatch_id=str(binding["dispatch_id"]),
-            ended_at=float(ended_at if ended_at is not None
-                           else clock.wall_time()), clock=clock,
-            events=[{"kind": "complete", "sequence": 1}])
+            if not usage_unavailable:
+                return {"status": "unavailable", "reason":
+                        "provider usage observation is unavailable"}
+            result = dispatch_telemetry.terminalize_unavailable(
+                ledger, dispatch_id=str(binding["dispatch_id"]),
+                ended_at=float(ended_at if ended_at is not None
+                               else clock.wall_time()), outcome=terminal_kind,
+                reason=str(unavailable_reason or
+                           "provider usage observation is unavailable"))
+        else:
+            result = dispatch_telemetry.finalize_usage(
+                ledger, dispatch_id=str(binding["dispatch_id"]),
+                ended_at=float(ended_at if ended_at is not None
+                               else clock.wall_time()), clock=clock,
+                events=[{"kind": terminal_kind, "sequence": 1}])
+        _invalidate_terminal_metrics(locked)
+        return result
 
 
 def _verified_stage_loop_wave_split(
@@ -6338,6 +6454,19 @@ def wave(ws: str) -> dict:
                                   "shared_owner": "scope"})
         ready, held = selected, [*held, *remaining]
 
+    effective_settings = operational_settings.load_settings(
+        environment=os.environ)
+    configured_concurrency = effective_settings.build.concurrency
+    if isinstance(configured_concurrency, int) and \
+            len(ready) > configured_concurrency:
+        overflow = ready[configured_concurrency:]
+        ready = ready[:configured_concurrency]
+        held = [*held, *({
+            "task": task["id"],
+            "reason": "configured build concurrency cap — next wave",
+            "shared_owner": "settings",
+        } for task in overflow)]
+
     for ready_task in ready:
         if staged_refusal := _staged_dispatch_refusal(ready_task):
             tp.trace(ws, "loop_staged_dispatch_blocked",
@@ -6375,7 +6504,8 @@ def wave(ws: str) -> dict:
         task_id = str(task["id"])
         dispatch = tp.dispatch_fields(
             "step", "tp-executor", task_id,
-            tp.step_tier("execute", task))
+            tp.step_tier("execute", task),
+            settings_context=effective_settings)
         dispatches[task_id] = dispatch
         intent = _native_dispatch_intent(
             ws, state, step="execute", task_id=task_id,
@@ -6862,6 +6992,16 @@ def next_action(
             ws, host=tp.host(), environment=os.environ)
         if step == "evaluate" or any(name in os.environ
                                      for name in capability_vars) else None)
+    try:
+        effective_settings = operational_settings.load_settings(
+            environment=os.environ)
+    except operational_settings.SettingsError as exc:
+        return {"error": "operational settings failed closed: " + str(exc),
+                "step": step, "status": status(ws)}
+    if state.get("settings_digest") not in (None, effective_settings.digest):
+        return {"error": "operational settings changed during the active "
+                         "governed transition",
+                "step": step, "status": status(ws)}
 
     worker_task = _current_task(state)
     worker_ref = str((worker_task or {}).get("id") or step)
@@ -6871,7 +7011,8 @@ def next_action(
         "step", STEP_ROLE[step], dispatch_ref,
         tp.step_tier(step, worker_task),
         capability_snapshot=capability_snapshot,
-        enforcement_mode=os.environ.get("TASKPLANE_ENFORCE_DISPATCH"))
+        enforcement_mode=os.environ.get("TASKPLANE_ENFORCE_DISPATCH"),
+        settings_context=effective_settings)
     if dispatch.get("dispatch_blocked"):
         tp.trace(ws, "dispatch_route_resolved", step=step,
                  task=(worker_task or {}).get("id"), resolution="blocked",
@@ -6999,7 +7140,19 @@ def next_action(
         try:
             stage_evidence, mandatory = _focused_stage_evidence(
                 ws, state, focused_stage)
-            maximum_lenses = None
+            catalog_ids = {
+                str(row.get("id") or "")
+                for row in lens_router.load_catalog().get("lenses") or []
+                if isinstance(row, Mapping) and row.get("id")
+            }
+            stage_policy = effective_settings.lenses.policy_for(
+                focused_stage, catalog_ids=catalog_ids)
+            if mandatory is not None and tuple(mandatory) != \
+                    tuple(stage_policy.mandatory):
+                raise lens_route_policy.LensRoutePolicyError(
+                    "Plan route evidence disagrees with canonical settings")
+            mandatory = list(stage_policy.mandatory)
+            maximum_lenses = stage_policy.max_count
             if focused_stage == "design" and design_decomposition is not None \
                     and design_lens_policy is not None:
                 stage_evidence = dict(stage_evidence)
@@ -7058,7 +7211,8 @@ def next_action(
     if step == "design" and isinstance(focused_route, Mapping):
         try:
             design_team_plan = _design_team_plan(
-                ws, state, focused_route, dispatch)
+                ws, state, focused_route, dispatch,
+                effective_settings=effective_settings)
             with mutate(ws) as fresh:
                 if fresh is None or fresh.get("step") != "design" or \
                         fresh.get("design_control_plane_binding") != \
@@ -7270,12 +7424,6 @@ def next_action(
     tp.trace(ws, "model_tier", step=step,
              task=(task or {}).get("id"), tier=model_tier, model=model,
              reasoning_effort=reasoning_effort)
-    tp.record_expected_dispatch(ws, "step", STEP_ROLE[step], model_tier,
-                                model, ref=(task or {}).get("id") or step,
-                                task_name=task_name,
-                                reasoning_effort=reasoning_effort,
-                                role_marker_value=dispatch["role_marker"],
-                                dispatch_route=dispatch.get("dispatch_route"))
     if dispatch.get("dispatch_route"):
         tp.trace(ws, "dispatch_route_resolved", step=step,
                  task=(task or {}).get("id"),
@@ -7404,11 +7552,28 @@ def next_action(
                     "step": step, "status": status(ws)}
         if stage_dispatch is not None:
             result["stage_runtime_dispatch"] = stage_dispatch
+    dispatch_member = str((task or {}).get("id") or step)
+    dispatch_intent = _native_dispatch_intent(
+        ws, state, step=step, task_id=dispatch_member,
+        dispatch=dispatch, wait_policy=dispatch_wait_policy)
+    intent_id = str(dispatch_intent.get("intent_id") or "")
+    intent_identity = dispatch_intent.get("identity") or {}
+    intent_run_id = str(intent_identity.get("run_id") or "") \
+        if isinstance(intent_identity, Mapping) else ""
+    if not intent_id or not intent_run_id:
+        return {"error": "native dispatch intent has no exact run identity",
+                "step": step, "status": status(ws)}
+    contract["worker_lifecycle"]["dispatch_intent_id"] = intent_id
+    contract["worker_lifecycle"]["dispatch_intent_run_id"] = intent_run_id
+    tp.record_expected_dispatch(
+        ws, "step", STEP_ROLE[step], model_tier, model,
+        ref=dispatch_member, task_name=task_name,
+        reasoning_effort=reasoning_effort,
+        role_marker_value=dispatch["role_marker"],
+        dispatch_route=dispatch.get("dispatch_route"),
+        intent_id=intent_id, intent_run_id=intent_run_id)
+    result["dispatch_intent"] = dispatch_intent
     if step in {"execute", "evaluate", "fix"}:
-        dispatch_member = str((task or {}).get("id") or step)
-        result["dispatch_intent"] = _native_dispatch_intent(
-            ws, state, step=step, task_id=dispatch_member,
-            dispatch=dispatch, wait_policy=dispatch_wait_policy)
         result["wait_invocation"] = event_wait_invocation(
             dispatch_wait_policy, [dispatch_member])
     lifecycle = contract["worker_lifecycle"]
@@ -7434,8 +7599,37 @@ def next_action(
             act_ws, stage=step, task=worker_ref,
             keep_slot=contract["task_slot"])
     except Exception as exc:
+        recovery_errors = []
+        try:
+            tp.cancel_expected_dispatch(
+                ws, intent_id, reason="worker-contract-activation-failed")
+        except Exception as recovery_exc:
+            recovery_errors.append(
+                "intent cancellation failed: "
+                f"{recovery_exc.__class__.__name__}: {recovery_exc}")
+        try:
+            active = tp.worker_contract_for_stage(
+                act_ws, stage=step, task=worker_ref)
+            if isinstance(active, Mapping) and active.get("contract", {}).get(
+                    "task_id") == contract.get("task_id"):
+                active_contract = active["contract"]
+                receipt = tp.record_worker_terminal(
+                    act_ws, str(active["slot"]), event=None,
+                    outcome="interruption",
+                    submission_status="activation_failed",
+                    authority="loop-gate")
+                tp.release_worker_contract(
+                    act_ws, str(active["slot"]),
+                    action=active_contract["worker_lifecycle"][
+                        "release_action"], terminal_receipt=receipt)
+        except Exception as recovery_exc:
+            recovery_errors.append(
+                "slot quarantine failed: "
+                f"{recovery_exc.__class__.__name__}: {recovery_exc}")
         return {"error": "worker contract activation failed closed: "
                          f"{exc.__class__.__name__}: {exc}",
+                **({"recovery_errors": recovery_errors}
+                   if recovery_errors else {}),
                 "step": step, "status": status(ws)}
     return result
 
@@ -9758,13 +9952,10 @@ def submit(ws: str, outcome: str, note: str = "",
                 locked["_submission"] = submission
     telemetry_finalization = None
     if step == "execute" and submission.get("task"):
-        try:
-            telemetry_finalization = finalize_observed_dispatch_usage(
-                ws, task_id=str(submission["task"]),
-                ended_at=float(submission["submitted_at"]))
-        except dispatch_telemetry.DispatchTelemetryError as exc:
-            telemetry_finalization = {
-                "status": "unavailable", "reason": str(exc)}
+        telemetry_finalization = {
+            "status": "pending-host-lifecycle",
+            "reason": "SubagentStop owns exact native usage terminalization",
+        }
     tp.trace(ws, "loop_submit", step=step, task=submission.get("task"),
              outcome=outcome, fingerprint=submission["fingerprint"][:12])
     return {"submitted": True, "transitioned": False,
@@ -10899,7 +11090,7 @@ def _signoff_gate_dod(ws: str, state: dict) -> dict:
     }
 
 
-def _seal_terminal_metrics_before_retro(state: dict) -> dict:
+def _seal_terminal_metrics_before_retro(ws: str, state: dict) -> dict:
     """Set measured or explicit attributable-unavailable terminal truth."""
     existing = state.get("wave_metrics_receipt")
     if isinstance(existing, Mapping):
@@ -10938,6 +11129,32 @@ def _seal_terminal_metrics_before_retro(state: dict) -> dict:
         if not isinstance(ledger, Mapping):
             raise wave_metrics.WaveMetricsError(
                 "terminal dispatch ledger is unavailable")
+        run_id = str(state.get("run_id") or "").strip()
+        if not run_id:
+            raise wave_metrics.WaveMetricsError(
+                "terminal dispatch intent census has no run identity")
+        census = tp.dispatch_intent_census(ws, run_id)
+        if census["truncated"]:
+            raise wave_metrics.WaveMetricsError(
+                "terminal dispatch intent census is truncated")
+        if census["duplicate_intent_ids"]:
+            raise wave_metrics.WaveMetricsError(
+                "terminal dispatch intent census contains duplicate intents")
+        if census["unmatched_intent_ids"]:
+            raise wave_metrics.WaveMetricsError(
+                "terminal dispatch intent census contains unstarted intents")
+        expected_intents = set(census["intent_ids"])
+        observed_intents = {
+            str(row.get("dispatch_id") or "")
+            for row in ledger.get("bindings") or []
+            if isinstance(row, Mapping)
+        }
+        if not expected_intents or expected_intents != observed_intents:
+            missing = sorted(expected_intents - observed_intents)
+            unexpected = sorted(observed_intents - expected_intents)
+            raise wave_metrics.WaveMetricsError(
+                "terminal dispatch intent census does not match the usage "
+                f"ledger (missing={missing}, unexpected={unexpected})")
         if upper_bound is not None and (
                 isinstance(upper_bound, bool) or
                 not isinstance(upper_bound, int) or upper_bound < 0):
@@ -11346,7 +11563,7 @@ def _complete_whole_run_terminal(
             raise ValueError("whole-run terminal replay lost its run")
         _validate_whole_run_terminal_intent(ws, locked, intent)
         locked["terminal_metrics"] = _seal_terminal_metrics_before_retro(
-            locked)
+            ws, locked)
     state = load(ws) or state
     activity = _publish_whole_run_terminal_activity(ws, state, intent)
     terminal_artifacts = state.get("terminal_artifacts")
@@ -12154,7 +12371,7 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             return {"error": "Definition of Done failed — sign-off cannot "
                              "complete until the evidence is repaired",
                     "step": "signoff", "dod": dod}
-        terminal_metrics = _seal_terminal_metrics_before_retro(state)
+        terminal_metrics = _seal_terminal_metrics_before_retro(ws, state)
         state["terminal_metrics"] = terminal_metrics
         state["step"] = "retro"
         tp.trace(ws, "loop_approve", gate="em_signoff", final="retro", by=by)
@@ -12677,7 +12894,7 @@ def retro(ws: str) -> dict:
                 return {"error": "terminal metrics cannot be sealed outside "
                                  "Retro", "step": (locked or {}).get("step")}
             locked["terminal_metrics"] = \
-                _seal_terminal_metrics_before_retro(locked)
+                _seal_terminal_metrics_before_retro(ws, locked)
 
     @contextlib.contextmanager
     def prepare_only_mutate(workspace: str):

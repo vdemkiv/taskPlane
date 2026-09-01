@@ -33,8 +33,9 @@ red; about 15 critical-path minutes, 38 runner-minutes, and 2.59x parallelism;
 Targets are 100% settings ownership and zero duplicate defaults; at most 230
 test files and 4,200 cases with at least six redundant families removed; exact
 p95 at most 60 seconds and proportional p95 at most five minutes; first CI
-within two hours, at most three matrices, at most 30 runner-minutes, and at
-least 4x parallelism when four shards exist; zero leaks and active worktrees at
+within two hours, one authoritative workflow with one unsharded suite, at
+most 28 runner-minutes, and at least 4x parallelism when four disjoint
+validation domains exist; zero leaks and active worktrees at
 most active shards plus one; 100M total and 15M uncached observed tokens; at
 most 24 planned sessions; active delivery at most eight hours and the phase
 through Retro at most twelve hours.

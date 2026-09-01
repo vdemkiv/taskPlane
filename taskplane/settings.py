@@ -22,10 +22,17 @@ from taskplane.settings_legacy import (
 
 
 DEFAULT_SETTINGS_PATH = Path(__file__).with_name("operational-settings.json")
+DEFAULT_LENS_CATALOG_PATH = \
+    Path(__file__).resolve().parent.parent / "lenses" / "catalog.json"
 RECEIPT_SCHEMA = "taskplane.operational-settings-receipt/v1"
-STAGES = ("product", "design", "plan", "build", "evaluate", "fix")
-ZERO_LENS_STAGES = frozenset(("build", "evaluate", "fix"))
+STAGES = (
+    "product", "design", "plan", "build", "evaluate", "fix",
+    "engineering",
+)
+ROUTED_LENS_STAGES = frozenset(("product", "design", "plan"))
+ZERO_LENS_STAGES = frozenset(("build", "evaluate", "fix", "engineering"))
 DESIGN_LENS_MAX = 16
+PLAN_LENS_MAX = 4
 REASONING = frozenset(("inherit", "low", "medium", "high", "xhigh", "max", "ultra"))
 TEST_SELECTIONS = frozenset(("targeted", "affected", "all"))
 _SECRET_PARTS = ("secret", "password", "credential", "private_key", "access_token", "api_key")
@@ -105,7 +112,7 @@ def _freeze(value: Mapping[str, Any]) -> Mapping[str, Any]:
 @dataclass(frozen=True)
 class StageSettings:
     model: str | None
-    reasoning: str
+    reasoning: str | None
 
     def to_dict(self) -> dict[str, Any]:
         return {"model": self.model, "reasoning": self.reasoning}
@@ -418,7 +425,10 @@ def _nonnegative_number(value: object, label: str) -> int | float:
     return value
 
 
-def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> OperationalSettings:
+def _validate_and_type(
+    data: Mapping[str, Any], receipt: Mapping[str, Any], *,
+    catalog_ids: frozenset[str],
+) -> OperationalSettings:
     if data.get("schema") != CURRENT_SCHEMA:
         raise SettingsError("unsupported operational settings schema")
     stages_raw = _plain_mapping(data.get("stages"), "stages")
@@ -430,10 +440,15 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
             model = None
         if model is not None and (not isinstance(model, str) or not model.strip()):
             raise SettingsError(f"stages.{name}.model must be inherit or a non-empty string")
+        if isinstance(model, str):
+            model = model.strip()
         reasoning = row.get("reasoning")
         if reasoning not in REASONING:
             raise SettingsError(f"stages.{name}.reasoning is unsupported")
-        stages[name] = StageSettings(model=model, reasoning=str(reasoning))
+        stages[name] = StageSettings(
+            model=model,
+            reasoning=None if reasoning == "inherit" else str(reasoning),
+        )
 
     lenses_raw = _plain_mapping(data.get("lenses"), "lenses")
     routes_raw = _plain_mapping(lenses_raw.get("routing"), "lenses.routing")
@@ -446,20 +461,30 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
             raise SettingsError(f"lenses.routing.{name} must be a string list")
         if len(set(route)) != len(route):
             raise SettingsError(f"lenses.routing.{name} contains conflicting duplicates")
+        unknown = sorted(set(route) - catalog_ids)
+        if unknown:
+            raise SettingsError(
+                f"lenses.routing.{name} contains unknown catalog ids: "
+                + ", ".join(unknown))
         routing[name] = tuple(route)
         counts[name] = _positive_int(counts_raw.get(name), f"lenses.counts.{name}", zero=True)
+        if len(routing[name]) > counts[name]:
+            raise SettingsError(
+                f"lenses.routing.{name} cannot exceed its maximum count")
     for name in ZERO_LENS_STAGES:
         if routing[name] or counts[name] != 0:
             raise SettingsError(
                 f"{name} must preserve the zero lens worker invariant")
+    for name in ROUTED_LENS_STAGES:
+        if not routing[name] or counts[name] == 0:
+            raise SettingsError(
+                f"lenses.routing.{name} requires a mandatory catalog lens")
     if counts["design"] > DESIGN_LENS_MAX:
         raise SettingsError(
             f"lenses.counts.design cannot exceed {DESIGN_LENS_MAX}")
-    if not routing["design"]:
-        raise SettingsError("lenses.routing.design requires a mandatory lens")
-    if len(routing["design"]) > counts["design"]:
+    if counts["plan"] > PLAN_LENS_MAX:
         raise SettingsError(
-            "lenses.routing.design cannot exceed its maximum count")
+            f"lenses.counts.plan cannot exceed {PLAN_LENS_MAX}")
 
     build_raw = _plain_mapping(data.get("build"), "build")
     build_shards = _positive_int(build_raw.get("shards"), "build.shards")
@@ -508,6 +533,9 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
     inheritance_raw = _plain_mapping(workflow_raw.get("worker_inheritance"), "workflow.worker_inheritance")
     if any(not isinstance(inheritance_raw.get(key), bool) for key in ("model", "reasoning")):
         raise SettingsError("workflow worker inheritance values must be boolean")
+    if not all(inheritance_raw[key] for key in ("model", "reasoning")):
+        raise SettingsError(
+            "workflow worker inheritance cannot disable canonical dispatch fields")
 
     cleanup_raw = _plain_mapping(data.get("cleanup"), "cleanup")
     if cleanup_raw.get("worktrees") not in {"after-merge", "retain", "manual"}:
@@ -576,6 +604,8 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         raise SettingsError("observability values must be boolean")
     if observable_raw["include_values"]:
         raise SettingsError("observability cannot include raw setting values")
+    if not observable_raw["receipt"]:
+        raise SettingsError("observability receipts cannot be disabled")
 
     test_shards = _positive_int(tests_raw.get("shards"), "tests.shards")
     normalized = {
@@ -639,6 +669,27 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SettingsError(f"cannot read valid settings JSON: {exc}") from exc
     return _plain_mapping(raw, "settings")
+
+
+def _read_lens_catalog() -> tuple[frozenset[str], str]:
+    """Return the one packaged catalog used to validate executable routes."""
+    catalog = _read_json(DEFAULT_LENS_CATALOG_PATH)
+    rows = catalog.get("lenses")
+    if not isinstance(rows, list) or not rows:
+        raise SettingsError("lens catalog must contain a non-empty lenses list")
+    ids: list[str] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            raise SettingsError(f"lens catalog row {index} must be an object")
+        lens_id = row.get("id")
+        if not isinstance(lens_id, str) or not lens_id.strip() or \
+                lens_id != lens_id.strip():
+            raise SettingsError(
+                f"lens catalog row {index} has an invalid id")
+        ids.append(lens_id)
+    if len(set(ids)) != len(ids):
+        raise SettingsError("lens catalog contains duplicate ids")
+    return frozenset(ids), _digest(catalog)
 
 
 def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
@@ -833,7 +884,10 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         "environment": environment_receipt,
         "overlay": overlay_receipt,
     }
-    return _validate_and_type(effective, receipt)
+    catalog_ids, catalog_digest = _read_lens_catalog()
+    receipt["lens_catalog_digest"] = catalog_digest
+    return _validate_and_type(
+        effective, receipt, catalog_ids=catalog_ids)
 
 
 def settings_digest(settings: OperationalSettings | Mapping[str, Any]) -> str:
@@ -851,11 +905,12 @@ def settings_receipt(settings: OperationalSettings) -> dict[str, Any]:
 
 __all__ = [
     "BuildSettings", "CleanupSettings", "DashboardRefreshSettings",
-    "DashboardSettings", "DEFAULT_SETTINGS_PATH",
+    "DashboardSettings", "DEFAULT_LENS_CATALOG_PATH", "DEFAULT_SETTINGS_PATH",
     "LensSettings", "LimitSettings", "ObservabilitySettings",
     "OperationalSettings", "OverrideSettings", "RuntimeSettings",
     "REQUIRED_DASHBOARD_LIFECYCLE_EVENTS", "SettingsError",
     "StageLensPolicy", "StageSettings", "TestSettings", "WorkflowSettings",
-    "ZERO_LENS_STAGES", "DESIGN_LENS_MAX", "load_settings",
+    "STAGES", "ROUTED_LENS_STAGES", "ZERO_LENS_STAGES",
+    "DESIGN_LENS_MAX", "PLAN_LENS_MAX", "load_settings",
     "settings_digest", "settings_receipt",
 ]

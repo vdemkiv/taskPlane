@@ -6,24 +6,27 @@
     "plan": {"model": "inherit", "reasoning": "high"},
     "build": {"model": "inherit", "reasoning": "high"},
     "evaluate": {"model": "inherit", "reasoning": "high"},
-    "fix": {"model": "inherit", "reasoning": "high"}
+    "fix": {"model": "inherit", "reasoning": "high"},
+    "engineering": {"model": "inherit", "reasoning": "high"}
   },
   "lenses": {
     "routing": {
       "product": ["product"],
       "design": ["solution-design"],
-      "plan": ["plan"],
+      "plan": ["architecture", "project-management", "testability"],
       "build": [],
       "evaluate": [],
-      "fix": []
+      "fix": [],
+      "engineering": []
     },
     "counts": {
       "product": 1,
       "design": 16,
-      "plan": 3,
+      "plan": 4,
       "build": 0,
       "evaluate": 0,
-      "fix": 0
+      "fix": 0,
+      "engineering": 0
     }
   },
   "build": {"shards": 1, "concurrency": "native"},

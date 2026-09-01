@@ -139,19 +139,23 @@ def test_ci_metrics_meet_declared_targets():
         "first_validation_hours": 1.5,
         "p50_minutes": 6.0,
         "p95_minutes": 8.0,
-        "runner_minutes": 29.0,
-        "parallelism": 4.833,
+        "runner_minutes": 28.0,
+        "parallelism": 4.667,
     }
     assert all(check["passed"] for check in metrics["checks"])
 
     over_budget = _fixture("metrics.json")
-    over_budget["cells"][0]["duration_minutes"] = 9.0
-    over_budget["authoritative_elapsed_minutes"] = 9.0
+    over_budget["cells"][0]["duration_minutes"] = 7.0
+    over_budget["authoritative_elapsed_minutes"] = 7.0
     failed = evaluate_ci_metrics(over_budget)
     assert failed["passed"] is False
-    assert next(
+    runner_check = next(
         check for check in failed["checks"] if check["name"] == "runner_minutes"
-    )["passed"] is False
+    )
+    assert runner_check == {
+        "name": "runner_minutes", "value": 29.0, "target": 28.0,
+        "direction": "max", "passed": False,
+    }
 
 
 def test_dashboard_browser_shard_is_disjoint_bounded_and_candidate_bound():

@@ -1557,42 +1557,42 @@ def cmd_screen_dispatch(a) -> int:
                     "permissionDecision": "deny",
                     "permissionDecisionReason": reason}}))
                 return 0
+        if ok and exp is not None and exp.get("intent_id"):
+            try:
+                import loop as _loop_runtime
+                observation = _loop_runtime.record_native_dispatch_observation(
+                    ws, expected=exp, native_task_name=str(agent))
+                if not isinstance(observation, dict) or \
+                        observation.get("status") == "unavailable":
+                    raise RuntimeError(
+                        "native dispatch observation was not committed")
+            except Exception as telemetry_error:
+                reason = (
+                    "taskplane native dispatch telemetry failed closed "
+                    f"for {exp.get('ref') or agent!r} "
+                    f"({type(telemetry_error).__name__}: "
+                    f"{telemetry_error}); the dispatch is denied before "
+                    "the native task starts and its expectation remains "
+                    "pending for a safe retry.")
+                try:
+                    tp.trace(
+                        ws, "native_dispatch_telemetry_unavailable",
+                        task=exp.get("ref"),
+                        error=f"{type(telemetry_error).__name__}: "
+                              f"{telemetry_error}")
+                except Exception:
+                    # Trace durability is secondary to the hook decision:
+                    # a broken audit sink must never turn this denial into
+                    # a permitted native start.
+                    pass
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason}}))
+                return 0
         ok = tp.commit_dispatch_verification(
             ws, agent, model, exp, ok, effort, strict=strict)
         if ok:
-            if exp is not None and exp.get("intent_id"):
-                try:
-                    import loop as _loop_runtime
-                    observation = \
-                        _loop_runtime.record_native_dispatch_observation(
-                        ws, expected=exp, native_task_name=str(agent))
-                    if not isinstance(observation, dict) or \
-                            observation.get("status") == "unavailable":
-                        raise RuntimeError(
-                            "native dispatch observation was not committed")
-                except Exception as telemetry_error:
-                    reason = (
-                        "taskplane native dispatch telemetry failed closed "
-                        f"for {exp.get('ref') or agent!r} "
-                        f"({type(telemetry_error).__name__}: "
-                        f"{telemetry_error}); the dispatch is denied before "
-                        "the native task starts.")
-                    try:
-                        tp.trace(
-                            ws, "native_dispatch_telemetry_unavailable",
-                            task=exp.get("ref"),
-                            error=f"{type(telemetry_error).__name__}: "
-                                  f"{telemetry_error}")
-                    except Exception:
-                        # Trace durability is secondary to the hook decision:
-                        # a broken audit sink must never turn this denial into
-                        # a permitted native start.
-                        pass
-                    print(json.dumps({"hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": reason}}))
-                    return 0
             if foreign_message:
                 print(json.dumps({"systemMessage": foreign_message}))
             return 0
@@ -1862,12 +1862,46 @@ def cmd_subagent_stop(a) -> int:
         if (producer_error or submission and submission.get("block")) and \
                 tp.normalize_worker_terminal_outcome(raw_outcome) == "success":
             raw_outcome = "failure"
+        normalized_outcome = tp.normalize_worker_terminal_outcome(raw_outcome)
         submission_status = (
             "producer_error" if producer_error else
             str((submission or {}).get("status") or "not_required"))
         try:
+            telemetry = _seal_terminal_dispatch_telemetry(
+                ws, lifecycle_contract, event, outcome=normalized_outcome)
+        except Exception as exc:
+            reason = (
+                "taskplane blocked lifecycle completion because native "
+                "dispatch telemetry could not be sealed before contract "
+                f"release ({type(exc).__name__}: {exc}).")
+            tp.trace(ws, "worker_dispatch_telemetry_failed",
+                     task_id=_contract_dispatch_task_id(lifecycle_contract),
+                     error=type(exc).__name__)
+            print(json.dumps({"decision": "block", "reason": reason,
+                              "hookSpecificOutput": {
+                                  "hookEventName": "SubagentStop",
+                                  "permissionDecision": "deny",
+                                  "permissionDecisionReason": reason}}))
+            return 2
+        terminal_event = dict(event)
+        telemetry_receipt = telemetry.get("receipt") \
+            if isinstance(telemetry, dict) else None
+        if isinstance(telemetry_receipt, dict):
+            terminal_event["usage_reference"] = telemetry_receipt
+        elif isinstance(telemetry, dict) and telemetry.get("status") == \
+                "unavailable":
+            terminal_event["usage_reference"] = {
+                "schema": "taskplane.dispatch-usage-unavailable/v1",
+                "status": "unavailable",
+                "reason": str(telemetry.get("reason") or
+                              "provider usage unavailable")[:1024],
+            }
+            tp.trace(ws, "worker_dispatch_telemetry_unavailable",
+                     task_id=_contract_dispatch_task_id(lifecycle_contract),
+                     reason=terminal_event["usage_reference"]["reason"])
+        try:
             released = tp.terminalize_worker_contract(
-                ws, event, outcome=raw_outcome,
+                ws, terminal_event, outcome=raw_outcome,
                 submission_status=submission_status)
         except Exception as exc:
             reason = (
@@ -2259,6 +2293,19 @@ class MeterCorrupt(Exception):
     trusted, so the caller must fail CLOSED rather than reset it to zero."""
 
 
+def _contract_dispatch_task_id(contract: dict) -> str:
+    """Return the stable loop/lens identity shared with native telemetry."""
+    lifecycle = contract.get("worker_lifecycle") or {}
+    task_id = str(lifecycle.get("task") or "").strip()
+    return task_id or str(contract.get("task_id") or "").strip()
+
+
+def _contract_dispatch_intent_id(contract: dict) -> str:
+    """Return the exact run-bound native intent sealed into the contract."""
+    lifecycle = contract.get("worker_lifecycle") or {}
+    return str(lifecycle.get("dispatch_intent_id") or "").strip()
+
+
 def _dispatch_usage_observation_required(ws: str, task_id: str) -> bool:
     """Whether the active loop has one unfinalized usage consumer."""
     try:
@@ -2345,6 +2392,86 @@ def _bounded_transcript_projection(
         if updated is not None:
             tp.atomic_write_json(checkpoint_path, updated, sort_keys=True)
     return projection
+
+
+def _normalized_dispatch_projection(projection: dict) -> dict:
+    """Adapt one authenticated transcript projection for the loop ledger."""
+    if not isinstance(projection, dict) or \
+            projection.get("status") != "available" or \
+            not isinstance(projection.get("usage"), dict):
+        raise ValueError("authenticated provider usage is unavailable")
+    usage = dict(projection["usage"])
+    cache_creation = int(usage["total_tokens"]) - int(
+        usage["input_tokens"]) - int(usage["output_tokens"])
+    if cache_creation < 0:
+        raise ValueError("authenticated provider usage does not reconcile")
+    usage.update({
+        "schema": "taskplane.token-usage/v2",
+        "available": True,
+        "provider": projection["provider"],
+        "reason": None,
+        "cache_creation_tokens": cache_creation,
+        "raw_total_tokens": usage["total_tokens"],
+        "effective_tokens": projection["effective_tokens"],
+    })
+    return usage
+
+
+def _hook_usage_provider(event: dict) -> str:
+    explicit = str(event.get("provider") or event.get("host") or "").lower()
+    if "claude" in explicit:
+        return "claude"
+    if "codex" in explicit:
+        return "codex"
+    # Native Codex task lifecycle events carry the exact emitted task_name.
+    # Claude may also expose a turn id, so turn_id alone is not a provider
+    # discriminator.
+    return "codex" if str(event.get("task_name") or "").strip() else "claude"
+
+
+def _seal_terminal_dispatch_telemetry(
+        ws: str, contract: dict, event: dict, *, outcome: str) -> dict:
+    """Observe and finalize the exact native attempt before slot release."""
+    import loop as _loop_runtime
+
+    task_id = _contract_dispatch_task_id(contract)
+    lifecycle = contract.get("worker_lifecycle") or {}
+    native_task_name = str(lifecycle.get("expected_task_name") or "").strip()
+    dispatch_id = _contract_dispatch_intent_id(contract)
+    if not task_id or not _dispatch_usage_observation_required(ws, task_id):
+        return {"status": "not-bound"}
+    import spend as _spend
+    transcript = _spend.event_transcript(event)
+    if not transcript:
+        result = _loop_runtime.finalize_observed_dispatch_usage(
+            ws, task_id=task_id, outcome=outcome,
+            native_task_name=native_task_name, usage_unavailable=True,
+            unavailable_reason="host transcript path is unavailable",
+            dispatch_id=dispatch_id or None)
+        return {**result, "reason":
+                "host transcript path is unavailable"}
+    provider = _hook_usage_provider(event)
+    projection = _bounded_transcript_projection(
+        ws, transcript, provider)
+    if projection.get("status") != "available":
+        result = _loop_runtime.finalize_observed_dispatch_usage(
+            ws, task_id=task_id, outcome=outcome,
+            native_task_name=native_task_name, usage_unavailable=True,
+            unavailable_reason=str(projection.get("reason") or
+                                   "authenticated provider usage is "
+                                   "unavailable"),
+            dispatch_id=dispatch_id or None)
+        return {**result, "reason": str(projection.get("reason") or
+                                        "authenticated provider usage is "
+                                        "unavailable")}
+    _loop_runtime.record_observed_dispatch_usage(
+        ws, task_id=task_id,
+        normalized_usage=_normalized_dispatch_projection(projection),
+        source_fingerprint=str(projection["source_fingerprint"]),
+        native_task_name=native_task_name, dispatch_id=dispatch_id or None)
+    return _loop_runtime.finalize_observed_dispatch_usage(
+        ws, task_id=task_id, outcome=outcome,
+        native_task_name=native_task_name, dispatch_id=dispatch_id or None)
 
 
 def _meter_load(ws, strict=False) -> dict:
@@ -2631,7 +2758,9 @@ def _screen(a) -> int:
         _projection = None
         _budget = contract.get("budget") or {}
         _token_ceiling = _budget.get("max_tokens") is not None
-        _telemetry_consumer = _dispatch_usage_observation_required(ws, tid)
+        _telemetry_task_id = _contract_dispatch_task_id(contract)
+        _telemetry_consumer = _dispatch_usage_observation_required(
+            ws, _telemetry_task_id)
         if _token_ceiling or _telemetry_consumer:
             try:
                 import spend as _spend
@@ -2663,29 +2792,19 @@ def _screen(a) -> int:
         if _telemetry_consumer and _tpath and isinstance(_projection, dict) \
                 and _projection.get("status") == "available":
             try:
-                _observed = dict(_projection["usage"])
-                _observed.update({
-                    "schema": "taskplane.token-usage/v2",
-                    "available": True, "provider": _projection["provider"],
-                    "reason": None,
-                    "cache_creation_tokens": 0,
-                    "raw_total_tokens": _observed["total_tokens"],
-                    "effective_tokens": _projection["effective_tokens"],
-                })
-                # dispatch_usage expects provider-shaped normalized fields,
-                # where total input is split into cached and uncached.
-                _observed["cached_input_tokens"] = \
-                    _projection["usage"]["cached_input_tokens"]
-                _observed["uncached_input_tokens"] = \
-                    _projection["usage"]["uncached_input_tokens"]
-                _observed["output_tokens"] = \
-                    _projection["usage"]["output_tokens"]
-                _observed["reasoning_tokens"] = \
-                    _projection["usage"]["reasoning_tokens"]
                 import loop as _loop_runtime
+                _native_task_name = str(
+                    ((contract.get("worker_lifecycle") or {}).get(
+                        "expected_task_name") or "")).strip()
                 _loop_runtime.record_observed_dispatch_usage(
-                    ws, task_id=str(tid),
-                    normalized_usage=_observed, source=_tpath)
+                    ws, task_id=_telemetry_task_id,
+                    normalized_usage=_normalized_dispatch_projection(
+                        _projection),
+                    source_fingerprint=str(
+                        _projection["source_fingerprint"]),
+                    native_task_name=_native_task_name,
+                    dispatch_id=(
+                        _contract_dispatch_intent_id(contract) or None))
             except Exception:
                 pass
         if _token_denial is not None:
@@ -3602,7 +3721,9 @@ def _record_parallel_expectations(ws: str, payload: dict) -> None:
             reasoning_effort=entry.get("reasoning_effort"),
             role_marker_value=entry.get("role_marker"),
             intent_id=((entry.get("dispatch_intent") or {}).get(
-                "intent_id")))
+                "intent_id")),
+            intent_run_id=(((entry.get("dispatch_intent") or {}).get(
+                "identity") or {}).get("run_id")))
 
 
 def _stage_activation(slot: str) -> str:

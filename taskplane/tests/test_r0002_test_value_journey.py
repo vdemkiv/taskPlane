@@ -99,14 +99,20 @@ def test_protected_contracts_and_fixture_consumers_remain_live() -> None:
         ), f"retained fixture has no structural consumer: {fixture['path']}"
 
 
-def test_accepted_evidence_excludes_low_value_mechanisms() -> None:
+def test_each_accepted_selector_names_current_contract_and_value_mechanism(
+) -> None:
     portfolio = json.loads(PORTFOLIO.read_text(encoding="utf-8"))
     forbidden = set(portfolio["policy"]["forbidden_evidence_mechanisms"])
     accepted = portfolio["accepted_evidence"]
+    allowed = {"public-journey", "semantic-refusal", "severed-edge"}
 
-    assert accepted and all(_selector_exists(row["selector"]) for row in accepted)
-    assert not forbidden.intersection(row["mechanism"] for row in accepted)
-    assert all(
-        row["mechanism"] in {"public-journey", "semantic-refusal", "severed-edge"}
-        for row in accepted
-    )
+    assert accepted
+    selectors = [row["selector"] for row in accepted]
+    assert len(selectors) == len(set(selectors))
+    for row in accepted:
+        assert set(row) == {"selector", "mechanism", "current_contract"}
+        assert _selector_exists(row["selector"])
+        assert row["mechanism"] in allowed
+        assert row["mechanism"] not in forbidden
+        assert isinstance(row["current_contract"], str)
+        assert row["current_contract"].strip()

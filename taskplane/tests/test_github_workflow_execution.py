@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import re
 
@@ -35,6 +36,31 @@ def _cell_invocations(job: dict) -> list[str]:
             continue
         found.extend(re.findall(r"--ci-cell\s+([^\s]+)", run))
     return found
+
+
+def _expanded_check_names(workflow: dict) -> list[str]:
+    names = []
+    for job in workflow["jobs"].values():
+        name = job["name"]
+        matrix = job.get("strategy", {}).get("matrix", {})
+        if "${{ matrix.python }}" in name:
+            names.extend(
+                name.replace("${{ matrix.python }}", version)
+                for version in matrix["python"]
+            )
+        else:
+            names.append(name)
+    return names
+
+
+def test_release_check_authority_matches_expanded_direct_workflow_checks():
+    workflow = _workflow()
+    policy = json.loads(
+        (ROOT / "design" / "compatibility.json").read_text(encoding="utf-8")
+    )
+
+    assert policy["release_authority"]["required_checks"] == \
+        _expanded_check_names(workflow)
 
 
 def test_workflow_dispatches_each_runner_cell_directly_without_join_jobs():

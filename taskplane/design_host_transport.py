@@ -329,6 +329,7 @@ def register_design_lens_dispatch_plan(
                     "reasoning_effort": worker.get("reasoning_effort"),
                     "matched": False,
                     "intent_id": worker["dispatch_intent"]["fingerprint"],
+                    "intent_run_id": plan.get("run_id"),
                     "design_host_authority": private,
                 })
             authorized[lens] = {
@@ -371,6 +372,10 @@ def attach_design_lens_host_authority(
     if not isinstance(decoded, dict):
         raise ValueError("Design lens contract cannot be represented as an object")
     output: JsonDict = decoded
+    output["worker_lifecycle"]["dispatch_intent_id"] = str(
+        row.get("dispatch_intent_fingerprint") or "")
+    output["worker_lifecycle"]["dispatch_intent_run_id"] = str(
+        assignment.get("run_id") or "")
     output["worker_lifecycle"]["design_host_authority"] = {
         "schema": HOST_AUTHORITY_SCHEMA,
         "artifact_root": os.path.realpath(os.path.abspath(artifact_root)),

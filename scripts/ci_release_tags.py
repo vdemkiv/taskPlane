@@ -36,6 +36,7 @@ Run: python3 scripts/ci_release_tags.py [<repo-root>] [--json]
             --authorize-version <version>
 """
 import argparse
+from datetime import datetime, timedelta
 import hashlib
 import json
 import os
@@ -494,6 +495,89 @@ def authenticate_direct_ci_matrix(cell_runtimes, cell_receipts):
     return authority, checked_cells
 
 
+def validate_measured_ci_signoff(wave_receipt, checked_cells):
+    """Bind release sign-off to timings from authenticated direct CI cells."""
+    from taskplane import ci_policy, release_evidence
+    from taskplane import wave_metrics as wave_metrics_module
+
+    try:
+        wave = wave_metrics_module.validate_wave_receipt(wave_receipt)
+    except wave_metrics_module.WaveMetricsError as exc:
+        raise release_evidence.ReleaseEvidenceError(
+            "sealed wave metrics evidence is invalid") from exc
+    names = {
+        "ci_first_validation_hours", "ci_red_validation_domains",
+        "ci_critical_path_minutes", "ci_p50_minutes", "ci_p95_minutes",
+        "ci_runner_minutes", "ci_parallelism_factor",
+    }
+    metrics = wave.get("metrics")
+    if not isinstance(metrics, Mapping) or not names.issubset(metrics):
+        raise release_evidence.ReleaseEvidenceError(
+            "sealed wave metrics omit measured CI release signoff")
+    if any(metrics[name].get("passed") is not True for name in names):
+        raise release_evidence.ReleaseEvidenceError(
+            "measured CI targets do not authorize release signoff")
+
+    cells = []
+    domains = {}
+    for row in checked_cells:
+        if not isinstance(row, Mapping):
+            raise release_evidence.ReleaseEvidenceError(
+                "authenticated CI timing receipt is invalid")
+        cell_id = row.get("id")
+        kind = row.get("kind")
+        duration_ms = row.get("duration_ms")
+        if not isinstance(cell_id, str) or not cell_id or \
+                not isinstance(kind, str) or not kind or \
+                isinstance(duration_ms, bool) or \
+                not isinstance(duration_ms, int) or duration_ms <= 0:
+            raise release_evidence.ReleaseEvidenceError(
+                "authenticated CI timing receipt is invalid")
+        duration = duration_ms / 60_000
+        cells.append({"id": cell_id, "duration_minutes": duration})
+        domains[kind] = max(domains.get(kind, 0.0), duration)
+    if len(cells) != len({row["id"] for row in cells}) or not cells:
+        raise release_evidence.ReleaseEvidenceError(
+            "authenticated CI timing identities are incomplete")
+
+    try:
+        ready = datetime.fromisoformat(
+            str(wave["run"]["integration_ready_at"]).replace("Z", "+00:00"))
+        first_hours = metrics["ci_first_validation_hours"]["actual"]
+        first_started = ready + timedelta(hours=float(first_hours))
+        evidence = {
+            "integration_ready_at": ready.isoformat(),
+            "first_validation_started_at": first_started.isoformat(),
+            "validation_domain_ids": list(domains),
+            "validation_domain_durations_minutes": list(domains.values()),
+            "authoritative_elapsed_minutes":
+                metrics["ci_critical_path_minutes"]["actual"],
+            "cells": cells,
+            "targets": dict(ci_policy.DECLARED_TARGETS),
+        }
+        evaluated = ci_policy.evaluate_ci_metrics(evidence)
+    except (KeyError, TypeError, ValueError, ci_policy.CIPolicyError) as exc:
+        raise release_evidence.ReleaseEvidenceError(
+            "measured CI evidence is invalid") from exc
+    if evaluated["passed"] is not True:
+        raise release_evidence.ReleaseEvidenceError(
+            "measured CI metrics do not meet release targets")
+    expected = {
+        "ci_first_validation_hours": "first_validation_hours",
+        "ci_p50_minutes": "p50_minutes",
+        "ci_p95_minutes": "p95_minutes",
+        "ci_runner_minutes": "runner_minutes",
+        "ci_parallelism_factor": "parallelism",
+    }
+    if any(
+        float(metrics[metric]["actual"]) != evaluated["values"][value]
+        for metric, value in expected.items()
+    ) or metrics["ci_red_validation_domains"]["actual"] != 0:
+        raise release_evidence.ReleaseEvidenceError(
+            "sealed wave metrics disagree with authenticated CI timings")
+    return evaluated
+
+
 def assemble_protected_main_gate(root, *, pull_request_head_sha, cell_runtimes,
                                  cell_receipts, dashboard,
                                  dashboard_current, wave_metrics, cleanup,
@@ -549,6 +633,7 @@ def assemble_protected_main_gate(root, *, pull_request_head_sha, cell_runtimes,
             metrics["signoff"]["ready"] is not True:
         raise release_evidence.ReleaseEvidenceError(
             "sealed wave metrics do not bind the exact release candidate")
+    validate_measured_ci_signoff(metrics, checked_cells)
     try:
         cleanup_evidence = owned_cleanup.cleanup_consumer_evidence(cleanup)
     except owned_cleanup.OwnedCleanupError as exc:

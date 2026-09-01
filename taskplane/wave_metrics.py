@@ -548,11 +548,19 @@ def token_usage_projection(
         for raw in attempts or []:
             row = _mapping(raw, "unavailable terminal attempt")
             _exact_keys(row, required, "unavailable terminal attempt")
-            if row.get("usage_status") != "unavailable" or not isinstance(
-                    row.get("unavailable_reason"), str) or not row.get(
-                        "unavailable_reason"):
+            usage_status = row.get("usage_status")
+            if usage_status not in {"measured", "unavailable"}:
                 raise WaveMetricsError(
                     "unavailable terminal attempt attribution is invalid")
+            if usage_status == "unavailable" and (
+                    not isinstance(row.get("unavailable_reason"), str) or
+                    not row.get("unavailable_reason")):
+                raise WaveMetricsError(
+                    "unavailable terminal attempt attribution is invalid")
+            if usage_status == "measured" and row.get(
+                    "unavailable_reason") is not None:
+                raise WaveMetricsError(
+                    "measured terminal attempt cannot claim unavailability")
             for field in (
                     "attempt_fingerprint", "worker_fingerprint",
                     "task_fingerprint"):
@@ -574,13 +582,19 @@ def token_usage_projection(
             if int(correction_count) != correction_count:
                 raise WaveMetricsError(
                     "unavailable attempt correction count must be an integer")
-            for field in (
-                    "total_tokens", "uncached_input_tokens",
-                    "effective_tokens", "receipt_fingerprint",
-                    "usage_source_fingerprint"):
-                if row.get(field) is not None:
+            measurement_fields = (
+                "total_tokens", "uncached_input_tokens", "effective_tokens")
+            proof_fields = ("receipt_fingerprint", "usage_source_fingerprint")
+            if usage_status == "unavailable":
+                if any(row.get(field) is not None
+                       for field in (*measurement_fields, *proof_fields)):
                     raise WaveMetricsError(
                         "unavailable terminal usage cannot carry measured truth")
+            else:
+                for field in measurement_fields:
+                    _number(row.get(field), f"measured attempt {field}")
+                for field in proof_fields:
+                    _digest(row.get(field), f"measured attempt {field}")
             _redaction_check(row)
             unavailable_attempts.append(row)
         return {

@@ -488,14 +488,30 @@ ROLE_MARKER_PREFIX = "taskplane-role:"
 # never reads in CI as "the quality dropped".
 EXIT_OK, EXIT_BLOCKED, EXIT_USAGE = 0, 1, 2
 
-# Stable GitHub check-run identities, deliberately independent of mutable step
-# labels and aligned with design/compatibility.json. ``tests (python 3.12)`` is
-# the real single-suite job; release callers provide this stable check set.
-PUSHED_GREEN_REQUIRED_CHECKS = (
-    "tests (python 3.12)",
-    "R-0006 graph + CLI contracts",
-    "zero-token corpus (credential-empty, no-egress)",
-)
+def _canonical_required_checks():
+    """Load the sole stored release-check authority.
+
+    Workflow conformance tests compare these identities with the expanded
+    GitHub job names.  Keeping a second tuple here previously preserved two
+    deleted pseudo-checks after the workflow moved to direct jobs.
+    """
+    policy, error = _read_json(
+        os.path.join(ROOT, "design", "compatibility.json"))
+    authority = policy.get("release_authority") if isinstance(policy, dict) \
+        else None
+    checks = authority.get("required_checks") \
+        if isinstance(authority, dict) else None
+    if error or not isinstance(checks, list) or not checks or any(
+            not isinstance(name, str) or not name for name in checks) or \
+            len(checks) != len(set(checks)):
+        raise RuntimeError(
+            "canonical release required-check authority is unavailable")
+    return tuple(checks)
+
+
+# Backward-compatible API name; its value is derived, never independently
+# authored.  The compatibility policy is the only stored authority.
+PUSHED_GREEN_REQUIRED_CHECKS = _canonical_required_checks()
 CI_COMMIT_PROOF_SCHEMA = "taskplane.ci-commit-proof/v1"
 FORWARD_RELEASE_SURFACE_SCHEMA = "taskplane.forward-release-surface-proof/v1"
 _FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")

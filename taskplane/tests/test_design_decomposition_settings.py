@@ -105,12 +105,11 @@ def test_design_policy_is_dynamic_and_configured_by_the_canonical_values(
     }
     assert policy != default_policy
 
-    invalid_catalog = load_settings(_write_settings(
-        tmp_path, mandatory=["solution-design", "invented"], maximum=7))
     with pytest.raises(SettingsError, match="unknown catalog ids"):
-        invalid_catalog.lenses.policy_for("design", catalog_ids=catalog)
+        load_settings(_write_settings(
+            tmp_path, mandatory=["solution-design", "invented"], maximum=7))
 
-    for stage in ("build", "evaluate", "fix"):
+    for stage in ("build", "evaluate", "fix", "engineering"):
         zero = configured.lenses.policy_for(stage)
         assert zero.mandatory == ()
         assert zero.max_count == 0

@@ -18,6 +18,7 @@ import ci_evals  # noqa: E402
 import ci_local  # noqa: E402
 import ci_release_tags as gate  # noqa: E402
 from taskplane import release_evidence  # noqa: E402
+from taskplane import wave_metrics  # noqa: E402
 
 
 def _git(root: Path, *args: str) -> str:
@@ -337,3 +338,54 @@ def test_direct_ci_release_matrix_authenticates_each_host_runtime(tmp_path):
     with pytest.raises(release_evidence.ReleaseEvidenceError,
                        match="do not share one candidate authority"):
         gate.authenticate_direct_ci_matrix(divergent, receipts)
+
+
+def _measured_ci_signoff_fixture() -> tuple[dict, list[dict]]:
+    evidence = json.loads((
+        ROOT / "taskplane/tests/fixtures/wave-metrics/closed-run.json"
+    ).read_text(encoding="utf-8"))
+    actuals = evidence["actuals"]
+    actuals.update({
+        "ci_critical_path_minutes": 6,
+        "ci_p50_minutes": 4,
+        "ci_p95_minutes": 5,
+        "ci_runner_minutes": 28,
+        "ci_parallelism_factor": 4.667,
+    })
+    samples = evidence["samples"]
+    samples["ci_p50_minutes"]["size"] = 6
+    samples["ci_p95_minutes"]["size"] = 6
+    samples["ci_runner_minutes"]["size"] = 8
+    samples["ci_parallelism_factor"]["size"] = 8
+    checked = [
+        {"id": "pytest-1", "kind": "tests", "duration_ms": 240_000},
+        {"id": "quality-package", "kind": "quality-package",
+         "duration_ms": 240_000},
+        {"id": "dashboard-browser", "kind": "browser",
+         "duration_ms": 240_000},
+        {"id": "interpreter-import-3.10", "kind": "interpreter-import",
+         "duration_ms": 120_000},
+        {"id": "interpreter-import-3.11", "kind": "interpreter-import",
+         "duration_ms": 120_000},
+        {"id": "interpreter-import-3.13", "kind": "interpreter-import",
+         "duration_ms": 120_000},
+        {"id": "os-portability-windows", "kind": "os-portability",
+         "duration_ms": 300_000},
+        {"id": "security-no-egress", "kind": "security-no-egress",
+         "duration_ms": 300_000},
+    ]
+    return wave_metrics.seal_wave_receipt(evidence), checked
+
+
+def test_release_signoff_uses_authenticated_direct_ci_durations():
+    receipt, checked = _measured_ci_signoff_fixture()
+
+    evaluated = gate.validate_measured_ci_signoff(receipt, checked)
+
+    assert evaluated["passed"] is True
+    assert evaluated["values"]["runner_minutes"] == 28
+
+    checked[0]["duration_ms"] += 60_000
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="do not meet release targets"):
+        gate.validate_measured_ci_signoff(receipt, checked)

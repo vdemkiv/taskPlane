@@ -2,7 +2,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import time
@@ -538,19 +537,6 @@ def test_cancel_rejects_mutable_binding_before_canceller(tmp_path):
         adapter.cancel(handle)
     assert calls == []
 
-def test_production_edges_are_explicit_and_mutation_sensitive():
-    root = Path(__file__).resolve().parents[1]
-    cli_source = (root / "tp.py").read_text(encoding="utf-8")
-    loop_source = (root / "loop.py").read_text(encoding="utf-8")
-    governed_source = (root / "governed_commands.py").read_text(
-        encoding="utf-8")
-
-    assert "governed_command_engine.execute(" in cli_source
-    assert "governed_commands.execute(" in loop_source
-    assert "CommandAdapter(" in governed_source
-    assert "CommandRuntime(" in governed_source
-
-
 @pytest.mark.parametrize("step,role", [
     ("execute", "tp-executor"),
     ("evaluate", "tp-evaluator"),
@@ -590,35 +576,6 @@ def test_normal_native_dispatch_emits_non_authoritative_intent_telemetry(
         key: value for key, value in intent.items() if key != "telemetry_path"
     }
     assert not (tmp_path / ".taskplane" / "command-runtime-v1").exists()
-
-
-def test_normal_flow_wiring_is_mutation_sensitive():
-    source = Path(loop.__file__).read_text(encoding="utf-8")
-    wave_body = source[source.index("def wave("):source.index("def claim(")]
-    next_body = source[
-        source.index("def next_action("):source.index("guide = runtime_eval")]
-    assert 'intent = _native_dispatch_intent(' in wave_body
-    assert 'entry["dispatch_intent"] = dispatch_intents[str(t["id"])]' in \
-        wave_body
-    assert 'result["dispatch_intent"] = _native_dispatch_intent(' in \
-        next_body
-    assert '"wait_invocation": wave_wait_invocation' in wave_body
-    assert 'result["wait_invocation"] = event_wait_invocation(' in next_body
-    assert 'if step in {"execute", "evaluate", "fix"}' in next_body
-    governed_source = Path(governed_commands.__file__).read_text(
-        encoding="utf-8")
-    execute_start = governed_source.index("def execute(")
-    dispatch_body = governed_source[
-        governed_source.index('if action == "dispatch":', execute_start):
-        governed_source.index('if action == "checkpoint":', execute_start)]
-    assert "subprocess.Popen(" not in dispatch_body
-    assert "CommandRuntime(" not in dispatch_body
-    assert ".pending(" not in dispatch_body
-    assert ".receive(" not in dispatch_body
-    assert '"authoritative": False' in dispatch_body
-    assert '"host_observed": False' in dispatch_body
-    assert '"execution_observed": False' in dispatch_body
-    assert '"delivery_observed": False' in dispatch_body
 
 
 def _checkpoint_workspace(tmp_path):

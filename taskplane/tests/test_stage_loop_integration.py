@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import contextlib
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import subprocess
 import pytest
 
 from taskplane import loop, taskplane_lite
+from taskplane.settings import load_settings
 
 
 def _content_inventory(root: Path) -> dict[str, str]:
@@ -655,6 +657,36 @@ def test_parallel_wave_emits_one_native_set_without_execution_roots(
     assert "execution_root" not in encoded
     assert "tranche" not in encoded
     assert not (loop.load(ws) or {}).get("_stage_bindings")
+
+
+def test_parallel_wave_honors_configured_build_concurrency(
+        tmp_path, monkeypatch) -> None:
+    ws = _workspace(tmp_path)
+    state = loop.init(ws, "dispatch two independent roots", parallel=True)
+    state.update({
+        "step": "execute", "current_task": 0,
+        "tasks": [
+            {"id": "t01", "scope": ["a/**"], "tests": "true",
+             "deps": [], "status": "pending"},
+            {"id": "t02", "scope": ["b/**"], "tests": "true",
+             "deps": [], "status": "pending"},
+        ],
+    })
+    loop.save(ws, state)
+    effective = load_settings(environment={})
+    capped = replace(
+        effective, build=replace(effective.build, concurrency=1))
+    monkeypatch.setattr(
+        loop.operational_settings, "load_settings", lambda **_kwargs: capped)
+
+    result = loop.wave(ws)
+
+    assert [entry["task"]["id"] for entry in result["wave"]] == ["t01"]
+    assert result["held"] == [{
+        "task": "t02",
+        "reason": "configured build concurrency cap — next wave",
+        "shared_owner": "settings",
+    }]
 
 
 def test_real_wave_recovers_task_bindings_after_post_split_crash(

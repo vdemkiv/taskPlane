@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from taskplane import dispatch_telemetry, loop, retro, run_artifacts, wave_metrics
+from taskplane import (
+    dispatch_telemetry, loop, retro, run_artifacts,
+    taskplane_lite, wave_metrics,
+)
 from taskplane.delivery_ports import FakeClock
 
 
@@ -52,6 +55,20 @@ def _closed_ledger() -> tuple[dict, FakeClock]:
             ledger, dispatch_id=dispatch["dispatch_id"], ended_at=10,
             clock=clock, events=[{"kind": "complete", "sequence": 1}])
     return ledger, clock
+
+
+def _matched_intent_census(workspace: str, ledger: dict) -> None:
+    for binding in ledger["bindings"]:
+        taskplane_lite.record_expected_dispatch(
+            workspace, "step", "tp-evaluator", "standard", None,
+            ref=binding["task_id"], task_name=binding["thread_id"],
+            intent_id=binding["dispatch_id"],
+            intent_run_id=ledger["run_id"])
+        expected = taskplane_lite.peek_expectation(
+            workspace, binding["thread_id"], strict=True)
+        assert expected is not None
+        assert taskplane_lite.mark_expectation(
+            workspace, expected, strict=True)
 
 
 def _report(wave: dict, evaluator: dict) -> dict:
@@ -114,12 +131,14 @@ def test_real_terminal_ledger_renders_token_and_evaluator_truth(tmp_path):
     assert "e" * 64 in rendered
 
 
-def test_loop_produces_and_replays_current_terminal_metrics_without_archive():
+def test_loop_produces_and_replays_current_terminal_metrics_without_archive(
+        tmp_path):
     ledger, _clock = _closed_ledger()
     tasks = [{"id": "EVAL-1", "evaluation": {
         "status": "complete", "verdict": "pass", "reason_code": "none",
         "outage_identity": {"fingerprint": "e" * 64}}}]
     state = {
+        "run_id": ledger["run_id"],
         "tasks": tasks, "dispatch_telemetry": ledger,
         "settings_digest": "c" * 64,
         "run_artifact_binding": {
@@ -128,10 +147,11 @@ def test_loop_produces_and_replays_current_terminal_metrics_without_archive():
         },
     }
 
-    first = loop._seal_terminal_metrics_before_retro(state)
+    _matched_intent_census(str(tmp_path), ledger)
+    first = loop._seal_terminal_metrics_before_retro(str(tmp_path), state)
     evidence = json.loads(json.dumps(state["wave_metrics_evidence"]))
     receipt = json.loads(json.dumps(state["wave_metrics_receipt"]))
-    second = loop._seal_terminal_metrics_before_retro(state)
+    second = loop._seal_terminal_metrics_before_retro(str(tmp_path), state)
 
     assert first == second == {
         "status": "measured", "fingerprint": receipt["fingerprint"]}
@@ -152,13 +172,17 @@ def test_loop_produces_and_replays_current_terminal_metrics_without_archive():
     assert receipt["evaluator_summary"] == retro.evaluator_summary(tasks)
 
 
-def test_loop_persists_attributable_unavailable_instead_of_zero():
+def test_loop_persists_attributable_unavailable_instead_of_zero(tmp_path):
     ledger = dispatch_telemetry.new_ledger(
         run_id="run-missing", source_sha="a" * 40,
         design_fingerprint="design", plan_fingerprint="plan", started_at=0)
     dispatch_telemetry.bind_dispatch(
         ledger, _dispatch("missing", "thread-missing", 1))
+    dispatch_telemetry.terminalize_unavailable(
+        ledger, dispatch_id="missing", ended_at=10, outcome="failed",
+        reason="host transcript unavailable")
     state = {
+        "run_id": ledger["run_id"],
         "tasks": [], "dispatch_telemetry": ledger,
         "settings_digest": "c" * 64,
         "run_artifact_binding": {
@@ -167,9 +191,10 @@ def test_loop_persists_attributable_unavailable_instead_of_zero():
         },
     }
 
-    result = loop._seal_terminal_metrics_before_retro(state)
+    _matched_intent_census(str(tmp_path), ledger)
+    result = loop._seal_terminal_metrics_before_retro(str(tmp_path), state)
     first_evidence = json.loads(json.dumps(state["wave_metrics_evidence"]))
-    replay = loop._seal_terminal_metrics_before_retro(state)
+    replay = loop._seal_terminal_metrics_before_retro(str(tmp_path), state)
     projection = retro.sealed_wave_metrics_projection(state)
 
     assert result["status"] == replay["status"] == "unavailable"
@@ -223,6 +248,26 @@ def test_severed_usage_refuses_sealing_and_retro_reports_unknown(tmp_path):
     assert "observed uncached input tokens: unavailable" in rendered
     assert "observed effective tokens: unavailable" in rendered
     assert "observed total tokens: 0" not in rendered
+
+
+def test_partial_measured_attempts_survive_an_unavailable_wave():
+    ledger, _clock = _closed_ledger()
+    missing = _dispatch("missing", "thread-missing", 11)
+    dispatch_telemetry.bind_dispatch(ledger, missing)
+    dispatch_telemetry.terminalize_unavailable(
+        ledger, dispatch_id="missing", ended_at=12, outcome="failed",
+        reason="host transcript unavailable")
+    attempts = dispatch_telemetry.terminal_attempt_attribution(ledger)
+
+    projection = wave_metrics.token_usage_projection(
+        None, reason="one attempt is unavailable", attempts=attempts)
+
+    assert projection["status"] == "unavailable"
+    assert projection["total_tokens"] is None
+    assert [row["usage_status"] for row in projection["attempts"]] == [
+        "measured", "measured", "unavailable"]
+    assert projection["attempts"][0]["total_tokens"] == 130
+    assert projection["attempts"][-1]["total_tokens"] is None
 
 
 def test_cancellation_interruption_handoff_and_retry_remain_attributable():

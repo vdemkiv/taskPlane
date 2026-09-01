@@ -6,6 +6,7 @@ import pytest
 
 from taskplane.settings import (
     DEFAULT_SETTINGS_PATH,
+    STAGES,
     SettingsError,
     load_settings,
 )
@@ -26,7 +27,15 @@ def test_valid_canonical_settings_load_typed():
     assert settings.build.shards == 1
     assert settings.tests.backend == "ci"
     assert settings.tests.shards == 1
-    assert settings.lenses.counts["plan"] == 3
+    assert settings.lenses.routing["plan"] == (
+        "architecture", "project-management", "testability")
+    assert settings.lenses.counts["plan"] == 4
+    assert settings.lenses.policy_for("plan").dynamic is True
+    assert settings.stages["engineering"].reasoning == "high"
+    assert settings.lenses.policy_for("engineering").to_dict() == {
+        "stage": "engineering", "mandatory": [], "max_count": 0,
+        "dynamic": False,
+    }
     assert settings.tests.cache is True
     assert settings.tests.cache_max_age_seconds == 24 * 60 * 60
     assert settings.limits.timeouts["task_seconds"] == 1200
@@ -73,6 +82,54 @@ def test_invalid_or_unknown_settings_fail_closed(tmp_path):
         load_settings(_write(tmp_path, invalid_cache_age))
 
 
+@pytest.mark.parametrize("stage", STAGES)
+def test_every_stage_route_is_validated_against_the_packaged_catalog(
+        tmp_path, stage):
+    value = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    value["lenses"]["routing"][stage] = ["not-a-catalog-lens"]
+    value["lenses"]["counts"][stage] = 1
+
+    with pytest.raises(
+            SettingsError,
+            match=rf"lenses\.routing\.{stage} contains unknown catalog ids"):
+        load_settings(_write(tmp_path, value))
+
+
+def test_stage_inheritance_is_normalized_before_dispatch(tmp_path):
+    value = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    value["stages"]["engineering"] = {
+        "model": "inherit", "reasoning": "inherit"}
+
+    effective = load_settings(_write(tmp_path, value))
+
+    assert effective.stages["engineering"].model is None
+    assert effective.stages["engineering"].reasoning is None
+    assert effective.stages["engineering"].to_dict() == {
+        "model": None, "reasoning": None}
+
+
+def test_non_executable_settings_fail_at_load_time(tmp_path):
+    value = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    value["lenses"]["counts"]["plan"] = 5
+    with pytest.raises(SettingsError, match="plan cannot exceed 4"):
+        load_settings(_write(tmp_path, value))
+
+    value = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    value["lenses"]["counts"]["plan"] = 2
+    with pytest.raises(SettingsError, match="plan cannot exceed its maximum"):
+        load_settings(_write(tmp_path, value))
+
+    value = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    value["workflow"]["worker_inheritance"]["reasoning"] = False
+    with pytest.raises(SettingsError, match="cannot disable"):
+        load_settings(_write(tmp_path, value))
+
+    value = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    value["observability"]["receipt"] = False
+    with pytest.raises(SettingsError, match="cannot be disabled"):
+        load_settings(_write(tmp_path, value))
+
+
 def test_precedence_migration_and_safe_override_contract(tmp_path):
     base = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
     base["tests"]["selection"] = "affected"
@@ -91,7 +148,7 @@ def test_precedence_migration_and_safe_override_contract(tmp_path):
     assert safer_cache.tests.cache_max_age_seconds == 0
 
     with pytest.raises(SettingsError, match="exact authority"):
-        load_settings(path, overlay={"lenses": {"counts": {"product": 0}}})
+        load_settings(path, overlay={"lenses": {"counts": {"product": 2}}})
 
     authority = {
         "schema": "taskplane.human-decision/v1",
@@ -102,9 +159,9 @@ def test_precedence_migration_and_safe_override_contract(tmp_path):
         "revision": "rev-1",
     }
     weakened = load_settings(
-        path, overlay={"lenses": {"counts": {"product": 0}}},
+        path, overlay={"lenses": {"counts": {"product": 2}}},
         authority=authority)
-    assert weakened.lenses.counts["product"] == 0
+    assert weakened.lenses.counts["product"] == 2
     assert weakened.receipt["overlay"]["authority_fingerprint"]
 
     with pytest.raises(SettingsError, match="exact authority"):

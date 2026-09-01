@@ -760,6 +760,13 @@
       "fixture_consumers": []
     },
     {
+      "path": "taskplane/tests/test_native_terminal_telemetry.py",
+      "classification": "retain",
+      "reason": "Retains public native lifecycle coverage for exact attempt binding, honest terminal usage, retry isolation, replay, and census refusal.",
+      "replacement_selectors": [],
+      "fixture_consumers": []
+    },
+    {
       "path": "taskplane/tests/test_northstar.py",
       "classification": "rewrite",
       "reason": "Mixed file adjudicated: semantic contracts retained; low-value source/prose/byte/count/history evidence excluded.",
@@ -948,7 +955,7 @@
     {
       "path": "taskplane/tests/test_r0007_governed_commands.py",
       "classification": "rewrite",
-      "reason": "Mixed file adjudicated: semantic contracts retained; low-value source/prose/byte/count/history evidence excluded.",
+      "reason": "Retains public CLI/runtime lifecycle, authority, cancellation, telemetry, and checkpoint behavior; removes source-shape wiring assertions that could pass while the public path was broken.",
       "replacement_selectors": [],
       "fixture_consumers": []
     },
@@ -1606,7 +1613,7 @@
     {
       "path": "taskplane/tests/test_workflow_review_kernel_parity.py",
       "classification": "rewrite",
-      "reason": "Mixed file adjudicated: semantic contracts retained; low-value source/prose/byte/count/history evidence excluded.",
+      "reason": "Retains canonical schema, resume identity, stage-brief projection, and host-observed receipt refusals; removes workflow-source, role-prose, and configuration-string assertions.",
       "replacement_selectors": [],
       "fixture_consumers": []
     },
@@ -1914,23 +1921,68 @@
   "accepted_evidence": [
     {
       "selector": "taskplane/tests/test_r0002_control_plane_journey.py::test_dynamic_design_team_creates_one_portable_authorized_worker_per_lens",
-      "mechanism": "public-journey"
+      "mechanism": "public-journey",
+      "current_contract": "A governed Design run dispatches exactly the selected portable worker set with canonical settings and authority bindings."
     },
     {
       "selector": "taskplane/tests/test_host_native_publication.py::test_delayed_prior_run_and_wrong_expected_head_cannot_replace_current",
-      "mechanism": "severed-edge"
+      "mechanism": "severed-edge",
+      "current_contract": "Only a publication bound to the current expected head may replace the current dashboard generation."
     },
     {
       "selector": "taskplane/tests/test_failure_routing.py::test_known_classes_split_without_cross_authorizing_product_fixes",
-      "mechanism": "semantic-refusal"
+      "mechanism": "semantic-refusal",
+      "current_contract": "Failure classification routes known classes without granting product-fix authority to test or infrastructure failures."
     },
     {
       "selector": "taskplane/tests/test_run_artifacts.py::test_all_artifacts_and_activity_repeat_full_working_binding_and_verify",
-      "mechanism": "public-journey"
+      "mechanism": "public-journey",
+      "current_contract": "Every preserved run artifact and activity record repeats and verifies the complete working binding."
     },
     {
       "selector": "taskplane/tests/test_retro_metrics_truth.py::test_real_terminal_ledger_renders_token_and_evaluator_truth",
-      "mechanism": "public-journey"
+      "mechanism": "public-journey",
+      "current_contract": "Retro renders token and evaluator truth from the authenticated terminal ledger rather than a synthetic zero."
+    },
+    {
+      "selector": "taskplane/tests/test_r0007_governed_commands.py::test_supported_cli_and_loop_run_one_real_durable_command",
+      "mechanism": "public-journey",
+      "current_contract": "The supported CLI and loop surface launch, deliver, reconnect, and retain one governed durable command lifecycle."
+    },
+    {
+      "selector": "taskplane/tests/test_workflow_review_kernel_parity.py::test_reused_codex_child_final_claim_without_brief_delivery_is_rejected",
+      "mechanism": "semantic-refusal",
+      "current_contract": "A reused Codex child cannot satisfy a governed review lease without host-observed delivery of the exact brief."
+    },
+    {
+      "selector": "taskplane/tests/test_native_terminal_telemetry.py::test_subagent_stop_seals_content_bound_usage_and_actual_outcome",
+      "mechanism": "public-journey",
+      "current_contract": "The native dispatch and SubagentStop lifecycle binds authenticated transcript usage and the actual terminal outcome to one exact emitted intent."
+    },
+    {
+      "selector": "taskplane/tests/test_native_terminal_telemetry.py::test_missing_transcript_closes_attempt_without_inventing_zero_tokens",
+      "mechanism": "semantic-refusal",
+      "current_contract": "A terminal native attempt without host transcript evidence remains attributable while token totals stay unavailable instead of becoming synthetic zero."
+    },
+    {
+      "selector": "taskplane/tests/test_native_terminal_telemetry.py::test_usage_and_terminal_replay_are_idempotent_for_one_exact_attempt",
+      "mechanism": "public-journey",
+      "current_contract": "Identical usage and terminal lifecycle replay for one exact attempt preserves one receipt and never double counts usage."
+    },
+    {
+      "selector": "taskplane/tests/test_native_terminal_telemetry.py::test_retry_attempts_with_same_plan_task_cannot_cross_bind_usage",
+      "mechanism": "severed-edge",
+      "current_contract": "Retries of the same Plan task require exact intent and native task identity so usage cannot cross-bind between attempts."
+    },
+    {
+      "selector": "taskplane/tests/test_native_terminal_telemetry.py::test_cross_run_intent_is_denied_and_remains_retryable",
+      "mechanism": "semantic-refusal",
+      "current_contract": "A native dispatch intent from another governed run is denied without consuming the pending expectation."
+    },
+    {
+      "selector": "taskplane/tests/test_native_terminal_telemetry.py::test_terminal_intent_census_mismatch_reports_usage_unavailable",
+      "mechanism": "semantic-refusal",
+      "current_contract": "Terminal metrics remain unavailable when emitted native intents and observed dispatch attempts do not form one complete census."
     }
   ]
 }

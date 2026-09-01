@@ -152,9 +152,13 @@
     },
     "required_checks": [
       "tests (python 3.12)",
-      "zero-token corpus (credential-empty, no-egress)",
-      "R-0006 graph + CLI contracts",
-      "pushed SHA delivery proof"
+      "quality + package + release provenance",
+      "dashboard browser conformance",
+      "interpreter import (3.10)",
+      "interpreter import (3.11)",
+      "interpreter import (3.13)",
+      "native portability (windows)",
+      "zero-token corpus (credential-empty, no-egress)"
     ],
     "publication_decision": {
       "kind": "github-verified-annotated-tag/v1",

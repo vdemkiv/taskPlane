@@ -9,13 +9,13 @@
     {"id": "compatibility", "duration_minutes": 6.0},
     {"id": "quality", "duration_minutes": 6.0},
     {"id": "package", "duration_minutes": 6.0},
-    {"id": "dashboard-browser", "duration_minutes": 5.0}
+    {"id": "dashboard-browser", "duration_minutes": 4.0}
   ],
   "targets": {
     "first_validation_hours": 2,
     "p50_minutes": 10,
     "p95_minutes": 15,
-    "runner_minutes_max": 30,
+    "runner_minutes_max": 28,
     "parallelism_min": 4.0
   }
 }

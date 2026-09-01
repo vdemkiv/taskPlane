@@ -62,7 +62,7 @@ DECLARED_TARGETS = {
     "first_validation_hours": 2.0,
     "p50_minutes": 10.0,
     "p95_minutes": 15.0,
-    "runner_minutes_max": 30.0,
+    "runner_minutes_max": 28.0,
     "parallelism_min": 4.0,
 }
 
