@@ -339,7 +339,7 @@ def _parallel_loop_wave(
         lambda _ws, current: current.update({"tasks": copy.deepcopy(tasks)}))
     monkeypatch.setattr(loop, "_plan_dor_errors", lambda *_a, **_k: [])
     monkeypatch.setattr(
-        loop.tp, "plan_ordering_refusal", lambda *_a, **_k: None)
+        loop.tp, "plan_task_id_refusal", lambda *_a, **_k: None)
     advanced = loop.gate.__wrapped__(str(workspace), "pass")
     assert "error" not in advanced, advanced
     assert advanced["step"] == "plan_approval"

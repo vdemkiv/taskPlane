@@ -1543,7 +1543,7 @@ class TestPlanGateRefusesUnslottableTaskIds:
     gate, so a plan carrying `feat/login` cleared approval and only broke
     at execute/evaluate/fix — where the remedy (renaming ids in
     plan/tasks.json) costs a re-plan and a re-approval. The check now runs
-    at BOTH plan transitions, via taskplane_lite.plan_ordering_refusal."""
+    at BOTH plan transitions, via taskplane_lite.plan_task_id_refusal."""
 
     def test_plan_task_id_errors_names_every_offender(self):
         errs = tp_lite.plan_task_id_errors([
@@ -1561,19 +1561,19 @@ class TestPlanGateRefusesUnslottableTaskIds:
     def test_gate_refuses_a_plan_with_a_bad_id(self, tmp_path):
         ws = str(tmp_path / "ws")
         os.makedirs(ws)
-        refusal = tp_lite.plan_ordering_refusal(
+        refusal = tp_lite.plan_task_id_refusal(
             ws, [{"id": "feat/login"}, {"id": "t2"}], "gate")
         assert refusal is not None
         assert refusal["step"] == "plan"
         assert "feat/login" in refusal["error"]
-        assert refusal["task_ids"] and refusal["ordering"] == []
+        assert refusal["task_ids"]
         evs = _trace_events(ws, "loop_gate_blocked")
         _assert_audit_value(evs[-1], "reason", "task_id")
 
     def test_approve_refuses_the_same_plan(self, tmp_path):
         ws = str(tmp_path / "ws")
         os.makedirs(ws)
-        refusal = tp_lite.plan_ordering_refusal(
+        refusal = tp_lite.plan_task_id_refusal(
             ws, [{"id": "feat/login"}], "approve", by="human")
         assert refusal is not None and refusal["step"] == "plan_approval"
         assert "feat/login" in refusal["error"]
@@ -1585,6 +1585,6 @@ class TestPlanGateRefusesUnslottableTaskIds:
         ws = str(tmp_path / "ws")
         os.makedirs(ws)
         for where in ("gate", "approve"):
-            assert tp_lite.plan_ordering_refusal(
+            assert tp_lite.plan_task_id_refusal(
                 ws, [{"id": "t1"}, {"id": "fix.a-2_b", "deps": ["t1"]}],
                 where) is None, where

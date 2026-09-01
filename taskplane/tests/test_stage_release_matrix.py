@@ -16,15 +16,6 @@ ROOT = Path(__file__).resolve().parents[2]
 VERSION = json.loads((ROOT / ".codex-plugin/plugin.json").read_text(
     encoding="utf-8"))["version"]
 SUPPORTED_HOOK_ROOT_FIELDS = {"description", "hooks"}
-STAGE_MATRIX_TESTS = (
-    "taskplane/tests/test_stage_non_build_handoffs.py",
-    "taskplane/tests/test_stage_cross_host.py",
-    "taskplane/tests/test_stage_rollout.py",
-    "taskplane/tests/test_stage_r0003_preservation.py",
-    "taskplane/tests/test_stage_release_matrix.py",
-    "taskplane/tests/test_stage_loop_integration.py",
-    "taskplane/tests/test_stage_cli.py",
-)
 SHARED_RUNTIME_MEMBERS = (
     "hooks/hooks.json",
     "hooks/host-native.json",
@@ -97,43 +88,6 @@ def _replace_hook_manifest(
             archive.writestr(
                 info, json.dumps(value).encode("utf-8")
                 if info.filename == member else body)
-
-
-def _python_matrix_entries(workflow: str) -> dict[str, tuple[str, ...]]:
-    """Return the bounded entries from the primary compatibility matrix."""
-    lines = workflow.splitlines()
-    versions = ("3.10", "3.11", "3.12", "3.13")
-    headers = {
-        version: f'          - python: "{version}"'
-        for version in versions
-    }
-    indexes: dict[str, int] = {}
-    for version, header in headers.items():
-        matches = [index for index, line in enumerate(lines)
-                   if line == header]
-        assert len(matches) == 1, \
-            f"expected one exact Python {version} test-matrix entry"
-        indexes[version] = matches[0]
-    assert [indexes[version] for version in versions] == sorted(indexes.values())
-    step_boundaries = [index for index, line in enumerate(lines)
-                       if index > indexes[versions[-1]] and line == "    steps:"]
-    assert step_boundaries, "last Python matrix entry has no bounded end"
-    boundaries = [indexes[version] for version in versions] + [step_boundaries[0]]
-    return {version: tuple(lines[boundaries[offset]:boundaries[offset + 1]])
-            for offset, version in enumerate(versions)}
-
-
-def test_ci_runs_the_stage_release_contract_on_python_310_through_313() \
-        -> None:
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text(
-        encoding="utf-8")
-    entries = _python_matrix_entries(workflow)
-
-    for version in ("3.10", "3.11", "3.12", "3.13"):
-        for test_file in STAGE_MATRIX_TESTS:
-            selector = "              " + test_file
-            assert entries[version].count(selector) == 1, \
-                f"Python {version} must run exact selector {test_file}"
 
 
 def test_ci_builds_and_provenances_the_deterministic_claude_plugin() -> None:

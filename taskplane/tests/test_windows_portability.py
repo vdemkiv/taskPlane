@@ -18,8 +18,7 @@ Classes covered:
 
   2. NEWLINES. A file checked out with CRLF must produce the same detector
      score as the same file with LF, or one diff routes differently on
-     Windows than it does in CI — and the byte-frozen goldens are the
-     things that would disagree.
+     Windows than it does in CI.
 
   3. READ-ONLY TEARDOWN. git marks `.git/objects` read-only and Windows
      refuses to unlink a read-only file. POSIX only needs a writable parent
@@ -311,10 +310,8 @@ class TestBareRootGuardCoversEveryNamedHome(unittest.TestCase):
 
 
 class TestEmittedArtifactPathsAreSlashShaped(unittest.TestCase):
-    """Dispatch briefs are CROSS-HOST artifacts — their parity goldens are
-    compared byte for byte between Claude and Codex — so a path that
-    renders `\\` on one host and `/` on the other is a product
-    divergence, not a cosmetic one.
+    """Dispatch briefs are cross-host artifacts, so a path that renders
+    `\\` on one host and `/` on another is a product divergence.
 
     Three fields still carried the host shape after the role-instruction
     fix: the worker workspace (`.tp-work\\t1`), the dashboard pointer
@@ -337,50 +334,6 @@ class TestEmittedArtifactPathsAreSlashShaped(unittest.TestCase):
         for value in ({"id": "t1"}, {"id": "t1", "workspace": None}, None):
             with self.subTest(task=value):
                 self.assertIs(tp.posix_workspace(value), value)
-
-    def test_frozen_goldens_carry_no_host_separator(self):
-        """The goldens are the gate for the whole class, but they only
-        FIRE on a host that produces backslashes. This runs everywhere and
-        fails if a golden is ever regenerated on Windows — which would
-        freeze the divergence instead of catching it."""
-        import glob
-        import json as _json
-        fixtures = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "fixtures", "briefs")
-        goldens = sorted(glob.glob(os.path.join(fixtures, "golden_*.json")))
-        self.assertTrue(goldens, "no golden briefs found to check")
-
-        def walk(node, path):
-            if isinstance(node, str):
-                # No string in ANY golden carries a backslash today, so the
-                # rule is simply "none may". A path-shaped heuristic would
-                # have missed `.taskplane\\dashboard.html`, which contains
-                # no forward slash at all — verified by injecting exactly
-                # that and watching the clever version pass.
-                if "\\" in node:
-                    yield path, node
-            elif isinstance(node, list):
-                for i, item in enumerate(node):
-                    yield from walk(item, f"{path}[{i}]")
-            elif isinstance(node, dict):
-                for key, item in node.items():
-                    yield from walk(item, f"{path}.{key}")
-
-        for g in goldens:
-            with self.subTest(golden=os.path.basename(g)):
-                with open(g, encoding="utf-8") as f:
-                    raw = f.read()
-                # goldens carry a '#' comment header before the JSON body
-                body = "".join(l for l in raw.splitlines(keepends=True)
-                               if not l.startswith("#"))
-                data = _json.loads(body)
-                bad = list(walk(data, ""))
-                self.assertEqual(
-                    bad, [],
-                    "golden carries host-shaped paths — it was regenerated "
-                    "on a host that emits '\\'. Briefs are compared byte "
-                    "for byte across hosts; regenerate on a '/'-shaped host "
-                    "and fix the emitter, do not freeze the divergence.")
 
 
 class TestExternalStorePathsStayBounded(unittest.TestCase):

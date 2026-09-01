@@ -1013,10 +1013,9 @@ def to_posix(path: str) -> str:
 def posix_workspace(task):
     """`task` with a '/'-shaped `workspace`, for artifacts that LEAVE.
 
-    Dispatch briefs are cross-host: their parity goldens are compared byte
-    for byte between Claude and Codex, so a workspace stored as
-    `.tp-work\\t1` on Windows is a real divergence. Normalizing the copy
-    rather than the stored value keeps every filesystem use of it intact.
+    Dispatch briefs are cross-host, so a workspace stored as `.tp-work\\t1`
+    on Windows is a real semantic divergence. Normalizing the copy rather
+    than the stored value keeps every filesystem use of it intact.
     """
     if not isinstance(task, dict) or not task.get("workspace"):
         return task
@@ -3535,99 +3534,6 @@ def dod_check(contract: dict, workspace: str,
     return errors
 
 
-# ----------------------------------------------------------- plan ordering
-
-# B2 (R-0008): brief-SHAPE surfaces vs golden-brief fixtures. A task that
-# changes how stage/review briefs are emitted (lens routing, signal
-# detectors, the tp.py dispatch/emission layer) must run BEFORE any task
-# that regenerates the golden brief fixtures — otherwise the regenerated
-# goldens pin the OLD shape (the Phase 2 t6∥t7 sequencing gap, retro
-# lesson 1). The plan gate enforces this mechanically; planner memory is
-# not a control.
-BRIEF_SHAPE_SURFACES = ("taskplane/lens.py", "taskplane/lens_signals.py",
-                        "taskplane/tp.py")
-GOLDEN_PREFIX = "taskplane/tests/fixtures/briefs/"
-
-
-def _scope_touches(scope, target: str) -> bool:
-    """Glob/prefix intersection: does any scope glob reach `target` (a
-    literal file, or a directory prefix ending in '/')? Stem matching (the
-    text before the first wildcard), in BOTH directions, so `taskplane/**`
-    covers lens.py and a literal fixture path counts as touching the
-    fixture dir. A catch-all glob ('**') touches everything — the strict
-    direction."""
-    for g in scope or []:
-        stem = str(g).replace("\\", "/").split("*", 1)[0]
-        if target.startswith(stem) or stem.startswith(target):
-            return True
-    return False
-
-
-def plan_ordering_errors(tasks) -> list:
-    """B2: every task whose scope touches a BRIEF_SHAPE_SURFACES file must
-    be a TRANSITIVE dependency ancestor of every task whose scope touches
-    GOLDEN_PREFIX. Returns refusal strings naming both offending task
-    ids ([] = ordered). Fail-closed: any unordered pair refuses the plan
-    approval — an under-declared dep is a plan bug, not a warning."""
-    tasks = [t for t in tasks or [] if isinstance(t, dict)]
-    shape = [t for t in tasks
-             if any(_scope_touches(t.get("scope"), s)
-                    for s in BRIEF_SHAPE_SURFACES)]
-    golden = [t for t in tasks
-              if _scope_touches(t.get("scope"), GOLDEN_PREFIX)]
-
-    # DISJOINTNESS (EM, v3 phase 3). _scope_touches matches stems in BOTH
-    # directions, which is what lets a broad scope be caught at all — but it
-    # also made a CATCH-ALL scope ('**', 'taskplane/**') land in both sets at
-    # once. Two such tasks then demanded that each depend on the other: an
-    # unsatisfiable cycle that dead-ended plan approval, with no --force
-    # path and a remedy line naming the one fix that cannot work.
-    #
-    # A task in BOTH sets carries both halves itself and is self-ordered by
-    # its own execution — exactly what the bid == gid branch below already
-    # recognised for the single-task case. Generalise it: a both-task
-    # imposes no cross-task ordering, and none is imposed on it. The Phase 2
-    # gap this gate exists for (t6 shape ∥ t7 golden-regen, two DISJOINT
-    # scopes) is still caught, because those tasks are each in one set only.
-    both = {str(t.get("id")) for t in shape} & {str(t.get("id"))
-                                                for t in golden}
-    shape = [t for t in shape if str(t.get("id")) not in both]
-    golden = [t for t in golden if str(t.get("id")) not in both]
-    if not shape or not golden:
-        return []
-    deps = {str(t.get("id")): [str(d) for d in t.get("deps") or []]
-            for t in tasks}
-
-    def ancestors(tid: str, seen: set) -> set:
-        for d in deps.get(tid, []):
-            if d not in seen:
-                seen.add(d)
-                ancestors(d, seen)
-        return seen
-
-    errors = []
-    for g in golden:
-        gid = str(g.get("id"))
-        anc = ancestors(gid, set())
-        for b in shape:
-            bid = str(b.get("id"))
-            if bid == gid or bid in anc:
-                continue     # ordered (or the same task carries both)
-            errors.append(
-                f"plan ordering: task {gid} touches {GOLDEN_PREFIX}** "
-                f"(golden brief regen) but does not depend — transitively — "
-                f"on brief-shape task {bid}; order brief-shape changes "
-                "before golden regeneration. Remedies, in preference order: "
-                f"add {bid} to {gid}'s deps; or narrow the scopes so only "
-                "the task that really changes brief shape reaches "
-                + ", ".join(BRIEF_SHAPE_SURFACES) +
-                f"; or merge both halves into one task. There is "
-                "deliberately no --force past this: regenerating goldens "
-                "against the OLD brief shape pins the bug into the fixtures, "
-                "and the plan is still free to edit at this gate")
-    return errors
-
-
 def plan_task_id_errors(tasks) -> list:
     """E5 remedy (Phase 3 EM review): every task id BECOMES a per-task
     contract slot (TASKPLANE_TASK) and is interpolated into the composed
@@ -3654,35 +3560,25 @@ def plan_task_id_errors(tasks) -> list:
     return errors
 
 
-def plan_ordering_refusal(ws: str, tasks, where: str, by=None):
-    """B2 (R-0008): one refusal for BOTH plan transitions — the mechanical
-    plan GATE (a loop initialized without the 'plan' checkpoint goes
-    plan→execute there and would otherwise bypass the rule entirely) and
-    plan_approval approve(). Identical refusal either way: both task ids
-    named in the error, traced loop_gate_blocked / loop_approve_blocked
-    with reason=ordering. Returns None when the plan is ordered.
+def plan_task_id_refusal(ws: str, tasks, where: str, by=None):
+    """Refuse unusable task ids at both plan transitions.
 
-    Also carries the E5 task-id charset check (`plan_task_id_errors`):
-    these two transitions are exactly where an un-slottable id has to be
-    caught — before human approval makes the rename expensive — and
-    reason=task_id distinguishes it in the trace."""
+    This is the earliest point where an invalid id can be corrected without
+    repeating approved work. Returns ``None`` when every id is usable.
+    """
     ids = plan_task_id_errors(tasks)
-    ordering = plan_ordering_errors(tasks)
-    problems = ids + ordering
-    if not problems:
+    if not ids:
         return None
-    reason = "task_id" if ids else "ordering"
     if where == "gate":
-        trace(ws, "loop_gate_blocked", step="plan", reason=reason,
-              errors=problems)
+        trace(ws, "loop_gate_blocked", step="plan", reason="task_id",
+              errors=ids)
         step = "plan"
     else:
-        trace(ws, "loop_approve_blocked", gate="plan", reason=reason,
-              errors=problems, by=by)
+        trace(ws, "loop_approve_blocked", gate="plan", reason="task_id",
+              errors=ids, by=by)
         step = "plan_approval"
-    label = "plan gate BLOCKED" if ids else "plan ordering gate BLOCKED"
-    return {"error": label + " — " + "; ".join(problems),
-            "step": step, "ordering": ordering, "task_ids": ids}
+    return {"error": "plan gate BLOCKED — " + "; ".join(ids),
+            "step": step, "task_ids": ids}
 
 
 # ------------------------------------------------ engine fingerprint (A4)

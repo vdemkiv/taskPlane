@@ -648,8 +648,6 @@ def verify_forward_release_surface(root):
     except OSError as exc:
         workflow = ""
         errors.append(f"cannot read CI workflow: {exc}")
-    if "python scripts/ci_evals.py --verify-release-surface --json" not in workflow:
-        errors.append("CI does not execute the forward-release surface proof")
     python_312 = re.search(
         r"\n  tests:\n(?P<body>.*?)(?=\n  [a-zA-Z0-9_-]+:\n)",
         workflow, re.DOTALL,

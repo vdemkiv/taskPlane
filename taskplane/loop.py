@@ -9056,9 +9056,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     "step": "plan",
                     "dor": {"ready": False,
                             "blockers": reanchor_errors}}
-        # B2: ordering at the GATE too — checkpoint-less loops skip approve.
-        if (refusal := tp.plan_ordering_refusal(ws, state.get("tasks"),
-                                                "gate")):
+        # Validate task ids here too: checkpoint-less loops skip approve.
+        if (refusal := tp.plan_task_id_refusal(ws, state.get("tasks"),
+                                               "gate")):
             return refusal
 
     task = _current_task(state)
@@ -10269,9 +10269,8 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
                              "requirement is under the threshold. Refine it "
                              "(close the gaps) or `loop approve --force`.",
                     "refinement": refinement}
-        # B2 (R-0008): mechanical brief-shape-before-golden-regen ordering.
-        if (refusal := tp.plan_ordering_refusal(ws, state.get("tasks"),
-                                                "approve", by=by)):
+        if (refusal := tp.plan_task_id_refusal(
+                ws, state.get("tasks"), "approve", by=by)):
             return refusal
         if _consolidated_enabled():
             state["authority_target_revision"] = tp.git_head(ws)
