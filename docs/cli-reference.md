@@ -65,6 +65,7 @@ not repeated in the tables.
 | `tp.py loop` | drive the Evaluate-Loop engine |
 | `tp.py loop approve` | record a human approval at a checkpoint gate |
 | `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
+| `tp.py loop build-quality` | admit one typed candidate-bound Build/Fix quality receipt before worker submission or gate evaluation |
 | `tp.py loop claim` | a worker claims one wave task into its own worktree |
 | `tp.py loop command` | run a durable command through the live loop root |
 | `tp.py loop command cancel` | cancel a durable command |
@@ -84,6 +85,7 @@ not repeated in the tables.
 | `tp.py loop select` | A/B selection gate: pick the variant that ships (or 'hybrid') |
 | `tp.py loop status` | show the loop's stage, tasks and gates |
 | `tp.py loop submit` | worker submits evidence without transitioning state; the orchestrator gates |
+| `tp.py loop terminal` | orchestrator-only: idempotently close the whole run for cancellation, interruption, or handoff |
 | `tp.py loop verify-dispatch` | audit whether dispatched agents used the models the briefs resolved (tier routing) |
 | `tp.py loop wave` | print the EXECUTE wave: one brief per scope-disjoint task |
 | `tp.py new` | create + activate a Task Contract |
@@ -634,6 +636,17 @@ Positional arguments:
 
 - `flow` (required) — routine flow identity (facade, delivery, product, design, build, engineering, status, help, north_star or tag_slack)
 
+## `tp.py loop build-quality`
+
+admit one typed candidate-bound Build/Fix quality receipt before worker submission or gate evaluation
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--receipt` | RECEIPT (required) | completed Build-quality receipt JSON file |
+| `--stage` | one of: execute, fix | optional exact current stage assertion |
+| `--strategy` | STRATEGY (required) | typed test-strategy JSON file |
+| `--task` | TASK (required) | exact approved task id |
+
 ## `tp.py loop claim`
 
 a worker claims one wave task into its own worktree
@@ -850,6 +863,18 @@ Positional arguments:
 | --- | --- | --- |
 | `--note` | NOTE | one-line evidence note recorded with the submission |
 | `--task` | TASK | task id (parallel execute waves) |
+
+## `tp.py loop terminal`
+
+orchestrator-only: idempotently close the whole run for cancellation, interruption, or handoff
+
+Positional arguments:
+
+- `outcome` (required; choices: `cancellation`, `interruption`, `handoff`)
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY (required) | attributable orchestrator/human identity; host session authority is derived from the environment |
 
 ## `tp.py loop verify-dispatch`
 
