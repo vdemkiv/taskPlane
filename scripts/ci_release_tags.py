@@ -66,6 +66,15 @@ NOT_SHIPPED = {
                   "honestly point anywhere.",
         "co_released_with": "2.5.0",
     },
+    "2.18.2": {
+        "reason": "never shipped as its own version. The external-worktree "
+                  "bootstrap repair was installed and packaged only as a "
+                  "local development candidate; no source tree declared "
+                  "2.18.2. That work shipped with the canonical settings, "
+                  "dashboard, cleanup, test-portfolio, and CI delivery in "
+                  "2.18.3.",
+        "co_released_with": "2.18.3",
+    },
 }
 
 # Versions with real manifest trees that attributed release history explicitly
@@ -109,13 +118,6 @@ NOT_RELEASED = {
                   "preceded the complete local and exact-PR-head-SHA release "
                   "proof; it was explicitly not released.",
         "superseded_by": "2.18.1",
-    },
-    "2.18.2": {
-        "reason": "superseded external-worktree bootstrap repair candidate "
-                  "that preceded the canonical settings, dashboard, cleanup, "
-                  "test-portfolio, and CI delivery release; it was explicitly "
-                  "not released.",
-        "superseded_by": "2.18.3",
     },
 }
 
