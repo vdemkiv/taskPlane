@@ -23,7 +23,7 @@
     {
       "id": "AC-SET4",
       "selectors": [
-        "taskplane/tests/test_settings_flow_wiring.py::test_every_flow_initializes_from_canonical_settings"
+        "taskplane/tests/test_settings_flow_wiring.py::test_public_cli_refuses_invalid_settings_before_flow_state_or_artifacts"
       ]
     },
     {
@@ -182,7 +182,7 @@
         }
       ],
       "interface_fixtures": [
-        {"path": "taskplane/tests/fixtures/test-strategy/r0001.json", "slice": "TEST-STRATEGY"}
+        {"path": "design/test-strategy.json", "slice": "TEST-STRATEGY"}
       ]
     }
   ],

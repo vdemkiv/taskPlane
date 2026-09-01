@@ -286,9 +286,10 @@ def test_public_signoff_sets_attributable_metrics_truth_before_retro(
     calls = []
     production_sealer = loop._seal_terminal_metrics_before_retro
 
-    def seal(current):
+    def seal(metrics_workspace, current):
+        assert metrics_workspace == str(workspace)
         calls.append(current["step"])
-        return production_sealer(current)
+        return production_sealer(metrics_workspace, current)
 
     monkeypatch.setattr(loop, "_seal_terminal_metrics_before_retro", seal)
 

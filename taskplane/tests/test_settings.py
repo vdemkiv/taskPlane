@@ -31,6 +31,10 @@ def test_valid_canonical_settings_load_typed():
         "architecture", "project-management", "testability")
     assert settings.lenses.counts["plan"] == 4
     assert settings.lenses.policy_for("plan").dynamic is True
+    assert settings.lenses.policy_for("product").to_dict() == {
+        "stage": "product", "mandatory": ["product"], "max_count": 3,
+        "dynamic": True,
+    }
     assert settings.stages["engineering"].reasoning == "high"
     assert settings.lenses.policy_for("engineering").to_dict() == {
         "stage": "engineering", "mandatory": [], "max_count": 0,

@@ -170,6 +170,13 @@
         "taskplane/build_quality.py->contract:taskplane.build-quality-receipt/v1:provides"
       ],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "test_strategy_authority": {
+        "schema": "taskplane.plan-test-strategy-reference/v1",
+        "path": "design/test-strategy.json",
+        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
+        "criterion_ids": ["AC-TST1", "AC-TST3", "AC-CI2"],
+        "changed_producer_ids": ["validation:test-strategy"]
+      },
       "test_contract": {
         "changed_producers": ["taskplane/evaluation_output.py", "taskplane/failure_routing.py", "taskplane/test_strategy.py", "taskplane/build_quality.py"],
         "all_consumers": ["Build quality admission", "Evaluate verdict admission", "CI failure ingestion", "Fix admission", "Retro failure reporting"],
@@ -198,6 +205,13 @@
         "resource:taskplane.run-artifacts/v1->taskplane/owned_cleanup.py:protected-from"
       ],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "test_strategy_authority": {
+        "schema": "taskplane.plan-test-strategy-reference/v1",
+        "path": "design/test-strategy.json",
+        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
+        "criterion_ids": ["AC-CLN1", "AC-CLN2"],
+        "changed_producer_ids": ["validation:test-strategy"]
+      },
       "test_contract": {
         "changed_producers": ["taskplane/run_store.py", "taskplane/run_artifacts.py", "taskplane/owned_cleanup.py"],
         "all_consumers": ["dashboard publisher", "dependency graph publisher", "telemetry publisher", "agent activity logger", "validation evidence", "cleanup receipt", "Retro archive"],
@@ -226,6 +240,13 @@
         "taskplane/depgraph.py->resource:taskplane.run-artifacts/v1:publishes"
       ],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "test_strategy_authority": {
+        "schema": "taskplane.plan-test-strategy-reference/v1",
+        "path": "design/test-strategy.json",
+        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
+        "criterion_ids": ["AC-SET1", "AC-SET2", "AC-SET3", "AC-SET4", "AC-SET5", "AC-P0"],
+        "changed_producer_ids": ["validation:test-strategy"]
+      },
       "test_contract": {
         "changed_producers": ["taskplane/operational-settings.json", "taskplane/settings.py", "taskplane/depgraph.py", "taskplane/plan_topology.py"],
         "all_consumers": ["loop initialization", "automatic decomposition", "Design lens selection", "host worker assignment", "stage graph snapshot", "dashboard graph", "CI plan"],
@@ -256,6 +277,13 @@
         "taskplane/dashboard.py->resource:taskplane.run-artifacts/v1:publishes"
       ],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "test_strategy_authority": {
+        "schema": "taskplane.plan-test-strategy-reference/v1",
+        "path": "design/test-strategy.json",
+        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
+        "criterion_ids": ["AC-REG"],
+        "changed_producer_ids": ["dashboard:canonical-snapshot", "dashboard:phase-graphs", "dashboard:publication"]
+      },
       "test_contract": {
         "changed_producers": ["taskplane/dashboard.py", "taskplane/host_native.py", "taskplane/views.py"],
         "all_consumers": ["durable HTML", "host-native panel", "browser preview", "current-head publication", "dashboard artifact class"],
@@ -285,6 +313,13 @@
         "taskplane/dispatch_telemetry.py->resource:taskplane.run-artifacts/v1:publishes"
       ],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "test_strategy_authority": {
+        "schema": "taskplane.plan-test-strategy-reference/v1",
+        "path": "design/test-strategy.json",
+        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
+        "criterion_ids": ["AC-MET"],
+        "changed_producer_ids": ["validation:test-strategy"]
+      },
       "test_contract": {
         "changed_producers": ["taskplane/dispatch_telemetry.py", "taskplane/wave_metrics.py", "taskplane/retro.py"],
         "all_consumers": ["dashboard metrics", "Engineering sign-off", "Retro report", "Retro ZIP", "cleanup terminal seal"],
@@ -327,6 +362,13 @@
         "Retro reports measured token totals or explicit unavailable status, retains evaluator identities, and never converts missing usage to zero.",
         "Behavioral journey tests cover the public producers and consumers; source-shape, byte-identity, stale-history, and ceremonial tests are removed."
       ],
+      "test_strategy_authority": {
+        "schema": "taskplane.plan-test-strategy-reference/v1",
+        "path": "design/test-strategy.json",
+        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
+        "criterion_ids": ["AC-REG", "AC-SET1", "AC-SET2", "AC-SET3", "AC-SET4", "AC-SET5", "AC-P0", "AC-CI2", "AC-MET", "AC-TST1", "AC-TST2", "AC-TST3"],
+        "changed_producer_ids": ["dashboard:canonical-snapshot", "dashboard:phase-graphs", "dashboard:publication", "validation:test-strategy"]
+      },
       "test_contract": {
         "changed_producers": ["taskplane/loop.py", "taskplane/tp.py", "host hooks", "Design host role"],
         "all_consumers": ["every flow initialization", "decomposition", "Design route", "native host worker dispatcher", "worker lifecycle hooks", "activity log", "Design gate", "Build quality gate", "Evaluate failure gate", "Fix admission", "Engineering and Retro"],
@@ -355,6 +397,13 @@
       "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "acceptance_refs": ["Dashboard publications, graph and dependency evidence, telemetry, and every agent activity log are stored as separate durable artifact classes beside the run and survive every cleanup outcome."],
+      "test_strategy_authority": {
+        "schema": "taskplane.plan-test-strategy-reference/v1",
+        "path": "design/test-strategy.json",
+        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
+        "criterion_ids": ["AC-CLN1", "AC-CLN2", "AC-REL"],
+        "changed_producer_ids": ["dashboard:canonical-snapshot", "dashboard:phase-graphs", "dashboard:publication", "validation:test-strategy"]
+      },
       "test_contract": {
         "changed_producers": ["public governed lifecycle"],
         "all_consumers": ["artifact manifest", "all seven artifact classes", "cleanup", "handoff", "Retro ZIP"],
@@ -384,6 +433,13 @@
       "design_edges": [],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "acceptance_refs": ["Behavioral journey tests cover the public producers and consumers; source-shape, byte-identity, stale-history, and ceremonial tests are removed."],
+      "test_strategy_authority": {
+        "schema": "taskplane.plan-test-strategy-reference/v1",
+        "path": "design/test-strategy.json",
+        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
+        "criterion_ids": ["AC-TST1", "AC-TST2", "AC-TST3"],
+        "changed_producer_ids": ["validation:test-strategy"]
+      },
       "test_contract": {
         "changed_producers": ["taskplane/test_portfolio.json", "current behavioral test inventory"],
         "all_consumers": ["Build exact-selector contract", "changed-radius validation", "protected floors", "authoritative CI", "release audit"],
@@ -413,6 +469,13 @@
       ],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
       "acceptance_refs": ["GitHub Actions runs one unsharded authoritative Python 3.12 suite plus only genuinely independent validations."],
+      "test_strategy_authority": {
+        "schema": "taskplane.plan-test-strategy-reference/v1",
+        "path": "design/test-strategy.json",
+        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
+        "criterion_ids": ["AC-CI1"],
+        "changed_producer_ids": ["validation:test-strategy"]
+      },
       "test_contract": {
         "changed_producers": ["scripts/ci_local.py", ".github/workflows/ci.yml"],
         "all_consumers": ["one Python 3.12 suite job", "independent browser validation", "quality and package validation", "interpreter import smoke", "OS and portability boundary", "security and no-egress validation", "release proof"],
@@ -442,6 +505,13 @@
       "new_modules": ["scripts/package_openai.py", "scripts/package_claude.py", "taskplane/tests/test_r0002_release_package_journey.py"],
       "design_edges": ["scripts/package_openai.py->scripts/package_claude.py:parity"],
       "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+      "test_strategy_authority": {
+        "schema": "taskplane.plan-test-strategy-reference/v1",
+        "path": "design/test-strategy.json",
+        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
+        "criterion_ids": ["AC-REL"],
+        "changed_producer_ids": ["validation:test-strategy"]
+      },
       "test_contract": {
         "changed_producers": ["release evidence", "Codex plugin manifest", "Claude plugin manifest and marketplace", "OpenAI and Claude packagers"],
         "all_consumers": ["version audit", "protected-main release gate", "marketplace archive", "installed Taskplane runtime", "Retro ZIP"],

@@ -114,6 +114,9 @@ def test_codex_and_claude_packages_declare_one_canonical_contract(
     installed = tmp_path / "installed-taskplane"
     for directory in (".codex-plugin", ".claude-plugin", "hooks", "taskplane"):
         shutil.copytree(ROOT / directory, installed / directory)
+    (installed / "lenses").mkdir()
+    shutil.copy2(ROOT / "lenses/catalog.json",
+                 installed / "lenses/catalog.json")
     subprocess.run(["git", "init", "-q"], cwd=installed, check=True)
     receipt_home = tmp_path / "receipt-home"
     identity = storage.resolve_repository_identity(str(installed))

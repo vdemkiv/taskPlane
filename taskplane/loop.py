@@ -7932,6 +7932,14 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
                             kind=relation, confidence="high")
         if apply:
             task["impact_policy"] = depgraph.impact_policy(task)
+        try:
+            strategy_authority = _seal_task_test_strategy_authority(
+                ws, state, task)
+        except (OSError, ValueError, test_strategy.StrategyContractError) as exc:
+            errors.append(prefix + "test-strategy authority: " + str(exc))
+        else:
+            if apply and strategy_authority is not None:
+                task["test_strategy_authority_receipt"] = strategy_authority
         if rid and task.get("high_cost"):
             if rec is None:
                 errors.append(prefix + f"requirement {rid} does not exist")
@@ -7954,12 +7962,15 @@ _REANCHOR_CONTRACT_FIELDS = (
     # If both are present they are both bound, so aliases cannot hide drift.
     "gap", "gap_category", "contracts", "modules", "new_modules",
     "design_edges", "impact", "impact_policy", "criteria",
+    "acceptance_refs", "test_contract", "test_strategy_authority",
 )
 _REANCHOR_SEQUENCE_FIELDS = frozenset({
     "scope", "deps", "contracts", "modules", "new_modules",
-    "design_edges", "criteria",
+    "design_edges", "criteria", "acceptance_refs",
 })
-_REANCHOR_MAPPING_FIELDS = frozenset({"impact", "impact_policy"})
+_REANCHOR_MAPPING_FIELDS = frozenset({
+    "impact", "impact_policy", "test_contract", "test_strategy_authority",
+})
 
 _REANCHOR_RESOLVED_OUTAGE_REASONS = {
     "human-resolved-orchestration-outage": "orchestration_unavailable",
@@ -9091,6 +9102,8 @@ def _build_quality_binding(
     """Derive the only Build-quality binding accepted by this loop head."""
     candidate = _failure_candidate_identity(ws, task)
     settings = operational_settings.load_settings(environment=os.environ)
+    strategy_authority = _validated_task_test_strategy_authority(
+        ws, state, task)
     runtime_digest = str(tp.engine_fingerprint() or "")
     environment_digest = hashlib.sha256(json.dumps({
         "python": [sys.version_info.major, sys.version_info.minor],
@@ -9104,6 +9117,9 @@ def _build_quality_binding(
         "task": str(task.get("id") or ""),
         "candidate": candidate,
         "settings_digest": settings.digest,
+        "test_strategy_authority": (
+            strategy_authority.get("fingerprint")
+            if strategy_authority is not None else None),
     }, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
         allow_nan=False).encode("utf-8")).hexdigest()
     return {
@@ -9114,6 +9130,209 @@ def _build_quality_binding(
         "runtime_digest": runtime_digest,
         "environment_digest": environment_digest,
     }
+
+
+_DESIGN_TEST_STRATEGY_REFERENCE_SCHEMA = \
+    "taskplane.design-test-strategy-reference/v1"
+_PLAN_TEST_STRATEGY_REFERENCE_SCHEMA = \
+    "taskplane.plan-test-strategy-reference/v1"
+_TEST_STRATEGY_AUTHORITY_SCHEMA = "taskplane.test-strategy-authority/v1"
+_DESIGN_STRATEGY_REFERENCE_FIELDS = frozenset({
+    "schema", "path", "strategy_fingerprint",
+})
+_PLAN_STRATEGY_REFERENCE_FIELDS = frozenset({
+    *_DESIGN_STRATEGY_REFERENCE_FIELDS,
+    "criterion_ids", "changed_producer_ids",
+})
+
+
+def _strategy_authority_strings(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or not value or any(
+            not isinstance(item, str) or not item.strip() or
+            item != item.strip() for item in value):
+        raise ValueError(f"{label} must be a non-empty trimmed string list")
+    if len(value) != len(set(value)):
+        raise ValueError(f"{label} contains duplicates")
+    return list(value)
+
+
+def _test_strategy_artifact(ws: str, reference: Mapping[str, object]) \
+        -> tuple[str, dict]:
+    rel = _dc.design_safe_rel(reference.get("path"))
+    if rel is None or rel != reference.get("path"):
+        raise ValueError(
+            "approved test-strategy artifact must use an exact design/ path")
+    workspace = os.path.realpath(ws)
+    candidate = os.path.abspath(os.path.join(workspace, rel))
+    path = os.path.realpath(candidate)
+    try:
+        within_workspace = os.path.commonpath((workspace, path)) == workspace
+    except ValueError:
+        within_workspace = False
+    if not within_workspace or candidate != path or os.path.islink(candidate) \
+            or not os.path.isfile(path):
+        raise ValueError(
+            "approved test-strategy artifact is missing or unsafe")
+    value, errors = _read_json(path)
+    if errors or value is None:
+        raise ValueError("approved test-strategy artifact is unreadable: "
+                         + "; ".join(errors))
+    sealed = test_strategy.seal_strategy(value)
+    validated = test_strategy.validate_strategy(sealed)
+    expected = str(reference.get("strategy_fingerprint") or "")
+    if expected != validated.get("contract_fingerprint_sha256"):
+        raise ValueError(
+            "approved test-strategy artifact fingerprint is stale")
+    return rel, validated
+
+
+def _test_strategy_plan_contract(task: Mapping[str, object]) -> dict:
+    """Project only the immutable Plan fields that authorize Build tests."""
+    return {
+        key: _copy_json(task.get(key))
+        for key in (
+            "id", "tests", "criteria", "acceptance_refs", "test_contract",
+            "test_strategy_authority",
+        )
+    }
+
+
+def _seal_task_test_strategy_authority(
+        ws: str, state: Mapping[str, object], task: Mapping[str, object]
+        ) -> dict | None:
+    """Derive one Design+Plan authority; Build can never mint this record."""
+    if not state.get("design_required"):
+        # Explicit compatibility boundary: pre-Design v1 tasks retain their
+        # candidate-bound quality receipts for one migration path.
+        return None
+    if not isinstance(task.get("test_contract"), Mapping):
+        return None
+    design, errors = _design_contract(ws)
+    if errors or design is None:
+        raise ValueError("approved Design test strategy is unavailable: "
+                         + "; ".join(errors))
+    design_settings = design.get("test_strategy")
+    design_reference = (design_settings.get("authority")
+                        if isinstance(design_settings, Mapping) else None)
+    plan_reference = task.get("test_strategy_authority")
+    if not isinstance(design_reference, Mapping) or set(design_reference) != \
+            _DESIGN_STRATEGY_REFERENCE_FIELDS or design_reference.get(
+                "schema") != _DESIGN_TEST_STRATEGY_REFERENCE_SCHEMA:
+        raise ValueError(
+            "approved Design test-strategy reference is missing or invalid")
+    if not isinstance(plan_reference, Mapping) or set(plan_reference) != \
+            _PLAN_STRATEGY_REFERENCE_FIELDS or plan_reference.get(
+                "schema") != _PLAN_TEST_STRATEGY_REFERENCE_SCHEMA:
+        raise ValueError(
+            "approved Plan test-strategy reference is missing or invalid")
+    if any(plan_reference.get(field) != design_reference.get(field)
+           for field in ("path", "strategy_fingerprint")):
+        raise ValueError(
+            "Plan test strategy differs from the approved Design artifact")
+    rel, strategy = _test_strategy_artifact(ws, design_reference)
+    criterion_ids = _strategy_authority_strings(
+        plan_reference.get("criterion_ids"),
+        "Plan test-strategy criterion_ids")
+    producer_ids = _strategy_authority_strings(
+        plan_reference.get("changed_producer_ids"),
+        "Plan test-strategy changed_producer_ids")
+    criteria = {
+        str(row.get("id")): row
+        for row in strategy.get("acceptance_criteria") or []
+        if isinstance(row, Mapping)
+    }
+    producers = {
+        str(row.get("id")): row
+        for row in strategy.get("producers") or []
+        if isinstance(row, Mapping)
+    }
+    missing_criteria = sorted(set(criterion_ids) - set(criteria))
+    missing_producers = sorted(set(producer_ids) - set(producers))
+    if missing_criteria or missing_producers:
+        raise ValueError(
+            "Plan test-strategy selection is absent from the approved "
+            f"artifact: criteria={missing_criteria}, producers={missing_producers}")
+    selected_selectors = [
+        selector for criterion_id in criterion_ids
+        for selector in criteria[criterion_id]["selectors"]
+    ]
+    if len(selected_selectors) != len(set(selected_selectors)):
+        raise ValueError(
+            "Plan test-strategy selection contains overlapping selectors")
+    design_map = _dc.acceptance_test_map(design)
+    if not isinstance(design_map, Mapping) or not design_map:
+        raise ValueError("approved Design exact selector map is unavailable")
+    design_selectors = [
+        selector for selectors in design_map.values()
+        for selector in selectors
+    ]
+    outside_design = sorted(set(selected_selectors) - set(design_selectors))
+    if outside_design:
+        raise ValueError(
+            "Plan test strategy selects tests outside approved Design: "
+            + ", ".join(outside_design))
+    refs = task.get("acceptance_refs")
+    if refs is not None:
+        accepted_refs = _strategy_authority_strings(
+            refs, "Plan task acceptance_refs")
+        missing_refs = sorted(set(accepted_refs) - set(design_map))
+        if missing_refs:
+            raise ValueError(
+                "Plan task acceptance refs are absent from approved Design: "
+                + "; ".join(missing_refs))
+        referenced_selectors = [
+            selector for criterion in accepted_refs
+            for selector in design_map[criterion]
+        ]
+        outside_refs = sorted(
+            set(selected_selectors) - set(referenced_selectors))
+        uncovered_refs = [
+            criterion for criterion in accepted_refs
+            if not set(design_map[criterion]).intersection(selected_selectors)
+        ]
+        if outside_refs or uncovered_refs:
+            raise ValueError(
+                "Plan test-strategy selection is outside or does not cover "
+                "its exact Design acceptance refs: "
+                f"outside={outside_refs}, uncovered={uncovered_refs}")
+    design_fingerprint = str(state.get("design_fingerprint") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", design_fingerprint):
+        raise ValueError("approved Design fingerprint is missing or invalid")
+    material = {
+        "schema": _TEST_STRATEGY_AUTHORITY_SCHEMA,
+        "task": str(task.get("id") or ""),
+        "design_fingerprint": design_fingerprint,
+        "design_selectors_fingerprint": hashlib.sha256(
+            tp.canonical_json_bytes(design_map)).hexdigest(),
+        "plan_contract_fingerprint": hashlib.sha256(
+            tp.canonical_json_bytes(
+                _test_strategy_plan_contract(task))).hexdigest(),
+        "artifact": {
+            "path": rel,
+            "strategy_fingerprint": strategy[
+                "contract_fingerprint_sha256"],
+        },
+        "selection": {
+            "criterion_ids": criterion_ids,
+            "selectors": selected_selectors,
+            "changed_producer_ids": producer_ids,
+        },
+    }
+    return {**material, "fingerprint": hashlib.sha256(
+        tp.canonical_json_bytes(material)).hexdigest()}
+
+
+def _validated_task_test_strategy_authority(
+        ws: str, state: Mapping[str, object], task: Mapping[str, object]
+        ) -> dict | None:
+    expected = _seal_task_test_strategy_authority(ws, state, task)
+    if expected is None:
+        return None
+    recorded = task.get("test_strategy_authority_receipt")
+    if recorded != expected:
+        raise ValueError(
+            "approved Design/Plan test-strategy authority is missing or stale")
+    return expected
 
 
 def record_build_quality(
@@ -9134,9 +9353,21 @@ def record_build_quality(
     if task is None:
         return {"error": f"no task {task_id}"}
     task_ws = str(task.get("workspace") or ws)
-    expected = _build_quality_binding(task_ws, state, task, current_stage)
     try:
+        strategy_authority = _validated_task_test_strategy_authority(
+            task_ws, state, task)
+        expected = _build_quality_binding(task_ws, state, task, current_stage)
         validated_strategy = test_strategy.validate_strategy(strategy)
+        if strategy_authority is not None and (
+                validated_strategy.get("contract_fingerprint_sha256") !=
+                strategy_authority["artifact"]["strategy_fingerprint"] or
+                list(receipt.get("criterion_ids") or []) !=
+                strategy_authority["selection"]["criterion_ids"] or
+                list(receipt.get("changed_producer_ids") or []) !=
+                strategy_authority["selection"]["changed_producer_ids"]):
+            raise ValueError(
+                "submitted Build quality differs from the approved "
+                "Design/Plan test strategy")
         admitted = build_quality.admit_build_quality(
             validated_strategy, receipt, expected_binding=expected)
         artifact_root = _run_artifact_root(ws, state)
@@ -9167,6 +9398,18 @@ def record_build_quality(
                        if str(row.get("id") or "") == str(task_id)), None)
         if target is None:
             return {"error": f"no task {task_id}"}
+        try:
+            locked_authority = _validated_task_test_strategy_authority(
+                str(target.get("workspace") or ws), locked, target)
+        except Exception as exc:
+            return {"error": "Build quality refused after state lock: "
+                    f"{exc.__class__.__name__}: {exc}"}
+        if locked_authority != strategy_authority:
+            return {"error": "Build quality refused: approved test-strategy "
+                    "authority changed during admission"}
+        # This is submitted validation evidence.  The separately named
+        # Plan-sealed authority receipt above is immutable and never replaced
+        # by Build input.
         target["test_strategy"] = validated_strategy
         target["build_quality_receipt"] = admitted
         target["build_quality_artifact"] = reference
@@ -9184,6 +9427,17 @@ def _build_quality_errors(
     if not isinstance(strategy, Mapping) or not isinstance(receipt, Mapping):
         return ["current Build-quality strategy and receipt are required"]
     try:
+        strategy_authority = _validated_task_test_strategy_authority(
+            ws, state, task)
+        if strategy_authority is not None and (
+                strategy.get("contract_fingerprint_sha256") !=
+                strategy_authority["artifact"]["strategy_fingerprint"] or
+                list(receipt.get("criterion_ids") or []) !=
+                strategy_authority["selection"]["criterion_ids"] or
+                list(receipt.get("changed_producer_ids") or []) !=
+                strategy_authority["selection"]["changed_producer_ids"]):
+            raise ValueError(
+                "Build evidence differs from approved Design/Plan test strategy")
         build_quality.admit_build_quality(
             strategy, receipt,
             expected_binding=_build_quality_binding(ws, state, task, stage))

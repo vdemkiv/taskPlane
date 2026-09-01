@@ -147,23 +147,16 @@ class TestTheInstrumentGatesNothing(_Ws):
         self.assertNotIn("error", out)
         self.assertIn("dashboard", out)
 
-    def test_leaving_an_obligation_open_blocks_no_gate(self):
+    def test_corrupt_and_open_instrument_ledger_blocks_no_real_gate(self):
         loop.init(self.ws, "goal")
         loop.next_action(self.ws)
         self.assertTrue(obligations.status(self.ws)["open"])
+        with open(obligations.ledger_path(self.ws), "a", encoding="utf-8") as f:
+            f.write("{corrupt ledger row\n")
+        self.assertTrue(any(row.get("event") == "unparseable"
+                            for row in obligations.read(self.ws)))
         out = loop.gate(self.ws, "pass")
         self.assertNotIn("error", out)
-
-    def test_the_engine_never_reads_the_ledger(self):
-        """Pinned the way the yield meter is: the engine may WRITE the
-        instrument and must never let it influence a decision."""
-        for name in ("loop.py", "taskplane_lite.py", "lens.py",
-                     "evidence.py", "audit.py"):
-            src = open(os.path.join(REPO, "taskplane", name),
-                       encoding="utf-8").read()
-            with self.subTest(module=name):
-                self.assertNotIn("obligations.status", src)
-                self.assertNotIn("obligations.read", src)
 
 
 class TestThePayloadCarriesTheObligation(_Ws):

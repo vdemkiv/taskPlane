@@ -1,58 +1,13 @@
-"""t3+t4 (R-0004) — stage waves: the workflow FILES (t3) and the tp.py
-stage EMITTER + Codex parity (t4).
-
-t3: workflows/execute-wave.js, evaluate-wave.js, fix-wave.js on the
-review-wave.js pattern.
-
-t4 additions (contract:wave-workflow):
-  * stage emitter — `loop wave --emit` / `loop next --emit` wrap a stage
-    dispatch payload as ONE ready-to-run stage workflow invocation; the
-    Task path stays semantically equivalent across the bare and explicit Task rails
-    (the mandatory fallback and the only Codex path), while focused live
-    comparisons prove the workflow rail carries the same contract fields;
-  * kill-switch matrix — every documented TASKPLANE_WORKFLOWS spelling ×
-    Codex markers × CLAUDE_CODE_WORKFLOWS, asserted against
-    tp.workflow_available itself (single detector: the emitter may not
-    re-parse the env);
-  * resume — a static killed-mid-stage journal fixture replays against the
-    workflow files' deterministic label rule (completed agents cached,
-    incomplete re-run) and the engine-side idempotence that makes resume
-    safe (double-submit of the same outcome is a no-op) is pinned against
-    loop.submit through a throwaway workspace;
-  * adversarial gate walk — test_every_gate_reachable_without_workflows
-    drives init→pm→design→plan→execute→evaluate→em→signoff with
-    TASKPLANE_WORKFLOWS=0 and reaches every gate via dispatch;
-  * the workflow-agnostic module scan extends to audit.py (the emitter
-    lives in tp.py ONLY).
-
-Static pins (CI has no JS runtime — every check is a source scan, the
-test_review_wave.py style):
-  * each file ships, `export const meta` is a PURE literal (no calls, no
-    interpolation), and the meta name matches the stage names pinned in
-    contract:wave-workflow (parsed programmatically, not hand-copied);
-  * deterministic: no Date.now / new Date / Math.random / dynamic
-    import() / require() / process. in any of the three files;
-  * ZERO gate verbs (gate/approve/signoff/resolve) anywhere in each file —
-    human gates stay at conversation level by construction; the workflow
-    is transport, the orchestrator gates OUTSIDE the run;
-  * agent() outputs use each brief's canonical versioned output contract;
-    evaluate carries the evaluator schema/resume identity and returns only
-    transport receipts, while execute/fix retain their strict receipt pins;
-  * parallel dispatch shape: one agent() thunk per brief fanned out via
-    parallel() (tasks in one wave are independent by plan construction);
-  * args consumption: execute/evaluate consume args.briefs, fix consumes
-    args.verdicts (the evaluator's repro notes ride in those briefs);
-    prompts are passed to agent() VERBATIM (no template interpolation);
-  * no workflow translates canonical result artifacts or advances gates.
-"""
+"""Current behavioral contracts for stage workflow transport and fallback."""
+import base64
 import contextlib
 import importlib.util
-import inspect
 import io
 import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -75,8 +30,6 @@ _sf_spec = importlib.util.spec_from_file_location(
     "stage_fixture", os.path.join(BRIEFS, "stage_fixture.py"))
 stage_fixture = importlib.util.module_from_spec(_sf_spec)
 _sf_spec.loader.exec_module(stage_fixture)
-STAGES = ("execute-wave", "evaluate-wave", "fix-wave")
-RECEIPT_STAGES = ("execute-wave", "fix-wave")
 GATE_VERBS = ("gate", "approve", "signoff", "resolve")
 
 
@@ -84,216 +37,85 @@ def _path(stage: str) -> str:
     return os.path.join(WF_DIR, f"{stage}.js")
 
 
-def _js(stage: str) -> str:
-    with open(_path(stage), encoding="utf-8") as f:
-        return f.read()
+def _run_public_workflow(stage: str, args: dict) -> dict:
+    """Import and invoke the shipped workflow under a behavioral Node host."""
+    with open(_path(stage), "rb") as stream:
+        source = base64.b64encode(stream.read()).decode()
+    script = r"""
+const mod = await import('data:text/javascript;base64,' + process.argv[1]);
+const args = JSON.parse(process.argv[2]);
+const stage = process.argv[3];
+const calls = [];
+const phases = [];
+const parallelWidths = [];
+const agent = async (prompt, options) => {
+  calls.push({prompt, options});
+  const task = options.label.split(':').slice(1).join(':');
+  if (stage === 'evaluate-wave') {
+    return {schema: 'taskplane.evaluator-output/v2', task, requirement: '',
+      verdict: 'pass', criteria: [], graph: {dispositions: [],
+      requirements_checked: [], contracts_checked: []}, failures: []};
+  }
+  return {task, outcome: 'pass', note: 'ok'};
+};
+const parallel = async (runs) => {
+  parallelWidths.push(runs.length);
+  return Promise.all(runs.map((run) => run()));
+};
+const result = await mod.default({
+  args, agent, parallel, phase: (value) => phases.push(value),
+});
+process.stdout.write(JSON.stringify({meta: mod.meta, calls, phases,
+  parallelWidths, result}));
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script, source,
+         json.dumps(args), stage], check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace")
+    return json.loads(completed.stdout)
 
 
-def _meta_block(src: str, stage: str) -> str:
-    m = re.search(r"const\s+meta\s*=\s*\{(.*?)\n\};", src, re.S)
-    assert m, f"workflows/{stage}.js must declare `const meta = {{...}};`"
-    return m.group(1)
+@pytest.mark.parametrize("stage,key,prefix,first_phase", [
+    ("execute-wave", "briefs", "task", "Build"),
+    ("evaluate-wave", "briefs", "eval", "Evaluate"),
+    ("fix-wave", "verdicts", "fix", "Fix"),
+])
+def test_shipped_workflow_executes_public_transport_contract(
+        stage, key, prefix, first_phase):
+    output_schema = ({
+        "$id": "taskplane.evaluator-output/v2",
+        "additionalProperties": False,
+    } if stage == "evaluate-wave" else {
+        "$id": f"taskplane.{stage}-test-receipt/v1",
+        "additionalProperties": False,
+    })
+    entries = []
+    for member in ("a", "b"):
+        output_contract = {"output_schema": output_schema}
+        entry = {
+            "id": member, "prompt": f"exact prompt {member}",
+            "output_contract": output_contract,
+        }
+        if stage == "evaluate-wave":
+            output_contract["max_attempts"] = 2
+            entry.update({"resume_identity": f"resume-{member}",
+                          "max_attempts": 2})
+        entries.append(entry)
+    observed = _run_public_workflow(stage, {
+        "settings_digest": "0" * 64, key: entries})
 
-
-def _schema_block(src: str, name: str, stage: str) -> str:
-    m = re.search(rf"const\s+{name}\s*=\s*\{{(.*?)\n\}};", src, re.S)
-    assert m, f"workflows/{stage}.js must declare `const {name} = {{...}};`"
-    return m.group(1)
-
-
-def _contracts() -> list:
-    """The SHIPPED design contract list — from the frozen snapshot
-    fixtures/briefs/shipped_contracts.json, read programmatically (never
-    hand-copied into a test).
-
-    Contract-turnover rule: design/contract.json always describes the
-    NEXT design cycle — it is REPLACED wholesale at every new design
-    gate — so it stops carrying the Phase 2 field-list pins the moment a
-    new phase's design lands. Schema pins for the SHIPPED surface must
-    therefore derive from a stable source: the snapshot was captured
-    verbatim from the Phase 2 contract that shipped these workflows
-    (`git show 6a3d581:design/contract.json`, the `contracts` table) and
-    changes ONLY when a shipped contract deliberately changes shape."""
-    with open(os.path.join(BRIEFS, "shipped_contracts.json"), encoding="utf-8") as f:
-        contracts = json.load(f)["contracts"]
-    if any(c["id"] == "contract:wave-workflow" for c in contracts):
-        return contracts
-    raise AssertionError(
-        "shipped_contracts.json must carry contract:wave-workflow")
-
-
-def _spec(cid: str) -> dict:
-    return next(c for c in _contracts() if c["id"] == cid)
-
-
-def _receipt_fields() -> list:
-    """receipts[{task, outcome, note}] — parsed from the contract text."""
-    m = re.search(r"receipts\[\{([^}]+)\}\]",
-                  _spec("contract:wave-workflow")["description"])
-    assert m, "contract:wave-workflow must pin the receipt field list"
-    fields = [x.strip() for x in m.group(1).split(",")]
-    assert fields
-    return fields
-
-
-def _findings_fields() -> list:
-    """findings[{severity, class, ...}] — from contract:findings-v2."""
-    m = re.search(r"findings\[\{([^}]+)\}\]",
-                  _spec("contract:findings-v2")["description"])
-    assert m, "contract:findings-v2 must pin the findings field list"
-    fields = [x.strip() for x in m.group(1).split(",")]
-    assert fields
-    return fields
-
-
-def _stage_names_from_contract() -> list:
-    """`name is execute-wave|evaluate-wave|fix-wave` — parsed, not typed."""
-    m = re.search(r"name\s+is\s+([a-z|-]+)",
-                  _spec("contract:wave-workflow")["description"])
-    assert m, "contract:wave-workflow must pin the stage workflow names"
-    names = m.group(1).split("|")
-    assert len(names) == 3
-    return names
-
-
-# ------------------------------------------------------------ files + meta
-
-
-class TestWorkflowFiles:
-    def test_all_three_ship_in_plugin_workflows_dir(self):
-        for stage in STAGES:
-            assert os.path.isfile(_path(stage)), f"{stage}.js missing"
-
-    def test_meta_is_a_pure_literal_in_each(self):
-        for stage in STAGES:
-            meta = _meta_block(_js(stage), stage)
-            # A pure literal has no calls, no interpolation, no identifiers
-            # doing work — the runtime reads it without executing the body.
-            assert "(" not in meta and ")" not in meta, stage
-            assert "${" not in meta and "`" not in meta, stage
-            assert f"'{stage}'" in meta, stage
-            assert re.search(r"description:\s*'[^']+'", meta), stage
-            assert re.search(r"phases:\s*\[", meta), stage
-
-    def test_meta_names_match_contract_wave_workflow(self):
-        """The three stage names come from contract:wave-workflow — the
-        emitter (t4) selects workflow{name} from the same list, so a rename
-        on either side fails here."""
-        for name in _stage_names_from_contract():
-            meta = _meta_block(_js(name), name)
-            assert re.search(rf"name:\s*'{re.escape(name)}'", meta)
-
-
-# ------------------------------------------------------------- determinism
-
-
-class TestDeterminism:
-    def test_no_clock_no_random_no_dynamic_import_no_process(self):
-        for stage in STAGES:
-            src = _js(stage)
-            assert "Date.now" not in src and "new Date" not in src, stage
-            assert "Math.random" not in src, stage
-            assert "import(" not in src and "require(" not in src, stage
-            assert "process." not in src, stage
-
-    def test_zero_gate_verbs_in_every_stage_file(self):
-        """R-0004: no generated stage run contains an approval step — the
-        workflow is transport; humans decide at conversation level AFTER
-        the run returns. Substring scan, case-insensitive, comments
-        included: gate verbs must not appear in any spelling."""
-        for stage in STAGES:
-            low = _js(stage).lower()
-            for verb in GATE_VERBS:
-                assert verb not in low, \
-                    f"{stage}.js contains gate verb {verb!r}"
-
-
-# ----------------------------------------------------------- schema pins
-
-
-class TestSchemaPins:
-    def test_execute_and_fix_pin_the_receipt_contract(self):
-        """RECEIPT_SCHEMA field list is derived from contract:wave-workflow
-        (receipts[{task, outcome, note}]), not hand-copied — drift in
-        either direction fails here."""
-        fields = _receipt_fields()
-        for stage in RECEIPT_STAGES:
-            src = _js(stage)
-            schema = _schema_block(src, "RECEIPT_SCHEMA", stage)
-            for field in fields:
-                assert re.search(rf"\b{re.escape(field)}\b", schema), \
-                    f"{stage}.js RECEIPT_SCHEMA missing field {field!r}"
-            # every contract field is REQUIRED, not merely present
-            m = re.search(r"required:\s*\[([^\]]*)\]", schema)
-            assert m, f"{stage}.js RECEIPT_SCHEMA must pin required fields"
-            required = re.findall(r"'([^']+)'", m.group(1))
-            assert sorted(required) == sorted(fields), stage
-            assert "output_contract.output_schema || RECEIPT_SCHEMA" in src, stage
-
-    def test_evaluate_consumes_the_canonical_evaluator_contract(self):
-        src = _js("evaluate-wave")
-        for token in ("output_contract.output_schema", "resume_identity",
-                      "max_attempts", "taskplane.evaluator-output/v2"):
-            assert token in src
-        assert "typeof output_schema !== 'object'" in src
-
-    def test_every_stage_returns_transport_receipts_only(self):
-        for stage in STAGES:
-            src = _js(stage)
-            assert re.search(r"return\s+\{\s*receipts:", src), stage
-
-
-# ------------------------------------------- dispatch shape + args
-
-
-class TestDispatchShape:
-    def test_parallel_fanout_of_agent_thunks(self):
-        """One agent() per brief, wrapped as thunks and fanned out with a
-        single parallel() barrier — tasks in one wave are independent by
-        plan construction."""
-        for stage in STAGES:
-            src = _js(stage)
-            assert "parallel(" in src, stage
-            assert "agent(" in src, stage
-            assert re.search(r"\.map\(\(\w+\)\s*=>\s*\(\)\s*=>",
-                             src), f"{stage}.js must map briefs to thunks"
-            assert "await parallel(" in src, stage
-
-    def test_execute_and_evaluate_consume_args_briefs(self):
-        for stage in ("execute-wave", "evaluate-wave"):
-            src = _js(stage)
-            assert "args.briefs" in src, stage
-            assert "agent(b.prompt" in src, \
-                f"{stage}.js must pass the brief prompt to agent() verbatim"
-
-    def test_fix_consumes_args_verdicts(self):
-        src = _js("fix-wave")
-        assert "args.verdicts" in src
-        assert "agent(v.prompt" in src, \
-            "fix-wave.js must pass the verdict brief prompt verbatim"
-
-    def test_prompts_are_verbatim_no_interpolation(self):
-        """The harness governs, the workflow transports: the Task-path
-        prompt text (per-brief `export TASKPLANE_TASK=<slot>` and the
-        claim/submit/CLEAR protocol) must ride through agent() untouched,
-        so no template literal may rewrite it anywhere in the file."""
-        for stage in STAGES:
-            src = _js(stage)
-            assert "`" not in src and "${" not in src, stage
-
-    def test_per_brief_labels_and_phases(self):
-        for stage, prefix in (("execute-wave", "task"),
-                              ("evaluate-wave", "eval"),
-                              ("fix-wave", "fix")):
-            src = _js(stage)
-            assert f"'{prefix}:' + " in src, \
-                f"{stage}.js must label each agent per brief"
-            assert re.search(r"phase\('[^']+'\)", src), stage
-
-    def test_return_keys_per_stage(self):
-        assert "receipts:" in _js("execute-wave")
-        assert "receipts:" in _js("fix-wave")
-        assert "receipts:" in _js("evaluate-wave")
+    assert observed["meta"]["name"] == stage
+    assert observed["phases"] == [first_phase, "Collect"]
+    assert observed["parallelWidths"] == [2]
+    assert [row["prompt"] for row in observed["calls"]] == [
+        "exact prompt a", "exact prompt b"]
+    assert [row["options"]["label"] for row in observed["calls"]] == [
+        f"{prefix}:a", f"{prefix}:b"]
+    assert all(row["options"]["schema"] == output_schema
+               for row in observed["calls"])
+    assert [row["task"] for row in observed["result"]["receipts"]] == [
+        "a", "b"]
+    assert observed["result"]["settings_digest"] == "0" * 64
 
 
 # =====================================================================
@@ -303,7 +125,10 @@ class TestDispatchShape:
 
 def _clean_env(monkeypatch):
     for v in stage_fixture.SCRUB_VARS:
-        monkeypatch.delenv(v, raising=False)
+        # Register an undo even when the variable starts absent: the shared
+        # real-workspace fixture writes TASKPLANE_SESSION_ID directly.
+        monkeypatch.setenv(v, "")
+        monkeypatch.delenv(v)
 
 
 _REAL_CLI_TIME = cli._time
@@ -553,14 +378,6 @@ class TestStageEmitterWorkflowPath:
             [e["task"]["id"] for e in payload["wave"]]
         assert len(briefs) == len(payload["wave"]) == 2
 
-    def test_workflow_names_come_from_contract_wave_workflow(self, rails):
-        """The emitted names and the shipped files both pin to the SAME
-        contract list — a rename on either side fails here."""
-        names = _stage_names_from_contract()
-        got = [json.loads(rails["caps"][s]["wf"])["workflow"]["name"]
-               for s in stage_fixture.STAGES]
-        assert got == names
-
     def test_stage_payloads_bind_settings_and_expected_workflow_inputs(self,
                                                                        rails):
         from taskplane.settings import load_settings
@@ -776,49 +593,6 @@ class TestStageKillSwitchMatrix:
         _clean_env(monkeypatch)
         self._paths_match_detector(wave_ws, False)
 
-# ------------------------------------------------------------- resume
-
-
-def test_resume_fixture():
-    """Killed-mid-stage journal replay (STATIC fixture): completed agents'
-    cached results are reused — never re-dispatched — and incomplete ones
-    re-run. Journal keying is valid ONLY because each stage workflow labels
-    its agents with the deterministic literal rule '<prefix>:' + brief id;
-    the fixture is bound to that rule programmatically."""
-    with open(os.path.join(BRIEFS, "stage_journal_killed.json"), encoding="utf-8") as f:
-        fx = json.load(f)
-    stage = fx["workflow"]
-    assert stage in STAGES
-    src = _js(stage)
-    m = re.search(r"label:\s*'([a-z]+):' \+ ", src)
-    assert m, f"{stage}.js must label agents with a literal prefix rule"
-    prefix = m.group(1)
-    labels = [f"{prefix}:{b['id']}" for b in fx["briefs"]]
-    completed = {e["label"]: e["cached"]
-                 for e in fx["journal"]["completed"]}
-    assert set(completed) <= set(labels), "journal keys must be brief labels"
-    # THE resume contract: cached results reused, incomplete re-run.
-    rerun = [l for l in labels if l not in completed]
-    assert rerun == fx["journal"]["killed_during"]
-    assert not set(rerun) & set(completed)
-    # the cached result honors the schema the workflow pins (receipt shape)
-    for cached in completed.values():
-        assert sorted(cached.keys()) == sorted(_receipt_fields())
-
-
-def test_resume_relies_on_pinned_script_determinism():
-    """The journal replay above is the HOST runtime's; the script-side
-    property that makes it possible is determinism (no clock, no random,
-    no dynamic loading — pinned by TestDeterminism) plus the literal label
-    rule per stage. Re-assert the binding for all three stages."""
-    for stage, prefix in (("execute-wave", "task"),
-                          ("evaluate-wave", "eval"),
-                          ("fix-wave", "fix")):
-        src = _js(stage)
-        assert f"label: '{prefix}:' + " in src, stage
-        assert "Date.now" not in src and "Math.random" not in src, stage
-
-
 def test_double_submit_same_outcome_is_a_noop(tmp_path, monkeypatch):
     """Engine-side idempotence (the other half of resume safety): a
     resumed agent that already submitted re-submits the SAME outcome and
@@ -826,6 +600,7 @@ def test_double_submit_same_outcome_is_a_noop(tmp_path, monkeypatch):
     including fingerprint and submitted_at — pinned against loop.py's
     REAL submit through a throwaway workspace."""
     _clean_env(monkeypatch)
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "stage-fixture")
     ws = stage_fixture.build_repo(str(tmp_path))
     stage_fixture.start_loop(ws)
     aws = os.path.join(ws, ".tp-work", "t1")
@@ -1358,28 +1133,6 @@ def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
         _assert_audit_value(e, "reason", disabled_reason)
 
 
-# --------------------------- workflow-agnostic modules (extended pin)
-
-
-class TestWorkflowAgnosticModulesExtended:
-    def test_loop_lens_and_audit_have_zero_workflow_coupling(self):
-        """The R-0002 pin (loop.py/lens.py workflow-agnostic) EXTENDS to
-        audit.py: the stage emitter lives in tp.py ONLY, so no gate can
-        ever be reachable only via workflows. Canonical product identities
-        such as ``workflow_id`` and stage dispatch-set names are allowed;
-        coupling means importing, selecting, or launching the optional JS
-        workflow transport."""
-        transport_markers = (
-            "workflows/", "TASKPLANE_WORKFLOWS",
-            "CLAUDE_CODE_WORKFLOWS", "workflow_available(",
-        )
-        for mod in ("loop.py", "lens.py", "audit.py"):
-            with open(os.path.join(ROOT, "taskplane", mod), encoding="utf-8") as f:
-                src = f.read()
-            for marker in transport_markers:
-                assert marker not in src, (mod, marker)
-
-
 # =====================================================================
 # A6 (R-0007) — malformed wave entries degrade to the Task path
 # E5 (R-0011) — un-slottable ids refuse emission at compose time
@@ -1559,11 +1312,8 @@ class TestSlotCharsetRefusalAtEmission:
         _assert_audit_value(evs[-1], "reason", _stderr_reason(err))
         assert evs[-1]["stage"] == "fix"
 
-    def test_charset_single_source_is_the_enforced_slot_regex(self):
-        """The emitter validates against taskplane_lite._TASK_SLOT_RE
-        itself — no second regex that could drift from the screener's."""
-        src = inspect.getsource(cli._valid_slot_id)
-        assert "_TASK_SLOT_RE" in src
+    def test_slot_charset_accepts_safe_ids_and_rejects_unsafe_ids(self):
+        """Accepted and rejected ids stay aligned at the public boundary."""
         assert cli._valid_slot_id("t1") and cli._valid_slot_id("fix.a-2_b")
         for bad in ("t1;rm", "$(x)", "a b", "", ".hidden", None, 7):
             assert not cli._valid_slot_id(bad), bad

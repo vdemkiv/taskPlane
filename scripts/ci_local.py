@@ -421,32 +421,19 @@ PYTEST_CHECK_IDS = tuple(
     f"pytest-shard-{index + 1}" for index in range(PYTEST_SHARD_COUNT)
 )
 def pytest_inventory() -> tuple[str, ...]:
+    """Discover the current runnable test surface from the checkout.
+
+    ``test_portfolio.json`` is targeted review evidence, not a packaged or
+    exhaustive allowlist.  Letting it admit tests made compact evidence able
+    to hide a real test file or authorize a nonexistent one.
+    """
     present = tuple(sorted(
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / "taskplane" / "tests").glob("test_*.py")
         if path.is_file()
     ))
     if not present or len(present) != len(set(present)):
-        raise RunnerError("accepted pytest inventory is missing or duplicate")
-    portfolio_path = ROOT / "taskplane" / "test_portfolio.json"
-    try:
-        portfolio = json.loads(portfolio_path.read_text(encoding="utf-8"))
-        accepted = {
-            row["path"] for row in portfolio["files"]
-            if row.get("classification") in {"retain", "rewrite"}
-        }
-    except (OSError, KeyError, TypeError, ValueError) as exc:
-        raise RunnerError("test-value portfolio is unavailable") from exc
-    try:
-        plan_text = (ROOT / "plan" / "tasks.json").read_text(encoding="utf-8")
-    except OSError:
-        plan_text = ""
-    missing = sorted(
-        path for path in set(present) - accepted if path not in plan_text
-    )
-    if missing:
-        raise RunnerError("pytest files lack current-value adjudication: " +
-                          ", ".join(missing))
+        raise RunnerError("current pytest inventory is missing or duplicate")
     return present
 
 

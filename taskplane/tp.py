@@ -4028,11 +4028,141 @@ def _resume_filter(ws: str, briefs: dict) -> dict:
     return out
 
 
+_REVIEW_FINDINGS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["lens", "findings"],
+    "properties": {
+        "lens": {"type": "string"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["severity", "class", "file", "line", "title",
+                             "scenario", "fix"],
+                "properties": {
+                    "lens": {"type": "string"},
+                    "severity": {"enum": ["high", "med", "low"]},
+                    "class": {"enum": ["regression", "pre-existing",
+                                         "observation"]},
+                    "file": {"type": "string"},
+                    "line": {"type": "integer", "minimum": 1},
+                    "title": {"type": "string"},
+                    "scenario": {"type": "string"},
+                    "fix": {"type": "string"},
+                },
+            },
+        },
+        "clean": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+
+def _review_workflow_args(briefs: dict) -> dict:
+    """Project Task-path lens briefs into the workflow's governed slots.
+
+    The Task payload remains the portable fallback contract.  The workflow
+    receives an explicit execution projection so every routed brief has the
+    schema, result path, lease, retry ceiling, and semantic resume identity
+    its host runtime needs.  Missing execution authority refuses emission
+    instead of silently compiling an empty wave.
+    """
+    digest = briefs.get("settings_digest")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("review dispatch lacks canonical settings digest")
+    from taskplane.settings import load_settings
+    settings = load_settings(environment=os.environ)
+    if settings.digest != digest:
+        raise ValueError("review dispatch settings changed during composition")
+    raw = list(briefs.get("deep") or [])
+    if briefs.get("sweep") is not None:
+        raw.append(briefs["sweep"])
+    slots = []
+    for index, brief in enumerate(raw):
+        if not isinstance(brief, dict):
+            raise ValueError(f"review brief {index} is not an object")
+        slot_id = str(brief.get("id") or (
+            "sweep" if brief is briefs.get("sweep") else ""))
+        prompt = brief.get("prompt")
+        result_path = brief.get("output")
+        lease = brief.get("contract")
+        task_slot = lease.get("task_slot") if isinstance(lease, dict) else None
+        if not slot_id or not isinstance(prompt, str) or not prompt or \
+                not isinstance(result_path, str) or not result_path or \
+                not isinstance(lease, dict) or not lease or \
+                task_slot != brief.get("task_slot"):
+            raise ValueError(
+                f"review brief {index} lacks its governed execution contract")
+        worker = {key: brief.get(key) for key in (
+            "task_name", "agent", "role_marker", "model", "model_tier",
+            "reasoning_effort")}
+        if any(not isinstance(worker[key], str) or not worker[key]
+               for key in ("task_name", "agent", "role_marker", "model_tier",
+                           "reasoning_effort")) or \
+                worker["model"] is not None and \
+                (not isinstance(worker["model"], str) or not worker["model"]):
+            raise ValueError(
+                f"review brief {index} lacks its canonical worker route")
+        schema = json.loads(json.dumps(_REVIEW_FINDINGS_SCHEMA))
+        identity_material = {
+            "settings_digest": digest, "slot_id": slot_id,
+            "prompt": prompt, "result_schema": schema,
+            "result_path": result_path, "lease": lease, "worker": worker,
+        }
+        resume_identity = hashlib.sha256(json.dumps(
+            identity_material, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False).encode("utf-8")).hexdigest()
+        slots.append({
+            "slot_id": slot_id,
+            "lens_ids": list(brief.get("ids") or [slot_id]),
+            "prompt": prompt, "result_schema": schema,
+            "resume_identity": resume_identity,
+            "result_path": result_path, "lease": dict(lease),
+            "max_attempts": settings.runtime.review_max_attempts,
+            **worker,
+        })
+    return {"settings_digest": digest, "slots": slots}
+
+
 def cmd_lens(a) -> int:
     """Route / list / show / dispatch lenses."""
-    import lens as lensmod
     ws = _workspace(a.workspace)
     action = getattr(a, "lens_action", "route")
+
+    # ``lens dispatch`` is the standalone review-wave surface.  A live
+    # delivery loop owns all of its native dispatches through run-bound
+    # intents and worker lifecycle contracts; admitting this legacy surface
+    # inside that run would create a screened expectation with no terminal
+    # usage binding and let the terminal census silently omit the worker.
+    # Refuse before routing or writing shared review context.  Terminal and
+    # absent loops retain the standalone behavior for compatibility.
+    if action == "dispatch":
+        try:
+            import loop as loopmod
+            active_loop = loopmod.load(ws)
+        except Exception as exc:
+            print(
+                "taskplane: standalone lens dispatch refused because "
+                "Taskplane cannot prove that no governed delivery run is "
+                f"active ({type(exc).__name__}: {exc}). Recover the loop "
+                "state before dispatching review workers.",
+                file=sys.stderr,
+            )
+            return 1
+        if isinstance(active_loop, dict) and active_loop.get("step") not in \
+                loopmod.TERMINAL_STEPS:
+            print(
+                "taskplane: standalone lens dispatch refused while a "
+                "governed delivery run is active at step="
+                f"{active_loop.get('step')!r}. Continue through `tp loop "
+                "next`; the active flow owns its run-bound dispatch and "
+                "terminal telemetry.",
+                file=sys.stderr,
+            )
+            return 1
+
+    import lens as lensmod
 
     if action == "list":
         cat = lensmod.catalog_summary()
@@ -4244,9 +4374,10 @@ def cmd_lens(a) -> int:
             out = dict(briefs)
             out["dispatch_path"] = "workflow"
             out["reason"] = reason
-            # args IS the unmodified dispatch payload — the workflow and
-            # the Task path consume the identical contract:lens-brief set.
-            workflow_args = briefs
+            # Compile the portable Task briefs into the workflow runtime's
+            # explicit governed slot contract.  This must never omit routed
+            # deep/sweep work: review-wave refuses a missing slots array.
+            workflow_args = _review_workflow_args(briefs)
             out["workflow"] = {"name": "review-wave",
                                "args": workflow_args}
             print(json.dumps(out, indent=2))

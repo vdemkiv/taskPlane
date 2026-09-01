@@ -26,6 +26,51 @@ def _runtime(runner):
     )
 
 
+def test_pytest_inventory_discovers_checkout_and_ignores_compact_evidence(
+    tmp_path, monkeypatch,
+):
+    runner = _runner()
+    tests = tmp_path / "taskplane" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_alpha.py").write_text("def test_alpha(): pass\n")
+    (tests / "test_beta.py").write_text("def test_beta(): pass\n")
+    (tests / "helper.py").write_text("VALUE = 1\n")
+    portfolio = tmp_path / "taskplane" / "test_portfolio.json"
+    portfolio.write_text(
+        '{"schema":"taskplane.test-value-ledger/v1",'
+        '"scope":{"claim":"targeted-evidence-only"},'
+        '"removals":[{"path":"taskplane/tests/test_beta.py"}],'
+        '"protected_contracts":[{"selector":'
+        '"taskplane/tests/test_ghost.py::test_ghost"}]}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+
+    expected = (
+        "taskplane/tests/test_alpha.py", "taskplane/tests/test_beta.py",
+    )
+    assert runner.pytest_inventory() == expected
+
+    portfolio.unlink()
+    assert runner.pytest_inventory() == expected
+    (tests / "test_alpha.py").unlink()
+    (tests / "test_gamma.py").write_text("def test_gamma(): pass\n")
+    assert runner.pytest_inventory() == (
+        "taskplane/tests/test_beta.py", "taskplane/tests/test_gamma.py",
+    )
+
+
+def test_pytest_inventory_fails_closed_when_checkout_has_no_tests(
+    tmp_path, monkeypatch,
+):
+    runner = _runner()
+    (tmp_path / "taskplane" / "tests").mkdir(parents=True)
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+
+    with pytest.raises(runner.RunnerError, match="current pytest inventory"):
+        runner.pytest_inventory()
+
+
 def test_runner_plan_has_one_unsharded_suite_and_no_pytest_replays():
     runner = _runner()
     runtime = _runtime(runner)

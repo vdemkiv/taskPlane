@@ -11,10 +11,11 @@ import pytest
 from taskplane import build_quality, ci_policy, test_strategy
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "test-strategy" / "r0001.json"
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURE = ROOT / "design" / "test-strategy.json"
 CI_CANDIDATE = Path(__file__).parent / "fixtures" / "ci-policy" / "candidate.json"
 PRODUCER_ID = "validation:test-strategy"
-FIXTURE_PATH = "taskplane/tests/fixtures/test-strategy/r0001.json"
+FIXTURE_PATH = "design/test-strategy.json"
 
 
 def _digest(text: str) -> str:

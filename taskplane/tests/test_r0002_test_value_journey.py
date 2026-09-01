@@ -1,8 +1,7 @@
-"""Current test-value adjudication as an executable repository contract."""
+"""Targeted test-value evidence without inventory self-attestation."""
 
 from __future__ import annotations
 
-import ast
 import json
 from pathlib import Path
 import subprocess
@@ -13,106 +12,88 @@ ROOT = Path(__file__).resolve().parents[2]
 PORTFOLIO = ROOT / "taskplane" / "test_portfolio.json"
 
 
-def _definitions(path: Path) -> set[tuple[str, ...]]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    found: set[tuple[str, ...]] = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            found.add((node.name,))
-        elif isinstance(node, ast.ClassDef):
-            for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    found.add((node.name, child.name))
-    return found
+def _ledger() -> dict:
+    return json.loads(PORTFOLIO.read_text(encoding="utf-8"))
 
 
-def _selector_exists(selector: str) -> bool:
-    path_text, *node_parts = selector.split("::")
-    path = ROOT / path_text
-    return path.is_file() and tuple(node_parts) in _definitions(path)
-
-
-def _module_strings(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    return {
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    }
-
-
-def test_current_inventory_is_completely_adjudicated_and_removals_collect() -> None:
-    portfolio = json.loads(PORTFOLIO.read_text(encoding="utf-8"))
-    inventory = {
-        path.relative_to(ROOT).as_posix()
-        for path in (ROOT / "taskplane" / "tests").glob("test_*.py")
-    }
-    records = portfolio["files"]
-
-    assert {record["path"] for record in records} == inventory
-    assert len(records) == len(inventory)
-    assert {record["classification"] for record in records} <= {
-        "retain", "rewrite"
-    }
-    assert all(record["reason"] for record in records)
-
-    removed = portfolio["removals"]
-    assert all(not (ROOT / row["path"]).exists() for row in removed)
-    replacements = [
+def _selectors(ledger: dict) -> list[str]:
+    values = [
         selector
-        for row in removed
-        for selector in row["replacement_selectors"]
+        for removal in ledger["removals"]
+        for selector in removal["replacement_selectors"]
     ]
-    assert replacements and all(_selector_exists(item) for item in replacements)
-
-    completed = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", *replacements],
-        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", check=False,
+    values.extend(row["selector"] for row in ledger["protected_contracts"])
+    values.extend(
+        selector
+        for fixture in ledger["retained_fixtures"]
+        for selector in fixture["consumer_selectors"]
     )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "no tests collected" not in completed.stdout
+    values.extend(row["selector"] for row in ledger["audited_evidence"])
+    return list(dict.fromkeys(values))
 
 
-def test_protected_contracts_and_fixture_consumers_remain_live() -> None:
-    portfolio = json.loads(PORTFOLIO.read_text(encoding="utf-8"))
-    protected = [
-        selector
-        for selectors in portfolio["protected_contracts"].values()
-        for selector in selectors
-    ]
-    assert protected and all(_selector_exists(item) for item in protected)
-
-    for fixture in portfolio["fixtures"]["retained"]:
-        fixture_path = ROOT / fixture["path"]
-        consumers = fixture["consumer_selectors"]
-        assert fixture_path.is_file()
-        assert consumers and all(_selector_exists(item) for item in consumers)
-        fixture_parts = fixture_path.relative_to(ROOT).parts
-        referenced = set()
-        for selector in consumers:
-            module = ROOT / selector.split("::", 1)[0]
-            referenced.update(_module_strings(module))
-        assert any(
-            fixture_path.name in value
-            or any(part in value for part in fixture_parts[-3:-1])
-            for value in referenced
-        ), f"retained fixture has no structural consumer: {fixture['path']}"
+def _pytest(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", *arguments], cwd=ROOT,
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )
 
 
-def test_each_accepted_selector_names_current_contract_and_value_mechanism(
+def test_ledger_is_explicitly_targeted_and_paths_match_the_current_tree() -> None:
+    ledger = _ledger()
+
+    assert ledger["schema"] == "taskplane.test-value-ledger/v1"
+    assert ledger["scope"]["claim"] == "targeted-evidence-only"
+    assert ledger["scope"]["complete_inventory_adjudication"] is False
+    assert "files" not in ledger
+    assert "evidence_revision" not in ledger
+
+    removals = ledger["removals"]
+    assert removals
+    assert len({row["path"] for row in removals}) == len(removals)
+    for row in removals:
+        assert set(row) == {
+            "path", "category", "reason", "replacement_selectors"}
+        assert not (ROOT / row["path"]).exists()
+        assert row["replacement_selectors"]
+
+    for pattern in ledger["removed_fixture_families"]:
+        assert not [path for path in ROOT.glob(pattern) if path.is_file()], \
+            pattern
+    for fixture in ledger["retained_fixtures"]:
+        assert (ROOT / fixture["path"]).is_file()
+        assert fixture["consumer_selectors"]
+
+
+def test_every_ledger_selector_is_collected_by_pytest_not_inferred_from_ast(
 ) -> None:
-    portfolio = json.loads(PORTFOLIO.read_text(encoding="utf-8"))
-    forbidden = set(portfolio["policy"]["forbidden_evidence_mechanisms"])
-    accepted = portfolio["accepted_evidence"]
-    allowed = {"public-journey", "semantic-refusal", "severed-edge"}
+    selectors = _selectors(_ledger())
+    assert selectors
 
-    assert accepted
-    selectors = [row["selector"] for row in accepted]
-    assert len(selectors) == len(set(selectors))
-    for row in accepted:
-        assert set(row) == {"selector", "mechanism", "current_contract"}
-        assert _selector_exists(row["selector"])
-        assert row["mechanism"] in allowed
-        assert row["mechanism"] not in forbidden
-        assert isinstance(row["current_contract"], str)
-        assert row["current_contract"].strip()
+    collected = _pytest("--collect-only", "-q", *selectors)
+
+    assert collected.returncode == 0, collected.stdout + collected.stderr
+    assert "no tests collected" not in collected.stdout
+
+
+def test_audited_mechanisms_execute_behavioral_probes() -> None:
+    ledger = _ledger()
+    evidence = {row["selector"]: row for row in ledger["audited_evidence"]}
+    cross_host = (
+        "taskplane/tests/test_r0002_cross_host_journey.py::"
+        "test_exact_dynamic_design_set_uses_portable_roles_and_host_receipts"
+    )
+    composition = (
+        "taskplane/tests/test_r0002_control_plane_journey.py::"
+        "test_dynamic_design_team_creates_one_portable_authorized_worker_per_lens"
+    )
+    probes = ledger["behavior_probes"]
+    assert cross_host in probes
+    assert composition in evidence
+    assert composition not in probes
+    assert set(probes) <= set(evidence) | {
+        row["selector"] for row in ledger["protected_contracts"]}
+
+    executed = _pytest("-q", *probes)
+
+    assert executed.returncode == 0, executed.stdout + executed.stderr

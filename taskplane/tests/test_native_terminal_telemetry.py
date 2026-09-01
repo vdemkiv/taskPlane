@@ -419,3 +419,23 @@ def test_terminal_intent_census_mismatch_reports_usage_unavailable(
     assert projection["token_usage"]["status"] == "unavailable"
     assert projection["token_usage"]["total_tokens"] is None
     assert projection["token_usage"]["effective_tokens"] is None
+
+
+def test_active_run_refuses_standalone_lens_dispatch_before_untracked_state(
+        tmp_path, capsys):
+    workspace = str(tmp_path)
+    loop.save(workspace, _state(step="em"))
+
+    rc = cli.main([
+        "lens", "dispatch", "--workspace", workspace, "--emit", "task",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert captured.out == ""
+    assert "governed delivery run is active" in captured.err
+    assert "tp loop next" in captured.err
+    assert tp.dispatch_report(workspace)["expected"] == 0
+    assert tp.dispatch_intent_census(workspace, RUN_ID)["intent_ids"] == []
+    assert "dispatch_telemetry" not in loop.load(workspace)
+    assert not (tmp_path / ".em-review").exists()

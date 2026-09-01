@@ -97,7 +97,7 @@
       "criterion": "A fresh governed Design run shows the active requirement and a visible nonzero dependency graph derived from the same canonical snapshot.",
       "design_element": "Active-run snapshot, decomposition graph receipt, snapshot-only publication, and monotonic current-head CAS.",
       "validation": "Drive a fresh public loop into Design and prove delayed prior-run values cannot replace its graph.",
-      "tests": ["taskplane/tests/test_design_decomposition_settings.py::test_design_decomposition_expands_graph_paths_and_refreshes_fingerprints", "taskplane/tests/test_dashboard_stage_graph_provenance.py::test_fresh_design_and_plan_do_not_reuse_prior_run_graph_artifacts", "taskplane/tests/test_dashboard_browser.py::test_real_browser_production_refresh_styles_and_shows_dependency_graph"],
+      "tests": ["taskplane/tests/test_design_decomposition_settings.py::test_design_decomposition_expands_graph_paths_and_refreshes_fingerprints", "taskplane/tests/test_dashboard_stage_graph_provenance.py::test_fresh_design_and_plan_do_not_reuse_prior_run_graph_artifacts", "taskplane/tests/test_dashboard_browser.py::test_real_browser_production_refresh_styles_and_shows_dependency_graph", "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied", "taskplane/tests/test_host_native_dashboard.py::test_codex_and_claude_project_equal_semantics_for_all_components", "taskplane/tests/test_status_and_large_delivery.py::test_large_dashboard_automatically_delivers_complete_markdown", "taskplane/tests/test_worker_contract_lifecycle.py::test_authenticated_release_refuses_before_terminal_and_tampering", "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"],
       "public_entrypoint": "tp loop next plus dashboard publication",
       "controlled_dependencies": ["private RunStore", "publication root", "browser executable"]
     },
@@ -105,7 +105,7 @@
       "criterion": "Automatic decomposition completes before dynamic Design lens selection and settings changes alter actual selection without source edits.",
       "design_element": "Settings-bound sequence and DesignTeamPlan with a cap of sixteen justified quick workers.",
       "validation": "Change only safe lens policy and prove decomposition precedes a changed actual worker set.",
-      "tests": ["taskplane/tests/test_design_decomposition_settings.py::test_design_policy_is_dynamic_and_configured_by_the_canonical_values", "taskplane/tests/test_r0002_control_plane_journey.py::test_dynamic_design_team_creates_one_portable_authorized_worker_per_lens", "taskplane/tests/test_r0002_cross_host_journey.py::test_exact_dynamic_design_set_uses_portable_roles_and_host_receipts"],
+      "tests": ["taskplane/tests/test_design_decomposition_settings.py::test_design_policy_is_dynamic_and_configured_by_the_canonical_values", "taskplane/tests/test_r0002_control_plane_journey.py::test_dynamic_design_team_creates_one_portable_authorized_worker_per_lens", "taskplane/tests/test_r0002_cross_host_journey.py::test_exact_dynamic_design_set_uses_portable_roles_and_host_receipts", "taskplane/tests/test_settings_inventory.py::test_every_operational_setting_has_one_canonical_owner", "taskplane/tests/test_settings.py::test_valid_canonical_settings_load_typed", "taskplane/tests/test_settings.py::test_invalid_or_unknown_settings_fail_closed", "taskplane/tests/test_settings.py::test_precedence_migration_and_safe_override_contract", "taskplane/tests/test_settings_flow_wiring.py::test_public_cli_refuses_invalid_settings_before_flow_state_or_artifacts", "taskplane/tests/test_settings_cross_host.py::test_effective_settings_are_portable_and_safely_observable", "taskplane/tests/test_settings_migration.py::test_legacy_and_version_forms_migrate_without_second_authority", "taskplane/tests/test_atomic_governed_preflight.py::test_preflight_is_atomic_before_any_worker_or_worktree", "taskplane/tests/test_stage_bounded_handoff.py::test_worker_receives_no_inherited_conversation_turns"],
       "public_entrypoint": "tp loop next",
       "controlled_dependencies": ["canonical settings", "lens catalog", "worker dispatcher"]
     },
@@ -121,7 +121,7 @@
       "criterion": "Retro reports measured token totals or explicit unavailable status, retains evaluator identities, and never converts missing usage to zero.",
       "design_element": "Metrics sealing before cleanup with evaluator attempt references and explicit unavailable projections.",
       "validation": "Complete measured and unavailable terminal journeys, clean owned state, and inspect retained outputs.",
-      "tests": ["taskplane/tests/test_retro_metrics_truth.py::test_real_terminal_ledger_renders_token_and_evaluator_truth", "taskplane/tests/test_retro_metrics_truth.py::test_severed_usage_refuses_sealing_and_retro_reports_unknown", "taskplane/tests/test_r0002_terminal_journey.py::test_public_signoff_sets_attributable_metrics_truth_before_retro"],
+      "tests": ["taskplane/tests/test_retro_metrics_truth.py::test_real_terminal_ledger_renders_token_and_evaluator_truth", "taskplane/tests/test_retro_metrics_truth.py::test_severed_usage_refuses_sealing_and_retro_reports_unknown", "taskplane/tests/test_r0002_terminal_journey.py::test_public_signoff_sets_attributable_metrics_truth_before_retro", "taskplane/tests/test_wave_metrics.py::test_wave_receipt_covers_baselines_targets_and_guardrails"],
       "public_entrypoint": "Engineering sign-off to Retro",
       "controlled_dependencies": ["dispatch ledger", "usage receipt", "evaluator terminals"]
     },
@@ -129,7 +129,7 @@
       "criterion": "Behavioral journey tests cover the public producers and consumers; source-shape, byte-identity, stale-history, and ceremonial tests are removed.",
       "design_element": "Test-value inventory, producer-consumer map, semantic severed-edge proof, and Build quality receipt.",
       "validation": "Reject uncollectable or shape-only evidence and prove real consumer mutations before portfolio pruning.",
-      "tests": ["taskplane/tests/test_r0002_build_quality_journey.py::test_recorded_build_quality_is_current_then_severs_when_candidate_moves", "taskplane/tests/test_r0002_test_value_journey.py::test_current_inventory_is_completely_adjudicated_and_removals_collect", "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"],
+      "tests": ["taskplane/tests/test_r0002_build_quality_journey.py::test_recorded_build_quality_is_current_then_severs_when_candidate_moves", "taskplane/tests/test_r0002_test_value_journey.py::test_ledger_is_explicitly_targeted_and_paths_match_the_current_tree", "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures", "taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete", "taskplane/tests/test_r0002_ci_journey.py::test_r0002_credential_empty_guard_executes_one_no_egress_corpus", "taskplane/tests/test_release_tags.py::test_pushed_sha_proof_refuses_when_remote_cannot_be_refreshed", "taskplane/tests/test_collision_integration.py::test_both_manifests_route_skill_to_dedicated_screen", "taskplane/tests/test_audit_sweep.py::TestAuditCadence::test_audit_due_fires_at_every_fifth_by_default", "taskplane/tests/test_build_quality.py::test_receipt_proves_the_complete_build_progression_and_exact_binding"],
       "public_entrypoint": "Plan strategy and Build gate",
       "controlled_dependencies": ["pytest collection", "static tools", "dependency radius"]
     },
@@ -137,7 +137,7 @@
       "criterion": "GitHub Actions runs one unsharded authoritative Python 3.12 suite plus only genuinely independent validations.",
       "design_element": "Frozen CI plan with one suite and disjoint quality/package, browser, interpreter-import, and OS checks.",
       "validation": "Execute one candidate and reject shard or compatibility-join receipts as authoritative tests.",
-      "tests": ["taskplane/tests/test_r0002_ci_journey.py::test_r0002_direct_ci_journey_reduces_thirteen_pytest_processes_to_three", "taskplane/tests/test_ci_local.py::test_direct_topology_is_disjoint_and_names_only_justified_serialization"],
+      "tests": ["taskplane/tests/test_r0002_ci_journey.py::test_r0002_direct_ci_journey_reduces_thirteen_pytest_processes_to_three", "taskplane/tests/test_ci_local.py::test_direct_topology_is_disjoint_and_names_only_justified_serialization", "taskplane/tests/test_ci_local.py::test_runner_plan_has_one_unsharded_suite_and_no_pytest_replays"],
       "public_entrypoint": "GitHub Actions",
       "controlled_dependencies": ["GitHub Actions", "Python 3.12", "browser and OS runners"]
     },
@@ -145,7 +145,7 @@
       "criterion": "Dashboard publications, graph and dependency evidence, telemetry, and every agent activity log are stored as separate durable artifact classes beside the run and survive every cleanup outcome.",
       "design_element": "RunArtifactStore projection beside the private run, allowlisted class manifest, append-only activity references, evidence-before-cleanup, and explicit cleanup exclusion.",
       "validation": "Exercise every terminal outcome and prove distinct classes, complete activity events, exact cleanup, and retained readability.",
-      "tests": ["taskplane/tests/test_r0002_terminal_journey.py::test_public_non_normal_terminal_journey_is_bound_clean_and_replay_safe", "taskplane/tests/test_r0002_terminal_journey.py::test_session_start_replays_only_an_already_persisted_exact_intent", "taskplane/tests/test_host_native_publication.py::test_dashboard_and_graph_are_preserved_in_separate_run_artifact_classes"],
+      "tests": ["taskplane/tests/test_r0002_terminal_journey.py::test_public_non_normal_terminal_journey_is_bound_clean_and_replay_safe", "taskplane/tests/test_r0002_terminal_journey.py::test_session_start_replays_only_an_already_persisted_exact_intent", "taskplane/tests/test_host_native_publication.py::test_dashboard_and_graph_are_preserved_in_separate_run_artifact_classes", "taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets", "taskplane/tests/test_owned_cleanup.py::test_cleanup_replay_is_exact_and_idempotent", "taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green", "taskplane/tests/test_release_provenance.py::test_premerge_first_parent_topology_matches_release_gate"],
       "public_entrypoint": "every governed dispatch/event and terminal cleanup",
       "controlled_dependencies": ["RunStore layout", "filesystem durability", "cleanup manifest"]
     }
@@ -158,6 +158,11 @@
     "ci_rule": "One unsharded Python 3.12 suite; parallelize only genuinely disjoint validations; no pseudo-test join."
   },
   "test_strategy": {
+    "authority": {
+      "schema": "taskplane.design-test-strategy-reference/v1",
+      "path": "design/test-strategy.json",
+      "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6"
+    },
     "keep": ["public journeys", "security and authority", "cross-host behavior", "release provenance", "exact-owned cleanup", "high-signal semantic regressions"],
     "remove": ["source/AST/line-count assertions", "byte identity as correctness", "history replay", "unconsumed fixtures", "duplicate suite subsets", "CI-name ceremony", "helper-only acceptance"],
     "progression": ["compile/import", "focused Ruff and typed boundaries", "collect exact selectors", "run exact selectors", "consumer radius and semantic severed edges", "one proportional suite", "classify failures", "Evaluate"],
@@ -168,7 +173,7 @@
     "alerts": ["Block on stale or missing run/requirement/settings/graph/candidate/worker/publication/quality/classification/metrics/cleanup binding.", "Block product Fix for non-product, mixed, or unknown failures.", "Block cleanup if a target overlaps run artifacts or ownership is ambiguous.", "Block clean Retro when usage is missing without attributable unavailable evidence.", "Block release for arbitrary pytest shards or pseudo-test join receipts."]
   },
   "quality_targets": {
-    "baseline": ["233 test files and 3315 static functions observed before final collection", "prior reported cases 4059 plus 39 new focused cases", "CI critical path about 13m10s", "effective parallelism 2.11x", "wave duration 24h58m09s", "token usage unavailable from retained receipts"],
+    "baseline": ["233 test files and 3951 cases in the final local collection", "39 net low-value cases removed in the bounded final audit", "CI critical path about 13m10s", "effective parallelism 2.11x", "wave duration 24h58m09s", "token usage unavailable from retained receipts"],
     "targets": ["No numeric deletion gate; retained tests protect current contracts", "exact feedback under 60s and changed radius under 5m", "CI p95 no more than 15m and runner minutes no more than 28", "zero cleanup leaks and all artifact classes readable", "tokens measured or explicitly unavailable", "end-to-end wave no more than 12h"]
   },
   "risks": [

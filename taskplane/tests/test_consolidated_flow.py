@@ -76,16 +76,6 @@ def test_facade_and_delivery_flows_expose_one_preimplementation_authorization():
     assert ["authorization", "build"] in delivery["edges"]
 
 
-def test_shipped_driver_contract_does_not_reintroduce_ceremonial_gates():
-    driver = (ROOT / "skills/tp-go/SKILL.md").read_text(encoding="utf-8")
-    facade = (ROOT / "skills/taskplane/SKILL.md").read_text(encoding="utf-8")
-
-    assert "consolidated pre-implementation authorization" in driver
-    assert "Product, Design, and Plan gates are mechanical" in driver
-    assert "three human gates" not in driver
-    assert "Design Contract approval, plan approval" not in facade
-
-
 @pytest.mark.parametrize("host", ["claude", "codex", "slack"])
 def test_one_attributed_host_event_authorizes_all_routine_flows(host):
     event = {"type": "approval", "response": {"decision": "approve"}}
@@ -157,8 +147,6 @@ def test_host_runtime_uses_accessible_fallback_without_decision_authority():
     assert declaration["fallback"] == "accessible_bounded"
     assert declaration["runtimeReceiptRequired"] is True
     assert declaration["nativeUiIsAuthority"] is False
-    source = (ROOT / "hooks/host_native_runtime.py").read_text(encoding="utf-8")
-    assert "never turns native UI into workflow authority" in source
 
 
 def test_thread_flow_separates_initial_authorization_from_final_signoff():

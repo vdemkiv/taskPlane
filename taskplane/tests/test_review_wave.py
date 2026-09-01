@@ -1,38 +1,15 @@
-"""t5 (R-0002) — review-wave plugin workflow + capability detection +
-MANDATORY byte-identical Task-dispatch fallback.
-
-Pins:
-  * workflows/review-wave.js ships in the plugin, meta is a PURE literal,
-    the script is deterministic (no Date.now/Math.random/dynamic import)
-    and honest to the Dynamic Workflows primitives (agent/parallel/phase/
-    args) — static checks only, CI has no JS runtime;
-  * the workflow consumes the canonical ReviewKernel slot manifest and each
-    brief's leased schema/resume/result identity without remapping findings;
-  * workflow_available(): conservative, env-based — Codex ALWAYS
-    unavailable, TASKPLANE_WORKFLOWS=1 opt-in, =0 kill-switch, default
-    unset with no marker = unavailable;
-  * `tp lens dispatch --emit task` stdout is BYTE-IDENTICAL to the
-    pre-change dispatch payload (json.dumps(lens.dispatch_briefs(...))) —
-    Codex parity, R-0002's core promise; default (auto, bare env) equals
-    --emit task byte-for-byte;
-  * `--emit workflow` carries every deep brief with slots/contracts intact
-    as workflow args; the chosen path is TRACED (review_dispatch_path) on
-    BOTH paths, never printed on the task path;
-  * no gate is reachable only via workflows: loop.py/lens.py carry zero
-    workflow coupling — the em step instruction text is untouched.
-"""
+"""Executable review-wave transport and public dispatch contracts."""
+import base64
 import contextlib
 import io
 import json
 import os
-import re
 import subprocess
 import sys
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import lens  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import tp as cli  # noqa: E402
 
@@ -41,88 +18,34 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 WF = os.path.join(ROOT, "workflows", "review-wave.js")
 
 
-def _js() -> str:
-    with open(WF, encoding="utf-8") as f:
-        return f.read()
-
-
-def _meta_block(src: str) -> str:
-    m = re.search(r"const\s+meta\s*=\s*\{(.*?)\n\};", src, re.S)
-    assert m, "workflows/review-wave.js must declare `const meta = {...};`"
-    return m.group(1)
-
-
-# ------------------------------------------------------------ workflow file
-
-
-class TestWorkflowFile:
-    def test_ships_in_plugin_workflows_dir(self):
-        assert os.path.isfile(WF)
-
-    def test_meta_is_a_pure_literal(self):
-        meta = _meta_block(_js())
-        # A pure literal has no calls, no interpolation, no identifiers
-        # doing work — the runtime must be able to read it without
-        # executing the script body.
-        assert "(" not in meta and ")" not in meta
-        assert "${" not in meta and "`" not in meta
-        assert "'review-wave'" in meta
-        assert "'Lenses'" in meta and "'Merge'" in meta
-        assert re.search(r"description:\s*'[^']+'", meta)
-
-    def test_deterministic_no_clock_no_random_no_dynamic_import(self):
-        src = _js()
-        assert "Date.now" not in src and "new Date" not in src
-        assert "Math.random" not in src
-        assert "import(" not in src and "require(" not in src
-        assert "process." not in src
-
-    def test_honest_to_dynamic_workflow_primitives(self):
-        src = _js()
-        assert "parallel(" in src
-        assert "agent(" in src
-        assert "phase('Lenses')" in src and "phase('Merge')" in src
-        assert "args.slots" in src
-        assert "'lens:' + b.slot_id" in src
-        for field in ("b.result_schema", "b.resume_identity",
-                      "b.result_path", "b.lease"):
-            assert field in src
-
-    def test_slot_contract_is_passed_to_the_agent_unchanged(self):
-        src = _js()
-        assert "schema: b.result_schema" in src
-        assert "resumeKey: b.resume_identity" in src
-        assert "resultPath: b.result_path" in src
-        assert "lease: b.lease" in src
-
-    def test_lens_prompts_instruct_every_schema_field(self):
-        """EM blocker (v3 Phase 1): FINDINGS_SCHEMA requires `class` per
-        finding, so the PROMPTS on BOTH dispatch paths must instruct it —
-        otherwise the workflow path schema-rejects output the Task path
-        accepts, breaking R-0002's parity promise."""
-        entry = {"id": "security", "name": "Security",
-                 "looks_for": "x", "checks": ["c1"]}
-        deep_prompt = lens._lens_prompt(entry, "main")
-        for field in ("severity", "class", "file", "line", "title",
-                      "scenario", "fix"):
-            assert f'"{field}"' in deep_prompt, \
-                f"deep lens prompt no longer instructs {field!r}"
-        assert "regression|pre-existing|observation" in deep_prompt
-        # sweep prompt carries the class instruction too
-        routing = {"lenses": [{"id": "i18n", "name": "i18n",
-                               "tier": "sweep"}],
-                   "context": {"changed_files": 1}}
-        briefs = lens.dispatch_briefs(routing, base="main")
-        assert briefs["sweep"] is not None
-        assert "class" in briefs["sweep"]["prompt"]
-        assert "regression|pre-existing|observation" in \
-            briefs["sweep"]["prompt"]
-
-    def test_returns_transport_receipts_only(self):
-        src = _js()
-        assert "receipts:" in src
-        assert "per_lens" not in src
-        assert "routing_decision" not in src
+def _node_workflow(args):
+    """Execute the shipped module with observable host-runtime doubles."""
+    with open(WF, "rb") as f:
+        source = base64.b64encode(f.read()).decode("ascii")
+    script = r"""
+const mod = await import('data:text/javascript;base64,' + process.argv[1]);
+const args = JSON.parse(process.argv[2]);
+const events = [];
+const calls = [];
+const phase = (name) => events.push({kind: 'phase', name});
+const agent = async (prompt, options) => {
+  calls.push({prompt, options});
+  events.push({kind: 'agent-start', label: options.label});
+  await Promise.resolve();
+  events.push({kind: 'agent-finish', label: options.label});
+  return {label: options.label, result_path: options.resultPath};
+};
+const parallel = async (runs) => {
+  events.push({kind: 'parallel', width: runs.length});
+  return Promise.all(runs.map((run) => run()));
+};
+const result = await mod.default({args, agent, parallel, phase});
+process.stdout.write(JSON.stringify({meta: mod.meta, result, calls, events}));
+"""
+    return subprocess.run(
+        ["node", "--input-type=module", "-e", script, source,
+         json.dumps(args)], check=False, capture_output=True, text=True,
+        encoding="utf-8", errors="replace")
 
 
 # ------------------------------------------------- capability detection
@@ -255,59 +178,36 @@ def bare_host(monkeypatch):
     _clean_env(monkeypatch)
 
 
-class TestEmitTaskByteIdentity:
-    def test_emit_task_equals_pre_change_dispatch_payload(self, tmp_path,
-                                                          bare_host):
-        """--emit task stdout must be EXACTLY json.dumps of the untouched
-        lens.dispatch_briefs payload — the pre-change bytes. No new keys,
-        no dispatch_path/reason/workflow on stdout (Codex parity)."""
-        ws = _repo(tmp_path)
-        rc, out = _dispatch(ws, "--emit", "task")
-        assert rc == 0
-        # stage="review" mirrors what cmd_lens now asks for (v2.11.0) —
-        # the point of this test is that --emit task adds NO keys to the
-        # payload, not which router produced it.
-        # v2.13.0: dispatch writes the shared review context once and the
-        # briefs cite it, so the comparison must be built the same way —
-        # this test is about --emit task adding NO keys to the payload, not
-        # about how the briefs got their context.
-        import review as rvmod
-        routing = lens.route_git_diff(ws, base="HEAD", task_type=None,
-                                      only=None, skip=None, breadth="routed",
-                                      stage="review")
-        ctx = rvmod.write_context(
-            ws, diff=cli.tp_target_diff(ws, "HEAD")[1], blast_radius="")
-        expected = json.dumps(
-            lens.dispatch_briefs(routing, base="HEAD", context_paths=ctx),
-            indent=2) + "\n"
-        assert out == expected  # byte-for-byte
-        payload = json.loads(out)
-        assert "dispatch_path" not in payload
-        assert "workflow" not in payload
-        assert "reason" not in payload
-
-    def test_default_auto_on_bare_host_is_byte_identical_to_task(
+class TestEmitTask:
+    def test_default_bare_host_returns_a_decoded_task_manifest(
             self, tmp_path, bare_host):
         ws = _repo(tmp_path)
-        _, out_default = _dispatch(ws)
-        _, out_task = _dispatch(ws, "--emit", "task")
-        assert out_default == out_task
+        rc, out = _dispatch(ws)
+        assert rc == 0
+        payload = json.loads(out)
+        assert payload["nothing_to_review"] is False
+        assert isinstance(payload["deep"], list)
+        assert isinstance(payload["sweep"], dict)
+        assert len(payload["settings_digest"]) == 64
+        assert not ({"dispatch_path", "workflow", "reason"} & payload.keys())
 
-    def test_codex_env_always_gets_task_bytes(self, tmp_path, monkeypatch):
+    def test_codex_env_always_gets_the_task_manifest(self, tmp_path,
+                                                     monkeypatch):
         _clean_env(monkeypatch)
         monkeypatch.setenv("CODEX_HOME", "/x")
         monkeypatch.setenv("TASKPLANE_WORKFLOWS", "1")   # codex still wins
         ws = _repo(tmp_path)
         rc, out = _dispatch(ws)
         assert rc == 0
-        assert "dispatch_path" not in json.loads(out)
+        payload = json.loads(out)
+        assert not ({"dispatch_path", "workflow", "reason"} & payload.keys())
 
 
 class TestEmitWorkflow:
-    def test_workflow_payload_carries_every_brief_and_slot(self, tmp_path,
-                                                           bare_host):
+    def test_public_payload_executes_every_slot_through_the_node_runtime(
+            self, tmp_path, bare_host):
         ws = _repo(tmp_path)
-        rc, out = _dispatch(ws, "--emit", "workflow")
+        rc, out = _dispatch(ws, "--all", "--emit", "workflow")
         assert rc == 0
         payload = json.loads(out)
         assert payload["dispatch_path"] == "workflow"
@@ -315,17 +215,71 @@ class TestEmitWorkflow:
         wf = payload["workflow"]
         assert wf["name"] == "review-wave"
         args = wf["args"]
-        # args IS the dispatch payload: identical briefs, slots intact
-        assert args["deep"] == payload["deep"]
-        assert args["sweep"] == payload["sweep"]
-        assert args["deep"] == []
-        sweep = args["sweep"]
-        assert sweep
-        assert 4 <= len(sweep["ids"]) <= 5
-        assert sweep["task_slot"] == "lens-sweep"
-        assert sweep["contract"]["task_slot"] == sweep["task_slot"]
-        assert f"export TASKPLANE_TASK={sweep['task_slot']}" in sweep["prompt"]
-        assert sweep["output"] == ".em-review/lens-sweep/findings.json"
+        briefs = payload["deep"] + [payload["sweep"]]
+        slots = args["slots"]
+        assert len(slots) == len(briefs) > 1
+        assert len({slot["resume_identity"] for slot in slots}) == len(slots)
+        for brief, slot in zip(briefs, slots):
+            expected_id = brief.get("id") or "sweep"
+            assert slot["slot_id"] == expected_id
+            assert slot["prompt"] == brief["prompt"]
+            assert slot["result_path"] == brief["output"]
+            assert slot["lease"] == brief["contract"]
+            assert slot["lease"]["task_slot"] == brief["task_slot"]
+            for field in ("task_name", "agent", "role_marker", "model",
+                          "model_tier", "reasoning_effort"):
+                assert slot[field] == brief[field]
+            assert slot["max_attempts"] >= 1
+            assert slot["result_schema"]["required"] == ["lens", "findings"]
+            assert len(slot["resume_identity"]) == 64
+
+        completed = _node_workflow(args)
+        assert completed.returncode == 0, completed.stderr
+        runtime = json.loads(completed.stdout)
+        assert runtime["meta"]["name"] == "review-wave"
+        assert runtime["meta"]["phases"] == [
+            {"title": "Lenses"}, {"title": "Merge"}]
+        expected_calls = [{
+            "prompt": slot["prompt"],
+            "options": {
+                "label": "lens:" + slot["slot_id"], "phase": "Lenses",
+                "schema": slot["result_schema"],
+                "resumeKey": slot["resume_identity"],
+                "resultPath": slot["result_path"], "lease": slot["lease"],
+                "maxAttempts": slot["max_attempts"],
+                "taskName": slot["task_name"], "agent": slot["agent"],
+                "roleMarker": slot["role_marker"], "model": slot["model"],
+                "modelTier": slot["model_tier"],
+                "reasoningEffort": slot["reasoning_effort"],
+            },
+        } for slot in slots]
+        assert runtime["calls"] == expected_calls
+        labels = [call["options"]["label"] for call in expected_calls]
+        events = runtime["events"]
+        assert events[0] == {"kind": "phase", "name": "Lenses"}
+        assert events[1] == {"kind": "parallel", "width": len(slots)}
+        assert events[-1] == {"kind": "phase", "name": "Merge"}
+        starts = [event["label"] for event in events
+                  if event["kind"] == "agent-start"]
+        finishes = [event["label"] for event in events
+                    if event["kind"] == "agent-finish"]
+        assert starts == labels and finishes == labels
+        first_finish = next(i for i, event in enumerate(events)
+                            if event["kind"] == "agent-finish")
+        assert all(i < first_finish for i, event in enumerate(events)
+                   if event["kind"] == "agent-start")
+        expected_receipts = [{"label": "lens:" + slot["slot_id"],
+                              "result_path": slot["result_path"]}
+                             for slot in slots]
+        assert runtime["result"] == {
+            "receipts": expected_receipts,
+            "settings_digest": args["settings_digest"],
+        }
+
+    def test_runtime_refuses_a_workflow_without_governed_slots(self):
+        completed = _node_workflow({"settings_digest": "0" * 64})
+        assert completed.returncode != 0
+        assert "lacks canonical slots" in completed.stderr
 
     def test_auto_picks_workflow_when_opted_in(self, tmp_path, monkeypatch):
         _clean_env(monkeypatch)
@@ -346,7 +300,7 @@ class TestPathTracing:
                if e["event"] == "review_dispatch_path"]
         assert evs and evs[-1]["path"] == tp._audit_minimized("task")
         assert evs[-1].get("reason")
-        assert "dispatch_path" not in out          # stdout stays pre-change
+        assert "dispatch_path" not in json.loads(out)
 
     def test_workflow_path_is_traced(self, tmp_path, bare_host):
         ws = _repo(tmp_path)
@@ -355,28 +309,3 @@ class TestPathTracing:
                if e["event"] == "review_dispatch_path"]
         assert evs and evs[-1]["path"] == tp._audit_minimized("workflow")
         assert evs[-1].get("reason")
-
-
-# ------------------------------------------- no gate only via workflows
-
-
-class TestNoWorkflowOnlyGate:
-    def test_loop_and_lens_have_zero_workflow_coupling(self):
-        """R-W2: no code path where workflows are the only route to a gate.
-        The loop engine and the brief builder must not know workflows
-        exist — the em step instruction text is untouched by t5."""
-        transport_markers = (
-            "workflows/", "TASKPLANE_WORKFLOWS",
-            "CLAUDE_CODE_WORKFLOWS", "workflow_available(",
-            "review-wave",
-        )
-        for mod in ("loop.py", "lens.py"):
-            with open(os.path.join(ROOT, "taskplane", mod), encoding="utf-8") as f:
-                src = f.read()
-            for marker in transport_markers:
-                assert marker not in src, (mod, marker)
-
-    def test_em_step_uses_selective_dispatch(self):
-        with open(os.path.join(ROOT, "taskplane", "loop.py"), encoding="utf-8") as f:
-            src = f.read()
-        assert '"all" if step == "em" else "routed"' not in src

@@ -14,20 +14,22 @@ from taskplane.test_strategy import (
 )
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "test-strategy" / "r0001.json"
-FAILURES = FIXTURE.parent / "failure-classes.json"
-SEVERED_EDGES = FIXTURE.parent / "severed-edges.json"
 ROOT = Path(__file__).resolve().parents[2]
 DESIGN_CONTRACT = ROOT / "design" / "contract.json"
+STRATEGY = ROOT / "design" / "test-strategy.json"
+FAILURES = (Path(__file__).parent / "fixtures" / "test-strategy" /
+            "failure-classes.json")
+SEVERED_EDGES = (Path(__file__).parent / "fixtures" / "test-strategy" /
+                 "severed-edges.json")
 PORTFOLIO = ROOT / "taskplane" / "test_portfolio.json"
 
 
 def _strategy():
-    return seal_strategy(json.loads(FIXTURE.read_text(encoding="utf-8")))
+    return seal_strategy(json.loads(STRATEGY.read_text(encoding="utf-8")))
 
 
 def _declared_selectors():
-    strategy = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    strategy = json.loads(STRATEGY.read_text(encoding="utf-8"))
     design = json.loads(DESIGN_CONTRACT.read_text(encoding="utf-8"))
     portfolio = json.loads(PORTFOLIO.read_text(encoding="utf-8"))
     selectors = [
@@ -47,7 +49,7 @@ def _declared_selectors():
     )
     selectors.extend(
         selector
-        for fixture in portfolio["fixtures"]["retained"]
+        for fixture in portfolio["retained_fixtures"]
         for selector in fixture["consumer_selectors"]
     )
     return list(dict.fromkeys(selectors))
@@ -135,7 +137,7 @@ def test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_sli
     portfolio = json.loads(PORTFOLIO.read_text(encoding="utf-8"))
     fixture_consumers = {
         fixture["path"]: fixture["consumer_selectors"]
-        for fixture in portfolio["fixtures"]["retained"]
+        for fixture in portfolio["retained_fixtures"]
     }
     dashboard = [
         producer

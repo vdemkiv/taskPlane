@@ -1,12 +1,13 @@
 """Public journey: current Build evidence is required before Evaluate."""
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import sys
 from types import SimpleNamespace
 
-from taskplane import build_quality, loop, run_artifacts
+from taskplane import build_quality, loop, run_artifacts, test_strategy
 from taskplane import tp as tp_cli
 from taskplane.tests.test_build_quality import (
     FIXTURE_PATH, PRODUCER_ID, _advance, _exact, _radius, _static, _strategy,
@@ -95,3 +96,95 @@ def test_recorded_build_quality_is_current_then_severs_when_candidate_moves(
     ], cwd=workspace, check=True)
     assert "another active stage" in loop._build_quality_errors(
         str(workspace), current, current["tasks"][0], "execute")[0]
+
+
+def test_record_build_quality_refuses_strategy_outside_approved_design_plan_scope(
+        tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    (workspace / "owned.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "owned.py"], cwd=workspace, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Taskplane", "-c",
+        "user.email=taskplane@example.invalid", "commit", "-qm", "base",
+    ], cwd=workspace, check=True)
+    store = tmp_path / "store"
+    monkeypatch.setattr(loop.tp, "external_store_root", lambda _ws: str(store))
+
+    approved = _strategy()
+    approved_selector = next(
+        row for row in approved["acceptance_criteria"]
+        if row["id"] == "AC-TST1")["selectors"][0]
+    design = workspace / "design"
+    design.mkdir()
+    strategy_path = design / "test-strategy.json"
+    strategy_path.write_text(json.dumps(approved), encoding="utf-8")
+    (design / "contract.json").write_text(json.dumps({
+        "acceptance_map": [{
+            "criterion": "Approved test behavior",
+            "tests": [approved_selector],
+        }],
+        "test_strategy": {"authority": {
+            "schema": "taskplane.design-test-strategy-reference/v1",
+            "path": "design/test-strategy.json",
+            "strategy_fingerprint": approved[
+                "contract_fingerprint_sha256"],
+        }},
+    }), encoding="utf-8")
+    task = {
+        "id": "QUALITY", "scope": ["owned.py"],
+        "tests": f"python3 -m pytest -q {approved_selector}",
+        "criteria": ["Approved test behavior"],
+        "acceptance_refs": ["Approved test behavior"],
+        "test_contract": {"changed_producers": ["owned.py"]},
+        "test_strategy_authority": {
+            "schema": "taskplane.plan-test-strategy-reference/v1",
+            "path": "design/test-strategy.json",
+            "strategy_fingerprint": approved[
+                "contract_fingerprint_sha256"],
+            "criterion_ids": ["AC-TST1"],
+            "changed_producer_ids": [PRODUCER_ID],
+        },
+    }
+    state = {
+        "run_id": "run-strategy-authority", "step": "execute",
+        "current_task": 0, "design_required": True,
+        "design_fingerprint": "d" * 64, "tasks": [task],
+    }
+    task["test_strategy_authority_receipt"] = \
+        loop._seal_task_test_strategy_authority(
+            str(workspace), state, task)
+    loop.save(str(workspace), state)
+
+    substitute = copy.deepcopy(approved)
+    next(row for row in substitute["acceptance_criteria"]
+         if row["id"] == "AC-TST1")["selectors"] = [
+             "taskplane/tests/test_settings.py::"
+             "test_non_executable_settings_fail_at_load_time"]
+    substitute = test_strategy.seal_strategy(substitute)
+    binding = loop._build_quality_binding(
+        str(workspace), state, task, "execute")
+    receipt = build_quality.begin_receipt(
+        substitute, binding=binding, criterion_ids=["AC-TST1"],
+        changed_producer_ids=[PRODUCER_ID],
+        changed_paths=["taskplane/test_strategy.py", FIXTURE_PATH])
+    receipt = _advance(
+        substitute, receipt, "static", _static(receipt), "local")
+    receipt = _advance(
+        substitute, receipt, "exact-selector", _exact(receipt), "local")
+    receipt = _advance(
+        substitute, receipt, "changed-radius", _radius(receipt), "ci")
+    receipt = _advance(
+        substitute, receipt, "proportional-suite",
+        {"scope": ["taskplane/tests/test_settings.py"], "passed": True},
+        "ci")
+
+    refused = loop.record_build_quality(
+        str(workspace), "QUALITY", strategy=substitute, receipt=receipt)
+
+    assert "approved Design/Plan test strategy" in refused["error"]
+    current = loop.load(str(workspace))
+    assert current["tasks"][0]["test_strategy_authority_receipt"] == \
+        task["test_strategy_authority_receipt"]
+    assert "test_strategy" not in current["tasks"][0]

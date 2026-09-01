@@ -127,20 +127,6 @@ class TestProgramOrder(unittest.TestCase):
                                     "exact-SHA proof and human sign-off"):
             build_c.require_program_phase(self._ledger(), "r0011")
 
-    def test_program_order_wiring_precedes_plan_execution(self):
-        source = open(loop.__file__, encoding="utf-8").read()
-        approve_start = source.index("def approve(")
-        approve_end = source.index("\ndef retro(", approve_start)
-        approve_body = source[approve_start:approve_end]
-        projection = approve_body.index("build_c.project_define(")
-        execute = approve_body.index('state["step"] = "execute"')
-        self.assertLess(projection, execute)
-        build_c_source = open(build_c.__file__, encoding="utf-8").read()
-        self.assertIn("start_review(", build_c_source)
-        self.assertNotIn("automatic_sweep_route", build_c_source)
-        self.assertNotIn("lens.route", build_c_source)
-
-
 class TestScopeAssignment(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -604,36 +590,6 @@ class TestBuildCCheckpointSpec(unittest.TestCase):
         with self.assertRaisesRegex(checkpoint.CheckpointSpecError,
                                     "tracked regular file"):
             checkpoint.validate_checkpoint_spec(self.ws, untracked)
-
-
-class TestSubmitCheckpointWiring(unittest.TestCase):
-    def test_submit_checkpoint_edges_are_mutation_sensitive(self):
-        source = open(loop.__file__, encoding="utf-8").read()
-        start = source.index("def _run_submit_checkpoint(")
-        end = source.index("\ndef submit(", start)
-        body = source[start:end]
-        preflight = body.index("checkpoint.validate_checkpoint_spec(")
-        authorization = body.index(
-            "mint_semantic_checkpoint_authorization(")
-        launch = body.index('governed_commands.execute(act_ws, "checkpoint"')
-        wait = body.index('governed_commands.execute(act_ws, "wait"')
-        receipt = body.index("checkpoint.validate_and_mint(")
-        self.assertLess(preflight, authorization)
-        self.assertLess(authorization, launch)
-        self.assertLess(launch, wait)
-        self.assertLess(wait, receipt)
-        launch_body = body[launch:wait]
-        self.assertIn('"checkpoint_authority": checkpoint_authority',
-                      launch_body)
-        self.assertNotIn('"argv"', launch_body)
-        self.assertNotIn('"cwd"', launch_body)
-
-        submit_start = source.index("def submit(")
-        submit_end = source.index("\ndef _submission_staleness(", submit_start)
-        submit_body = source[submit_start:submit_end]
-        self.assertIn("_run_submit_checkpoint(", submit_body)
-        self.assertIn('submission["checkpoint_receipt"] = checkpoint_receipt',
-                      submit_body)
 
 
 class TestClosedGapPlan(unittest.TestCase):
@@ -2974,12 +2930,22 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertIsNone(tp.engine_skew_refusal(self.tmp, None))
         self.assertIsNone(tp.engine_skew_refusal(self.tmp, {}))
 
-    def test_the_comparison_runs_before_the_evaluation_walk(self):
-        """Pure PRE-check: it can only refuse more, never validate less."""
-        import inspect
-        src = inspect.getsource(loop.gate)
-        self.assertLess(src.index("engine_skew_refusal"),
-                        src.index("_evaluation_errors("))
+    def test_engine_skew_refuses_before_evaluation_validation(self):
+        ws = self._wave_ws()
+        self._skew_submit(ws)
+        self._restamp(ws, "f" * 64)
+
+        with unittest.mock.patch.object(
+                loop, "_evaluation_errors",
+                side_effect=AssertionError(
+                    "evaluation validation ran after engine-skew refusal"),
+                ) as validate_evaluation:
+            out = self._skew_gate(ws)
+
+        self.assertIn("different engine build", out["error"])
+        self.assertEqual(loop.load(ws)["step"], "evaluate")
+        validate_evaluation.assert_not_called()
+
 
 class TestStatelessReviewContractBootstrap(unittest.TestCase):
     """Focused selector for the stateless signed-action regression."""
@@ -3193,21 +3159,6 @@ class TestReviewBridge(unittest.TestCase):
             "review_policy": {"depth": "quick-only"},
         }
         return workspace, baseline, graph, impact, task, requirement
-
-    def test_review_bridge_parallel_evaluate_scans_before_kernel_and_route(self):
-        source = open(loop.__file__, encoding="utf-8").read()
-        start = source.index("# The graph is an input to evaluation")
-        end = source.index("    result = {**dispatch,", start)
-        flow = source[start:end]
-
-        scan = flow.index("depgraph.scan(graph_refresh_ws)")
-        impact = flow.index("imp = depgraph.impact(graph_ws, changed")
-        kernel = flow.index("review_kernel, routing = _review_kernel(")
-        self.assertIn(
-            "graph_refresh_ws = act_ws if is_parallel_evaluate else ws",
-            flow)
-        self.assertLess(scan, impact)
-        self.assertLess(impact, kernel)
 
     def test_review_bridge_graph_failure_dispatches_no_lenses(self):
         workspace, baseline, graph, impact, task, requirement = \

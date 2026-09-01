@@ -20,15 +20,19 @@ answer is already known to be no.
 
 Every assertion here was observed FAILING before it was kept.
 """
+import contextlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -36,6 +40,8 @@ ROOT = os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import release_provenance as prov  # noqa: E402
+import package_claude  # noqa: E402
+import package_openai  # noqa: E402
 from taskplane import release_evidence  # noqa: E402
 
 
@@ -177,23 +183,60 @@ class TestBothPackagersUseIt(unittest.TestCase):
     """One rule, both archives. A Claude-only guard would leave the OpenAI
     submission archive exactly as unaccountable as before."""
 
+    def _run(self, package, output_dir):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(stderr):
+            if package == "claude":
+                return package_claude.main([
+                    "--output-dir", str(output_dir), "--allow-dirty"])
+            with mock.patch.object(sys, "argv", [
+                    "package_openai.py", "--output-dir", str(output_dir),
+                    "--allow-dirty"]):
+                return package_openai.main()
+
     def test_each_packager_writes_a_provenance_record(self):
-        for name in ("package_claude.py", "package_openai.py"):
-            src = open(os.path.join(ROOT, "scripts", name),
-                       encoding="utf-8").read()
-            with self.subTest(script=name):
-                self.assertIn("release_provenance", src)
-                self.assertIn("allow_dirty", src)
+        for package in ("claude", "openai"):
+            with self.subTest(package=package), \
+                    tempfile.TemporaryDirectory(prefix="tp-package-") as raw:
+                output_dir = Path(raw)
+                self.assertEqual(self._run(package, output_dir), 0)
+                archives = list(output_dir.glob("*.zip"))
+                self.assertEqual(len(archives), 1)
+                record_path = archives[0].with_suffix(
+                    archives[0].suffix + ".provenance.json")
+                checksum_path = archives[0].with_suffix(
+                    archives[0].suffix + ".sha256")
+                self.assertTrue(checksum_path.is_file())
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+                self.assertEqual(record["kind"], package)
+                self.assertEqual(record["archive"], archives[0].name)
+                self.assertEqual(record["sha256"],
+                                 checksum_path.read_text(encoding="utf-8")
+                                 .split()[0])
 
     def test_a_refused_build_leaves_no_archive_behind(self):
         """Half-written output is how an unaccountable zip ends up in a
         release: the build 'failed', but dist/ still has a plausible file."""
-        for name in ("package_claude.py", "package_openai.py"):
-            src = open(os.path.join(ROOT, "scripts", name),
-                       encoding="utf-8").read()
-            with self.subTest(script=name):
-                self.assertIn("output.unlink(missing_ok=True)", src)
-                self.assertIn("checksum.unlink(missing_ok=True)", src)
+        class RefusedProvenance(Exception):
+            pass
+
+        refused = types.ModuleType("release_provenance")
+        refused.ProvenanceError = RefusedProvenance
+
+        def reject(*args, **kwargs):
+            raise RefusedProvenance("injected refusal")
+
+        refused.write = reject
+        for package in ("claude", "openai"):
+            with self.subTest(package=package), \
+                    tempfile.TemporaryDirectory(prefix="tp-package-") as raw, \
+                    mock.patch.dict(
+                        sys.modules, {"release_provenance": refused}
+                    ):
+                output_dir = Path(raw)
+                self.assertEqual(self._run(package, output_dir), 1)
+                self.assertEqual(list(output_dir.iterdir()), [])
 
 
 def _protected_main_fixture(root: Path, source: str, first_parent: str,

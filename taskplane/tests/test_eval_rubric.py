@@ -5,8 +5,8 @@ one recorded run, the rows `evals/scenarios/<skill>.json` declares — each row
 `pass`, `fail`, `no_evidence` or `n/a`, with the evidence or the reason. It
 does that generically: the vocabulary of checks, records, selectors and
 anchors is `eval_scenario`'s, and the scorer never learns that a skill named
-`tp-engineering` exists. `TestTheScorerIsGeneric` reads its own source and
-fails if it ever does.
+`tp-engineering` exists. `TestTheScorerIsGeneric` proves that at the public
+boundary by scoring a valid scenario for an invented skill.
 
 THE INVARIANT THAT OUTRANKS EVERY OTHER ASSERTION HERE. An absent producing
 record is `no_evidence`, NEVER `pass`. This is not a nicety — it is the exact
@@ -43,7 +43,6 @@ Every assertion here was observed FAILING before it was kept.
 import io
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -709,27 +708,6 @@ class TestNotApplicableIsDeclaredNeverInferred(unittest.TestCase):
 # ================================================== generic, not per-skill
 
 class TestTheScorerIsGeneric(unittest.TestCase):
-    def test_no_skill_name_appears_in_the_scorer(self):
-        """Adding a skill must be adding a JSON file, not adding a branch.
-
-        The plugin's own name is exempted in exactly one place — it is the
-        SCHEMA namespace both modules already publish under — and the
-        exemption is checked, not assumed: every line that mentions it must
-        be spelling a schema id.
-        """
-        with io.open(er.__file__, encoding="utf-8") as f:
-            src = f.read()
-        namespace = es.SCHEMA.split(".")[0]
-        for skill in es.GOVERNED_SKILLS:
-            if skill == namespace:
-                continue
-            self.assertNotIn(skill, src)
-        for line in src.splitlines():
-            if namespace in line:
-                self.assertIn('"%s.' % namespace, line)
-        self.assertNotIn("if skill", src)
-        self.assertIsNone(re.search(r"skill\s*==", src))
-
     def test_the_scorer_evaluates_a_scenario_it_has_never_seen(self):
         """A manifest for an invented skill, over the same record, scores."""
         scenario = _scen(_step("Z1", record="trace", check="exists",
@@ -744,12 +722,6 @@ class TestTheScorerIsGeneric(unittest.TestCase):
         like a shy session."""
         self.assertEqual(set(er.CHECK_KINDS) | {"all"}, set(es.CHECKS))
         self.assertEqual(set(er.RECORDS), set(es.RECORDS))
-
-    def test_all_is_flattened_by_eval_scenario_and_not_re_implemented(self):
-        with io.open(er.__file__, encoding="utf-8") as f:
-            src = f.read()
-        self.assertIn("constraints(", src)
-
 
 # ================================================ the negative corpus is real
 
