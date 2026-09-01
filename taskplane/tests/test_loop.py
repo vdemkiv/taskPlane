@@ -3620,27 +3620,6 @@ class TestReviewBridge(unittest.TestCase):
             "slots": reloaded["slots"],
         }, immutable)
 
-    def test_golden_evaluate_brief_is_lens_free(self):
-        golden = os.path.join(
-            os.path.dirname(__file__), "fixtures", "briefs",
-            "golden_stage_evaluate.json")
-        with open(golden, encoding="utf-8") as stream:
-            raw = stream.read()
-        payload = json.loads(raw[raw.index("{"):])
-
-        self.assertEqual(payload["step"], "evaluate")
-        self.assertNotIn("lenses", payload)
-        self.assertNotIn("language_references", payload)
-        self.assertEqual(payload["review_kernel"]["slots"], [])
-        self.assertEqual(
-            payload["review_kernel"]["lens_execution_policy"], "none")
-        self.assertEqual(
-            payload["review_kernel"]["lens_worker_start_count"], 0)
-        self.assertIn("Evaluate is lens-free", payload["instruction"])
-        self.assertNotIn("ROUTED lens", payload["instruction"])
-        self.assertNotIn("lens-brief", raw)
-        self.assertNotIn("taskplane-role:tp-lens", raw)
-
     def test_review_bridge_checkout_bound_main_reloads_target_runtime(self):
         canonical = sys.modules.get("taskplane_lite")
         canonical_storage = sys.modules.get("storage")

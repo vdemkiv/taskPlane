@@ -15,8 +15,8 @@
   },
   "final": {
     "test_files": 230,
-    "collected_cases": 4086,
-    "test_loc": 84771,
+    "collected_cases": 4080,
+    "test_loc": 84707,
     "removed_files": 57,
     "removed_cases": 916,
     "removed_loc": 16865,
@@ -29,15 +29,19 @@
   "selector_pruning": {
     "base_revision": "e0aadf61c60c30996739b9f0e6d6f891384e80d4",
     "source_diff_sha256": "83ef358d81b3509d4249b3272b6b0c157d4849f5b960fa973c85487acedb1176",
-    "removed_cases": 20,
+    "removed_cases": 26,
     "added_contract_cases": 2,
-    "changed_test_lines": {"deleted": 600, "added": 320},
+    "changed_test_lines": {"deleted": 664, "added": 320},
     "removed_fixtures": [
       "taskplane/tests/fixtures/briefs/audit_hybrid_corpus.json",
       "taskplane/tests/fixtures/briefs/changed_files.json",
       "taskplane/tests/fixtures/briefs/golden_dispatch_all.json",
       "taskplane/tests/fixtures/briefs/golden_dispatch_review.json",
-      "taskplane/tests/fixtures/briefs/golden_dispatch_routed.json"
+      "taskplane/tests/fixtures/briefs/golden_dispatch_routed.json",
+      "taskplane/tests/fixtures/briefs/golden_stage_evaluate.json",
+      "taskplane/tests/fixtures/briefs/golden_stage_execute.json",
+      "taskplane/tests/fixtures/briefs/golden_stage_fix.json",
+      "taskplane/tests/fixtures/briefs/regen.py"
     ],
     "removed_selectors": [
       "taskplane/tests/test_binding_obligations.py::TheEngineStillCannotSeeAnyOfThis::test_an_open_binding_obligation_never_reaches_a_loop_gate",
@@ -58,8 +62,14 @@
       "taskplane/tests/test_lens_routing_product_truth.py::test_historical_contract_and_current_plan_route_remain_intact",
       "taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_equal_fingerprint_gate_is_byte_identical_to_the_pre_a4_flow",
       "taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_merge_and_byte_identical_reevidence_replaces_worker_engine_stamp",
+      "taskplane/tests/test_loop.py::TestReviewBridge::test_golden_evaluate_brief_is_lens_free",
       "taskplane/tests/test_model_tiers.py::TestTierResolver::test_defaults_only_cheap_is_pinned",
-      "taskplane/tests/test_stage_waves.py::TestStageKillSwitchMatrix::test_single_detector_the_emitter_never_parses_the_env"
+      "taskplane/tests/test_stage_waves.py::TestSlotCharsetRefusalAtEmission::test_valid_ids_emit_byte_identically",
+      "taskplane/tests/test_stage_waves.py::TestStageKillSwitchMatrix::test_single_detector_the_emitter_never_parses_the_env",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathByteIdentity::test_c1_activation_block_never_reaches_the_task_path",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathByteIdentity::test_golden_headers_document_the_regen_command",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathByteIdentity::test_goldens_are_deterministic_artifacts",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathByteIdentity::test_task_path_stdout_matches_stage_goldens"
     ],
     "added_selectors": [
       "taskplane/tests/test_ci_local.py::test_import_cycle_gate_protects_topology_not_physical_line_count",
@@ -69,7 +79,12 @@
       "taskplane/tests/test_dispatch_parity.py::TestDispatchContract::test_live_dispatch_carries_the_lens_brief_contract_fields",
       "taskplane/tests/test_dispatch_parity.py::TestWorkflowArgsParity::test_workflow_args_json_equal_task_path_payload",
       "taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_recorded_t7_skew_is_refused_then_gates_through_after_merge",
-      "taskplane/tests/test_stage_waves.py::TestStageKillSwitchMatrix::test_truthy_spellings_opt_in_to_the_workflow_path"
+      "taskplane/tests/test_loop.py::TestReviewBridge::test_zero_lens_evaluate_seals_current_graph_without_route_or_wait",
+      "taskplane/tests/test_stage_waves.py::TestStageEmitterWorkflowPath::test_agent_prompts_are_task_path_bytes_verbatim",
+      "taskplane/tests/test_stage_waves.py::TestStageEmitterWorkflowPath::test_stage_payloads_bind_settings_and_expected_workflow_inputs",
+      "taskplane/tests/test_stage_waves.py::TestStageKillSwitchMatrix::test_truthy_spellings_opt_in_to_the_workflow_path",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathContract::test_bare_default_and_explicit_task_select_same_contract",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathContract::test_task_stdout_never_carries_workflow_keys"
     ]
   },
   "inventory_sha256": "685d8555c1fad519efbc2cc2f6fbfd4b56ee5e813b8089aee730b53967365d1d",

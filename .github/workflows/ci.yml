@@ -892,23 +892,19 @@ jobs:
           git config --global user.name "taskplane-ci"
       # Run from the repo ROOT (same rule as the tests job): conftest.py
       # resolves the taskplane package only when the root is on sys.path.
-      - name: Codex dispatch parity (frozen briefs vs goldens)
+      - name: Codex dispatch parity (live producer contracts)
         run: python3 -m pytest taskplane/tests/test_dispatch_parity.py -q
       - name: Detector-fixture completeness (positive+negative per lens)
         run: python3 -m pytest taskplane/tests/test_lens_signals_fixtures.py -q
-      # t4 (R-0004): the STAGE-wave half of the parity guard. The three
-      # governed stage dispatches (execute/evaluate/fix) replay through the
-      # real CLI and byte-compare against checked-in goldens (regenerated
-      # only via taskplane/tests/fixtures/briefs/regen.py — the documented
-      # single regen path); the same file carries the kill-switch matrix,
-      # the Codex stage cases (task bytes + no workflow path chosen,
-      # trace-verified), the killed-mid-stage resume fixture, and the
-      # every-gate-reachable-without-workflows adversarial walk.
+      # t4 (R-0004): the STAGE-wave half of the parity guard compares the
+      # live Task and workflow producers by current contract fields. The same
+      # file carries the kill-switch matrix, Codex stage cases, killed-stage
+      # resume fixture, and every-gate-without-workflows adversarial walk.
       - name: Stage-wave parity + kill-switch matrix + Codex stage cases
         run: python3 -m pytest taskplane/tests/test_stage_waves.py -q
 
-  # Required native-host leg. Unlike codex-parity's frozen payload replay,
-  # this runs the hook lifecycle, strict spawn screening, hashed native task
+  # Required native-host leg. This runs the hook lifecycle, strict spawn
+  # screening, hashed native task
   # identities, reasoning-effort routing, and execute-wave registration with
   # real Codex host markers present.
   codex-host:
