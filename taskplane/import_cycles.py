@@ -1,4 +1,4 @@
-"""Deterministic file-level import-cycle inventory and non-growth ratchet.
+"""Deterministic file-level import-cycle topology inventory and ratchet.
 
 The scanner deliberately uses only the standard library.  It follows imports
 at every AST depth (including the deferred imports that commonly hide cycles),
@@ -17,7 +17,7 @@ import sys
 from typing import Iterable, Mapping, Sequence
 
 
-SCHEMA = "taskplane.import-cycle-ratchet/v1"
+SCHEMA = "taskplane.import-cycle-topology/v2"
 CHECK_SCHEMA = "taskplane.import-cycle-check/v1"
 PACKAGE = "taskplane"
 POLICY_RELATIVE = Path("taskplane/tests/fixtures/import-cycles.json")
@@ -127,11 +127,9 @@ def _resolve_imports(tree: ast.AST, modules: set[str]) -> set[str]:
 
 
 def _scan_graph(
-        sources: Mapping[str, tuple[str, str]]) -> tuple[dict[str, set[str]],
-                                                         dict[str, int]]:
+        sources: Mapping[str, tuple[str, str]]) -> dict[str, set[str]]:
     modules = set(sources)
     graph: dict[str, set[str]] = {}
-    physical_loc: dict[str, int] = {}
     for module in sorted(sources):
         relative, source = sources[module]
         try:
@@ -142,8 +140,7 @@ def _scan_graph(
             raise CycleScanError(
                 f"cannot parse {relative}:{line}: SyntaxError: {reason}") from exc
         graph[module] = _resolve_imports(tree, modules)
-        physical_loc[module] = len(source.splitlines())
-    return graph, physical_loc
+    return graph
 
 
 def _tarjan(graph: Mapping[str, set[str]]) -> list[list[str]]:
@@ -189,7 +186,7 @@ def _inventory_from_sources(
         sources: Mapping[str, tuple[str, str]], *, source_revision: str) -> dict:
     if not isinstance(source_revision, str) or not source_revision.strip():
         raise CyclePolicyError("source_revision must be a non-empty string")
-    graph, loc = _scan_graph(sources)
+    graph = _scan_graph(sources)
     rows = []
     for members in _tarjan(graph):
         member_set = set(members)
@@ -204,7 +201,6 @@ def _inventory_from_sources(
             "internal_edges": edges,
             "member_count": len(members),
             "edge_count": len(edges),
-            "physical_loc": sum(loc[member] for member in members),
         })
     inventory = {
         "schema": SCHEMA,
@@ -268,7 +264,6 @@ def validate_inventory(record: Mapping) -> None:
 
     expected_row_keys = {
         "members", "internal_edges", "member_count", "edge_count",
-        "physical_loc",
     }
     seen_members: set[str] = set()
     previous_members: list[str] | None = None
@@ -316,11 +311,6 @@ def validate_inventory(record: Mapping) -> None:
                     value != expected:
                 raise CyclePolicyError(
                     f"sccs[{index}].{field} must equal {expected}")
-        physical_loc = row["physical_loc"]
-        if isinstance(physical_loc, bool) or not isinstance(physical_loc, int) \
-                or physical_loc < 0:
-            raise CyclePolicyError(
-                f"sccs[{index}].physical_loc must be a non-negative integer")
 
 
 def load_policy(path: Path) -> dict:
@@ -337,7 +327,7 @@ def load_policy(path: Path) -> dict:
 
 def _measure(row: Mapping) -> dict[str, int]:
     return {field: row[field]
-            for field in ("member_count", "edge_count", "physical_loc")}
+            for field in ("member_count", "edge_count")}
 
 
 def _violation(code: str, current: Mapping, *, baseline: Mapping | None,
@@ -357,9 +347,6 @@ def check_inventory(policy: Mapping, current: Mapping) -> dict:
     validate_inventory(current)
     baseline_rows = policy["sccs"]
     violations = []
-    descendants: dict[int, list[Mapping]] = {
-        index: [] for index in range(len(baseline_rows))}
-
     for row in current["sccs"]:
         members = set(row["members"])
         candidate_indexes = [
@@ -390,7 +377,6 @@ def check_inventory(policy: Mapping, current: Mapping) -> dict:
 
         baseline_index = candidate_indexes[0]
         baseline = baseline_rows[baseline_index]
-        descendants[baseline_index].append(row)
         baseline_edges = {tuple(edge) for edge in baseline["internal_edges"]}
         current_edges = {tuple(edge) for edge in row["internal_edges"]}
         new_edges = current_edges - baseline_edges
@@ -399,28 +385,6 @@ def check_inventory(policy: Mapping, current: Mapping) -> dict:
                 "new-internal-edge", row, baseline=baseline,
                 affected_modules={item for edge in new_edges for item in edge},
                 affected_edges=new_edges))
-
-    # One baseline SCC may legitimately split into several current SCCs.  Its
-    # bound applies to the descendants in aggregate, otherwise two children
-    # could each consume the full parent LOC allowance and silently grow.
-    for baseline_index, rows in descendants.items():
-        if not rows:
-            continue
-        baseline = baseline_rows[baseline_index]
-        aggregate = {
-            "members": sorted({member for row in rows
-                               for member in row["members"]}),
-            "internal_edges": sorted({tuple(edge) for row in rows
-                                      for edge in row["internal_edges"]}),
-            "member_count": sum(row["member_count"] for row in rows),
-            "edge_count": sum(row["edge_count"] for row in rows),
-            "physical_loc": sum(row["physical_loc"] for row in rows),
-        }
-        if aggregate["physical_loc"] > baseline["physical_loc"]:
-            violations.append(_violation(
-                "physical-loc-growth", aggregate, baseline=baseline,
-                affected_modules=aggregate["members"],
-                affected_edges=aggregate["internal_edges"]))
 
     baseline_members = {member for row in baseline_rows
                         for member in row["members"]}
@@ -459,14 +423,12 @@ def format_failures(result: Mapping) -> str:
             for source, target in row["affected_edges"]) or "(none)"
         text = (
             f"{row['code']}: modules=[{modules}] edges=[{edges}] measured "
-            f"members={measured['member_count']} edges={measured['edge_count']} "
-            f"physical_loc={measured['physical_loc']}")
+            f"members={measured['member_count']} edges={measured['edge_count']}")
         bounds = row.get("bounds")
         if bounds is not None:
             text += (
                 f"; bound members={bounds['member_count']} "
-                f"edges={bounds['edge_count']} "
-                f"physical_loc={bounds['physical_loc']}")
+                f"edges={bounds['edge_count']}")
         lines.append(text)
     return "\n".join(lines)
 

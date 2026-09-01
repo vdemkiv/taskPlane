@@ -70,8 +70,8 @@ class DesignWorkflowTest(unittest.TestCase):
                 "test_real_stage_completion_seals_design_outputs",
             ],
             "the proposed graph stays separate": [
-                "taskplane/tests/test_r0006_graph_boundaries.py::"
-                "test_shared_graph_payload_preserves_dependency_and_boundary_meaning",
+                "taskplane/tests/test_dashboard_phase_graphs.py::"
+                "test_design_graph_plan_dag_waves_and_module_impact_are_distinct",
             ],
         }
         contract = {

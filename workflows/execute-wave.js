@@ -33,6 +33,15 @@ const PAUSED = new Set(['approval_required', 'input_required']);
 const RESUME = {
   authorization_granted: 'approval_required', input_provided: 'input_required',
 };
+const SETTINGS_DIGEST = /^[0-9a-f]{64}$/;
+
+function requireSettings(args) {
+  const digest = args && args.settings_digest;
+  if (typeof digest !== 'string' || !SETTINGS_DIGEST.test(digest)) {
+    throw new Error('execute workflow lacks canonical settings digest');
+  }
+  return { digest };
+}
 
 function prepareCommandWave(args, briefs, stage) {
   const members = briefs.map((brief) => String(brief.id));
@@ -118,6 +127,7 @@ const RECEIPT_SCHEMA = {
 };
 
 export default async function executeWave({ args, agent, parallel, phase }) {
+  const settings = requireSettings(args);
   phase('Build');
   const briefs = args.briefs || [];
   const commandWave = prepareCommandWave(args, briefs, 'execute');
@@ -158,5 +168,6 @@ export default async function executeWave({ args, agent, parallel, phase }) {
   }
   return { receipts: commandWave.sealed_members
       .map((member) => commandWave.receipts[member]).filter(Boolean),
-    command_wave: commandWave, command_events: events };
+    command_wave: commandWave, command_events: events,
+    settings_digest: settings.digest };
 }

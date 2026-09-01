@@ -30,7 +30,19 @@ import depgraph  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import producer_observation  # noqa: E402
+from taskplane.authority import DECISION_SCHEMA  # noqa: E402
+from taskplane.settings import SettingsError  # noqa: E402
 from taskplane.tests.review_kernel_support import complete_review  # noqa: E402
+
+
+SETTINGS_AUTHORITY = {
+    "schema": DECISION_SCHEMA,
+    "authorized": True,
+    "authority_requested": "gate_weakening",
+    "actor": "human:test",
+    "thread": "audit-settings-compatibility",
+    "revision": "1",
+}
 
 
 def git_ws(tmp, tasks):
@@ -239,25 +251,27 @@ class TestAuditCadence(AuditBase):
             ws, {"tasks": [{"id": "x", "type": "release"}]}))
 
     def test_env_override_respected(self):
-        ws = self.ws()
         with mock.patch.dict(os.environ, {"TASKPLANE_AUDIT_EVERY": "2"}):
-            self.assertEqual(loop.audit_every(), 2)
-            self.assertFalse(loop.audit_due(ws))     # upcoming #1
-            loop.record_audit_review(ws)
-            self.assertTrue(loop.audit_due(ws))      # upcoming #2
+            with self.assertRaises(SettingsError):
+                loop.audit_every()
+            self.assertEqual(
+                loop.audit_every(authority=SETTINGS_AUTHORITY), 2)
 
-    def test_env_override_min_1_enforced(self):
-        ws = self.ws()
-        for raw in ("0", "-3", "1"):
+    def test_env_override_must_be_positive_and_exactly_authorized(self):
+        for raw in ("0", "-3"):
             with mock.patch.dict(os.environ,
                                  {"TASKPLANE_AUDIT_EVERY": raw}):
-                self.assertEqual(loop.audit_every(), 1, raw)
-                self.assertTrue(loop.audit_due(ws), raw)   # every review
+                with self.assertRaises(SettingsError):
+                    loop.audit_every(authority=SETTINGS_AUTHORITY)
+        with mock.patch.dict(os.environ, {"TASKPLANE_AUDIT_EVERY": "1"}):
+            self.assertEqual(
+                loop.audit_every(authority=SETTINGS_AUTHORITY), 1)
 
-    def test_env_garbage_falls_back_to_default(self):
+    def test_env_garbage_fails_closed(self):
         with mock.patch.dict(os.environ,
                              {"TASKPLANE_AUDIT_EVERY": "often"}):
-            self.assertEqual(loop.audit_every(), 5)
+            with self.assertRaises(SettingsError):
+                loop.audit_every(authority=SETTINGS_AUTHORITY)
 
     def test_counter_write_is_atomic(self):
         """The counter goes through tp.atomic_write_json; a failed write
@@ -455,17 +469,17 @@ class TestGateIntegration(AuditBase):
 
 class TestEmPayloadAndCounterWiring(AuditBase):
     def test_em_payload_advertises_audit_mode_when_due(self):
-        with mock.patch.dict(os.environ, {"TASKPLANE_AUDIT_EVERY": "1"}):
+        with mock.patch.object(audit, "audit_every", return_value=1):
             ws = loop_to_em(self.tmp)
             act = loop.next_action(ws)
             self.assertEqual(act["step"], "em")
-            audit = act.get("audit")
-            self.assertIsInstance(audit, dict)
-            self.assertTrue(audit["due"])
-            self.assertIn("every-1", audit["reason"])
+            audit_info = act.get("audit")
+            self.assertIsInstance(audit_info, dict)
+            self.assertTrue(audit_info["due"])
+            self.assertIn("every-1", audit_info["reason"])
             # the POINT of audit mode: the routing decision is recorded so
             # the findings-vs-routing diff is computable at the gate.
-            decision = audit.get("routing_decision")
+            decision = audit_info.get("routing_decision")
             self.assertIsInstance(decision, dict)
             expected = {e["id"] for e in lens.load_catalog()["lenses"]}
             self.assertEqual(set(decision), expected)

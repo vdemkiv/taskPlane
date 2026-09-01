@@ -151,6 +151,7 @@ def test_supported_cli_and_loop_run_one_real_durable_command(tmp_path, capsys):
         "schema": "taskplane.governed-command-identity/v1",
         "run_id": "run-r0007",
         "task_id": "c1-governed-command-runtime",
+        "attempt": 1,
     }
     assert launched["lifecycle_states"] == ["created", "running"]
 
@@ -1086,6 +1087,22 @@ def test_checkpoint_receipt_rejects_caller_forgery_and_red_stops_later_phases(
                        match="caller-authored fields.*producer"):
         checkpoint.validate_and_mint(str(workspace), spec, forged_result)
 
+    partial_cleanup = _checkpoint_command_result(workspace, runtime_argv)
+    partial_cleanup["cleanup_receipt"] = {}
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="cleanup envelope is incomplete"):
+        checkpoint.validate_and_mint(
+            str(workspace), spec, partial_cleanup)
+
+    forged_cleanup = _run_governed_checkpoint_command(
+        workspace, runtime_argv, "checkpoint-cleanup-forgery")
+    forged_cleanup["cleanup_receipt"]["receipt_digest"] = "0" * 64
+    forged_cleanup["cleanup_evidence"]["receipt_digest"] = "0" * 64
+    with pytest.raises(checkpoint.CheckpointReceiptError,
+                       match="cleanup envelope is invalid"):
+        checkpoint.validate_and_mint(
+            str(workspace), spec, forged_cleanup)
+
     red = _checkpoint_command_result(
         workspace, runtime_argv, state="failed", exit_code=1)
     with pytest.raises(checkpoint.CheckpointReceiptError,
@@ -1190,8 +1207,9 @@ def test_semantic_sidecar_rejects_redigest_and_replay_against_current_state(
         str(workspace), loop.load(str(workspace)), task, str(workspace))
     lifecycle = "loop-submit-checkpoint:checkpoint-task"
     handle = receipt["command"]["handle"]
-    path = (Path(governed_commands._runtime_root(str(workspace))) / handle /
-            "semantic-checkpoint-receipt.json")
+    sealed = governed_commands._sealed_runtime_evidence(
+        governed_commands._runtime_root(str(workspace)), handle)
+    path = sealed["evidence"]["semantic-checkpoint-receipt"]
     original = json.loads(path.read_text(encoding="utf-8"))
 
     redigested = dict(original)
@@ -1202,7 +1220,7 @@ def test_semantic_sidecar_rejects_redigest_and_replay_against_current_state(
         governed_commands._canonical_digest(material)
     path.write_text(json.dumps(redigested), encoding="utf-8")
     with pytest.raises(governed_commands.GovernedCommandError,
-                       match="execution receipt is invalid"):
+                       match="execution receipt"):
         governed_commands.semantic_checkpoint_execution_evidence(
             str(workspace), lifecycle, handle)
 
@@ -1253,19 +1271,25 @@ def _assert_process_absent(pid_path):
     pytest.fail(f"semantic checkpoint descendant {pid} leaked")
 
 
-def test_semantic_checkpoint_reaps_success_descendants(tmp_path):
+def test_semantic_checkpoint_reaps_success_descendants(tmp_path, monkeypatch):
     workspace, task, pid_path = _semantic_descendant_workspace(
         tmp_path, escape_group=False)
     receipt = loop._run_submit_checkpoint(
         str(workspace), loop.load(str(workspace)), task, str(workspace))
     assert receipt["verdict"] == "green"
     handle = receipt["command"]["handle"]
-    runtime = CommandRuntime(
-        governed_commands._runtime_root(str(workspace)),
-        workspace=str(workspace),
-        authorization="loop-submit-checkpoint:checkpoint-task")
-    snapshot = runtime.snapshot(handle)
-    assert snapshot["state"] == "succeeded"
+    runtime_root = governed_commands._runtime_root(str(workspace))
+    assert not (runtime_root / handle).exists()
+    monkeypatch.setattr(
+        governed_commands.owned_cleanup, "cleanup_manifest",
+        lambda *_args, **_kwargs: pytest.fail(
+            "terminal replay re-ran destructive cleanup"))
+    replayed = governed_commands.execute(str(workspace), "show", {
+        "authorization": "loop-submit-checkpoint:checkpoint-task",
+        "handle": handle,
+    })
+    assert replayed["snapshot"]["state"] == "succeeded"
+    assert replayed["cleanup_evidence"]["leak_count"] == 0
     _assert_process_absent(pid_path)
 
 

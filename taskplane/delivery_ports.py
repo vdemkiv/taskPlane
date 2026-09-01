@@ -14,12 +14,13 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Iterable, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence, runtime_checkable
 
 try:  # pragma: no cover - platform branch
     import fcntl
@@ -44,6 +45,7 @@ EVIDENCE_FAULT_SEAMS = (
 IRREVERSIBLE_TOOLS = frozenset({"push", "tag", "install", "publish", "credential-release"})
 TRUSTED_GIT_SNAPSHOT_SCHEMA = "taskplane.trusted-git-snapshot/v1"
 _TRUSTED_GIT_SNAPSHOT_TOKEN = object()
+_DASHBOARD_REFRESH_PUBLISHER = None
 
 
 class DeliveryPortError(RuntimeError):
@@ -52,6 +54,141 @@ class DeliveryPortError(RuntimeError):
 
 class InjectedFault(DeliveryPortError):
     """A deterministic test fault at a named public seam."""
+
+
+def configure_dashboard_refresh_publisher(publisher) -> None:
+    """Attach the composition-root dashboard publisher to this leaf port."""
+    global _DASHBOARD_REFRESH_PUBLISHER
+    if publisher is not None and not callable(publisher):
+        raise TypeError("dashboard refresh publisher must be callable")
+    _DASHBOARD_REFRESH_PUBLISHER = publisher
+
+
+def publish_dashboard_refresh(
+    workspace: str,
+    *,
+    event_type: str,
+    outcome: str,
+    lifecycle_events: Sequence[str],
+    trace: Callable[..., object],
+    member_terminal: bool = False,
+    publisher=None,
+) -> None:
+    """Publish one post-receipt lifecycle intent through an injected port."""
+    if event_type not in lifecycle_events:
+        raise ValueError(
+            "dashboard lifecycle event is absent from canonical settings: "
+            + str(event_type)
+        )
+    selected = publisher or _DASHBOARD_REFRESH_PUBLISHER
+    if selected is None:
+        trace(
+            workspace,
+            "dashboard_publication_deferred",
+            event_type=event_type,
+            outcome=outcome,
+            member_terminal=member_terminal,
+            error="dashboard refresh publisher is not configured",
+        )
+        return
+    try:
+        selected(workspace, event_type=event_type, outcome=outcome)
+    except Exception as exc:
+        trace(
+            workspace,
+            "dashboard_publication_deferred",
+            event_type=event_type,
+            outcome=outcome,
+            member_terminal=member_terminal,
+            error=f"{exc.__class__.__name__}: {exc}",
+        )
+
+
+def dispatch_task_name(kind: str, agent: str, ref: str | None = None) -> str:
+    """Return a stable native task identity without erasing its role."""
+    role = (agent or "agent").removeprefix("tp-")
+    parts = ["tp", kind]
+    if role != kind:
+        parts.append(role)
+    if ref:
+        parts.append(str(ref))
+    identity = "\0".join((str(kind), str(agent), str(ref or "")))
+    raw = "_".join(parts).lower()
+    name = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "tp_agent"
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
+    return name[:55].rstrip("_") + "_" + digest
+
+
+def role_marker(agent: str) -> str:
+    return "taskplane-role:" + str(agent)
+
+
+def dispatch_envelope(
+    kind: str,
+    agent: str,
+    ref: str,
+    model_tier: str,
+    *,
+    role_instructions: str,
+    requested_model: str | None,
+    requested_effort: str,
+    settings_digest: str,
+    route: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Seal resolved settings and optional host routing into one brief."""
+    fields = {
+        "role": agent,
+        "role_marker": role_marker(agent),
+        "role_instructions": role_instructions,
+        "task_name": dispatch_task_name(kind, agent, ref),
+        "model_tier": model_tier,
+        "model": route["effective_model"] if route else requested_model,
+        "reasoning_effort": (
+            route["effective_effort"] if route else requested_effort),
+        "settings_digest": settings_digest,
+    }
+    if route is not None:
+        fields["dispatch_route"] = dict(route)
+        fields["dispatch_blocked"] = route["block_before_dispatch"]
+    return fields
+
+
+def normalize_worker_terminal_outcome(value: object) -> str:
+    text = str(value or "success").strip().lower()
+    for token, outcome in (
+        ("handoff", "handoff"), ("transfer", "handoff"),
+        ("cancel", "cancellation"), ("interrupt", "interruption"),
+        ("abort", "interruption"), ("killed", "interruption"),
+        ("fail", "failure"), ("error", "failure"),
+        ("exception", "failure"),
+    ):
+        if token in text:
+            return outcome
+    return "success"
+
+
+def task_test_timeout_seconds(
+    task: object, *, default_seconds: int,
+    validator: Callable[..., int],
+) -> int:
+    """Read one closed Plan timeout shape without owning its defaults."""
+    field = "verification_runner.gate_timeout.aggregate_seconds"
+    if not isinstance(task, dict):
+        raise ValueError(f"{field} task container must be an object")
+    if "verification_runner" not in task:
+        return int(default_seconds)
+    runner = task.get("verification_runner")
+    if not isinstance(runner, dict):
+        raise ValueError(f"{field} parent containers must be objects")
+    if "gate_timeout" not in runner:
+        raise ValueError(f"{field} is required when verification_runner is present")
+    gate_timeout = runner.get("gate_timeout")
+    if not isinstance(gate_timeout, dict):
+        raise ValueError(f"{field} parent containers must be objects")
+    if "aggregate_seconds" not in gate_timeout:
+        raise ValueError(f"{field} is required when gate_timeout is present")
+    return validator(
+        gate_timeout.get("aggregate_seconds"), field=field, plan_minted=True)
 
 
 def canonical_json(value: Any) -> bytes:

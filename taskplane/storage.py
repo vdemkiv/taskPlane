@@ -8,11 +8,13 @@ path it happens to use.
 from __future__ import annotations
 
 from collections.abc import MutableMapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import tempfile
@@ -54,13 +56,37 @@ def resolve_repository_family(workspace: str) -> dict:
         if parent == cursor:
             break
         cursor = parent
-    worktree = next((path for path in chain
-                     if os.path.exists(os.path.join(path, ".git"))), current)
+    def git_path(*arguments: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", *arguments], cwd=current, capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        value = result.stdout.strip()
+        return os.path.realpath(value) if result.returncode == 0 and value \
+            else None
+
+    worktree = git_path("rev-parse", "--path-format=absolute",
+                        "--show-toplevel") or next((
+        path for path in chain
+        if os.path.exists(os.path.join(path, ".git"))), current)
     launcher = next((os.path.realpath(os.path.join(path, ".taskplane",
                                                    "codex-hook.py"))
                      for path in chain
                      if os.path.isfile(os.path.join(path, ".taskplane",
                                                     "codex-hook.py"))), None)
+    if launcher is None:
+        # Linked worktrees created by Codex are external siblings, not
+        # descendants of the primary checkout. Git's common directory is the
+        # portable repository-family boundary; its parent is the primary
+        # checkout for a non-bare repository.
+        common = git_path("rev-parse", "--path-format=absolute",
+                          "--git-common-dir")
+        candidate = (os.path.join(os.path.dirname(common), ".taskplane",
+                                  "codex-hook.py") if common else None)
+        if candidate and os.path.isfile(candidate):
+            launcher = os.path.realpath(candidate)
     return {"schema": "taskplane.repository-family/v1",
             "worktree": worktree, "launcher": launcher}
 
@@ -237,12 +263,126 @@ def _atomic_json(path: str, value: dict) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        try:
+            directory_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:  # directory fsync is unavailable on some hosts
+            pass
     finally:
         try:
             if os.path.exists(temporary):
                 os.unlink(temporary)
         except OSError:
             pass
+
+
+@contextmanager
+def _storage_file_lock(path: str, *, timeout: float = 10.0):
+    """Cross-host storage lock with a fail-closed, owner-bound fallback."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    try:
+        handle = open(path, "a+b")
+    except OSError as exc:
+        raise StorageIdentityError(
+            f"could not open dashboard storage lock: {exc}") from exc
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl is not None:
+        try:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise StorageIdentityError(
+                    f"could not acquire dashboard storage lock: {exc}") \
+                    from exc
+            yield
+        finally:
+            handle.close()
+        return
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
+    if msvcrt is not None:
+        try:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            deadline = time.monotonic() + max(0.1, timeout)
+            while True:
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        raise StorageIdentityError(
+                            "could not acquire dashboard storage lock") \
+                            from exc
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            handle.close()
+        return
+    handle.close()
+    lockdir = path + ".lockdir"
+    owner_path = os.path.join(lockdir, "owner")
+    owner = secrets.token_hex(32)
+    deadline = time.monotonic() + max(0.1, timeout)
+    while True:
+        try:
+            os.mkdir(lockdir)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise StorageIdentityError(
+                    "could not acquire dashboard storage lock")
+            time.sleep(0.01)
+            continue
+        except OSError as exc:
+            raise StorageIdentityError(
+                f"could not acquire dashboard storage lock: {exc}") from exc
+        try:
+            with open(owner_path, "x", encoding="ascii") as marker:
+                marker.write(owner)
+                marker.flush()
+                os.fsync(marker.fileno())
+        except OSError as exc:
+            try:
+                os.rmdir(lockdir)
+            except OSError:
+                pass
+            raise StorageIdentityError(
+                f"could not establish dashboard lock ownership: {exc}") \
+                from exc
+        break
+    try:
+        yield
+    finally:
+        try:
+            with open(owner_path, encoding="ascii") as marker:
+                observed_owner = marker.read()
+            if observed_owner != owner:
+                raise StorageIdentityError(
+                    "could not release dashboard storage lock: "
+                    "ownership is ambiguous")
+            os.unlink(owner_path)
+            os.rmdir(lockdir)
+        except StorageIdentityError:
+            raise
+        except OSError as exc:
+            raise StorageIdentityError(
+                f"could not release dashboard storage lock: {exc}") from exc
 
 
 def _locator_path(checkout: str) -> str:
@@ -1182,3 +1322,148 @@ def instruction_artifact_paths(checkout: str | None) -> tuple[str, str]:
     if checkout:
         return evaluator_contract_path(checkout), review_public_root(checkout)
     return ".eval/verdict.json", ".em-review"
+
+
+DASHBOARD_PUBLICATION_SCHEMA = "taskplane.dashboard-publication-store/v1"
+
+
+def dashboard_snapshot_store_path(workspace: str) -> str:
+    """Return the workspace-local atomic dashboard publication head."""
+    root = os.path.realpath(os.path.abspath(workspace))
+    return os.path.join(root, ".taskplane", "dashboard-state", "current.json")
+
+
+def load_dashboard_publication(workspace: str) -> dict | None:
+    """Load and authenticate the complete persisted snapshot history."""
+    path = dashboard_snapshot_store_path(workspace)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise StorageIdentityError(
+            f"dashboard publication is unreadable: {exc}") from exc
+    if not isinstance(value, dict) or value.get("schema") != \
+            DASHBOARD_PUBLICATION_SCHEMA or set(value) != {
+                "schema", "current", "history"}:
+        raise StorageIdentityError("dashboard publication schema is invalid")
+    history = value.get("history")
+    if not isinstance(history, list) or not history:
+        raise StorageIdentityError("dashboard publication history is invalid")
+    try:
+        if __package__:
+            from .host_native import (ContradictorySnapshotError,
+                                      HostSurfaceSnapshot)
+        else:
+            from taskplane.host_native import (ContradictorySnapshotError,
+                                               HostSurfaceSnapshot)
+        checked = [HostSurfaceSnapshot.from_dict(row) for row in history]
+    except (TypeError, ValueError) as exc:
+        raise StorageIdentityError(
+            f"dashboard publication snapshot is invalid: {exc}") from exc
+    identities: dict[tuple[str, str, str, str, int], str] = {}
+    for snapshot in checked:
+        key = (snapshot.workflow_id, snapshot.run_id, snapshot.target,
+               snapshot.revision, snapshot.sequence)
+        prior = identities.get(key)
+        if prior is not None and prior != snapshot.fingerprint:
+            raise ContradictorySnapshotError(
+                "contradictory snapshots share one sequence")
+        identities[key] = snapshot.fingerprint
+    current = HostSurfaceSnapshot.from_dict(value["current"])
+    if current.to_dict() != checked[-1].to_dict():
+        raise StorageIdentityError(
+            "dashboard publication current head does not match history")
+    return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
+            "current": current.to_dict(),
+            "history": [snapshot.to_dict() for snapshot in checked]}
+
+
+def commit_dashboard_snapshot(workspace: str, snapshot) -> dict:
+    """CAS one authenticated HostSurfaceSnapshot into the durable head.
+
+    An exact duplicate is idempotent. Equal sequence with different bytes is
+    contradictory, and lower/non-monotonic updates fail closed.
+    """
+    try:
+        if __package__:
+            from .host_native import (ContradictorySnapshotError,
+                                      HostSurfaceSnapshot)
+        else:
+            from taskplane.host_native import (ContradictorySnapshotError,
+                                               HostSurfaceSnapshot)
+        authenticated = HostSurfaceSnapshot.from_dict(snapshot.to_dict())
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise StorageIdentityError(
+            f"dashboard snapshot is invalid: {exc}") from exc
+    path = dashboard_snapshot_store_path(workspace)
+    with _storage_file_lock(path + ".lock"):
+        prior = load_dashboard_publication(workspace)
+        history = list((prior or {}).get("history") or [])
+        if history:
+            previous = HostSurfaceSnapshot.from_dict(history[-1])
+            stable = (authenticated.workflow_id, authenticated.run_id,
+                      authenticated.target, authenticated.revision)
+            previous_stable = (previous.workflow_id, previous.run_id,
+                               previous.target, previous.revision)
+            if stable == previous_stable and \
+                    authenticated.sequence == previous.sequence:
+                if authenticated.fingerprint != previous.fingerprint:
+                    raise ContradictorySnapshotError(
+                        "contradictory snapshots share one sequence")
+                return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
+                        "current": previous.to_dict(), "history": history,
+                        "replayed": True}
+            if (authenticated.workflow_id, authenticated.run_id,
+                    authenticated.target) == (
+                    previous.workflow_id, previous.run_id, previous.target) \
+                    and authenticated.sequence <= previous.sequence:
+                raise StorageIdentityError(
+                    "dashboard snapshot sequence is not monotonic")
+        history.append(authenticated.to_dict())
+        # Publication history is bounded presentation evidence, not the event
+        # journal. The authoritative workflow journal retains the full run.
+        history = history[-256:]
+        stored = {"schema": DASHBOARD_PUBLICATION_SCHEMA,
+                  "current": authenticated.to_dict(), "history": history}
+        _atomic_json(path, stored)
+        return {**stored, "replayed": False}
+
+
+def commit_dashboard_event(workspace: str, event) -> dict:
+    """Durably append one authenticated snapshot event, idempotently."""
+    try:
+        if __package__:
+            from .host_native import HostSurfaceEvent
+        else:
+            from taskplane.host_native import HostSurfaceEvent
+        checked = HostSurfaceEvent.from_dict(event.to_dict())
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise StorageIdentityError(f"dashboard event is invalid: {exc}") \
+            from exc
+    root = os.path.dirname(dashboard_snapshot_store_path(workspace))
+    path = os.path.join(root, "events.json")
+    with _storage_file_lock(path + ".lock"):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                stored = json.load(handle)
+        except FileNotFoundError:
+            stored = {"schema": "taskplane.dashboard-events/v1",
+                      "events": []}
+        except (OSError, ValueError) as exc:
+            raise StorageIdentityError(
+                f"dashboard event history is unreadable: {exc}") from exc
+        if not isinstance(stored, dict) or stored.get("schema") != \
+                "taskplane.dashboard-events/v1" or \
+                not isinstance(stored.get("events"), list):
+            raise StorageIdentityError("dashboard event history is invalid")
+        events = [HostSurfaceEvent.from_dict(row)
+                  for row in stored["events"]]
+        if any(row.fingerprint == checked.fingerprint for row in events):
+            return {"event": checked.to_dict(), "replayed": True}
+        events.append(checked)
+        value = {"schema": "taskplane.dashboard-events/v1",
+                 "events": [row.to_dict() for row in events[-512:]]}
+        _atomic_json(path, value)
+        return {"event": checked.to_dict(), "replayed": False}

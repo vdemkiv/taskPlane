@@ -26,6 +26,11 @@ except ImportError:  # package import path
     from taskplane import checkpoint_boundary
 
 try:
+    import owned_cleanup
+except ImportError:  # package import path
+    from taskplane import owned_cleanup
+
+try:
     from taskplane import taskplane_lite as contract_engine
     from taskplane import terminal_truth
     from taskplane import wiring_closure
@@ -66,6 +71,10 @@ _R0010_TASK = re.compile(r"(?:^|-)r0010(?:-|$)", re.IGNORECASE)
 _COMMAND_RESULT_FIELDS = frozenset({
     "schema", "action", "handle", "identity", "lifecycle_states",
     "snapshot", "event",
+})
+_COMMAND_RESULT_CLEANUP_FIELDS = frozenset({
+    "cleanup_receipt", "cleanup_evidence", "publication_replay",
+    "publication_result",
 })
 _TERMINAL_STATES = frozenset({"succeeded", "failed", "timed_out", "cancelled"})
 _GREEN_STATE = "succeeded"
@@ -505,11 +514,16 @@ def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
 
 
 def _validated_identity(value: object, field: str) -> dict:
-    if (not isinstance(value, Mapping) or set(value) != {
-            "schema", "run_id", "task_id"} or
+    required = {"schema", "run_id", "task_id"}
+    if (not isinstance(value, Mapping) or not required.issubset(value) or
+            set(value) - required - {"attempt"} or
             value.get("schema") != _IDENTITY_SCHEMA or
             any(not isinstance(value.get(key), str) or
-                not value[key].strip() for key in ("run_id", "task_id"))):
+                not value[key].strip() for key in ("run_id", "task_id")) or
+            ("attempt" in value and (
+                isinstance(value["attempt"], bool) or
+                not isinstance(value["attempt"], int) or
+                value["attempt"] < 1))):
         raise CheckpointReceiptError(f"{field} identity is invalid")
     return dict(value)
 
@@ -548,11 +562,40 @@ def _validated_runtime_result(
     if not isinstance(result, Mapping):
         raise CheckpointReceiptError(
             "governed command result must be an engine mapping")
-    unknown = sorted(set(result) - _COMMAND_RESULT_FIELDS)
+    unknown = sorted(
+        set(result) - _COMMAND_RESULT_FIELDS - _COMMAND_RESULT_CLEANUP_FIELDS)
     if unknown:
         raise CheckpointReceiptError(
             "governed command result has caller-authored fields: " +
             ", ".join(unknown))
+    cleanup_fields = set(result) & _COMMAND_RESULT_CLEANUP_FIELDS
+    if cleanup_fields and cleanup_fields != _COMMAND_RESULT_CLEANUP_FIELDS:
+        raise CheckpointReceiptError(
+            "governed command result cleanup envelope is incomplete")
+    if cleanup_fields:
+        cleanup_receipt = result.get("cleanup_receipt")
+        cleanup_evidence = result.get("cleanup_evidence")
+        try:
+            expected_cleanup_evidence = \
+                owned_cleanup.cleanup_consumer_evidence(cleanup_receipt)
+        except (owned_cleanup.OwnedCleanupError, TypeError, ValueError):
+            expected_cleanup_evidence = None
+        if (not isinstance(cleanup_receipt, Mapping) or
+                cleanup_receipt.get("schema") !=
+                "taskplane.cleanup-receipt/v1" or
+                cleanup_receipt.get("cleanup_status") != "clean" or
+                cleanup_receipt.get("leak_count") != 0 or
+                not isinstance(cleanup_evidence, Mapping) or
+                cleanup_evidence.get("schema") !=
+                "taskplane.cleanup-consumer-evidence/v1" or
+                cleanup_evidence.get("cleanup_status") != "clean" or
+                cleanup_evidence.get("leak_count") != 0 or
+                dict(cleanup_evidence) != expected_cleanup_evidence or
+                not isinstance(result.get("publication_replay"), Mapping) or
+                not isinstance(result.get("publication_result"), Mapping)):
+            raise CheckpointReceiptError(
+                "governed command result cleanup envelope is invalid")
+        result = {key: result[key] for key in _COMMAND_RESULT_FIELDS}
     missing = sorted(_COMMAND_RESULT_FIELDS - set(result))
     if missing:
         raise CheckpointReceiptError(

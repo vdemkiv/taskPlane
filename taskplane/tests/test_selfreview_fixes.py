@@ -32,6 +32,9 @@ def _repo(prefix="tp-fix-"):
     _git(ws, "config", "user.email", "t@t"); _git(ws, "config", "user.name", "t")
     open(os.path.join(ws, "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "add", "-A"); _git(ws, "commit", "-qm", "base")
+    os.makedirs(os.path.join(ws, ".taskplane"), exist_ok=True)
+    open(os.path.join(ws, ".taskplane", "codex-hook.py"), "w",
+         encoding="utf-8").write("# stable test launcher\n")
     return ws
 
 
@@ -142,6 +145,12 @@ class TestKernel(unittest.TestCase):
 class TestEngine(unittest.TestCase):
     def setUp(self):
         self.ws = _repo()
+        previous = os.environ.get("TASKPLANE_SESSION_ID")
+        os.environ["TASKPLANE_SESSION_ID"] = "selfreview-test-session"
+        self.addCleanup(
+            lambda: os.environ.pop("TASKPLANE_SESSION_ID", None)
+            if previous is None else os.environ.__setitem__(
+                "TASKPLANE_SESSION_ID", previous))
 
     def _ab_to_selection(self, ids=("va", "vb")):
         loop.init(self.ws, "g", parallel=True)
@@ -281,7 +290,6 @@ class TestEngine(unittest.TestCase):
 class TestKernelFailClosed(unittest.TestCase):
     def test_corrupt_contract_blocks(self):
         ws = _repo()
-        os.makedirs(os.path.join(ws, ".taskplane"))
         open(os.path.join(ws, ".taskplane", "active_contract.json"), "w", encoding="utf-8").write("{bad")
         r = subprocess.run(
             [sys.executable, os.path.join(

@@ -1,0 +1,4 @@
+import os
+
+environment = os.environ
+BLOCKING = environment.get("TASKPLANE_OBLIGATIONS", "off")

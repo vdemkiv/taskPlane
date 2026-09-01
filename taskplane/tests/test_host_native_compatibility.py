@@ -13,7 +13,11 @@ import pytest
 
 from taskplane import storage
 from taskplane.host_capabilities import Observation, negotiate_host_surfaces
-from taskplane.host_native import HostSurfaceSnapshot
+from taskplane.host_native import (
+    ContradictorySnapshotError,
+    HostSurfaceEvent,
+    HostSurfaceSnapshot,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -87,7 +91,7 @@ def test_codex_and_claude_packages_declare_one_canonical_contract(
     assert "hostNative" not in hooks
     commands = [hook["command"] for entry in hooks["hooks"]["SessionStart"]
                 for hook in entry["hooks"]]
-    assert any("host_native_runtime.py\" check --host claude" in command
+    assert any("host-native-check --host claude" in command
                for command in commands)
     codex_manifest = json.loads(
         (ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
@@ -235,6 +239,135 @@ def test_late_stale_duplicates_never_reproject_or_reopen_terminal_state() -> Non
                    for view in host_views.values())
         assert all(view["canonical"]["state"] == "completed"
                    for view in host_views.values())
+
+
+def _committed(snapshot: HostSurfaceSnapshot, *, replayed: bool = False) -> dict:
+    return {
+        "schema": "taskplane.dashboard-snapshot-refresh/v1",
+        "snapshot": snapshot.to_dict(),
+        "event": HostSurfaceEvent.from_snapshot(
+            snapshot, event_type=snapshot.state).to_dict(),
+        "replayed": replayed,
+        "source_mode": "legacy",
+    }
+
+
+def _selections(host: str = "codex"):
+    return negotiate_host_surfaces(
+        host=host, host_version="test", observations={
+            name: Observation(
+                status="supported", source=f"{host}:runtime",
+                confidence="high", observed_at="100.0")
+            for name in SURFACES
+        })
+
+
+def test_durable_publish_head_is_monotonic_idempotent_and_terminal_closed() -> None:
+    runtime = _runtime_module()
+    recovery = runtime.HostNativeRecovery()
+
+    first = runtime.project_committed_dashboard(
+        _committed(_snapshot(1)), host="codex", selections=_selections(),
+        recovery=recovery)
+    duplicate = runtime.project_committed_dashboard(
+        _committed(_snapshot(1), replayed=True), host="codex",
+        selections=_selections(), recovery=recovery)
+
+    assert first["publish_head"] == duplicate["publish_head"]
+    assert duplicate["status"] == "republished"
+    assert [event.sequence for event in recovery.audit] == [1]
+
+    with pytest.raises(ContradictorySnapshotError):
+        runtime.project_committed_dashboard(
+            _committed(_snapshot(1, "waiting")), host="codex",
+            selections=_selections(), recovery=recovery)
+    assert recovery.publish_head() == first["publish_head"]
+
+    terminal = runtime.project_committed_dashboard(
+        _committed(_snapshot(2, "completed")), host="codex",
+        selections=_selections(), recovery=recovery)
+    closed_head = copy.deepcopy(terminal["publish_head"])
+    refused = runtime.project_committed_dashboard(
+        _committed(_snapshot(3)), host="codex", selections=_selections(),
+        recovery=recovery)
+
+    assert closed_head["sequence"] == 2
+    assert closed_head["state"] == "completed"
+    assert closed_head["terminal_closed"] is True
+    assert closed_head["task_id"] == IDENTITY["task_id"]
+    assert closed_head["slot_id"] == IDENTITY["slot_id"]
+    assert closed_head["evidence"] == ["sha256:e14"]
+    assert closed_head["gate"] == {
+        "state": "awaiting_human", "evidence": "sha256:e14"}
+    assert refused["status"] == "rejected"
+    assert refused["publish_head"] == closed_head
+    assert [event.sequence for event in recovery.audit] == [1, 2]
+
+
+def test_session_recovery_republishes_committed_unpublished_snapshot_without_new_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime_module()
+    from taskplane import loop_status
+
+    declaration = json.loads(
+        (ROOT / "hooks" / "host-native.json").read_text(encoding="utf-8"))
+    assert declaration["sessionRecovery"] == {
+        "callback": "taskplane.loop_status.refresh_dashboard_snapshot",
+        "settingsKey": "dashboard.refresh",
+    }
+    assert declaration["acknowledgement"] == \
+        "taskplane.host-native-acknowledgement/v1"
+    assert runtime._configured_loop_status() is loop_status
+    frozen_design = {"schema": "taskplane.dashboard-design-graph/v1",
+                     "modules": [], "edges": []}
+    projected = loop_status._PHASE_GRAPH_PROJECTOR(
+        "/portable/workspace", {"step": "design"},
+        snapshot_values={"design_graph": frozen_design})
+    assert projected["design_graph"] == frozen_design
+
+    snapshot = _snapshot(7)
+    calls: list[tuple[str, str, bool]] = []
+
+    def refresh(workspace: str, *, event_type: str, replay: bool):
+        calls.append((workspace, event_type, replay))
+        return _committed(snapshot, replayed=True)
+
+    monkeypatch.setattr(loop_status, "refresh_dashboard_snapshot", refresh,
+                        raising=False)
+    recovery = runtime.HostNativeRecovery()
+    first = runtime.recover_session_dashboard(
+        "/portable/workspace", host="codex", selections=_selections(),
+        recovery=recovery)
+    second = runtime.recover_session_dashboard(
+        "/portable/workspace", host="codex", selections=_selections(),
+        recovery=recovery)
+
+    assert calls == [
+        ("/portable/workspace", "session_recovery", True),
+        ("/portable/workspace", "session_recovery", True),
+    ]
+    assert first["publish_head"] == second["publish_head"]
+    assert first["publish_head"]["sequence"] == snapshot.sequence
+    assert first["publish_head"]["snapshot_fingerprint"] == \
+        snapshot.fingerprint
+    assert second["status"] == "republished"
+    assert [event.sequence for event in recovery.audit] == [7]
+
+    def no_active(workspace: str, *, event_type: str, replay: bool):
+        calls.append((workspace, event_type, replay))
+        return {
+            "schema": "taskplane.dashboard-publication/v1",
+            "status": "no_active", "snapshot": None, "event": None,
+            "replayed": False, "source_mode": "none", "surfaces": {},
+        }
+
+    monkeypatch.setattr(loop_status, "refresh_dashboard_snapshot", no_active)
+    inactive = runtime.recover_session_dashboard(
+        "/fresh/install", host="codex", selections=_selections())
+    assert inactive["status"] == "no_active"
+    assert inactive["publish_head"] is None
+    assert inactive["projections"] == {}
 
 
 @pytest.mark.parametrize("host", ["codex", "claude"])

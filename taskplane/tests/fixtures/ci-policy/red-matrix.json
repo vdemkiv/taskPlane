@@ -1,0 +1,13 @@
+{
+  "schema": "taskplane.ci-matrix/v1",
+  "candidate_fingerprint": "3131313131313131313131313131313131313131313131313131313131313131",
+  "status": "red",
+  "classification_receipt": null,
+  "green_cells": ["compatibility"],
+  "failures": [
+    {"id": "failure-product", "cell": "unit-core", "selector": "taskplane/tests/test_dashboard.py::test_state", "output_digest": "4141414141414141414141414141414141414141414141414141414141414141"},
+    {"id": "failure-test", "cell": "quality", "selector": "taskplane/tests/test_fixture.py::test_contract", "output_digest": "4242424242424242424242424242424242424242424242424242424242424242"},
+    {"id": "failure-infrastructure", "cell": "package", "selector": "taskplane/tests/test_package.py::test_build", "output_digest": "4343434343434343434343434343434343434343434343434343434343434343"},
+    {"id": "failure-environment", "cell": "dashboard-browser", "selector": "taskplane/tests/test_dashboard_browser.py::test_current_dashboard_dom", "output_digest": "4444444444444444444444444444444444444444444444444444444444444444"}
+  ]
+}

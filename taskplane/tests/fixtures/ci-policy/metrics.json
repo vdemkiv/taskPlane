@@ -1,0 +1,23 @@
+{
+  "integration_ready_at": "2026-08-30T12:00:00Z",
+  "first_matrix_started_at": "2026-08-30T13:30:00Z",
+  "matrix_ids": ["matrix-1", "matrix-2"],
+  "matrix_durations_minutes": [6.0, 8.0],
+  "authoritative_elapsed_minutes": 6.0,
+  "cells": [
+    {"id": "unit-core", "duration_minutes": 6.0},
+    {"id": "compatibility", "duration_minutes": 6.0},
+    {"id": "quality", "duration_minutes": 6.0},
+    {"id": "package", "duration_minutes": 6.0},
+    {"id": "dashboard-browser", "duration_minutes": 5.0}
+  ],
+  "four_shards_exist": true,
+  "targets": {
+    "first_matrix_hours": 2,
+    "matrix_count_max": 3,
+    "p50_minutes": 10,
+    "p95_minutes": 15,
+    "runner_minutes_max": 30,
+    "parallelism_min": 4.0
+  }
+}

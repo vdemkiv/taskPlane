@@ -58,7 +58,7 @@ def _released(**changes):
 
 @pytest.mark.parametrize("case", [
     "dirty", "untracked", "staged", "unmerged", "unregistered",
-    "selected_variant", "failed", "active", "locked", "symlinked",
+    "selected_variant", "unreleased", "active", "locked", "symlinked",
     "path_mismatch", "missing_ref", "ambiguous_main",
     "merge_in_progress", "evidence_needed",
 ])
@@ -92,8 +92,8 @@ def test_preservation_matrix_fails_closed(tmp_path, case):
             str(primary), "task-1"))
     elif case == "selected_variant":
         lifecycle["selected_variant"] = True
-    elif case == "failed":
-        lifecycle["status"] = "failed"
+    elif case == "unreleased":
+        lifecycle["released"] = False
     elif case == "active":
         lifecycle.update(status="running", active=True, released=False)
     elif case == "locked":

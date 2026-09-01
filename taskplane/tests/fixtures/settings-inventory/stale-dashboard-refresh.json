@@ -1,0 +1,8 @@
+{
+  "schema": "taskplane.host-native-package/v1",
+  "sessionRecovery": {
+    "callback": "taskplane.loop_status.refresh_dashboard_snapshot",
+    "eventType": "stale_local_default",
+    "replay": false
+  }
+}

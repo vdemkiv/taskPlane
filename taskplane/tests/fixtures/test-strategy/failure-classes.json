@@ -1,0 +1,9 @@
+{
+  "schema": "taskplane.failure-class-fixtures/v1",
+  "failures": [
+    {"class": "product", "reason": "behavior contradicts acceptance", "owner": "producer", "cluster": "behavior"},
+    {"class": "test", "reason": "assertion encodes obsolete behavior", "owner": "test-owner", "cluster": "assertion"},
+    {"class": "infrastructure", "reason": "runner service failed", "owner": "ci-owner", "cluster": "runner"},
+    {"class": "environment", "reason": "browser executable fingerprint changed", "owner": "browser-cell", "cluster": "browser-environment"}
+  ]
+}

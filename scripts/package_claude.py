@@ -49,7 +49,11 @@ for _stream in (sys.stdout, sys.stderr):
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 MANIFEST_PATH = ROOT / ".claude-plugin" / "plugin.json"
 MARKETPLACE_PATH = ROOT / ".claude-plugin" / "marketplace.json"
 ARCHIVE_ROOT = "taskplane"
@@ -114,6 +118,12 @@ RELEASE_SURFACE_FILES = (
     "lenses/references/prompt-injection-defense.md",
     "README.md",
     "CHANGELOG.md",
+)
+
+CANONICAL_AUTHORITY_FILES = (
+    "taskplane/operational-settings.json",
+    "taskplane/settings_inventory.json",
+    "taskplane/test_portfolio.json",
 )
 
 SUPPORTED_HOOK_ROOT_FIELDS = frozenset({"description", "hooks"})
@@ -183,6 +193,10 @@ def package_files() -> list:
     for relative in REQUIRED_FILES:
         path = ROOT / relative
         require(path.is_file(), f"required file is missing: {relative}")
+        files.add(path)
+    for relative in CANONICAL_AUTHORITY_FILES:
+        path = ROOT / relative
+        require(path.is_file(), f"canonical authority is missing: {relative}")
         files.add(path)
 
     add_tree(files, ROOT / "assets",
@@ -270,6 +284,12 @@ def validate_archive(path: Path, version: str) -> tuple:
         require(marketplace.get("version") == version and
                 marketplace.get("plugins", [{}])[0].get("version") == version,
                 "packaged marketplace and Claude manifest versions disagree")
+        for required in CANONICAL_AUTHORITY_FILES:
+            member = f"{ARCHIVE_ROOT}/{required}"
+            require(member in names,
+                    f"archive is missing canonical authority {required}")
+            require(archive.read(member) == (ROOT / required).read_bytes(),
+                    f"archive has stale canonical authority bytes for {required}")
         for required in RELEASE_SURFACE_FILES:
             member = f"{ARCHIVE_ROOT}/{required}"
             require(member in names,
@@ -334,7 +354,7 @@ def main(argv=None) -> int:
     import release_provenance as prov
     try:
         prov_path = prov.write(ROOT, output, digest,
-                               allow_dirty=args.allow_dirty)
+                               allow_dirty=args.allow_dirty, kind="claude")
     except prov.ProvenanceError as exc:
         output.unlink(missing_ok=True)
         checksum.unlink(missing_ok=True)

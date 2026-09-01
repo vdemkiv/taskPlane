@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
+from taskplane import import_cycles
+
 
 ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 SPEC = importlib.util.spec_from_file_location("ci_local", ROOT / "scripts" / "ci_local.py")
 PACKAGE_SPEC = importlib.util.spec_from_file_location(
     "package_openai", ROOT / "scripts" / "package_openai.py",
@@ -28,23 +36,99 @@ def _package_module():
     return module
 
 
-def test_closed_inventory_is_complete_unique_and_sharded_once():
-    runner = _runner()
-    ids = [check.id for check in runner.INVENTORY]
-    assignments = [check_id for shard in runner.SHARDS for check_id in shard]
+def _workflow_job(source: str, job: str, next_job: str) -> str:
+    match = re.search(
+        rf"(?ms)^  {re.escape(job)}:\n(?P<body>.*?)(?=^  {re.escape(next_job)}:)",
+        source,
+    )
+    assert match, f"workflow job {job!r} is missing"
+    return match.group("body")
 
-    assert runner.SCHEMA == "taskplane.local-ci-equivalent/v1"
-    assert 3 <= len(runner.SHARDS) <= 5
-    assert len(ids) == len(set(ids))
-    assert sorted(assignments) == sorted(ids)
-    assert len(assignments) == len(set(assignments))
-    assert {
-        "compile-import", "version-verify", "zero-token-corpus",
-        "release-surface", "release-history",
-        "unittest-canary", "loop-cost", "import-cycle-current",
-        "generated-lens-drift", "generated-cli-drift", "package-openai",
-        "package-claude", "ruff", "mypy", "host-platform",
-    }.union(runner.PYTEST_CHECK_IDS) == set(ids)
+
+def test_zero_token_no_egress_guard_executes_in_credential_empty_environment(
+    tmp_path,
+):
+    """Execute the shipped guard, rather than trusting workflow prose."""
+    job = _workflow_job(
+        WORKFLOW.read_text(encoding="utf-8"),
+        "zero-token-corpus",
+        "wave3-contracts",
+    )
+    match = re.search(
+        r"(?ms)cat >\"\$guard_dir/sitecustomize\.py\" <<'PY'\n"
+        r"(?P<guard>.*?)^          PY$",
+        job,
+    )
+    assert match, "zero-token no-egress guard is not extractable"
+    assert "secrets." not in job and "ANTHROPIC" not in job and "OPENAI" not in job
+
+    guard_dir = tmp_path / "guard"
+    guard_dir.mkdir()
+    (guard_dir / "sitecustomize.py").write_text(
+        textwrap.dedent(match.group("guard")), encoding="utf-8"
+    )
+    isolated_home = tmp_path / "home"
+    isolated_home.mkdir()
+    clean_env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(isolated_home),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONPATH": str(guard_dir),
+    }
+    probe = r"""
+import json
+import os
+import sitecustomize
+import socket
+import sys
+
+sys.dont_write_bytecode = True
+required = {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"}
+host_injected = {"__CF_USER_TEXT_ENCODING"}
+sensitive = (
+    "CREDENTIAL", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "AUTH",
+    "API_KEY", "ACCESS_KEY", "PRIVATE_KEY", "PROXY", "OPENAI",
+    "ANTHROPIC", "AWS", "AZURE", "GCP", "GOOGLE_CLOUD", "CLOUDSDK",
+    "MODEL", "COHERE", "GEMINI", "MISTRAL", "HUGGINGFACE", "HF_",
+)
+assert required <= set(os.environ)
+assert set(os.environ) - required <= host_injected
+assert not [name for name in os.environ
+            if any(marker in name.upper() for marker in sensitive)]
+probes = (
+    ("socket.socket", lambda: socket.socket()),
+    ("socket.connect", lambda: socket.socket.connect(None, ("example.invalid", 443))),
+    ("socket.connect_ex", lambda: socket.socket.connect_ex(None, ("example.invalid", 443))),
+    ("socket.create_connection", lambda: socket.create_connection(("example.invalid", 443))),
+    ("socket.getaddrinfo", lambda: socket.getaddrinfo("example.invalid", 443)),
+)
+for label, call in probes:
+    try:
+        call()
+    except sitecustomize.NoEgressError:
+        pass
+    else:
+        raise AssertionError("probe escaped: " + label)
+assert sitecustomize.ATTEMPTS == [label for label, _ in probes]
+print(json.dumps({"preloaded": "sitecustomize" in sys.modules,
+                  "attempts": sitecustomize.ATTEMPTS}, sort_keys=True))
+"""
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", probe],
+        cwd=ROOT,
+        env=clean_env,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    evidence = json.loads(result.stdout)
+    assert evidence["preloaded"] is True
+    assert evidence["attempts"] == [
+        "socket.socket", "socket.connect", "socket.connect_ex",
+        "socket.create_connection", "socket.getaddrinfo",
+    ]
 
 
 def test_complete_pytest_inventory_is_partitioned_exactly_once_and_balanced():
@@ -53,7 +137,9 @@ def test_complete_pytest_inventory_is_partitioned_exactly_once_and_balanced():
     partitions = runner.PYTEST_PARTITIONS
     assigned = [path for partition in partitions for path in partition]
 
-    assert len(partitions) == len(runner.SHARDS) == 4
+    assert len(partitions) == len(runner.SHARDS) == \
+        runner.load_settings(
+            runner.DEFAULT_SETTINGS_PATH, environment={}).tests.shards
     assert all(partitions)
     assert all(list(partition) == sorted(partition) for partition in partitions)
     assert sorted(assigned) == sorted(files)
@@ -175,10 +261,37 @@ def test_pr_workflow_binds_all_blocking_jobs_to_exact_head_sha():
     assert "pushed SHA delivery proof" in workflow
 
 
-def test_import_cycle_check_names_current_checkout_inputs_explicitly():
-    runner = _runner()
-    check = runner.CHECKS["import-cycle-current"]
-    assert check.argv[2:] == (
-        "--root", ".", "--policy",
-        "taskplane/tests/fixtures/import-cycles.json", "--check",
-    )
+def test_import_cycle_gate_protects_topology_not_physical_line_count():
+    def inventory(revision, members, edges):
+        return {
+            "schema": import_cycles.SCHEMA,
+            "package": "taskplane",
+            "source_revision": revision,
+            "sccs": [{
+                "members": members,
+                "internal_edges": edges,
+                "member_count": len(members),
+                "edge_count": len(edges),
+            }],
+        }
+
+    members = ["taskplane.a", "taskplane.b", "taskplane.c"]
+    edges = [
+        ["taskplane.a", "taskplane.b"],
+        ["taskplane.b", "taskplane.c"],
+        ["taskplane.c", "taskplane.a"],
+    ]
+    policy = inventory("older-source", members, edges)
+
+    unchanged_topology = inventory("new-source-with-more-lines", members, edges)
+    assert import_cycles.check_inventory(
+        policy, unchanged_topology)["status"] == "pass"
+
+    grown = inventory("new-source", members, sorted([
+        *edges, ["taskplane.a", "taskplane.c"],
+    ]))
+    result = import_cycles.check_inventory(policy, grown)
+    assert result["status"] == "fail"
+    assert [row["code"] for row in result["violations"]] == [
+        "new-internal-edge",
+    ]

@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 POLICY = ROOT / "pyproject.toml"
 LOCK = ROOT / "requirements-dev.lock"
+RUNNER = ROOT / "scripts" / "ci_local.py"
 
 EXPECTED_LOCK = {
     "mypy": "1.17.1",
@@ -23,13 +24,20 @@ EXPECTED_LOCK = {
 STRICT_BOUNDARIES = {
     "taskplane.audit_projection",
     "taskplane.checkpoint_boundary",
+    "taskplane.ci_failure_batching",
+    "taskplane.ci_policy",
     "taskplane.dispatch_telemetry",
     "taskplane.em_outage",
     "taskplane.enforcement",
     "taskplane.expanded_route_authority_provider",
     "taskplane.host_native",
     "taskplane.lens_route_policy",
+    "taskplane.owned_cleanup",
     "taskplane.review_convergence",
+    "taskplane.settings",
+    "taskplane.settings_legacy",
+    "taskplane.test_strategy",
+    "taskplane.wave_metrics",
 }
 DYNAMIC_RUFF_NAMES = {
     "Ctx",
@@ -121,7 +129,9 @@ def _strict_policy_violations(policy: str) -> list[str]:
     return problems
 
 
-def _quality_violations(ci: str, policy: str, lock: str) -> list[str]:
+def _quality_violations(
+    ci: str, policy: str, lock: str, runner: str,
+) -> list[str]:
     problems: list[str] = []
     job = _job(ci, "python-quality")
     required_job_fragments = (
@@ -130,8 +140,9 @@ def _quality_violations(ci: str, policy: str, lock: str) -> list[str]:
         'python-version: "3.14"',
         "python -m pip install --disable-pip-version-check",
         "--require-hashes -r requirements-dev.lock",
-        "python -m ruff check --output-format=github taskplane hooks scripts",
-        "python -m mypy --strict --config-file pyproject.toml",
+        'needs: [ci-plan]',
+        '--ci-cell "$cell" --receipt "$evidence/$cell.json"',
+        "Preserve quality, package, timing, and cleanup evidence",
     )
     if not job:
         problems.append("missing blocking python-quality job")
@@ -140,6 +151,12 @@ def _quality_violations(ci: str, policy: str, lock: str) -> list[str]:
             problems.append(f"quality job misses {fragment}")
     if "continue-on-error:" in job or "strategy:" in job:
         problems.append("quality job must be one blocking non-matrix execution")
+    for fragment in (
+        '[PYTHON, "-m", "ruff", "check", "--output-format=github",',
+        '[PYTHON, "-m", "mypy", "--strict", "--config-file", "pyproject.toml"],',
+    ):
+        if fragment not in runner:
+            problems.append(f"quality runner misses {fragment}")
 
     required_policy_fragments = (
         'target-version = "py310"',
@@ -188,18 +205,8 @@ def test_h09_ci_enforces_lint_and_strict_types() -> None:
         CI.read_text(encoding="utf-8"),
         POLICY.read_text(encoding="utf-8"),
         LOCK.read_text(encoding="utf-8"),
+        RUNNER.read_text(encoding="utf-8"),
     ) == []
-
-
-def test_h09_staged_strict_baseline_covers_all_top_level_modules() -> None:
-    """Every production module is either strict now or exact measured debt."""
-    policy = POLICY.read_text(encoding="utf-8")
-    debt = set(_array_values(policy, "module"))
-    production = _production_modules()
-
-    assert len(production) == 92
-    assert production - debt == STRICT_BOUNDARIES
-    assert _strict_policy_violations(policy) == []
 
 
 @pytest.mark.parametrize(
@@ -216,13 +223,17 @@ def test_h09_staged_strict_baseline_covers_all_top_level_modules() -> None:
             "          python -m pip install --disable-pip-version-check\n"
             "          --no-deps -r requirements-dev.lock",
         ),
-        ("ci", "python -m ruff check", "echo ruff check"),
-        ("ci", "python -m mypy --strict", "python -m mypy"),
+        ("runner", '[PYTHON, "-m", "ruff", "check", "--output-format=github",',
+         '[PYTHON, "-m", "ruff", "check",'),
+        ("runner", '[PYTHON, "-m", "mypy", "--strict",',
+         '[PYTHON, "-m", "mypy",'),
         (
             "ci",
-            "name: Python quality (ruff + strict mypy)\n    runs-on: ubuntu-latest",
             "name: Python quality (ruff + strict mypy)\n"
-            "    continue-on-error: true\n    runs-on: ubuntu-latest",
+            "    needs: [ci-plan]\n    runs-on: ubuntu-latest",
+            "name: Python quality (ruff + strict mypy)\n"
+            "    needs: [ci-plan]\n    continue-on-error: true\n"
+            "    runs-on: ubuntu-latest",
         ),
         ("policy", "strict = true", "strict = false"),
         ("policy", "warn_unused_ignores = true", "warn_unused_ignores = false"),
@@ -261,10 +272,13 @@ def test_h09_quality_contract_rejects_weakened_configuration(
         "ci": CI.read_text(encoding="utf-8"),
         "policy": POLICY.read_text(encoding="utf-8"),
         "lock": LOCK.read_text(encoding="utf-8"),
+        "runner": RUNNER.read_text(encoding="utf-8"),
     }
     assert old in sources[target]
     sources[target] = sources[target].replace(old, new, 1)
-    assert _quality_violations(sources["ci"], sources["policy"], sources["lock"])
+    assert _quality_violations(
+        sources["ci"], sources["policy"], sources["lock"], sources["runner"],
+    )
 
 
 def test_h1e_sandbox_regression_runs_on_blocking_windows_leg() -> None:

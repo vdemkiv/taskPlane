@@ -111,6 +111,14 @@ explicit.
   dependency-graph blast radius at the DoD gate: Tier 1 blocks a was-green-now-red
   test against the change's baseline; Tier 2 flags a changed enforcement/public
   entry point with no covering test. [docs/regression-gate-design.md](docs/regression-gate-design.md).
+- **One measurable delivery receipt.** A closed candidate/run interval binds
+  settings, CI, dashboard publication, cleanup, portfolio, token/session,
+  worktree, and dispatch evidence by digest. Billing, host-observed usage, and
+  cumulative archive bounds stay separate; nonzero owned leaks or unexplained
+  hard-ceiling breaches refuse sign-off, and Plan-return churn is measured
+  against its 21-return baseline and two-return target. Dashboard, Retro,
+  Engineering, and release consume the same redacted receipt without recounting
+  traces or DOM state. [docs/wave-metrics.md](docs/wave-metrics.md).
 - **Audit cadence + router audits.** Every Nth review (`TASKPLANE_AUDIT_EVERY`) a
   full-catalog sweep diffs its findings against the routing; any finding from an
   `n/a`-routed lens is auto-filed as a router regression that blocks sign-off.
@@ -139,18 +147,20 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
-> the fully verified forward release candidate moves as v2.18.1, which is not released. Historical
+> v2.18.1 is the tagged local predecessor, v2.18.2 is a superseded unreleased
+> candidate, and the forward release candidate moves as v2.18.3, which is not
+> released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.1 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.18.3 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.18.1** | **Complete local and exact-PR-head-SHA release proof — not released.** Adds the standard-library closed-inventory local CI runner, deterministic exact-once receipts, isolated parallel shards, deadline-safe cleanup, mutation detection, and a blocking PR-head proof that synthetic merge validation cannot substitute. This row claims no main merge, tag, upload, installation, Marketplace publication, or release. |
-| **v2.18.0** | **Superseded public-metadata correction candidate — not released; compatibility N-1 for v2.18.1.** Removes external orchestration-product comparisons from every public skill and agent discovery description plus public security guidance, while preserving exact external namespaces only in internal collision enforcement and tests. Restores the deleted repository-wide branding regression test so a future merge cannot silently reintroduce the copy. It was never promoted into released truth. |
-| **v2.17.26** | **Superseded R-0002 whole-codebase EM remediation candidate — not released; compatibility N-1 for v2.18.0.** Integrated the completed high-, medium-, and low-priority remediation waves, focused final defect fixes, exact-SHA verification evidence, and final Engineering Manager disposition. It was never promoted into released truth. |
+| **v2.18.3** | **Canonical delivery settings, truthful live dashboards, CI-first testing, and exact-owned cleanup — not released.** One validated settings spine now initializes every governed flow and seals portable, observable effective settings. A single settings-bound snapshot publishes current phase and dependency graphs consistently across native and static dashboard surfaces. The test portfolio removes evidence-proven redundancy while retaining authority and regression floors; settings-derived parallel CI, failure classification, release evidence, measurable delivery metrics, and fail-closed owned-resource cleanup close the full delivery lifecycle. |
+| **v2.18.2** | **External-worktree Codex hook bootstrap repair — not released.** Hooks now resolve a validated repository launcher through Git's common directory when a linked worktree has no ignored local bridge, keep host-native checks on that same stable engine, fail with an actionable error when neither a launcher nor plugin root exists, and restore the launcher before any required hook-config rewrite. A local reinstall and generated upload artifact are development actions, not Marketplace publication or a public release. |
+| **v2.18.1** | **Complete local and exact-PR-head-SHA release proof — tagged local predecessor, not publicly released.** Adds the standard-library closed-inventory local CI runner, deterministic exact-once receipts, isolated parallel shards, deadline-safe cleanup, mutation detection, and a blocking PR-head proof that synthetic merge validation cannot substitute. Its tag and local installation do not claim an upload or Marketplace publication. |
 ## Install
 
 How you install taskplane depends on your **account type**, and the paths are

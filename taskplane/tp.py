@@ -50,6 +50,7 @@ import hashlib
 import io
 import json
 import re
+import runpy
 import shlex
 import time as _time
 import traceback
@@ -62,10 +63,42 @@ import collision as collision_kernel  # noqa: E402
 import storage as runtime_storage  # noqa: E402
 import run_store as repository_run_store  # noqa: E402
 import governed_commands as governed_command_engine  # noqa: E402
+import loop_status as loop_status_runtime  # noqa: E402
 if __package__:
     from .delivery_ports import DeliveryPortError  # noqa: E402
 else:  # pragma: no cover - direct CLI execution
     from delivery_ports import DeliveryPortError  # noqa: E402
+
+
+def _publish_worker_dashboard_refresh(workspace: str, **kwargs):
+    """Composition-root adapter for the enforcement kernel's refresh intent."""
+    import loop_status
+    return loop_status.refresh_dashboard_snapshot(workspace, **kwargs)
+
+
+tp.configure_dashboard_refresh_publisher(_publish_worker_dashboard_refresh)
+
+
+def _project_dashboard_phase_graph(workspace: str, **kwargs):
+    import dashboard
+    return dashboard.phase_graph_projection(workspace, **kwargs)
+
+
+loop_status_runtime.configure_phase_graph_projector(
+    _project_dashboard_phase_graph)
+
+
+def _publish_cleanup_dashboard(workspace: str, **kwargs):
+    """Compose cleanup publication without coupling cleanup to renderers."""
+    import loop_status
+    import views
+    return governed_command_engine.owned_cleanup.publish_canonical_dashboard(
+        workspace, snapshot_publisher=loop_status.refresh_dashboard_snapshot,
+        delivery_publisher=views.refresh_views, **kwargs)
+
+
+governed_command_engine.owned_cleanup.configure_publication_publisher(
+    _publish_cleanup_dashboard)
 
 
 # Closed user-layer refusal protocol. Only errors whose failure is an
@@ -619,6 +652,8 @@ runpy.run_path(ENGINE, run_name="__main__")
 
 def _codex_hook_action(command: str) -> str:
     value = str(command or "")
+    if "host-native-check" in value:
+        return "host-native-check"
     if re.search(r'host_native_runtime\.py"?\s+check\s+--host\s+claude(?:\s|$)', value):
         # Host-native capability discovery is context acquisition. Treat it
         # as the same fail-closed class so repo-local Codex hook installation
@@ -640,7 +675,9 @@ def _codex_hook_rows() -> dict:
         for row in rows:
             for hook in row.get("hooks") or []:
                 command = str(hook.get("command") or "")
-                is_host_native_check = "host_native_runtime.py" in command
+                is_host_native_check = (
+                    "host_native_runtime.py" in command
+                    or "host-native-check" in command)
                 _codex_hook_action(command)
                 # Keep the bundled missing-runner fallback. A Codex-managed
                 # worktree contains the tracked hook configuration but not
@@ -655,9 +692,9 @@ def _codex_hook_rows() -> dict:
                         "TASKPLANE_HOOK_PATH=bridge")
                 if is_host_native_check:
                     hook["command"] = hook["command"].replace(
-                        "check --host claude", "check --host codex")
+                        "--host claude", "--host codex")
                     hook["commandWindows"] = hook["commandWindows"].replace(
-                        "check --host claude", "check --host codex")
+                        "--host claude", "--host codex")
     return generated
 
 
@@ -742,15 +779,18 @@ def _install_codex_hooks(ws: str) -> dict:
                          what="Codex hook configuration")
     if not isinstance(prior, dict) or not isinstance(prior.get("hooks"), dict):
         raise RuntimeError("existing .codex/hooks.json is not a hook object")
+    original = json.loads(json.dumps(prior))
     hooks = prior["hooks"]
     for event, rows in _codex_hook_rows().items():
         existing = [row for row in hooks.get(event, [])
                     if _CODEX_HOOK_MARKER not in json.dumps(row)
                     and "host_native_runtime.py" not in json.dumps(row)]
         hooks[event] = existing + rows
-    tp.atomic_write_json(config_path, prior, indent=2, sort_keys=False)
-    _exclude_generated_codex_config(ws, prior)
-
+    # Install the ignored launcher first. A tracked or host-protected hook
+    # configuration may already be correct while this checkout-local bridge
+    # is absent (notably in a newly-created linked worktree). Leaving the
+    # launcher behind if a genuinely required config update is denied makes
+    # the next hook invocation recoverable without weakening that denial.
     runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
     os.makedirs(os.path.dirname(runner_path), exist_ok=True)
     family = _plugin_family_for_engine(os.path.abspath(__file__))
@@ -763,6 +803,9 @@ def _install_codex_hooks(ws: str) -> dict:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+    if prior != original:
+        tp.atomic_write_json(config_path, prior, indent=2, sort_keys=False)
+    _exclude_generated_codex_config(ws, prior)
     return _codex_hooks_report(ws)
 
 
@@ -3613,6 +3656,8 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
         return None
     step = payload.get("step")
     instruction = payload.get("instruction") or ""
+    from taskplane.settings import load_settings
+    settings_digest = load_settings(environment=os.environ).digest
     if step == "execute" and payload.get("parallel") and "wave" in payload:
         entries = payload.get("wave") or []
         if not entries:
@@ -3626,7 +3671,8 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
                                                  instruction, e)}
                   for e in entries]
         return ("execute", {"name": "execute-wave",
-                            "args": {"briefs": briefs}}, None)
+                            "args": {"briefs": briefs,
+                                     "settings_digest": settings_digest}}, None)
     if step in STAGE_WAVE_NAMES and "task" in payload:
         # same validation on the single-task step shapes (A6/E5): a
         # payload CARRYING a task that is malformed degrades to the Task
@@ -3649,7 +3695,8 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
                     brief[field] = payload[field]
         key = "verdicts" if step == "fix" else "briefs"
         return (step, {"name": STAGE_WAVE_NAMES[step],
-                       "args": {key: [brief]}}, None)
+                       "args": {key: [brief],
+                                "settings_digest": settings_digest}}, None)
     return None
 
 
@@ -4032,7 +4079,9 @@ def cmd_lens(a) -> int:
             out["reason"] = reason
             # args IS the unmodified dispatch payload — the workflow and
             # the Task path consume the identical contract:lens-brief set.
-            out["workflow"] = {"name": "review-wave", "args": briefs}
+            workflow_args = briefs
+            out["workflow"] = {"name": "review-wave",
+                               "args": workflow_args}
             print(json.dumps(out, indent=2))
             return 0
         print(json.dumps(briefs, indent=2))
@@ -4564,6 +4613,24 @@ def cmd_track(a) -> int:
     print(json.dumps(out, indent=2))
     # Same exit-code contract as cmd_loop: an engine refusal is nonzero.
     return 1 if isinstance(out, dict) and out.get("error") else 0
+
+
+def cmd_host_native_check(a) -> int:
+    """Run the package-owned host-surface probe through the stable engine.
+
+    Codex may execute a primary checkout's hook configuration from a linked
+    worktree and does not guarantee plugin-root environment variables there.
+    Routing this probe through ``codex-hook.py`` gives every hook action the
+    same validated installation-family resolver.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script = os.path.join(root, "hooks", "host_native_runtime.py")
+    namespace = runpy.run_path(
+        script, run_name="taskplane_host_native_runtime")
+    entrypoint = namespace.get("_main")
+    if not callable(entrypoint):
+        raise RuntimeError("host-native runtime has no entrypoint")
+    return int(entrypoint(["check", "--host", a.host]) or 0)
 
 
 def cmd_context(a) -> int:
@@ -6176,11 +6243,8 @@ def _inline_max() -> int:
     retyped. 24k is roughly where a fragment stops being a message and
     starts being a document; TASKPLANE_INLINE_MAX overrides it, and 0
     disables reference mode entirely."""
-    raw = (os.environ.get("TASKPLANE_INLINE_MAX") or "").strip()
-    try:
-        return int(raw) if raw else 24_000
-    except ValueError:
-        return 24_000
+    from taskplane.settings import load_settings
+    return load_settings(environment=os.environ).runtime.inline_max_bytes
 
 
 def cmd_findings(a) -> int:
@@ -6667,6 +6731,8 @@ def _cli_commands(parser, path=(), help_text=None):
             continue
         helps = {ca.dest: ca.help for ca in action._choices_actions}
         for name in sorted(action.choices):
+            if helps.get(name) == argparse.SUPPRESS:
+                continue
             yield from _cli_commands(action.choices[name], path + (name,),
                                      helps.get(name))
 
@@ -7340,6 +7406,15 @@ def _render_engine_error(exc: BaseException, envelope: dict, *,
 
 def main(argv=None) -> int:
     _utf8_streams()
+    # Interpret and authenticate the complete operational policy before CLI
+    # construction or any workflow action can create repository state.
+    try:
+        from taskplane import settings as operational_settings
+        operational_settings.load_settings(environment=os.environ)
+    except Exception as exc:
+        print(f"taskplane: operational settings are invalid: {exc}",
+              file=sys.stderr)
+        return 1
     compatibility_refusal = _enforce_stage_compatibility(argv)
     if compatibility_refusal is not None:
         return compatibility_refusal
@@ -8074,6 +8149,11 @@ def main(argv=None) -> int:
     tcl.add_argument("--status", default="done",
                      help="status to close the track in (default done)")
     tk.set_defaults(fn=cmd_track)
+
+    hnc = sub.add_parser("host-native-check", help=argparse.SUPPRESS)
+    hnc.add_argument("--host", choices=["claude", "codex"], required=True,
+                     help=argparse.SUPPRESS)
+    hnc.set_defaults(fn=cmd_host_native_check)
 
     cx = sub.add_parser("context", help="session-start context summary")
     cx.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)

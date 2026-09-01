@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import run_store  # noqa: E402
@@ -444,7 +445,7 @@ class TestRunStore(unittest.TestCase):
         self.assertTrue(os.path.isfile(
             os.path.join(self.home, "runs", "run-123", "manifest.json")))
 
-    def test_commit_is_revision_checked_and_atomic(self):
+    def test_commit_is_revision_checked_atomic_and_locks_fail_closed(self):
         self.store.create(self.identity, run_id="run-123",
                           checkout="/tmp/project", host={}, target={})
         updated = self.store.commit(
@@ -459,6 +460,14 @@ class TestRunStore(unittest.TestCase):
                                "manifest.json"), encoding="utf-8") as f:
             persisted = json.load(f)
         self.assertEqual(persisted, updated)
+        lock = os.path.join(self.home, "ambiguous.lock")
+        os.mkdir(lock + ".lockdir")
+        os.utime(lock + ".lockdir", (0, 0))
+        with mock.patch.dict(sys.modules, {"fcntl": None, "msvcrt": None}), \
+                self.assertRaises(storage.StorageIdentityError):
+            with storage._storage_file_lock(lock, timeout=0.01):
+                self.fail("age alone must never prove lock-owner death")
+        self.assertTrue(os.path.isdir(lock + ".lockdir"))
 
 
 class TestLegacyStorageMigration(unittest.TestCase):

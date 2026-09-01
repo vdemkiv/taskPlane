@@ -8,16 +8,39 @@ their historical signatures without creating an import cycle.
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
+import re
 import time
 
 import progress
 import taskplane_lite as tp
 
+try:
+    from . import host_native
+    from . import settings as operational_settings
+    from . import storage as runtime_storage
+    from . import wave_metrics
+except (ImportError, ValueError):
+    from taskplane import host_native
+    from taskplane import settings as operational_settings
+    from taskplane import storage as runtime_storage
+    from taskplane import wave_metrics
+
 
 BOUNDED_STAGE_VIEW_SCHEMA = "taskplane.bounded-stage-view/v1"
 BOUNDED_STAGE_VIEW_MAX_ITEMS = 100
+_PHASE_GRAPH_PROJECTOR = None
+
+
+def configure_phase_graph_projector(projector) -> None:
+    """Inject the pure graph projector from a presentation composition root."""
+    global _PHASE_GRAPH_PROJECTOR
+    if projector is not None and not callable(projector):
+        raise TypeError("phase graph projector must be callable")
+    _PHASE_GRAPH_PROJECTOR = projector
 
 
 def _empty_stage_view(*, limit: int, mode: str, status: str,
@@ -376,6 +399,51 @@ def user_summary(ws: str, host: str | None = None,
     }
 
 
+DASHBOARD_PUBLICATION_SCHEMA = host_native.DASHBOARD_PUBLICATION_SCHEMA
+
+
+def _load_legacy_state(ws: str) -> dict | None:
+    import loop
+    return loop.load(ws)
+
+
+def _load_v4_manifest(ws: str, locator: dict) -> dict:
+    import loop
+    store = loop._stage_store(ws, str(locator["run_id"]))
+    return store.load(str(locator["run_id"]))
+
+
+def _validate_v4_manifest(manifest: dict) -> None:
+    try:
+        from . import run_store as stage_run_store
+    except (ImportError, ValueError):
+        from taskplane import run_store as stage_run_store
+    stage_run_store._validate_stage_index(manifest)
+
+
+def _select_dashboard_source(ws: str) -> dict:
+    return host_native.select_dashboard_source(
+        ws, locator_loader=runtime_storage.load_workspace_locator,
+        legacy_loader=_load_legacy_state, manifest_loader=_load_v4_manifest,
+        manifest_validator=_validate_v4_manifest,
+        error_formatter=_stage_view_error)
+
+
+def refresh_dashboard_snapshot(
+        ws: str, *, event_type: str, outcome: str | None = None,
+        committed_at: float | str | None = None, replay: bool = False) -> dict:
+    settings = operational_settings.load_settings()
+    return host_native.refresh_dashboard_snapshot(
+        ws, event_type=event_type, outcome=outcome,
+        committed_at=committed_at, replay=replay,
+        settings_digest=settings.digest, source_loader=_select_dashboard_source,
+        graph_projector=_PHASE_GRAPH_PROJECTOR,
+        metrics_projector=wave_metrics.consumer_projection,
+        publication_loader=runtime_storage.load_dashboard_publication,
+        snapshot_committer=runtime_storage.commit_dashboard_snapshot,
+        event_committer=runtime_storage.commit_dashboard_event,
+        error_formatter=_stage_view_error)
+
 def publish_artifacts(ws: str) -> "str | None":
     import views
     return views._publish_artifacts(ws)
@@ -383,10 +451,37 @@ def publish_artifacts(ws: str) -> "str | None":
 
 def with_dashboard(fn):
     def wrapped(ws, *args, **kwargs):
+        # Load before the wrapped transition so malformed settings cannot
+        # follow a state write with a merely stale dashboard warning.
+        settings = operational_settings.load_settings()
         result = fn(ws, *args, **kwargs)
-        if isinstance(result, dict) and "error" not in result:
-            import views
-            views.refresh_views(ws, result)
+        if isinstance(result, dict):
+            # A stage-native refusal is a proven read-only boundary.  Do not
+            # turn that refusal into dashboard/event/artifact writes against
+            # the mismatched or disabled store it explicitly rejected.
+            if result.get("stage_native") == "read-only" and result.get("error"):
+                return result
+            outcome = result.get("outcome")
+            if outcome is None:
+                outcome = "failure" if result.get("error") else "success"
+            try:
+                if fn.__name__ not in settings.dashboard.refresh.lifecycle_events:
+                    raise ValueError(
+                        "dashboard lifecycle event is absent from canonical "
+                        f"settings: {fn.__name__}")
+                publication = refresh_dashboard_snapshot(
+                    ws, event_type=fn.__name__, outcome=str(outcome))
+                if publication.get("status") != "no_active":
+                    result["dashboard_snapshot"] = publication
+                    import views
+                    views.refresh_views(ws, result)
+            except Exception as exc:
+                # The committed lifecycle outcome stays authoritative. A
+                # failed publication becomes replayable secondary evidence.
+                result["dashboard_refresh"] = {
+                    "status": "stale", "replay_required": True,
+                    "error": _stage_view_error(exc),
+                }
         return result
     wrapped.__name__ = fn.__name__
     wrapped.__doc__ = fn.__doc__

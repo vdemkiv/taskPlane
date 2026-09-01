@@ -35,13 +35,6 @@ class TestTierResolver(unittest.TestCase):
             else:
                 os.environ[k] = v
 
-    def test_defaults_only_cheap_is_pinned(self):
-        # portable default: only 'cheap' maps to a concrete model; the rest
-        # inherit the session model (None) so nothing is forced.
-        self.assertEqual(tp.model_for_tier("cheap"), "haiku")
-        self.assertIsNone(tp.model_for_tier("standard"))
-        self.assertIsNone(tp.model_for_tier("deep"))
-
     def test_codex_defaults_all_tiers_to_inherit(self):
         os.environ["CODEX_HOME"] = "/tmp/codex-test"
         self.assertIsNone(tp.model_for_tier("cheap"))

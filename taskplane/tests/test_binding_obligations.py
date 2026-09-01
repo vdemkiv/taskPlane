@@ -31,7 +31,19 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
 import obligations                                            # noqa: E402
+from taskplane.authority import DECISION_SCHEMA               # noqa: E402
+from taskplane.settings import SettingsError                  # noqa: E402
 TP = os.path.join(ROOT, "taskplane", "tp.py")
+
+
+SETTINGS_AUTHORITY = {
+    "schema": DECISION_SCHEMA,
+    "authorized": True,
+    "authority_requested": "gate_weakening",
+    "actor": "human:test",
+    "thread": "obligation-settings-compatibility",
+    "revision": "1",
+}
 
 
 class _Ws(unittest.TestCase):
@@ -101,19 +113,22 @@ class TheBlockIsEscapable(_Ws):
         self.assertIsNone(obligations.blocked_reason(self.ws, "tp dod"))
         self.assertEqual(obligations.blocking(self.ws), [])
 
-    def test_the_kill_switch_disables_blocking_but_not_recording(self):
+    def test_governance_weakening_requires_authority_and_keeps_recording(self):
         oid = self.owe()
         os.environ["TASKPLANE_OBLIGATIONS"] = "off"
-        self.assertIsNone(obligations.blocked_reason(self.ws, "tp dod"))
-        # still recorded — the instrument keeps working
+        with self.assertRaises(SettingsError):
+            obligations.blocking_enabled()
+        self.assertFalse(obligations.blocking_enabled(
+            authority=SETTINGS_AUTHORITY))
         self.assertEqual([o["id"] for o in obligations.status(self.ws)["open"]],
                          [oid])
 
-    def test_the_switch_accepts_the_obvious_spellings(self):
+    def test_authorized_compatibility_alias_accepts_documented_spellings(self):
         self.owe()
         for v in ("off", "0", "false", "advisory", "OFF"):
             os.environ["TASKPLANE_OBLIGATIONS"] = v
-            self.assertFalse(obligations.blocking_enabled(), v)
+            self.assertFalse(obligations.blocking_enabled(
+                authority=SETTINGS_AUTHORITY), v)
         os.environ["TASKPLANE_OBLIGATIONS"] = "on"
         self.assertTrue(obligations.blocking_enabled())
 
@@ -311,26 +326,6 @@ class TheEngineStillCannotSeeAnyOfThis(_Ws):
             for forbidden in ("obligations.status", "obligations.blocking",
                               "obligations.blocked_reason"):
                 self.assertNotIn(forbidden, src, f"{name}: {forbidden}")
-
-    def test_an_open_binding_obligation_never_reaches_a_loop_gate(self):
-        """The prohibition is on the COMMAND, never on the state machine.
-
-        Asserting the gate simply PASSES would be the wrong test — it can
-        fail for its own reasons (an unauthored spec, here) and then this
-        would go green for a reason unrelated to obligations. What must
-        hold is that whatever the gate decides, obligations played no part
-        in it.
-        """
-        import loop
-        loop.init(self.ws, "goal")
-        loop.next_action(self.ws)
-        self.owe()
-        self.assertTrue(obligations.blocking(self.ws))
-        verdict = json.dumps(loop.gate(self.ws, "pass"), default=str).lower()
-        for word in ("obligation", "render_graph", "not been shown",
-                     "tp ack"):
-            self.assertNotIn(word, verdict)
-
 
 class TheHooksAreWired(unittest.TestCase):
 

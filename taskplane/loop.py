@@ -3536,12 +3536,16 @@ def _native_dispatch_intent(
             "role": role,
             "task_name": dispatch.get("task_name"),
             "wait_policy": dict(wait_policy),
+            "fork_turns": "none",
+            "inherited_turns": 0,
         },
         "run_id": run_id,
         "task_id": task_id,
         "wave_id": wave_id,
     })
     result["wait_policy"] = dict(wait_policy)
+    result["fork_turns"] = "none"
+    result["inherited_turns"] = 0
     return result
 
 # A task is SETTLED when nothing further is owed on it: it passed, or the
@@ -3703,9 +3707,12 @@ TERMINAL_STEPS = ("done", "failed")
 
 
 def automatic_cleanup_enabled() -> bool:
-    """Rollback switch: default on; false returns to manual cleanup."""
-    return (os.environ.get("TASKPLANE_AUTO_WORKTREE_CLEANUP") or "on").strip() \
-        .lower() not in {"0", "false", "no", "off", "manual"}
+    """Use the one canonical worktree-cleanup policy."""
+    if __package__:
+        from .settings import load_settings
+    else:
+        from settings import load_settings
+    return load_settings().cleanup.worktrees == "after-merge"
 
 
 def _cleanup_lifecycle(task: dict) -> dict:
@@ -5801,12 +5808,25 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         tp.trace(ws, "loop_staged_dispatch_blocked", task=task_id,
                  surface="claim", reason="mandatory_replan_required")
         return staged_refusal
+    try:
+        if __package__:
+            from . import preflight as startup_preflight
+        else:
+            import preflight as startup_preflight
+        startup_receipt = startup_preflight.atomic_governed_startup(
+            workspace=ws, worker_workspace=agent_ws, task_id=task_id)
+    except Exception as exc:
+        return {"error": "atomic governed preflight failed before any "
+                         "worker/worktree effect: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "task": task_id}
     contract = tp.build_contract(
         f"EXECUTE: {t['id']}", scope=t.get("scope"),
         test_command=t.get("tests"), plan_minted=True, regression_gate=True,
         test_timeout_seconds=tp.task_test_timeout_seconds(t),
         tools=["Read", "Grep", "Glob", "Bash", "Write", "Edit",
                "MultiEdit"])
+    contract["startup_preflight"] = startup_receipt
     enforcement = ((state.get("enforcement") or {}).get("current"))
     if enforcement:
         contract["enforcement"] = enforcement
@@ -8100,8 +8120,8 @@ from evidence import EVIDENCE_JUDGMENT_KEYS, evidence  # noqa: E402,F401
 
 # ---------------------------------------------------------------------------
 # Audit sweep cadence + router-regression auto-filing (v3 Phase 1, R-0001):
-# MOVED VERBATIM to audit.py (R-0006 / D-0004, v3 Phase 2), byte-frozen by
-# taskplane/tests/test_audit_extraction.py. The names below are CALLER
+# MOVED VERBATIM to audit.py (R-0006 / D-0004, v3 Phase 2), protected by
+# direct cadence/gate tests in taskplane/tests/test_audit_sweep.py. The names below are CALLER
 # aliases bound once at import — NOT patch seams (t9 / R-0011 E6). Patch the
 # MACHINERY at audit.<name> (audit.audit_counter, audit.audit_every, …),
 # resolved module-locally inside audit.py: rebinding the loop alias is
@@ -8110,7 +8130,6 @@ from evidence import EVIDENCE_JUDGMENT_KEYS, evidence  # noqa: E402,F401
 # late-binds those via _loop() (audit.py:41-51) every call, so a patched
 # loop.finding_blocks does govern the gate. TestPatchSeams pins both halves.
 from audit import (  # noqa: E402,F401 — re-exports, not dead imports
-    AUDIT_EVERY_DEFAULT,
     AUDIT_FILE,
     _audit_brief,
     _audit_path,
@@ -9037,9 +9056,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     "step": "plan",
                     "dor": {"ready": False,
                             "blockers": reanchor_errors}}
-        # B2: ordering at the GATE too — checkpoint-less loops skip approve.
-        if (refusal := tp.plan_ordering_refusal(ws, state.get("tasks"),
-                                                "gate")):
+        # Validate task ids here too: checkpoint-less loops skip approve.
+        if (refusal := tp.plan_task_id_refusal(ws, state.get("tasks"),
+                                               "gate")):
             return refusal
 
     task = _current_task(state)
@@ -10250,9 +10269,8 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
                              "requirement is under the threshold. Refine it "
                              "(close the gaps) or `loop approve --force`.",
                     "refinement": refinement}
-        # B2 (R-0008): mechanical brief-shape-before-golden-regen ordering.
-        if (refusal := tp.plan_ordering_refusal(ws, state.get("tasks"),
-                                                "approve", by=by)):
+        if (refusal := tp.plan_task_id_refusal(
+                ws, state.get("tasks"), "approve", by=by)):
             return refusal
         if _consolidated_enabled():
             state["authority_target_revision"] = tp.git_head(ws)
@@ -10965,4 +10983,9 @@ gate = _with_dashboard(gate)
 submit = _with_dashboard(submit)
 next_action = _with_dispatch_dashboard(next_action)
 approve = _with_dashboard(approve)
+select = _with_dashboard(select)
+resolve = _with_dashboard(resolve)
+replan = _with_dashboard(replan)
+handle_host_input = _with_dashboard(handle_host_input)
+cleanup_replay = _with_dashboard(cleanup_replay)
 retro = _with_dashboard(retro)

@@ -1,0 +1,101 @@
+{
+  "schema": "taskplane.operational-settings/v1",
+  "stages": {
+    "product": {"model": "inherit", "reasoning": "high"},
+    "design": {"model": "inherit", "reasoning": "high"},
+    "plan": {"model": "inherit", "reasoning": "high"},
+    "build": {"model": "inherit", "reasoning": "high"},
+    "evaluate": {"model": "inherit", "reasoning": "high"},
+    "fix": {"model": "inherit", "reasoning": "high"}
+  },
+  "lenses": {
+    "routing": {
+      "product": ["product"],
+      "design": ["design"],
+      "plan": ["plan"],
+      "build": [],
+      "evaluate": [],
+      "fix": []
+    },
+    "counts": {
+      "product": 1,
+      "design": 1,
+      "plan": 3,
+      "build": 0,
+      "evaluate": 0,
+      "fix": 0
+    }
+  },
+  "build": {"shards": 1, "concurrency": "native"},
+  "tests": {
+    "backend": "ci",
+    "selection": "targeted",
+    "shards": 1,
+    "cache": true,
+    "cache_max_age_seconds": 86400
+  },
+  "limits": {
+    "timeouts": {
+      "task_seconds": 1200,
+      "subprocess_seconds": 300,
+      "wait_seconds": 60,
+      "lens_wait_seconds": 1800,
+      "lens_minimum_wait_seconds": 300
+    },
+    "budgets": {
+      "max_actions": 60,
+      "lens_deep_max_actions": 45,
+      "lens_sweep_max_actions": 30,
+      "max_tokens": null,
+      "max_cost_usd": null
+    }
+  },
+  "workflow": {
+    "transport": "native",
+    "worker_inheritance": {"model": true, "reasoning": true}
+  },
+  "cleanup": {"worktrees": "after-merge", "artifacts_days": 30},
+  "runtime": {
+    "audit_every": 5,
+    "inline_max_bytes": 24000,
+    "orphan_ttl_seconds": 3600,
+    "obligations": "enforce",
+    "runnability": "probe",
+    "review_max_attempts": 2
+  },
+  "dashboard": {
+    "refresh": {
+      "lifecycle_events": [
+        "gate",
+        "submit",
+        "next_action",
+        "approve",
+        "select",
+        "resolve",
+        "replan",
+        "handle_host_input",
+        "cleanup_replay",
+        "retro",
+        "worker_terminal"
+      ],
+      "session_event": "session_recovery",
+      "replay_on_session_start": true
+    }
+  },
+  "overrides": {
+    "safe_paths": [
+      "stages.*.model",
+      "stages.*.reasoning",
+      "build.shards",
+      "tests.selection",
+      "tests.shards",
+      "tests.cache",
+      "tests.cache_max_age_seconds",
+      "runtime.inline_max_bytes",
+      "limits.timeouts.*",
+      "limits.budgets.*"
+    ],
+    "governance_paths": ["lenses.*", "build.concurrency", "tests.backend", "workflow.*", "cleanup.*", "runtime.audit_every", "runtime.orphan_ttl_seconds", "runtime.obligations", "runtime.runnability", "runtime.review_max_attempts"]
+  },
+  "observability": {"receipt": true, "include_values": false}
+}

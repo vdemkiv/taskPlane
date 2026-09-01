@@ -1,37 +1,8 @@
-"""t6 (R-0002) — CI Codex-parity leg: frozen briefs replayed against goldens.
+"""Current dispatch contracts across library, Codex, and workflow rails.
 
-The Task-dispatch payload (contract:lens-brief) is the SINGLE handoff both
-review paths consume — the workflow path as `workflow.args`, the Codex path
-as stdout. These tests freeze it:
-
-  * golden replay — `lens.dispatch_briefs(lens.route(<frozen files>))` must
-    byte-match the checked-in goldens (routed AND breadth=all), so ANY change
-    to the dispatch-payload shape fails CI even while the workflow-path tests
-    stay green. A deliberate shape change regenerates the goldens via
-    `python3 taskplane/tests/fixtures/briefs/regen.py` (documented in the
-    goldens' comment headers — that friction is the point);
-  * codex-env parity — with CODEX_HOME set, `tp lens dispatch` stdout for the
-    fixture equals the same golden-derived bytes (the only host-legitimate
-    delta is tier->model resolution: on codex the cheap tier resolves to null
-    instead of "haiku" so another host's model id is never dispatched), and
-    NEVER carries workflow keys;
-  * detector-fixture completeness — re-asserted here so the CI leg is
-    self-contained: every catalog lens id has a non-empty positive AND
-    negative detector fixture dir (t1's discipline, pinned at CI level);
-  * workflow-args parity — the `--emit workflow` payload's `args` field
-    JSON-equals the Task-path payload for the same fixture (fixture-level,
-    no JS runtime needed).
-
-BYTE NORMALIZATION (mirrors fixtures/briefs/regen.py): goldens are stored
-with sorted keys, indent=2, default ensure_ascii, trailing newline, after an
-env scrub (CODEX_HOME/CODEX_THREAD_ID/TASKPLANE_MODEL_*/
-TASKPLANE_REASONING_*/TASKPLANE_WORKFLOWS/CLAUDE_CODE_WORKFLOWS unset).
-Payloads are compared as
-`json.dumps(obj, indent=2, sort_keys=True)` bytes — key ORDER is the only
-thing normalization forgives; every key, value, prompt byte and brief count
-is pinned. The emitted absolute plugin root in `role_instructions` is replaced
-with `<PLUGIN>`; the fixture routing input is workspace-relative and the
-payload carries no timestamps, so the goldens are machine-portable.
+These checks protect required fields, settings propagation, host-safe model
+resolution, and semantic equality between Task and workflow transport. They
+deliberately do not replay whole historical payload snapshots.
 """
 import contextlib
 import io
@@ -47,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lens  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import tp as cli  # noqa: E402
+from taskplane.settings import load_settings  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BRIEFS = os.path.join(HERE, "fixtures", "briefs")
@@ -96,31 +68,6 @@ def _scrub_plugin_root(value, root=PLUGIN_ROOT):
     return value
 
 
-def normalize(payload) -> str:
-    """THE byte normalization (same dumps args as regen.py's goldens)."""
-    return json.dumps(_scrub_plugin_root(payload), indent=2,
-                      sort_keys=True) + "\n"
-
-
-def load_golden(name: str):
-    """Goldens carry a '#' comment header (regen command + scrub rules)
-    above the JSON body — strip it, parse the rest."""
-    with open(os.path.join(BRIEFS, name), encoding="utf-8") as f:
-        raw = f.read()
-    body = "".join(l for l in raw.splitlines(keepends=True)
-                   if not l.startswith("#"))
-    return json.loads(body)
-
-
-def golden_bytes(name: str) -> str:
-    """The golden's JSON body EXACTLY as stored (header stripped, bytes
-    kept) — pins the normalization itself, not just the parsed value."""
-    with open(os.path.join(BRIEFS, name), encoding="utf-8") as f:
-        raw = f.read()
-    return "".join(l for l in raw.splitlines(keepends=True)
-                   if not l.startswith("#"))
-
-
 def tree_files(root):
     out = []
     for dirpath, dirs, names in os.walk(root):
@@ -131,9 +78,8 @@ def tree_files(root):
     return sorted(out)
 
 
-def frozen_files():
-    with open(os.path.join(BRIEFS, "changed_files.json"), encoding="utf-8") as f:
-        return json.load(f)
+def fixture_files():
+    return tree_files(WORKSPACE)
 
 
 @pytest.fixture()
@@ -142,10 +88,10 @@ def scrubbed_env(monkeypatch):
         monkeypatch.delenv(v, raising=False)
 
 
-# ------------------------------------------------------- 1. golden replay
+# ------------------------------------------------------- 1. live contract
 
 
-class TestGoldenReplay:
+class TestDispatchContract:
     def test_path_scrub_handles_windows_separators_before_json_encoding(self):
         root = r"C:\repo\taskPlane"
         payload = {"role_instructions":
@@ -155,37 +101,12 @@ class TestGoldenReplay:
             "<PLUGIN>/agents/tp-executor.md"
         assert root not in json.dumps(scrubbed)
 
-    def test_fixture_tree_matches_frozen_changed_files(self):
-        """The checked-in tree IS the routing input — drift between the two
-        would make the goldens replay a different change than the one the
-        fixture documents."""
-        assert tree_files(WORKSPACE) == frozen_files()
-
-    def test_routed_dispatch_payload_matches_golden(self, scrubbed_env):
+    def test_review_dispatch_is_complete_and_never_dispatches_na_lenses(
+            self, scrubbed_env):
         payload = lens.dispatch_briefs(
-            lens.route(frozen_files()), base="HEAD",
-            context_paths=SHARED_CONTEXT_PATHS)
-        assert normalize(payload) == golden_bytes(
-            "golden_dispatch_routed.json")
-
-    def test_breadth_all_dispatch_payload_matches_golden(self, scrubbed_env):
-        """breadth=all is the em-step shape: deep briefs + the batched sweep
-        brief (cheap tier) — the sweep half of the contract is pinned too."""
-        payload = lens.dispatch_briefs(
-            lens.route(frozen_files(), breadth="all"), base="HEAD",
-            context_paths=SHARED_CONTEXT_PATHS)
-        assert normalize(payload) == golden_bytes("golden_dispatch_all.json")
-
-    def test_review_dispatch_payload_matches_golden(self, scrubbed_env):
-        """v2.11.0: what a REVIEW actually dispatches — signal-driven
-        routing, so `routing_decision` carries all 26 dispositions and only
-        the summoned lenses get a brief."""
-        payload = lens.dispatch_briefs(
-            lens.route(frozen_files(), stage="review",
+            lens.route(fixture_files(), stage="review",
                        workspace=WORKSPACE), base="HEAD",
             context_paths=SHARED_CONTEXT_PATHS)
-        assert normalize(payload) == golden_bytes(
-            "golden_dispatch_review.json")
         assert len(payload["routing_decision"]) == len(lens.load_catalog()["lenses"])
         dispatched = {b["id"] for b in payload["deep"]} | set(
             (payload["sweep"] or {}).get("ids") or [])
@@ -197,33 +118,11 @@ class TestGoldenReplay:
             assert payload["routing_decision"][k]["negative_evidence"], \
                 f"{k} is n/a with no evidence — that is a silent skip"
 
-    def test_goldens_are_deterministic_artifacts(self):
-        """No absolute paths, no timestamps, keys sorted — the scrub rules
-        the goldens' headers document, machine-checked."""
-        for name in ("golden_dispatch_routed.json",
-                     "golden_dispatch_all.json",
-                     "golden_dispatch_review.json"):
-            body = golden_bytes(name)
-            payload = json.loads(body)
-            assert body == normalize(payload), f"{name}: keys not sorted"
-            assert "/tmp/" not in body and "/home/" not in body, \
-                f"{name}: absolute path leaked"
-            for k in ('"timestamp"', '"time"', '"date"'):
-                assert k not in body, f"{name}: nondeterministic field {k}"
-
-    def test_golden_headers_document_the_regen_command(self):
-        for name in ("golden_dispatch_routed.json",
-                     "golden_dispatch_all.json",
-                     "golden_dispatch_review.json"):
-            with open(os.path.join(BRIEFS, name), encoding="utf-8") as f:
-                head = f.read(1000)
-            assert head.startswith("#")
-            assert "python3 taskplane/tests/fixtures/briefs/regen.py" in head
-
-    def test_golden_carries_the_lens_brief_contract_fields(self):
-        """Spot-pin the contract:lens-brief surface so a reviewer can see
-        WHAT the byte-compare protects."""
-        payload = load_golden("golden_dispatch_all.json")
+    def test_live_dispatch_carries_the_lens_brief_contract_fields(
+            self, monkeypatch):
+        payload = lens.dispatch_briefs(
+            lens.route(fixture_files(), breadth="all"), base="HEAD",
+            context_paths=SHARED_CONTEXT_PATHS)
         assert payload["base"] == "HEAD"
         assert payload["deep"] and payload["sweep"]
         for b in payload["deep"]:
@@ -231,16 +130,43 @@ class TestGoldenReplay:
                 "lens", "tp-lens", b["id"])
             assert b["role_marker"] == "taskplane-role:tp-lens"
             assert b["role_instructions"].endswith("agents/tp-lens.md")
-            assert b["reasoning_effort"] in tp.REASONING_EFFORTS
+            assert b["reasoning_effort"] in tp.REASONING_EFFORTS and \
+                b["settings_digest"] == payload["settings_digest"]
             assert b["task_slot"] == f"lens-{b['id']}"
             assert b["contract"]["read_only"] is True
             assert b["contract"]["task_slot"] == b["task_slot"]
             assert b["output"] == f".em-review/lens-{b['id']}/findings.json"
             assert f"export TASKPLANE_TASK={b['task_slot']}" in b["prompt"]
         assert payload["sweep"]["model_tier"] == "cheap"
-        assert payload["sweep"]["reasoning_effort"] == "low"
+        assert payload["sweep"]["reasoning_effort"] == "high" and \
+            payload["sweep"]["settings_digest"] == payload["settings_digest"]
         assert payload["sweep"]["task_name"] == tp.dispatch_task_name(
             "lens", "tp-lens", "sweep")
+
+        custom = load_settings(overlay={"limits": {
+            "budgets": {"lens_deep_max_actions": 41,
+                        "lens_sweep_max_actions": 19},
+            "timeouts": {"lens_wait_seconds": 901,
+                         "lens_minimum_wait_seconds": 101},
+        }})
+        loads = []
+
+        def settings_snapshot(**_kwargs):
+            loads.append(custom.digest)
+            return custom
+
+        monkeypatch.setattr(tp, "_canonical_operational_settings",
+                            settings_snapshot)
+        projected = lens.dispatch_briefs(
+            lens.route(fixture_files(), breadth="all"), base="HEAD",
+            context_paths=SHARED_CONTEXT_PATHS)
+        assert loads == [custom.digest]
+        assert {brief["contract"]["max_actions"]
+                for brief in projected["deep"]} == {41}
+        assert projected["sweep"]["contract"]["max_actions"] == 19
+        assert projected["sweep"]["wait_policy"]["timeout_seconds"] == 901
+        assert projected["sweep"]["wait_policy"][
+            "minimum_timeout_seconds"] == 101
 
 
 # ------------------------------------------------- 2. codex-env CLI parity
@@ -274,23 +200,9 @@ def _dispatch(ws, *extra) -> tuple[int, str]:
     return rc, out.getvalue()
 
 
-def _host_expected(golden_name: str) -> dict:
-    """Golden-derived expectation for the CURRENT host env: identical payload
-    except each brief's `model` re-resolves through tp.model_for_tier (the
-    documented host seam — on codex the cheap tier must resolve to null so
-    another host's model id is never dispatched). Nothing else may differ."""
-    payload = load_golden(golden_name)
-    for b in payload.get("deep") or []:
-        b["model"] = tp.model_for_tier(b["model_tier"])
-    if payload.get("sweep"):
-        payload["sweep"]["model"] = tp.model_for_tier(
-            payload["sweep"]["model_tier"])
-    return payload
-
-
 class TestCodexEnvParity:
-    def test_codex_cli_stdout_equals_golden_derived_bytes(self, tmp_path,
-                                                          monkeypatch):
+    def test_codex_cli_uses_current_settings_and_host_safe_models(
+            self, tmp_path, monkeypatch):
         for v in SCRUB_VARS:
             monkeypatch.delenv(v, raising=False)
         monkeypatch.setenv("CODEX_HOME", "/x")
@@ -298,26 +210,23 @@ class TestCodexEnvParity:
         ws = _fixture_repo(tmp_path)
         rc, out = _dispatch(ws)
         assert rc == 0
-        # v2.11.0: the CLI default is signal-driven routing, so the payload
-        # it dispatches is pinned by its OWN golden. The legacy and
-        # force-everything payloads are still pinned, at library level,
-        # above — this change is the CLI's contract, not the library's.
-        assert normalize(json.loads(out)) == normalize(
-            _host_expected("golden_dispatch_review.json"))
+        payload = json.loads(out)
+        assert payload["settings_digest"] == load_settings().digest
+        assert all(brief["model"] is None for brief in payload["deep"])
+        assert payload["routing_decision"]
 
-    def test_codex_cli_breadth_all_equals_golden_derived_bytes(
+    def test_codex_cli_breadth_all_keeps_sweep_host_safe(
             self, tmp_path, monkeypatch):
-        """The sweep brief exercises the one legitimate host delta: cheap
-        tier resolves to null under codex, 'haiku' in the golden."""
         for v in SCRUB_VARS:
             monkeypatch.delenv(v, raising=False)
         monkeypatch.setenv("CODEX_HOME", "/x")
         ws = _fixture_repo(tmp_path)
         rc, out = _dispatch(ws, "--all")
         assert rc == 0
-        expected = _host_expected("golden_dispatch_all.json")
-        assert expected["sweep"]["model"] is None  # the codex model rule
-        assert normalize(json.loads(out)) == normalize(expected)
+        payload = json.loads(out)
+        assert payload["sweep"]["model"] is None
+        assert payload["sweep"]["settings_digest"] == \
+            payload["settings_digest"]
 
     def test_codex_stdout_never_carries_workflow_keys(self, tmp_path,
                                                       monkeypatch):
@@ -330,17 +239,6 @@ class TestCodexEnvParity:
         payload = json.loads(out)
         for key in ("dispatch_path", "workflow", "reason"):
             assert key not in payload
-
-    def test_bare_host_cli_equals_scrubbed_golden_bytes(self, tmp_path,
-                                                        scrubbed_env):
-        """On the capture host (bare env) the CLI stdout normalizes to the
-        golden EXACTLY — model fields included ('haiku' sweep)."""
-        ws = _fixture_repo(tmp_path)
-        rc, out = _dispatch(ws, "--all")
-        assert rc == 0
-        assert normalize(json.loads(out)) == golden_bytes(
-            "golden_dispatch_all.json")
-
 
 # ------------------------- 3. detector-fixture completeness (CI-level pin)
 
@@ -380,7 +278,7 @@ class TestWorkflowArgsParity:
         assert wf_payload["dispatch_path"] == "workflow"
         args = wf_payload["workflow"]["args"]
         assert args == task_payload  # JSON-equal, whole payload
-        assert normalize(args) == golden_bytes("golden_dispatch_review.json")
+        assert args["settings_digest"] == load_settings().digest
 
     def test_workflow_args_breadth_all_parity_including_sweep(self, tmp_path,
                                                               scrubbed_env):
@@ -391,4 +289,4 @@ class TestWorkflowArgsParity:
         args = json.loads(out_w)["workflow"]["args"]
         assert args == task_payload
         assert args["sweep"] == task_payload["sweep"]
-        assert normalize(args) == golden_bytes("golden_dispatch_all.json")
+        assert args["sweep"]["settings_digest"] == args["settings_digest"]

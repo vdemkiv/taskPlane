@@ -21,9 +21,10 @@ import taskplane_lite as tp
 import storage as runtime_storage
 
 try:
-    from . import plan_topology
+    from . import plan_topology, wave_metrics
 except ImportError:  # pragma: no cover - direct module loading
     import plan_topology
+    import wave_metrics
 
 
 _STAGE_VIEW_LIMIT = 100
@@ -32,6 +33,20 @@ _STAGE_VIEW_LIMIT = 100
 def performance_projection(state: dict) -> dict:
     """Compute delivery metrics from native dispatch and loop trace facts."""
     return plan_topology.execution_metrics(state)
+
+
+def sealed_wave_metrics_projection(state: dict) -> dict | None:
+    """Consume a sealed wave receipt; never reconstruct metrics in Retro."""
+    receipt = state.get("wave_metrics_receipt")
+    if receipt is None:
+        # One-release compatibility for loops created before AC-MET.  New
+        # governed R-0001 runs bind the receipt before Engineering sign-off.
+        return None
+    projection = wave_metrics.consumer_projection(receipt, consumer="retro")
+    if projection["signoff"]["ready"] is not True:
+        raise wave_metrics.WaveMetricsError(
+            "wave metrics have blocking cleanup or ceiling evidence")
+    return projection
 
 
 def _execution_state(tasks: list, events: list) -> dict:
@@ -223,6 +238,18 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
         f"- execution metric source: "
         f"{report.get('execution_metric_source', 'unknown')}",
     ])
+    wave = report.get("wave_metrics") or {}
+    if wave:
+        wave_signoff = wave.get("signoff") or {}
+        lines.extend([
+            "", "## Sealed wave metrics", "",
+            f"- receipt: {wave.get('receipt_fingerprint')}",
+            f"- candidate: {wave.get('candidate_fingerprint')}",
+            f"- integration ready: {wave.get('integration_ready_at')}",
+            f"- sign-off ready: {str(bool(wave_signoff.get('ready'))).lower()}",
+            "- source digests: " + json.dumps(
+                wave.get("source_digests") or {}, sort_keys=True),
+        ])
     foreign = report.get("foreign_interference") or {}
     if foreign.get("headline"):
         lines.extend(["", "## FOREIGN INTERFERENCE", "",
@@ -353,6 +380,13 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                  if row.get("event") == "refinement_gate"]
         waves = [row for row in events if row.get("event") == "loop_wave"]
         tasks = state.get("tasks") or []
+        try:
+            metrics_projection = sealed_wave_metrics_projection(state)
+        except wave_metrics.WaveMetricsError as exc:
+            return {"error": "retro wave metrics evidence is unavailable — "
+                    "loop remains open",
+                    "detail": f"{exc.__class__.__name__}: {exc}",
+                    "step": "retro", "retro_id": retro_id}
 
         accuracy = []
         for gate_row in gates:
@@ -473,6 +507,8 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "execution_metrics": execution_metrics,
             "execution_metric_source": execution_metric_source,
         }
+        if metrics_projection is not None:
+            report["wave_metrics"] = metrics_projection
         if stage_native:
             report["stage_view"] = stage_view
             report["stage_metrics"] = stage_metrics

@@ -488,12 +488,11 @@ ROLE_MARKER_PREFIX = "taskplane-role:"
 # never reads in CI as "the quality dropped".
 EXIT_OK, EXIT_BLOCKED, EXIT_USAGE = 0, 1, 2
 
-# Stable logical checks, deliberately independent of mutable workflow step
-# labels.  The workflow records the aggregate compatibility matrix, the
-# focused graph/CLI contract job, and the credential-empty corpus job against
-# one workflow SHA.  A release/delivery caller must provide this exact set.
+# Stable GitHub check-run identities, deliberately independent of mutable step
+# labels and aligned with design/compatibility.json. ``tests (python 3.12)`` is
+# the real single-suite job; release callers provide this stable check set.
 PUSHED_GREEN_REQUIRED_CHECKS = (
-    "python compatibility (3.10-3.13)",
+    "tests (python 3.12)",
     "R-0006 graph + CLI contracts",
     "zero-token corpus (credential-empty, no-egress)",
 )
@@ -514,6 +513,37 @@ def _literal_assignments(path, names):
     return values
 
 
+def _installed_runtime_probe(root):
+    """Load the installed runtime and emit version plus settings bindings."""
+    command = (
+        "import hashlib,json; "
+        "from taskplane import release_evidence as r; "
+        "from taskplane.settings import (DEFAULT_SETTINGS_PATH,load_settings,"
+        "settings_receipt); "
+        "s=load_settings(); "
+        "print(json.dumps({'version':r.CURRENT_VERSION,"
+        "'previous_version':r.PREVIOUS_VERSION,"
+        "'compatibility_previous_version':r.COMPATIBILITY_PREVIOUS_VERSION,"
+        "'historical_graph_revision':r.HISTORICAL_GRAPH_REVISION,"
+        "'settings_source_sha256':hashlib.sha256("
+        "DEFAULT_SETTINGS_PATH.read_bytes()).hexdigest(),"
+        "'settings_effective_digest':s.digest,"
+        "'settings_receipt_digest':settings_receipt(s)"
+        "['settings_digest']},sort_keys=True))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", command],
+        cwd=root,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": ""},
+        text=True, encoding="utf-8", errors="replace", capture_output=True,
+    )
+    try:
+        proof = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        proof = None
+    return result, proof
+
+
 def verify_forward_release_surface(root):
     """Build both install surfaces and prove the forward candidate is closed."""
     repository = Path(root).resolve()
@@ -531,8 +561,8 @@ def verify_forward_release_surface(root):
         errors.append(f"cannot read release runtime identity: {exc}")
     if set(release) != wanted:
         errors.append("release runtime identity is incomplete")
-    if release.get("CURRENT_VERSION") != "2.18.1":
-        errors.append("forward candidate is not exactly 2.18.1")
+    if release.get("CURRENT_VERSION") != "2.18.3":
+        errors.append("forward candidate is not exactly 2.18.3")
     if release.get("PREVIOUS_VERSION") != "2.17.20":
         errors.append("v2.17.20 is not preserved as the last released generation")
     if release.get("COMPATIBILITY_PREVIOUS_VERSION") != "2.18.0":
@@ -540,28 +570,25 @@ def verify_forward_release_surface(root):
     if release.get("HISTORICAL_GRAPH_REVISION") != expected_graph:
         errors.append("historical graph revision 2757822e is not exact")
 
-    runtime_import = subprocess.run(
-        [
-            sys.executable, "-B", "-c",
-            "import json; from taskplane import release_evidence as r; "
-            "print(json.dumps([r.CURRENT_VERSION, r.PREVIOUS_VERSION, "
-            "r.COMPATIBILITY_PREVIOUS_VERSION, "
-            "r.HISTORICAL_GRAPH_REVISION]))",
-        ],
-        cwd=repository, text=True, encoding="utf-8", errors="replace",
-        capture_output=True,
-    )
-    expected_runtime = [
-        release.get("CURRENT_VERSION"), release.get("PREVIOUS_VERSION"),
-        release.get("COMPATIBILITY_PREVIOUS_VERSION"),
-        release.get("HISTORICAL_GRAPH_REVISION"),
-    ]
-    try:
-        imported_runtime = json.loads(runtime_import.stdout)
-    except ValueError:
-        imported_runtime = None
-    if runtime_import.returncode != 0 or imported_runtime != expected_runtime:
-        errors.append("release_evidence runtime cannot import with the exact identity")
+    runtime_import, expected_installed = _installed_runtime_probe(repository)
+    expected_runtime_identity = {
+        "version": release.get("CURRENT_VERSION"),
+        "previous_version": release.get("PREVIOUS_VERSION"),
+        "compatibility_previous_version": release.get(
+            "COMPATIBILITY_PREVIOUS_VERSION"),
+        "historical_graph_revision": release.get("HISTORICAL_GRAPH_REVISION"),
+    }
+    if (runtime_import.returncode != 0 or
+            not isinstance(expected_installed, dict) or
+            any(expected_installed.get(key) != value
+                for key, value in expected_runtime_identity.items())):
+        errors.append(
+            "release runtime cannot load version and canonical settings")
+        expected_installed = None
+    elif (expected_installed.get("settings_receipt_digest") !=
+          expected_installed.get("settings_effective_digest")):
+        errors.append(
+            "repository settings receipt does not bind the effective digest")
 
     manifests = {}
     manifest_paths = {
@@ -588,7 +615,9 @@ def verify_forward_release_surface(root):
     required_doc_phrases = (
         "v2.17.20", "released-incomplete", "v2.17.21",
         "v2.17.22", "v2.17.23", "v2.17.24", "superseded",
-        "v2.17.25", "v2.17.26", "v2.18.0", "v2.18.1", "not released",
+        "v2.17.25", "v2.17.26", "v2.18.0", "v2.18.1", "v2.18.2",
+        "v2.18.3",
+        "not released",
         "2757822e", "inherited limitation", "no history rewrite",
         "no re-release", "no verifier weakening",
     )
@@ -619,18 +648,29 @@ def verify_forward_release_surface(root):
     except OSError as exc:
         workflow = ""
         errors.append(f"cannot read CI workflow: {exc}")
-    if "python scripts/ci_evals.py --verify-release-surface --json" not in workflow:
-        errors.append("CI does not execute the forward-release surface proof")
     python_312 = re.search(
-        r'- python: "3\.12"(?P<body>.*?)(?:\n\s*- python:|\n\s*steps:)',
+        r"\n  tests:\n(?P<body>.*?)(?=\n  [a-zA-Z0-9_-]+:\n)",
         workflow, re.DOTALL,
     )
-    if python_312 is None or "taskplane/tests" not in python_312.group("body"):
-        errors.append("Python 3.12 CI does not select the complete taskplane test surface")
+    if python_312 is None or not all(
+        marker in python_312.group("body")
+        for marker in (
+            'python-version: "3.12"',
+            "Execute the frozen authoritative pytest suite",
+            '--ci-cell "$cell"',
+        )
+    ):
+        errors.append(
+            "the real Python 3.12 tests job does not execute the complete "
+            "settings-derived test surface"
+        )
 
     archives = {}
     surface_members = (
         "taskplane/release_evidence.py",
+        "taskplane/operational-settings.json",
+        "taskplane/settings_inventory.json",
+        "taskplane/test_portfolio.json",
         "lenses/references/prompt-injection-defense.md",
     )
     with tempfile.TemporaryDirectory(prefix="taskplane-release-surface-") as tmp:
@@ -668,26 +708,21 @@ def verify_forward_release_surface(root):
                         member_digests[relative] = hashlib.sha256(member).hexdigest()
                     extract_root = Path(tmp) / f"{name}-installed"
                     archive.extractall(extract_root)
-                    installed_import = subprocess.run(
-                        [
-                            sys.executable, "-B", "-c",
-                            "from taskplane import release_evidence as r; "
-                            "print(r.CURRENT_VERSION)",
-                        ],
-                        cwd=extract_root / "taskplane",
-                        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-                        text=True, encoding="utf-8", errors="replace",
-                        capture_output=True,
-                    )
+                    installed_import, installed_proof = \
+                        _installed_runtime_probe(extract_root / "taskplane")
                     if (installed_import.returncode != 0 or
-                            installed_import.stdout.strip() !=
-                            release.get("CURRENT_VERSION")):
+                            installed_proof != expected_installed or
+                            not isinstance(installed_proof, dict) or
+                            installed_proof.get("settings_receipt_digest") !=
+                            installed_proof.get("settings_effective_digest")):
                         errors.append(
-                            f"{name} installed release_evidence runtime does not import")
+                            f"{name} installed runtime does not load exact "
+                            "settings source/effective digests")
                     archives[name] = {
                         "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
                         "member_count": len(archive.namelist()),
                         "surface_member_digests": member_digests,
+                        "settings": installed_proof,
                     }
             except Exception as exc:
                 errors.append(f"{name} release surface failed: {exc}")
@@ -1879,7 +1914,7 @@ def _parser():
     p.add_argument("--prove-pushed-sha", action="store_true",
                    help="fetch and prove exact pushed-SHA CI evidence")
     p.add_argument("--verify-release-surface", action="store_true",
-                   help="prove 2.18.1 manifests and both install archives")
+                   help="prove 2.18.3 manifests and both install archives")
     p.add_argument("--checked-sha", metavar="SHA",
                    help="full commit SHA whose required checks were observed")
     p.add_argument("--check-receipts", metavar="FILE",

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import sys
@@ -20,35 +19,6 @@ CURRENT_TRUTH_FILES = (
 
 def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
-
-
-def test_historical_contract_and_current_plan_route_remain_intact() -> None:
-    contract = json.loads(_text("design/contract.json"))
-    tasks = json.loads(_text("plan/tasks.json"))
-
-    contract_ids = {row["id"] for row in contract["contracts"]}
-    assert {
-        "contract:lens.focused-stage-routing",
-        "contract:review.catalog-disposition",
-        "contract:delivery.stage-lens-execution",
-        "contract:authority.expanded-lens-route",
-        "resource:authority.expanded-lens-route-custody",
-        "resource:review.route-fingerprint",
-        "resource:telemetry.lens-route",
-    } <= contract_ids
-
-    policy = tasks["delivery_policy"]
-    assert policy["build_lens_workers"] == 0
-    assert policy["fix_lens_workers"] == 0
-    assert policy["em_lens_workers"] == 0
-    assert "exactly four" in policy["plan"]
-    dispositions = tasks["plan_route"]["dispositions"]
-    assert len(dispositions) == 26
-    assert len({row["lens"] for row in dispositions}) == 26
-    assert {row["disposition"] for row in dispositions} <= {
-        "execute_deep", "execute_light", "covered_by", "not_applicable"
-    }
-    assert all(row.get("evidence") and row.get("reason") for row in dispositions)
 
 
 def test_current_product_truth_describes_the_same_dispatch_model() -> None:

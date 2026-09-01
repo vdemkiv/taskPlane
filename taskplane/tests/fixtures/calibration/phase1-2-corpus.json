@@ -493,7 +493,7 @@
    "scope": [
     "taskplane/audit.py",
     "taskplane/loop.py",
-    "taskplane/tests/test_audit_extraction.py",
+    "taskplane/tests/test_audit_sweep.py",
     "taskplane/tests/fixtures/audit/**"
    ],
    "forecast_inputs": {

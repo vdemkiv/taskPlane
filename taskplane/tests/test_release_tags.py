@@ -12,6 +12,7 @@ always passes is worse than no check, because it reads as evidence. So most
 of this file builds throwaway git repos with a specific defect planted in
 each, and asserts the gate names that defect.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -19,10 +20,21 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import ci_local as ci_runner  # noqa: E402
 import ci_release_tags as gate     # noqa: E402
+import ci_evals  # noqa: E402
+import release_provenance as provenance  # noqa: E402
+from taskplane import release_evidence  # noqa: E402
+from taskplane import (  # noqa: E402
+    ci_policy, host_native, owned_cleanup, views, wave_metrics,
+)
 
 
 def _git(root, *args, check=True):
@@ -32,6 +44,167 @@ def _git(root, *args, check=True):
     if check and p.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {p.stdout}")
     return p.stdout.strip()
+
+
+def _green_ci_receipt(runtime, cell, owned):
+    ownership_material = {
+        "schema": "taskplane.ci-owned-cell/v1",
+        "candidate_fingerprint": runtime["candidate"]["fingerprint"],
+        "source_sha": runtime["candidate"]["source_sha"],
+        "cell_id": cell["id"],
+        "containment_root": str(owned.parent),
+        "relative_name": owned.name,
+        "registered_before_run": True,
+    }
+    ownership = {
+        **ownership_material,
+        "fingerprint": gate._sha256_json(ownership_material),
+    }
+    cleanup_material = {
+        "schema": ci_runner.CI_CLEANUP_SCHEMA,
+        "registration_fingerprint": ownership["fingerprint"],
+        "outcome": "success",
+        "resources": [str(owned)],
+        "status": "clean",
+        "leak_count": 0,
+        "leaks": [],
+    }
+    cleanup = {
+        **cleanup_material,
+        "fingerprint": gate._sha256_json(cleanup_material),
+    }
+    observed = {
+        "implementation": "CPython", "python": "3.12.9",
+        "os": "posix", "platform": "Linux", "machine": "x86_64",
+    }
+    commands = [{
+        "argv": argv, "returncode": 0, "duration_ms": 0,
+        "output_digest": "d" * 64,
+    } for argv in ci_runner._ci_cell_commands(cell, owned)]
+    payload = {
+        "schema": ci_runner.CI_CELL_SCHEMA,
+        "id": cell["id"], "kind": cell["kind"], "status": "green",
+        "outcome": "success", "classification": None,
+        "candidate_fingerprint": runtime["candidate"]["fingerprint"],
+        "source_sha": runtime["candidate"]["source_sha"],
+        "plan_fingerprint": runtime["plan"]["fingerprint"],
+        "settings_receipt_fingerprint": runtime["settings_receipt"]["fingerprint"],
+        "environment": {
+            "candidate_fingerprint": runtime["candidate"]["fingerprints"]["environment"],
+            "observed": observed,
+            "observed_fingerprint": gate._sha256_json(observed),
+        },
+        "browser_fingerprint": (
+            runtime["candidate"]["browser_fingerprint"]
+            if cell["kind"] == "browser" else None
+        ),
+        "browser_observation": (
+            runtime["candidate"]["browser"]
+            if cell["kind"] == "browser" else None
+        ),
+        "selectors": cell["selectors"], "duration_ms": 0,
+        "commands": commands, "output_digest": "e" * 64,
+        "ownership": ownership, "cleanup": cleanup,
+    }
+    return {**payload, "receipt": gate._sha256_json(payload)}
+
+
+def _pushed_sha_receipts(sha):
+    return [
+        {"name": name, "sha": sha, "conclusion": "success"}
+        for name in ci_evals.PUSHED_GREEN_REQUIRED_CHECKS
+    ]
+
+
+def _pushed_sha_repository(tmp_path):
+    remote = tmp_path / "remote.git"
+    repository = tmp_path / "repository"
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)],
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    repository.mkdir()
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.name", "taskplane-test")
+    _git(repository, "config", "user.email", "taskplane@example.invalid")
+    (repository / "tracked.txt").write_text("one\n", encoding="utf-8")
+    _git(repository, "add", "tracked.txt")
+    _git(repository, "commit", "-qm", "initial")
+    _git(repository, "branch", "-M", "main")
+    _git(repository, "remote", "add", "origin", str(remote))
+    _git(repository, "push", "-q", "-u", "origin", "main")
+    return repository, remote, _git(repository, "rev-parse", "HEAD")
+
+
+def _run_pushed_sha_proof(repository, checked_sha, receipts):
+    receipt_path = repository.parent / "required-checks.json"
+    receipt_path.write_text(
+        json.dumps(_pushed_sha_receipts(receipts), sort_keys=True),
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [
+            sys.executable,
+            str(Path(ROOT) / "scripts" / "ci_evals.py"),
+            "--prove-pushed-sha",
+            "--checked-sha", checked_sha,
+            "--check-receipts", str(receipt_path),
+            "--root", str(repository),
+            "--json",
+        ],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+
+def test_pushed_sha_proof_fetches_before_classifying_stale_tracking_ref(
+        tmp_path):
+    repository, remote, stale_sha = _pushed_sha_repository(tmp_path)
+    publisher = tmp_path / "publisher"
+    subprocess.run(
+        ["git", "clone", "-q", str(remote), str(publisher)],
+        check=True,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    _git(publisher, "config", "user.name", "taskplane-test")
+    _git(publisher, "config", "user.email", "taskplane@example.invalid")
+    _git(publisher, "checkout", "-q", "-B", "main", "origin/main")
+    (publisher / "tracked.txt").write_text("remote advanced\n", encoding="utf-8")
+    _git(publisher, "commit", "-qam", "remote advanced")
+    _git(publisher, "push", "-q", "origin", "main")
+    remote_sha = _git(publisher, "rev-parse", "HEAD")
+    assert _git(repository, "rev-parse", "refs/remotes/origin/main") == stale_sha
+
+    result = _run_pushed_sha_proof(repository, stale_sha, stale_sha)
+
+    assert result.returncode == 1
+    proof = json.loads(result.stdout)
+    assert proof["status"] == "local_green"
+    assert proof["fetch_receipt"]["ok"] is True
+    assert proof["remote_sha"] == remote_sha
+    assert proof["behind_count"] == 1
+
+
+def test_pushed_sha_proof_refuses_cached_ref_when_fetch_fails(tmp_path):
+    repository, remote, sha = _pushed_sha_repository(tmp_path)
+    unavailable = tmp_path / "remote-unavailable.git"
+    remote.rename(unavailable)
+    assert _git(repository, "rev-parse", "refs/remotes/origin/main") == sha
+
+    result = _run_pushed_sha_proof(repository, sha, sha)
+
+    assert result.returncode == 1
+    proof = json.loads(result.stdout)
+    assert proof["status"] == "refused"
+    assert proof["fetch_receipt"]["ok"] is False
+    assert proof["remote_sha"] is None
+    assert any("fetch failed" in row for row in proof["errors"])
 
 
 class _Repo:
@@ -86,6 +259,312 @@ class _RepoCase(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def _protected_main_evidence(root, source_sha, first_parent_sha, pull_head_sha):
+    fixture = Path(ROOT) / "taskplane/tests/fixtures/release/protected-main-evidence.json"
+    evidence = json.loads(fixture.read_text(encoding="utf-8"))
+    for row in (
+        evidence["merge_topology"], evidence["ci"],
+        evidence["receipts"]["candidate"],
+        evidence["receipts"]["dashboard"],
+        evidence["receipts"]["wave_metrics"],
+        evidence["receipts"]["cleanup"],
+        *evidence["receipts"]["checks"].values(),
+    ):
+        for key in ("source_sha", "candidate_sha", "merge_created_sha",
+                    "checked_sha"):
+            if key in row:
+                row[key] = source_sha
+    evidence["source_sha"] = source_sha
+    evidence["merge_topology"]["first_parent_sha"] = first_parent_sha
+    evidence["merge_topology"]["pull_request_head_sha"] = pull_head_sha
+    for package in evidence["packages"]:
+        package["source_sha"] = source_sha
+    inputs = release_evidence.release_input_digests(root)
+    evidence["supply_chain"]["workflow_digest"] = inputs["workflow_digest"]
+    evidence["supply_chain"]["lock_digest"] = inputs["lock_digest"]
+    evidence["receipts"]["settings"]["digest"] = inputs["settings_digest"]
+    return evidence
+
+
+def test_tag_requires_exact_protected_main_green(tmp_path):
+    """No branch/pre-merge green result can authorize a release tag."""
+    repo = _Repo(str(tmp_path))
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    shutil.copy(Path(ROOT) / ".github/workflows/ci.yml",
+                tmp_path / ".github/workflows/ci.yml")
+    shutil.copy(Path(ROOT) / "requirements-dev.lock",
+                tmp_path / "requirements-dev.lock")
+    (tmp_path / "taskplane").mkdir()
+    shutil.copy(Path(ROOT) / "taskplane/operational-settings.json",
+                tmp_path / "taskplane/operational-settings.json")
+    base = repo.release("1.0.0")
+    repo.tag("1.0.0", base)
+    _git(str(tmp_path), "checkout", "-q", "-b", "feature")
+    pull_head = repo.release("1.1.0")
+    _git(str(tmp_path), "checkout", "-q", "main")
+    _git(str(tmp_path), "merge", "-q", "--no-ff", "feature",
+         "-m", "merge release candidate")
+    protected_head = _git(str(tmp_path), "rev-parse", "HEAD")
+
+    evidence = _protected_main_evidence(
+        tmp_path, protected_head, base, pull_head)
+    receipt = release_evidence.create_protected_main_release_gate(
+        evidence, repository=tmp_path)
+    authorization = gate.authorize_tag(tmp_path, "1.1.0", receipt)
+    assert authorization["authorized"] is True
+    assert authorization["source_sha"] == protected_head
+
+    branch_evidence = deepcopy(evidence)
+    branch_evidence["source_sha"] = pull_head
+    branch_evidence["merge_topology"]["merge_created_sha"] = pull_head
+    branch_evidence["merge_topology"]["checked_sha"] = pull_head
+    branch_evidence["merge_topology"]["pull_request_head_sha"] = "c" * 40
+    branch_evidence["ci"]["candidate_sha"] = pull_head
+    for name, row in branch_evidence["receipts"].items():
+        if name == "checks":
+            for check in row.values():
+                check["source_sha"] = pull_head
+        elif name != "settings":
+            row["source_sha"] = pull_head
+    for package in branch_evidence["packages"]:
+        package["source_sha"] = pull_head
+    branch_receipt = release_evidence.create_protected_main_release_gate(
+        branch_evidence, repository=tmp_path)
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="protected branch head"):
+        gate.authorize_tag(tmp_path, "1.1.0", branch_receipt)
+
+    red = deepcopy(evidence)
+    red["ci"]["conclusions"]["pytest-1"] = "failure"
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="required check"):
+        release_evidence.create_protected_main_release_gate(
+            red, repository=tmp_path)
+
+
+def test_unsafe_workflow_bytes_cannot_be_laundered_by_digest_and_booleans(
+        tmp_path):
+    repo = _Repo(str(tmp_path))
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    shutil.copy(Path(ROOT) / ".github/workflows/ci.yml",
+                tmp_path / ".github/workflows/ci.yml")
+    shutil.copy(Path(ROOT) / "requirements-dev.lock",
+                tmp_path / "requirements-dev.lock")
+    (tmp_path / "taskplane").mkdir()
+    shutil.copy(Path(ROOT) / "taskplane/operational-settings.json",
+                tmp_path / "taskplane/operational-settings.json")
+    base = repo.release("1.0.0")
+    repo.tag("1.0.0", base)
+    _git(str(tmp_path), "checkout", "-q", "-b", "feature")
+    pull_head = repo.release("1.1.0")
+    _git(str(tmp_path), "checkout", "-q", "main")
+    _git(str(tmp_path), "merge", "-q", "--no-ff", "feature", "-m", "merge")
+    protected = _git(str(tmp_path), "rev-parse", "HEAD")
+    evidence = _protected_main_evidence(tmp_path, protected, base, pull_head)
+
+    workflow = tmp_path / ".github/workflows/ci.yml"
+    unsafe = workflow.read_text(encoding="utf-8")
+    unsafe = unsafe.replace("permissions:\n  contents: read", "permissions: write-all")
+    unsafe = unsafe.replace(
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "actions/checkout@main",
+        1,
+    )
+    unsafe += "\nenv:\n  RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}\n"
+    workflow.write_text(unsafe, encoding="utf-8")
+    # A malicious caller recomputes the digest and repeats all of the old
+    # trusted booleans. The release boundary must inspect the bytes itself.
+    evidence["supply_chain"]["workflow_digest"] = hashlib.sha256(
+        workflow.read_bytes()).hexdigest()
+    evidence["supply_chain"].update({
+        "permissions": "contents:read",
+        "immutable_actions": True,
+        "hash_locked_dependencies": True,
+        "credential_empty_untrusted_jobs": True,
+    })
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="workflow supply-chain"):
+        release_evidence.create_protected_main_release_gate(
+            evidence, repository=tmp_path)
+
+
+def test_workflow_supply_chain_rejects_job_level_write_permissions():
+    workflow = (Path(ROOT) / ".github/workflows/ci.yml").read_text(
+        encoding="utf-8")
+    unsafe = workflow.replace(
+        "    runs-on: ubuntu-latest",
+        "    runs-on: ubuntu-latest\n    permissions:\n      contents: write",
+        1,
+    )
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="job permissions"):
+        release_evidence._workflow_supply_chain(unsafe.encode("utf-8"))
+
+
+@pytest.mark.parametrize("unsafe_row", [
+    "package @ https://example.invalid/package.whl --hash=sha256:" + "1" * 64,
+    "git+https://example.invalid/package.git#egg=package --hash=sha256:" +
+    "1" * 64,
+    "../package.whl --hash=sha256:" + "1" * 64,
+    "unhashed==1.0",
+    "-r other.lock",
+    "--requirement other.lock",
+    "-c constraints.lock",
+])
+def test_lock_validator_rejects_every_unsafe_executable_row(unsafe_row):
+    good = "safe==1.0 --hash=sha256:" + "0" * 64
+    assert release_evidence._lock_is_hash_pinned(
+        f"{good}\n{unsafe_row}\n".encode("utf-8")) is False
+
+
+def test_post_merge_release_cli_assembles_and_authorizes_from_sealed_receipts(
+        tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    repo = _Repo(str(repository))
+    (repository / ".github/workflows").mkdir(parents=True)
+    shutil.copy(Path(ROOT) / ".github/workflows/ci.yml",
+                repository / ".github/workflows/ci.yml")
+    shutil.copy(Path(ROOT) / "requirements-dev.lock",
+                repository / "requirements-dev.lock")
+    (repository / "taskplane").mkdir()
+    shutil.copy(Path(ROOT) / "taskplane/operational-settings.json",
+                repository / "taskplane/operational-settings.json")
+    base = repo.release("1.0.0")
+    repo.tag("1.0.0", base)
+    _git(str(repository), "checkout", "-q", "-b", "feature")
+    pull_head = repo.release("1.1.0")
+    _git(str(repository), "checkout", "-q", "main")
+    _git(str(repository), "merge", "-q", "--no-ff", "feature", "-m", "merge")
+    source = _git(str(repository), "rev-parse", "HEAD")
+
+    candidate_input = json.loads((
+        Path(ROOT) / "taskplane/tests/fixtures/ci-policy/candidate.json"
+    ).read_text(encoding="utf-8"))
+    settings = ci_runner._ci_settings(
+        Path(ROOT) / "taskplane/operational-settings.json",
+    )
+    plan_input = ci_runner._ci_declaration(
+        settings, event="push", ref="refs/heads/main", run_id="release",
+    )
+    candidate_input["source_sha"] = source
+    candidate_input["fingerprints"]["settings"] = settings.digest
+    candidate_input["fingerprints"]["shard-plan"] = gate._sha256_json(plan_input)
+    candidate = ci_policy.freeze_candidate(candidate_input)
+    plan = ci_policy.build_ci_plan(candidate, plan_input)
+    settings_receipt = {
+        "schema": "taskplane.authoritative-ci-settings-receipt/v1",
+        "source": "canonical-loader",
+        "precedence": ["defaults", "file", "overlay"],
+        "candidate_sha": source,
+        "settings_digest": plan["settings_digest"],
+        "effective": {},
+        "loader_receipt": {},
+    }
+    settings_receipt["fingerprint"] = gate._sha256_json(settings_receipt)
+    runtime_payload = {
+        "schema": "taskplane.authoritative-ci-runtime/v1",
+        "candidate": candidate,
+        "settings_receipt": settings_receipt,
+        "plan": plan,
+    }
+    runtime = {**runtime_payload,
+               "fingerprint": gate._sha256_json(runtime_payload)}
+    cell_receipts = {
+        cell["id"]: _green_ci_receipt(
+            runtime, cell, artifacts / f"{cell['id']}-owned",
+        )
+        for cell in plan["cells"]
+    }
+
+    dashboard_snapshot = host_native.HostSurfaceSnapshot.create(
+        workflow_id="taskplane-loop", run_id="release-run",
+        target="signoff", revision=source, sequence=1, stage="signoff",
+        state="complete", values={
+            "candidate_sha": source,
+            "generated_at": "2026-08-31T01:00:00Z",
+        }, evidence=("release-gate",), safe_actions=())
+    dashboard_delivery = views.deliver_dashboard(
+        str(artifacts / "dashboard"), dashboard_snapshot.to_dict(),
+        html_renderer=lambda _canonical: "<main>release dashboard</main>")
+    dashboard = dashboard_delivery["publication_receipt"]
+    dashboard_current = dashboard_delivery["current_head"]
+    metrics_input = json.loads((
+        Path(ROOT) / "taskplane/tests/fixtures/wave-metrics/closed-run.json"
+    ).read_text(encoding="utf-8"))
+    metrics_input["run"]["candidate_fingerprint"] = candidate["fingerprint"]
+    for row in metrics_input["sources"].values():
+        row["candidate_fingerprint"] = candidate["fingerprint"]
+    metrics = wave_metrics.seal_wave_receipt(metrics_input)
+
+    manifest = artifacts / "cleanup.json"
+    owned_cleanup.create_manifest(
+        manifest, repository_id="repo", workspace_fingerprint="4" * 64,
+        settings_digest="5" * 64, run_id="release", task_id="release",
+        attempt=1, evidence_root=artifacts / "cleanup-evidence")
+    owner = owned_cleanup.load_manifest(manifest)["owner"]
+    replay = artifacts / "publication-replay.json"
+    owned_cleanup.write_publication_replay(
+        replay, owner=owner, outcome="success", source_revision=1,
+        source_fingerprint="6" * 64, trigger="terminal")
+    cleanup_receipt = owned_cleanup.seal_and_cleanup(
+        manifest, outcome="success", evidence={"publication-replay": replay})
+
+    archives = []
+    for kind in ("openai", "claude"):
+        archive = artifacts / f"{kind}.zip"
+        archive.write_bytes(kind.encode())
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        record = json.loads(provenance.write(
+            repository, archive, digest, kind=kind
+        ).read_text(encoding="utf-8"))
+        archives.append(record)
+
+    release_gate = gate.assemble_protected_main_gate(
+        repository, pull_request_head_sha=pull_head, runtime=runtime,
+        cell_receipts=cell_receipts, dashboard=dashboard,
+        dashboard_current=dashboard_current,
+        wave_metrics=metrics, cleanup=cleanup_receipt,
+        openai_provenance=archives[0], claude_provenance=archives[1])
+    authorization = gate.authorize_tag(
+        repository, "1.1.0", release_gate)
+    assert release_gate["source_sha"] == source
+    assert authorization["authorized"] is True
+
+    missing_sha = deepcopy(dashboard)
+    missing_sha["candidate"].pop("source_sha")
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="dashboard publication evidence"):
+        gate.assemble_protected_main_gate(
+            repository, pull_request_head_sha=pull_head, runtime=runtime,
+            cell_receipts=cell_receipts, dashboard=missing_sha,
+            dashboard_current=dashboard_current,
+            wave_metrics=metrics, cleanup=cleanup_receipt,
+            openai_provenance=archives[0], claude_provenance=archives[1])
+
+    wrong_snapshot = host_native.HostSurfaceSnapshot.create(
+        workflow_id="taskplane-loop", run_id="release-run",
+        target="signoff", revision="f" * 40, sequence=2, stage="signoff",
+        state="complete", values={
+            "candidate_sha": "f" * 40,
+            "generated_at": "2026-08-31T01:01:00Z",
+        }, evidence=("release-gate",), safe_actions=())
+    wrong_delivery = views.deliver_dashboard(
+        str(artifacts / "wrong-dashboard"), wrong_snapshot.to_dict(),
+        html_renderer=lambda _canonical: "<main>wrong dashboard</main>")
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="dashboard publication evidence"):
+        gate.assemble_protected_main_gate(
+            repository, pull_request_head_sha=pull_head, runtime=runtime,
+            cell_receipts=cell_receipts,
+            dashboard=wrong_delivery["publication_receipt"],
+            dashboard_current=wrong_delivery["current_head"],
+            wave_metrics=metrics, cleanup=cleanup_receipt,
+            openai_provenance=archives[0], claude_provenance=archives[1])
 
 
 class TestThisRepoIsClean(unittest.TestCase):
@@ -414,7 +893,7 @@ class TestDeclaredButNotReleasedCannotRot(unittest.TestCase):
         self.assertEqual(
             set(gate.NOT_RELEASED), {
                 "2.17.22", "2.17.23", "2.17.24", "2.17.25", "2.17.26",
-                "2.18.0",
+                "2.18.0", "2.18.2",
             }
         )
         for version, info in gate.NOT_RELEASED.items():

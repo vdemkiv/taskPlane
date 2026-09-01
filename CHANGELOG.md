@@ -26,16 +26,31 @@ lens rewrite and never bumped to.
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
-> the fully verified forward release candidate moves as v2.18.1, which is not released. Historical
+> v2.18.1 is the tagged local predecessor, v2.18.2 is a superseded unreleased
+> candidate, and the forward release candidate moves as v2.18.3, which is not
+> released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.1 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.18.3 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
+**Unreleased R-0001 delivery note.** Delivery metrics now have one closed,
+redacted, non-cumulative receipt. It binds settings, CI, dashboard publication,
+cleanup, portfolio, token/session/worktree, and dispatch evidence by digest;
+records the approved suite, feedback, critical-path, parallelism, leak, usage,
+Plan-return churn, and end-to-end baselines/targets; keeps billing,
+host-observed usage, and archive
+upper bounds distinct; names deliberate serialization; and refuses sign-off for
+owned leaks or an unexplained hard-ceiling breach. Dashboard, Retro,
+Engineering, and release projections consume the sealed receipt without
+recounting archived traces, reruns, canceled heads, render output, or DOM state.
+
 | Version | Highlights |
 | --- | --- |
-| **v2.18.1** | **Complete local and exact-PR-head-SHA release proof — not released.** Adds the standard-library closed-inventory local CI runner, deterministic exact-once receipts, isolated parallel shards, deadline-safe cleanup, mutation detection, and a blocking PR-head proof that synthetic merge validation cannot substitute. This row claims no main merge, tag, upload, installation, Marketplace publication, or release. |
+| **v2.18.3** | **Canonical delivery settings, truthful live dashboards, CI-first testing, and exact-owned cleanup — not released.** A typed fail-closed loader makes `taskplane/operational-settings.json` the sole owner of configurable defaults, precedence, stage models/reasoning, dispatch, sharding, timeouts, transport, and cleanup policy; every governed flow binds the same effective-settings digest. One settings-bound `HostSurfaceSnapshot` now drives native, JSON, Markdown, HTML, compatibility, recovery, and already-open dashboard delivery with current phase, Design graph, Plan topology, module impact, ordering, freshness, and action-safety evidence. The evidence-pruned suite retains security, authority, portability, release, and high-signal regression floors while removing redundant/stale families. Settings-derived parallel CI, producer/consumer freshness selectors, one terminal authoritative matrix, exact-owned cleanup across every terminal outcome, sealed release provenance, and non-cumulative wave metrics make the delivery lifecycle measurable and fail closed. |
+| **v2.18.2** | **External-worktree Codex hook bootstrap repair — not released.** Codex hooks now resolve the primary checkout's validated launcher from Git's common directory when an external linked worktree lacks its ignored local bridge, route the host-native probe through the same stable engine, fail with an actionable error when no launcher or host plugin root exists, and restore a missing runner before attempting any required hook-config rewrite. Repository-family resolution now uses Git's absolute top-level and common-directory facts so all linked worktrees share the same durable Taskplane state. Exact external-worktree regressions cover PreToolUse, SessionStart, and Stop in both native and bridge manifests. A local reinstall and generated upload artifact are development actions, not Marketplace publication or a public release. |
+| **v2.18.1** | **Complete local and exact-PR-head-SHA release proof — tagged local predecessor, not publicly released.** Adds the standard-library closed-inventory local CI runner, deterministic exact-once receipts, isolated parallel shards, deadline-safe cleanup, mutation detection, and a blocking PR-head proof that synthetic merge validation cannot substitute. Its tag and local installation do not claim an upload or Marketplace publication. |
 | **v2.18.0** | **Superseded public-metadata correction candidate — not released; compatibility N-1 for v2.18.1.** Removes external orchestration-product comparisons from every public skill and agent discovery description plus public security guidance, while preserving exact external namespaces only in internal collision enforcement and tests. Restores the deleted repository-wide branding regression test so a future merge cannot silently reintroduce the copy. It was never promoted into released truth. |
 | **v2.17.26** | **Superseded R-0002 whole-codebase EM remediation candidate — not released; compatibility N-1 for v2.18.0.** Integrated the completed high-, medium-, and low-priority remediation waves, focused final defect fixes, exact-SHA verification evidence, and final Engineering Manager disposition. It was never promoted into released truth. |
 | **v2.17.25** | **Superseded R-0013 main-integration candidate — not released; compatibility N-1 for v2.17.26.** Completed the R-0013 Plan: Codex-native execution authority replaced Taskplane-owned delivery lifecycle control; retained Design evidence validated one concurrent all-26 Design-only sweep; Build, Fix, Evaluate, and execution-time EM started zero Taskplane lens workers; deterministic ready sets, one event-driven wait, bounded acceptance waves, fail-closed native usage evidence, real-checkout wiring closure, and atomic exact-SHA terminal truth governed delivery. It was never promoted into released truth. |

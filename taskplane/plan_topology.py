@@ -9,7 +9,11 @@ concurrency and agent lifecycle remain owned by the native Codex runtime.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import html
+import json
 import math
+import os
 from pathlib import Path
 import shlex
 from typing import Any, Iterable, Mapping, Sequence
@@ -22,10 +26,32 @@ except ImportError:  # pragma: no cover - direct module loading
 
 TOPOLOGY_SCHEMA = "taskplane.plan-topology/v1"
 SEALED_READY_SET_SCHEMA = "taskplane.sealed-ready-set/v1"
+PLAN_DASHBOARD_SCHEMA = "taskplane.dashboard-plan-task-dag/v1"
+PLAN_WAVES_DASHBOARD_SCHEMA = "taskplane.dashboard-plan-waves/v1"
 
 
 class PlanTopologyError(RuntimeError):
     """The Plan topology or trace-derived metrics are structurally unsafe."""
+
+
+def canonical_plan_fingerprint(plan: Mapping[str, Any]) -> str:
+    """Return the exact fingerprint used by the Plan approval receipt.
+
+    The loop seals the complete committed ``plan/tasks.json`` object rather
+    than a renderer-selected subset.  Keeping that byte-independent canonical
+    rule here lets presentation code prove approval without inventing a second
+    approval flag.
+    """
+    if not isinstance(plan, Mapping):
+        raise PlanTopologyError("Plan dashboard source must be an object")
+    try:
+        encoded = json.dumps(
+            dict(plan), sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise PlanTopologyError("Plan dashboard source is not canonical JSON") from exc
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _finite_number(value: object, label: str) -> float:
@@ -220,6 +246,611 @@ def classify_plan(
     }
     material["fingerprint"] = content_fingerprint(material)
     return material
+
+
+def _topological_order(
+    dependencies: Mapping[str, Sequence[str]],
+) -> list[str]:
+    """Return one deterministic order or refuse a cyclic Plan."""
+    _descendants(dependencies)  # validates the complete graph first
+    remaining = {task_id: set(values)
+                 for task_id, values in dependencies.items()}
+    order: list[str] = []
+    while remaining:
+        ready = sorted(task_id for task_id, deps in remaining.items()
+                       if not deps)
+        if not ready:  # defensive; _descendants already rejects this
+            raise PlanTopologyError("task dependency graph contains a cycle")
+        for task_id in ready:
+            order.append(task_id)
+            remaining.pop(task_id)
+        for deps in remaining.values():
+            deps.difference_update(ready)
+    return order
+
+
+def _dashboard_waves(
+    raw_waves: object, *, task_ids: Sequence[str],
+    dependencies: Mapping[str, Sequence[str]], approval: str,
+) -> list[dict[str, Any]]:
+    """Validate and normalize the Plan-authored wave partition."""
+    if not isinstance(raw_waves, list) or not raw_waves:
+        raise PlanTopologyError("Plan dashboard waves must be a non-empty list")
+    known = set(task_ids)
+    seen_wave_ids: set[str] = set()
+    seen_tasks: set[str] = set()
+    task_wave: dict[str, int] = {}
+    normalized: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_waves):
+        if not isinstance(raw, Mapping):
+            raise PlanTopologyError("every Plan dashboard wave must be an object")
+        wave_id = str(raw.get("id") or "").strip()
+        if not wave_id or wave_id in seen_wave_ids:
+            raise PlanTopologyError("Plan dashboard wave ids must be unique")
+        seen_wave_ids.add(wave_id)
+        tasks = raw.get("parallel")
+        if not isinstance(tasks, list) or not tasks or any(
+                not isinstance(task_id, str) or not task_id.strip()
+                for task_id in tasks):
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} has invalid task membership")
+        members = [task_id.strip() for task_id in tasks]
+        if len(set(members)) != len(members):
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} repeats a task")
+        unknown = sorted(set(members) - known)
+        repeated = sorted(set(members) & seen_tasks)
+        if unknown:
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} has unknown tasks: {unknown}")
+        if repeated:
+            raise PlanTopologyError(
+                f"Plan dashboard tasks occur in multiple waves: {repeated}")
+        after = raw.get("after") or []
+        if not isinstance(after, list) or any(
+                not isinstance(task_id, str) or not task_id.strip()
+                for task_id in after):
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} has invalid predecessors")
+        after_ids = [task_id.strip() for task_id in after]
+        if sorted(set(after_ids) - known):
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} has unknown predecessors")
+        if any(task_id not in seen_tasks for task_id in after_ids):
+            raise PlanTopologyError(
+                f"Plan dashboard wave {wave_id} precedes its after-task")
+        for task_id in members:
+            task_wave[task_id] = index
+        seen_tasks.update(members)
+        normalized.append({
+            "id": wave_id,
+            "index": index,
+            "tasks": members,
+            "after": after_ids,
+            "serialization": str(raw.get("serialization") or ""),
+            "approval": approval,
+        })
+    missing = sorted(known - seen_tasks)
+    if missing:
+        raise PlanTopologyError(
+            f"Plan dashboard waves omit tasks: {missing}")
+    for task_id, deps in dependencies.items():
+        for dependency in deps:
+            if task_wave[dependency] >= task_wave[task_id]:
+                raise PlanTopologyError(
+                    f"Plan dashboard wave order violates {dependency}->{task_id}")
+    return normalized
+
+
+def _exact_plan_approval(
+    plan: Mapping[str, Any], receipt: Mapping[str, Any] | None,
+    *, plan_fingerprint: str,
+) -> tuple[str, str | None]:
+    """Return approved only for a valid receipt over this complete Plan."""
+    if not isinstance(receipt, Mapping):
+        return "planned", None
+    try:
+        try:
+            from . import delivery_policy
+        except ImportError:  # pragma: no cover - direct module loading
+            import delivery_policy  # type: ignore
+        checked = delivery_policy.validate_delivery_mode_receipt(receipt)
+    except Exception:
+        return "planned", None
+    matches = (
+        checked.get("plan_fingerprint") == plan_fingerprint
+        and checked.get("requirement") == str(plan.get("requirement") or "")
+        and checked.get("mode") == plan.get("delivery_mode")
+        and checked.get("automatic_lenses") == plan.get("automatic_lenses")
+        and checked.get("plan_authority") == plan.get("plan_authority")
+    )
+    if not matches:
+        return "planned", None
+    return "approved", str(checked.get("fingerprint") or "") or None
+
+
+def dashboard_plan_projection(
+    plan: Mapping[str, Any], *,
+    approval_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Project the current Plan DAG and waves without becoming authority.
+
+    The complete Plan is fingerprinted before any presentation field is
+    selected.  Wave membership is checked against the declared DAG, and the
+    word ``approved`` appears only when the incumbent closed delivery-mode
+    receipt validates and binds that exact full-Plan fingerprint.
+    """
+    if not isinstance(plan, Mapping) or plan.get("schema") != \
+            "taskplane.plan/v1":
+        raise PlanTopologyError("Plan dashboard source schema is invalid")
+    raw_tasks = plan.get("tasks")
+    if not isinstance(raw_tasks, list) or any(
+            not isinstance(row, Mapping) for row in raw_tasks):
+        raise PlanTopologyError("Plan dashboard tasks must be a list of objects")
+    rows = _task_rows(raw_tasks)
+    dependencies = {row["id"]: list(row["deps"]) for row in rows}
+    order = _topological_order(dependencies)
+    plan_fingerprint = canonical_plan_fingerprint(plan)
+    approval, receipt_fingerprint = _exact_plan_approval(
+        plan, approval_receipt, plan_fingerprint=plan_fingerprint)
+    edges = [
+        {"from": dependency, "to": row["id"], "kind": "depends"}
+        for row in rows for dependency in row["deps"]
+    ]
+    edges.sort(key=lambda row: (row["from"], row["to"]))
+    tasks = [{
+        "id": row["id"],
+        "deps": list(row["deps"]),
+        "scope": list(row["scope"]),
+        "status": str(row.get("status") or "pending"),
+    } for row in rows]
+    waves = _dashboard_waves(
+        plan.get("waves"), task_ids=[row["id"] for row in rows],
+        dependencies=dependencies, approval=approval)
+    dag_material = {
+        "schema": PLAN_DASHBOARD_SCHEMA,
+        "source": "plan/tasks.json#/tasks",
+        "plan_fingerprint": plan_fingerprint,
+        "tasks": tasks,
+        "edges": edges,
+        "task_total": len(tasks),
+        "edge_total": len(edges),
+        "topological_order": order,
+    }
+    wave_material = {
+        "schema": PLAN_WAVES_DASHBOARD_SCHEMA,
+        "source": "plan/tasks.json#/waves",
+        "plan_fingerprint": plan_fingerprint,
+        "waves": waves,
+        "wave_total": len(waves),
+        "approval": approval,
+        "approval_receipt_fingerprint": receipt_fingerprint,
+    }
+    return {
+        "dag": {**dag_material,
+                "fingerprint": content_fingerprint(dag_material)},
+        "waves": {**wave_material,
+                  "fingerprint": content_fingerprint(wave_material)},
+    }
+
+
+def _phase_escape(value: object) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _phase_arrow(back: bool = False) -> str:
+    return "←" if back else "→"
+
+
+def _flow_label(value, limit=42):
+    """Compact a graph node without hiding which end of a path it names."""
+    value = str(value or "")
+    if len(value) <= limit:
+        return value
+    left = max(8, (limit - 3) // 2)
+    return value[:left] + "…" + value[-(limit - left - 1):]
+
+
+_DESIGN_GRAPH_SCHEMA = "taskplane.dashboard-design-graph/v1"
+_MODULE_IMPACT_SCHEMA = "taskplane.dashboard-module-impact/v1"
+_PHASE_GRAPH_SCHEMA = "taskplane.dashboard-phase-graphs/v1"
+_PHASE_ORDER = {
+    "pm": 0,
+    "design": 1,
+    "design_approval": 2,
+    "plan": 3,
+    "plan_approval": 4,
+    "execute": 5,
+    "build": 5,
+    "evaluate": 5,
+    "fix": 5,
+    "em": 6,
+    "signoff": 7,
+    "retro": 8,
+    "done": 9,
+}
+
+
+def _phase_digest(value: object) -> str:
+    try:
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("phase graph source is not canonical JSON") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _read_dashboard_json(path: str) -> dict[str, Any] | None:
+    try:
+        with open(path, encoding="utf-8") as stream:
+            value = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _design_graph_projection(ws: str) -> dict[str, Any] | None:
+    contract = _read_dashboard_json(os.path.join(ws, "design", "contract.json"))
+    if not contract or contract.get("schema") != "taskplane.design/v1":
+        return None
+    graph = contract.get("graph")
+    if not isinstance(graph, dict):
+        return None
+    raw_modules = graph.get("proposed_modules")
+    raw_edges = graph.get("proposed_edges")
+    if not isinstance(raw_modules, list) or not isinstance(raw_edges, list):
+        return None
+    modules = [str(value) for value in raw_modules
+               if isinstance(value, str) and value.strip()]
+    if len(modules) != len(raw_modules) or len(set(modules)) != len(modules):
+        return None
+    edges = []
+    for raw in raw_edges:
+        if not isinstance(raw, dict):
+            return None
+        source = str(raw.get("from") or "").strip()
+        target = str(raw.get("to") or "").strip()
+        kind = str(raw.get("kind") or "").strip()
+        reason = str(raw.get("reason") or "").strip()
+        if not source or not target or not kind or not reason:
+            return None
+        edges.append({"from": source, "to": target,
+                      "kind": kind, "reason": reason})
+    material = {
+        "schema": _DESIGN_GRAPH_SCHEMA,
+        "source": "design/contract.json#/graph",
+        "design_graph_fingerprint": _phase_digest(graph),
+        "modules": modules,
+        "edges": edges,
+        "module_total": len(modules),
+        "edge_total": len(edges),
+        "depth_policy": dict(graph.get("depth_policy") or {}),
+    }
+    return {**material, "fingerprint": _phase_digest(material)}
+
+
+def _module_impact_projection(
+    impact: Mapping[str, Any], *, limit: int,
+) -> dict[str, Any]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("module impact display limit must be a positive integer")
+    rows: list[dict[str, Any]] = []
+    raw_impacted = impact.get("impacted")
+    if isinstance(raw_impacted, Mapping):
+        depths = []
+        for raw_depth, raw_rows in raw_impacted.items():
+            try:
+                depth = int(raw_depth)
+            except (TypeError, ValueError):
+                continue
+            depths.append((depth, raw_rows))
+        for depth, raw_rows in sorted(depths, key=lambda item: item[0]):
+            if not isinstance(raw_rows, (list, tuple)):
+                continue
+            for raw in raw_rows:
+                if not isinstance(raw, Mapping) or not raw.get("module"):
+                    continue
+                rows.append({
+                    "depth": depth,
+                    "module": str(raw.get("module") or ""),
+                    "via": str(raw.get("via") or ""),
+                    "kind": str(raw.get("kind") or ""),
+                })
+    raw_source_total = impact.get("total_impacted", len(rows))
+    source_total = (raw_source_total if isinstance(raw_source_total, int)
+                    and not isinstance(raw_source_total, bool)
+                    and raw_source_total >= 0 else len(rows))
+    visible = rows[:limit]
+    visible_total = len(visible)
+    omitted_total = max(0, source_total - visible_total)
+    unknown = impact.get("unknown")
+    unknown_rows = list(unknown) if isinstance(unknown, (list, tuple)) else []
+    policy_blocked = impact.get("policy_blocked")
+    blocked_rows = (list(policy_blocked)
+                    if isinstance(policy_blocked, (list, tuple)) else [])
+    graph = impact.get("graph")
+    graph_fingerprint = (str(graph.get("content_fingerprint") or
+                             graph.get("fingerprint") or "")
+                         if isinstance(graph, Mapping) else "")
+    material = {
+        "schema": _MODULE_IMPACT_SCHEMA,
+        "source": "taskplane.depgraph.impact",
+        "graph_fingerprint": graph_fingerprint or None,
+        "touched": [str(value) for value in impact.get("touched") or ()],
+        "visible": visible,
+        "available_total": len(rows),
+        "source_total": source_total,
+        "visible_total": visible_total,
+        "omitted_total": omitted_total,
+        "unknown_total": len(unknown_rows),
+        "policy_blocked_total": len(blocked_rows),
+        "source_truncated": bool(impact.get("truncated")),
+        "depth_truncated": bool(impact.get("depth_truncated")),
+        "render_truncated": omitted_total > 0 or len(rows) > visible_total,
+        "depth_limit": impact.get("depth_limit"),
+    }
+    return {**material, "fingerprint": _phase_digest(material)}
+
+
+def _snapshot_component(
+    values: Mapping[str, Any] | None, key: str, schema: str,
+) -> dict[str, Any] | None:
+    if not isinstance(values, Mapping):
+        return None
+    value = values.get(key)
+    if not isinstance(value, Mapping) or value.get("schema") != schema:
+        return None
+    return {str(name): item for name, item in value.items()}
+
+
+def phase_graph_projection(
+    workspace: str,
+    state: Mapping[str, Any] | None = None,
+    *,
+    snapshot_values: Mapping[str, Any] | None = None,
+    impact: Mapping[str, Any] | None = None,
+    module_impact_limit: int = 8,
+    loop_loader=None,
+    impact_loader=None,
+) -> dict[str, Any]:
+    """Return distinct stage-aware graph components for every renderer.
+
+    A canonical HostSurfaceSnapshot may supply the four component values;
+    those frozen values win over workspace reads.  The fallback keeps legacy
+    loop dashboards useful while Design/Plan/module owners remain the only
+    authorities for their source data.
+    """
+    state = state if isinstance(state, Mapping) else (
+        loop_loader(workspace) if callable(loop_loader) else {})
+    if snapshot_values is None and isinstance(state.get("values"), Mapping):
+        snapshot_values = state.get("values")
+    step = str(state.get("step") or state.get("stage") or "")
+    rank = _PHASE_ORDER.get(step, -1)
+    components: dict[str, dict[str, Any]] = {}
+
+    if rank >= _PHASE_ORDER["design"]:
+        design = _snapshot_component(
+            snapshot_values, "design_graph", _DESIGN_GRAPH_SCHEMA)
+        if design is None:
+            design = _design_graph_projection(workspace)
+        if design is not None:
+            components["design_graph"] = design
+
+    if rank >= _PHASE_ORDER["plan"]:
+        dag = _snapshot_component(
+            snapshot_values, "plan_task_dag", PLAN_DASHBOARD_SCHEMA)
+        waves = _snapshot_component(
+            snapshot_values, "plan_waves", PLAN_WAVES_DASHBOARD_SCHEMA)
+        if dag is None or waves is None:
+            plan = _read_dashboard_json(
+                os.path.join(workspace, "plan", "tasks.json"))
+            if plan is not None:
+                try:
+                    projected = dashboard_plan_projection(
+                        plan,
+                        approval_receipt=(state.get("delivery_mode_receipt")
+                                          if isinstance(state.get(
+                                              "delivery_mode_receipt"), Mapping)
+                                          else None),
+                    )
+                except PlanTopologyError:
+                    projected = None
+                if projected is not None:
+                    dag = dag or projected["dag"]
+                    waves = waves or projected["waves"]
+        if dag is not None:
+            components["plan_task_dag"] = dag
+        if waves is not None:
+            components["plan_waves"] = waves
+
+    canonical_impact = _snapshot_component(
+        snapshot_values, "module_impact", _MODULE_IMPACT_SCHEMA)
+    if canonical_impact is not None:
+        components["module_impact"] = canonical_impact
+    else:
+        raw_impact = impact
+        if raw_impact is None:
+            tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
+            derived = (impact_loader(workspace, tasks or [])
+                       if callable(impact_loader) else {})
+            raw_impact = derived if isinstance(derived, Mapping) else None
+        if isinstance(raw_impact, Mapping) and raw_impact:
+            components["module_impact"] = _module_impact_projection(
+                raw_impact, limit=module_impact_limit)
+
+    material = {"schema": _PHASE_GRAPH_SCHEMA, "step": step, **components}
+    return {**material, "fingerprint": _phase_digest(material)}
+
+
+def _bounded_graph_svg(
+    component_id: str, title: str, nodes: list[str],
+    edges: list[Mapping[str, Any]], *, node_limit: int = 10,
+) -> str:
+    """Draw one compact graph while disclosing renderer omissions."""
+    selected: list[str] = []
+    for edge in edges:
+        for key in ("from", "to"):
+            value = str(edge.get(key) or "")
+            if value and value not in selected and len(selected) < node_limit:
+                selected.append(value)
+    for value in nodes:
+        if value not in selected and len(selected) < node_limit:
+            selected.append(value)
+    width, box_w, box_h, gap_x, gap_y = 880, 365, 42, 60, 18
+    positions: dict[str, tuple[int, int]] = {}
+    for index, value in enumerate(selected):
+        positions[value] = (
+            55 + (index % 2) * (box_w + gap_x),
+            14 + (index // 2) * (box_h + gap_y),
+        )
+    height = max(92, 28 + ((len(selected) + 1) // 2) * (box_h + gap_y))
+    lines = []
+    for edge in edges:
+        source = str(edge.get("from") or "")
+        target = str(edge.get("to") or "")
+        if source not in positions or target not in positions:
+            continue
+        sx, sy = positions[source]
+        tx, ty = positions[target]
+        lines.append(
+            f'<line x1="{sx + box_w / 2:.1f}" y1="{sy + box_h:.1f}" '
+            f'x2="{tx + box_w / 2:.1f}" y2="{ty:.1f}" '
+            'stroke="var(--line)" stroke-width="1.2"/>')
+    boxes = []
+    for value, (x, y) in positions.items():
+        boxes.append(
+            f'<g><rect x="{x}" y="{y}" width="{box_w}" height="{box_h}" '
+            'rx="6" fill="var(--surface-1)" stroke="var(--line)"/>'
+            f'<text x="{x + 12}" y="{y + 25}" '
+            'font-family="var(--font-mono)" font-size="10.5" '
+            f'fill="var(--text-primary)">{_phase_escape(_flow_label(value, 50))}'
+            '</text></g>')
+    visible_edges = sum(
+        1 for edge in edges
+        if str(edge.get("from") or "") in positions
+        and str(edge.get("to") or "") in positions)
+    description = (
+        f'{len(nodes)} source nodes and {len(edges)} source edges; '
+        f'{len(selected)} nodes and {visible_edges} edges visible in this '
+        'bounded rendering.')
+    return (
+        f'<svg data-phase-graph="{_phase_escape(component_id)}" '
+        f'viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-labelledby="{component_id}-svg-title {component_id}-svg-desc">'
+        f'<title id="{component_id}-svg-title">{_phase_escape(title)}</title>'
+        f'<desc id="{component_id}-svg-desc">{_phase_escape(description)}</desc>'
+        + "".join(lines) + "".join(boxes) + '</svg>')
+
+
+def _render_design_graph(component: Mapping[str, Any]) -> str:
+    modules = [str(value) for value in component.get("modules") or ()]
+    edges = [row for row in component.get("edges") or ()
+             if isinstance(row, Mapping)]
+    return (
+        '<section class="tp-phase-graph" id="tp-design-graph" '
+        f'data-schema="{_phase_escape(component.get("schema", ""))}" '
+        f'data-source="{_phase_escape(component.get("source", ""))}">'
+        '<p class="tp-kicker">Design proposed module &amp; edge graph</p>'
+        f'<p class="tp-lede">source {int(component.get("module_total", 0))} '
+        f'modules · {int(component.get("edge_total", 0))} edges · '
+        f'<code>{_phase_escape(component.get("source", ""))}</code></p>'
+        + _bounded_graph_svg("tp-design-graph", "Design proposed graph",
+                             modules, edges) + '</section>')
+
+
+def _render_plan_dag(component: Mapping[str, Any]) -> str:
+    tasks = [row for row in component.get("tasks") or ()
+             if isinstance(row, Mapping)]
+    nodes = [str(row.get("id") or "") for row in tasks]
+    edges = [row for row in component.get("edges") or ()
+             if isinstance(row, Mapping)]
+    order = " → ".join(str(value)
+                         for value in component.get("topological_order") or ())
+    return (
+        '<section class="tp-phase-graph" id="tp-plan-task-dag" '
+        f'data-schema="{_phase_escape(component.get("schema", ""))}" '
+        f'data-source="{_phase_escape(component.get("source", ""))}">'
+        '<p class="tp-kicker">Plan task dependency DAG</p>'
+        f'<p class="tp-lede">source {int(component.get("task_total", 0))} '
+        f'tasks · {int(component.get("edge_total", 0))} dependency edges</p>'
+        + _bounded_graph_svg("tp-plan-task-dag", "Plan task dependency DAG",
+                             nodes, edges)
+        + f'<p class="tp-lede">topological order · {_phase_escape(order)}</p></section>')
+
+
+def _render_plan_waves(component: Mapping[str, Any]) -> str:
+    approval = ("approved" if component.get("approval") == "approved"
+                else "planned")
+    rows = []
+    for wave in component.get("waves") or ():
+        if not isinstance(wave, Mapping):
+            continue
+        tasks = ", ".join(str(value) for value in wave.get("tasks") or ())
+        rows.append(
+            '<li style="padding:4px 0" '
+            f'data-wave-approval="{approval}"><code>{_phase_escape(wave.get("id", ""))}'
+            f'</code> · {_phase_escape(tasks)} · {approval}</li>')
+    receipt = component.get("approval_receipt_fingerprint")
+    receipt_text = (f' · receipt <code>{_phase_escape(str(receipt)[:16])}</code>'
+                    if approval == "approved" and receipt else "")
+    return (
+        '<section class="tp-phase-graph" id="tp-plan-waves" '
+        f'data-schema="{_phase_escape(component.get("schema", ""))}" '
+        f'data-source="{_phase_escape(component.get("source", ""))}" '
+        f'data-plan-approval="{approval}">'
+        '<p class="tp-kicker">Plan waves</p>'
+        f'<p class="tp-lede">source {int(component.get("wave_total", 0))} '
+        f'waves · {approval}{receipt_text}</p><ol>'
+        + "".join(rows) + '</ol></section>')
+
+
+def _render_module_impact(component: Mapping[str, Any]) -> str:
+    rows = []
+    for row in component.get("visible") or ():
+        if not isinstance(row, Mapping):
+            continue
+        rows.append(
+            f'<li><code>{_phase_escape(row.get("module", ""))}</code> · depth '
+            f'{_phase_escape(row.get("depth", ""))} · {_phase_escape(row.get("kind", ""))} '
+            f'{_phase_arrow(back=True)} {_phase_escape(row.get("via", ""))}</li>')
+    yes_no = lambda value: "yes" if value else "no"
+    return (
+        '<section class="tp-phase-graph" id="tp-repository-module-impact" '
+        f'data-schema="{_phase_escape(component.get("schema", ""))}" '
+        f'data-source="{_phase_escape(component.get("source", ""))}" '
+        f'data-source-total="{int(component.get("source_total", 0))}" '
+        f'data-visible-total="{int(component.get("visible_total", 0))}" '
+        f'data-omitted-total="{int(component.get("omitted_total", 0))}">'
+        '<p class="tp-kicker">Repository module impact</p>'
+        f'<p class="tp-lede">source {int(component.get("source_total", 0))} · '
+        f'visible {int(component.get("visible_total", 0))} · omitted '
+        f'{int(component.get("omitted_total", 0))} · unknown '
+        f'{int(component.get("unknown_total", 0))} · policy stopped '
+        f'{int(component.get("policy_blocked_total", 0))}</p>'
+        f'<p class="tp-lede">source truncated '
+        f'{yes_no(component.get("source_truncated"))} · depth truncated '
+        f'{yes_no(component.get("depth_truncated"))} · render truncated '
+        f'{yes_no(component.get("render_truncated"))}</p><ol>'
+        + "".join(rows) + '</ol></section>')
+
+
+def render_phase_dependency_graphs(projection: Mapping[str, Any]) -> str:
+    """Render four separately labelled canonical graph components."""
+    if not isinstance(projection, Mapping) or projection.get("schema") != \
+            _PHASE_GRAPH_SCHEMA:
+        return ""
+    renderers = (
+        ("design_graph", _render_design_graph),
+        ("plan_task_dag", _render_plan_dag),
+        ("plan_waves", _render_plan_waves),
+        ("module_impact", _render_module_impact),
+    )
+    return "".join(renderer(projection[key])
+                   for key, renderer in renderers
+                   if isinstance(projection.get(key), Mapping))
+
 
 
 def _ready_task_fingerprint(row: Mapping[str, Any], *,

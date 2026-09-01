@@ -1,0 +1,504 @@
+{
+  "schema": "taskplane.test-portfolio/v1",
+  "owner": "TEST-PORTFOLIO",
+  "frozen_sha": "7c8568170a4c25e5c6a6a3816c269f7bf6037bd0",
+  "authority": {
+    "plan": "R-0001/AC-TST2",
+    "policy": "remove only history replay, stale-fixture, duplicate, implementation-detail, or ceremonial tests when a retained current-contract selector or explicit obsolete-contract authority is recorded",
+    "protected_selector_source": "taskplane/tests/fixtures/test-strategy/r0001.json",
+    "protected_selector_source_sha256": "c6ccaea5215e067ba022f9046e05fe6ffe6593aa7223ed11b8c33629011de50a"
+  },
+  "baselines": {
+    "approved_historical": {"test_files": 266, "collected_cases": 4909, "test_loc": 95601},
+    "current_pre_prune": {"test_files": 283, "collected_cases": 5009, "test_loc": 100291},
+    "measurement": "git ls-files taskplane/tests/test_*.py; pytest --collect-only -q; wc -l over the tracked test inventory"
+  },
+  "final": {
+    "test_files": 230,
+    "collected_cases": 4061,
+    "test_loc": 84284,
+    "removed_files": 57,
+    "removed_cases": 916,
+    "removed_loc": 16865,
+    "added_contract_files": 4,
+    "added_contract_cases": 11,
+    "added_contract_loc": 1625,
+    "redundant_families_removed": 18,
+    "targets": {"test_files_max": 230, "collected_cases_max": 4200, "families_min": 6}
+  },
+  "selector_pruning": {
+    "base_revision": "e0aadf61c60c30996739b9f0e6d6f891384e80d4",
+    "source_diff_sha256": "201a10fa5685162439e49c617853a5aa381865ca0b934548597213fd659c220a",
+    "removed_cases": 45,
+    "added_contract_cases": 2,
+    "changed_test_lines": {"deleted": 1305, "added": 538},
+    "removed_fixtures": [
+      "taskplane/tests/fixtures/briefs/audit_hybrid_corpus.json",
+      "taskplane/tests/fixtures/briefs/changed_files.json",
+      "taskplane/tests/fixtures/briefs/golden_dispatch_all.json",
+      "taskplane/tests/fixtures/briefs/golden_dispatch_review.json",
+      "taskplane/tests/fixtures/briefs/golden_dispatch_routed.json",
+      "taskplane/tests/fixtures/briefs/golden_stage_evaluate.json",
+      "taskplane/tests/fixtures/briefs/golden_stage_execute.json",
+      "taskplane/tests/fixtures/briefs/golden_stage_fix.json",
+      "taskplane/tests/fixtures/briefs/regen.py"
+    ],
+    "removed_selectors": [
+      "taskplane/tests/test_binding_obligations.py::TheEngineStillCannotSeeAnyOfThis::test_an_open_binding_obligation_never_reaches_a_loop_gate",
+      "taskplane/tests/test_ci_local.py::test_closed_inventory_is_complete_unique_and_sharded_once",
+      "taskplane/tests/test_ci_local.py::test_import_cycle_check_names_current_checkout_inputs_explicitly",
+      "taskplane/tests/test_debt_burndown.py::TestGoldenRegenProvenance::test_every_golden_carries_regen_banner",
+      "taskplane/tests/test_debt_burndown.py::TestGoldenRegenProvenance::test_regen_script_is_the_documented_path",
+      "taskplane/tests/test_debt_burndown.py::TestHybridMeasurement::test_frozen_corpus_shape",
+      "taskplane/tests/test_debt_burndown.py::TestHybridMeasurement::test_normal_em_adopts_selective_execution",
+      "taskplane/tests/test_dispatch_parity.py::TestCodexEnvParity::test_bare_host_cli_equals_scrubbed_golden_bytes",
+      "taskplane/tests/test_dispatch_parity.py::TestGoldenReplay::test_breadth_all_dispatch_payload_matches_golden",
+      "taskplane/tests/test_dispatch_parity.py::TestGoldenReplay::test_fixture_tree_matches_frozen_changed_files",
+      "taskplane/tests/test_dispatch_parity.py::TestGoldenReplay::test_golden_headers_document_the_regen_command",
+      "taskplane/tests/test_dispatch_parity.py::TestGoldenReplay::test_goldens_are_deterministic_artifacts",
+      "taskplane/tests/test_dispatch_parity.py::TestGoldenReplay::test_routed_dispatch_payload_matches_golden",
+      "taskplane/tests/test_em_h2_quality.py::test_h09_staged_strict_baseline_covers_all_top_level_modules",
+      "taskplane/tests/test_eval_scenario.py::TestEveryEvaluatedSkillHasAScenario::test_every_scenario_fingerprint_is_current",
+      "taskplane/tests/test_evidence_bundle.py::TestTheSuiteIsCitedNotRerun::test_native_executor_and_evaluator_task_ids_share_suite_identity",
+      "taskplane/tests/test_lens_routing_integration.py::test_stage_policy_and_accepted_plan_authority_are_one_closed_boundary",
+      "taskplane/tests/test_lens_routing_product_truth.py::test_historical_contract_and_current_plan_route_remain_intact",
+      "taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_equal_fingerprint_gate_is_byte_identical_to_the_pre_a4_flow",
+      "taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_merge_and_byte_identical_reevidence_replaces_worker_engine_stamp",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_a_both_task_alongside_a_narrow_golden_task_is_not_paired",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_catch_all_scopes_do_not_synthesize_an_unsatisfiable_cycle",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_declared_dependency_passes_the_gate",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_no_plan_checkpoint_loop_cannot_bypass_the_rule",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_phase3_plan_shape_passes",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_same_task_touching_both_surfaces_is_ordered",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_the_real_phase2_gap_is_still_caught_after_the_fix",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_the_refusal_names_scope_narrowing_as_a_remedy",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_the_refusal_says_why_there_is_no_force",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_transitive_dependency_satisfies_the_rule",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_violation_detected_transitively_not_just_directly",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_violating_plan_is_refused_at_approve_too",
+      "taskplane/tests/test_loop.py::TestPlanOrderingGate::test_violating_plan_is_refused_at_the_gate_naming_both_tasks",
+      "taskplane/tests/test_loop.py::TestReviewBridge::test_golden_evaluate_brief_is_lens_free",
+      "taskplane/tests/test_loop.py::TestTaskSuiteTimeoutAuthority::test_absent_task_timeout_defaults_to_exactly_600",
+      "taskplane/tests/test_loop.py::TestTaskSuiteTimeoutAuthority::test_unrelated_task_dod_keeps_600",
+      "taskplane/tests/test_model_tiers.py::TestTierResolver::test_defaults_only_cheap_is_pinned",
+      "taskplane/tests/test_stage_waves.py::TestSlotCharsetRefusalAtEmission::test_valid_ids_emit_byte_identically",
+      "taskplane/tests/test_stage_waves.py::TestStageKillSwitchMatrix::test_single_detector_the_emitter_never_parses_the_env",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathByteIdentity::test_c1_activation_block_never_reaches_the_task_path",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathByteIdentity::test_golden_headers_document_the_regen_command",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathByteIdentity::test_goldens_are_deterministic_artifacts",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathByteIdentity::test_task_path_stdout_matches_stage_goldens",
+      "taskplane/tests/test_stage_release_matrix.py::test_ci_runs_the_stage_release_contract_on_python_310_through_313",
+      "taskplane/tests/test_windows_portability.py::TestEmittedArtifactPathsAreSlashShaped::test_frozen_goldens_carry_no_host_separator"
+    ],
+    "added_selectors": [
+      "taskplane/tests/test_ci_local.py::test_import_cycle_gate_protects_topology_not_physical_line_count",
+      "taskplane/tests/test_settings.py::test_one_release_cache_environment_aliases_are_safe_and_receipted"
+    ],
+    "retained_current_contracts": [
+      "taskplane/tests/test_dispatch_parity.py::TestDispatchContract::test_live_dispatch_carries_the_lens_brief_contract_fields",
+      "taskplane/tests/test_dispatch_parity.py::TestWorkflowArgsParity::test_workflow_args_json_equal_task_path_payload",
+      "taskplane/tests/test_ci_local.py::test_complete_pytest_inventory_is_partitioned_exactly_once_and_balanced",
+      "taskplane/tests/test_evidence_bundle.py::TestTheSuiteIsCitedNotRerun::test_transport_only_pythonpath_is_not_suite_behavior_identity",
+      "taskplane/tests/test_github_workflow_execution.py::test_supported_python_matrix_compiles_imports_before_tests",
+      "taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_recorded_t7_skew_is_refused_then_gates_through_after_merge",
+      "taskplane/tests/test_loop.py::TestReviewBridge::test_zero_lens_evaluate_seals_current_graph_without_route_or_wait",
+      "taskplane/tests/test_stage_waves.py::TestStageEmitterWorkflowPath::test_agent_prompts_are_task_path_bytes_verbatim",
+      "taskplane/tests/test_stage_waves.py::TestStageEmitterWorkflowPath::test_stage_payloads_bind_settings_and_expected_workflow_inputs",
+      "taskplane/tests/test_stage_waves.py::TestStageKillSwitchMatrix::test_truthy_spellings_opt_in_to_the_workflow_path",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathContract::test_bare_default_and_explicit_task_select_same_contract",
+      "taskplane/tests/test_stage_waves.py::TestStageTaskPathContract::test_task_stdout_never_carries_workflow_keys",
+      "taskplane/tests/test_settings.py::test_valid_canonical_settings_load_typed",
+      "taskplane/tests/test_windows_portability.py::TestEmittedArtifactPathsAreSlashShaped::test_worker_workspace_is_normalized_on_the_way_into_a_brief"
+    ]
+  },
+  "inventory_sha256": "685d8555c1fad519efbc2cc2f6fbfd4b56ee5e813b8089aee730b53967365d1d",
+  "protected_floors": [
+    "security-and-authority",
+    "cross-host-portability",
+    "release-version-tag-provenance",
+    "receipts-cache-and-owned-cleanup",
+    "ci-supply-chain",
+    "large-delivery-and-native-accessibility"
+  ],
+  "future_selectors": [],
+  "executable_proofs": [
+    "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied",
+    "taskplane/tests/test_host_native_dashboard.py::test_codex_and_claude_project_equal_semantics_for_all_components",
+    "taskplane/tests/test_status_and_large_delivery.py::test_large_dashboard_automatically_delivers_complete_markdown",
+    "taskplane/tests/test_worker_contract_lifecycle.py::test_authenticated_release_refuses_before_terminal_and_tampering",
+    "taskplane/tests/test_windows_portability.py::TestArtifactsAreByteIdenticalAcrossHosts::test_atomic_write_json_emits_lf_on_every_host",
+    "taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green",
+    "taskplane/tests/test_release_provenance.py::test_premerge_first_parent_topology_matches_release_gate",
+    "taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets",
+    "taskplane/tests/test_ci_local.py::test_zero_token_no_egress_guard_executes_in_credential_empty_environment",
+    "taskplane/tests/test_github_workflow_execution.py::test_supported_python_matrix_compiles_imports_before_tests",
+    "taskplane/tests/test_release_tags.py::test_pushed_sha_proof_fetches_before_classifying_stale_tracking_ref",
+    "taskplane/tests/test_release_tags.py::test_pushed_sha_proof_refuses_cached_ref_when_fetch_fails",
+    "taskplane/tests/test_collision_integration.py::test_both_manifests_route_skill_to_dedicated_screen",
+    "taskplane/tests/test_audit_sweep.py::TestAuditCadence::test_audit_due_fires_at_every_fifth_by_default"
+  ],
+  "families": [
+    {
+      "id": "field-report-9464-history-replay",
+      "classification": "history-replay",
+      "authority": "The PR-9464 incident narrative is closed; current routing, stop-submission, and bounded delivery contracts are authoritative.",
+      "removed_files": [
+        "taskplane/tests/test_field_report_9464.py",
+        "taskplane/tests/test_field_report_9464_exit_path.py"
+      ],
+      "source_sha256": "7bb683bfc0ee9397a6341f3f5dc68c0dd480e7c3a3e5ab9fb417f298f475dd44",
+      "before": {"files": 2, "cases": 81, "loc": 1060},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_focused_lens_routing.py::test_product_route_is_deterministic_complete_and_risk_sensitive",
+        "taskplane/tests/test_stop_submission_enforcement.py::TestSubmissionPreservation::test_valid_submission_allows_and_every_input_stays_byte_identical",
+        "taskplane/tests/test_status_and_large_delivery.py::test_large_dashboard_automatically_delivers_complete_markdown"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "remove focused routing dispatch edge", "selector": "taskplane/tests/test_focused_lens_routing.py::test_product_route_is_deterministic_complete_and_risk_sensitive"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["routing kernel", "stop hook", "runtime output adapter"], "disposition": "inline incident replay only; no shared fixture owner"}
+    },
+    {
+      "id": "r0006-closed-acceptance-replay",
+      "classification": "history-replay",
+      "authority": "R-0006 acceptance was closed and its live graph, CI, compatibility, and release contracts have named current suites.",
+      "removed_files": [
+        "taskplane/tests/test_r0006_baseline.py",
+        "taskplane/tests/test_r0006_cli_errors.py",
+        "taskplane/tests/test_r0006_graph_boundaries.py",
+        "taskplane/tests/test_r0006_graph_quality.py",
+        "taskplane/tests/test_r0006_import_cycle_ratchet.py",
+        "taskplane/tests/test_r0006_pushed_sha.py",
+        "taskplane/tests/test_r0006_python_compatibility.py",
+        "taskplane/tests/test_r0006_python_matrix.py",
+        "taskplane/tests/test_r0006_quick_only.py",
+        "taskplane/tests/test_r0006_workflow_wiring.py",
+        "taskplane/tests/test_r0006_zero_token_ci.py"
+      ],
+      "source_sha256": "d9e46705182a1fd81d0c2e858cdf2dbf6219c55584875d3caf6b5fc343094676",
+      "before": {"files": 11, "cases": 132, "loc": 3301},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_graph_quality.py::TestGraphQualityRecord::test_same_inputs_have_the_same_fingerprint",
+        "taskplane/tests/test_lens_route_v2.py::TestBreadthAllUnchanged::test_breadth_all_is_legacy_even_with_stage",
+        "taskplane/tests/test_github_workflow_execution.py::test_authoritative_workflow_uses_one_settings_derived_suite",
+        "taskplane/tests/test_github_workflow_execution.py::test_quality_receipt_command_identity_is_cross_runner_and_tamper_closed",
+        "taskplane/tests/test_em_m1_ci_dependencies.py::test_m06_readonly_PR_jobs_disable_persist_credentials",
+        "taskplane/tests/test_em_m1_ci_dependencies.py::test_m17_pytest_is_version_and_hash_locked",
+        "taskplane/tests/test_em_h2_quality.py::test_h09_ci_enforces_lint_and_strict_types",
+        "taskplane/tests/test_em_h2_quality.py::test_h1e_sandbox_regression_runs_on_blocking_windows_leg",
+        "taskplane/tests/test_ci_local.py::test_zero_token_no_egress_guard_executes_in_credential_empty_environment",
+        "taskplane/tests/test_github_workflow_execution.py::test_supported_python_matrix_compiles_imports_before_tests",
+        "taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green",
+        "taskplane/tests/test_release_tags.py::test_pushed_sha_proof_fetches_before_classifying_stale_tracking_ref",
+        "taskplane/tests/test_release_tags.py::test_pushed_sha_proof_refuses_cached_ref_when_fetch_fails",
+        "taskplane/tests/test_windows_portability.py::TestNewlineNormalization::test_crlf_reads_identically_to_lf",
+        "taskplane/tests/test_windows_portability.py::TestArtifactsAreByteIdenticalAcrossHosts::test_atomic_write_json_emits_lf_on_every_host"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "remove the settings-derived authoritative CI suite", "selector": "taskplane/tests/test_github_workflow_execution.py::test_authoritative_workflow_uses_one_settings_derived_suite"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["graph scanner", "review kernel", "GitHub workflow", "release gate"], "disposition": "R-0006 fixtures were private replay data embedded in removed files"}
+    },
+    {
+      "id": "v094-v101-fix-archaeology",
+      "classification": "implementation-detail",
+      "authority": "Patch-version reproductions are superseded by invariant-level security, screener, and external-store tests.",
+      "removed_files": [
+        "taskplane/tests/test_v094_fixes.py",
+        "taskplane/tests/test_v095_fixes.py",
+        "taskplane/tests/test_v096_fixes.py",
+        "taskplane/tests/test_v097_fixes.py",
+        "taskplane/tests/test_v101_fixes.py"
+      ],
+      "source_sha256": "a1910b46c35ac9fe170b8dd3c739292820b6753431dc20547fdc222584f610af",
+      "before": {"files": 5, "cases": 85, "loc": 1419},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied",
+        "taskplane/tests/test_screener_bypasses.py::TestD0001ShellGroupingHidesTheProgram::test_every_grouped_form_is_refused",
+        "taskplane/tests/test_external_store.py::TestKey::test_key_is_readable_slug_and_collision_free"
+      ],
+      "mutation_proof": {"kind": "mutation", "operator": "permit unknown mutation capability", "selector": "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["capability policy", "command screener", "external store"], "disposition": "tmp-path-only cases; no retained fixture consumers"}
+    },
+    {
+      "id": "v120-v154-feature-history",
+      "classification": "duplicate",
+      "authority": "Version-labelled feature snapshots duplicate current knowledge-store, host-surface, accessibility, and delivery contracts.",
+      "removed_files": [
+        "taskplane/tests/test_v120_coverage.py",
+        "taskplane/tests/test_v130_grounding.py",
+        "taskplane/tests/test_v140_tag.py",
+        "taskplane/tests/test_v150_share.py",
+        "taskplane/tests/test_v151_fixes.py",
+        "taskplane/tests/test_v152_fixes.py",
+        "taskplane/tests/test_v153_render.py",
+        "taskplane/tests/test_v154_coverage.py"
+      ],
+      "source_sha256": "813ed7f14fa4639da188f7ebbf06457e843e024ba1c0abd8320526ad7d2ad1f2",
+      "before": {"files": 8, "cases": 94, "loc": 1469},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_kb.py::TestKBLoopIntegration::test_approve_records_and_next_recalls",
+        "taskplane/tests/test_external_store.py::TestMigration::test_migrate_moves_untracks_and_ignores",
+        "taskplane/tests/test_host_native_dashboard.py::test_rendered_surface_accessibility_is_measured",
+        "taskplane/tests/test_status_and_large_delivery.py::test_large_dashboard_automatically_delivers_complete_markdown"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "drop persisted approved knowledge from next-context retrieval", "selector": "taskplane/tests/test_kb.py::TestKBLoopIntegration::test_approve_records_and_next_recalls"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["knowledge store", "store migrator", "native dashboard", "delivery adapter"], "disposition": "removed files generated only ephemeral workspaces"}
+    },
+    {
+      "id": "v200-v221-graph-artifact-history",
+      "classification": "duplicate",
+      "authority": "Release-labelled graph/artifact/concurrency examples duplicate current graph and obligation contracts.",
+      "removed_files": [
+        "taskplane/tests/test_v200_artifacts.py",
+        "taskplane/tests/test_v200_graph_use.py",
+        "taskplane/tests/test_v221_fixes.py"
+      ],
+      "source_sha256": "5fd8f5b44ae04c374b55724874522964fa33b954c92511534e2f6ea038992678",
+      "before": {"files": 3, "cases": 41, "loc": 744},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_artifact_graph.py::TestReferencesAreEdges::test_the_blast_radius_now_reaches_the_artifacts",
+        "taskplane/tests/test_depgraph.py::TestScan::test_scan_builds_modules_and_edges",
+        "taskplane/tests/test_binding_obligations.py::TheBlockIsNarrow::test_the_conclusion_is_blocked",
+        "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_execute_pass_is_rejected_when_tests_fail"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "remove graph-to-artifact blast-radius edge", "selector": "taskplane/tests/test_artifact_graph.py::TestReferencesAreEdges::test_the_blast_radius_now_reaches_the_artifacts"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["artifact graph", "dependency graph", "binding obligations", "execute gate"], "disposition": "no fixture or generator was uniquely consumed"}
+    },
+    {
+      "id": "v230-v231-release-era-duplicates",
+      "classification": "duplicate",
+      "authority": "Version-named release regressions are replaced by direct release, host parity, browser conformance, and authority-boundary contracts.",
+      "removed_files": [
+        "taskplane/tests/test_v230_cli.py",
+        "taskplane/tests/test_v230_dashboard.py",
+        "taskplane/tests/test_v230_design.py",
+        "taskplane/tests/test_v230_docs.py",
+        "taskplane/tests/test_v230_graph.py",
+        "taskplane/tests/test_v230_guardrails.py",
+        "taskplane/tests/test_v230_loop.py",
+        "taskplane/tests/test_v231_cli.py",
+        "taskplane/tests/test_v231_dashboard.py",
+        "taskplane/tests/test_v231_dispatch.py",
+        "taskplane/tests/test_v231_guardrails.py"
+      ],
+      "source_sha256": "745d43af366d3a68f83a34d1df167d95308c0e9041ae0d648316628e08ffb2f5",
+      "before": {"files": 11, "cases": 312, "loc": 4915},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green",
+        "taskplane/tests/test_release_provenance.py::test_premerge_first_parent_topology_matches_release_gate",
+        "taskplane/tests/test_host_native_dashboard.py::test_codex_and_claude_project_equal_semantics_for_all_components",
+        "taskplane/tests/test_dashboard_browser.py::test_real_browser_svg_graphs_and_single_document_are_truthful",
+        "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied"
+      ],
+      "mutation_proof": {"kind": "mutation", "operator": "accept non-protected or non-green release topology", "selector": "taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["release gate", "host surfaces", "browser dashboard", "capability policy"], "disposition": "old release-specific inline fixtures have no live generator/consumer edge"}
+    },
+    {
+      "id": "views-seam-implementation-detail",
+      "classification": "implementation-detail",
+      "authority": "The former renderer seam is superseded by the canonical one-document publisher and accessible runtime fallback contracts.",
+      "removed_files": ["taskplane/tests/test_views_seam.py"],
+      "source_sha256": "bacf3073f091aef105d401061d5539d77f73843143cedb66f845a3192dce43d3",
+      "before": {"files": 1, "cases": 9, "loc": 197},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_dashboard_delivery_html.py::test_delivery_contains_exactly_one_doctype_html_head_and_body",
+        "taskplane/tests/test_status_and_large_delivery.py::test_runtime_output_adapter_uses_fresh_receipt_or_accessible_fallback"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "nest or duplicate canonical HTML document", "selector": "taskplane/tests/test_dashboard_delivery_html.py::test_delivery_contains_exactly_one_doctype_html_head_and_body"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["dashboard publisher", "runtime output adapter"], "disposition": "mock-renderer seam had no product fixture consumer"}
+    },
+    {
+      "id": "audit-extraction-implementation-detail",
+      "classification": "implementation-detail",
+      "authority": "The extraction byte-identity and seam-comment replay is superseded by direct audit cadence, gate, and EM payload behavior.",
+      "removed_files": ["taskplane/tests/test_audit_extraction.py"],
+      "source_sha256": "5de695b5ce0425a5188caa5f7af49052243cbb7a385ca10b9e14e3e06f040d51",
+      "before": {"files": 1, "cases": 18, "loc": 766},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_audit_sweep.py::TestAuditCadence::test_audit_due_fires_at_every_fifth_by_default",
+        "taskplane/tests/test_audit_sweep.py::TestGateIntegration::test_na_lens_finding_blocks_the_gate",
+        "taskplane/tests/test_audit_sweep.py::TestEmPayloadAndCounterWiring::test_em_payload_advertises_audit_mode_when_due"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "remove audit cadence trigger at configured interval", "selector": "taskplane/tests/test_audit_sweep.py::TestAuditCadence::test_audit_due_fires_at_every_fifth_by_default"},
+      "fixtures_generators_consumers": {"fixtures": ["taskplane/tests/fixtures/audit/**"], "generators": [], "consumers": ["test_audit_sweep.py"], "disposition": "shared audit fixtures are retained; only extraction archaeology is removed"}
+    },
+    {
+      "id": "routing-cost-detail-duplicates",
+      "classification": "duplicate",
+      "authority": "Typing-cost and breadth snapshots duplicate current budget, engine-failure, docs-only, telemetry-redaction, and recorded-breadth contracts.",
+      "removed_files": [
+        "taskplane/tests/test_em_m1_typing_cost.py",
+        "taskplane/tests/test_routing_budget_and_prose.py",
+        "taskplane/tests/test_route_breadth.py"
+      ],
+      "source_sha256": "c315e59601245285146d69866b12e009e635caee2ed1ff71600c0bb5251df556",
+      "before": {"files": 3, "cases": 34, "loc": 756},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_lens_signals.py::TestBudget::test_cap_demotes_overflow_never_drops",
+        "taskplane/tests/test_lens_route_v2.py::TestEngineFailureStopsDispatch::test_engine_exception_emits_mapper_unavailable_and_zero_dispatch",
+        "taskplane/tests/test_lens_route_v2.py::TestBudgetAndFloorsThroughRoute::test_docs_only_change_keeps_attributable_lens_in_sweep",
+        "taskplane/tests/test_lens_route_v2.py::TestBreadthAllUnchanged::test_breadth_all_is_legacy_even_with_stage",
+        "taskplane/tests/test_lens_route_telemetry.py::test_route_telemetry_is_complete_bounded_and_redacted",
+        "taskplane/tests/test_eval_recorder.py::TestTheRoutingBreadthComesFromTheRecordNotTheRoutedSet::test_a_route_that_states_its_breadth_beats_the_routed_set"
+      ],
+      "mutation_proof": {"kind": "mutation", "operator": "drop over-budget lenses instead of deterministic demotion", "selector": "taskplane/tests/test_lens_signals.py::TestBudget::test_cap_demotes_overflow_never_drops"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["signal budget", "route engine", "route telemetry", "evaluation recorder"], "disposition": "removed fixtures were inline snapshots with no unique consumer"}
+    },
+    {
+      "id": "evaluation-wrapper-duplicates",
+      "classification": "duplicate",
+      "authority": "Small evaluator wrapper assertions duplicate complete workflow, compliant recorder, zero-lens terminal, and hard-gate contracts.",
+      "removed_files": [
+        "taskplane/tests/test_eval_dor.py",
+        "taskplane/tests/test_eval_graph_compliance.py",
+        "taskplane/tests/test_eval_routing_compliance.py",
+        "taskplane/tests/test_eval_context.py"
+      ],
+      "source_sha256": "090b1be1fb438e3fc87909a57e94b14a27a433cfb6f16a8eabc0106983932846",
+      "before": {"files": 4, "cases": 13, "loc": 138},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_eval_workflow.py::TestAbsoluteWorkflow::test_complete_ordered_evidence_is_eligible",
+        "taskplane/tests/test_eval_workflow.py::TestAbsoluteWorkflow::test_missing_dor_is_ineligible_even_when_model_claims_completion",
+        "taskplane/tests/test_eval_recorder.py::TestAStubDriverRunIsScoredByTheRealScorer::test_a_compliant_stub_run_passes_every_step",
+        "taskplane/tests/test_lens_routing_integration.py::test_every_zero_lens_terminal_path_has_no_lens_worker_start",
+        "taskplane/tests/test_command_efficiency.py::test_canonical_efficiency_passes_all_hard_gates"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "accept evaluation without DoR evidence", "selector": "taskplane/tests/test_eval_workflow.py::TestAbsoluteWorkflow::test_missing_dor_is_ineligible_even_when_model_claims_completion"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["evaluation workflow", "evaluation recorder", "zero-lens adapter", "efficiency gate"], "disposition": "thin hand-built contexts had no shared fixture owner"}
+    },
+    {
+      "id": "evaluation-record-shape-replay",
+      "classification": "history-replay",
+      "authority": "The original record-shape extraction replay is superseded by the live rubric negative corpus, record reader, gate baseline, and fixture-invisibility tests.",
+      "removed_files": ["taskplane/tests/test_eval_record_shape.py"],
+      "source_sha256": "5330e9d4a1095bd29e22833081176a57140fa74d1442dd05f0ef4383017779b3",
+      "before": {"files": 1, "cases": 23, "loc": 519},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_eval_rubric.py::TestTheNegativeCorpus::test_every_fixture_is_a_loadable_eval_record",
+        "taskplane/tests/test_eval_rubric.py::TestReadRecord::test_unparseable_json_is_unreadable_and_never_empty",
+        "taskplane/tests/test_eval_gate.py::TestABaselineIsAVerdictVectorNotAnAverage::test_the_baseline_stores_the_inputs_fingerprint_it_was_graded_at",
+        "taskplane/tests/test_eval_recorder.py::TestTheFixtureIsInvisibleToTheRepositorysOwnTooling::test_bare_pytest_at_the_repo_root_still_collects_cleanly"
+      ],
+      "mutation_proof": {"kind": "mutation", "operator": "treat unparseable evaluation JSON as empty evidence", "selector": "taskplane/tests/test_eval_rubric.py::TestReadRecord::test_unparseable_json_is_unreadable_and_never_empty"},
+      "fixtures_generators_consumers": {"fixtures": ["evals/fixtures/**"], "generators": ["evaluation recorder fixture builder"], "consumers": ["test_eval_rubric.py", "test_eval_gate.py", "test_eval_recorder.py"], "disposition": "all shared evaluation fixtures and generators are retained"}
+    },
+    {
+      "id": "derivation-ledger-detail-replay",
+      "classification": "implementation-detail",
+      "authority": "Command-token and verb-table internals duplicate scorer-level repeat detection and scenario-aware recorder behavior.",
+      "removed_files": ["taskplane/tests/test_derivation_ledger.py"],
+      "source_sha256": "d8cd9cc2ce5b18f1e74079b2b4bc51b6f2ab7eb95929390b7f2c7e1f23d1eb15",
+      "before": {"files": 1, "cases": 53, "loc": 874},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_eval_rubric.py::TestRepeats::test_a_second_derivation_of_the_same_input_fails",
+        "taskplane/tests/test_eval_recorder.py::TestScenarioAwareRecorderBoundaries::test_two_native_review_starts_remain_a_repeat"
+      ],
+      "mutation_proof": {"kind": "mutation", "operator": "accept a repeated derivation of identical input", "selector": "taskplane/tests/test_eval_rubric.py::TestRepeats::test_a_second_derivation_of_the_same_input_fails"},
+      "fixtures_generators_consumers": {"fixtures": ["evals/fixtures/**"], "generators": [], "consumers": ["evaluation rubric", "scenario-aware recorder"], "disposition": "shared evaluation corpus remains; command-parser internals are not a fixture contract"}
+    },
+    {
+      "id": "loop-cost-ratchet-duplicate",
+      "classification": "duplicate",
+      "authority": "The old loop-cost pin duplicates current validation progression, CI metrics, and identical-content cache contracts.",
+      "removed_files": ["taskplane/tests/test_loop_cost_ratchet.py"],
+      "source_sha256": "620e78a0123a1de248bef7b1b90ec74c0f18af34c9dcee7e05a45ebadef74750",
+      "before": {"files": 1, "cases": 8, "loc": 87},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_ci_execution_policy.py::test_validation_progression_requires_one_authoritative_ci_run",
+        "taskplane/tests/test_ci_execution_policy.py::test_ci_metrics_meet_declared_targets",
+        "taskplane/tests/test_suite_cache.py::TestCacheHitsOnlyOnIdenticalContent::test_second_check_over_identical_content_cites_the_first"
+      ],
+      "mutation_proof": {"kind": "mutation", "operator": "rerun an unchanged green validation layer", "selector": "taskplane/tests/test_ci_execution_policy.py::test_validation_progression_requires_one_authoritative_ci_run"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["CI policy", "suite cache"], "disposition": "old pinned loop trace was ceremonial and has no current generator"}
+    },
+    {
+      "id": "em-concurrency-replay",
+      "classification": "history-replay",
+      "authority": "The M16 EM finding replay duplicates the adversarial current review publication race contract.",
+      "removed_files": ["taskplane/tests/test_em_m2_concurrency.py"],
+      "source_sha256": "2c5a9f4aad5dcd1ed47adce3440375f021b290403bf5c03d6907498ee43bec61",
+      "before": {"files": 1, "cases": 2, "loc": 204},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": ["taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_concurrent_collect_loser_never_publishes_authoritative_views"],
+      "mutation_proof": {"kind": "severed-edge", "operator": "publish authoritative views from losing concurrent collector", "selector": "taskplane/tests/test_review_routing.py::TestSelectiveReviewKernel::test_concurrent_collect_loser_never_publishes_authoritative_views"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["selective review publisher"], "disposition": "thread/event harness is owned by the retained direct race test"}
+    },
+    {
+      "id": "public-brand-blacklist-ceremony",
+      "classification": "ceremonial",
+      "authority": "The one-off product-name blacklist is absent from current Design and Plan; registry collision authority and both packaged manifests remain directly protected.",
+      "removed_files": ["taskplane/tests/test_public_metadata_branding.py"],
+      "source_sha256": "9a3b012243b71c031fe3cedc7b897352dfc0b7c9924542f298922022236af749",
+      "before": {"files": 1, "cases": 1, "loc": 49},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_collision_core.py::test_registry_is_versioned_and_fingerprinted",
+        "taskplane/tests/test_collision_core.py::test_known_competitor_denial_names_authority_and_continuation",
+        "taskplane/tests/test_collision_integration.py::test_both_manifests_route_skill_to_dedicated_screen"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "remove dedicated skill screen from one packaged manifest", "selector": "taskplane/tests/test_collision_integration.py::test_both_manifests_route_skill_to_dedicated_screen"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["collision registry", "Codex manifest", "Claude manifest"], "disposition": "no fixture or generator edge"}
+    },
+    {
+      "id": "r0001-test-harness-implementation-detail",
+      "classification": "implementation-detail",
+      "authority": "Test-double self-tests are superseded by current native wait and atomic release/review publication contracts.",
+      "removed_files": ["taskplane/tests/test_r0001_test_harness.py"],
+      "source_sha256": "7f972a2c5fb6f65c22b51c9770f64eb8f6def5a0472ba2372ad3639600ab8dc9",
+      "before": {"files": 1, "cases": 3, "loc": 67},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_r0013_native_dispatch.py::test_one_native_wait_wakes_on_completion_or_attention",
+        "taskplane/tests/test_r0001_release_green.py::test_release_evidence_atomic_publication_recovers_each_fault",
+        "taskplane/tests/test_r0001_review_authority.py::test_override_publication_recovers_each_atomic_fault_without_fork"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "remove completion and attention outcomes from native wait", "selector": "taskplane/tests/test_r0013_native_dispatch.py::test_one_native_wait_wakes_on_completion_or_attention"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["native wait", "release evidence publisher", "review authority publisher"], "disposition": "unused test doubles have no live product or fixture consumer"}
+    },
+    {
+      "id": "review-summary-recovery-duplicate",
+      "classification": "duplicate",
+      "authority": "Helper-level summary recovery checks duplicate current collector and recovery integration contracts for normalization, targeted retry, and idempotence.",
+      "removed_files": ["taskplane/tests/test_review_summary_recovery.py"],
+      "source_sha256": "1a9bc238364b710b5eac24ef592e3b0d379ed8635b7cb1fe1313f560453b4c7f",
+      "before": {"files": 1, "cases": 4, "loc": 113},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_r0002_reviewkernel_regression_floor.py::test_blocker_only_summary_is_normalized_once_without_rewriting_findings",
+        "taskplane/tests/test_review_evidence_lifecycle.py::test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_producer_rerun",
+        "taskplane/tests/test_review_recovery.py::test_retry_plan_calls_only_affected_producers_and_preserves_valid_results",
+        "taskplane/tests/test_review_recovery.py::test_retry_and_repair_are_idempotent_and_never_duplicate_findings"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "rerun every producer for one derivable summary contradiction", "selector": "taskplane/tests/test_review_evidence_lifecycle.py::test_collect_normalizes_derivable_summary_contradiction_in_one_call_without_producer_rerun"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["review collector", "review recovery planner"], "disposition": "removed helper fixture was private to duplicate unit coverage"}
+    },
+    {
+      "id": "em-loop-docs-history-replay",
+      "classification": "history-replay",
+      "authority": "Closed M-22, M-27, and M-28 prose replays are superseded by runtime unavailable handling, conservative migration, and native ownership contracts.",
+      "removed_files": ["taskplane/tests/test_em_mx_loop_docs.py"],
+      "source_sha256": "5995ffd149f16a3eb121e47f80ab892675239d819bc0a0c6fef928a4a615756a",
+      "before": {"files": 1, "cases": 3, "loc": 187},
+      "after": {"files": 0, "cases": 0, "loc": 0},
+      "retained_selectors": [
+        "taskplane/tests/test_evidence_bundle.py::TestUnavailableModelEvaluationDoesNotOpenAProductFix::test_unavailable_advances_with_warning_without_a_fix_cycle",
+        "taskplane/tests/test_evidence_bundle.py::TestUnavailableModelEvaluationDoesNotOpenAProductFix::test_product_failure_cannot_be_disguised_as_unavailable",
+        "taskplane/tests/test_stage_migration.py::test_unambiguous_migration_is_atomic_idempotent_and_conservative",
+        "taskplane/tests/test_stage_migration.py::test_ambiguous_migration_commits_unknown_receipt_without_lifecycle_guess",
+        "taskplane/tests/test_r0013_native_authority.py::test_loop_wave_never_calls_stage_split_resume_or_execution_root_claim"
+      ],
+      "mutation_proof": {"kind": "severed-edge", "operator": "let loop wave reclaim native execution ownership", "selector": "taskplane/tests/test_r0013_native_authority.py::test_loop_wave_never_calls_stage_split_resume_or_execution_root_claim"},
+      "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["evaluation lifecycle", "stage migrator", "native authority boundary"], "disposition": "exact wording replay has no live fixture or generator consumer"}
+    }
+  ]
+}

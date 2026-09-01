@@ -48,6 +48,7 @@ def _evaluator_receipt(member):
 
 def _run_workflow(name, args, order=None):
     """Run the production JS workflow with deterministic host doubles."""
+    args = {"settings_digest": "0" * 64, **args}
     source = base64.b64encode(
         (ROOT / "workflows" / f"{name}-wave.js").read_bytes()).decode()
     script = r"""

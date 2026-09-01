@@ -1278,6 +1278,62 @@ class RepositoryManager:
             primary, task_id=task_id,
             run_id=run_id or registration.get("run_id"))
 
+    def owned_worktree_resource(self, primary_checkout: str, *, task_id: str,
+                                merge_receipt: Mapping,
+                                lifecycle: Mapping) -> dict:
+        """Adapt exact repository registration into cleanup manifest facts."""
+        primary = os.path.realpath(primary_checkout)
+        registration = storage.load_task_worktree_registration(primary, task_id)
+        if registration is None:
+            raise RepositoryAcquisitionError(
+                "identity", "task worktree has no managed registration")
+        managed = os.path.abspath(str(registration.get("path") or ""))
+        root, relative = os.path.split(managed)
+        if (not root or not relative or merge_receipt.get("managed_path") != managed or
+                merge_receipt.get("receipt_id") is None):
+            raise RepositoryAcquisitionError(
+                "identity", "task worktree cleanup identity is ambiguous")
+        try:
+            import worktree_cleanup
+        except ImportError:
+            from taskplane import worktree_cleanup
+        stable_identity = worktree_cleanup.resource_identity(
+            dict(merge_receipt), lifecycle=dict(lifecycle))
+        return {
+            "kind": "worktree",
+            "containment_root": root,
+            "relative_name": relative,
+            "stable_identity": stable_identity,
+            "policy": {"merge_receipt": copy.deepcopy(dict(merge_receipt)),
+                       "lifecycle": copy.deepcopy(dict(lifecycle))},
+        }
+
+    def register_owned_worktree(
+            self, manifest: str, primary_checkout: str, *, task_id: str,
+            merge_receipt: Mapping, lifecycle: Mapping,
+            creator_nonce: str, dependencies: Sequence[str] = (),
+            evidence_refs: Sequence[str] = (
+                "terminal-state", "handoff", "publication-replay")) -> str:
+        """Register and activate the incumbent exact worktree adapter.
+
+        Worktree creation owners call this at their reserve-before-use seam;
+        cleanup remains delegated to :mod:`worktree_cleanup` and never uses
+        path or branch-name inference.
+        """
+        try:
+            from taskplane import owned_cleanup
+        except ImportError:
+            import owned_cleanup
+        descriptor = self.owned_worktree_resource(
+            primary_checkout, task_id=task_id,
+            merge_receipt=merge_receipt, lifecycle=lifecycle)
+        resource_id = owned_cleanup.reserve_resource(
+            manifest, creator_nonce=creator_nonce,
+            evidence_refs=evidence_refs, dependencies=dependencies,
+            **descriptor)
+        owned_cleanup.activate_resource(manifest, resource_id)
+        return resource_id
+
     def accept_pickup_revision(self, primary_checkout: str, *, task_id: str,
                                revision: str) -> dict:
         """Accept an exact already-current revision at the merge boundary."""

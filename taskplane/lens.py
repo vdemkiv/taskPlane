@@ -1367,7 +1367,7 @@ def _lens_prompt(entry: dict, base: str) -> str:
         + CLEAR_ALWAYS)
 
 
-# Per-brief action ceilings (v2.11.0). A flat 30 truncated a verification
+# Per-brief action ceilings (v2.11.0). A flat ceiling truncated a verification
 # agent mid-research on karpenter#9464: it was fetching and reading external
 # sources to check the lenses' load-bearing claims, hit the ceiling, and
 # returned partial findings naming the questions it could not close. It
@@ -1380,14 +1380,12 @@ def _lens_prompt(entry: dict, base: str) -> str:
 # `.em-review/lens-<id>/**` and still cannot touch reviewed source. An
 # explicit `max_actions` overrides every tier, so callers that pin a number
 # (the parity fixtures) keep getting exactly that number.
-DEEP_ACTIONS = 45
-SWEEP_ACTIONS = 30
-
-
-def actions_for(tier: str, override=None) -> int:
+def actions_for(tier: str, settings_context, override=None) -> int:
     if override is not None:
         return int(override)
-    return DEEP_ACTIONS if tier == "deep" else SWEEP_ACTIONS
+    key = ("lens_deep_max_actions" if tier == "deep"
+           else "lens_sweep_max_actions")
+    return int(settings_context.limits.budgets[key])
 
 
 def dispatch_briefs(routing: dict, base: str = "HEAD",
@@ -1404,6 +1402,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     the harness/guardrails are preserved: a lens-agent can read the diff but
     never modify code, and it's budget-capped.
     """
+    settings_context = tp._canonical_operational_settings(legacy_environment=True)
     # v2 routings carry per-lens verdicts: "deep" fans out one governed agent
     # each, "light" batches into the single sweep-style brief, and "n/a"
     # lenses get NO brief — they do not run. The full disposition set
@@ -1498,14 +1497,16 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
     for x in deep:
         lid = x["id"]
         mtier = _lens_tier(lid, "deep")
-        brief = {**tp.dispatch_fields("lens", "tp-lens", lid, mtier),
+        brief = {**tp.dispatch_fields("lens", "tp-lens", lid, mtier,
+                                      settings_context=settings_context),
             "id": lid, "name": x["name"], "tier": "deep", "agent": "tp-lens",
             "task_slot": f"lens-{lid}",
             "output": f".em-review/lens-{lid}/findings.json",
             "contract": {"read_only": True,
                          "task_slot": f"lens-{lid}",
                          "write_allow": [f".em-review/lens-{lid}/**"],
-                         "max_actions": actions_for("deep", max_actions)},
+                         "max_actions": actions_for(
+                             "deep", settings_context, max_actions)},
             "prompt": _slot_instr(f"lens-{lid}") + _lens_prompt(x, base)
                 + _language_note(x.get("language_references")) + (
                 "\nBLAST RADIUS (from the dependency graph - factor "
@@ -1536,8 +1537,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
                 if key not in seen_refs:
                     sweep_refs.append(ref)
                     seen_refs.add(key)
-        sweep_brief = {**tp.dispatch_fields(
-            "lens", "tp-lens", "sweep", "cheap"),
+        sweep_brief = {**tp.dispatch_fields("lens", "tp-lens", "sweep", "cheap",
+                                            settings_context=settings_context),
             "ids": [s["id"] for s in sweep], "agent": "tp-lens",
             **({"tier": "light", "depth": "quick"}
                if review_policy and
@@ -1547,7 +1548,8 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "contract": {"read_only": True,
                          "task_slot": "lens-sweep",
                          "write_allow": [".em-review/lens-sweep/**"],
-                         "max_actions": actions_for("sweep", max_actions)},
+                         "max_actions": actions_for(
+                             "sweep", settings_context, max_actions)},
             "dispatch_set": {"schema": "taskplane.dispatch-set/v1",
                              "id": "automatic-review-sweep",
                              "concurrent": True,
@@ -1555,8 +1557,11 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
             "wait_policy": {"schema": "taskplane.wait-policy/v1",
                             "outstanding_set": "automatic-review-sweep",
                             "outstanding_count": len(sweep), "mode": "event",
-                            "timeout_seconds": 1800,
-                            "minimum_timeout_seconds": 300,
+                            "timeout_seconds": settings_context.limits.timeouts[
+                                "lens_wait_seconds"],
+                            "minimum_timeout_seconds":
+                                settings_context.limits.timeouts[
+                                    "lens_minimum_wait_seconds"],
                             "reissue_after": ["completion", "attention"],
                             "scheduled_polling": False},
             "prompt": _slot_instr("lens-sweep") + (
@@ -1605,7 +1610,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         # dispatch agents that don't exist. Signal "nothing to review".
         out = {
             "base": base,
-            "changed_files": routing["context"].get("changed_files", 0),
+            "changed_files": routing["context"].get("changed_files", 0), "settings_digest": settings_context.digest,
             "deep": [], "sweep": None,
             "nothing_to_review": True,
             "instruction": (
@@ -1621,7 +1626,7 @@ def dispatch_briefs(routing: dict, base: str = "HEAD",
         return out
     out = {
         "base": base,
-        "changed_files": routing["context"].get("changed_files", 0),
+        "changed_files": routing["context"].get("changed_files", 0), "settings_digest": settings_context.digest,
         "deep": briefs, "sweep": sweep_brief,
         "nothing_to_review": False,
         "instruction": (

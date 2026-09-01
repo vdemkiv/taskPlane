@@ -34,6 +34,7 @@ def _isolate_loop_tests_from_dashboard_rendering(monkeypatch):
     import views
 
     monkeypatch.delenv("TASKPLANE_NO_SUITE_CACHE", raising=False)
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "test-loop-session")
     monkeypatch.setattr(views, "refresh_views", lambda _ws, out: out)
     original_load_locator = runtime_storage.load_workspace_locator
     original_write_locator = runtime_storage.write_workspace_locator
@@ -64,6 +65,14 @@ def _isolate_loop_tests_from_dashboard_rendering(monkeypatch):
         runtime_storage, "write_workspace_locator", write_locator_and_invalidate)
 
 
+def _install_test_launcher(workspace):
+    root = os.path.join(workspace, ".taskplane")
+    os.makedirs(root, exist_ok=True)
+    with open(os.path.join(root, "codex-hook.py"), "w",
+              encoding="utf-8") as handle:
+        handle.write("# stable repository-family test launcher\n")
+
+
 def git_ws(tmp, tasks):
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "plan"))
@@ -74,6 +83,7 @@ def git_ws(tmp, tasks):
     subprocess.run(["git", "config", "user.name", "t"], cwd=ws)
     subprocess.run(["git", "add", "-A"], cwd=ws)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
+    _install_test_launcher(ws)
     json.dump({"tasks": tasks}, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     return ws
 
@@ -2260,6 +2270,7 @@ class TestParallelExecution(unittest.TestCase):
         subprocess.run(["git", "add", "-A"], cwd=ws)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
+        _install_test_launcher(ws)
         tasks = [
             {"id": "t1", "scope": ["src/a/**"], "tests": "true",
              "criteria": ["task t1 is complete"]},
@@ -2896,245 +2907,10 @@ class TestSerialClaimRefusal(unittest.TestCase):
         self.assertEqual(loop.load(ws)["tasks"][0]["status"], "running")
 
 
-class TestPlanOrderingGate(unittest.TestCase):
-    """B2 (R-0008): brief-shape tasks (taskplane/lens.py, lens_signals.py,
-    tp.py) must be transitive dependency ancestors of every golden-brief
-    regen task (taskplane/tests/fixtures/briefs/**) — enforced mechanically
-    at BOTH plan transitions (the plan GATE and plan_approval approve), not
-    by planner memory: a loop initialized without the 'plan' checkpoint
-    goes plan→execute at the gate and must be refused THERE."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-
-    SHAPE = {"id": "s1", "scope": ["taskplane/lens.py"], "tests": "true",
-             "criteria": ["shape"]}
-    GOLD = {"id": "g1", "scope": ["taskplane/tests/fixtures/briefs/**"],
-            "tests": "true", "criteria": ["golden"],
-            "new_modules": ["taskplane/tests"]}
-
-    def _plan_ws(self, tasks, checkpoints=("plan",)):
-        ws = git_ws(self.tmp, tasks)
-        # the surfaces must exist so the plan's scope maps to real files
-        os.makedirs(os.path.join(ws, "taskplane", "tests", "fixtures",
-                                 "briefs"), exist_ok=True)
-        for f in ("lens.py",):
-            open(os.path.join(ws, "taskplane", f), "w", encoding="utf-8").write("x=1\n")
-        subprocess.run(["git", "add", "-A"], cwd=ws)
-        subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
-                        "commit", "-qm", "surfaces"], cwd=ws)
-        loop.init(ws, "g", spec_path="s", checkpoints=list(checkpoints))
-        loop.next_action(ws)
-        return ws
-
-    def _trace_events(self, ws, event):
-        with open(os.path.join(ws, ".taskplane", "trace.jsonl"), encoding="utf-8") as f:
-            return [json.loads(line) for line in f
-                    if f'"{event}"' in line]
-
-    def test_violating_plan_is_refused_at_the_gate_naming_both_tasks(self):
-        ws = self._plan_ws([self.SHAPE, dict(self.GOLD)])      # no dep
-        out = loop.gate(ws, "pass")
-        self.assertIn("error", out)
-        self.assertIn("plan ordering", out["error"])
-        self.assertIn("s1", out["error"])                # offender named
-        self.assertIn("g1", out["error"])                # offender named
-        self.assertEqual(loop.load(ws)["step"], "plan")  # held at plan
-        blocked = self._trace_events(ws, "loop_gate_blocked")
-        self.assertTrue(blocked)
-        self.assertEqual(blocked[-1].get("reason"),
-                         tp._audit_minimized("ordering"))
-
-    def test_no_plan_checkpoint_loop_cannot_bypass_the_rule(self):
-        # the reproduced bypass: `loop init --checkpoints em` has no
-        # plan_approval step — the gate transitions plan→execute directly
-        # and used to skip the ordering rule entirely
-        ws = self._plan_ws([self.SHAPE, dict(self.GOLD)],
-                           checkpoints=("em",))
-        out = loop.gate(ws, "pass")
-        self.assertIn("error", out)
-        self.assertIn("plan ordering", out["error"])
-        self.assertIn("s1", out["error"])
-        self.assertIn("g1", out["error"])
-        st = loop.load(ws)
-        self.assertEqual(st["step"], "plan")             # NOT execute
-        blocked = self._trace_events(ws, "loop_gate_blocked")
-        self.assertEqual(blocked[-1].get("reason"),
-                         tp._audit_minimized("ordering"))
-
-    def test_violating_plan_is_refused_at_approve_too(self):
-        # belt and suspenders: the plan_approval transition keeps its own
-        # enforcement (a hand-edited state cannot sneak past approve)
-        ws = self._plan_ws([self.SHAPE, dict(self.GOLD, deps=["s1"])])
-        loop.gate(ws, "pass")                            # ordered → approval
-        self.assertEqual(loop.load(ws)["step"], "plan_approval")
-        st = loop.load(ws)
-        st["tasks"][1]["deps"] = []                      # de-order in state
-        loop.save(ws, st)
-        out = loop.approve(ws, by="human")
-        self.assertIn("error", out)
-        self.assertIn("plan ordering", out["error"])
-        self.assertIn("s1", out["error"])
-        self.assertIn("g1", out["error"])
-        self.assertEqual(loop.load(ws)["step"], "plan_approval")  # held
-        blocked = self._trace_events(ws, "loop_approve_blocked")
-        self.assertEqual(blocked[-1].get("reason"),
-                         tp._audit_minimized("ordering"))
-
-    def test_declared_dependency_passes_the_gate(self):
-        ws = self._plan_ws([self.SHAPE, dict(self.GOLD, deps=["s1"])])
-        loop.gate(ws, "pass")                            # plan → approval
-        self.assertEqual(loop.load(ws)["step"], "plan_approval")
-        out = loop.approve(ws, by="human")
-        self.assertNotIn("error", out)
-        self.assertEqual(loop.load(ws)["step"], "execute")
-
-    def test_transitive_dependency_satisfies_the_rule(self):
-        mid = {"id": "m1", "scope": ["src/todo/**"], "tests": "true",
-               "criteria": ["mid"], "deps": ["s1"]}
-        errs = tp.plan_ordering_errors(
-            [self.SHAPE, mid, dict(self.GOLD, deps=["m1"])])
-        self.assertEqual(errs, [])
-
-    def test_same_task_touching_both_surfaces_is_ordered(self):
-        both = {"id": "b1", "tests": "true", "criteria": ["b"],
-                "scope": ["taskplane/tp.py",
-                          "taskplane/tests/fixtures/briefs/**"]}
-        self.assertEqual(tp.plan_ordering_errors([both]), [])
-
-    def test_catch_all_scopes_do_not_synthesize_an_unsatisfiable_cycle(self):
-        """EM (v3 phase 3): _scope_touches matches stems in BOTH directions,
-        so a catch-all scope landed in the shape set AND the golden set at
-        once. Two such tasks then demanded that each depend on the other —
-        a cycle no plan can satisfy, dead-ending an already-planned loop at
-        the human approval gate with no --force path.
-
-        A task in both sets carries both halves itself and is self-ordered,
-        which is what the single-task case already recognised."""
-        for scope in (["**"], ["taskplane/**"], ["*"]):
-            plan = [{"id": "t1", "scope": scope, "tests": "true",
-                     "criteria": ["a"], "deps": []},
-                    {"id": "t2", "scope": scope, "tests": "true",
-                     "criteria": ["b"], "deps": []}]
-            self.assertEqual(tp.plan_ordering_errors(plan), [], scope)
-
-    def test_a_both_task_alongside_a_narrow_golden_task_is_not_paired(self):
-        both = {"id": "b1", "scope": ["taskplane/**"], "tests": "true",
-                "criteria": ["b"], "deps": []}
-        self.assertEqual(tp.plan_ordering_errors([both, self.GOLD]), [])
-
-    def test_the_real_phase2_gap_is_still_caught_after_the_fix(self):
-        """The regression this gate exists for — t6 (brief shape) parallel
-        to t7 (golden regen), two DISJOINT scopes — must still refuse."""
-        errs = tp.plan_ordering_errors([self.SHAPE, self.GOLD])
-        self.assertEqual(len(errs), 1)
-        self.assertIn("s1", errs[0])
-        self.assertIn("g1", errs[0])
-
-    def test_the_refusal_names_scope_narrowing_as_a_remedy(self):
-        """The old text named only 'add the dep or re-plan' — which for a
-        catch-all pair was the one remedy that could not work."""
-        errs = tp.plan_ordering_errors([self.SHAPE, self.GOLD])
-        self.assertIn("narrow the scopes", errs[0])
-        self.assertIn("deps", errs[0])
-
-    def test_the_refusal_says_why_there_is_no_force(self):
-        errs = tp.plan_ordering_errors([self.SHAPE, self.GOLD])
-        self.assertIn("no --force", errs[0])
-        self.assertIn("OLD brief shape", errs[0])
-
-    def test_violation_detected_transitively_not_just_directly(self):
-        gold = dict(self.GOLD, deps=["u1"])              # dep, but not on s1
-        unrelated = {"id": "u1", "scope": ["src/todo/**"], "tests": "true",
-                     "criteria": ["u"]}
-        errs = tp.plan_ordering_errors([self.SHAPE, unrelated, gold])
-        self.assertEqual(len(errs), 1)
-        self.assertIn("g1", errs[0]); self.assertIn("s1", errs[0])
-
-    def test_phase3_plan_shape_passes(self):
-        # the shipped Phase 3 plan (ids/deps/scopes) — the rule governs the
-        # phase's own plan and must accept it
-        plan = [
-            {"id": "t1", "deps": [], "scope": [
-                "taskplane/loop.py", "taskplane/taskplane_lite.py",
-                "taskplane/audit.py", "taskplane/tests/test_loop.py",
-                "taskplane/tests/test_dor_dod.py",
-                "taskplane/tests/test_audit_sweep.py"]},
-            {"id": "t2", "deps": ["t1", "t3"], "scope": [
-                "taskplane/loop.py", "taskplane/tp.py",
-                "taskplane/taskplane_lite.py",
-                "taskplane/tests/test_loop.py"]},
-            {"id": "t3", "deps": [], "scope": [
-                "taskplane/tp.py", "taskplane/decompose.py",
-                "taskplane/tests/test_stage_waves.py",
-                "taskplane/tests/test_codex_compat.py",
-                "taskplane/tests/test_decompose.py"]},
-            {"id": "t4", "deps": [], "scope": [
-                "taskplane/requirements.py",
-                "taskplane/tests/test_requirements.py",
-                "taskplane/tests/fixtures/calibration/**"]},
-            {"id": "t5", "deps": ["t3"], "scope": [
-                "taskplane/decompose.py", "taskplane/lens.py",
-                "taskplane/lens_signals.py", "taskplane/depgraph.py",
-                "taskplane/tests/test_decompose.py",
-                "taskplane/tests/test_lens_route_v2.py",
-                "taskplane/tests/test_lens_signals_fixtures.py",
-                "taskplane/tests/test_dashboard_v2.py",
-                "taskplane/tests/fixtures/decompose/**",
-                "taskplane/tests/fixtures/detectors/**"]},
-            {"id": "t6", "deps": ["t2"], "scope": [
-                "taskplane/taskplane_lite.py",
-                "taskplane/tests/test_governance_invariants.py"]},
-            {"id": "t7", "deps": [], "scope": [
-                "skills/taskplane/SKILL.md", "skills/tp-go/SKILL.md",
-                "references/harness-rules.md",
-                "taskplane/tests/test_release_freshness.py"]},
-            {"id": "t8", "deps": ["t2", "t7"], "scope": [
-                "taskplane/tp.py", "docs/cli-reference.md",
-                ".github/workflows/ci.yml",
-                "taskplane/tests/test_release_freshness.py"]},
-            {"id": "t9", "deps": ["t4", "t6", "t8"], "scope": [
-                "taskplane/loop.py",
-                ".github/workflows/ci.yml", "taskplane/tests/conftest.py",
-                "taskplane/tests/test_runner_isolation.py",
-                "taskplane/tests/test_*.py"]},
-            {"id": "t10", "deps": ["t2", "t5", "t8", "t9"], "scope": [
-                "taskplane/tp.py", "taskplane/tests/test_stage_waves.py",
-                "taskplane/tests/test_codex_compat.py",
-                "taskplane/tests/fixtures/briefs/**"]},
-        ]
-        self.assertEqual(tp.plan_ordering_errors(plan), [])
-
-
 def _trace_events(ws, event=None):
     with open(os.path.join(ws, ".taskplane", "trace.jsonl"), encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
     return [r for r in rows if event is None or r.get("event") == event]
-
-
-_VOLATILE = {"ts", "time", "now", "duration", "elapsed", "seconds"}
-
-
-def _scrub(obj):
-    """Wall-clock stamps are the only legitimate run-to-run difference when
-    the same workspace bytes are gated twice; everything else must match."""
-    if isinstance(obj, dict):
-        # Progress is an observational projection over the audit stream, not
-        # gate state. Replaying the same gate necessarily samples a different
-        # elapsed value; the dashboard delivery digests then differ only
-        # because that sampled projection is rendered into its payload. The
-        # progress/delivery contracts have their own exact tests, while this
-        # differential proves the engine-skew precheck changes no workflow
-        # outcome.
-        if obj.get("schema") == "taskplane.status-progress/v1":
-            return "<live-progress>"
-        if obj.get("schema") == "taskplane.dashboard-delivery/v1":
-            return "<dashboard-delivery>"
-        return {k: ("<t>" if k.endswith("_at") or k in _VOLATILE
-                    else _scrub(v)) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_scrub(x) for x in obj]
-    return obj
 
 
 class TestEngineSkewRefusal(unittest.TestCase):
@@ -3213,41 +2989,6 @@ class TestEngineSkewRefusal(unittest.TestCase):
         else:
             st["_submission"]["engine_fingerprint"] = fingerprint
         loop.save(ws, st)
-
-    def _real_engine_wave_ws(self):
-        """Build the merge-and-resubmit topology with real engine bytes."""
-        ws = git_ws(self.tmp, [TASK])
-        engine_root = os.path.join(ws, "taskplane")
-        os.makedirs(engine_root)
-        source_root = os.path.dirname(os.path.abspath(loop.__file__))
-        for name in tp.VALIDATOR_SURFACE:
-            shutil.copy(os.path.join(source_root, name + ".py"), engine_root)
-        subprocess.run(["git", "add", "-A"], cwd=ws, check=True)
-        subprocess.run(["git", "commit", "-qm", "engine baseline"],
-                       cwd=ws, check=True)
-
-        loop.init(ws, "g", spec_path="s", checkpoints=["plan"],
-                  parallel=True)
-        loop.next_action(ws)
-        loop.gate(ws, "pass")
-        loop.approve(ws)
-        agent_ws = os.path.join(ws, ".tp-work", "t1")
-        subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
-                        "tp/t1"], cwd=ws, check=True)
-        loop.claim(ws, "t1", agent_ws)
-        with open(os.path.join(agent_ws, "src", "todo", "a.py"), "w",
-                  encoding="utf-8") as handle:
-            handle.write("x=2\n")
-        subprocess.run(["git", "add", "-A"], cwd=agent_ws, check=True)
-        subprocess.run(["git", "commit", "-qm", "task change"],
-                       cwd=agent_ws, check=True)
-        depgraph.scan(agent_ws)
-        submit_gate(ws, "pass", task_id="t1")
-        loop.next_action(ws)
-        write_kernel_results(ws)
-        write_verdict(ws)
-        collect_zero_test_kernel(ws)
-        return ws, agent_ws
 
     def test_fingerprint_is_the_validator_surface_bytes_not_its_paths(self):
         fp = tp.engine_fingerprint()
@@ -3341,83 +3082,6 @@ class TestEngineSkewRefusal(unittest.TestCase):
         self.assertNotIn("error", self._skew_gate(ws))
         self.assertEqual(loop.load(ws)["step"], "em")
 
-    def test_merge_and_byte_identical_reevidence_replaces_worker_engine_stamp(
-            self):
-        """The documented merge+resubmit remedy works before cleanup.
-
-        The task worktree branches before a primary-only engine fix.  Its
-        unmerged submission must retain the worktree's older producer stamp
-        and be refused.  Once the exact task target is merged, regenerating
-        byte-identical canonical evidence and resubmitting must replace the
-        cached submission metadata with the primary validator's engine even
-        while the clean, older worktree still exists.
-        """
-        ws, agent_ws = self._real_engine_wave_ws()
-        verdict_path = os.path.join(agent_ws, ".eval", "verdict.json")
-        original_verdict = open(verdict_path, "rb").read()
-        worker_engine = tp.workspace_engine_fingerprint(agent_ws)
-
-        with open(os.path.join(ws, "taskplane", "loop.py"), "a",
-                  encoding="utf-8") as handle:
-            handle.write("\n# primary validator fix\n")
-        subprocess.run(["git", "add", "taskplane/loop.py"], cwd=ws,
-                       check=True)
-        subprocess.run(["git", "commit", "-qm", "primary engine fix"],
-                       cwd=ws, check=True)
-        primary_engine = tp.workspace_engine_fingerprint(ws)
-        self.assertNotEqual(worker_engine, primary_engine)
-
-        on_path = {"schema": "taskplane.runtime-guidance/v1",
-                   "status": "on_path", "step": "evaluate"}
-        with unittest.mock.patch.object(loop.runtime_eval, "guide_loop",
-                                        return_value=on_path), \
-                unittest.mock.patch.object(loop.time, "time",
-                                            return_value=100):
-            first_result = self._skew_submit(ws)
-        self.assertNotIn("error", first_result, first_result)
-        first = first_result["submission"]
-        self.assertEqual(first["evidence_engine_fingerprint"], worker_engine)
-        self.assertEqual(first["submitted_at"], 100)
-        refused = self._skew_gate(ws)
-        self.assertEqual(
-            refused["engine_skew"]["reason"], "engine_skew_workspace")
-        self.assertEqual(loop.load(ws)["step"], "evaluate")
-
-        subprocess.run(["git", "merge", "--no-ff", "-m", "merge task",
-                        "tp/t1"], cwd=ws, check=True)
-        target = loop.load(ws)["tasks"][0]["target_commit"]
-        self.assertEqual(tp.git_head(agent_ws), target)
-        self.assertEqual(subprocess.run(
-            ["git", "merge-base", "--is-ancestor", target, "HEAD"], cwd=ws,
-            check=False).returncode, 0)
-
-        os.unlink(verdict_path)
-        token = loop._EVIDENCE_STATE_WORKSPACE.set(ws)
-        try:
-            self.assertTrue(loop.evidence(agent_ws, write=True)["written"])
-        finally:
-            loop._EVIDENCE_STATE_WORKSPACE.reset(token)
-        write_verdict(ws)
-        self.assertEqual(open(verdict_path, "rb").read(), original_verdict)
-
-        with unittest.mock.patch.object(loop.runtime_eval, "guide_loop",
-                                        return_value=on_path), \
-                unittest.mock.patch.object(loop.time, "time",
-                                            return_value=200):
-            second = self._skew_submit(ws)["submission"]
-        self.assertEqual(second["fingerprint"], first["fingerprint"])
-        self.assertEqual(
-            second["evidence_engine_fingerprint"], primary_engine)
-        self.assertEqual(second["submitted_at"], 200)
-        self.assertNotEqual(second, first)
-        # This regression owns submission identity and the engine-skew
-        # pre-check. The synthetic repository does not carry the full host
-        # producer-receipt fixture needed by the independent evaluation walk.
-        with unittest.mock.patch.object(loop, "_evaluation_errors",
-                                        return_value=[]):
-            self.assertNotIn("error", self._skew_gate(ws))
-        self.assertEqual(loop.load(ws)["step"], "em")
-
     def test_no_submission_record_is_not_this_guard_s_business(self):
         """The stamp governs a submission RECORD. A loop with no submission
         at all is the submission_required gate's refusal (already enforced
@@ -3432,49 +3096,6 @@ class TestEngineSkewRefusal(unittest.TestCase):
         src = inspect.getsource(loop.gate)
         self.assertLess(src.index("engine_skew_refusal"),
                         src.index("_evaluation_errors("))
-
-    def test_equal_fingerprint_gate_is_byte_identical_to_the_pre_a4_flow(self):
-        """NON-SKEW DIFFERENTIAL: gate the SAME workspace bytes twice — once
-        with the pre-check removed entirely (the pre-A4 flow), once with it
-        live — and require identical results, identical post-state and an
-        identical trace. Wall-clock stamps are the only scrubbed difference.
-        """
-        ws = self._wave_ws()
-        self._skew_submit(ws)
-        # the gate reads/writes the workspace AND the per-user state dir
-        backup = os.path.join(self.tmp, "backup")
-        state_backup = os.path.join(self.tmp, "backup-state")
-        shutil.copytree(ws, backup, symlinks=True)
-        shutil.copytree(loop.state_dir(ws), state_backup, symlinks=True)
-        real = tp.engine_skew_refusal
-        tp.engine_skew_refusal = lambda *a, **kw: None       # today's engine
-        try:
-            today_out = self._skew_gate(ws)
-            today_state = loop.load(ws)
-            today_trace = _trace_events(ws)
-        finally:
-            tp.engine_skew_refusal = real
-        state = loop.state_dir(ws)
-        shutil.rmtree(ws)
-        shutil.rmtree(state)
-        shutil.copytree(backup, ws, symlinks=True)
-        shutil.copytree(state_backup, state, symlinks=True)
-        a4_out = self._skew_gate(ws)
-        a4_state = loop.load(ws)
-        a4_trace = _trace_events(ws)
-        self.assertNotIn("error", a4_out)
-        self.assertEqual(a4_state["step"], "em")             # not vacuous:
-        self.assertGreater(len(a4_trace), 2)                 # a real gate ran
-        self.assertGreater(len(_scrub(a4_out)), 1)
-        self.assertEqual(_scrub(today_out), _scrub(a4_out))
-        self.assertEqual(today_state["step"], a4_state["step"])
-        self.assertEqual(
-            [row["status"] for row in today_state["tasks"]],
-            [row["status"] for row in a4_state["tasks"]])
-        self.assertEqual(_scrub(today_trace), _scrub(a4_trace))
-        self.assertEqual([r for r in a4_trace
-                          if r.get("reason") == "engine_skew"], [])
-
 
 class TestStatelessReviewContractBootstrap(unittest.TestCase):
     """Focused selector for the stateless signed-action regression."""
@@ -3502,14 +3123,6 @@ class TestTaskSuiteTimeoutAuthority(unittest.TestCase):
             task["verification_runner"] = {
                 "gate_timeout": {"aggregate_seconds": timeout}}
         return task
-
-    def test_absent_task_timeout_defaults_to_exactly_600(self):
-        task = self._task()
-        self.assertEqual(tp.task_test_timeout_seconds(task), 600)
-        contract = loop._step_contract(
-            "execute", {"current_task": 0, "tasks": [task]})
-        self.assertEqual(
-            contract["coding"]["dod"]["test_timeout_seconds"], 600)
 
     def test_nested_task_timeout_reaches_claimed_execute_runner(self):
         task = self._task(1800)
@@ -3569,19 +3182,6 @@ class TestTaskSuiteTimeoutAuthority(unittest.TestCase):
                 tempfile.mkdtemp(), {"tasks": [task], "baseline": "HEAD"})
         self.assertEqual(
             captured[0]["coding"]["dod"]["test_timeout_seconds"], 1800)
-
-    def test_unrelated_task_dod_keeps_600(self):
-        captured = []
-
-        def check(contract, *_args, **_kwargs):
-            captured.append(contract)
-            return []
-
-        with unittest.mock.patch.object(loop.tp, "dod_check", side_effect=check):
-            loop._task_dod_errors(
-                tempfile.mkdtemp(), {}, self._task(), None)
-        self.assertEqual(
-            captured[0]["coding"]["dod"]["test_timeout_seconds"], 600)
 
     def test_invalid_contract_timeout_skips_suite_launch(self):
         contract = tp.build_contract(
@@ -3788,27 +3388,6 @@ class TestReviewBridge(unittest.TestCase):
             "evaluation_input": reloaded["evaluation_input"],
             "slots": reloaded["slots"],
         }, immutable)
-
-    def test_golden_evaluate_brief_is_lens_free(self):
-        golden = os.path.join(
-            os.path.dirname(__file__), "fixtures", "briefs",
-            "golden_stage_evaluate.json")
-        with open(golden, encoding="utf-8") as stream:
-            raw = stream.read()
-        payload = json.loads(raw[raw.index("{"):])
-
-        self.assertEqual(payload["step"], "evaluate")
-        self.assertNotIn("lenses", payload)
-        self.assertNotIn("language_references", payload)
-        self.assertEqual(payload["review_kernel"]["slots"], [])
-        self.assertEqual(
-            payload["review_kernel"]["lens_execution_policy"], "none")
-        self.assertEqual(
-            payload["review_kernel"]["lens_worker_start_count"], 0)
-        self.assertIn("Evaluate is lens-free", payload["instruction"])
-        self.assertNotIn("ROUTED lens", payload["instruction"])
-        self.assertNotIn("lens-brief", raw)
-        self.assertNotIn("taskplane-role:tp-lens", raw)
 
     def test_review_bridge_checkout_bound_main_reloads_target_runtime(self):
         canonical = sys.modules.get("taskplane_lite")

@@ -1,0 +1,19 @@
+{
+  "schema": "taskplane.plan/v1",
+  "requirement": "R-0001",
+  "design_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "delivery_mode": "build",
+  "automatic_lenses": [],
+  "plan_authority": "human:test approved the exact fixture Plan",
+  "tasks": [
+    {"id": "foundation", "scope": ["src/foundation.py"], "tests": "python3 -m pytest -q tests/test_foundation.py", "deps": [], "req": "R-0001", "contracts": []},
+    {"id": "api", "scope": ["src/api.py"], "tests": "python3 -m pytest -q tests/test_api.py", "deps": ["foundation"], "req": "R-0001", "contracts": []},
+    {"id": "ui", "scope": ["src/ui.py"], "tests": "python3 -m pytest -q tests/test_ui.py", "deps": ["foundation"], "req": "R-0001", "contracts": []},
+    {"id": "proof", "scope": ["tests/test_proof.py"], "tests": "python3 -m pytest -q tests/test_proof.py", "deps": ["api", "ui"], "req": "R-0001", "contracts": []}
+  ],
+  "waves": [
+    {"id": "W0", "parallel": ["foundation"], "serialization": "root"},
+    {"id": "W1", "after": ["foundation"], "parallel": ["api", "ui"], "serialization": "independent adapters"},
+    {"id": "W2", "after": ["api", "ui"], "parallel": ["proof"], "serialization": "join"}
+  ]
+}

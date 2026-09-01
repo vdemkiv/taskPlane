@@ -133,10 +133,11 @@ COMPLETION_PATTERNS = (
 )
 
 
-def blocking_enabled() -> bool:
+def blocking_enabled(*, authority: dict | None = None) -> bool:
     """Blocking is on unless explicitly disabled. Recording always happens."""
-    return (os.environ.get("TASKPLANE_OBLIGATIONS") or "").strip().lower() \
-        not in ("off", "0", "false", "advisory")
+    from taskplane.settings import load_settings
+    settings = load_settings(environment=os.environ, authority=authority)
+    return settings.runtime.obligations == "enforce"
 
 
 def blocking(ws: str) -> list:

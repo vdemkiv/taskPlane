@@ -121,6 +121,15 @@ RELEASE_SURFACE_FILES = (
     "CHANGELOG.md",
 )
 
+# Runtime policy authorities are data, not Python modules. Keep their
+# install membership explicit so a future package-file predicate cannot
+# silently strand settings loading or its conformance receipts.
+CANONICAL_AUTHORITY_FILES = (
+    "taskplane/operational-settings.json",
+    "taskplane/settings_inventory.json",
+    "taskplane/test_portfolio.json",
+)
+
 RELEASE_COMPATIBILITY_RECEIPT_FIELDS = frozenset({
     "schema", "source_sha", "compatibility_policy_fingerprint", "cells",
     "producer", "status", "cryptographic_authenticity_claimed", "fingerprint",
@@ -805,6 +814,10 @@ def produce_release_compatibility_receipt(
                         release_surface_files=(
                             RELEASE_SURFACE_FILES if plugin == current else ()
                         ),
+                        canonical_authority_files=(
+                            CANONICAL_AUTHORITY_FILES
+                            if plugin == current else ()
+                        ),
                     )
                 else:
                     historical.validate_archive(archives[plugin])
@@ -1188,6 +1201,10 @@ def package_files(manifest: dict) -> list[Path]:
         path = ROOT / relative
         require(path.is_file(), f"required file is missing: {relative}")
         files.add(path)
+    for relative in CANONICAL_AUTHORITY_FILES:
+        path = ROOT / relative
+        require(path.is_file(), f"canonical authority is missing: {relative}")
+        files.add(path)
 
     add_tree(files, ROOT / "assets", lambda path: path.suffix.lower() in {".svg", ".png", ".jpg", ".jpeg", ".webp"})
     add_tree(
@@ -1254,6 +1271,7 @@ def validate_archive(
     release_surface_root: Path | None = None,
     stage_runtime_files: tuple[str, ...] = STAGE_RUNTIME_FILES,
     release_surface_files: tuple[str, ...] = RELEASE_SURFACE_FILES,
+    canonical_authority_files: tuple[str, ...] = CANONICAL_AUTHORITY_FILES,
 ) -> tuple[int, int]:
     require(path.is_file() and zipfile.is_zipfile(path), "output is not a readable ZIP")
     require(path.stat().st_size <= 100 * 1024 * 1024, "compressed ZIP exceeds 100 MB")
@@ -1316,6 +1334,13 @@ def validate_archive(
         require(packaged_manifest.get("version") == package_version,
                 "ZIP Codex manifest does not match release runtime version")
         expected_surface_root = release_surface_root or ROOT
+        for required in canonical_authority_files:
+            member = f"{ARCHIVE_ROOT}/{required}"
+            require(member in names,
+                    f"ZIP is missing canonical authority {required}")
+            require(archive.read(member) ==
+                    (expected_surface_root / required).read_bytes(),
+                    f"ZIP has stale canonical authority bytes for {required}")
         for required in release_surface_files:
             member = f"{ARCHIVE_ROOT}/{required}"
             require(member in names,
@@ -1411,7 +1436,7 @@ def main() -> int:
         import release_provenance as prov
         try:
             prov_path = prov.write(ROOT, output, digest,
-                                   allow_dirty=args.allow_dirty)
+                                   allow_dirty=args.allow_dirty, kind="openai")
         except prov.ProvenanceError as exc:
             output.unlink(missing_ok=True)
             checksum.unlink(missing_ok=True)

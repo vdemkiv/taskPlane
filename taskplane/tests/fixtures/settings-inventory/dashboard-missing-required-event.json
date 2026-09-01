@@ -1,0 +1,9 @@
+{
+  "dashboard": {
+    "refresh": {
+      "lifecycle_events": ["gate"],
+      "session_event": "session_recovery",
+      "replay_on_session_start": true
+    }
+  }
+}

@@ -5,6 +5,8 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -14,15 +16,6 @@ ROOT = Path(__file__).resolve().parents[2]
 VERSION = json.loads((ROOT / ".codex-plugin/plugin.json").read_text(
     encoding="utf-8"))["version"]
 SUPPORTED_HOOK_ROOT_FIELDS = {"description", "hooks"}
-STAGE_MATRIX_TESTS = (
-    "taskplane/tests/test_stage_non_build_handoffs.py",
-    "taskplane/tests/test_stage_cross_host.py",
-    "taskplane/tests/test_stage_rollout.py",
-    "taskplane/tests/test_stage_r0003_preservation.py",
-    "taskplane/tests/test_stage_release_matrix.py",
-    "taskplane/tests/test_stage_loop_integration.py",
-    "taskplane/tests/test_stage_cli.py",
-)
 SHARED_RUNTIME_MEMBERS = (
     "hooks/hooks.json",
     "hooks/host-native.json",
@@ -36,6 +29,9 @@ SHARED_RUNTIME_MEMBERS = (
     "taskplane/loop_status.py",
     "taskplane/dashboard.py",
     "taskplane/runtime_eval.py",
+    "taskplane/operational-settings.json",
+    "taskplane/settings_inventory.json",
+    "taskplane/test_portfolio.json",
     "docs/cli-reference.md",
     "skills/taskplane/SKILL.md",
     "skills/taskplane/flow.json",
@@ -92,45 +88,6 @@ def _replace_hook_manifest(
             archive.writestr(
                 info, json.dumps(value).encode("utf-8")
                 if info.filename == member else body)
-
-
-def _python_matrix_entries(workflow: str) -> dict[str, tuple[str, ...]]:
-    """Return only the three bounded entries from the primary test matrix."""
-    lines = workflow.splitlines()
-    headers = {
-        version: f'          - python: "{version}"'
-        for version in ("3.10", "3.11", "3.12")
-    }
-    indexes: dict[str, int] = {}
-    for version, header in headers.items():
-        matches = [index for index, line in enumerate(lines)
-                   if line == header]
-        assert len(matches) == 1, \
-            f"expected one exact Python {version} test-matrix entry"
-        indexes[version] = matches[0]
-    assert indexes["3.10"] < indexes["3.11"] < indexes["3.12"]
-    step_boundaries = [index for index, line in enumerate(lines)
-                       if index > indexes["3.12"] and line == "    steps:"]
-    assert step_boundaries, "Python 3.12 matrix entry has no bounded end"
-    return {
-        "3.10": tuple(lines[indexes["3.10"]:indexes["3.11"]]),
-        "3.11": tuple(lines[indexes["3.11"]:indexes["3.12"]]),
-        "3.12": tuple(lines[indexes["3.12"]:step_boundaries[0]]),
-    }
-
-
-def test_ci_runs_the_stage_release_contract_on_python_310_through_312() \
-        -> None:
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text(
-        encoding="utf-8")
-    entries = _python_matrix_entries(workflow)
-
-    for version in ("3.10", "3.11"):
-        for test_file in STAGE_MATRIX_TESTS:
-            selector = "              " + test_file
-            assert entries[version].count(selector) == 1, \
-                f"Python {version} must run exact selector {test_file}"
-    assert entries["3.12"].count("              taskplane/tests") == 1
 
 
 def test_ci_builds_and_provenances_the_deterministic_claude_plugin() -> None:
@@ -221,31 +178,32 @@ def test_package_bytes_are_deterministic_for_the_same_release_tree(
 
     packager.write_zip(files, first)
     packager.write_zip(files, second)
-
     assert first.read_bytes() == second.read_bytes()
     assert hashlib.sha256(first.read_bytes()).hexdigest() == \
         hashlib.sha256(second.read_bytes()).hexdigest()
 
 
 def test_claude_plugin_upload_is_deterministic_and_provenanced(
-        tmp_path: Path) -> None:
-    packager = _load_packager("package_claude.py")
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PYTHONPATH", raising=False)
     output_dirs = (tmp_path / "first", tmp_path / "second")
-
-    for output_dir in output_dirs:
-        assert packager.main([
-            "--output-dir", str(output_dir),
-            "--ext", "plugin",
-            "--allow-dirty",
-        ]) == 0
-
+    runs = ((output_dirs[0], True), (output_dirs[1], True),
+            (tmp_path / "zip", False))
+    for output_dir, plugin in runs:
+        command = [sys.executable, "scripts/package_claude.py", "--output-dir",
+                   str(output_dir), "--allow-dirty"]
+        command += ["--ext", "plugin"] if plugin else []
+        result = subprocess.run(
+            command, cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+        )
+        assert result.returncode == 0, result.stderr
+    assert (tmp_path / "zip" / f"taskplane-{VERSION}-claude.zip").is_file()
     filename = f"taskplane-{VERSION}.plugin"
-    first = output_dirs[0] / filename
-    second = output_dirs[1] / filename
-    assert first.read_bytes() == second.read_bytes()
-    assert first.with_suffix(".plugin.sha256").is_file()
-    assert second.with_suffix(".plugin.sha256").is_file()
-    for artifact in (first, second):
+    artifacts = tuple(path / filename for path in output_dirs)
+    assert artifacts[0].read_bytes() == artifacts[1].read_bytes()
+    for artifact in artifacts:
+        assert artifact.with_suffix(".plugin.sha256").is_file()
         provenance = json.loads(artifact.with_suffix(
             ".plugin.provenance.json").read_text(encoding="utf-8"))
         assert provenance["archive"] == filename

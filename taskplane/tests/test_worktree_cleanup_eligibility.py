@@ -86,7 +86,7 @@ def test_eligibility_proves_registration_clean_lifecycle_and_ancestry(
     assert proof["reason"] == "eligible"
     assert proof["checked"]["clean"] is True
     assert proof["checked"]["ancestor"] is True
-    assert proof["checked"]["lifecycle"] == "passed_released"
+    assert proof["checked"]["lifecycle"] == "terminal_released"
 
 
 def test_task_status_branch_name_or_path_prefix_alone_never_qualifies(

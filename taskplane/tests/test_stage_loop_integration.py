@@ -836,7 +836,7 @@ def test_real_product_gate_and_plan_approval_seal_exact_outputs(
     loop.save(ws, state)
     monkeypatch.setattr(loop, "_design_current_errors", lambda *_a: [])
     monkeypatch.setattr(loop, "_refinement_report", lambda *_a: [])
-    monkeypatch.setattr(loop.tp, "plan_ordering_refusal", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop.tp, "plan_task_id_refusal", lambda *_a, **_k: None)
     monkeypatch.setattr(loop, "_consolidated_enabled", lambda: False)
     monkeypatch.setattr(loop.kb, "record_decision", lambda *_a, **_k: {})
 

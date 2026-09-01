@@ -70,6 +70,11 @@ except (ImportError, ValueError):  # direct ``taskplane_lite`` import
         _sanitize_audit_value, audit_record,
     )
 
+try:
+    from . import delivery_ports as _delivery_ports
+except (ImportError, ValueError):  # direct ``taskplane_lite`` import
+    import delivery_ports as _delivery_ports
+
 
 # ---------------------------------------------------------------------------
 # Durable-state primitives (v2.3.0). Governance files that more than one
@@ -1008,10 +1013,9 @@ def to_posix(path: str) -> str:
 def posix_workspace(task):
     """`task` with a '/'-shaped `workspace`, for artifacts that LEAVE.
 
-    Dispatch briefs are cross-host: their parity goldens are compared byte
-    for byte between Claude and Codex, so a workspace stored as
-    `.tp-work\\t1` on Windows is a real divergence. Normalizing the copy
-    rather than the stored value keeps every filesystem use of it intact.
+    Dispatch briefs are cross-host, so a workspace stored as `.tp-work\\t1`
+    on Windows is a real semantic divergence. Normalizing the copy rather
+    than the stored value keeps every filesystem use of it intact.
     """
     if not isinstance(task, dict) or not task.get("workspace"):
         return task
@@ -2689,9 +2693,27 @@ def screen_tool(contract: dict, tool_name: str, tool_input: dict,
 
 # --------------------------------------------------------------- DoD
 
-DEFAULT_TEST_TIMEOUT_SECONDS = 600
+# Safety ceilings are immutable protocol bounds, not configurable defaults.
 DEFAULT_MAX_TEST_TIMEOUT_SECONDS = 3600
 MAX_TEST_TIMEOUT_SECONDS = 14400
+
+
+def _canonical_operational_settings(*, legacy_environment: bool = False,
+                                    authority: dict | None = None):
+    """Load one immutable settings snapshot without creating a local cache.
+
+    The lite kernel is imported both as ``taskplane.taskplane_lite`` and as a
+    direct sibling module by the CLI.  Keep the import lazy to preserve those
+    two supported entry paths and to avoid turning settings into mutable
+    process-global state.
+    """
+    try:
+        from .settings import load_settings
+    except (ImportError, ValueError):
+        from settings import load_settings
+    return load_settings(
+        environment=os.environ if legacy_environment else None,
+        authority=authority)
 
 
 def validate_test_timeout_seconds(value, *, field: str,
@@ -2711,24 +2733,9 @@ def validate_test_timeout_seconds(value, *, field: str,
 
 def task_test_timeout_seconds(task: dict) -> int:
     """Derive the approved aggregate test timeout from one plan task."""
-    field = "verification_runner.gate_timeout.aggregate_seconds"
-    if not isinstance(task, dict):
-        raise ValueError(f"{field} task container must be an object")
-    if "verification_runner" not in task:
-        return DEFAULT_TEST_TIMEOUT_SECONDS
-    runner = task.get("verification_runner")
-    if not isinstance(runner, dict):
-        raise ValueError(f"{field} parent containers must be objects")
-    if "gate_timeout" not in runner:
-        raise ValueError(f"{field} is required when verification_runner is present")
-    gate_timeout = runner.get("gate_timeout")
-    if not isinstance(gate_timeout, dict):
-        raise ValueError(f"{field} parent containers must be objects")
-    if "aggregate_seconds" not in gate_timeout:
-        raise ValueError(f"{field} is required when gate_timeout is present")
-    return validate_test_timeout_seconds(
-        gate_timeout.get("aggregate_seconds"), field=field,
-        plan_minted=True)
+    return _delivery_ports.task_test_timeout_seconds(
+        task, default_seconds=int(_canonical_operational_settings().limits.timeouts[
+            "task_seconds"]), validator=validate_test_timeout_seconds)
 
 
 def _run(cmd, cwd, shell=False, timeout=600, env=None):
@@ -2923,9 +2930,8 @@ SUITE_CACHE_ENV_KEYS = frozenset({
     "CI", "LANG", "LC_ALL", "TZ",
     "PYTHONHASHSEED", "PYTHONPATH", "PYTHONUTF8", "PYTHONIOENCODING",
     "PYTEST_ADDOPTS", "PYTEST_PLUGINS",
-    "TASKPLANE_AUDIT_EVERY", "TASKPLANE_ENFORCE_DISPATCH",
-    "TASKPLANE_INLINE_MAX", "TASKPLANE_PUBLISH_REVIEW",
-    "TASKPLANE_QA_BASELINE", "TASKPLANE_RUNNABILITY",
+    "TASKPLANE_ENFORCE_DISPATCH", "TASKPLANE_PUBLISH_REVIEW",
+    "TASKPLANE_QA_BASELINE",
 })
 
 _TRANSPORT_SHIM_AST = ast.dump(ast.parse(
@@ -3066,6 +3072,9 @@ def _suite_cache_key(workspace: str, command, env: dict) -> "str | None":
     h.update(b"\0cmd\0" + str(command).encode())
     try:
         h.update(b"\0engine\0" + engine_fingerprint().encode())
+        settings = _canonical_operational_settings(
+            legacy_environment=True)
+        h.update(b"\0settings\0" + settings.digest.encode())
     except Exception:
         return None            # can't bind evidence to an engine → run it
     for key, value in _suite_env_identity(workspace, env):
@@ -3078,9 +3087,9 @@ def _suite_cache_path(key: str) -> str:
 
 
 def suite_cache_enabled() -> bool:
-    """Off with TASKPLANE_NO_SUITE_CACHE=1 — the escape hatch for a host
-    that suspects environmental nondeterminism."""
-    return os.environ.get("TASKPLANE_NO_SUITE_CACHE", "") not in ("1", "true")
+    """Return the validated per-run cache policy from canonical settings."""
+    return bool(_canonical_operational_settings(
+        legacy_environment=True).tests.cache)
 
 
 # D-0008. `tests_pass` is the gate that says behaviour was verified, and a
@@ -3096,22 +3105,10 @@ def suite_cache_enabled() -> bool:
 # hours ago, which is what makes a parallel wave cost one suite run instead
 # of one per task. Outside it, the environment is no longer a safe
 # assumption and the suite runs again.
-SUITE_CACHE_MAX_AGE_S = 24 * 3600
-
-
 def suite_cache_max_age() -> float:
-    """Window in seconds; TASKPLANE_SUITE_CACHE_MAX_AGE overrides.
-
-    0 or negative disables citation entirely (always re-run), which is the
-    stricter direction and therefore always safe to set.
-    """
-    raw = os.environ.get("TASKPLANE_SUITE_CACHE_MAX_AGE", "").strip()
-    if not raw:
-        return float(SUITE_CACHE_MAX_AGE_S)
-    try:
-        return float(raw)
-    except ValueError:
-        return float(SUITE_CACHE_MAX_AGE_S)
+    """Return the canonical freshness bound for cached suite evidence."""
+    return float(_canonical_operational_settings(
+        legacy_environment=True).tests.cache_max_age_seconds)
 
 
 def suite_cache_lookup(workspace: str, command, env: dict) -> "dict | None":
@@ -3379,7 +3376,9 @@ def dod_check(contract: dict, workspace: str,
     dod = coding.get("dod") or {}
     try:
         test_timeout_seconds = validate_test_timeout_seconds(
-            dod.get("test_timeout_seconds", DEFAULT_TEST_TIMEOUT_SECONDS),
+            dod.get("test_timeout_seconds", int(
+                _canonical_operational_settings().limits.timeouts[
+                    "task_seconds"])),
             field="coding.dod.test_timeout_seconds",
             plan_minted=bool(coding.get("plan_minted")))
     except ValueError as exc:
@@ -3535,99 +3534,6 @@ def dod_check(contract: dict, workspace: str,
     return errors
 
 
-# ----------------------------------------------------------- plan ordering
-
-# B2 (R-0008): brief-SHAPE surfaces vs golden-brief fixtures. A task that
-# changes how stage/review briefs are emitted (lens routing, signal
-# detectors, the tp.py dispatch/emission layer) must run BEFORE any task
-# that regenerates the golden brief fixtures — otherwise the regenerated
-# goldens pin the OLD shape (the Phase 2 t6∥t7 sequencing gap, retro
-# lesson 1). The plan gate enforces this mechanically; planner memory is
-# not a control.
-BRIEF_SHAPE_SURFACES = ("taskplane/lens.py", "taskplane/lens_signals.py",
-                        "taskplane/tp.py")
-GOLDEN_PREFIX = "taskplane/tests/fixtures/briefs/"
-
-
-def _scope_touches(scope, target: str) -> bool:
-    """Glob/prefix intersection: does any scope glob reach `target` (a
-    literal file, or a directory prefix ending in '/')? Stem matching (the
-    text before the first wildcard), in BOTH directions, so `taskplane/**`
-    covers lens.py and a literal fixture path counts as touching the
-    fixture dir. A catch-all glob ('**') touches everything — the strict
-    direction."""
-    for g in scope or []:
-        stem = str(g).replace("\\", "/").split("*", 1)[0]
-        if target.startswith(stem) or stem.startswith(target):
-            return True
-    return False
-
-
-def plan_ordering_errors(tasks) -> list:
-    """B2: every task whose scope touches a BRIEF_SHAPE_SURFACES file must
-    be a TRANSITIVE dependency ancestor of every task whose scope touches
-    GOLDEN_PREFIX. Returns refusal strings naming both offending task
-    ids ([] = ordered). Fail-closed: any unordered pair refuses the plan
-    approval — an under-declared dep is a plan bug, not a warning."""
-    tasks = [t for t in tasks or [] if isinstance(t, dict)]
-    shape = [t for t in tasks
-             if any(_scope_touches(t.get("scope"), s)
-                    for s in BRIEF_SHAPE_SURFACES)]
-    golden = [t for t in tasks
-              if _scope_touches(t.get("scope"), GOLDEN_PREFIX)]
-
-    # DISJOINTNESS (EM, v3 phase 3). _scope_touches matches stems in BOTH
-    # directions, which is what lets a broad scope be caught at all — but it
-    # also made a CATCH-ALL scope ('**', 'taskplane/**') land in both sets at
-    # once. Two such tasks then demanded that each depend on the other: an
-    # unsatisfiable cycle that dead-ended plan approval, with no --force
-    # path and a remedy line naming the one fix that cannot work.
-    #
-    # A task in BOTH sets carries both halves itself and is self-ordered by
-    # its own execution — exactly what the bid == gid branch below already
-    # recognised for the single-task case. Generalise it: a both-task
-    # imposes no cross-task ordering, and none is imposed on it. The Phase 2
-    # gap this gate exists for (t6 shape ∥ t7 golden-regen, two DISJOINT
-    # scopes) is still caught, because those tasks are each in one set only.
-    both = {str(t.get("id")) for t in shape} & {str(t.get("id"))
-                                                for t in golden}
-    shape = [t for t in shape if str(t.get("id")) not in both]
-    golden = [t for t in golden if str(t.get("id")) not in both]
-    if not shape or not golden:
-        return []
-    deps = {str(t.get("id")): [str(d) for d in t.get("deps") or []]
-            for t in tasks}
-
-    def ancestors(tid: str, seen: set) -> set:
-        for d in deps.get(tid, []):
-            if d not in seen:
-                seen.add(d)
-                ancestors(d, seen)
-        return seen
-
-    errors = []
-    for g in golden:
-        gid = str(g.get("id"))
-        anc = ancestors(gid, set())
-        for b in shape:
-            bid = str(b.get("id"))
-            if bid == gid or bid in anc:
-                continue     # ordered (or the same task carries both)
-            errors.append(
-                f"plan ordering: task {gid} touches {GOLDEN_PREFIX}** "
-                f"(golden brief regen) but does not depend — transitively — "
-                f"on brief-shape task {bid}; order brief-shape changes "
-                "before golden regeneration. Remedies, in preference order: "
-                f"add {bid} to {gid}'s deps; or narrow the scopes so only "
-                "the task that really changes brief shape reaches "
-                + ", ".join(BRIEF_SHAPE_SURFACES) +
-                f"; or merge both halves into one task. There is "
-                "deliberately no --force past this: regenerating goldens "
-                "against the OLD brief shape pins the bug into the fixtures, "
-                "and the plan is still free to edit at this gate")
-    return errors
-
-
 def plan_task_id_errors(tasks) -> list:
     """E5 remedy (Phase 3 EM review): every task id BECOMES a per-task
     contract slot (TASKPLANE_TASK) and is interpolated into the composed
@@ -3654,35 +3560,25 @@ def plan_task_id_errors(tasks) -> list:
     return errors
 
 
-def plan_ordering_refusal(ws: str, tasks, where: str, by=None):
-    """B2 (R-0008): one refusal for BOTH plan transitions — the mechanical
-    plan GATE (a loop initialized without the 'plan' checkpoint goes
-    plan→execute there and would otherwise bypass the rule entirely) and
-    plan_approval approve(). Identical refusal either way: both task ids
-    named in the error, traced loop_gate_blocked / loop_approve_blocked
-    with reason=ordering. Returns None when the plan is ordered.
+def plan_task_id_refusal(ws: str, tasks, where: str, by=None):
+    """Refuse unusable task ids at both plan transitions.
 
-    Also carries the E5 task-id charset check (`plan_task_id_errors`):
-    these two transitions are exactly where an un-slottable id has to be
-    caught — before human approval makes the rename expensive — and
-    reason=task_id distinguishes it in the trace."""
+    This is the earliest point where an invalid id can be corrected without
+    repeating approved work. Returns ``None`` when every id is usable.
+    """
     ids = plan_task_id_errors(tasks)
-    ordering = plan_ordering_errors(tasks)
-    problems = ids + ordering
-    if not problems:
+    if not ids:
         return None
-    reason = "task_id" if ids else "ordering"
     if where == "gate":
-        trace(ws, "loop_gate_blocked", step="plan", reason=reason,
-              errors=problems)
+        trace(ws, "loop_gate_blocked", step="plan", reason="task_id",
+              errors=ids)
         step = "plan"
     else:
-        trace(ws, "loop_approve_blocked", gate="plan", reason=reason,
-              errors=problems, by=by)
+        trace(ws, "loop_approve_blocked", gate="plan", reason="task_id",
+              errors=ids, by=by)
         step = "plan_approval"
-    label = "plan gate BLOCKED" if ids else "plan ordering gate BLOCKED"
-    return {"error": label + " — " + "; ".join(problems),
-            "step": step, "ordering": ordering, "task_ids": ids}
+    return {"error": "plan gate BLOCKED — " + "; ".join(ids),
+            "step": step, "task_ids": ids}
 
 
 # ------------------------------------------------ engine fingerprint (A4)
@@ -4531,7 +4427,6 @@ DEFAULT_OUT_OF_SCOPE = [".git/**", ".github/**", "deploy/**", "*.lock",
                         "components.yaml"]
 
 
-DEFAULT_MAX_ACTIONS = 60          # build contracts: hook-enforced ceiling
 DEFAULT_MAX_ACTIONS_RO = 40       # read-only review contracts
 
 
@@ -4595,7 +4490,8 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
     import uuid
     if max_actions is None:
         max_actions = DEFAULT_MAX_ACTIONS_RO if read_only \
-            else DEFAULT_MAX_ACTIONS
+            else _canonical_operational_settings().limits.budgets[
+                "max_actions"]
     max_actions = int(max_actions)
     if max_actions < 0:
         raise ValueError(
@@ -5816,21 +5712,26 @@ def load_active_for_event(workspace: str, event: dict) -> dict | None:
     return load_active(workspace)
 
 
-def normalize_worker_terminal_outcome(value: object) -> str:
-    text = str(value or "success").strip().lower()
-    if "handoff" in text or "transfer" in text:
-        return "handoff"
-    if "cancel" in text:
-        return "cancellation"
-    if "interrupt" in text or "abort" in text or "killed" in text:
-        return "interruption"
-    if "fail" in text or "error" in text or "exception" in text:
-        return "failure"
-    return "success"
+normalize_worker_terminal_outcome = \
+    _delivery_ports.normalize_worker_terminal_outcome
 
 
 def _worker_terminal_path(workspace: str, slot: str) -> str:
     return os.path.join(tp_dir(workspace), "worker-terminals", f"{slot}.json")
+
+
+def configure_dashboard_refresh_publisher(publisher) -> None:
+    _delivery_ports.configure_dashboard_refresh_publisher(publisher)
+
+
+def _refresh_dashboard_lifecycle(
+        workspace: str, *, event_type: str, outcome: str,
+        member_terminal: bool = False, publisher=None) -> None:
+    settings = _canonical_operational_settings()
+    _delivery_ports.publish_dashboard_refresh(
+        workspace, event_type=event_type, outcome=outcome,
+        lifecycle_events=settings.dashboard.refresh.lifecycle_events,
+        trace=trace, member_terminal=member_terminal, publisher=publisher)
 
 
 def record_worker_terminal(
@@ -5891,6 +5792,9 @@ def record_worker_terminal(
           task_id=contract.get("task_id"), outcome=normalized,
           submission_status=receipt["submission_status"],
           authority=authority, receipt_id=receipt["receipt_id"])
+    _refresh_dashboard_lifecycle(
+        workspace, event_type="worker_terminal", outcome=normalized,
+        member_terminal=True)
     return receipt
 
 
@@ -6288,11 +6192,9 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-DEFAULT_ORPHAN_TTL = 3600   # seconds of NO screening activity → orphaned
-
-
 def orphan_status(workspace: str, contract: dict,
-                  now: float | None = None) -> tuple[bool, str]:
+                  now: float | None = None, *,
+                  settings_authority: dict | None = None) -> tuple[bool, str]:
     """Is the active contract ORPHANED — its owner gone, nobody to clear it?
 
     Two guards, in order (v0.9.6):
@@ -6312,8 +6214,9 @@ def orphan_status(workspace: str, contract: dict,
          * NOT exhausted -> idle backstop for an agent that CRASHED mid-work,
            measured from the last time it was SEEN screening (any call — a
            working agent keeps generating approvals; a dead one makes none).
-           Fires after the TTL (contract `orphan_ttl_seconds`, env
-           TASKPLANE_ORPHAN_TTL, default DEFAULT_ORPHAN_TTL).
+           Fires after the positive canonical TTL (a per-contract
+           `orphan_ttl_seconds` remains an explicit contract value; the
+           compatibility environment aliases require exact authority).
 
     The screener auto-clears an orphaned contract and abstains."""
     import time
@@ -6399,14 +6302,13 @@ def orphan_status(workspace: str, contract: dict,
     # last_seen); one that died makes no calls, so its clock goes stale and
     # the contract releases — recovering a genuine leak WITHOUT ever releasing
     # a live, on-budget, actively-screening agent.
-    try:
-        ttl = float(contract.get("orphan_ttl_seconds")
-                    or os.environ.get("TASKPLANE_ORPHAN_TTL")
-                    or DEFAULT_ORPHAN_TTL)
-    except (TypeError, ValueError):
-        ttl = DEFAULT_ORPHAN_TTL
+    settings = _canonical_operational_settings(
+        legacy_environment=True, authority=settings_authority)
+    ttl = float(contract["orphan_ttl_seconds"]
+                if "orphan_ttl_seconds" in contract
+                else settings.runtime.orphan_ttl_seconds)
     if ttl <= 0:
-        return False, "orphan TTL disabled"
+        return False, "invalid non-positive orphan TTL — governed"
     last = max(float(contract.get("activated_at") or 0), last_seen)
     if last and (now - last) > ttl:
         idle = int(now - last)
@@ -6690,14 +6592,15 @@ def _ensure_self_ignored(d: str) -> None:
 MODEL_TIERS = ("cheap", "standard", "deep")
 REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 
-# Default tier -> model. Claude keeps the historical cheap=haiku mapping;
-# Codex inherits for every tier so no provider-specific id crosses hosts.
-# `standard`/`deep` always inherit unless an operator opts in. Override via
-# TASKPLANE_MODEL_CHEAP / _STANDARD / _DEEP (value "inherit" or "" => inherit).
+# Legacy tiers are projections only. Their values come from stage settings;
+# legacy environment aliases are interpreted by the typed loader for one
+# compatibility release and never become another default authority.
 def _default_tier_models() -> dict:
-    """Return defaults that never send another host's model identifier."""
-    return {"cheap": None if host() == "codex" else "haiku",
-            "standard": None, "deep": None}
+    """Compatibility tier projection of the canonical stage settings."""
+    settings = _canonical_operational_settings(legacy_environment=True)
+    return {"cheap": settings.stages["evaluate"].model,
+            "standard": settings.stages["build"].model,
+            "deep": settings.stages["design"].model}
 
 
 def reasoning_for_tier(tier: str | None) -> str:
@@ -6709,72 +6612,50 @@ def reasoning_for_tier(tier: str | None) -> str:
     injecting an unsupported value into a host tool call.
     """
     t = (tier or "standard").strip().lower()
-    default = {"cheap": "low", "standard": "medium", "deep": "high"}.get(
-        t, "medium")
-    value = (os.environ.get("TASKPLANE_REASONING_" + t.upper()) or "").strip()
-    return value if value in REASONING_EFFORTS else default
+    settings = _canonical_operational_settings(legacy_environment=True)
+    stage = {"cheap": "evaluate", "standard": "build", "deep": "design"}.get(
+        t, "build")
+    return settings.stages[stage].reasoning
 
 
-def dispatch_task_name(kind: str, agent: str, ref: str | None = None) -> str:
-    """Stable Codex task identity (lowercase letters/digits/underscores).
-
-    The human-facing taskplane role remains separate in ``agent``. Keeping
-    both fields prevents a generic Codex worker name from erasing who owns
-    the contract while still satisfying Codex's task-name grammar.
-    """
-    role = (agent or "agent").removeprefix("tp-")
-    parts = ["tp", kind]
-    if role != kind:
-        parts.append(role)
-    if ref:
-        parts.append(str(ref))
-    identity = "\0".join((str(kind), str(agent), str(ref or "")))
-    raw = "_".join(parts).lower()
-    name = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "tp_agent"
-    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
-    return name[:55].rstrip("_") + "_" + digest
-
-
-def role_marker(agent: str) -> str:
-    """Exact marker native Codex messages bind to a taskplane role."""
-    return "taskplane-role:" + str(agent)
+dispatch_task_name = _delivery_ports.dispatch_task_name
+role_marker = _delivery_ports.role_marker
 
 
 def dispatch_fields(kind: str, agent: str, ref: str,
                     model_tier: str, *, capability_snapshot=None,
                     enforcement_mode: str | None = None,
-                    observed_route: dict | None = None) -> dict:
-    """Host-neutral dispatch identity carried by every Codex task brief."""
-    role_path = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), "..", "agents", agent + ".md"))
-    requested_model = model_for_tier(model_tier)
-    requested_effort = reasoning_for_tier(model_tier)
+                    observed_route: dict | None = None,
+                    settings_context=None) -> dict:
+    """Resolve one settings snapshot, then delegate pure brief assembly."""
+    settings = settings_context or _canonical_operational_settings(
+        legacy_environment=True)
+    stage = {
+        "tp-product": "product", "tp-designer": "design",
+        "tp-planner": "plan", "tp-executor": "build",
+        "tp-evaluator": "evaluate", "tp-fixer": "fix",
+        "tp-engineering": "evaluate",
+    }.get(agent)
+    selected = stage or {
+        "cheap": "evaluate", "standard": "build", "deep": "design",
+    }.get((model_tier or "standard").strip().lower(), "build")
     route = None
     if capability_snapshot is not None:
         import host_capabilities
-
         route = host_capabilities.resolve_dispatch_route(
             capability_snapshot, tier=model_tier,
-            requested_model=requested_model,
-            requested_effort=requested_effort,
+            requested_model=settings.stages[selected].model,
+            requested_effort=settings.stages[selected].reasoning,
             mode=enforcement_mode or os.environ.get(
                 "TASKPLANE_ENFORCE_DISPATCH", "default"),
             observed=observed_route)
-    fields = {
-        "role": agent,
-        "role_marker": role_marker(agent),
-        "role_instructions": to_posix(role_path),
-        "task_name": dispatch_task_name(kind, agent, ref),
-        "model_tier": model_tier,
-        "model": (route["effective_model"] if route is not None
-                  else requested_model),
-        "reasoning_effort": (route["effective_effort"] if route is not None
-                             else requested_effort),
-    }
-    if route is not None:
-        fields["dispatch_route"] = route
-        fields["dispatch_blocked"] = route["block_before_dispatch"]
-    return fields
+    return _delivery_ports.dispatch_envelope(
+        kind, agent, ref, model_tier,
+        role_instructions=to_posix(os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "agents", agent + ".md"))),
+        requested_model=settings.stages[selected].model,
+        requested_effort=settings.stages[selected].reasoning,
+        settings_digest=settings.digest, route=route)
 
 
 # --- dispatch verification (tier routing is only real if the driver passes
@@ -7056,15 +6937,10 @@ STEP_DEFAULT_TIER = {
 
 def model_for_tier(tier: str | None) -> str | None:
     """Resolve an abstract capability tier to a concrete model id for the Agent
-    tool's `model` param, or None meaning "inherit the session model". Env
-    TASKPLANE_MODEL_<TIER> overrides the default ("inherit"/"" => None). An
-    unknown tier degrades to inherit (None) rather than raising, so a bad tier
-    never blocks the loop."""
+    tool's `model` param, or None meaning "inherit the session model". The
+    one-release alias is resolved inside the canonical loader. An unknown tier
+    degrades to inherit (None) rather than raising."""
     t = (tier or "standard").strip().lower()
-    env = os.environ.get("TASKPLANE_MODEL_" + t.upper())
-    if env is not None:
-        env = env.strip()
-        return None if env in ("", "inherit") else env
     return _default_tier_models().get(t)
 
 

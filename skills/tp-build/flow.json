@@ -2,6 +2,7 @@
   "schema": "taskplane.skill-flow/v1",
   "skill": "tp-build",
   "approval": {"status": "human-approved", "scope": "all-10", "date": "2026-08-14"},
+  "settings": {"source": "taskplane/operational-settings.json", "loader": "taskplane.settings.load_settings", "binding": "settings_digest"},
   "nodes": [
     {"id": "idea", "label": "feature idea", "kind": "input"},
     {"id": "product", "label": "Product · minimum-sufficient quick", "kind": "stage"},

@@ -33,16 +33,15 @@ class TestReleaseWindow(unittest.TestCase):
     ROW = re.compile(r"^\| \*\*(v\d+\.\d+\.\d+)\*\* \|", re.M)
 
     def test_readme_keeps_exactly_three_current_changelog_rows(self):
-        current = "v" + json.loads(
-            _read(".codex-plugin/plugin.json"))["version"]
+        expected = "2.18.3"; runtime = _read("taskplane/release_evidence.py"); codex = json.loads(_read(".codex-plugin/plugin.json"))
+        claude = json.loads(_read(".claude-plugin/plugin.json"))
+        marketplace = json.loads(_read(".claude-plugin/marketplace.json"))
+        compatibility = json.loads(_read("design/compatibility.json"))
+        self.assertIn(f'CURRENT_VERSION = "{expected}"', runtime)
+        self.assertEqual({codex["version"], claude["version"], marketplace["version"], marketplace["plugins"][0]["version"], compatibility["window"]["current"], compatibility["baseline_rebind"]["next_generation"]}, {expected})
         readme = _read("README.md")
-        section = readme.split("## What's new", 1)[1].split("## Install", 1)[0]
-        rows = self.ROW.findall(section)
-        changelog_rows = set(self.ROW.findall(_read("CHANGELOG.md")))
-        self.assertEqual(len(rows), 3)
-        self.assertEqual(rows[0], current)
-        self.assertTrue(set(rows) <= changelog_rows)
-
+        rows = self.ROW.findall(readme.split("## What's new", 1)[1].split("## Install", 1)[0])
+        self.assertEqual(len(rows), 3); self.assertEqual(rows[0], "v" + expected); self.assertTrue(set(rows) <= set(self.ROW.findall(_read("CHANGELOG.md"))))
 
 class TestGeneratedCliReference(unittest.TestCase):
     REFERENCE = "docs/cli-reference.md"
@@ -76,6 +75,24 @@ class TestGeneratedCliReference(unittest.TestCase):
         with self.assertRaises(cli.CliReferenceError) as raised:
             cli.cli_reference_markdown(parser)
         self.assertIn("--bare", str(raised.exception))
+
+    def test_generator_omits_internal_suppressed_commands(self):
+        import tp as cli
+
+        parser = argparse.ArgumentParser(prog="fake")
+        sub = parser.add_subparsers(dest="cmd", required=True)
+        public = sub.add_parser("public", help="documented command")
+        public.add_argument("--visible", action="store_true",
+                            help="documented flag")
+        hidden = sub.add_parser("internal", help=argparse.SUPPRESS)
+        hidden.add_argument("--private", help=argparse.SUPPRESS)
+
+        generated = cli.cli_reference_markdown(parser)
+
+        self.assertIn("fake public", generated)
+        self.assertNotIn("internal", generated)
+        self.assertNotIn("private", generated)
+        self.assertNotIn("SUPPRESS", generated)
 
     def test_generator_owns_the_closed_stage_request_contract(self):
         import tp as cli
@@ -174,6 +191,8 @@ class TestForwardRepairDocumentation(unittest.TestCase):
             self.assertIn("v2.17.26", prose, path)
             self.assertIn("v2.18.0", prose, path)
             self.assertIn("v2.18.1", prose, path)
+            self.assertIn("v2.18.2", prose, path)
+            self.assertIn("v2.18.3", prose, path)
             self.assertIn("not released", prose, path)
             self.assertIn("2757822e", prose, path)
             self.assertIn("inherited limitation", prose, path)

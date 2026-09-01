@@ -7,7 +7,7 @@ every-Nth/release/corrupt-state audit_due rule, the em brief's audit block
 (router_audit), and the em-gate half that auto-files n/a-lens findings as
 router regressions into findings.json and blocks sign-off on them.
 
-Behavior is BYTE-FROZEN by taskplane/tests/test_audit_extraction.py: a
+Behavior is protected directly by taskplane/tests/test_audit_sweep.py: a
 differential corpus captured from the pre-extraction loop.py replays against
 this module and must produce identical gate error lists, findings.json
 bytes, and trace event names. No guardrail here may loosen.
@@ -18,7 +18,8 @@ gate math itself still lives with the frozen `finding_blocks` rule in
 loop.py — this module CALLS it (late-bound, never a reimplementation).
 
 Routed reviews save tokens only if skipping stays HONEST: every Nth em
-review (default 5, TASKPLANE_AUDIT_EVERY overridable, min 1) — plus any
+review (canonical default 5; the compatibility alias requires exact
+authority) — plus any
 review flagged as a release review — runs as a full-catalog AUDIT. The
 audit's merged findings are diffed against the recorded routing decision;
 a finding attributable to a lens the router marked n/a is a detector miss
@@ -35,7 +36,6 @@ import lens as lens_router
 import taskplane_lite as tp
 
 AUDIT_FILE = "audit.json"
-AUDIT_EVERY_DEFAULT = 5
 
 
 def _loop():
@@ -57,18 +57,14 @@ def _audit_path(ws: str) -> str:
     return os.path.join(_loop()._state_dir(ws), AUDIT_FILE)
 
 
-def audit_every() -> int:
+def audit_every(*, authority: dict | None = None) -> int:
     """The audit cadence N: every Nth em review is a full audit sweep.
-    TASKPLANE_AUDIT_EVERY overrides the default of 5; a floor of 1 is
-    enforced (N=1 audits every review); garbage falls back to the default —
-    a typo must not silently disable the audit backstop."""
-    raw = str(os.environ.get("TASKPLANE_AUDIT_EVERY") or "").strip()
-    if raw:
-        try:
-            return max(1, int(raw))
-        except ValueError:
-            pass
-    return AUDIT_EVERY_DEFAULT
+    Canonical settings own the default of 5. The one-release
+    TASKPLANE_AUDIT_EVERY alias requires exact authority; invalid and
+    non-positive values fail closed rather than weakening the backstop."""
+    from taskplane.settings import load_settings
+    return load_settings(
+        environment=os.environ, authority=authority).runtime.audit_every
 
 
 def audit_counter(ws: str) -> int:

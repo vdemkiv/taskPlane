@@ -16,11 +16,14 @@ import hashlib
 import html
 import json
 import os
+from typing import Any, Mapping
 
 import taskplane_lite as tp
 import loop as _loop        # engine owns the state machine; the view derives
 import kb as _kb            # from its public read models (display_pipeline,
 import depgraph as _dg      # STEP_ROLE, kb.counts, depgraph.summary) instead
+import plan_topology as _pt # Plan DAG/waves stay owned by one topology model.
+import host_native
                             # of re-encoding schemas that then drift.
 import text_runtime as _text
 
@@ -3121,14 +3124,28 @@ def _lane(t, loop_step, meter=None):
         f'{wait}</div>{bar}</div>')
 
 
-def _flow_label(value, limit=42):
-    """Compact a graph node without hiding which end of a path it names."""
-    value = str(value or "")
-    if len(value) <= limit:
-        return value
-    left = max(8, (limit - 3) // 2)
-    return value[:left] + "…" + value[-(limit - left - 1):]
+_flow_label = _pt._flow_label
+_DESIGN_GRAPH_SCHEMA = _pt._DESIGN_GRAPH_SCHEMA
+_MODULE_IMPACT_SCHEMA = _pt._MODULE_IMPACT_SCHEMA
+_PHASE_GRAPH_SCHEMA = _pt._PHASE_GRAPH_SCHEMA
 
+
+def phase_graph_projection(
+    workspace: str,
+    state: Mapping[str, Any] | None = None,
+    *,
+    snapshot_values: Mapping[str, Any] | None = None,
+    impact: Mapping[str, Any] | None = None,
+    module_impact_limit: int = 8,
+) -> dict[str, Any]:
+    """Compatibility facade over the canonical acyclic phase projector."""
+    return _pt.phase_graph_projection(
+        workspace, state, snapshot_values=snapshot_values, impact=impact,
+        module_impact_limit=module_impact_limit, loop_loader=_load_loop,
+        impact_loader=lambda ws, tasks: _current_graph_impact(ws, tasks))
+
+
+render_phase_dependency_graphs = _pt.render_phase_dependency_graphs
 
 def _current_graph_impact(ws, tasks, supplied=None):
     """Use canonical impact when present; otherwise derive one display view."""
@@ -3514,12 +3531,18 @@ def render_review_workflow(*, status: str, slots=None,
         'revision before the human gate.</p></div>')
 
 
-def _graph_panel(ws, tasks):
+def _graph_panel(ws, tasks, state=None, snapshot_values=None):
     """Graph tab: module/edge summary, most-connected hubs, and the blast
     radius of the current tasks' scope — all from the committed graph."""
+    state = state if isinstance(state, Mapping) else (_load_loop(ws) or {})
+    current_impact = _current_graph_impact(ws, tasks)
+    phase_html = render_phase_dependency_graphs(phase_graph_projection(
+        ws, state, snapshot_values=snapshot_values,
+        impact=current_impact if current_impact else None))
     g = _dg.load(ws)          # external store, via the graph owner's loader
     if not (g.get("modules") or g.get("edges")):
-        return ('<div style="font-size:13px;color:var(--text-muted)">no '
+        return (phase_html
+                + '<div style="font-size:13px;color:var(--text-muted)">no '
                 'dependency graph yet — scanned at loop start, or run '
                 '<code style="font-family:var(--font-mono)">tp graph scan'
                 '</code>. In a polyglot repo the scanner follows in-language '
@@ -3568,7 +3591,6 @@ def _graph_panel(ws, tasks):
         f'<div style="font-size:11px;color:var(--text-muted)">external deps'
         f'</div></div></div>')
     imp_html = ""
-    current_impact = _current_graph_impact(ws, tasks)
     scope = sorted({s.rstrip("*").rstrip("/") for t in tasks
                     for s in t.get("scope", []) if s})
     if scope:
@@ -3655,7 +3677,8 @@ def _graph_panel(ws, tasks):
             f'letter-spacing:1.2px;color:var(--text-muted);margin-bottom:'
             f'8px">product layer — requirements ↔ modules</div>'
             f'{"".join(rows)}{shared_html}</div>')
-    return (render_dependency_flow(ws, impact=current_impact, tasks=tasks)
+    return (phase_html
+            + render_dependency_flow(ws, impact=current_impact, tasks=tasks)
             + '<div class="tp-sec"><p class="tp-kicker">module-level graph — what the engine computed</p>'
             + tile3
             + f'<div style="background:none;border:1px solid '
@@ -4838,7 +4861,7 @@ def _widget_parts(ws: str) -> dict:
 
     # graph + context merged into one "map" tab — the codebase context
     # (hubs, blast radius) above the work context (requirement, lenses, KB)
-    graph_html = _graph_panel(ws, tasks)
+    graph_html = _graph_panel(ws, tasks, state=state)
     workflow_html = render_workflow_flow(state, step, tasks)
     context_html = (
         _context_panel(ws, state, full_trace)
@@ -5033,135 +5056,9 @@ def _page_bytes(html: str) -> int:
 
 # Host-native dashboard contract (R-0011).  These are semantic component
 # identifiers, deliberately independent of either host's visual vocabulary.
-HOST_DASHBOARD_COMPONENTS = (
-    "workflow", "dor", "dependency_impact", "agents", "lenses",
-    "criteria", "findings", "validation", "artifacts", "gate",
-)
-
-
-def _dashboard_plain(value):
-    """Return JSON-shaped presentation data without mutating canonical data."""
-    if isinstance(value, dict) or hasattr(value, "items"):
-        return {str(key): _dashboard_plain(item)
-                for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [_dashboard_plain(item) for item in value]
-    return value
-
-
-def carousel_pages(items, *, filters=None, current=1, page_size=8):
-    """Create deterministic, lossless carousel pages of three to eight items.
-
-    Zero and one item remain concise native cards.  Larger collections use a
-    stable input order; a one/two-item tail is rebalanced into the preceding
-    page so every carousel page stays within the host UI guideline.  Filtering
-    is explicit equality matching and therefore serializable and replayable.
-    """
-    if isinstance(page_size, bool) or not isinstance(page_size, int) \
-            or not 3 <= page_size <= 8:
-        raise ValueError("page_size must be between 3 and 8")
-    filters = dict(filters or {})
-    selected = []
-    identities = set()
-    for raw in items:
-        row = _dashboard_plain(raw)
-        identity = row.get("id") if isinstance(row, dict) else None
-        if not isinstance(identity, str) or not identity.strip() \
-                or identity in identities:
-            raise ValueError("every carousel item requires a stable unique id")
-        identities.add(identity)
-        if all(row.get(key) == value for key, value in filters.items()):
-            selected.append(row)
-
-    chunks = [selected[i:i + page_size]
-              for i in range(0, len(selected), page_size)]
-    if len(chunks) > 1 and len(chunks[-1]) < 3:
-        needed = 3 - len(chunks[-1])
-        chunks[-1][0:0] = chunks[-2][-needed:]
-        del chunks[-2][-needed:]
-    total_pages = len(chunks)
-    active = min(max(int(current or 1), 1), max(total_pages, 1))
-    pages = [{
-        "id": f"page-{index}",
-        "position": index,
-        "total_pages": total_pages,
-        "items": chunk,
-        "item_ids": [item["id"] for item in chunk],
-    } for index, chunk in enumerate(chunks, 1)]
-    return {
-        "schema": "taskplane.host-carousel/v1",
-        "total_items": len(selected),
-        "total_pages": total_pages,
-        "current": active,
-        "filters": filters,
-        "navigation": {
-            "previous": active - 1 if total_pages and active > 1 else None,
-            "next": active + 1 if active < total_pages else None,
-        },
-        "pages": pages,
-    }
-
-
-def native_dashboard_projection(snapshot, *, host, filters=None, current=1):
-    """Project one canonical snapshot into an accessible host-native model.
-
-    The host-specific section contains styling and interaction affordances
-    only.  It cannot change semantic values, evidence, provenance, ordering,
-    actions, or gate state, keeping Claude and Codex projections comparable.
-    """
-    if host not in {"codex", "claude"}:
-        raise ValueError("host must be codex or claude")
-    canonical = snapshot.to_dict()
-    values = canonical["values"]
-    components = []
-    for order, name in enumerate(HOST_DASHBOARD_COMPONENTS):
-        value = _dashboard_plain(values.get(name, {}))
-        row = {"id": name, "order": order, "value": value}
-        if isinstance(value, dict) and isinstance(value.get("items"), list):
-            row["collection"] = carousel_pages(
-                value["items"], filters=filters, current=current)
-        components.append(row)
-
-    actions = list(canonical["safe_actions"])
-    return {
-        "schema": "taskplane.host-native-dashboard/v1",
-        "identity": {key: canonical[key] for key in (
-            "workflow_id", "run_id", "target", "revision", "sequence")},
-        "stage": canonical["stage"],
-        "state": canonical["state"],
-        "fingerprint": canonical["fingerprint"],
-        "components": components,
-        "evidence": list(canonical["evidence"]),
-        "safe_actions": actions,
-        "presentation": {
-            "host": host,
-            "style": "openai-system" if host == "codex" else "claude-system",
-            "primary_actions": actions[:2],
-            "detail_actions": actions[2:],
-            "card": {
-                "single_purpose": True,
-                "max_primary_actions": 2,
-                "nested_scroll": False,
-                "deep_navigation": False,
-                "rich_detail_surface": "fullscreen",
-                "composer_retained": True,
-            },
-            "responsive": {"min_viewport_px": 320, "layout": "fluid"},
-            "accessibility": {
-                "semantic_labels": True,
-                "alt_text": True,
-                "keyboard_navigation": True,
-                "visible_focus": True,
-                "text_scale_percent": 200,
-                "reduced_motion": True,
-                "status_not_color_only": True,
-                "contrast": "WCAG-AA",
-                "fonts": "system",
-                "tokens": "host-system",
-                "themes": ["light", "dark"],
-            },
-        },
-    }
+HOST_DASHBOARD_COMPONENTS = host_native.HOST_DASHBOARD_COMPONENTS
+carousel_pages = host_native.carousel_pages
+native_dashboard_projection = host_native.native_dashboard_projection
 
 
 _HOST_SURFACE_TOKENS = {
@@ -5204,6 +5101,9 @@ def _dashboard_value_markup(value, *, omit=(), locale: str | None = None):
     if isinstance(value, bool):
         return _msg("boolean_yes" if value else "boolean_no", locale=locale)
     return html.escape(str(value))
+
+
+render_wave_metrics_projection = host_native.render_wave_metrics_projection
 
 
 def _dashboard_collection_markup(collection, *, locale: str | None = None):

@@ -116,8 +116,7 @@ def test_automatic_merge_persists_receipt_before_cleanup_and_replay_recovers(
     assert not os.path.exists(worker)
 
 
-def test_pre_receipt_failure_and_disabled_mode_preserve_tree(
-        tmp_path, monkeypatch):
+def test_pre_receipt_failure_preserves_tree(tmp_path, monkeypatch):
     primary, worker, _receipt, _layout = _fixture(tmp_path)
     verdict = storage.evaluation_path(worker)
     os.makedirs(os.path.dirname(verdict), exist_ok=True)
@@ -134,8 +133,4 @@ def test_pre_receipt_failure_and_disabled_mode_preserve_tree(
     result = loop._automatic_merge_cleanup(str(primary), task)
     assert result["status"] == "preserved"
     assert "task_merges" not in loop.load(str(primary))
-    assert os.path.isdir(worker)
-
-    monkeypatch.setenv("TASKPLANE_AUTO_WORKTREE_CLEANUP", "off")
-    assert loop._automatic_merge_cleanup(str(primary), task) is None
     assert os.path.isdir(worker)

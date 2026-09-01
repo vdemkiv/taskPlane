@@ -39,8 +39,18 @@ const RECEIPT_SCHEMA = {
     note: { type: 'string' },
   },
 };
+const SETTINGS_DIGEST = /^[0-9a-f]{64}$/;
+
+function requireSettings(args) {
+  const digest = args && args.settings_digest;
+  if (typeof digest !== 'string' || !SETTINGS_DIGEST.test(digest)) {
+    throw new Error('fix workflow lacks canonical settings digest');
+  }
+  return { digest };
+}
 
 export default async function fixWave({ args, agent, parallel, phase }) {
+  const settings = requireSettings(args);
   phase('Fix');
   const verdicts = args.verdicts || [];
   // One governed fix agent per failed-task verdict brief, fanned out
@@ -63,5 +73,6 @@ export default async function fixWave({ args, agent, parallel, phase }) {
   // the harness still owns every state transition.
   return {
     receipts: results.filter(Boolean),
+    settings_digest: settings.digest,
   };
 }

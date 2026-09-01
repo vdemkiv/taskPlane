@@ -36,17 +36,24 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Mapping
 
 import taskplane_lite as tp
+try:
+    from . import host_native
+except (ImportError, ValueError):
+    from taskplane import host_native
 
 
-_REVISION_ID_KEYS = ("target_fingerprint", "context_fingerprint",
-                     "findings_fingerprint", "canonical_revision")
+# Compatibility alias; host_native owns the canonical identity schema beside
+# its validator and every presentation facade consumes that single value.
+_REVISION_ID_KEYS = host_native.REVISION_ID_KEYS
 
 # A transition always refreshes the durable dashboard, but only a HUMAN gate
 # needs the model to stop, surface it, and acknowledge delivery.  Issuing and
@@ -58,173 +65,39 @@ _HUMAN_DASHBOARD_STEPS = frozenset({
     "design_approval", "plan_approval", "selection", "signoff", "escalated",
 })
 
-LARGE_DASHBOARD_INLINE_BYTES = 64 * 1024
-_CANONICAL_START = "<!-- taskplane-canonical-json:start -->"
-_CANONICAL_END = "<!-- taskplane-canonical-json:end -->"
-
-
-def canonical_dashboard_bytes(model: Mapping) -> bytes:
-    """Canonical JSON is the machine authority for every delivery surface."""
-    if not isinstance(model, Mapping):
-        raise TypeError("dashboard model must be a mapping")
-    return json.dumps(
-        dict(model), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False).encode("utf-8")
-
-
-def _write_delivery_artifact(path: str, payload: bytes) -> None:
-    target = os.path.abspath(path)
-    parent = os.path.dirname(target)
-    os.makedirs(parent, exist_ok=True)
-    if os.path.lexists(target) and os.path.islink(target):
-        raise ValueError("dashboard artifact path must not be a symlink")
-    fd, temporary = tempfile.mkstemp(prefix=".dashboard-", dir=parent)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, target)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(temporary)
-        raise
-
-
-def _artifact_ref(path: str, payload: bytes) -> dict:
-    return {"status": "available", "path": path, "bytes": len(payload),
-            "sha256": hashlib.sha256(payload).hexdigest()}
-
-
-def _embedded_html(body: str, canonical: bytes) -> bytes:
-    encoded = base64.b64encode(canonical).decode("ascii")
-    return (
-        '<!DOCTYPE html><html lang="en"><meta charset="utf-8"><body>'
-        + body
-        + '<script type="application/x-taskplane-json-base64" '
-          f'data-taskplane-canonical="true">{encoded}</script>'
-          '</body></html>').encode("utf-8")
+LARGE_DASHBOARD_INLINE_BYTES = host_native.LARGE_DASHBOARD_INLINE_BYTES
+_NO_EXPECTED_HEAD = host_native._NO_EXPECTED_HEAD
+canonical_dashboard_bytes = host_native.canonical_dashboard_bytes
+dashboard_freshness_state = host_native.dashboard_freshness_state
+dashboard_publication_receipt_fingerprint = (
+    host_native.dashboard_publication_receipt_fingerprint)
+validate_dashboard_publication_receipt = (
+    host_native.validate_dashboard_publication_receipt)
+decode_dashboard_artifact = host_native.decode_dashboard_artifact
+_write_delivery_artifact = host_native._write_delivery_artifact
 
 
 def deliver_dashboard(output_dir: str, model: Mapping, *,
                       inline_threshold: int = LARGE_DASHBOARD_INLINE_BYTES,
-                      html_renderer=None) -> dict:
-    """Publish a lossless, size-appropriate dashboard artifact set.
-
-    JSON and complete Markdown are required.  Inline is selected only when
-    the canonical semantic bytes fit the declared boundary.  HTML is a
-    best-effort convenience and cannot change publication or gate state.
-    """
-    if isinstance(inline_threshold, bool) or not isinstance(inline_threshold, int) \
-            or inline_threshold < 1:
-        raise ValueError("inline_threshold must be a positive byte count")
-    canonical = canonical_dashboard_bytes(model)
-    canonical_text = canonical.decode("utf-8")
-    root = os.path.abspath(output_dir)
-    if os.path.lexists(root) and os.path.islink(root):
-        raise ValueError("dashboard output directory must not be a symlink")
-    os.makedirs(root, exist_ok=True)
-    json_path = os.path.join(root, "dashboard.json")
-    markdown_path = os.path.join(root, "dashboard.md")
-    markdown = (
-        "# Taskplane dashboard\n\n"
-        "Canonical complete dashboard evidence (JSON):\n\n"
-        f"{_CANONICAL_START}\n```json\n{canonical_text}\n```\n"
-        f"{_CANONICAL_END}\n").encode("utf-8")
-    _write_delivery_artifact(json_path, canonical)
-    _write_delivery_artifact(markdown_path, markdown)
-    artifacts = {"json": _artifact_ref(json_path, canonical),
-                 "markdown": _artifact_ref(markdown_path, markdown)}
-
-    inline = None
-    mode = "complete-markdown"
-    if len(canonical) <= inline_threshold:
-        import dashboard as _dashboard
-        content = _dashboard.render_lossless_dashboard_inline(canonical_text)
-        inline = {"format": "html", "content": content, "complete": True,
-                  "semantic_bytes": len(canonical)}
-        mode = "inline"
-
-    html_path = os.path.join(root, "dashboard.html")
-    if html_renderer is None:
-        artifacts["html"] = {"status": "unavailable", "path": html_path,
-                             "reason": "optional HTML was not requested"}
-    else:
-        try:
-            body = str(html_renderer(canonical_text))
-            html_payload = _embedded_html(body, canonical)
-            _write_delivery_artifact(html_path, html_payload)
-            artifacts["html"] = _artifact_ref(html_path, html_payload)
-        except Exception as exc:
-            artifacts["html"] = {
-                "status": "unavailable", "path": html_path,
-                "reason": f"{exc.__class__.__name__}: {exc}"}
-
-    return {
-        "schema": "taskplane.dashboard-delivery/v1", "status": "published",
-        "mode": mode, "semantic_bytes": len(canonical),
-        "semantic_sha256": hashlib.sha256(canonical).hexdigest(),
-        "gate": dict(model.get("gate") or {}), "inline": inline,
-        "artifacts": artifacts,
-    }
-
-
-def decode_dashboard_artifact(kind: str, payload: bytes) -> dict:
-    """Decode a delivery surface for semantic-equivalence verification."""
-    text = payload.decode("utf-8")
-    if kind == "json":
-        value = json.loads(text)
-    elif kind == "markdown":
-        start = text.index(_CANONICAL_START) + len(_CANONICAL_START)
-        end = text.rindex(_CANONICAL_END)
-        fenced = text[start:end].strip()
-        if not fenced.startswith("```json\n") or not fenced.endswith("\n```"):
-            raise ValueError("invalid complete Markdown dashboard artifact")
-        value = json.loads(fenced[len("```json\n"):-len("\n```")])
-    elif kind in {"html", "inline"}:
-        marker = 'data-taskplane-canonical="true">'
-        start = text.index(marker) + len(marker)
-        end = text.index("</script>", start)
-        value = json.loads(base64.b64decode(text[start:end]).decode("utf-8"))
-    else:
-        raise ValueError(f"unsupported dashboard artifact kind: {kind}")
-    if not isinstance(value, dict):
-        raise ValueError("dashboard artifact must decode to an object")
-    return value
-
-
+                      html_renderer=None,
+                      host_acknowledgement: "Mapping | None" = None,
+                      expected_head=_NO_EXPECTED_HEAD) -> dict:
+    """Compatibility facade over the acyclic host delivery implementation."""
+    import dashboard as _dashboard
+    return host_native.deliver_dashboard(
+        output_dir, model, inline_threshold=inline_threshold,
+        inline_renderer=_dashboard.render_lossless_dashboard_inline,
+        html_renderer=html_renderer,
+        host_acknowledgement=host_acknowledgement,
+        expected_head=expected_head)
 def _transition_step(out: dict) -> str:
     state = out.get("status") or out.get("state") or {}
     return str((state.get("step") if isinstance(state, dict) else None)
                or out.get("step") or "")
 
 
-def canonical_revision_identity(value: dict) -> dict:
-    """Validate and normalize the tuple shared by every review projection."""
-    source = value.get("identity") if isinstance(value, dict) \
-        and isinstance(value.get("identity"), dict) else value
-    source = source if isinstance(source, dict) else {}
-    if any(source.get(key) in (None, "") for key in _REVISION_ID_KEYS):
-        raise ValueError("complete canonical revision identity is required")
-    try:
-        revision = int(source["canonical_revision"])
-    except (TypeError, ValueError):
-        raise ValueError("canonical revision identity has invalid revision")
-    if revision < 1:
-        raise ValueError("canonical revision identity has invalid revision")
-    return {
-        "target_fingerprint": str(source["target_fingerprint"]),
-        "context_fingerprint": str(source["context_fingerprint"]),
-        "findings_fingerprint": str(source["findings_fingerprint"]),
-        "canonical_revision": revision,
-    }
-
-
-def canonical_report_projection(report: str, identity: dict) -> dict:
-    """A report projection that cannot drop or rename canonical identity."""
-    return {"schema": "taskplane.review-projection/v1", "kind": "report",
-            "identity": canonical_revision_identity(identity),
-            "body": str(report or "")}
+canonical_revision_identity = host_native.canonical_revision_identity
+canonical_report_projection = host_native.canonical_report_projection
 
 
 def terminal_public_report_surface(identity: dict, report: dict) -> dict:
@@ -418,6 +291,34 @@ def publish_report(ws: str, state: dict | None = None) -> "dict | None":
 _VIEW_FAILED_WARNED = False
 
 
+def _delivery_model(out: Mapping) -> dict:
+    publication = out.get("dashboard_snapshot")
+    snapshot = publication.get("snapshot") if isinstance(
+        publication, Mapping) else None
+    if isinstance(snapshot, Mapping):
+        # This is the one frozen HostSurfaceSnapshot assembled by loop_status.
+        # No presentation value or transition reread enters canonical bytes.
+        return dict(snapshot)
+    return {
+        "schema": "taskplane.dashboard-delivery-model/v1",
+        "transition": {key: value for key, value in out.items()
+                       if key not in {"dashboard", "artifacts"}},
+        "gate": dict((out.get("gate") or
+                      ((out.get("status") or {}).get("gate")
+                       if isinstance(out.get("status"), dict) else {}) or {})),
+    }
+
+
+def _delivery_host_acknowledgement(out: Mapping) -> "Mapping | None":
+    for key in ("host_publication", "host_native_publication",
+                "dashboard_host_publication"):
+        publication = out.get(key)
+        if isinstance(publication, Mapping) and isinstance(
+                publication.get("acknowledgement"), Mapping):
+            return publication["acknowledgement"]
+    return None
+
+
 def refresh_views(ws: str, out: dict) -> dict:
     """Render the dashboard and publish the gate snapshot; annotate `out`.
 
@@ -426,102 +327,94 @@ def refresh_views(ws: str, out: dict) -> dict:
     """
     global _VIEW_FAILED_WARNED
     try:
-        import dashboard as _dash
-        frag = _dash.report_widget(ws)
-        # The durable artifact is a real report document, not a raw widget
-        # fragment.  This uses the same 940px canvas, palette, dark-mode
-        # variables and section hierarchy as engineering-review reports, so
-        # Codex/Claude/file delivery all render the same bytes reliably.
-        doc = _dash.standalone_document(
-            [frag], title="taskplane — mission control")
         import storage as _runtime_storage
         p = _runtime_storage.dashboard_path(ws)
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        tmp = f"{p}.tmp.{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
-            f.write(doc)
-        os.replace(tmp, p)
-        fragment_path = os.path.splitext(p)[0] + ".fragment.html"
-        fragment_tmp = f"{fragment_path}.tmp.{os.getpid()}"
-        with open(fragment_tmp, "w", encoding="utf-8", newline="") as f:
-            f.write(frag)
-        os.replace(fragment_tmp, fragment_path)
         step = _transition_step(out)
         human_gate = step in _HUMAN_DASHBOARD_STEPS
         logical_path = (p if _runtime_storage.load_workspace_locator(ws)
                         else ".taskplane/dashboard.html")
-        out["dashboard"] = {
-            # logical pointer, not a path: os.path.join made
-            # this '\\' on Windows and the goldens disagreed
-            "path": logical_path,
-            "inline": {"path": fragment_path},
-            "render": (
+        fragment_path = os.path.splitext(p)[0] + ".fragment.html"
+        delivery_root = os.path.join(os.path.dirname(p), "dashboard-delivery")
+        rendered: dict = {}
+
+        def presentation(_canonical: str) -> str:
+            import dashboard as _dash
+            fragment = _dash.report_widget(ws)
+            canonical_model = json.loads(_canonical)
+            canonical_values = canonical_model.get("values") \
+                if isinstance(canonical_model.get("values"), Mapping) else {}
+            fragment += _dash.render_wave_metrics_projection(
+                canonical_values.get("wave_metrics"))
+            rendered["fragment"] = fragment
+            return fragment
+
+        # Canonical JSON/Markdown and the product outcome are committed by
+        # deliver_dashboard even when presentation() raises.  The renderer is
+        # a true output port: it receives canonical bytes and cannot feed
+        # semantic values back into the delivery model.
+        delivery = deliver_dashboard(
+            delivery_root, _delivery_model(out),
+            inline_threshold=LARGE_DASHBOARD_INLINE_BYTES,
+            html_renderer=presentation,
+            host_acknowledgement=_delivery_host_acknowledgement(out))
+        if delivery.get("inline"):
+            inline = dict(delivery["inline"])
+            inline_path = os.path.join(delivery_root, "dashboard.inline.html")
+            _write_delivery_artifact(
+                inline_path, inline.pop("content").encode("utf-8"))
+            inline["path"] = inline_path
+            delivery["inline"] = inline
+
+        out["dashboard"] = {"path": logical_path, "delivery": delivery}
+        html_ref = delivery["artifacts"]["html"]
+        if html_ref["status"] == "available":
+            with open(html_ref["path"], "rb") as stream:
+                _write_delivery_artifact(p, stream.read())
+            fragment = rendered.get("fragment")
+            if isinstance(fragment, str):
+                _write_delivery_artifact(
+                    fragment_path, fragment.encode("utf-8"))
+                out["dashboard"]["inline"] = {"path": fragment_path}
+            out["dashboard"]["render"] = (
                 "human gate — render inline.path with the host widget before "
                 "asking for approval or rejection; path is fallback only"
                 if human_gate else
                 "refreshed for this internal transition — keep using this "
                 "path as the progress reference; do not render or acknowledge "
-                "it until a human gate or explicit status request")}
-        # R-0001: delivery is a production concern, not a test-only helper.
-        # The transition payload is the canonical semantic input; the rendered
-        # fragment is retained as evidence but never replaces canonical JSON.
-        # Very large values bypass inline transport automatically and point to
-        # the complete Markdown artifact instead.
-        delivery_root = os.path.join(os.path.dirname(p), "dashboard-delivery")
-        delivery_model = {
-            "schema": "taskplane.dashboard-delivery-model/v1",
-            "transition": {key: value for key, value in out.items()
-                           if key not in {"dashboard", "artifacts"}},
-            "rendered_dashboard": {"fragment": frag},
-            "gate": dict((out.get("gate") or
-                          ((out.get("status") or {}).get("gate")
-                           if isinstance(out.get("status"), dict) else {}) or
-                          {})),
-        }
-        try:
-            delivery = deliver_dashboard(
-                delivery_root, delivery_model,
-                inline_threshold=LARGE_DASHBOARD_INLINE_BYTES,
-                html_renderer=lambda _canonical: doc)
-            if delivery.get("inline"):
-                inline = dict(delivery["inline"])
-                inline_path = os.path.join(delivery_root, "dashboard.inline.html")
-                _write_delivery_artifact(
-                    inline_path, inline.pop("content").encode("utf-8"))
-                inline["path"] = inline_path
-                delivery["inline"] = inline
-            out["dashboard"]["delivery"] = delivery
-        except Exception as exc:
-            detail = f"{exc.__class__.__name__}: {exc}"
-            out["dashboard"]["delivery"] = {
-                "schema": "taskplane.dashboard-delivery/v1",
-                "status": "unavailable", "gating": False, "reason": detail,
-                "action": "retry artifact delivery"}
+                "it until a human gate or explicit status request")
+        else:
+            detail = str(html_ref.get("reason") or
+                         "HTML presentation is unavailable")
+            out["dashboard"].update({
+                "error": detail,
+                "render": "NOT refreshed — this transition's dashboard is "
+                          "STALE or missing. Canonical JSON/Markdown remain "
+                          "published; do not present the HTML as current."})
             with contextlib.suppress(Exception):
-                tp.trace(ws, "artifact_delivery_unavailable", error=detail)
-        # WS-F: the engine can render, write and point at the artifact, and
-        # has no way to see whether it reached a human — which is exactly how
-        # "no inline dashboard, no report, nothing" kept happening against a
-        # green engine. Record the demand so the SILENCE is countable.
-        # Best-effort and non-blocking by contract: a workspace with no
-        # ledger, or a failed write, changes nothing about this transition.
-        with contextlib.suppress(Exception):
-            import obligations
-            oid = obligations.issue(
-                ws, "render_dashboard",
-                detail="show the refreshed dashboard inline",
-                # This is one durable dashboard obligation for the whole
-                # delivery loop. The current step still controls whether the
-                # payload asks for delivery, but must not mint a new debt at
-                # every transition.
-                step="loop",
-                artifact=p, key=logical_path)
-            if oid:
-                out["dashboard"]["obligation"] = oid
-                if human_gate:
-                    out["dashboard"]["ack"] = (
-                        f"after delivering it, run once: tp ack {oid} "
-                        f"--delivered {logical_path}")
+                tp.trace(ws, "dashboard_render_failed", error=detail)
+            if not _VIEW_FAILED_WARNED:
+                _VIEW_FAILED_WARNED = True
+                print(f"taskplane: WARNING — dashboard render failed "
+                      f"({detail}); canonical delivery remains available, "
+                      "but the inline view is stale until repaired.",
+                      file=sys.stderr)
+        if html_ref["status"] == "available":
+            # WS-F: the engine can render, write and point at the artifact,
+            # but cannot see whether it reached a human. Record that demand
+            # only after the exact HTML artifact exists; issuing it for a
+            # stale or missing file would create fictional delivery debt.
+            with contextlib.suppress(Exception):
+                import obligations
+                oid = obligations.issue(
+                    ws, "render_dashboard",
+                    detail="show the refreshed dashboard inline",
+                    step="loop", artifact=p, key=logical_path)
+                if oid:
+                    out["dashboard"]["obligation"] = oid
+                    if human_gate:
+                        out["dashboard"]["ack"] = (
+                            f"after delivering it, run once: tp ack {oid} "
+                            f"--delivered {logical_path}")
     except Exception as exc:
         detail = f"{exc.__class__.__name__}: {exc}"
         with contextlib.suppress(Exception):
