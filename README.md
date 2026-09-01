@@ -147,20 +147,21 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
-> v2.18.1 is the tagged local predecessor, v2.18.2 is a superseded unreleased
-> candidate, and the forward release candidate moves as v2.18.3, which is not
+> v2.18.1 is the tagged local predecessor, v2.18.2 and v2.18.3 are superseded
+> unreleased candidates, and the forward release candidate moves as v2.18.4,
+> which is not
 > released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.3 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.18.4 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.18.3** | **Canonical delivery settings, truthful live dashboards, CI-first testing, and exact-owned cleanup — not released.** One validated settings spine now initializes every governed flow and seals portable, observable effective settings. A single settings-bound snapshot publishes current phase and dependency graphs consistently across native and static dashboard surfaces. The test portfolio removes evidence-proven redundancy while retaining authority and regression floors; settings-derived parallel CI, failure classification, release evidence, measurable delivery metrics, and fail-closed owned-resource cleanup close the full delivery lifecycle. |
+| **v2.18.4** | **Final dashboard graphs now show governed execution truth — not released.** Plan topology remains bound to the immutable approved Plan, while task and wave execution status comes from the exact governed-loop task identity set. Completed runs display passed tasks and waves; a missing, duplicate, or mismatched live-status edge displays unavailable/unknown instead of silently replaying Plan-time pending values. Approval proof and execution state remain visibly separate, and `taskplane/operational-settings.json` remains the one canonical settings source. |
+| **v2.18.3** | **Canonical delivery settings, CI-first testing, and exact-owned cleanup — superseded unreleased candidate.** It delivered the new dashboard pipeline, but its final Plan graph replayed Plan-time pending task status after the governed loop had completed. v2.18.4 corrects that live-status edge without weakening approval receipts or freshness checks. |
 | **v2.18.2** | **External-worktree Codex hook bootstrap repair — not released.** Hooks now resolve a validated repository launcher through Git's common directory when a linked worktree has no ignored local bridge, keep host-native checks on that same stable engine, fail with an actionable error when neither a launcher nor plugin root exists, and restore the launcher before any required hook-config rewrite. A local reinstall and generated upload artifact are development actions, not Marketplace publication or a public release. |
-| **v2.18.1** | **Complete local and exact-PR-head-SHA release proof — tagged local predecessor, not publicly released.** Adds the standard-library closed-inventory local CI runner, deterministic exact-once receipts, isolated parallel shards, deadline-safe cleanup, mutation detection, and a blocking PR-head proof that synthetic merge validation cannot substitute. Its tag and local installation do not claim an upload or Marketplace publication. |
 ## Install
 
 How you install taskplane depends on your **account type**, and the paths are

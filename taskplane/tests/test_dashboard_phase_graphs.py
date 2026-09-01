@@ -74,6 +74,47 @@ def test_plan_task_dag_and_waves_are_visible_from_plan_onward(tmp_path):
         assert [wave["id"] for wave in waves["waves"]] == ["W0", "W1", "W2"]
 
 
+def test_plan_graph_uses_live_governed_task_status_and_wave_execution(tmp_path):
+    ws = _workspace(tmp_path)
+    state = _state("done")
+    state["tasks"] = [
+        {"id": task_id, "status": "passed"}
+        for task_id in ("foundation", "api", "ui", "proof")
+    ]
+
+    projection = dashboard.phase_graph_projection(
+        str(ws), state, impact=_json("module-impact.json"))
+    dag = projection["plan_task_dag"]
+    waves = projection["plan_waves"]
+
+    assert dag["status_source"] == "governed-loop"
+    assert dag["status_counts"] == {"passed": 4}
+    assert {task["status"] for task in dag["tasks"]} == {"passed"}
+    assert waves["execution"] == "passed"
+    assert all(wave["execution"] == "passed" for wave in waves["waves"])
+    rendered = dashboard.render_phase_dependency_graphs(projection)
+    assert "foundation · passed" in rendered
+    assert 'data-wave-execution="passed"' in rendered
+    assert "approval planned · execution passed" in rendered
+
+
+def test_plan_graph_refuses_stale_status_when_loop_task_edge_is_severed(tmp_path):
+    ws = _workspace(tmp_path)
+    state = _state("done")
+    state["tasks"] = [{"id": "foundation", "status": "passed"}]
+
+    projection = dashboard.phase_graph_projection(
+        str(ws), state, impact=_json("module-impact.json"))
+    dag = projection["plan_task_dag"]
+    waves = projection["plan_waves"]
+
+    assert dag["status_source"] == "unavailable"
+    assert dag["status_counts"] == {"unknown": 4}
+    assert {task["status"] for task in dag["tasks"]} == {"unknown"}
+    assert waves["execution"] == "unavailable"
+    assert "do not match the Plan" in dag["status_error"]
+
+
 def test_only_exact_plan_receipt_labels_waves_approved(tmp_path):
     ws = _workspace(tmp_path)
     impact = _json("module-impact.json")
