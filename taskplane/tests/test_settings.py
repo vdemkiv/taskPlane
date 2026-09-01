@@ -25,7 +25,7 @@ def test_valid_canonical_settings_load_typed():
     assert settings.lenses.counts["build"] == 0
     assert settings.build.shards == 1
     assert settings.tests.backend == "ci"
-    assert settings.tests.shards == 4
+    assert settings.tests.shards == 1
     assert settings.lenses.counts["plan"] == 3
     assert settings.tests.cache is True
     assert settings.tests.cache_max_age_seconds == 24 * 60 * 60

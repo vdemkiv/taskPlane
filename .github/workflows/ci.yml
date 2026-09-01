@@ -18,8 +18,8 @@ jobs:
     outputs:
       candidate-sha: ${{ steps.bootstrap.outputs.candidate-sha }}
       artifact-days: ${{ steps.bootstrap.outputs.artifact-days }}
-      pytest-matrix: ${{ steps.plan.outputs.pytest-matrix }}
-      max-parallel: ${{ steps.plan.outputs.max-parallel }}
+      pytest-cell: ${{ steps.plan.outputs.pytest-cell }}
+      pytest-timeout-minutes: ${{ steps.plan.outputs.pytest-timeout-minutes }}
       quality-cell: ${{ steps.plan.outputs.quality-cell }}
       quality-timeout-minutes: ${{ steps.plan.outputs.quality-timeout-minutes }}
       browser-cell: ${{ steps.plan.outputs.browser-cell }}
@@ -80,17 +80,14 @@ jobs:
           pytest_cells = [cell for cell in cells if cell["kind"] == "pytest"]
           quality_cells = [cell for cell in cells if cell["kind"] == "quality-package"]
           browser_cells = [cell for cell in cells if cell["kind"] == "browser"]
-          if not pytest_cells or len(quality_cells) != 1 or len(browser_cells) != 1:
-              raise SystemExit("frozen plan does not contain pytest plus singleton quality/browser cells")
+          if len(pytest_cells) != 1 or len(quality_cells) != 1 or len(browser_cells) != 1:
+              raise SystemExit("canonical CI must contain one pytest, quality, and browser cell")
           # The settings-bounded execution budgets total at most 30 runner-minutes;
           # each job gets one additional minute to publish terminal evidence.
           minutes = lambda cell: (int(cell["timeout_seconds"]) + 59) // 60 + 1
           with open(sys.argv[2], "a", encoding="utf-8") as output:
-              output.write("pytest-matrix=" + json.dumps({"include": [
-                  {"cell": cell["id"], "timeout_minutes": minutes(cell)}
-                  for cell in pytest_cells
-              ]}, separators=(",", ":")) + "\n")
-              output.write(f"max-parallel={runtime['plan']['max_parallel']}\n")
+              output.write(f"pytest-cell={pytest_cells[0]['id']}\n")
+              output.write(f"pytest-timeout-minutes={minutes(pytest_cells[0])}\n")
               output.write(f"quality-cell={quality_cells[0]['id']}\n")
               output.write(f"quality-timeout-minutes={minutes(quality_cells[0])}\n")
               output.write(f"browser-cell={browser_cells[0]['id']}\n")
@@ -133,20 +130,6 @@ jobs:
               taskplane/tests/test_stage_cli.py
               taskplane/tests/test_github_workflow_execution.py::test_supported_python_matrix_compiles_imports_before_tests
           - python: "3.11"
-            tests: >-
-              taskplane/tests/test_r0002_reviewkernel_regression_floor.py
-              taskplane/tests/test_repository_preflight.py
-              taskplane/tests/test_storage_kernel.py
-              taskplane/tests/test_windows_portability.py
-              taskplane/tests/test_stage_non_build_handoffs.py
-              taskplane/tests/test_stage_cross_host.py
-              taskplane/tests/test_stage_rollout.py
-              taskplane/tests/test_stage_r0003_preservation.py
-              taskplane/tests/test_stage_release_matrix.py
-              taskplane/tests/test_stage_loop_integration.py
-              taskplane/tests/test_stage_cli.py
-              taskplane/tests/test_github_workflow_execution.py::test_supported_python_matrix_compiles_imports_before_tests
-          - python: "3.12"
             tests: >-
               taskplane/tests/test_r0002_reviewkernel_regression_floor.py
               taskplane/tests/test_repository_preflight.py
@@ -312,18 +295,15 @@ jobs:
         if: matrix.python == '3.12'
         run: python3 scripts/ci_loop_cost.py
 
-  # The complete pytest inventory executes exactly once in disjoint cells
-  # emitted by the frozen settings-derived plan. Compatibility legs above keep
-  # their interpreter contracts but no longer replay the full 3.12 suite.
-  authoritative-tests:
-    name: authoritative CI cell (${{ matrix.cell }})
+  # The complete pytest inventory executes once in the established protected
+  # check. Sharding remains a supported explicit setting, but the canonical CI
+  # profile stays single-suite until measured critical-path evidence justifies
+  # changing it.
+  tests:
+    name: tests (python 3.12)
     needs: [ci-plan]
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.timeout_minutes }}
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ fromJSON(needs.ci-plan.outputs.max-parallel) }}
-      matrix: ${{ fromJSON(needs.ci-plan.outputs.pytest-matrix) }}
+    timeout-minutes: ${{ fromJSON(needs.ci-plan.outputs.pytest-timeout-minutes) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -347,29 +327,30 @@ jobs:
         with:
           name: ci-runtime-${{ needs.ci-plan.outputs.candidate-sha }}
           path: ${{ runner.temp }}/runtime
-      - name: Execute one frozen disjoint pytest cell
+      - name: Execute the frozen authoritative pytest suite
         shell: bash
         run: |
           set +e
-          evidence="$RUNNER_TEMP/cell-evidence/${{ matrix.cell }}"
+          cell="${{ needs.ci-plan.outputs.pytest-cell }}"
+          evidence="$RUNNER_TEMP/cell-evidence/$cell"
           mkdir -p "$evidence"
           python3 scripts/ci_local.py \
             --runtime-plan "$RUNNER_TEMP/runtime/ci-runtime.json" \
-            --ci-cell "${{ matrix.cell }}" \
-            --receipt "$evidence/${{ matrix.cell }}.json"
+            --ci-cell "$cell" \
+            --receipt "$evidence/$cell.json"
           echo "$?" > "$evidence/exit-code"
           exit 0
-      - name: Preserve exact cell outcome and cleanup evidence
+      - name: Preserve exact suite outcome and cleanup evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ci-cell-${{ matrix.cell }}-${{ needs.ci-plan.outputs.candidate-sha }}
-          path: ${{ runner.temp }}/cell-evidence/${{ matrix.cell }}
+          name: ci-cell-${{ needs.ci-plan.outputs.pytest-cell }}-${{ needs.ci-plan.outputs.candidate-sha }}
+          path: ${{ runner.temp }}/cell-evidence/${{ needs.ci-plan.outputs.pytest-cell }}
           if-no-files-found: error
           retention-days: ${{ fromJSON(needs.ci-plan.outputs.artifact-days) }}
-      - name: Enforce cell result after durable receipt publication
+      - name: Enforce suite result after durable receipt publication
         if: always()
-        run: test "$(cat "$RUNNER_TEMP/cell-evidence/${{ matrix.cell }}/exit-code")" = "0"
+        run: test "$(cat "$RUNNER_TEMP/cell-evidence/${{ needs.ci-plan.outputs.pytest-cell }}/exit-code")" = "0"
 
   # H-09: one blocking, non-matrix quality job owns the repository's pinned
   # Python lint/type policy.  Keeping it outside the test matrix avoids paying
@@ -573,12 +554,12 @@ jobs:
           taskplane/tests/test_stage_cli.py::test_stage_runtime_refusal_is_nonzero_and_machine_readable
 
   # P1 is push-only: pull_request uses a synthetic merge/branch SHA and must
-  # remain local_green. The protected floors, terminal join, and browser cell
-  # are one workflow-run receipt set; the proof then checks repository topology.
+  # remain local_green. The real test and browser jobs publish direct receipts;
+  # this proof binds their conclusions to repository topology without a join job.
   pushed-sha-proof:
     name: pushed SHA delivery proof
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [ci-plan, python-compatibility, tests-authority, zero-token-corpus, wave3-contracts, authoritative-ci, dashboard-browser]
+    needs: [ci-plan, python-compatibility, tests, zero-token-corpus, wave3-contracts, dashboard-browser]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -589,11 +570,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Restore terminal receipt evidence
+      - name: Restore authoritative test receipt evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: terminal-matrix-${{ needs.ci-plan.outputs.candidate-sha }}
-          path: ${{ runner.temp }}/terminal
+          name: ci-cell-${{ needs.ci-plan.outputs.pytest-cell }}-${{ needs.ci-plan.outputs.candidate-sha }}
+          path: ${{ runner.temp }}/tests
       - name: Restore browser receipt evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -602,14 +583,13 @@ jobs:
       - name: Bind required check results to this workflow SHA
         env:
           CHECKED_SHA: ${{ github.sha }}
-          COMPAT_RESULT: ${{ needs.tests-authority.result }}
+          TESTS_RESULT: ${{ needs.tests.result }}
           PYTHON_COMPAT_RESULT: ${{ needs.python-compatibility.result }}
           GRAPH_CLI_RESULT: ${{ needs.wave3-contracts.result }}
           ZERO_TOKEN_RESULT: ${{ needs.zero-token-corpus.result }}
-          TERMINAL_RESULT: ${{ needs.authoritative-ci.result }}
           BROWSER_RESULT: ${{ needs.dashboard-browser.result }}
         run: |
-          python3 - "$RUNNER_TEMP/required-checks.json" "$RUNNER_TEMP/terminal/terminal.json" "$RUNNER_TEMP/browser/dashboard-browser.json" <<'PY'
+          python3 - "$RUNNER_TEMP/required-checks.json" "$RUNNER_TEMP/tests/${{ needs.ci-plan.outputs.pytest-cell }}.json" "$RUNNER_TEMP/browser/dashboard-browser.json" <<'PY'
           import importlib.util
           import json
           import os
@@ -618,20 +598,22 @@ jobs:
           spec = importlib.util.spec_from_file_location("ci_evals", "scripts/ci_evals.py")
           ci_evals = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(ci_evals)
-          terminal = json.load(open(sys.argv[2], encoding="utf-8"))
+          tests = json.load(open(sys.argv[2], encoding="utf-8"))
           browser = json.load(open(sys.argv[3], encoding="utf-8"))
-          if os.environ["TERMINAL_RESULT"] != "success" or os.environ["BROWSER_RESULT"] != "success":
-              raise SystemExit("terminal or browser job conclusion is not success")
+          if os.environ["TESTS_RESULT"] != "success" or os.environ["BROWSER_RESULT"] != "success":
+              raise SystemExit("test or browser job conclusion is not success")
           if os.environ["PYTHON_COMPAT_RESULT"] != "success":
               raise SystemExit("supported Python compatibility conclusion is not success")
-          if terminal.get("green") is not True or terminal.get("source_sha") != os.environ["CHECKED_SHA"]:
-              raise SystemExit("terminal receipt is not exact-pushed-SHA green")
+          if tests.get("status") != "green" or tests.get("source_sha") != os.environ["CHECKED_SHA"]:
+              raise SystemExit("test receipt is not exact-pushed-SHA green")
+          if tests.get("cleanup", {}).get("leak_count") != 0:
+              raise SystemExit("test receipt reports cleanup leaks")
           if browser.get("id") != "dashboard-browser" or browser.get("status") != "green":
               raise SystemExit("browser receipt is not green")
           if browser.get("source_sha") != os.environ["CHECKED_SHA"]:
               raise SystemExit("browser receipt names a different pushed SHA")
           conclusions = (
-              os.environ["COMPAT_RESULT"],
+              os.environ["TESTS_RESULT"],
               os.environ["GRAPH_CLI_RESULT"],
               os.environ["ZERO_TOKEN_RESULT"],
           )
@@ -1048,116 +1030,6 @@ jobs:
         if: always()
         run: test "$(cat "$RUNNER_TEMP/cell-evidence/${{ needs.ci-plan.outputs.browser-cell }}/exit-code")" = "0"
 
-  # This is the only authority join for the frozen settings-derived plan. It runs
-  # after green, red, skipped, or cancelled prerequisites, preserves its own
-  # terminal evidence, and refuses authority unless every planned receipt matches.
-  authoritative-ci:
-    name: authoritative CI terminal matrix
-    if: always()
-    needs: [ci-plan, authoritative-tests, python-quality, dashboard-browser]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.ci-plan.outputs.candidate-sha || github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Restore the exact candidate plan
-        continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ci-runtime-${{ needs.ci-plan.outputs.candidate-sha }}
-          path: ${{ runner.temp }}/runtime
-      - name: Restore all frozen cell receipts
-        continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: ci-cell-*-${{ needs.ci-plan.outputs.candidate-sha }}
-          path: ${{ runner.temp }}/receipts
-      - name: Aggregate every plan-bound receipt
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          mkdir -p "$RUNNER_TEMP/terminal-evidence"
-          python3 scripts/ci_local.py \
-            --runtime-plan "$RUNNER_TEMP/runtime/ci-runtime.json" \
-            --receipt-root "$RUNNER_TEMP/receipts" \
-            --aggregate-ci "$RUNNER_TEMP/terminal-evidence/terminal.json" \
-            >"$RUNNER_TEMP/terminal-evidence/aggregate.log" 2>&1
-          echo "$?" > "$RUNNER_TEMP/terminal-evidence/exit-code"
-          exit 0
-      - name: Preserve the terminal matrix on every outcome
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: terminal-matrix-${{ needs.ci-plan.outputs.candidate-sha }}
-          path: ${{ runner.temp }}/terminal-evidence
-          if-no-files-found: error
-          retention-days: ${{ fromJSON(needs.ci-plan.outputs.artifact-days) }}
-      - name: Enforce one matching all-green terminal matrix
-        if: always()
-        env:
-          CANDIDATE_SHA: ${{ needs.ci-plan.outputs.candidate-sha }}
-        run: |
-          test "$(cat "$RUNNER_TEMP/terminal-evidence/exit-code")" = "0"
-          python3 - "$RUNNER_TEMP/runtime/ci-runtime.json" "$RUNNER_TEMP/terminal-evidence/terminal.json" <<'PY'
-          import json, os, sys
-          runtime = json.load(open(sys.argv[1], encoding="utf-8"))
-          terminal = json.load(open(sys.argv[2], encoding="utf-8"))
-          expected = [cell["id"] for cell in runtime["plan"]["cells"]]
-          if terminal.get("green") is not True:
-              raise SystemExit("terminal matrix is not green")
-          if terminal.get("source_sha") != os.environ["CANDIDATE_SHA"]:
-              raise SystemExit("terminal matrix names a different candidate")
-          if [cell.get("id") for cell in terminal.get("cells", [])] != expected:
-              raise SystemExit("terminal matrix does not join the frozen plan cells")
-          PY
-
-  # Preserve the established branch-protection identity, now as a receipt-
-  # backed alias rather than a second execution of the unchanged full suite.
-  tests-authority:
-    name: tests (python 3.12)
-    if: always()
-    needs: [ci-plan, python-compatibility, authoritative-ci, dashboard-browser]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Restore terminal receipt evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: terminal-matrix-${{ needs.ci-plan.outputs.candidate-sha }}
-          path: ${{ runner.temp }}/terminal
-      - name: Restore browser receipt evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ci-cell-${{ needs.ci-plan.outputs.browser-cell }}-${{ needs.ci-plan.outputs.candidate-sha }}
-          path: ${{ runner.temp }}/browser
-      - name: Bind protected check to terminal and browser receipts
-        env:
-          CANDIDATE_SHA: ${{ needs.ci-plan.outputs.candidate-sha }}
-          TERMINAL_RESULT: ${{ needs.authoritative-ci.result }}
-          BROWSER_RESULT: ${{ needs.dashboard-browser.result }}
-          COMPATIBILITY_RESULT: ${{ needs.python-compatibility.result }}
-        run: |
-          python3 - "$RUNNER_TEMP/terminal/terminal.json" "$RUNNER_TEMP/browser/dashboard-browser.json" <<'PY'
-          import json, os, sys
-          terminal = json.load(open(sys.argv[1], encoding="utf-8"))
-          browser = json.load(open(sys.argv[2], encoding="utf-8"))
-          if os.environ["TERMINAL_RESULT"] != "success" or os.environ["BROWSER_RESULT"] != "success":
-              raise SystemExit("terminal or browser job conclusion is not success")
-          if os.environ["COMPATIBILITY_RESULT"] != "success":
-              raise SystemExit("supported Python compatibility conclusion is not success")
-          if terminal.get("green") is not True or terminal.get("source_sha") != os.environ["CANDIDATE_SHA"]:
-              raise SystemExit("terminal receipt is not exact-candidate green")
-          if browser.get("id") != "dashboard-browser" or browser.get("status") != "green":
-              raise SystemExit("browser receipt is not green")
-          if browser.get("source_sha") != os.environ["CANDIDATE_SHA"]:
-              raise SystemExit("browser receipt names a different candidate")
-          PY
-
   # This is the single blocking pull-request proof. Every prerequisite above
   # checks out the actual PR head; the aggregate then binds their conclusions
   # and its own checkout to that same immutable SHA. GitHub's synthetic merge
@@ -1168,8 +1040,7 @@ jobs:
     needs:
       - ci-plan
       - python-compatibility
-      - tests-authority
-      - authoritative-ci
+      - tests
       - python-quality
       - zero-token-corpus
       - wave3-contracts
@@ -1187,11 +1058,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Restore terminal receipt evidence
+      - name: Restore authoritative test receipt evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: terminal-matrix-${{ needs.ci-plan.outputs.candidate-sha }}
-          path: ${{ runner.temp }}/terminal
+          name: ci-cell-${{ needs.ci-plan.outputs.pytest-cell }}-${{ needs.ci-plan.outputs.candidate-sha }}
+          path: ${{ runner.temp }}/tests
       - name: Restore browser receipt evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -1201,8 +1072,7 @@ jobs:
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           COMPAT_RESULT: ${{ needs.python-compatibility.result }}
-          TESTS_RESULT: ${{ needs.tests-authority.result }}
-          TERMINAL_RESULT: ${{ needs.authoritative-ci.result }}
+          TESTS_RESULT: ${{ needs.tests.result }}
           BROWSER_RESULT: ${{ needs.dashboard-browser.result }}
           QUALITY_RESULT: ${{ needs.python-quality.result }}
           CORPUS_RESULT: ${{ needs.zero-token-corpus.result }}
@@ -1214,7 +1084,7 @@ jobs:
           HOST_RESULT: ${{ needs.codex-host.result }}
           HISTORY_RESULT: ${{ needs.release-tags.result }}
         run: |
-          python3 - "$RUNNER_TEMP/terminal/terminal.json" "$RUNNER_TEMP/browser/dashboard-browser.json" <<'PY'
+          python3 - "$RUNNER_TEMP/tests/${{ needs.ci-plan.outputs.pytest-cell }}.json" "$RUNNER_TEMP/browser/dashboard-browser.json" <<'PY'
           import hashlib
           import json
           import os
@@ -1226,18 +1096,17 @@ jobs:
               ["git", "rev-parse", "HEAD"], check=True, capture_output=True,
               text=True, encoding="utf-8",
           ).stdout.strip()
-          terminal = json.load(open(sys.argv[1], encoding="utf-8"))
+          tests = json.load(open(sys.argv[1], encoding="utf-8"))
           browser = json.load(open(sys.argv[2], encoding="utf-8"))
           names = (
-              "python-compatibility", "tests-authority", "authoritative-ci",
-              "dashboard-browser", "python-quality", "zero-token-corpus",
+              "python-compatibility", "tests", "dashboard-browser",
+              "python-quality", "zero-token-corpus",
               "wave3-contracts", "tests-portability", "validate-plugin",
               "docs-truth", "codex-parity", "codex-host", "release-tags",
           )
           conclusions = (
               os.environ["COMPAT_RESULT"], os.environ["TESTS_RESULT"],
-              os.environ["TERMINAL_RESULT"], os.environ["BROWSER_RESULT"],
-              os.environ["QUALITY_RESULT"],
+              os.environ["BROWSER_RESULT"], os.environ["QUALITY_RESULT"],
               os.environ["CORPUS_RESULT"], os.environ["GRAPH_RESULT"],
               os.environ["PORTABILITY_RESULT"], os.environ["PLUGIN_RESULT"],
               os.environ["DOCS_RESULT"], os.environ["PARITY_RESULT"],
@@ -1261,8 +1130,10 @@ jobs:
           print(json.dumps(proof, sort_keys=True))
           if checked != expected:
               raise SystemExit("checkout is not github.event.pull_request.head.sha")
-          if terminal.get("green") is not True or terminal.get("source_sha") != expected:
-              raise SystemExit("terminal receipt is not exact-PR-head green")
+          if tests.get("status") != "green" or tests.get("source_sha") != expected:
+              raise SystemExit("test receipt is not exact-PR-head green")
+          if tests.get("cleanup", {}).get("leak_count") != 0:
+              raise SystemExit("test receipt reports cleanup leaks")
           if browser.get("id") != "dashboard-browser" or browser.get("status") != "green":
               raise SystemExit("browser receipt is not green")
           if browser.get("source_sha") != expected:

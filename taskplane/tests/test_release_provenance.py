@@ -210,7 +210,10 @@ def _protected_main_fixture(root: Path, source: str, first_parent: str,
     })
     evidence["ci"]["candidate_sha"] = source
     for name, row in evidence["receipts"].items():
-        if name != "settings":
+        if name == "checks":
+            for check in row.values():
+                check["source_sha"] = source
+        elif name != "settings":
             row["source_sha"] = source
     for package in evidence["packages"]:
         package["source_sha"] = source
@@ -292,7 +295,8 @@ def test_premerge_first_parent_topology_matches_release_gate(tmp_path):
     [
         (("ci", "event"), "pull_request", "pre-merge CI"),
         (("supply_chain", "immutable_actions"), False, "immutable pins"),
-        (("receipts", "browser", "fresh"), False, "browser receipt is stale"),
+        (("receipts", "checks", "dashboard-browser", "fresh"), False,
+         "dashboard-browser receipt is stale"),
         (("receipts", "dashboard", "source_sha"), "f" * 40,
          "dashboard receipt is stale"),
         (("receipts", "wave_metrics", "recounted"), True,

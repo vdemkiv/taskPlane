@@ -117,7 +117,7 @@ def measure_audit_hybrid(corpus_entries, workspace=None, base: str = "HEAD",
      verdict, bar, corpus_size, rows}. Deterministic for a frozen corpus.
     Imports lens at call time (lens imports THIS module at load time, so a
     module-level import would be a cycle)."""
-    import lens  # noqa: runtime import — see docstring
+    import lens  # noqa: PLC0415 - deferred to avoid the documented import cycle
 
     rows = []
     tokens_full = tokens_hybrid = escaped_total = 0

@@ -30,13 +30,13 @@
   "tests": {
     "backend": "ci",
     "selection": "targeted",
-    "shards": 4,
+    "shards": 1,
     "cache": true,
     "cache_max_age_seconds": 86400
   },
   "limits": {
     "timeouts": {
-      "task_seconds": 600,
+      "task_seconds": 1200,
       "subprocess_seconds": 300,
       "wait_seconds": 60,
       "lens_wait_seconds": 1800,

@@ -10,8 +10,6 @@ from taskplane.ci_policy import (
     build_ci_plan,
     evaluate_ci_metrics,
     freeze_candidate,
-    reuse_terminal_matrix,
-    seal_terminal_matrix,
 )
 
 
@@ -26,7 +24,7 @@ def _candidate():
     return freeze_candidate(_fixture("candidate.json"))
 
 
-def test_validation_progression_and_terminal_matrix_reuse():
+def test_validation_progression_requires_one_authoritative_ci_run():
     candidate = _candidate()
     evidence = None
     for layer, execution in (
@@ -75,26 +73,6 @@ def test_validation_progression_and_terminal_matrix_reuse():
             },
         )
 
-    plan = build_ci_plan(candidate, _fixture("ci-plan.json"))
-    terminal = seal_terminal_matrix(candidate, plan, _fixture("green-cells.json"))
-    exact_reuse = reuse_terminal_matrix(terminal, candidate)
-    assert exact_reuse["terminal_reusable"] is True
-    assert exact_reuse["matrix_runs"] == 0
-    assert exact_reuse["rerun_cells"] == []
-    assert set(exact_reuse["cited_unchanged_green"]) == {
-        cell["id"] for cell in terminal["cells"]
-    }
-
-    changed = _fixture("candidate.json")
-    changed["fingerprints"]["tests"] = "f" * 64
-    invalidated = reuse_terminal_matrix(terminal, freeze_candidate(changed))
-    assert invalidated["terminal_reusable"] is False
-    assert set(invalidated["rerun_cells"]) == {
-        cell["id"] for cell in terminal["cells"]
-    }
-    assert invalidated["cited_unchanged_green"] == []
-
-
 def test_ci_shards_cleanup_and_candidate_freeze_are_authoritative():
     candidate = _candidate()
     plan = build_ci_plan(candidate, _fixture("ci-plan.json"))
@@ -109,9 +87,6 @@ def test_ci_shards_cleanup_and_candidate_freeze_are_authoritative():
         "cancel_in_progress": True,
         "scope": "same-pr-heads-only",
     }
-    assert plan["terminal_aggregate"]["needs"] == [
-        cell["id"] for cell in plan["cells"]
-    ]
     assert plan["serializations"] == [
         {"name": "package-index", "cells": ["package"]}
     ]
@@ -203,16 +178,6 @@ def test_dashboard_browser_shard_is_disjoint_bounded_and_candidate_bound():
         and not set(browser["paths"]).intersection(cell["paths"])
         for cell in ordinary
     )
-
-    terminal = seal_terminal_matrix(candidate, plan, _fixture("green-cells.json"))
-    browser_drift = copy.deepcopy(_fixture("candidate.json"))
-    browser_drift["browser"]["version"] = "Chromium 131.0.1"
-    reuse = reuse_terminal_matrix(terminal, freeze_candidate(browser_drift))
-    assert reuse["terminal_reusable"] is False
-    assert reuse["rerun_cells"] == ["dashboard-browser"]
-    assert set(reuse["cited_unchanged_green"]) == {
-        cell["id"] for cell in ordinary
-    }
 
     duplicated = _fixture("ci-plan.json")
     duplicated["cells"][0]["selectors"].append(browser["selectors"][0])

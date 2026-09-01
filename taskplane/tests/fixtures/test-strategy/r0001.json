@@ -49,7 +49,7 @@
     {
       "id": "AC-TST3",
       "selectors": [
-        "taskplane/tests/test_ci_execution_policy.py::test_validation_progression_and_terminal_matrix_reuse"
+        "taskplane/tests/test_ci_execution_policy.py::test_validation_progression_requires_one_authoritative_ci_run"
       ]
     },
     {

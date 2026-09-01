@@ -83,8 +83,7 @@ _BY_ID = {s["id"]: s for s in SPECS}
 
 
 def enabled(*, authority: dict | None = None) -> bool:
-    """`TASKPLANE_RUNNABILITY=off` skips the probe entirely (air-gapped hosts,
-    or anyone who would rather pay the six-agent tax than a subprocess)."""
+    """A receipted `TASKPLANE_RUNNABILITY=off` skips the probe entirely."""
     from taskplane.settings import load_settings
     settings = load_settings(environment=os.environ, authority=authority)
     return settings.runtime.runnability == "probe"

@@ -27,6 +27,7 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import ci_local as ci_runner  # noqa: E402
 import ci_release_tags as gate     # noqa: E402
 import ci_evals  # noqa: E402
 import release_provenance as provenance  # noqa: E402
@@ -43,6 +44,69 @@ def _git(root, *args, check=True):
     if check and p.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {p.stdout}")
     return p.stdout.strip()
+
+
+def _green_ci_receipt(runtime, cell, owned):
+    ownership_material = {
+        "schema": "taskplane.ci-owned-cell/v1",
+        "candidate_fingerprint": runtime["candidate"]["fingerprint"],
+        "source_sha": runtime["candidate"]["source_sha"],
+        "cell_id": cell["id"],
+        "containment_root": str(owned.parent),
+        "relative_name": owned.name,
+        "registered_before_run": True,
+    }
+    ownership = {
+        **ownership_material,
+        "fingerprint": gate._sha256_json(ownership_material),
+    }
+    cleanup_material = {
+        "schema": ci_runner.CI_CLEANUP_SCHEMA,
+        "registration_fingerprint": ownership["fingerprint"],
+        "outcome": "success",
+        "resources": [str(owned)],
+        "status": "clean",
+        "leak_count": 0,
+        "leaks": [],
+    }
+    cleanup = {
+        **cleanup_material,
+        "fingerprint": gate._sha256_json(cleanup_material),
+    }
+    observed = {
+        "implementation": "CPython", "python": "3.12.9",
+        "os": "posix", "platform": "Linux", "machine": "x86_64",
+    }
+    commands = [{
+        "argv": argv, "returncode": 0, "duration_ms": 0,
+        "output_digest": "d" * 64,
+    } for argv in ci_runner._ci_cell_commands(cell, owned)]
+    payload = {
+        "schema": ci_runner.CI_CELL_SCHEMA,
+        "id": cell["id"], "kind": cell["kind"], "status": "green",
+        "outcome": "success", "classification": None,
+        "candidate_fingerprint": runtime["candidate"]["fingerprint"],
+        "source_sha": runtime["candidate"]["source_sha"],
+        "plan_fingerprint": runtime["plan"]["fingerprint"],
+        "settings_receipt_fingerprint": runtime["settings_receipt"]["fingerprint"],
+        "environment": {
+            "candidate_fingerprint": runtime["candidate"]["fingerprints"]["environment"],
+            "observed": observed,
+            "observed_fingerprint": gate._sha256_json(observed),
+        },
+        "browser_fingerprint": (
+            runtime["candidate"]["browser_fingerprint"]
+            if cell["kind"] == "browser" else None
+        ),
+        "browser_observation": (
+            runtime["candidate"]["browser"]
+            if cell["kind"] == "browser" else None
+        ),
+        "selectors": cell["selectors"], "duration_ms": 0,
+        "commands": commands, "output_digest": "e" * 64,
+        "ownership": ownership, "cleanup": cleanup,
+    }
+    return {**payload, "receipt": gate._sha256_json(payload)}
 
 
 def _pushed_sha_receipts(sha):
@@ -203,11 +267,10 @@ def _protected_main_evidence(root, source_sha, first_parent_sha, pull_head_sha):
     for row in (
         evidence["merge_topology"], evidence["ci"],
         evidence["receipts"]["candidate"],
-        evidence["receipts"]["matrix"],
-        evidence["receipts"]["browser"],
         evidence["receipts"]["dashboard"],
         evidence["receipts"]["wave_metrics"],
         evidence["receipts"]["cleanup"],
+        *evidence["receipts"]["checks"].values(),
     ):
         for key in ("source_sha", "candidate_sha", "merge_created_sha",
                     "checked_sha"):
@@ -260,7 +323,10 @@ def test_tag_requires_exact_protected_main_green(tmp_path):
     branch_evidence["merge_topology"]["pull_request_head_sha"] = "c" * 40
     branch_evidence["ci"]["candidate_sha"] = pull_head
     for name, row in branch_evidence["receipts"].items():
-        if name != "settings":
+        if name == "checks":
+            for check in row.values():
+                check["source_sha"] = pull_head
+        elif name != "settings":
             row["source_sha"] = pull_head
     for package in branch_evidence["packages"]:
         package["source_sha"] = pull_head
@@ -271,7 +337,7 @@ def test_tag_requires_exact_protected_main_green(tmp_path):
         gate.authorize_tag(tmp_path, "1.1.0", branch_receipt)
 
     red = deepcopy(evidence)
-    red["ci"]["conclusions"]["terminal-matrix"] = "failure"
+    red["ci"]["conclusions"]["pytest-1"] = "failure"
     with pytest.raises(release_evidence.ReleaseEvidenceError,
                        match="required check"):
         release_evidence.create_protected_main_release_gate(
@@ -379,11 +445,16 @@ def test_post_merge_release_cli_assembles_and_authorizes_from_sealed_receipts(
     candidate_input = json.loads((
         Path(ROOT) / "taskplane/tests/fixtures/ci-policy/candidate.json"
     ).read_text(encoding="utf-8"))
+    settings = ci_runner._ci_settings(
+        Path(ROOT) / "taskplane/operational-settings.json",
+    )
+    plan_input = ci_runner._ci_declaration(
+        settings, event="push", ref="refs/heads/main", run_id="release",
+    )
     candidate_input["source_sha"] = source
+    candidate_input["fingerprints"]["settings"] = settings.digest
+    candidate_input["fingerprints"]["shard-plan"] = gate._sha256_json(plan_input)
     candidate = ci_policy.freeze_candidate(candidate_input)
-    plan_input = json.loads((
-        Path(ROOT) / "taskplane/tests/fixtures/ci-policy/ci-plan.json"
-    ).read_text(encoding="utf-8"))
     plan = ci_policy.build_ci_plan(candidate, plan_input)
     settings_receipt = {
         "schema": "taskplane.authoritative-ci-settings-receipt/v1",
@@ -403,61 +474,12 @@ def test_post_merge_release_cli_assembles_and_authorizes_from_sealed_receipts(
     }
     runtime = {**runtime_payload,
                "fingerprint": gate._sha256_json(runtime_payload)}
-    browser_cell = next(row for row in plan["cells"]
-                        if row["kind"] == "browser")
-    observed = {"implementation": "CPython", "python": "3.13.0",
-                "os": "posix", "platform": "Darwin", "machine": "arm64"}
-    ownership = {
-        "schema": "taskplane.ci-owned-cell/v1",
-        "candidate_fingerprint": candidate["fingerprint"],
-        "source_sha": source,
-        "cell_id": browser_cell["id"],
-        "containment_root": str(artifacts),
-        "relative_name": "browser-owned",
-        "registered_before_run": True,
-    }
-    ownership["fingerprint"] = gate._sha256_json(ownership)
-    resource = str(artifacts / "browser-owned")
-    cleanup_payload = {
-        "schema": "taskplane.ci-cleanup-receipt/v1",
-        "registration_fingerprint": ownership["fingerprint"],
-        "outcome": "success", "resources": [resource], "status": "clean",
-        "leak_count": 0, "leaks": [],
-    }
-    cleanup_cell = {**cleanup_payload,
-                    "fingerprint": gate._sha256_json(cleanup_payload)}
-    commands = [{
-        "argv": ["taskplane-python", "-m", "pytest", "-q",
-                 *browser_cell["selectors"]],
-        "returncode": 0, "duration_ms": 1, "output_digest": "d" * 64,
-    }]
-    browser_payload = {
-        "schema": "taskplane.authoritative-ci-cell/v1",
-        "id": browser_cell["id"], "kind": "browser", "status": "green",
-        "outcome": "success", "classification": None,
-        "candidate_fingerprint": candidate["fingerprint"],
-        "source_sha": source, "plan_fingerprint": plan["fingerprint"],
-        "settings_receipt_fingerprint": settings_receipt["fingerprint"],
-        "environment": {
-            "candidate_fingerprint": candidate["fingerprints"]["environment"],
-            "observed": observed,
-            "observed_fingerprint": gate._sha256_json(observed),
-        },
-        "browser_fingerprint": candidate["browser_fingerprint"],
-        "browser_observation": candidate["browser"],
-        "selectors": browser_cell["selectors"], "duration_ms": 1,
-        "commands": commands, "output_digest": "e" * 64,
-        "ownership": ownership, "cleanup": cleanup_cell,
-    }
-    browser = {**browser_payload,
-               "receipt": gate._sha256_json(browser_payload)}
-    cells = [
-        {"id": cell["id"], "status": "green",
-         "receipt": browser["receipt"] if cell["id"] == browser_cell["id"]
-         else hashlib.sha256(cell["id"].encode()).hexdigest()}
+    cell_receipts = {
+        cell["id"]: _green_ci_receipt(
+            runtime, cell, artifacts / f"{cell['id']}-owned",
+        )
         for cell in plan["cells"]
-    ]
-    terminal = ci_policy.seal_terminal_matrix(candidate, plan, cells)
+    }
 
     dashboard_snapshot = host_native.HostSurfaceSnapshot.create(
         workflow_id="taskplane-loop", run_id="release-run",
@@ -504,7 +526,7 @@ def test_post_merge_release_cli_assembles_and_authorizes_from_sealed_receipts(
 
     release_gate = gate.assemble_protected_main_gate(
         repository, pull_request_head_sha=pull_head, runtime=runtime,
-        terminal=terminal, browser=browser, dashboard=dashboard,
+        cell_receipts=cell_receipts, dashboard=dashboard,
         dashboard_current=dashboard_current,
         wave_metrics=metrics, cleanup=cleanup_receipt,
         openai_provenance=archives[0], claude_provenance=archives[1])
@@ -519,7 +541,7 @@ def test_post_merge_release_cli_assembles_and_authorizes_from_sealed_receipts(
                        match="dashboard publication evidence"):
         gate.assemble_protected_main_gate(
             repository, pull_request_head_sha=pull_head, runtime=runtime,
-            terminal=terminal, browser=browser, dashboard=missing_sha,
+            cell_receipts=cell_receipts, dashboard=missing_sha,
             dashboard_current=dashboard_current,
             wave_metrics=metrics, cleanup=cleanup_receipt,
             openai_provenance=archives[0], claude_provenance=archives[1])
@@ -538,7 +560,7 @@ def test_post_merge_release_cli_assembles_and_authorizes_from_sealed_receipts(
                        match="dashboard publication evidence"):
         gate.assemble_protected_main_gate(
             repository, pull_request_head_sha=pull_head, runtime=runtime,
-            terminal=terminal, browser=browser,
+            cell_receipts=cell_receipts,
             dashboard=wrong_delivery["publication_receipt"],
             dashboard_current=wrong_delivery["current_head"],
             wave_metrics=metrics, cleanup=cleanup_receipt,

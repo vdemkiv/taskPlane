@@ -1079,7 +1079,7 @@
         "taskplane/tests/test_ci_failure_batching.py",
         "taskplane/tests/fixtures/ci-policy/**"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_ci_execution_policy.py::test_validation_progression_and_terminal_matrix_reuse taskplane/tests/test_ci_execution_policy.py::test_ci_shards_cleanup_and_candidate_freeze_are_authoritative taskplane/tests/test_ci_execution_policy.py::test_ci_metrics_meet_declared_targets taskplane/tests/test_ci_execution_policy.py::test_dashboard_browser_shard_is_disjoint_bounded_and_candidate_bound taskplane/tests/test_ci_failure_batching.py::test_red_matrix_is_classified_once_and_corrected_as_one_wave taskplane/tests/test_ci_failure_batching.py::test_third_plan_return_consolidates_coupled_surfaces",
+      "tests": "python3 -m pytest -q taskplane/tests/test_ci_execution_policy.py::test_validation_progression_requires_one_authoritative_ci_run taskplane/tests/test_ci_execution_policy.py::test_ci_shards_cleanup_and_candidate_freeze_are_authoritative taskplane/tests/test_ci_execution_policy.py::test_ci_metrics_meet_declared_targets taskplane/tests/test_ci_execution_policy.py::test_dashboard_browser_shard_is_disjoint_bounded_and_candidate_bound taskplane/tests/test_ci_failure_batching.py::test_red_matrix_is_classified_once_and_corrected_as_one_wave taskplane/tests/test_ci_failure_batching.py::test_third_plan_return_consolidates_coupled_surfaces",
       "req": "R-0001",
       "deps": [
         "SET-SPINE",
@@ -1129,8 +1129,8 @@
         ]
       },
       "criteria": [
-        "AC-TST3: Validation advances static, exact, changed-radius, proportional, and one frozen-SHA CI matrix, unchanged greens are cited, broad local runs default refused, and source/test changes invalidate terminal authority; verify taskplane/tests/test_ci_execution_policy.py::test_validation_progression_and_terminal_matrix_reuse.",
-        "AC-CI1: Disjoint settings-derived shards run concurrently with named serialization, bounded timeouts, safe PR cancellation, p50 at most 10 minutes, p95 at most 15 minutes, at most 30 runner-minutes, first CI within two hours, at most three matrices, and at least 4x parallelism when four shards exist; verify taskplane/tests/test_ci_execution_policy.py::test_ci_shards_cleanup_and_candidate_freeze_are_authoritative and taskplane/tests/test_ci_execution_policy.py::test_ci_metrics_meet_declared_targets.",
+        "AC-TST3: Validation advances static, exact, changed-radius, proportional, and one frozen-SHA CI run, unchanged greens are cited, broad local runs default refused, and source/test changes invalidate direct check authority; verify taskplane/tests/test_ci_execution_policy.py::test_validation_progression_requires_one_authoritative_ci_run.",
+        "AC-CI1: One settings-derived pytest suite runs concurrently with disjoint quality/package and browser jobs, with bounded timeouts, safe PR cancellation, p50 at most 10 minutes, p95 at most 15 minutes, at most 30 runner-minutes, and first CI within two hours; explicit non-default sharding remains validated but is not the default workflow; verify taskplane/tests/test_ci_execution_policy.py::test_ci_shards_cleanup_and_candidate_freeze_are_authoritative and taskplane/tests/test_ci_execution_policy.py::test_ci_metrics_meet_declared_targets.",
         "AC-CI2: A red matrix yields one complete classified failure inventory and correction wave, unchanged greens do not rerun, and a third Plan return creates one stabilization successor; verify taskplane/tests/test_ci_failure_batching.py::test_red_matrix_is_classified_once_and_corrected_as_one_wave and taskplane/tests/test_ci_failure_batching.py::test_third_plan_return_consolidates_coupled_surfaces."
       ]
     },
@@ -1328,7 +1328,7 @@
         "taskplane/tests/test_ci_runtime_wiring.py",
         "taskplane/tests/fixtures/ci-runtime/**"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_github_workflow_execution.py::test_authoritative_workflow_uses_settings_derived_disjoint_shards taskplane/tests/test_ci_runtime_wiring.py::test_browser_cell_is_required_isolated_candidate_bound_and_cleanup_safe",
+      "tests": "python3 -m pytest -q taskplane/tests/test_github_workflow_execution.py::test_authoritative_workflow_uses_one_settings_derived_suite taskplane/tests/test_ci_runtime_wiring.py::test_browser_cell_is_required_isolated_candidate_bound_and_cleanup_safe",
       "req": "R-0001",
       "deps": [
         "CI-POLICY",
@@ -1359,13 +1359,12 @@
           "compatibility matrix",
           "quality/package cells",
           "isolated browser cell",
-          "terminal aggregate",
           "metrics",
           "release"
         ],
-        "freshness": "Read-only settings plan freezes exact SHA, selector allocation and max-parallel/timeouts; each cell emits durable candidate/environment/timing/cleanup receipts and terminal aggregate joins matching receipts.",
+        "freshness": "Read-only settings plan freezes exact SHA, selector allocation and timeouts; each real job emits its own durable candidate/environment/timing/cleanup receipt and release validation consumes those receipts directly.",
         "severed_edges": "Give untrusted jobs credentials/write permission, use mutable actions, duplicate browser selectors, exceed three matrices/30 runner-minutes, omit timeout/cleanup/terminal cancellation receipt, or accept stale SHA/environment and exact tests fail.",
-        "fixtures": "Workflow, local runner, browser environment, cancellation, timeout, shard allocation, durable timing, terminal aggregate, immutable pin and permission fixtures stay here.",
+        "fixtures": "Workflow, local runner, browser environment, cancellation, timeout, selection, durable timing, direct job receipt, immutable pin and permission fixtures stay here.",
         "classification_before_correction": [
           "product",
           "test",
@@ -1374,7 +1373,7 @@
         ]
       },
       "criteria": [
-        "Task-level DoD for CI-WIRING (not requirement-level AC-TST3, AC-CI1, or AC-REL completion): the authoritative workflow consumes settings-derived disjoint shards and requires one isolated, exact-candidate, cleanup-safe browser cell; verify taskplane/tests/test_github_workflow_execution.py::test_authoritative_workflow_uses_settings_derived_disjoint_shards and taskplane/tests/test_ci_runtime_wiring.py::test_browser_cell_is_required_isolated_candidate_bound_and_cleanup_safe."
+        "Task-level DoD for CI-WIRING (not requirement-level AC-TST3, AC-CI1, or AC-REL completion): the authoritative workflow consumes one settings-derived suite and requires one isolated, exact-candidate, cleanup-safe browser cell; verify taskplane/tests/test_github_workflow_execution.py::test_authoritative_workflow_uses_one_settings_derived_suite and taskplane/tests/test_ci_runtime_wiring.py::test_browser_cell_is_required_isolated_candidate_bound_and_cleanup_safe."
       ]
     },
     {

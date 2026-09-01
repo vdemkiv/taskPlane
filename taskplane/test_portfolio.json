@@ -6,7 +6,7 @@
     "plan": "R-0001/AC-TST2",
     "policy": "remove only history replay, stale-fixture, duplicate, implementation-detail, or ceremonial tests when a retained current-contract selector or explicit obsolete-contract authority is recorded",
     "protected_selector_source": "taskplane/tests/fixtures/test-strategy/r0001.json",
-    "protected_selector_source_sha256": "a11d3c51bebd0e35cf89ed27cad279308145c2854aaea7b214e575aa8792a59a"
+    "protected_selector_source_sha256": "c6ccaea5215e067ba022f9046e05fe6ffe6593aa7223ed11b8c33629011de50a"
   },
   "baselines": {
     "approved_historical": {"test_files": 266, "collected_cases": 4909, "test_loc": 95601},
@@ -16,7 +16,7 @@
   "final": {
     "test_files": 230,
     "collected_cases": 4086,
-    "test_loc": 84772,
+    "test_loc": 84771,
     "removed_files": 57,
     "removed_cases": 916,
     "removed_loc": 16865,
@@ -31,7 +31,7 @@
     "source_diff_sha256": "83ef358d81b3509d4249b3272b6b0c157d4849f5b960fa973c85487acedb1176",
     "removed_cases": 20,
     "added_contract_cases": 2,
-    "changed_test_lines": {"deleted": 600, "added": 321},
+    "changed_test_lines": {"deleted": 600, "added": 320},
     "removed_fixtures": [
       "taskplane/tests/fixtures/briefs/audit_hybrid_corpus.json",
       "taskplane/tests/fixtures/briefs/changed_files.json",
@@ -141,7 +141,7 @@
       "retained_selectors": [
         "taskplane/tests/test_graph_quality.py::TestGraphQualityRecord::test_same_inputs_have_the_same_fingerprint",
         "taskplane/tests/test_lens_route_v2.py::TestBreadthAllUnchanged::test_breadth_all_is_legacy_even_with_stage",
-        "taskplane/tests/test_github_workflow_execution.py::test_authoritative_workflow_uses_settings_derived_disjoint_shards",
+        "taskplane/tests/test_github_workflow_execution.py::test_authoritative_workflow_uses_one_settings_derived_suite",
         "taskplane/tests/test_github_workflow_execution.py::test_quality_receipt_command_identity_is_cross_runner_and_tamper_closed",
         "taskplane/tests/test_em_m1_ci_dependencies.py::test_m06_readonly_PR_jobs_disable_persist_credentials",
         "taskplane/tests/test_em_m1_ci_dependencies.py::test_m17_pytest_is_version_and_hash_locked",
@@ -155,7 +155,7 @@
         "taskplane/tests/test_windows_portability.py::TestNewlineNormalization::test_crlf_reads_identically_to_lf",
         "taskplane/tests/test_windows_portability.py::TestArtifactsAreByteIdenticalAcrossHosts::test_atomic_write_json_emits_lf_on_every_host"
       ],
-      "mutation_proof": {"kind": "severed-edge", "operator": "remove settings-derived disjoint CI shard", "selector": "taskplane/tests/test_github_workflow_execution.py::test_authoritative_workflow_uses_settings_derived_disjoint_shards"},
+      "mutation_proof": {"kind": "severed-edge", "operator": "remove the settings-derived authoritative CI suite", "selector": "taskplane/tests/test_github_workflow_execution.py::test_authoritative_workflow_uses_one_settings_derived_suite"},
       "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["graph scanner", "review kernel", "GitHub workflow", "release gate"], "disposition": "R-0006 fixtures were private replay data embedded in removed files"}
     },
     {
@@ -375,11 +375,11 @@
       "before": {"files": 1, "cases": 8, "loc": 87},
       "after": {"files": 0, "cases": 0, "loc": 0},
       "retained_selectors": [
-        "taskplane/tests/test_ci_execution_policy.py::test_validation_progression_and_terminal_matrix_reuse",
+        "taskplane/tests/test_ci_execution_policy.py::test_validation_progression_requires_one_authoritative_ci_run",
         "taskplane/tests/test_ci_execution_policy.py::test_ci_metrics_meet_declared_targets",
         "taskplane/tests/test_suite_cache.py::TestCacheHitsOnlyOnIdenticalContent::test_second_check_over_identical_content_cites_the_first"
       ],
-      "mutation_proof": {"kind": "mutation", "operator": "rerun an unchanged green validation layer", "selector": "taskplane/tests/test_ci_execution_policy.py::test_validation_progression_and_terminal_matrix_reuse"},
+      "mutation_proof": {"kind": "mutation", "operator": "rerun an unchanged green validation layer", "selector": "taskplane/tests/test_ci_execution_policy.py::test_validation_progression_requires_one_authoritative_ci_run"},
       "fixtures_generators_consumers": {"fixtures": [], "generators": [], "consumers": ["CI policy", "suite cache"], "disposition": "old pinned loop trace was ceremonial and has no current generator"}
     },
     {

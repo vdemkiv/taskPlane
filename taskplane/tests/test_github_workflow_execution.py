@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from copy import deepcopy
 from pathlib import Path
 import re
 import shutil
@@ -18,6 +19,7 @@ SPEC = importlib.util.spec_from_file_location(
     "ci_local_github_contract", ROOT / "scripts" / "ci_local.py",
 )
 SUPPORTED_PYTHONS = ("3.10", "3.11", "3.12", "3.13")
+COMPATIBILITY_PYTHONS = ("3.10", "3.11", "3.13")
 COMPATIBILITY_SELECTOR = (
     "taskplane/tests/test_github_workflow_execution.py::"
     "test_supported_python_matrix_compiles_imports_before_tests"
@@ -45,7 +47,7 @@ def _browser():
 
 def _compatibility_job(workflow: str) -> str:
     start = workflow.index("  python-compatibility:\n")
-    end = workflow.index("\n  authoritative-tests:", start)
+    end = workflow.index("\n  tests:", start)
     return workflow[start:end]
 
 
@@ -80,17 +82,18 @@ def _copy_shipped_python_surface(destination: Path) -> None:
 
 
 def test_supported_python_matrix_compiles_imports_before_tests(tmp_path):
-    """Keep the 3.10-3.13 matrix and execute its pre-test source gate."""
+    """Smoke alternate runtimes; the real test job covers Python 3.12."""
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     job = _compatibility_job(workflow)
     versions = tuple(re.findall(
         r'^          - python: "(3\.\d+)"$', job, flags=re.MULTILINE
     ))
-    assert versions == SUPPORTED_PYTHONS
+    assert versions == COMPATIBILITY_PYTHONS
+    assert "name: tests (python 3.12)" in workflow
     assert "python-version: ${{ matrix.python }}" in job
 
     starts = [job.index(f'          - python: "{version}"')
-              for version in SUPPORTED_PYTHONS]
+              for version in COMPATIBILITY_PYTHONS]
     ends = starts[1:] + [job.index("    steps:", starts[-1])]
     for start, end in zip(starts, ends):
         assert job[start:end].count(COMPATIBILITY_SELECTOR) == 1
@@ -203,7 +206,7 @@ def _green_receipt(runner, runtime, cell, owned, *, python_version="3.12.9"):
     return {**payload, "receipt": runner._sha256_json(payload)}
 
 
-def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
+def test_authoritative_workflow_uses_one_settings_derived_suite(tmp_path):
     runner = _runner()
     contract = json.loads(FIXTURE.read_text(encoding="utf-8"))
     source_sha = runner._git("rev-parse", "HEAD")
@@ -244,69 +247,47 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     paths = [path for cell in plan["cells"] for path in cell["paths"]]
     assert len(selectors) == len(set(selectors))
     assert len(paths) == len(set(paths))
-    assert plan["terminal_aggregate"] == {
-        "candidate_fingerprint": runtime["candidate"]["fingerprint"],
-        "needs": contract["cell_ids"],
-        "matching_receipts_only": True,
-    }
-
-    runtime_path = tmp_path / "runtime.json"
-    runner._atomic_write_json(runtime_path, runtime)
-    receipt_root = tmp_path / "receipts"
+    receipts = {}
     for cell in plan["cells"]:
         owned = tmp_path / "owned" / cell["id"]
         receipt = _green_receipt(runner, runtime, cell, owned)
-        runner._atomic_write_json(
-            receipt_root / cell["id"] / f"{cell['id']}.json", receipt,
+        receipts[cell["id"]] = runner.validate_authoritative_ci_cell_receipt(
+            receipt, runtime, cell,
         )
-    terminal_path = tmp_path / "terminal.json"
-    assert runner.aggregate_authoritative_ci(
-        runtime_path, receipt_root, terminal_path,
-    ) == 0
-    terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
-    assert terminal["green"] is True
-    assert terminal["source_sha"] == source_sha
-    assert terminal["settings_receipt"]["fingerprint"] == settings["fingerprint"]
 
-    tampered_path = next(receipt_root.rglob("pytest-1.json"))
-    tampered = json.loads(tampered_path.read_text(encoding="utf-8"))
+    tampered = deepcopy(receipts["pytest-1"])
     tampered["environment"]["observed"]["python"] = "3.13-tampered"
     tampered["receipt"] = runner._sha256_json({
         key: value for key, value in tampered.items() if key != "receipt"
     })
-    runner._atomic_write_json(tampered_path, tampered)
     with pytest.raises(runner.RunnerError, match="observed environment"):
-        runner.aggregate_authoritative_ci(
-            runtime_path, receipt_root, tmp_path / "refused-terminal.json",
+        runner.validate_authoritative_ci_cell_receipt(
+            tampered, runtime,
+            next(cell for cell in plan["cells"] if cell["id"] == "pytest-1"),
         )
 
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "--emit-ci-plan" in workflow
     assert "name: settings-derived authoritative CI plan" in workflow
     assert "needs: [ci-plan]" in workflow
-    assert 'matrix: ${{ fromJSON(needs.ci-plan.outputs.pytest-matrix) }}' in workflow
-    assert 'max-parallel: ${{ fromJSON(needs.ci-plan.outputs.max-parallel) }}' in workflow
-    assert '--ci-cell "${{ matrix.cell }}"' in workflow
-    assert workflow.count('--ci-cell "$cell"') == 2
+    assert "pytest-cell: ${{ steps.plan.outputs.pytest-cell }}" in workflow
+    assert "pytest-timeout-minutes:" in workflow
+    assert "name: tests (python 3.12)" in workflow
+    assert "Execute the frozen authoritative pytest suite" in workflow
+    assert workflow.count('--ci-cell "$cell"') == 3
     assert workflow.count("--ci-cell") == 3
     assert "name: dashboard browser conformance" in workflow
-    assert "name: authoritative CI terminal matrix" in workflow
-    assert "needs: [ci-plan, authoritative-tests, python-quality, dashboard-browser]" in workflow
-    authoritative_tests = workflow.split("  authoritative-tests:", 1)[1].split(
+    tests_job = workflow.split("  tests:", 1)[1].split(
         "\n  python-quality:", 1,
     )[0]
-    assert "fetch-depth: 30" in authoritative_tests
-    assert 'expected = [cell["id"] for cell in runtime["plan"]["cells"]]' in workflow
-    assert 'expected = ["pytest-1"' not in workflow
-    assert "--aggregate-ci" in workflow
-    assert "pattern: ci-cell-*-${{ needs.ci-plan.outputs.candidate-sha }}" in workflow
-    assert "name: terminal-matrix-${{ needs.ci-plan.outputs.candidate-sha }}" in workflow
-    assert workflow.count("TERMINAL_RESULT:") == 3
-    assert workflow.count("BROWSER_RESULT:") == 3
-    assert workflow.count("Restore terminal receipt evidence") == 3
-    assert workflow.count("Restore browser receipt evidence") == 3
+    assert "fetch-depth: 30" in tests_job
+    assert "strategy:" not in tests_job
+    assert "authoritative CI terminal matrix" not in workflow
+    assert "tests-authority:" not in workflow
+    assert "terminal-matrix-" not in workflow
+    assert "--aggregate-ci" not in workflow
+    assert "Restore authoritative test receipt evidence" in workflow
     assert "--ignore=taskplane/tests/test_dashboard_browser.py" not in workflow
-    assert workflow.count("strategy:") == 3
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow
     assert "permissions:\n  contents: read" in workflow
     compatibility = json.loads(
@@ -314,9 +295,8 @@ def test_authoritative_workflow_uses_settings_derived_disjoint_shards(tmp_path):
     )
     required = compatibility["release_authority"]["required_checks"]
     assert required[0] == "tests (python 3.12)"
-    assert "name: tests (python 3.12)" in workflow
     assert "name: Python compatibility (${{ matrix.python }})" in workflow
-    assert '          - python: "3.12"' in workflow
+    assert '          - python: "3.12"' not in _compatibility_job(workflow)
     assert all(f"name: {name}" in workflow for name in required[1:])
     action_refs = re.findall(r"uses:\s*[^@\s]+@([^\s#]+)", workflow)
     assert action_refs and all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs)
@@ -334,10 +314,7 @@ def test_quality_receipt_command_identity_is_cross_runner_and_tamper_closed(
         run_id="9001",
         browser=_browser(),
     )
-    runtime_path = tmp_path / "runtime.json"
-    runner._atomic_write_json(runtime_path, runtime)
-    receipt_root = tmp_path / "receipts"
-    quality_path = receipt_root / "quality-package" / "quality-package.json"
+    receipts = {}
     for cell in runtime["plan"]["cells"]:
         receipt = _green_receipt(
             runner,
@@ -346,25 +323,24 @@ def test_quality_receipt_command_identity_is_cross_runner_and_tamper_closed(
             tmp_path / "owned" / cell["id"],
             python_version="3.14.0" if cell["id"] == "quality-package" else "3.12.9",
         )
-        runner._atomic_write_json(
-            receipt_root / cell["id"] / f"{cell['id']}.json", receipt,
-        )
+        receipts[cell["id"]] = receipt
 
-    quality = json.loads(quality_path.read_text(encoding="utf-8"))
+    quality = receipts["quality-package"]
+    quality_cell = next(
+        cell for cell in runtime["plan"]["cells"]
+        if cell["id"] == "quality-package"
+    )
     assert {command["argv"][0] for command in quality["commands"]} == {
         runner.CI_LOGICAL_PYTHON,
     }
     monkeypatch.setattr(runner, "PYTHON", "/opt/cpython-3.12/bin/python3")
-    assert runner.aggregate_authoritative_ci(
-        runtime_path, receipt_root, tmp_path / "terminal.json",
-    ) == 0
+    runner.validate_authoritative_ci_cell_receipt(quality, runtime, quality_cell)
 
     quality["commands"][0]["argv"][0] = "/opt/cpython-3.14/bin/python3"
     quality["receipt"] = runner._sha256_json({
         key: value for key, value in quality.items() if key != "receipt"
     })
-    runner._atomic_write_json(quality_path, quality)
     with pytest.raises(runner.RunnerError, match="command evidence is not exact"):
-        runner.aggregate_authoritative_ci(
-            runtime_path, receipt_root, tmp_path / "refused-terminal.json",
+        runner.validate_authoritative_ci_cell_receipt(
+            quality, runtime, quality_cell,
         )

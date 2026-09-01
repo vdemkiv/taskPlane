@@ -222,14 +222,23 @@ class TestProbedOnce(unittest.TestCase):
                 os.environ["PATH"] = old_path
             self.assertEqual(len(calls), 2)
 
-    def test_the_off_switch_skips_the_probe_entirely(self):
+    def test_an_authorized_off_switch_skips_the_probe_entirely(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "go.mod"), "w").close()
             calls = []
             orig, runnability.probe = runnability.probe, self._stub(d, calls)
             os.environ["TASKPLANE_RUNNABILITY"] = "off"
+            authority = {
+                "schema": "taskplane.human-decision/v1",
+                "authorized": True,
+                "authority_requested": "gate_weakening",
+                "actor": "human:test",
+                "thread": "runnability-probe",
+                "revision": "1",
+            }
             try:
-                res = runnability.probe_once(d)
+                res = runnability.probe_once(
+                    d, settings_authority=authority)
             finally:
                 runnability.probe = orig
                 os.environ.pop("TASKPLANE_RUNNABILITY", None)

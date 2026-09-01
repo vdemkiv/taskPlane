@@ -490,8 +490,7 @@ EXIT_OK, EXIT_BLOCKED, EXIT_USAGE = 0, 1, 2
 
 # Stable GitHub check-run identities, deliberately independent of mutable step
 # labels and aligned with design/compatibility.json. ``tests (python 3.12)`` is
-# a protected-name alias backed by the exact five-cell terminal matrix and its
-# isolated browser receipt; release callers provide this stable check set.
+# the real single-suite job; release callers provide this stable check set.
 PUSHED_GREEN_REQUIRED_CHECKS = (
     "tests (python 3.12)",
     "R-0006 graph + CLI contracts",

@@ -416,13 +416,14 @@ def _sha256_json(value):
 
 
 def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
-                                 terminal, browser, dashboard,
+                                 cell_receipts, dashboard,
                                  dashboard_current, wave_metrics, cleanup,
                                  openai_provenance,
                                  claude_provenance):
     """Assemble release truth only from existing sealed producer receipts."""
+    import ci_local
     import release_provenance
-    from taskplane import ci_policy, owned_cleanup, release_evidence, views
+    from taskplane import owned_cleanup, release_evidence, views
     from taskplane import wave_metrics as wave_metrics_module
 
     repository = Path(root).resolve()
@@ -476,51 +477,34 @@ def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
             settings_receipt.get("candidate_sha") != source_sha:
         raise release_evidence.ReleaseEvidenceError(
             "authoritative CI runtime names another protected-main SHA")
-    reuse = ci_policy.reuse_terminal_matrix(terminal, candidate)
-    if reuse.get("terminal_reusable") is not True:
+    planned_cells = plan.get("cells")
+    if not isinstance(planned_cells, list) or not planned_cells or \
+            not isinstance(cell_receipts, Mapping):
         raise release_evidence.ReleaseEvidenceError(
-            "terminal matrix is not exact-candidate green")
-
-    browser_cell = next(
-        (row for row in plan.get("cells", [])
-         if isinstance(row, Mapping) and row.get("kind") == "browser"), None)
-    if browser_cell is None:
+            "authoritative CI direct receipts are incomplete")
+    planned_ids = [
+        row.get("id") for row in planned_cells if isinstance(row, Mapping)
+    ]
+    if len(planned_ids) != len(planned_cells) or \
+            any(not isinstance(cell_id, str) for cell_id in planned_ids) or \
+            set(cell_receipts) != set(planned_ids):
         raise release_evidence.ReleaseEvidenceError(
-            "authoritative CI plan has no browser cell")
-    browser_material = {
-        key: value for key, value in browser.items() if key != "receipt"
-    }
-    checked_browser = dict(browser)
-    browser_cleanup = browser.get("cleanup")
-    if browser.get("schema") != "taskplane.authoritative-ci-cell/v1" or \
-            browser.get("receipt") != _sha256_json(browser_material) or \
-            browser.get("id") != browser_cell["id"] or \
-            browser.get("kind") != "browser" or \
-            browser.get("status") != "green" or \
-            browser.get("outcome") != "success" or \
-            browser.get("classification") is not None or \
-            browser.get("source_sha") != source_sha or \
-            browser.get("candidate_fingerprint") != candidate["fingerprint"] or \
-            browser.get("plan_fingerprint") != plan["fingerprint"] or \
-            browser.get("settings_receipt_fingerprint") != \
-            settings_receipt["fingerprint"] or \
-            browser.get("browser_fingerprint") != \
-            candidate["browser_fingerprint"] or \
-            browser.get("browser_observation") != candidate["browser"] or \
-            not isinstance(browser_cleanup, Mapping) or \
-            browser_cleanup.get("status") != "clean" or \
-            browser_cleanup.get("leak_count") != 0:
+            "authoritative CI direct receipts do not match the plan")
+    checked_cells = []
+    try:
+        for cell in planned_cells:
+            checked_cells.append(
+                ci_local.validate_authoritative_ci_cell_receipt(
+                    cell_receipts[cell["id"]], runtime, cell,
+                )
+            )
+    except (KeyError, TypeError, ci_local.RunnerError) as exc:
         raise release_evidence.ReleaseEvidenceError(
-            "browser evidence is invalid")
-    terminal_browser = next(
-        (row for row in terminal.get("cells", [])
-         if isinstance(row, Mapping) and row.get("id") == browser_cell["id"]),
-        None,
-    )
-    if terminal_browser is None or \
-            terminal_browser.get("receipt") != checked_browser.get("receipt"):
+            "authoritative CI direct receipt is invalid") from exc
+    if any(row["status"] != "green" for row in checked_cells) or \
+            sum(row["kind"] == "browser" for row in checked_cells) != 1:
         raise release_evidence.ReleaseEvidenceError(
-            "browser evidence is not the terminal matrix browser receipt")
+            "authoritative CI direct receipts are not all green")
 
     try:
         dashboard_evidence = views.validate_dashboard_publication_receipt(
@@ -581,19 +565,21 @@ def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
         "ci": {
             "event": "push", "ref_kind": "protected-main",
             "candidate_sha": source_sha, "terminal_status": "green",
-            "required_checks": [row["id"] for row in terminal["cells"]],
-            "conclusions": {row["id"]: "success" for row in terminal["cells"]},
+            "required_checks": [row["id"] for row in checked_cells],
+            "conclusions": {row["id"]: "success" for row in checked_cells},
         },
         "supply_chain": supply,
         "receipts": {
             "settings": {"digest": inputs["settings_digest"]},
             "candidate": {"digest": candidate["fingerprint"],
                           "source_sha": source_sha},
-            "matrix": {"digest": terminal["fingerprint"],
-                       "source_sha": source_sha, "status": "green"},
-            "browser": {"digest": checked_browser["receipt"],
-                        "source_sha": source_sha, "status": "green",
-                        "fresh": True},
+            "checks": {
+                row["id"]: {
+                    "digest": row["receipt"], "source_sha": source_sha,
+                    "status": "green", "fresh": True,
+                }
+                for row in checked_cells
+            },
             "dashboard": dashboard_evidence,
             "wave_metrics": {"digest": metrics["fingerprint"],
                              "source_sha": source_sha, "status": "sealed",
@@ -630,8 +616,8 @@ def main():
         manifest_path = Path(args.assembly_manifest).resolve()
         manifest = _read_json_object(manifest_path, "release assembly manifest")
         expected = {
-            "schema", "pull_request_head_sha", "runtime", "terminal",
-            "browser", "dashboard", "dashboard_current", "wave_metrics",
+            "schema", "pull_request_head_sha", "runtime", "cell_receipts",
+            "dashboard", "dashboard_current", "wave_metrics",
             "cleanup",
             "openai_provenance", "claude_provenance",
         }
@@ -652,8 +638,7 @@ def main():
             args.root,
             pull_request_head_sha=manifest["pull_request_head_sha"],
             runtime=artifact("runtime"),
-            terminal=artifact("terminal"),
-            browser=artifact("browser"),
+            cell_receipts=artifact("cell_receipts"),
             dashboard=artifact("dashboard"),
             dashboard_current=artifact("dashboard_current"),
             wave_metrics=artifact("wave_metrics"),

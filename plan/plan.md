@@ -120,7 +120,7 @@ An unchanged green layer is cited, never rerun. Reuse requires equality of sourc
 
 Every red matrix is inventoried once, classified once, clustered once, and corrected in one wave. No rerun occurs without a changed product byte, evidence byte, or named environment condition. The already-required third Plan return is represented only by `PLAN-STABILIZATION`.
 
-The CI planner emits pairwise-disjoint exact-SHA shards, bounded `max-parallel`, settings-derived timeouts, PR-only same-group cancellation, durable all-outcome receipts, and a terminal aggregate. Protected-main and release runs never cancel in progress. The isolated browser selectors are allocated exactly once, not repeated inside ordinary pytest shards.
+The CI planner emits one exact-SHA pytest suite plus disjoint quality/package and browser jobs, with settings-derived timeouts, PR-only same-group cancellation, and durable all-outcome receipts. Release validation consumes those real job receipts directly; there is no terminal join job or compatibility alias. Protected-main and release runs never cancel in progress. The isolated browser selectors are allocated exactly once, not repeated inside the pytest suite.
 
 Targets remain: first matrix within two hours of `integration_ready_at`; at most three matrices; p50 at most 10 minutes; p95 at most 15 minutes; no more than 30 raw runner-minutes; and at least 4.0x parallelism when four shards exist.
 
@@ -152,7 +152,7 @@ One redacted, non-cumulative wave receipt binds exact run/candidate/settings/sou
 
 Final targets include 100% settings ownership and zero duplicate defaults; exact p95 ≤60 seconds and radius/proportional p95 ≤5 minutes; zero leaks and active worktrees ≤ active shards + 1; token target 100M total/15M uncached and ceiling 150M/25M; active delivery ≤8 hours and phase through Retro ≤12 hours; ≤24 planned sessions and fail-closed ceiling 60. Billing, observed usage, archive upper bounds, and DOM-visible counts remain separate truth classes.
 
-After exact and proportional evidence is green, freeze one SHA and run one authoritative matrix. Any source/test byte change creates a new candidate. If merge creates a protected-main SHA, run the exact matrix for that SHA. Only its exact green, least privilege, immutable pins/locks, credential-empty untrusted jobs, exact head/first-parent topology, dashboard/browser receipts, package provenance, metrics, cleanup receipt, and zero leaks may support later human-authorized version/tag/release.
+After exact and proportional evidence is green, freeze one SHA and run one authoritative GitHub Actions workflow. Any source/test byte change creates a new candidate. If merge creates a protected-main SHA, run the exact workflow for that SHA. Only direct exact-candidate job receipts, least privilege, immutable pins/locks, credential-empty untrusted jobs, exact head/first-parent topology, dashboard/browser receipts, package provenance, metrics, cleanup receipt, and zero leaks may support later human-authorized version/tag/release.
 
 Evaluate then Engineering inspect the exact diff and bound evidence directly with zero lenses. Engineering sign-off is required before Retro. Retro consumes sealed receipts without recalculation.
 

@@ -20,7 +20,6 @@ from typing import Any, Mapping, Sequence
 CANDIDATE_SCHEMA = "taskplane.ci-candidate/v1"
 PLAN_SCHEMA = "taskplane.ci-plan/v1"
 VALIDATION_SCHEMA = "taskplane.ci-validation/v1"
-TERMINAL_SCHEMA = "taskplane.ci-terminal-matrix/v1"
 METRICS_SCHEMA = "taskplane.ci-metrics/v1"
 
 VALIDATION_LAYERS = (
@@ -233,7 +232,7 @@ def advance_validation(
     if unchanged_green is not None:
         if layer == "authoritative-ci":
             raise CIPolicyError(
-                "authoritative CI reuse requires a sealed terminal matrix"
+                "authoritative CI must execute once for the frozen candidate"
             )
         green = _mapping(unchanged_green, "unchanged green receipt")
         if green.get("layer") != layer:
@@ -262,10 +261,11 @@ def advance_validation(
 
 def _settings_payload(declaration: Mapping[str, Any]) -> dict[str, Any]:
     settings = declaration.get("settings")
-    if hasattr(settings, "to_dict") and callable(settings.to_dict):
-        typed = settings.to_dict()
+    to_dict = getattr(settings, "to_dict", None)
+    if callable(to_dict):
+        typed = _mapping(to_dict(), "settings")
         typed["digest"] = getattr(settings, "digest", None)
-        return _mapping(typed, "settings")
+        return typed
     return _mapping(settings, "settings")
 
 
@@ -435,122 +435,10 @@ def build_ci_plan(
         "cancellation": cancellation,
         "serializations": serializations,
         "cells": cells,
-        "terminal_aggregate": {
-            "candidate_fingerprint": frozen["fingerprint"],
-            "needs": [cell["id"] for cell in cells],
-            "matching_receipts_only": True,
-        },
     }
     if frozen["fingerprints"]["shard-plan"] != _fingerprint(raw):
         raise CIPolicyError("CI declaration does not match the frozen shard plan fingerprint")
     return {**payload, "fingerprint": _fingerprint(payload)}
-
-
-def seal_terminal_matrix(
-    candidate: Mapping[str, Any],
-    plan: Mapping[str, Any],
-    receipts: Sequence[Mapping[str, Any]],
-) -> dict[str, Any]:
-    """Seal an exact all-green terminal matrix for later citation/reuse."""
-
-    frozen = _validated_candidate(candidate)
-    ci_plan = _mapping(plan, "CI plan")
-    if (
-        ci_plan.get("schema") != PLAN_SCHEMA
-        or ci_plan.get("candidate_fingerprint") != frozen["fingerprint"]
-    ):
-        raise CIPolicyError("terminal matrix plan is not bound to the candidate")
-    expected_plan_fingerprint = _fingerprint({
-        key: value for key, value in ci_plan.items() if key != "fingerprint"
-    })
-    if ci_plan.get("fingerprint") != expected_plan_fingerprint:
-        raise CIPolicyError("CI plan fingerprint is stale")
-
-    if not isinstance(receipts, Sequence) or isinstance(receipts, (str, bytes)):
-        raise CIPolicyError("cell receipts must be a list")
-    by_id: dict[str, dict[str, Any]] = {}
-    for value in receipts:
-        row = _mapping(value, "cell receipt")
-        cell_id = row.get("id")
-        if not isinstance(cell_id, str) or cell_id in by_id:
-            raise CIPolicyError("cell receipt ids must be unique")
-        if row.get("status") != "green":
-            raise CIPolicyError("only an all-green matrix can become terminal authority")
-        _require_digest(row.get("receipt"), f"cell {cell_id} receipt")
-        by_id[cell_id] = row
-    expected_ids = [cell["id"] for cell in ci_plan["cells"]]
-    if set(by_id) != set(expected_ids):
-        raise CIPolicyError("terminal matrix requires one receipt for every planned cell")
-    cells = [
-        {
-            "id": cell["id"],
-            "kind": cell["kind"],
-            "status": "green",
-            "receipt": by_id[cell["id"]]["receipt"],
-            "candidate_fingerprint": frozen["fingerprint"],
-            "browser_fingerprint": (
-                frozen["browser_fingerprint"] if cell["kind"] == "browser" else None
-            ),
-        }
-        for cell in ci_plan["cells"]
-    ]
-    payload = {
-        "schema": TERMINAL_SCHEMA,
-        "candidate_fingerprint": frozen["fingerprint"],
-        "browser_fingerprint": frozen["browser_fingerprint"],
-        "source_sha": frozen["source_sha"],
-        "plan_fingerprint": ci_plan["fingerprint"],
-        "cells": cells,
-        "green": True,
-    }
-    return {**payload, "fingerprint": _fingerprint(payload)}
-
-
-def reuse_terminal_matrix(
-    terminal: Mapping[str, Any], candidate: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Cite equal greens; invalidate globally or browser-only on drift."""
-
-    prior = _mapping(terminal, "terminal matrix")
-    frozen = _validated_candidate(candidate)
-    if prior.get("schema") != TERMINAL_SCHEMA:
-        raise CIPolicyError("terminal matrix schema is unsupported")
-    expected = _fingerprint({key: value for key, value in prior.items() if key != "fingerprint"})
-    if prior.get("fingerprint") != expected or prior.get("green") is not True:
-        raise CIPolicyError("terminal matrix is stale or not green")
-    cells = prior.get("cells")
-    if not isinstance(cells, list) or not cells:
-        raise CIPolicyError("terminal matrix contains no cell receipts")
-    ids = [str(cell.get("id") or "") for cell in cells if isinstance(cell, Mapping)]
-    if len(ids) != len(cells) or any(not cell_id for cell_id in ids) or len(ids) != len(set(ids)):
-        raise CIPolicyError("terminal matrix cell identities are invalid")
-
-    if prior.get("candidate_fingerprint") != frozen["fingerprint"]:
-        rerun = ids
-        cited: list[str] = []
-        reason = "candidate-drift"
-    elif prior.get("browser_fingerprint") != frozen["browser_fingerprint"]:
-        rerun = [
-            str(cell["id"])
-            for cell in cells
-            if isinstance(cell, Mapping) and cell.get("kind") == "browser"
-        ]
-        cited = [cell_id for cell_id in ids if cell_id not in rerun]
-        reason = "browser-environment-drift"
-    else:
-        rerun = []
-        cited = ids
-        reason = "exact-terminal-green"
-    return {
-        "schema": "taskplane.ci-reuse-decision/v1",
-        "terminal_reusable": not rerun,
-        "candidate_fingerprint": frozen["fingerprint"],
-        "cited_unchanged_green": cited,
-        "rerun_cells": rerun,
-        "reason": reason,
-        "matrix_runs": 0,
-        "required_matrix_runs": 0 if not rerun else 1,
-    }
 
 
 def _parse_time(value: object, label: str) -> datetime:
@@ -678,6 +566,4 @@ __all__ = [
     "build_ci_plan",
     "evaluate_ci_metrics",
     "freeze_candidate",
-    "reuse_terminal_matrix",
-    "seal_terminal_matrix",
 ]

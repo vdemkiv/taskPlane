@@ -16,7 +16,7 @@ CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 READ_ONLY_PR_JOBS = (
     "ci-plan",
     "python-compatibility",
-    "authoritative-tests",
+    "tests",
     "python-quality",
     "zero-token-corpus",
     "wave3-contracts",
@@ -26,11 +26,10 @@ READ_ONLY_PR_JOBS = (
     "codex-parity",
     "codex-host",
     "dashboard-browser",
-    "authoritative-ci",
 )
 TEST_JOBS = (
     "python-compatibility",
-    "authoritative-tests",
+    "tests",
     "wave3-contracts",
     "tests-portability",
     "codex-parity",

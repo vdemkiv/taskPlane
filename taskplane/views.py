@@ -398,29 +398,23 @@ def refresh_views(ws: str, out: dict) -> dict:
                       f"({detail}); canonical delivery remains available, "
                       "but the inline view is stale until repaired.",
                       file=sys.stderr)
-        # WS-F: the engine can render, write and point at the artifact, and
-        # has no way to see whether it reached a human — which is exactly how
-        # "no inline dashboard, no report, nothing" kept happening against a
-        # green engine. Record the demand so the SILENCE is countable.
-        # Best-effort and non-blocking by contract: a workspace with no
-        # ledger, or a failed write, changes nothing about this transition.
-        with contextlib.suppress(Exception):
-            import obligations
-            oid = obligations.issue(
-                ws, "render_dashboard",
-                detail="show the refreshed dashboard inline",
-                # This is one durable dashboard obligation for the whole
-                # delivery loop. The current step still controls whether the
-                # payload asks for delivery, but must not mint a new debt at
-                # every transition.
-                step="loop",
-                artifact=p, key=logical_path)
-            if oid:
-                out["dashboard"]["obligation"] = oid
-                if human_gate:
-                    out["dashboard"]["ack"] = (
-                        f"after delivering it, run once: tp ack {oid} "
-                        f"--delivered {logical_path}")
+        if html_ref["status"] == "available":
+            # WS-F: the engine can render, write and point at the artifact,
+            # but cannot see whether it reached a human. Record that demand
+            # only after the exact HTML artifact exists; issuing it for a
+            # stale or missing file would create fictional delivery debt.
+            with contextlib.suppress(Exception):
+                import obligations
+                oid = obligations.issue(
+                    ws, "render_dashboard",
+                    detail="show the refreshed dashboard inline",
+                    step="loop", artifact=p, key=logical_path)
+                if oid:
+                    out["dashboard"]["obligation"] = oid
+                    if human_gate:
+                        out["dashboard"]["ack"] = (
+                            f"after delivering it, run once: tp ack {oid} "
+                            f"--delivered {logical_path}")
     except Exception as exc:
         detail = f"{exc.__class__.__name__}: {exc}"
         with contextlib.suppress(Exception):

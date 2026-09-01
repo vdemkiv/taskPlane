@@ -16,11 +16,11 @@
     "ref_kind": "protected-main",
     "candidate_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "terminal_status": "green",
-    "required_checks": ["terminal-matrix", "dashboard-browser", "release-tags"],
+    "required_checks": ["pytest-1", "quality-package", "dashboard-browser"],
     "conclusions": {
-      "terminal-matrix": "success",
-      "dashboard-browser": "success",
-      "release-tags": "success"
+      "pytest-1": "success",
+      "quality-package": "success",
+      "dashboard-browser": "success"
     }
   },
   "supply_chain": {
@@ -34,8 +34,11 @@
   "receipts": {
     "settings": {"digest": "3333333333333333333333333333333333333333333333333333333333333333"},
     "candidate": {"digest": "4444444444444444444444444444444444444444444444444444444444444444", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-    "matrix": {"digest": "5555555555555555555555555555555555555555555555555555555555555555", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "green"},
-    "browser": {"digest": "6666666666666666666666666666666666666666666666666666666666666666", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "green", "fresh": true},
+    "checks": {
+      "pytest-1": {"digest": "5555555555555555555555555555555555555555555555555555555555555555", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "green", "fresh": true},
+      "quality-package": {"digest": "6666666666666666666666666666666666666666666666666666666666666666", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "green", "fresh": true},
+      "dashboard-browser": {"digest": "abababababababababababababababababababababababababababababababab", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "green", "fresh": true}
+    },
     "dashboard": {"digest": "7777777777777777777777777777777777777777777777777777777777777777", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "published", "fresh": true},
     "wave_metrics": {"digest": "8888888888888888888888888888888888888888888888888888888888888888", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "sealed", "recounted": false},
     "cleanup": {"digest": "9999999999999999999999999999999999999999999999999999999999999999", "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "clean", "leak_count": 0}

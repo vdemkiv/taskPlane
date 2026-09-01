@@ -29,6 +29,9 @@ def _repo():
     _git(ws, "config", "user.email", "t@t"); _git(ws, "config", "user.name", "t")
     open(os.path.join(ws, "a.py"), "w", encoding="utf-8").write("x = 1\n")
     _git(ws, "add", "-A"); _git(ws, "commit", "-qm", "base")
+    os.makedirs(os.path.join(ws, ".taskplane"), exist_ok=True)
+    open(os.path.join(ws, ".taskplane", "codex-hook.py"), "w",
+         encoding="utf-8").write("# stable test launcher\n")
     return ws
 
 
@@ -129,6 +132,12 @@ def _pass_eval(ws):
 class TestSelectionStep(unittest.TestCase):
     def setUp(self):
         self.ws = _repo()
+        previous = os.environ.get("TASKPLANE_SESSION_ID")
+        os.environ["TASKPLANE_SESSION_ID"] = "selection-test-session"
+        self.addCleanup(
+            lambda: os.environ.pop("TASKPLANE_SESSION_ID", None)
+            if previous is None else os.environ.__setitem__(
+                "TASKPLANE_SESSION_ID", previous))
 
     def test_ab_detected_from_plan(self):
         state = _to_plan_approved(self.ws)

@@ -36,9 +36,10 @@ release truth, or audit evidence.
   local shells, linked worktrees, and GitHub-hosted CI.
 - Product, Design, and Plan workers need one settings and test-strategy contract
   whose downstream consumers cannot silently diverge.
-- Build workers need pairwise-disjoint tasks and validation shards dispatched
+- Build workers need pairwise-disjoint tasks and validation jobs dispatched
   concurrently without editing-time lens fan-out.
-- Maintainers need quick local feedback, one terminal authoritative CI matrix,
+- Maintainers need quick local feedback, one authoritative CI workflow with no
+  synthetic join check,
   and failure batches classified once rather than green layers repeatedly run.
 - Operators need truthful settings, validation, cleanup, usage, and duration
   receipts that survive failure and handoff without exposing secrets.
@@ -87,7 +88,7 @@ only after the current contract they protect is adjudicated.
 7. A Design and coding-phase test-strategy contract with exact acceptance
    selectors, producer/consumer freshness and severed-edge checks, same-slice
    fixture updates, product-versus-test failure classification, and progressive
-   validation culminating in one exact-candidate authoritative CI matrix.
+   validation culminating in one exact-candidate authoritative CI workflow.
 8. Outcome-independent cleanup for exactly owned temporary worktrees,
    contracts, processes/process groups, caches, generated state, and test
    artifacts, including evidence retention, unsafe-target refusal, idempotency,
@@ -152,15 +153,15 @@ only after the current contract they protect is adjudicated.
    environment before a correction is authorized.
 9. Execute validation once per unchanged evidence layer in this order: static,
    exact selector, changed-file/radius, proportional suite, then one terminal
-   exact-candidate authoritative CI matrix. Broad validation defaults to GitHub
+   exact-candidate authoritative CI workflow. Broad validation defaults to GitHub
    Actions; local broad execution occurs only when approved settings explicitly
    select it.
-10. Dispatch all pairwise-disjoint Build tasks and CI validation shards in
+10. Dispatch all pairwise-disjoint Build tasks and CI validation jobs in
     parallel. Serialize only for an explicit dependency, shared owner/state, or
     authority transition, and record the reason. Freeze the candidate for the
-    terminal matrix; a source/test change invalidates it, while unchanged green
+    authoritative workflow; a source/test change invalidates its receipts, while unchanged green
     layer fingerprints are cited rather than rerun.
-11. On every red matrix, collect and classify all direct failures once, assign
+11. On every red workflow, collect and classify all direct failures once, assign
     one owner per failure cluster, and issue one correction wave. After two Plan
     returns, consolidate remaining coupled generators, goldens, checksums,
     fixtures, manifests, and history ledgers into one bounded stabilization
@@ -230,19 +231,20 @@ only after the current contract they protect is adjudicated.
    and `taskplane/tests/test_test_portfolio_contract.py::test_portfolio_targets_are_met_without_count_only_deletion`.
 8. **AC-TST3 — Progressive CI-first validation.** Validation advances static,
    exact selector, changed-file/radius, proportional suite, and one frozen-SHA
-   GitHub Actions matrix; unchanged green fingerprints are cited without
+   GitHub Actions workflow; unchanged green fingerprints are cited without
    execution, broad local runs are refused by default, and any candidate source/
-   test change invalidates terminal authority. Verify with
-   `taskplane/tests/test_ci_execution_policy.py::test_validation_progression_and_terminal_matrix_reuse`.
-9. **AC-CI1 — Parallel bounded CI.** Pairwise-disjoint shards execute
-   concurrently with settings-derived counts, budgets, and timeouts; every
+   test change invalidates direct check authority. Verify with
+   `taskplane/tests/test_ci_execution_policy.py::test_validation_progression_requires_one_authoritative_ci_run`.
+9. **AC-CI1 — Parallel bounded CI.** One pytest suite runs alongside
+   pairwise-disjoint quality/package and browser jobs with settings-derived
+   budgets and timeouts; every
    serialization has a recorded dependency/shared-owner/authority reason; PR
    supersession cancellation cannot cancel protected-main/release runs; and CI
    meets the p50/p95, runner-minute, first-matrix, matrix-count, and at-least-4x
    parallelism targets. Verify with
    `taskplane/tests/test_ci_execution_policy.py::test_ci_shards_cleanup_and_candidate_freeze_are_authoritative`
    and `taskplane/tests/test_ci_execution_policy.py::test_ci_metrics_meet_declared_targets`.
-10. **AC-CI2 — One classified correction wave.** One red matrix produces a
+10. **AC-CI2 — One classified correction wave.** One red workflow produces a
     complete direct-failure inventory with product/test/infrastructure/environment
     classification and one owner per cluster; unchanged green layers do not
     rerun, and a third Plan return is mechanically converted to one bounded

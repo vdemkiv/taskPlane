@@ -26,12 +26,16 @@ import tempfile
 import time
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence, TYPE_CHECKING
 
-try:
+if TYPE_CHECKING:
     from .host_capabilities import SurfaceSelection
-except (ImportError, ValueError):  # direct CLI/module execution
-    from host_capabilities import SurfaceSelection
+else:
+    if __package__:
+        from . import host_capabilities as _host_capabilities
+    else:  # direct CLI/module execution
+        import host_capabilities as _host_capabilities
+    SurfaceSelection = _host_capabilities.SurfaceSelection
 
 
 SNAPSHOT_SCHEMA = "taskplane.host-surface-snapshot/v1"
@@ -368,7 +372,7 @@ _DASHBOARD_HEAD_IDENTITY_KEYS = (
 _NO_EXPECTED_HEAD = object()
 
 
-def canonical_dashboard_bytes(model: Mapping) -> bytes:
+def canonical_dashboard_bytes(model: Mapping[str, Any]) -> bytes:
     """Canonical JSON is the machine authority for every delivery surface."""
     if not isinstance(model, Mapping):
         raise TypeError("dashboard model must be a mapping")
@@ -396,12 +400,12 @@ def _write_delivery_artifact(path: str, payload: bytes) -> None:
         raise
 
 
-def _artifact_ref(path: str, payload: bytes) -> dict:
+def _artifact_ref(path: str, payload: bytes) -> dict[str, Any]:
     return {"status": "available", "path": path, "bytes": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest()}
 
 
-def _fingerprint_value(value: Mapping) -> str:
+def _fingerprint_value(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_dashboard_bytes(value)).hexdigest()
 
 
@@ -417,7 +421,9 @@ class _HtmlShape(HTMLParser):
         if decl.casefold().strip() == "doctype html":
             self.doctypes += 1
 
-    def handle_starttag(self, tag: str, attrs) -> None:
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]],
+    ) -> None:
         if tag in self.tags:
             self.tags[tag] += 1
 
@@ -434,7 +440,7 @@ def _disable_unverified_actions(fragment: str) -> str:
         r"<button\b(?=[^>]*\bdata-dashboard-action(?:\s|=|>))[^>]*>",
         re.IGNORECASE)
 
-    def closed(match: re.Match) -> str:
+    def closed(match: re.Match[str]) -> str:
         tag = match.group(0)
         inspection = re.search(
             r"\bdata-action-kind\s*=\s*(['\"])inspection\1", tag,
@@ -452,7 +458,7 @@ def _disable_unverified_actions(fragment: str) -> str:
     return action.sub(closed, fragment)
 
 
-def _dashboard_freshness_controller(rendered_head: Mapping,
+def _dashboard_freshness_controller(rendered_head: Mapping[str, Any],
                                     *, actions_enabled: bool) -> str:
     encoded_head = base64.b64encode(canonical_dashboard_bytes(
         rendered_head)).decode("ascii")
@@ -511,7 +517,8 @@ def _dashboard_freshness_controller(rendered_head: Mapping,
         '})();</script>')
 
 
-def _embedded_html(body: str, canonical: bytes, *, rendered_head: Mapping,
+def _embedded_html(body: str, canonical: bytes, *,
+                   rendered_head: Mapping[str, Any],
                    actions_enabled: bool) -> bytes:
     fragment_shape = _html_shape(body)
     if fragment_shape.doctypes or any(fragment_shape.tags.values()):
@@ -539,7 +546,8 @@ def _embedded_html(body: str, canonical: bytes, *, rendered_head: Mapping,
     return document.encode("utf-8")
 
 
-def _normalize_delivery_head(value: Mapping) -> dict:
+def _normalize_delivery_head(
+        value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("dashboard head must be a mapping")
     try:
@@ -561,10 +569,11 @@ def _normalize_delivery_head(value: Mapping) -> dict:
 
 
 def dashboard_freshness_state(
-        rendered_head: Mapping, current_head: "Mapping | None", *,
+        rendered_head: Mapping[str, Any],
+        current_head: Mapping[str, Any] | None, *,
         page_url: str, bridge_available: bool, fetch_available: bool,
         previously_stale: bool = False,
-        previous_rendered_sequence: "int | None" = None) -> dict:
+        previous_rendered_sequence: int | None = None) -> dict[str, Any]:
     """Return the fail-closed action state for one open dashboard page."""
     rendered = _normalize_delivery_head(rendered_head)
     base = {"rendered_sequence": rendered["sequence"]}
@@ -615,23 +624,27 @@ def dashboard_freshness_state(
             "reason": "exact durable head verified", **result_base}
 
 
-def dashboard_publication_receipt_fingerprint(receipt: Mapping) -> str:
+def dashboard_publication_receipt_fingerprint(
+        receipt: Mapping[str, Any]) -> str:
     """Authenticate a receipt after removing only its self fingerprint."""
     payload = dict(receipt)
     payload.pop("fingerprint", None)
     return _fingerprint_value(payload)
 
 
-def _lowercase_digest(value, length: int) -> bool:
+def _lowercase_digest(value: object, length: int) -> bool:
     return isinstance(value, str) and len(value) == length and all(
         character in "0123456789abcdef" for character in value)
 
 
-def _snapshot_receipt(model: Mapping, canonical_sha256: str) -> dict:
-    identity = model.get("identity") if isinstance(
-        model.get("identity"), Mapping) else {}
-    values = model.get("values") if isinstance(
-        model.get("values"), Mapping) else model
+def _snapshot_receipt(
+        model: Mapping[str, Any], canonical_sha256: str) -> dict[str, Any]:
+    identity_value = model.get("identity")
+    identity: Mapping[str, Any] = (
+        identity_value if isinstance(identity_value, Mapping) else {})
+    values_value = model.get("values")
+    values: Mapping[str, Any] = (
+        values_value if isinstance(values_value, Mapping) else model)
     sequence = model.get("sequence", identity.get("sequence", 0))
     if isinstance(sequence, bool) or not isinstance(sequence, int):
         sequence = 0
@@ -646,7 +659,7 @@ def _snapshot_receipt(model: Mapping, canonical_sha256: str) -> dict:
     }
 
 
-def _candidate_receipt(snapshot: Mapping) -> dict:
+def _candidate_receipt(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     candidate = {
         "source_sha": snapshot.get("candidate_sha"),
         "snapshot_fingerprint": snapshot.get("fingerprint"),
@@ -657,8 +670,8 @@ def _candidate_receipt(snapshot: Mapping) -> dict:
 
 
 def validate_dashboard_publication_receipt(
-        receipt: Mapping, *, current_head: Mapping,
-        expected_source_sha: str) -> dict:
+        receipt: Mapping[str, Any], *, current_head: Mapping[str, Any],
+        expected_source_sha: str) -> dict[str, Any]:
     """Return release evidence only for the exact durable dashboard head."""
     receipt_fields = {
         "schema", "snapshot", "candidate", "graphs", "dom_freshness",
@@ -751,9 +764,13 @@ def validate_dashboard_publication_receipt(
     }
 
 
-def _rendered_head(model: Mapping, snapshot: Mapping) -> dict:
-    identity = model.get("identity") if isinstance(
-        model.get("identity"), Mapping) else {}
+def _rendered_head(
+        model: Mapping[str, Any],
+        snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    identity_value = model.get("identity")
+    identity: Mapping[str, Any] = (
+        identity_value if isinstance(identity_value, Mapping) else {})
     return {
         "workflow_id": str(model.get("workflow_id") or
                            identity.get("workflow_id") or "dashboard"),
@@ -768,15 +785,18 @@ def _rendered_head(model: Mapping, snapshot: Mapping) -> dict:
     }
 
 
-def _graph_fingerprints(model: Mapping) -> dict:
-    source = model.get("values") if isinstance(
-        model.get("values"), Mapping) else model
+def _graph_fingerprints(model: Mapping[str, Any]) -> dict[str, Any]:
+    source_value = model.get("values")
+    source: Mapping[str, Any] = (
+        source_value if isinstance(source_value, Mapping) else model)
     return {key: _fingerprint_value(source[key]) for key in
             _DASHBOARD_GRAPH_KEYS if isinstance(source.get(key), Mapping)}
 
 
 def _host_acknowledgement_receipt(
-        acknowledgement: "Mapping | None", rendered_head: Mapping) -> dict:
+        acknowledgement: Mapping[str, Any] | None,
+        rendered_head: Mapping[str, Any],
+) -> dict[str, Any]:
     if acknowledgement is None:
         limitation = {
             "status": "static-limitation",
@@ -800,8 +820,9 @@ def _host_acknowledgement_receipt(
         reasons.append("host acknowledgement names another snapshot")
     if value.get("sequence") != rendered_head["sequence"]:
         reasons.append("host acknowledgement names another sequence")
-    identity = value.get("identity") if isinstance(
-        value.get("identity"), Mapping) else {}
+    identity_value = value.get("identity")
+    identity: Mapping[str, Any] = (
+        identity_value if isinstance(identity_value, Mapping) else {})
     for key in _DASHBOARD_HEAD_IDENTITY_KEYS:
         if key not in identity:
             reasons.append(f"host acknowledgement {key} is missing")
@@ -831,7 +852,7 @@ def _fsync_directory(path: str) -> None:
         os.close(descriptor)
 
 
-def _load_current_head(path: str) -> "dict | None":
+def _load_current_head(path: str) -> dict[str, Any] | None:
     if not os.path.exists(path):
         return None
     if os.path.islink(path):
@@ -844,7 +865,9 @@ def _load_current_head(path: str) -> "dict | None":
     return value
 
 
-def _commit_current_head(root: str, head: Mapping, *, expected_head) -> dict:
+def _commit_current_head(
+        root: str, head: Mapping[str, Any], *, expected_head: object,
+) -> dict[str, Any]:
     path = os.path.join(root, "current.json")
     lock_path = os.path.join(root, ".current.lock")
     try:
@@ -884,11 +907,13 @@ def _commit_current_head(root: str, head: Mapping, *, expected_head) -> dict:
             os.unlink(lock_path)
 
 
-def deliver_dashboard(output_dir: str, model: Mapping, *,
+def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
                       inline_threshold: int = LARGE_DASHBOARD_INLINE_BYTES,
-                      inline_renderer=None, html_renderer=None,
-                      host_acknowledgement: "Mapping | None" = None,
-                      expected_head=_NO_EXPECTED_HEAD) -> dict:
+                      inline_renderer: Callable[[str], object] | None = None,
+                      html_renderer: Callable[[str], object] | None = None,
+                      host_acknowledgement: Mapping[str, Any] | None = None,
+                      expected_head: object = _NO_EXPECTED_HEAD,
+                      ) -> dict[str, Any]:
     """Publish one canonical snapshot through disjoint delivery projections.
 
     Canonical bytes are encoded once. JSON, complete Markdown, optional HTML,
@@ -1022,9 +1047,10 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
         }, expected_head=expected_head)
 
     gate_source = model.get("gate")
+    values_source = model.get("values")
     if not isinstance(gate_source, Mapping) and isinstance(
-            model.get("values"), Mapping):
-        gate_source = model["values"].get("gate")
+            values_source, Mapping):
+        gate_source = values_source.get("gate")
     return {
         "schema": "taskplane.dashboard-delivery/v1", "status": status,
         "mode": mode, "semantic_bytes": len(canonical),
@@ -1038,7 +1064,8 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
     }
 
 
-def decode_dashboard_artifact(kind: str, payload: bytes) -> dict:
+def decode_dashboard_artifact(
+        kind: str, payload: bytes) -> dict[str, Any]:
     """Decode a delivery surface for semantic-equivalence verification."""
     text = payload.decode("utf-8")
     if kind == "json":
@@ -1079,8 +1106,11 @@ def _generated_at(value: float | str | None) -> str:
         "+00:00", "Z")
 
 
-def _v4_dashboard_source(manifest: dict, run_id: str, *,
-                         manifest_validator, error_formatter) -> dict:
+def _v4_dashboard_source(
+        manifest: dict[str, Any], run_id: str, *,
+        manifest_validator: Callable[..., Any],
+        error_formatter: Callable[[Exception], str],
+) -> dict[str, Any]:
     try:
         if manifest.get("schema") != "taskplane.run/v4" or \
                 manifest.get("run_id") != run_id:
@@ -1133,9 +1163,13 @@ def _v4_dashboard_source(manifest: dict, run_id: str, *,
         }
 
 
-def select_dashboard_source(ws: str, *, locator_loader, legacy_loader,
-                            manifest_loader, manifest_validator,
-                            error_formatter) -> dict:
+def select_dashboard_source(
+        ws: str, *, locator_loader: Callable[..., Any],
+        legacy_loader: Callable[..., Any],
+        manifest_loader: Callable[..., Any],
+        manifest_validator: Callable[..., Any],
+        error_formatter: Callable[[Exception], str],
+) -> dict[str, Any]:
     """Select legacy or v4 once, then perform exactly one state read."""
     try:
         locator = locator_loader(ws)
@@ -1185,7 +1219,8 @@ def select_dashboard_source(ws: str, *, locator_loader, legacy_loader,
     }
 
 
-def _bounded_loop_values(state: dict | None) -> dict:
+def _bounded_loop_values(
+        state: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(state, dict):
         return {}
     tasks = [
@@ -1201,8 +1236,11 @@ def _bounded_loop_values(state: dict | None) -> dict:
     }
 
 
-def _phase_graph_values(ws: str, state: dict | None, *, projector,
-                        error_formatter) -> dict:
+def _phase_graph_values(
+        ws: str, state: dict[str, Any] | None, *,
+        projector: Callable[..., Any],
+        error_formatter: Callable[[Exception], str],
+) -> dict[str, Any]:
     """Consume the projection slice when present; never invent graph truth."""
     try:
         project = projector
@@ -1217,8 +1255,11 @@ def _phase_graph_values(ws: str, state: dict | None, *, projector,
         return {"phase_graph_error": error_formatter(exc)}
 
 
-def _wave_metrics_values(state: dict | None, *, metrics_projector,
-                         error_formatter) -> dict:
+def _wave_metrics_values(
+        state: dict[str, Any] | None, *,
+        metrics_projector: Callable[..., Any],
+        error_formatter: Callable[[Exception], str],
+) -> dict[str, Any]:
     """Project the sealed receipt already present in the one selected state."""
     if not isinstance(state, dict) or state.get("wave_metrics_receipt") is None:
         return {}
@@ -1233,8 +1274,10 @@ def _wave_metrics_values(state: dict | None, *, metrics_projector,
         }}
 
 
-def _next_dashboard_sequence(ws: str, source: dict, *,
-                             publication_loader) -> int:
+def _next_dashboard_sequence(
+        ws: str, source: dict[str, Any], *,
+        publication_loader: Callable[..., Any],
+) -> int:
     prior = publication_loader(ws)
     if prior is None:
         return 1
@@ -1245,8 +1288,11 @@ def _next_dashboard_sequence(ws: str, source: dict, *,
     return current.sequence + 1 if same_run else 1
 
 
-def _publication(snapshot, event, *, source_mode: str,
-                 replayed: bool, status: str) -> dict:
+def _publication(
+        snapshot: HostSurfaceSnapshot | None,
+        event: HostSurfaceEvent | None, *, source_mode: str,
+        replayed: bool, status: str,
+) -> dict[str, Any]:
     fingerprint = snapshot.fingerprint if snapshot is not None else None
     return {
         "schema": DASHBOARD_PUBLICATION_SCHEMA, "status": status,
@@ -1261,9 +1307,14 @@ def _publication(snapshot, event, *, source_mode: str,
 def refresh_dashboard_snapshot(
         ws: str, *, event_type: str, outcome: str | None = None,
         committed_at: float | str | None = None, replay: bool = False,
-        settings_digest: str, source_loader, graph_projector,
-        metrics_projector, publication_loader, snapshot_committer,
-        event_committer, error_formatter) -> dict:
+        settings_digest: str, source_loader: Callable[..., Any],
+        graph_projector: Callable[..., Any],
+        metrics_projector: Callable[..., Any],
+        publication_loader: Callable[..., Any],
+        snapshot_committer: Callable[..., Any],
+        event_committer: Callable[..., Any],
+        error_formatter: Callable[[Exception], str],
+) -> dict[str, Any]:
     """Freeze or idempotently replay the sole canonical dashboard snapshot."""
     if not str(event_type or "").strip():
         raise ValueError("dashboard event_type is required")
@@ -1314,7 +1365,7 @@ def refresh_dashboard_snapshot(
             error_formatter=error_formatter),
         **metrics_values,
     }
-    safe_actions = ()
+    safe_actions: tuple[str, ...] = ()
     metrics_receipt_present = isinstance(state, dict) and \
         state.get("wave_metrics_receipt") is not None
     metrics_signoff_ready = not metrics_receipt_present or \
@@ -1350,7 +1401,7 @@ HOST_DASHBOARD_COMPONENTS = (
 )
 
 
-def _dashboard_plain(value):
+def _dashboard_plain(value: Any) -> Any:
     """Return JSON-shaped presentation data without mutating canonical data."""
     if isinstance(value, dict) or hasattr(value, "items"):
         return {str(key): _dashboard_plain(item)
@@ -1360,7 +1411,10 @@ def _dashboard_plain(value):
     return value
 
 
-def carousel_pages(items, *, filters=None, current=1, page_size=8):
+def carousel_pages(
+        items: Iterable[Any], *, filters: Mapping[str, Any] | None = None,
+        current: int = 1, page_size: int = 8,
+) -> dict[str, Any]:
     """Create deterministic, lossless carousel pages of three to eight items.
 
     Zero and one item remain concise native cards.  Larger collections use a
@@ -1372,8 +1426,8 @@ def carousel_pages(items, *, filters=None, current=1, page_size=8):
             or not 3 <= page_size <= 8:
         raise ValueError("page_size must be between 3 and 8")
     filters = dict(filters or {})
-    selected = []
-    identities = set()
+    selected: list[dict[str, Any]] = []
+    identities: set[str] = set()
     for raw in items:
         row = _dashboard_plain(raw)
         identity = row.get("id") if isinstance(row, dict) else None
@@ -1413,7 +1467,10 @@ def carousel_pages(items, *, filters=None, current=1, page_size=8):
     }
 
 
-def native_dashboard_projection(snapshot, *, host, filters=None, current=1):
+def native_dashboard_projection(
+        snapshot: HostSurfaceSnapshot, *, host: str,
+        filters: Mapping[str, Any] | None = None, current: int = 1,
+) -> dict[str, Any]:
     """Project one canonical snapshot into an accessible host-native model.
 
     The host-specific section contains styling and interaction affordances
@@ -1424,7 +1481,7 @@ def native_dashboard_projection(snapshot, *, host, filters=None, current=1):
         raise ValueError("host must be codex or claude")
     canonical = snapshot.to_dict()
     values = canonical["values"]
-    components = []
+    components: list[dict[str, Any]] = []
     for order, name in enumerate(HOST_DASHBOARD_COMPONENTS):
         value = _dashboard_plain(values.get(name, {}))
         row = {"id": name, "order": order, "value": value}
@@ -1473,7 +1530,7 @@ def native_dashboard_projection(snapshot, *, host, filters=None, current=1):
             },
         },
     }
-def canonical_revision_identity(value: dict) -> dict:
+def canonical_revision_identity(value: Any) -> dict[str, Any]:
     """Validate and normalize the tuple shared by every review projection."""
     source = value.get("identity") if isinstance(value, dict) \
         and isinstance(value.get("identity"), dict) else value
@@ -1494,7 +1551,9 @@ def canonical_revision_identity(value: dict) -> dict:
     }
 
 
-def canonical_report_projection(report: str, identity: dict) -> dict:
+def canonical_report_projection(
+        report: str, identity: dict[str, Any],
+) -> dict[str, Any]:
     """A report projection that cannot drop or rename canonical identity."""
     return {"schema": "taskplane.review-projection/v1", "kind": "report",
             "identity": canonical_revision_identity(identity),
@@ -1514,7 +1573,7 @@ def render_wave_metrics_projection(projection: Mapping[str, Any] | None) -> str:
     metrics = projection.get("metrics")
     if not receipt or not isinstance(metrics, Mapping):
         return ""
-    rows = []
+    rows: list[str] = []
     for name, metric in metrics.items():
         if not isinstance(metric, Mapping):
             continue
@@ -1523,8 +1582,9 @@ def render_wave_metrics_projection(projection: Mapping[str, Any] | None) -> str:
             f'actual {_dashboard_escape(metric.get("actual"))} {_dashboard_escape(metric.get("unit"))} · '
             f'baseline {_dashboard_escape(metric.get("baseline"))} · target '
             f'{_dashboard_escape(metric.get("target"))}</li>')
-    signoff = projection.get("signoff") \
-        if isinstance(projection.get("signoff"), Mapping) else {}
+    signoff_value = projection.get("signoff")
+    signoff: Mapping[str, Any] = (
+        signoff_value if isinstance(signoff_value, Mapping) else {})
     return (
         '<section class="tp-sec" id="tp-wave-metrics" '
         f'data-wave-metrics-receipt="{_dashboard_escape(receipt)}">'

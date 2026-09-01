@@ -12,13 +12,16 @@ from datetime import datetime
 import math
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-try:
+# Mypy checks package imports as the authoritative typed boundary.  Taskplane
+# also supports direct loading from the ``taskplane/`` directory, so select
+# that compatibility import shape explicitly at runtime.
+if TYPE_CHECKING or __package__:
     from .ci_policy import DECLARED_TARGETS as CI_TARGETS
     from .delivery_ports import content_fingerprint
     from .dispatch_telemetry import WAVE_BUDGET_CEILINGS
-except ImportError:  # pragma: no cover - direct module loading
+else:  # pragma: no cover - direct module loading
     from ci_policy import DECLARED_TARGETS as CI_TARGETS
     from delivery_ports import content_fingerprint
     from dispatch_telemetry import WAVE_BUDGET_CEILINGS

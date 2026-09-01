@@ -3,9 +3,6 @@
   "matrices": ["tests", "quality-package", "browser"],
   "cell_ids": [
     "pytest-1",
-    "pytest-2",
-    "pytest-3",
-    "pytest-4",
     "quality-package",
     "dashboard-browser"
   ],
@@ -14,5 +11,5 @@
     "taskplane/tests/test_dashboard_browser.py::test_real_browser_svg_graphs_and_single_document_are_truthful"
   ],
   "runner_minutes_max": 30,
-  "minimum_parallelism": 4
+  "minimum_parallelism": 3
 }

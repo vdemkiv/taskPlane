@@ -62,7 +62,7 @@
     "ci_first_matrix_hours": {"size": 1, "method": "integration-ready to first-matrix interval"},
     "ci_matrix_count": {"size": 1, "method": "unique candidate-bound matrix ids"},
     "ci_red_matrices": {"size": 1, "method": "terminal candidate-bound outcomes"},
-    "ci_critical_path_minutes": {"size": 1, "method": "terminal matrix elapsed interval"},
+    "ci_critical_path_minutes": {"size": 1, "method": "authoritative workflow elapsed interval"},
     "ci_p50_minutes": {"size": 1, "method": "nearest-rank candidate-bound matrix durations"},
     "ci_p95_minutes": {"size": 1, "method": "nearest-rank candidate-bound matrix durations"},
     "ci_runner_minutes": {"size": 5, "method": "sum of disjoint terminal cell durations"},

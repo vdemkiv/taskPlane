@@ -610,7 +610,7 @@ def _protected_main_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     receipts = _closed(
         value.get("receipts"),
         frozenset({
-            "settings", "candidate", "matrix", "browser", "dashboard",
+            "settings", "candidate", "checks", "dashboard",
             "wave_metrics", "cleanup",
         }),
         "release prerequisite receipts",
@@ -626,25 +626,35 @@ def _protected_main_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
     if candidate.get("source_sha") != source_sha:
         raise ReleaseEvidenceError("candidate receipt names another source SHA")
 
-    matrix = _closed(
-        receipts.get("matrix"), frozenset({"digest", "source_sha", "status"}),
-        "terminal matrix receipt")
-    _fingerprint(matrix.get("digest"), "matrix digest")
-    if matrix.get("source_sha") != source_sha or matrix.get("status") != "green":
-        raise ReleaseEvidenceError("terminal matrix is not exact-source green")
-
-    for name, status in (("browser", "green"), ("dashboard", "published")):
+    check_receipts = receipts.get("checks")
+    if not isinstance(check_receipts, Mapping) or \
+            set(check_receipts) != set(checks):
+        raise ReleaseEvidenceError(
+            "direct check receipts do not match the required checks")
+    for name in checks:
         observation = _closed(
-            receipts.get(name),
+            check_receipts.get(name),
             frozenset({"digest", "source_sha", "status", "fresh"}),
-            f"{name} receipt",
+            f"check {name} receipt",
         )
-        _fingerprint(observation.get("digest"), f"{name} digest")
+        _fingerprint(observation.get("digest"), f"check {name} digest")
         if observation.get("source_sha") != source_sha or \
-                observation.get("status") != status or \
+                observation.get("status") != "green" or \
                 observation.get("fresh") is not True:
             raise ReleaseEvidenceError(
-                f"{name} receipt is stale or bound to another source SHA")
+                f"check {name} receipt is stale or bound to another source SHA")
+
+    dashboard = _closed(
+        receipts.get("dashboard"),
+        frozenset({"digest", "source_sha", "status", "fresh"}),
+        "dashboard receipt",
+    )
+    _fingerprint(dashboard.get("digest"), "dashboard digest")
+    if dashboard.get("source_sha") != source_sha or \
+            dashboard.get("status") != "published" or \
+            dashboard.get("fresh") is not True:
+        raise ReleaseEvidenceError(
+            "dashboard receipt is stale or bound to another source SHA")
 
     metrics = _closed(
         receipts.get("wave_metrics"),

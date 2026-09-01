@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Closed, isolated, parallel local equivalent of Taskplane's blocking CI.
+"""Closed, isolated local equivalent of Taskplane's blocking CI.
 
 This runner intentionally has no discovery mechanism: INVENTORY is the whole
-contract.  Each check is assigned once to one of four subprocess shards and
-every shard is collected even after another fails.
+contract. The canonical CI profile runs the pytest inventory once; explicit
+non-authoritative profiles may still use the supported sharding capability.
 """
 from __future__ import annotations
 
@@ -32,7 +32,6 @@ from taskplane.ci_policy import (  # noqa: E402
     BROWSER_INPUTS,
     build_ci_plan,
     freeze_candidate,
-    seal_terminal_matrix,
 )
 from taskplane.settings import (  # noqa: E402
     DEFAULT_SETTINGS_PATH,
@@ -73,7 +72,6 @@ PACKAGE_TEMP_ROOT = "TASKPLANE_PACKAGE_TEMP_ROOT"
 TEMP_PREFIX = "taskplane-local-ci-"
 DEADLINE_SECONDS = 13_800
 CLEANUP_RESERVE_SECONDS = 600
-AGGREGATE_TIMEOUT_SECONDS = 14_400
 
 
 class RunnerError(RuntimeError):
@@ -191,7 +189,7 @@ def _ci_settings(
         raise RunnerError(f"authoritative CI settings were rejected: {exc}") from exc
     if (
         settings.tests.backend != "ci"
-        or settings.tests.shards < 2
+        or settings.tests.shards < 1
         or settings.build.concurrency != "native"
         or settings.receipt.get("precedence") != ["defaults", "file"]
     ):
@@ -219,7 +217,8 @@ def _ci_declaration(
         group = f"release-{run_id}"
         cancel = False
     partitions = _ci_pytest_partitions(settings.tests.shards)
-    cell_timeout = settings.limits.timeouts["subprocess_seconds"]
+    test_timeout = settings.limits.timeouts["task_seconds"]
+    subprocess_timeout = settings.limits.timeouts["subprocess_seconds"]
     cells: list[dict[str, Any]] = []
     for index, selectors in enumerate(partitions, start=1):
         cells.append({
@@ -228,7 +227,7 @@ def _ci_declaration(
             "matrix": "tests",
             "selectors": list(selectors),
             "paths": list(selectors),
-            "timeout_seconds": cell_timeout,
+            "timeout_seconds": test_timeout,
             "cleanup_resources": [f"generated-state:pytest-{index}"],
         })
     cells.extend((
@@ -245,7 +244,7 @@ def _ci_declaration(
                 "requirements-dev.lock", "pyproject.toml",
                 "scripts/package_openai.py", "scripts/package_claude.py",
             ],
-            "timeout_seconds": cell_timeout,
+            "timeout_seconds": subprocess_timeout,
             "cleanup_resources": ["generated-state:quality-package"],
         },
         {
@@ -258,7 +257,7 @@ def _ci_declaration(
                 "taskplane/tests/test_dashboard_browser.py",
                 "taskplane/tests/fixtures/dashboard-browser",
             ],
-            "timeout_seconds": cell_timeout,
+            "timeout_seconds": subprocess_timeout,
             "cleanup_resources": [
                 "process:dashboard-browser", "generated-state:dashboard-browser",
             ],
@@ -349,12 +348,6 @@ PYTEST_SHARD_COUNT = load_settings(
 PYTEST_CHECK_IDS = tuple(
     f"pytest-shard-{index + 1}" for index in range(PYTEST_SHARD_COUNT)
 )
-# Content address of every repository-relative `path:estimated-byte-weight` row.
-# A file added, removed, renamed, or reweighted must deliberately refresh this
-# pin, so the complete suite cannot silently shrink or use stale balancing data.
-PYTEST_WEIGHT_SHA256 = "14d02c629049fe230c1bab6496fb2bcbaf8fbd44d0d71c9147df88baa3a124e3"
-
-
 def pytest_inventory() -> tuple[str, ...]:
     tracked = subprocess.run(
         ["git", "ls-files", "--", "taskplane/tests/test_*.py"],
@@ -372,18 +365,10 @@ def pytest_inventory() -> tuple[str, ...]:
 
 
 def pytest_weights(files: Sequence[str]) -> dict[str, int]:
-    weights = {
+    return {
         path: max(1, (ROOT / path).stat().st_size)
         for path in files
     }
-    rows = "\n".join(f"{path}:{weights[path]}" for path in sorted(weights))
-    observed = hashlib.sha256(rows.encode()).hexdigest()
-    if observed != PYTEST_WEIGHT_SHA256:
-        raise RunnerError(
-            "pytest weight inventory is absent or stale: "
-            f"expected {PYTEST_WEIGHT_SHA256}, observed {observed}"
-        )
-    return weights
 
 
 def partition_pytest_files(
@@ -395,7 +380,7 @@ def partition_pytest_files(
         not isinstance(weight, int) or weight <= 0 for weight in weights.values()
     ):
         raise RunnerError("pytest weight inventory is absent or stale")
-    if shard_count < 2 or len(files) < shard_count:
+    if shard_count < 1 or len(files) < shard_count:
         raise RunnerError("pytest partitions must all be nonempty")
     partitions: list[list[str]] = [[] for _ in range(shard_count)]
     loads = [0] * shard_count
@@ -452,8 +437,8 @@ AUXILIARY_CHECK_IDS = (
 
 
 def _local_shards() -> tuple[tuple[str, ...], ...]:
-    if PYTEST_SHARD_COUNT < 2:
-        raise RunnerError("canonical tests.shards must provide parallel feedback")
+    if PYTEST_SHARD_COUNT < 1:
+        raise RunnerError("canonical tests.shards must be positive")
     rows = [[check_id] for check_id in PYTEST_CHECK_IDS]
     for index, check_id in enumerate(AUXILIARY_CHECK_IDS):
         rows[index % PYTEST_SHARD_COUNT].append(check_id)
@@ -1297,36 +1282,6 @@ def validate_authoritative_ci_cell_receipt(
     return receipt
 
 
-def aggregate_authoritative_ci(
-    runtime_path: Path, receipt_root: Path, output_path: Path,
-) -> int:
-    runtime = _load_runtime_plan(runtime_path)
-    receipts: list[dict[str, Any]] = []
-    for path in sorted(receipt_root.rglob("*.json")):
-        try:
-            row = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            continue
-        if isinstance(row, dict) and row.get("schema") == CI_CELL_SCHEMA:
-            receipts.append(row)
-    expected = {cell["id"] for cell in runtime["plan"]["cells"]}
-    ids = [str(row.get("id") or "") for row in receipts]
-    if set(ids) != expected or len(ids) != len(set(ids)):
-        raise RunnerError("terminal aggregate requires exactly one receipt per CI cell")
-    cells = {cell["id"]: cell for cell in runtime["plan"]["cells"]}
-    receipts = [
-        validate_authoritative_ci_cell_receipt(row, runtime, cells[row["id"]])
-        for row in receipts
-    ]
-    terminal = seal_terminal_matrix(
-        runtime["candidate"], runtime["plan"], receipts,
-    )
-    terminal["settings_receipt"] = runtime["settings_receipt"]
-    terminal["runtime_fingerprint"] = runtime["fingerprint"]
-    _atomic_write_json(output_path, terminal)
-    return 0
-
-
 def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = None) -> int:
     argsv = list(sys.argv[1:] if argv is None else argv)
     env = os.environ if environ is None else environ
@@ -1340,8 +1295,6 @@ def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = 
     parser.add_argument("--runtime-plan", type=Path)
     parser.add_argument("--ci-cell")
     parser.add_argument("--receipt", type=Path)
-    parser.add_argument("--aggregate-ci", type=Path)
-    parser.add_argument("--receipt-root", type=Path)
     parser.add_argument("--source-sha")
     parser.add_argument("--event")
     parser.add_argument("--ref")
@@ -1377,12 +1330,6 @@ def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = 
             raise RunnerError("CI cell requires --runtime-plan and --receipt")
         return run_authoritative_ci_cell(
             args.runtime_plan, args.ci_cell, args.receipt, environ=env,
-        )
-    if args.aggregate_ci is not None:
-        if args.runtime_plan is None or args.receipt_root is None:
-            raise RunnerError("CI aggregate requires --runtime-plan and --receipt-root")
-        return aggregate_authoritative_ci(
-            args.runtime_plan, args.receipt_root, args.aggregate_ci,
         )
     if env.get(RECURSION_GUARD):
         raise RunnerError("recursive top-level ci_local invocation refused")

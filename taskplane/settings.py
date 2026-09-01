@@ -489,6 +489,9 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         raise SettingsError(
             "dashboard.refresh.lifecycle_events must exactly match required "
             "governed transitions")
+    typed_lifecycle_events = [
+        item for item in lifecycle_events if isinstance(item, str)
+    ]
     session_event = refresh_raw.get("session_event")
     if not isinstance(session_event, str) or not session_event.strip():
         raise SettingsError("dashboard.refresh.session_event must be a string")
@@ -500,22 +503,30 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
     overrides_raw = _plain_mapping(data.get("overrides"), "overrides")
     safe_paths = overrides_raw.get("safe_paths")
     governance_paths = overrides_raw.get("governance_paths")
-    for value, label in ((safe_paths, "safe_paths"), (governance_paths, "governance_paths")):
-        if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-            raise SettingsError(f"overrides.{label} must be a string list")
+    if not isinstance(safe_paths, list) or not all(
+            isinstance(item, str) and item for item in safe_paths):
+        raise SettingsError("overrides.safe_paths must be a string list")
+    if not isinstance(governance_paths, list) or not all(
+            isinstance(item, str) and item for item in governance_paths):
+        raise SettingsError("overrides.governance_paths must be a string list")
+    typed_safe_paths = [item for item in safe_paths if isinstance(item, str)]
+    typed_governance_paths = [
+        item for item in governance_paths if isinstance(item, str)
+    ]
     observable_raw = _plain_mapping(data.get("observability"), "observability")
     if any(not isinstance(observable_raw.get(key), bool) for key in ("receipt", "include_values")):
         raise SettingsError("observability values must be boolean")
     if observable_raw["include_values"]:
         raise SettingsError("observability cannot include raw setting values")
 
+    test_shards = _positive_int(tests_raw.get("shards"), "tests.shards")
     normalized = {
         "schema": CURRENT_SCHEMA,
         "stages": {key: value.to_dict() for key, value in stages.items()},
         "lenses": {"routing": {key: list(value) for key, value in routing.items()}, "counts": counts},
         "build": {"shards": build_shards, "concurrency": concurrency},
         "tests": {"backend": backend, "selection": selection,
-                  "shards": _positive_int(tests_raw.get("shards"), "tests.shards"),
+                  "shards": test_shards,
                   "cache": tests_raw["cache"],
                   "cache_max_age_seconds": cache_max_age_seconds},
         "limits": {"timeouts": timeouts, "budgets": budgets},
@@ -530,11 +541,12 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
             "review_max_attempts": review_max_attempts,
         },
         "dashboard": {"refresh": {
-            "lifecycle_events": list(lifecycle_events),
+            "lifecycle_events": typed_lifecycle_events,
             "session_event": session_event,
             "replay_on_session_start": replay_on_session_start,
         }},
-        "overrides": {"safe_paths": list(safe_paths), "governance_paths": list(governance_paths)},
+        "overrides": {"safe_paths": typed_safe_paths,
+                      "governance_paths": typed_governance_paths},
         "observability": dict(observable_raw),
     }
     digest = _digest(normalized)
@@ -545,7 +557,7 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
         lenses=LensSettings(_freeze(routing), _freeze(counts)),
         build=BuildSettings(build_shards, concurrency),
         tests=TestSettings(
-            backend, selection, normalized["tests"]["shards"],
+            backend, selection, test_shards,
             tests_raw["cache"], cache_max_age_seconds),
         limits=LimitSettings(_freeze(timeouts), _freeze(budgets)),
         workflow=WorkflowSettings("native", _freeze(dict(inheritance_raw))),
@@ -554,8 +566,10 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
             audit_every, inline_max_bytes, orphan_ttl_seconds, obligations,
             runnability, review_max_attempts),
         dashboard=DashboardSettings(DashboardRefreshSettings(
-            tuple(lifecycle_events), session_event, replay_on_session_start)),
-        overrides=OverrideSettings(tuple(safe_paths), tuple(governance_paths)),
+            tuple(typed_lifecycle_events), session_event,
+            replay_on_session_start)),
+        overrides=OverrideSettings(
+            tuple(typed_safe_paths), tuple(typed_governance_paths)),
         observability=ObservabilitySettings(observable_raw["receipt"], False),
         digest=digest, receipt=_freeze(sealed_receipt),
     )
@@ -607,14 +621,14 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                 name = prefix + tier
                 if name not in environment:
                     continue
-                value = str(environment[name]).strip()
-                if field == "model" and value in {"", "inherit"}:
-                    value = "inherit"
-                if not value:
+                stage_value = str(environment[name]).strip()
+                if field == "model" and stage_value in {"", "inherit"}:
+                    stage_value = "inherit"
+                if not stage_value:
                     continue
                 for stage in stages:
                     environment_overlay["stages"].setdefault(stage, {})[
-                        field] = value
+                        field] = stage_value
                     applied.append(f"stages.{stage}.{field}")
         runtime_overlay: dict[str, Any] = {}
         integer_aliases = {
@@ -628,7 +642,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                 continue
             raw_value = str(environment[name]).strip()
             try:
-                value = int(raw_value)
+                integer_value = int(raw_value)
             except ValueError as exc:
                 raise SettingsError(
                     f"legacy environment {name} must be an integer") from exc
@@ -636,7 +650,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                 raise SettingsError(
                     "duplicate legacy environment aliases for runtime." +
                     field)
-            runtime_overlay[field] = value
+            runtime_overlay[field] = integer_value
             applied.append(f"runtime.{field}")
         enum_aliases = {
             "TASKPLANE_OBLIGATIONS": (
@@ -661,14 +675,14 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
             environment_overlay["runtime"] = runtime_overlay
         if "TASKPLANE_NO_SUITE_CACHE" in environment:
             raw_value = str(environment["TASKPLANE_NO_SUITE_CACHE"]).strip().lower()
-            aliases = {
+            cache_aliases = {
                 "1": False, "true": False, "on": False, "yes": False,
                 "0": True, "false": True, "off": True, "no": True,
             }
-            if raw_value not in aliases:
+            if raw_value not in cache_aliases:
                 raise SettingsError(
                     "legacy environment TASKPLANE_NO_SUITE_CACHE is unsupported")
-            environment_overlay["tests"]["cache"] = aliases[raw_value]
+            environment_overlay["tests"]["cache"] = cache_aliases[raw_value]
             applied.append("tests.cache")
         if "TASKPLANE_SUITE_CACHE_MAX_AGE" in environment:
             raw_value = str(
@@ -686,10 +700,11 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                     "legacy environment TASKPLANE_SUITE_CACHE_MAX_AGE must "
                     "be a finite number") from exc
             # Historic zero and negative values both meant "never cite".
-            value: int | float = max(0.0, parsed)
-            if value.is_integer():
-                value = int(value)
-            environment_overlay["tests"]["cache_max_age_seconds"] = value
+            cache_age_value: int | float = max(0.0, parsed)
+            if isinstance(cache_age_value, float) and cache_age_value.is_integer():
+                cache_age_value = int(cache_age_value)
+            environment_overlay["tests"][
+                "cache_max_age_seconds"] = cache_age_value
             applied.append("tests.cache_max_age_seconds")
         if (environment_overlay["stages"] or environment_overlay["tests"]
                 or runtime_overlay):

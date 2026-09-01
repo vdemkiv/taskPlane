@@ -59,10 +59,16 @@ def test_every_flow_initializes_from_canonical_settings():
     assert set(consumers) == expected_consumers
     assert all(row["initialization"] and row["binding"]
                for row in consumers.values())
-    for consumer in consumers.values():
+    production_consumers = [
+        row for row in consumers.values()
+        if row["initialization"] != "non-authoritative-test-input"
+    ]
+    for consumer in production_consumers:
         text = _surface_text(consumer)
         assert all(marker in text for marker in consumer["proof_markers"]), \
             consumer["id"]
+    excluded = consumers["tests-fixtures-generators-graph-excluded"]
+    assert excluded["binding"] == "negative mutation evidence"
 
     flow_paths = sorted((ROOT / "skills").glob("*/flow.json"))
     assert flow_paths
