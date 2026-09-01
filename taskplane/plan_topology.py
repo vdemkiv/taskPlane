@@ -536,6 +536,7 @@ _PHASE_ORDER = {
     "signoff": 7,
     "retro": 8,
     "done": 9,
+    "failed": 9,
 }
 
 

@@ -686,11 +686,15 @@ def _publication_problem(ws: str, publication: dict, result: dict) -> str | None
     html = (delivery.get("artifacts") or {}).get("html")
     if not isinstance(html, dict) or html.get("status") != "available":
         return "dashboard HTML artifact is unavailable"
-    if runtime_storage.load_workspace_locator(ws) is not None:
-        preservation = dashboard.get("run_artifacts")
-        if not isinstance(preservation, dict) or \
-                preservation.get("status") != "preserved":
-            return "dashboard/graph run-artifact preservation is degraded"
+    preservation = dashboard.get("run_artifacts")
+    preservation_required = \
+        runtime_storage.load_workspace_locator(ws) is not None or \
+        (isinstance(preservation, dict) and
+         preservation.get("status") != "unavailable")
+    if preservation_required and (
+            not isinstance(preservation, dict) or
+            preservation.get("status") != "preserved"):
+        return "dashboard/graph run-artifact preservation is degraded"
     return None
 
 

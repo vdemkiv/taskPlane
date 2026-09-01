@@ -1330,6 +1330,53 @@ def _authority_receipt_binding(state: Mapping[str, Any] | None) -> str | None:
     return None
 
 
+def _dashboard_candidate_values(
+        state: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Name a migrated legacy run's observed candidate without hiding baseline."""
+    if not isinstance(state, Mapping):
+        return {}
+    baseline = state.get("baseline")
+    if not isinstance(baseline, str) or not re.fullmatch(
+            r"[0-9a-f]{40}", baseline):
+        return {}
+    values: dict[str, Any] = {
+        "candidate_sha": baseline,
+        "baseline_sha": baseline,
+    }
+    try:
+        if __package__:
+            from . import run_artifacts
+        else:  # pragma: no cover - direct module loading
+            import run_artifacts  # type: ignore
+        binding = run_artifacts.validate_binding(
+            state.get("run_artifact_binding"))
+    except Exception:
+        return values
+    candidate = binding.get("candidate")
+    if not isinstance(candidate, Mapping) or candidate.get("schema") != \
+            "taskplane.legacy-terminal-observation/v1":
+        return values
+    observation = {key: candidate.get(key) for key in (
+        "schema", "run_id", "baseline", "observed_revision",
+        "workspace_fingerprint", "source_state_fingerprint",
+        "tasks_fingerprint", "execution_status",
+    )}
+    observed = observation["observed_revision"]
+    if candidate.get("fingerprint") != _canonical_fingerprint(observation) or \
+            observation["run_id"] != state.get("run_id") or \
+            observation["baseline"] != baseline or \
+            observation["execution_status"] != "unproven" or \
+            not isinstance(observed, str) or \
+            not re.fullmatch(r"[0-9a-f]{40}", observed):
+        return values
+    return {
+        **values,
+        "candidate_sha": observed,
+        "observed_revision": observed,
+        "candidate_execution_status": "unproven",
+    }
+
+
 def _next_dashboard_sequence(
         ws: str, source: dict[str, Any], *,
         publication_loader: Callable[..., Any],
@@ -1424,11 +1471,7 @@ def refresh_dashboard_snapshot(
         "graph_receipt": graph_receipt,
         "publication_epoch": publication_epoch,
     }
-    candidate_sha = (state or {}).get("baseline")
-    candidate_value = ({"candidate_sha": candidate_sha}
-                       if isinstance(candidate_sha, str) and
-                       re.fullmatch(r"[0-9a-f]{40}", candidate_sha)
-                       else {})
+    candidate_value = _dashboard_candidate_values(state)
     values = {
         "generated_at": _generated_at(committed_at),
         "settings_digest": settings_digest,

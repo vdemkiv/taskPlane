@@ -43,7 +43,8 @@ def test_design_graph_is_visible_from_design_onward(tmp_path):
     define = dashboard.phase_graph_projection(str(ws), _state("pm"), impact=impact)
     assert "design_graph" not in define
     for step in ("design", "design_approval", "plan", "plan_approval",
-                 "execute", "evaluate", "fix", "em", "signoff", "done"):
+                 "execute", "evaluate", "fix", "em", "signoff", "done",
+                 "failed"):
         projection = dashboard.phase_graph_projection(
             str(ws), _state(step), impact=impact)
         graph = projection["design_graph"]
@@ -61,7 +62,8 @@ def test_plan_task_dag_and_waves_are_visible_from_plan_onward(tmp_path):
         str(ws), _state("design_approval"), impact=impact)
     assert "plan_task_dag" not in design
     assert "plan_waves" not in design
-    for step in ("plan", "plan_approval", "execute", "em", "done"):
+    for step in ("plan", "plan_approval", "execute", "em", "done",
+                 "failed"):
         projection = dashboard.phase_graph_projection(
             str(ws), _state(step), impact=impact)
         dag = projection["plan_task_dag"]

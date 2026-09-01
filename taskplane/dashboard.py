@@ -5146,12 +5146,21 @@ def render_canonical_dashboard_snapshot(snapshot: Mapping[str, Any]) -> str:
     provenance_value = values.get("provenance")
     provenance = (provenance_value if isinstance(provenance_value, Mapping)
                   else {})
-    binding_rows = (
+    binding_rows = [
         ("run", snapshot.get("run_id")),
         ("requirement", provenance.get("requirement_id") or
          loop.get("requirement_id")),
         ("stage", stage),
         ("revision", snapshot.get("revision")),
+    ]
+    if values.get("baseline_sha"):
+        binding_rows.append(("baseline", values.get("baseline_sha")))
+    if values.get("candidate_sha"):
+        binding_rows.append(("observed candidate", values.get("candidate_sha")))
+    if values.get("candidate_execution_status"):
+        binding_rows.append(("candidate execution proof",
+                             values.get("candidate_execution_status")))
+    binding_rows.extend((
         ("settings", provenance.get("settings_digest") or
          values.get("settings_digest")),
         ("authority receipt", provenance.get("authority_receipt")),
@@ -5160,7 +5169,7 @@ def render_canonical_dashboard_snapshot(snapshot: Mapping[str, Any]) -> str:
          phase.get("fingerprint")),
         ("publication epoch", provenance.get("publication_epoch") or
          snapshot.get("sequence")),
-    )
+    ))
     binding = (
         '<section class="tp-sec" id="tp-canonical-provenance" '
         'aria-labelledby="tp-canonical-provenance-label"><p class="tp-kicker" '
