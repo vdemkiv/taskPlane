@@ -1665,6 +1665,16 @@ _DOC_VARS = """
 """
 
 
+def dashboard_document_style() -> str:
+    """Return the canonical palette required by durable dashboard HTML.
+
+    Inline hosts provide these tokens themselves.  The content-addressed
+    browser artifact does not have a host theme, so its document shell must
+    install this same palette before rendering the shared fragment.
+    """
+    return _DOC_VARS.strip()
+
+
 def inline_review_style() -> str:
     """Self-contained, root-scoped palette for Codex inline fragments."""
     return """

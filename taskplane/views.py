@@ -80,6 +80,7 @@ _write_delivery_artifact = host_native._write_delivery_artifact
 def deliver_dashboard(output_dir: str, model: Mapping, *,
                       inline_threshold: int = LARGE_DASHBOARD_INLINE_BYTES,
                       html_renderer=None,
+                      html_stylesheet: "str | None" = None,
                       host_acknowledgement: "Mapping | None" = None,
                       expected_head=_NO_EXPECTED_HEAD) -> dict:
     """Compatibility facade over the acyclic host delivery implementation."""
@@ -88,6 +89,7 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
         output_dir, model, inline_threshold=inline_threshold,
         inline_renderer=_dashboard.render_lossless_dashboard_inline,
         html_renderer=html_renderer,
+        html_stylesheet=html_stylesheet,
         host_acknowledgement=host_acknowledgement,
         expected_head=expected_head)
 def _transition_step(out: dict) -> str:
@@ -336,9 +338,9 @@ def refresh_views(ws: str, out: dict) -> dict:
         fragment_path = os.path.splitext(p)[0] + ".fragment.html"
         delivery_root = os.path.join(os.path.dirname(p), "dashboard-delivery")
         rendered: dict = {}
+        import dashboard as _dash
 
         def presentation(_canonical: str) -> str:
-            import dashboard as _dash
             fragment = _dash.report_widget(ws)
             canonical_model = json.loads(_canonical)
             canonical_values = canonical_model.get("values") \
@@ -356,6 +358,7 @@ def refresh_views(ws: str, out: dict) -> dict:
             delivery_root, _delivery_model(out),
             inline_threshold=LARGE_DASHBOARD_INLINE_BYTES,
             html_renderer=presentation,
+            html_stylesheet=_dash.dashboard_document_style(),
             host_acknowledgement=_delivery_host_acknowledgement(out))
         if delivery.get("inline"):
             inline = dict(delivery["inline"])
