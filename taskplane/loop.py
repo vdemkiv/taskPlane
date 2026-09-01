@@ -11535,6 +11535,211 @@ def _finalize_owned_run_cleanup(
 _WHOLE_RUN_TERMINAL_OUTCOMES = frozenset({
     "cancellation", "interruption", "handoff",
 })
+_RUN_CONTROL_STATE_FIELDS = (
+    "run_start_step", "run_stage_instance_id", "run_candidate_fingerprint",
+    "run_artifacts", "run_artifact_binding", "owned_cleanup_manifest",
+)
+_LEGACY_TERMINAL_MIGRATION_SCHEMA = \
+    "taskplane.legacy-terminal-control-plane-migration/v1"
+_LEGACY_TERMINAL_MIGRATION_FIELD = \
+    "legacy_terminal_control_plane_migration"
+
+
+def _legacy_terminal_task_statuses(state: Mapping[str, object]) -> list[dict]:
+    return [
+        {"id": str(task.get("id") or ""),
+         "status": str(task.get("status") or "pending")}
+        for task in state.get("tasks") or [] if isinstance(task, Mapping)
+    ]
+
+
+def _validate_legacy_terminal_migration(
+        state: Mapping[str, object], binding: Mapping[str, object]) \
+        -> dict | None:
+    receipt = state.get(_LEGACY_TERMINAL_MIGRATION_FIELD)
+    if receipt is None:
+        return None
+    fields = {
+        "schema", "run_id", "source_state_fingerprint", "baseline",
+        "observed_revision", "workspace_fingerprint", "settings_digest",
+        "absent_fields", "task_statuses_preserved", "tasks_fingerprint",
+        "execution_status", "artifact_binding_fingerprint",
+        "authority_fingerprint", "fingerprint",
+    }
+    if not isinstance(receipt, Mapping) or set(receipt) != fields or \
+            receipt.get("schema") != _LEGACY_TERMINAL_MIGRATION_SCHEMA:
+        raise ValueError(
+            "legacy terminal control-plane migration receipt is invalid")
+    material = {key: value for key, value in receipt.items()
+                if key != "fingerprint"}
+    task_statuses = _legacy_terminal_task_statuses(state)
+    tasks_fingerprint = hashlib.sha256(tp.canonical_json_bytes(
+        state.get("tasks") or [])).hexdigest()
+    if receipt.get("fingerprint") != _terminal_fingerprint(material) or \
+            receipt.get("run_id") != state.get("run_id") or \
+            receipt.get("baseline") != state.get("baseline") or \
+            receipt.get("settings_digest") != binding.get(
+                "settings_digest") or \
+            receipt.get("absent_fields") != list(_RUN_CONTROL_STATE_FIELDS) or \
+            receipt.get("task_statuses_preserved") != task_statuses or \
+            receipt.get("tasks_fingerprint") != tasks_fingerprint or \
+            receipt.get("execution_status") != "unproven" or \
+            receipt.get("artifact_binding_fingerprint") != binding.get(
+                "fingerprint"):
+        raise ValueError(
+            "legacy terminal control-plane migration receipt is stale")
+    candidate = binding.get("candidate")
+    if not isinstance(candidate, Mapping) or candidate.get(
+            "execution_status") != "unproven":
+        raise ValueError(
+            "legacy terminal migration candidate inferred execution")
+    return dict(receipt)
+
+
+def _migrate_legacy_terminal_control_plane(
+        ws: str, state: Mapping[str, object],
+        authority: Mapping[str, object]) -> dict:
+    """Mint only the evidence boundary needed to close one legacy run."""
+    present = [field for field in _RUN_CONTROL_STATE_FIELDS if field in state]
+    if present or _LEGACY_TERMINAL_MIGRATION_FIELD in state:
+        raise ValueError(
+            "legacy terminal control-plane state is partial or ambiguous")
+    if state.get("step") in TERMINAL_STEPS or any(
+            field in state for field in (
+                "whole_run_terminal", "terminal_outcome",
+                "terminal_artifacts", "terminal_cleanup", "retro")):
+        raise ValueError(
+            "legacy terminal migration requires an active untouched run")
+    run_id = str(state.get("run_id") or "").strip()
+    baseline = str(state.get("baseline") or "").strip()
+    settings_digest = str(state.get("settings_digest") or "").strip()
+    observed_revision = str(tp.git_head(ws) or "").strip()
+    if not run_id or re.fullmatch(r"[0-9a-f]{40,64}", baseline) is None or \
+            re.fullmatch(r"[0-9a-f]{64}", settings_digest) is None or \
+            re.fullmatch(r"[0-9a-f]{40,64}", observed_revision) is None:
+        raise ValueError(
+            "legacy terminal migration identity is incomplete")
+    baseline_check = tp._run(  # noqa: SLF001 - canonical Git evidence owner
+        ["git", "rev-parse", "--verify", f"{baseline}^{{commit}}"], cwd=ws)
+    if baseline_check.returncode != 0:
+        raise ValueError("legacy terminal migration baseline is unavailable")
+
+    source_state = _copy_json(state)
+    source_state_fingerprint = hashlib.sha256(
+        tp.canonical_json_bytes(source_state)).hexdigest()
+    workspace_fingerprint = tp.workspace_fingerprint(ws, baseline)
+    tasks_fingerprint = hashlib.sha256(tp.canonical_json_bytes(
+        state.get("tasks") or [])).hexdigest()
+    observation = {
+        "schema": "taskplane.legacy-terminal-observation/v1",
+        "run_id": run_id, "baseline": baseline,
+        "observed_revision": observed_revision,
+        "workspace_fingerprint": workspace_fingerprint,
+        "source_state_fingerprint": source_state_fingerprint,
+        "tasks_fingerprint": tasks_fingerprint,
+        "execution_status": "unproven",
+    }
+    candidate_fingerprint = hashlib.sha256(
+        tp.canonical_json_bytes(observation)).hexdigest()
+    candidate = {
+        **observation,
+        "id": f"legacy-terminal-observation:{run_id}",
+        "fingerprint": candidate_fingerprint,
+        "requirement": str(state.get("requirement_id") or ""),
+        "goal_fingerprint": hashlib.sha256(
+            str(state.get("goal") or "").encode("utf-8")).hexdigest(),
+    }
+    stage_instance_id = "legacy-terminal-" + hashlib.sha256(
+        tp.canonical_json_bytes({
+            "run_id": run_id, "candidate": candidate_fingerprint,
+            "settings_digest": settings_digest,
+        })).hexdigest()[:24]
+    identity = runtime_storage.resolve_repository_identity(ws)
+    binding = run_artifacts.create_binding(
+        repository_id=identity.repo_id, run_id=run_id,
+        stage_id="legacy-terminal-migration",
+        stage_instance_id=stage_instance_id, candidate=candidate,
+        settings_digest=settings_digest,
+        source_fingerprint=source_state_fingerprint)
+    artifact_root = _ensure_run_artifact_parent(ws, state)
+    manifest_path = os.path.join(artifact_root, run_artifacts.MANIFEST_NAME)
+    if not os.path.exists(manifest_path):
+        run_artifacts.create_manifest(artifact_root, binding=binding)
+    manifest = run_artifacts.load_manifest(artifact_root)
+    if manifest.get("binding") != binding:
+        raise run_artifacts.RunArtifactError(
+            "legacy terminal artifact manifest belongs to another binding")
+    run_artifacts.verify_manifest(
+        artifact_root, expected_binding=binding)
+    cleanup_manifest = _ensure_owned_cleanup_manifest(
+        ws, artifact_root, binding)
+    receipt_material = {
+        "schema": _LEGACY_TERMINAL_MIGRATION_SCHEMA,
+        "run_id": run_id,
+        "source_state_fingerprint": source_state_fingerprint,
+        "baseline": baseline, "observed_revision": observed_revision,
+        "workspace_fingerprint": workspace_fingerprint,
+        "settings_digest": settings_digest,
+        "absent_fields": list(_RUN_CONTROL_STATE_FIELDS),
+        "task_statuses_preserved": _legacy_terminal_task_statuses(state),
+        "tasks_fingerprint": tasks_fingerprint,
+        "execution_status": "unproven",
+        "artifact_binding_fingerprint": binding["fingerprint"],
+        "authority_fingerprint": authority.get("fingerprint"),
+    }
+    receipt = {**receipt_material,
+               "fingerprint": _terminal_fingerprint(receipt_material)}
+    fields = {
+        "run_start_step": "legacy-terminal-migration",
+        "run_stage_instance_id": stage_instance_id,
+        "run_candidate_fingerprint": candidate_fingerprint,
+        "run_artifacts": run_artifacts.manifest_locator_reference(),
+        "run_artifact_binding": binding,
+        "owned_cleanup_manifest": cleanup_manifest,
+        _LEGACY_TERMINAL_MIGRATION_FIELD: receipt,
+    }
+    with mutate(ws) as locked:
+        if locked is None or hashlib.sha256(tp.canonical_json_bytes(
+                locked)).hexdigest() != source_state_fingerprint:
+            raise ValueError(
+                "legacy terminal state changed during migration")
+        if any(field in locked for field in _RUN_CONTROL_STATE_FIELDS) or \
+                _LEGACY_TERMINAL_MIGRATION_FIELD in locked:
+            raise ValueError(
+                "legacy terminal control-plane state became ambiguous")
+        locked.update(fields)
+    migrated = load(ws)
+    if not isinstance(migrated, Mapping):
+        raise ValueError("legacy terminal migration lost its run")
+    checked = run_artifacts.validate_binding(
+        migrated.get("run_artifact_binding"))
+    _validate_legacy_terminal_migration(migrated, checked)
+    return checked
+
+
+def _terminal_run_artifact_binding(
+        ws: str, state: Mapping[str, object],
+        authority: Mapping[str, object]) -> dict:
+    present = [field for field in _RUN_CONTROL_STATE_FIELDS if field in state]
+    if not present:
+        return _migrate_legacy_terminal_control_plane(ws, state, authority)
+    if len(present) != len(_RUN_CONTROL_STATE_FIELDS):
+        raise ValueError(
+            "whole-run control-plane state is partial or ambiguous")
+    binding = run_artifacts.validate_binding(
+        state.get("run_artifact_binding"))
+    if state.get("run_artifacts") != \
+            run_artifacts.manifest_locator_reference() or \
+            state.get("run_stage_instance_id") != binding.get(
+                "stage_instance_id") or \
+            state.get("run_candidate_fingerprint") != (
+                binding.get("candidate") or {}).get("fingerprint") or \
+            not str(state.get("run_start_step") or "").strip() or \
+            not str(state.get("owned_cleanup_manifest") or "").strip():
+        raise ValueError(
+            "whole-run control-plane binding is inconsistent")
+    _validate_legacy_terminal_migration(state, binding)
+    return binding
 
 
 def _whole_run_terminal_paths(ws: str, state: Mapping[str, object]) \
@@ -11614,6 +11819,7 @@ def _validate_whole_run_terminal_intent(
         raise ValueError("whole-run terminal intent fingerprint is stale")
     binding = run_artifacts.validate_binding(
         state.get("run_artifact_binding"))
+    _validate_legacy_terminal_migration(state, binding)
     manifest = run_artifacts.load_manifest(_run_artifact_root(ws, state))
     candidate = str((binding.get("candidate") or {}).get("fingerprint") or "")
     if manifest.get("binding") != binding or \
@@ -11903,8 +12109,12 @@ def terminalize_run(ws: str, outcome: str, *, by: str) -> dict:
                 "step": state.get("step")}
     try:
         authority = _whole_run_terminal_authority(state, by=by)
-        binding = run_artifacts.validate_binding(
-            state.get("run_artifact_binding"))
+        binding = _terminal_run_artifact_binding(
+            ws, state, authority)
+        state = load(ws)
+        if state is None:
+            raise ValueError(
+                "whole-run terminal migration lost its active run")
         intent_material = {
             "schema": "taskplane.whole-run-terminal-intent/v1",
             "run_id": state["run_id"], "outcome": outcome,

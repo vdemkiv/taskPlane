@@ -1,4 +1,4 @@
-"""Installed-package journey for the 2.18.5 marketplace candidate.
+"""Installed-package journey for the 2.18.6 marketplace candidate.
 
 The journey executes extracted archives from an isolated directory.  It
 checks public behavior and schemas, not byte identity; the sole digest
@@ -17,7 +17,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "2.18.5"
+VERSION = "2.18.6"
 
 
 def _script_module(name: str):
@@ -176,7 +176,7 @@ role = design_host_transport.portable_role_reference("tp-lens")
 assert role["path"] == "agents/tp-lens.md"
 
 print(json.dumps({
-    "version": "2.18.5",
+    "version": "2.18.6",
     "settings_digest": configured.digest,
     "routing": routing["next"],
     "validation_layers": progression["completed"],

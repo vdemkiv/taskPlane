@@ -213,8 +213,8 @@ def test_release_gate_inspects_workflow_bytes_and_locked_dependencies(tmp_path):
 
 
 def test_current_candidate_has_an_explicit_nonrelease_predecessor():
-    disposition = gate.NOT_RELEASED["2.18.4"]
-    assert disposition["superseded_by"] == "2.18.5"
+    disposition = gate.NOT_RELEASED["2.18.5"]
+    assert disposition["superseded_by"] == "2.18.6"
     assert "never promoted" in disposition["reason"]
 
 
