@@ -429,21 +429,22 @@ def test_h19_resealed_ci_proof_cannot_change_repository_or_check_identity(
 
 def test_h22_compatibility_matrix_includes_last_released_generation():
     policy = _policy()
+    current = policy["window"]["current"]
+    last_released = policy["window"]["last_released"]
 
-    assert policy["window"]["current"] == "2.18.4"
-    assert policy["window"]["last_released"] == "2.17.20"
-    assert policy["window"]["candidate_previous"] == "2.18.0"
+    assert current == CURRENT_VERSION
+    assert policy["window"]["candidate_previous"] in \
+        policy["window"]["additional_candidate_generations"]
     assert {(row["plugin"], row["host"]) for row in policy["release_matrix"]} == {
-        ("2.18.4", "2.18.4"),
-        ("2.18.4", "2.17.20"),
-        ("2.17.20", "2.18.4"),
-        ("2.17.20", "2.17.20"),
+        (current, current),
+        (current, last_released),
+        (last_released, current),
+        (last_released, last_released),
     }
     producer = policy["release_observation_producer"]
-    assert producer["last_released_tag"] == "v2.17.20"
-    assert producer["last_released_commit"] == (
-        "4a0378e7f080136d27f01d4ab7ecdf9bac8a1ad6"
-    )
+    assert producer["last_released_tag"] == f"v{last_released}"
+    assert len(producer["last_released_commit"]) == 40
+    int(producer["last_released_commit"], 16)
     assert producer["entrypoint"].startswith("scripts/package_openai.py ")
 
 

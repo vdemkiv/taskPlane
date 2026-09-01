@@ -81,25 +81,27 @@ def test_ci_shards_cleanup_and_candidate_freeze_are_authoritative():
     assert plan["candidate_fingerprint"] == candidate["fingerprint"]
     assert plan["source_sha"] == candidate["source_sha"]
     assert plan["max_parallel"] >= 4
-    assert len(plan["matrices"]) <= 3
+    assert plan["validation_domains"] == [
+        "primary", "compatibility-quality-package", "browser",
+    ]
     assert plan["cancellation"] == {
         "group": "pull-request-482",
         "cancel_in_progress": True,
         "scope": "same-pr-heads-only",
     }
     assert plan["serializations"] == [
-        {"name": "package-index", "cells": ["package"]}
+        {
+            "name": "package-index", "cells": ["package"],
+            "reason": "package provenance consumes the built archive",
+        }
     ]
 
     occupied_selectors = set()
-    occupied_paths = set()
     for cell in plan["cells"]:
         assert cell["candidate_fingerprint"] == candidate["fingerprint"]
         assert cell["timeout_seconds"] <= 600
         assert not occupied_selectors.intersection(cell["selectors"])
-        assert not occupied_paths.intersection(cell["paths"])
         occupied_selectors.update(cell["selectors"])
-        occupied_paths.update(cell["paths"])
         assert cell["cleanup"]["registered_before_run"] is True
         assert cell["cleanup"]["outcomes"] == [
             "success",
@@ -134,8 +136,7 @@ def test_ci_metrics_meet_declared_targets():
 
     assert metrics["passed"] is True
     assert metrics["values"] == {
-        "first_matrix_hours": 1.5,
-        "matrix_count": 2,
+        "first_validation_hours": 1.5,
         "p50_minutes": 6.0,
         "p95_minutes": 8.0,
         "runner_minutes": 29.0,
@@ -175,7 +176,6 @@ def test_dashboard_browser_shard_is_disjoint_bounded_and_candidate_bound():
     }
     assert all(
         not set(browser["selectors"]).intersection(cell["selectors"])
-        and not set(browser["paths"]).intersection(cell["paths"])
         for cell in ordinary
     )
 

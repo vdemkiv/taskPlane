@@ -11,19 +11,17 @@ import copy
 import hashlib
 import json
 import re
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
+
+if __package__:
+    from .build_quality import VALIDATION_LAYERS
+else:  # pragma: no cover - direct CLI module loading
+    from build_quality import VALIDATION_LAYERS
 
 
 SCHEMA = "taskplane.test-strategy/v1"
 FAILURE_CLASSES = ("product", "test", "infrastructure", "environment")
 CORRECTION_FIELDS = ("class", "reason", "owner", "cluster")
-VALIDATION_LAYERS = (
-    "static",
-    "exact-selector",
-    "changed-radius",
-    "proportional-suite",
-    "authoritative-ci",
-)
 FINGERPRINT_INPUTS = (
     "source",
     "tests",
@@ -192,10 +190,27 @@ def validate_strategy(strategy: Mapping[str, Any]) -> dict[str, Any]:
                 edge.get("selector"), f"producer {producer_id} severed edge selector"
             )
 
-        fixtures = producer.get("interface_fixtures")
-        if not isinstance(fixtures, list) or not fixtures:
+        fixtures = producer.get("interface_fixtures", [])
+        interface_kind = producer.get("interface_kind")
+        if interface_kind is None:
+            # Compatibility for sealed v1 strategies: a declared fixture is
+            # an explicit serialized boundary, while no fixture is in-process.
+            interface_kind = "serialized" if fixtures else "in-process"
+        if interface_kind not in {"in-process", "serialized", "external"}:
+            raise StrategyContractError(
+                f"producer {producer_id} has an unknown interface kind"
+            )
+        if not isinstance(fixtures, list):
+            raise StrategyContractError(
+                f"producer {producer_id} interface fixtures must be a list"
+            )
+        if interface_kind in {"serialized", "external"} and not fixtures:
             raise StrategyContractError(
                 f"producer {producer_id} must name interface fixtures"
+            )
+        if interface_kind == "in-process" and fixtures:
+            raise StrategyContractError(
+                f"producer {producer_id} in-process interface must use a real consumer journey"
             )
         for fixture in fixtures:
             if not isinstance(fixture, Mapping) or not isinstance(
@@ -237,69 +252,3 @@ def validate_strategy(strategy: Mapping[str, Any]) -> dict[str, Any]:
     if strategy.get("contract_fingerprint_sha256") != expected_contract:
         raise StrategyContractError("test strategy has a stale contract fingerprint")
     return copy.deepcopy(dict(strategy))
-
-
-def classify_failures(
-    strategy: Mapping[str, Any], failures: Iterable[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
-    """Open the correction gate only after complete direct-failure inventory."""
-
-    validate_strategy(strategy)
-    classified: list[dict[str, Any]] = []
-    for index, failure in enumerate(failures):
-        row = dict(failure)
-        missing = [field for field in CORRECTION_FIELDS if not row.get(field)]
-        if missing:
-            missing_text = ", ".join(missing)
-            raise StrategyContractError(
-                f"failure {index} must be classified before correction; missing {missing_text}"
-            )
-        if row["class"] not in FAILURE_CLASSES:
-            raise StrategyContractError(
-                f"failure {index} has unknown class {row['class']!r}"
-            )
-        row["correction_allowed"] = True
-        classified.append(row)
-    return classified
-
-
-def advance_validation(
-    strategy: Mapping[str, Any],
-    layer: str,
-    *,
-    candidate_sha: str,
-    prior: Mapping[str, Any] | None = None,
-    unchanged_green_fingerprint: str | None = None,
-) -> dict[str, Any]:
-    """Advance one layer for one frozen candidate, never skipping or rerunning."""
-
-    validated = validate_strategy(strategy)
-    if layer not in VALIDATION_LAYERS:
-        raise StrategyContractError(f"unknown validation layer {layer!r}")
-    if not re.fullmatch(r"[0-9a-f]{40,64}", candidate_sha):
-        raise StrategyContractError("candidate SHA must be a full hexadecimal SHA")
-    completed = list(prior.get("completed", [])) if prior else []
-    prior_sha = prior.get("candidate_sha") if prior else candidate_sha
-    if prior_sha != candidate_sha:
-        raise StrategyContractError(
-            "authoritative CI matrix and all prior layers must use one frozen candidate SHA"
-        )
-    expected_layer = VALIDATION_LAYERS[len(completed)] if len(completed) < 5 else None
-    if layer != expected_layer:
-        raise StrategyContractError(
-            f"validation must advance to {expected_layer!r}, not {layer!r}"
-        )
-    completed.append(layer)
-    cited = list(prior.get("cited_unchanged_green", [])) if prior else []
-    if unchanged_green_fingerprint:
-        cited.append({"layer": layer, "fingerprint": unchanged_green_fingerprint})
-    authoritative = layer == "authoritative-ci"
-    return {
-        "schema": "taskplane.validation-evidence/v1",
-        "candidate_sha": candidate_sha,
-        "strategy_fingerprint": validated["contract_fingerprint_sha256"],
-        "completed": completed,
-        "cited_unchanged_green": cited,
-        "authoritative": authoritative,
-        "matrix_runs": 1 if authoritative else 0,
-    }

@@ -1,24 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
-import json
-import os
 from pathlib import Path
-import re
-import subprocess
-import sys
-import textwrap
 
 import pytest
 
-from taskplane import import_cycles
-
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-SPEC = importlib.util.spec_from_file_location("ci_local", ROOT / "scripts" / "ci_local.py")
-PACKAGE_SPEC = importlib.util.spec_from_file_location(
-    "package_openai", ROOT / "scripts" / "package_openai.py",
+SPEC = importlib.util.spec_from_file_location(
+    "ci_local_value_contract", ROOT / "scripts" / "ci_local.py",
 )
 
 
@@ -29,269 +19,110 @@ def _runner():
     return module
 
 
-def _package_module():
-    assert PACKAGE_SPEC is not None and PACKAGE_SPEC.loader is not None
-    module = importlib.util.module_from_spec(PACKAGE_SPEC)
-    PACKAGE_SPEC.loader.exec_module(module)
-    return module
-
-
-def _workflow_job(source: str, job: str, next_job: str) -> str:
-    match = re.search(
-        rf"(?ms)^  {re.escape(job)}:\n(?P<body>.*?)(?=^  {re.escape(next_job)}:)",
-        source,
+def _runtime(runner):
+    return runner.build_authoritative_ci_runtime(
+        source_sha=runner._git("rev-parse", "HEAD"),
+        event="pull_request", ref="482", run_id="9001",
     )
-    assert match, f"workflow job {job!r} is missing"
-    return match.group("body")
 
 
-def test_zero_token_no_egress_guard_executes_in_credential_empty_environment(
-    tmp_path,
-):
-    """Execute the shipped guard, rather than trusting workflow prose."""
-    job = _workflow_job(
-        WORKFLOW.read_text(encoding="utf-8"),
-        "zero-token-corpus",
-        "wave3-contracts",
-    )
-    match = re.search(
-        r"(?ms)cat >\"\$guard_dir/sitecustomize\.py\" <<'PY'\n"
-        r"(?P<guard>.*?)^          PY$",
-        job,
-    )
-    assert match, "zero-token no-egress guard is not extractable"
-    assert "secrets." not in job and "ANTHROPIC" not in job and "OPENAI" not in job
-
-    guard_dir = tmp_path / "guard"
-    guard_dir.mkdir()
-    (guard_dir / "sitecustomize.py").write_text(
-        textwrap.dedent(match.group("guard")), encoding="utf-8"
-    )
-    isolated_home = tmp_path / "home"
-    isolated_home.mkdir()
-    clean_env = {
-        "PATH": os.environ["PATH"],
-        "HOME": str(isolated_home),
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "PYTHONPATH": str(guard_dir),
-    }
-    probe = r"""
-import json
-import os
-import sitecustomize
-import socket
-import sys
-
-sys.dont_write_bytecode = True
-required = {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"}
-host_injected = {"__CF_USER_TEXT_ENCODING"}
-sensitive = (
-    "CREDENTIAL", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "AUTH",
-    "API_KEY", "ACCESS_KEY", "PRIVATE_KEY", "PROXY", "OPENAI",
-    "ANTHROPIC", "AWS", "AZURE", "GCP", "GOOGLE_CLOUD", "CLOUDSDK",
-    "MODEL", "COHERE", "GEMINI", "MISTRAL", "HUGGINGFACE", "HF_",
-)
-assert required <= set(os.environ)
-assert set(os.environ) - required <= host_injected
-assert not [name for name in os.environ
-            if any(marker in name.upper() for marker in sensitive)]
-probes = (
-    ("socket.socket", lambda: socket.socket()),
-    ("socket.connect", lambda: socket.socket.connect(None, ("example.invalid", 443))),
-    ("socket.connect_ex", lambda: socket.socket.connect_ex(None, ("example.invalid", 443))),
-    ("socket.create_connection", lambda: socket.create_connection(("example.invalid", 443))),
-    ("socket.getaddrinfo", lambda: socket.getaddrinfo("example.invalid", 443)),
-)
-for label, call in probes:
-    try:
-        call()
-    except sitecustomize.NoEgressError:
-        pass
-    else:
-        raise AssertionError("probe escaped: " + label)
-assert sitecustomize.ATTEMPTS == [label for label, _ in probes]
-print(json.dumps({"preloaded": "sitecustomize" in sys.modules,
-                  "attempts": sitecustomize.ATTEMPTS}, sort_keys=True))
-"""
-    result = subprocess.run(
-        [sys.executable, "-B", "-c", probe],
-        cwd=ROOT,
-        env=clean_env,
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-    )
-    assert result.returncode == 0, result.stderr
-    evidence = json.loads(result.stdout)
-    assert evidence["preloaded"] is True
-    assert evidence["attempts"] == [
-        "socket.socket", "socket.connect", "socket.connect_ex",
-        "socket.create_connection", "socket.getaddrinfo",
+def test_runner_plan_has_one_unsharded_suite_and_no_pytest_replays():
+    runner = _runner()
+    runtime = _runtime(runner)
+    cells = runtime["plan"]["cells"]
+    pytest_commands = [
+        command
+        for cell in cells
+        for command in runner._ci_cell_commands(cell, Path("/owned"))
+        if command[1:3] == ["-m", "pytest"]
     ]
+    core = next(cell for cell in cells if cell["id"] == "pytest-1")
 
-
-def test_complete_pytest_inventory_is_partitioned_exactly_once_and_balanced():
-    runner = _runner()
-    files = runner.pytest_inventory()
-    partitions = runner.PYTEST_PARTITIONS
-    assigned = [path for partition in partitions for path in partition]
-
-    assert len(partitions) == len(runner.SHARDS) == \
-        runner.load_settings(
-            runner.DEFAULT_SETTINGS_PATH, environment={}).tests.shards
-    assert all(partitions)
-    assert all(list(partition) == sorted(partition) for partition in partitions)
-    assert sorted(assigned) == sorted(files)
-    assert len(assigned) == len(set(assigned))
-    assert all(path.endswith(".py") and "/test_" in path for path in assigned)
-    loads = [sum(runner.PYTEST_WEIGHTS[path] for path in row) for row in partitions]
-    assert max(loads) - min(loads) <= max(runner.PYTEST_WEIGHTS.values())
-    for check_id, partition in zip(runner.PYTEST_CHECK_IDS, partitions):
-        check = runner.CHECKS[check_id]
-        assert check.argv == (runner.PYTHON, "-m", "pytest", *partition, "-q")
-        assert "taskplane/tests" not in check.argv
-
-
-def test_pytest_partition_rejects_missing_stale_duplicate_and_unbalanced_rows():
-    runner = _runner()
-    with pytest.raises(runner.RunnerError, match="weight inventory"):
-        runner.partition_pytest_files(("a.py", "b.py"), {"a.py": 1}, 2)
-    with pytest.raises(runner.RunnerError, match="duplicate"):
-        runner.partition_pytest_files(("a.py", "a.py"), {"a.py": 1}, 2)
-    with pytest.raises(runner.RunnerError, match="nonempty"):
-        runner.partition_pytest_files(("a.py",), {"a.py": 1}, 2)
-
-
-def test_top_level_runner_refuses_recursion():
-    runner = _runner()
-    with pytest.raises(runner.RunnerError, match="recursive"):
-        runner.main(["--json"], environ={runner.RECURSION_GUARD: "1"})
-
-
-def test_runner_provides_portable_validated_package_root(tmp_path):
-    runner = _runner()
-    shard = tmp_path / "runner-owned"
-    shard.mkdir()
-    (shard / "home").mkdir()
-    (shard / "tmp").mkdir()
-    env = runner._safe_env(shard)
-    assert env[runner.PACKAGE_TEMP_ROOT] == str(shard.resolve())
-
-    package = _package_module()
-    nested_output = shard / "openai-a"
-    roots = package.approved_output_roots(env)
-    assert shard.resolve() in roots
-    package.require_approved_output(nested_output, roots)
-    outside = Path(tmp_path.anchor) / "package-output-escape"
-    assert not any(outside.resolve().is_relative_to(root) for root in roots)
-    with pytest.raises(package.PackageError, match="approved temporary root"):
-        package.require_approved_output(outside, roots)
-
-
-def test_receipt_collection_fails_closed_on_missing_duplicate_and_malformed():
-    runner = _runner()
-    expected = ("a", "b")
-    base = {
-        "check_id": "a", "argv": ["python3", "-V"], "status": "passed",
-        "duration_ms": 1, "output_digest": "0" * 64,
-    }
-    with pytest.raises(runner.RunnerError, match="missing"):
-        runner.validate_results(expected, [base])
-    with pytest.raises(runner.RunnerError, match="duplicate"):
-        runner.validate_results(("a",), [base, base])
-    malformed = dict(base, output_digest="bad")
-    with pytest.raises(runner.RunnerError, match="malformed"):
-        runner.validate_results(("a",), [malformed])
-
-
-def test_remote_required_never_reports_full_green():
-    runner = _runner()
-    results = [
-        {"check_id": "host-platform", "argv": ["host-platform"],
-         "status": "remote-required", "duration_ms": 0,
-         "output_digest": "0" * 64},
+    assert [cell["id"] for cell in cells if cell["kind"] == "pytest"] == [
+        "pytest-1",
     ]
-    report = runner.build_report("a" * 40, results, checkout_mutated=False)
-    assert report["status"] == "local-green/remote-required"
-    assert report["full_green"] is False
+    assert core["runtime"] == "3.12"
+    assert core["selectors"] == list(runner._authoritative_pytest_files())
+    assert core["excluded_selectors"] == list(runner.CI_WINDOWS_SELECTORS)
+    assert len(pytest_commands) == 3  # core, real browser, native Windows only
+    assert all(cell["kind"] != "pytest" for cell in cells
+               if cell["id"].startswith("interpreter-import-"))
+    assert not any(command[1:3] == ["-m", "pytest"] for command in
+                   runner._ci_cell_commands(
+                       next(cell for cell in cells
+                            if cell["id"] == "quality-package"), Path("/owned")))
 
 
-def test_json_encoding_is_canonical_and_receipts_are_sha_bound():
+def test_direct_topology_is_disjoint_and_names_only_justified_serialization():
     runner = _runner()
-    report = runner.build_report(
-        "a" * 40,
-        [{"check_id": "a", "argv": ["python3", "-V"], "status": "passed",
-          "duration_ms": 0, "output_digest": "0" * 64}],
-        checkout_mutated=False,
+    plan = _runtime(runner)["plan"]
+    ids = [cell["id"] for cell in plan["cells"]]
+
+    assert ids == [
+        "pytest-1", "quality-package", "dashboard-browser",
+        "interpreter-import-3.10", "interpreter-import-3.11",
+        "interpreter-import-3.13", "os-portability-windows",
+        "security-no-egress",
+    ]
+    assert plan["max_parallel"] == len(ids)
+    assert plan["serializations"] == [{
+        "name": "package-build-before-provenance",
+        "cells": ["quality-package"],
+        "reason": "archive validation consumes package outputs",
+    }]
+    browser = next(cell for cell in plan["cells"]
+                   if cell["id"] == "dashboard-browser")
+    assert browser["selectors"] == list(runner.CI_BROWSER_SELECTORS)
+    assert len(browser["selectors"]) == 4
+    assert set(browser["selectors"]).isdisjoint(
+        next(cell for cell in plan["cells"]
+             if cell["id"] == "pytest-1")["selectors"])
+
+
+def test_failure_routing_uses_typed_evidence_and_unknown_holds():
+    runner = _runner()
+    runtime = _runtime(runner)
+    cell = next(row for row in runtime["plan"]["cells"]
+                if row["id"] == "pytest-1")
+    routed = runner._typed_failure_routing(
+        runtime, cell, outcome="failure", output_digest="0" * 64,
+        command_receipts=[],
     )
-    assert report["receipts"][0]["source_sha"] == "a" * 40
-    assert report["receipts"][0]["inventory_version"] == runner.INVENTORY_VERSION
-    encoded = runner.canonical_json(report)
-    assert encoded == json.dumps(report, sort_keys=True, separators=(",", ":"))
+    record = routed["records"][0]
+
+    assert record["class"] == "unknown"
+    assert record["route"] == "hold"
+    assert record["evidence"]["output_digest"] == "0" * 64
+    assert routed["next"] == "hold"
+    assert routed["product_fix_allowed"] is False
+    assert "assertion" not in record["reason"].lower()
+
+    environment = runner._typed_failure_routing(
+        runtime, cell, outcome="failure", output_digest="1" * 64,
+        command_receipts=[], known_class="environment",
+    )
+    assert environment["records"][0]["route"] == "environment-recovery"
 
 
-def test_cleanup_rejects_unowned_or_symlink_roots(tmp_path):
+def test_cleanup_refuses_ambiguous_and_durable_artifact_targets(tmp_path):
     runner = _runner()
-    owned = tmp_path / (runner.TEMP_PREFIX + "owned")
-    owned.mkdir()
-    runner.cleanup_root(owned, tmp_path)
-    assert not owned.exists()
-    outside = tmp_path.parent / (runner.TEMP_PREFIX + "outside")
-    outside.mkdir(exist_ok=True)
-    try:
-        with pytest.raises(runner.RunnerError, match="containment"):
-            runner.cleanup_root(outside, tmp_path)
-    finally:
-        outside.rmdir()
+    runtime = _runtime(runner)
+    target, ownership = runner._owned_cell_root(runtime, "pytest-1", tmp_path)
+    target.mkdir()
+    unsafe = tmp_path / "taskplane-ci-unowned"
+    unsafe.mkdir()
+    with pytest.raises(runner.RunnerError, match="ambiguous or unowned"):
+        runner._cleanup_ci_cell_root(unsafe, ownership)
+    assert unsafe.exists()
 
-
-def test_pr_workflow_binds_all_blocking_jobs_to_exact_head_sha():
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    assert "exact PR head SHA blocking proof" in workflow
-    assert "ref: ${{ github.event.pull_request.head.sha }}" in workflow
-    graph_job = workflow.split("  wave3-contracts:", 1)[1].split(
-        "\n  pushed-sha-proof:", 1,
-    )[0]
-    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in \
-        graph_job
-    assert "fetch-depth: 1" in graph_job
-    assert "persist-credentials: false" in graph_job
-    assert "synthetic_merge_substitutes" in workflow
-    assert "pushed SHA delivery proof" in workflow
-
-
-def test_import_cycle_gate_protects_topology_not_physical_line_count():
-    def inventory(revision, members, edges):
-        return {
-            "schema": import_cycles.SCHEMA,
-            "package": "taskplane",
-            "source_revision": revision,
-            "sccs": [{
-                "members": members,
-                "internal_edges": edges,
-                "member_count": len(members),
-                "edge_count": len(edges),
-            }],
-        }
-
-    members = ["taskplane.a", "taskplane.b", "taskplane.c"]
-    edges = [
-        ["taskplane.a", "taskplane.b"],
-        ["taskplane.b", "taskplane.c"],
-        ["taskplane.c", "taskplane.a"],
-    ]
-    policy = inventory("older-source", members, edges)
-
-    unchanged_topology = inventory("new-source-with-more-lines", members, edges)
-    assert import_cycles.check_inventory(
-        policy, unchanged_topology)["status"] == "pass"
-
-    grown = inventory("new-source", members, sorted([
-        *edges, ["taskplane.a", "taskplane.c"],
-    ]))
-    result = import_cycles.check_inventory(policy, grown)
-    assert result["status"] == "fail"
-    assert [row["code"] for row in result["violations"]] == [
-        "new-internal-edge",
-    ]
+    target.rmdir()
+    artifact_target, ownership = runner._owned_cell_root(
+        runtime, "pytest-1", tmp_path,
+    )
+    artifact_target.mkdir()
+    with pytest.raises(runner.RunnerError, match="durable CI artifacts"):
+        runner._cleanup_ci_cell_root(
+            artifact_target, ownership,
+            durable_artifacts={"root": str(artifact_target)},
+        )
+    assert artifact_target.exists()

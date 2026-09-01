@@ -123,6 +123,7 @@ def test_dashboard_refresh_policy_has_one_settings_owner_and_digest(
     assert settings.dashboard.refresh.replay_on_session_start is True
     assert "gate" in settings.dashboard.refresh.lifecycle_events
     assert "worker_terminal" in settings.dashboard.refresh.lifecycle_events
+    assert "terminalize_run" in settings.dashboard.refresh.lifecycle_events
     assert _DIGEST.fullmatch(settings.digest)
 
     host_contract = json.loads((ROOT / "hooks" / "host-native.json").read_text(

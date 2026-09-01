@@ -17,10 +17,12 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import dashboard  # noqa: E402
+import host_native  # noqa: E402
 import loop  # noqa: E402
 import loop_status  # noqa: E402
 import settings as operational_settings  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
+import views  # noqa: E402
 
 
 def _git(ws, *a):
@@ -51,7 +53,12 @@ class TestAutoRender(unittest.TestCase):          # AC1
         self.assertIn("dashboard", out)
         p = os.path.join(tp.tp_dir(ws), "dashboard.html")
         self.assertTrue(os.path.exists(p))
-        self.assertIn("mission control", open(p, encoding="utf-8").read())
+        with open(p, "rb") as stream:
+            rendered = host_native.decode_dashboard_artifact(
+                "html", stream.read())
+        self.assertEqual(rendered, out["dashboard_snapshot"]["snapshot"])
+        self.assertEqual(rendered["values"]["loop"]["step"], "plan")
+        self.assertNotIn("phase_graph_error", rendered["values"])
 
     def test_next_action_refreshes_fragment(self):
         ws = _repo(self.tmp)
@@ -109,6 +116,39 @@ class TestAutoRender(unittest.TestCase):          # AC1
                              ["replan", "resolve", "gate"])
         finally:
             loop_status.refresh_dashboard_snapshot = original
+
+    def test_committed_transition_blocks_next_mutation_until_exact_replay(self):
+        ws = _repo(self.tmp)
+        loop.init(ws, "g")
+        os.makedirs(os.path.join(ws, "specs"), exist_ok=True)
+        open(os.path.join(ws, "specs", "spec.md"), "w",
+             encoding="utf-8").write("# spec\n")
+        real_refresh = views.refresh_views
+
+        def broken(_ws, out):
+            out["dashboard"] = {
+                "path": "unavailable", "error": "renderer unavailable"}
+            return out
+
+        views.refresh_views = broken
+        try:
+            committed = loop.gate(ws, "pass")
+            self.assertEqual(loop.load(ws)["step"], "plan")
+            self.assertEqual(
+                committed["dashboard_refresh"]["status"], "blocked")
+            self.assertTrue(loop.status(ws)["dashboard_publication"][
+                "replay_required"])
+
+            refused = loop.next_action(ws)
+            self.assertIn("replay is required", refused["error"])
+            self.assertEqual(loop.load(ws)["step"], "plan")
+        finally:
+            views.refresh_views = real_refresh
+
+        resumed = loop.next_action(ws)
+        self.assertNotIn("error", resumed)
+        self.assertEqual(resumed["dashboard_replay"]["status"], "replayed")
+        self.assertNotIn("dashboard_publication", loop.status(ws))
 
 
 class TestJourney(unittest.TestCase):             # AC2

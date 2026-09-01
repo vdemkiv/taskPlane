@@ -28,6 +28,11 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping, Sequence, TYPE_CHECKING
 
+try:
+    from . import wave_metrics
+except ImportError:  # pragma: no cover - direct module loading
+    import wave_metrics  # type: ignore
+
 if TYPE_CHECKING:
     from .host_capabilities import SurfaceSelection
 else:
@@ -477,7 +482,10 @@ def _dashboard_freshness_controller(rendered_head: Mapping[str, Any],
         '.toLowerCase();return !["inspect","view","details","export",'
         '"inspection"].includes(kind);});}'
         'function state(name,reason,enabled){root.dataset.dashboardFreshness=name;'
-        'root.dataset.dashboardFreshnessReason=reason||"";mutations().forEach('
+        'root.dataset.dashboardFreshnessReason=reason||"";var notice='
+        'document.getElementById("tp-dashboard-freshness-status");if(notice){'
+        'notice.dataset.status=name;notice.textContent="Dashboard "+name+": "+'
+        '(reason||"status unavailable");}mutations().forEach('
         'function(item){item.disabled=!enabled;item.setAttribute("aria-disabled",'
         'enabled?"false":"true");});}'
         'function sameIdentity(head){return ["workflow_id","run_id","target",'
@@ -538,6 +546,11 @@ def _embedded_html(body: str, canonical: bytes, *,
         '<title>Taskplane dashboard</title>' + style + '</head><body '
         'data-dashboard-delivery-root="true" data-dashboard-freshness="'
         + ("fresh" if actions_enabled else "unverified") + '">'
+        + '<div id="tp-dashboard-freshness-status" role="status" '
+          'aria-live="polite" data-status="'
+        + ("fresh" if actions_enabled else "unverified") + '">Dashboard '
+        + ("fresh: embedded host acknowledgement verified" if actions_enabled
+           else "unverified: dashboard head has not been verified") + '</div>'
         + body
         + '<script type="application/x-taskplane-json-base64" '
           f'data-taskplane-canonical="true">{encoded}</script>'
@@ -870,6 +883,17 @@ def _load_current_head(path: str) -> dict[str, Any] | None:
     return value
 
 
+def dashboard_current_head(root: str) -> dict[str, Any] | None:
+    """Read the durable head a publisher will compare in its CAS.
+
+    The returned receipt fingerprint is an observation, not authority.  A
+    caller passes it back as ``expected_head`` and the commit rechecks it
+    while holding the current-pointer lock.
+    """
+    return _load_current_head(os.path.join(os.path.abspath(root),
+                                           "current.json"))
+
+
 def _commit_current_head(
         root: str, head: Mapping[str, Any], *, expected_head: object,
 ) -> dict[str, Any]:
@@ -893,9 +917,12 @@ def _commit_current_head(
         if current is not None:
             same_identity = all(current.get(key) == head.get(key)
                                 for key in _DASHBOARD_HEAD_IDENTITY_KEYS)
-            if same_identity and current.get("sequence", -1) > head["sequence"]:
+            # Dashboard snapshot sequence is the publication epoch.  It is
+            # monotonic across runs, so a delayed prior-run writer can never
+            # replace the current run merely by changing identity fields.
+            if current.get("sequence", -1) > head["sequence"]:
                 raise ValueError("dashboard current pointer refuses stale sequence")
-            if (same_identity and current.get("sequence") == head["sequence"]
+            if (current.get("sequence") == head["sequence"]
                     and current.get("snapshot_fingerprint") !=
                     head["snapshot_fingerprint"]):
                 raise ValueError(
@@ -1237,6 +1264,7 @@ def _bounded_loop_values(
     ]
     return {
         "goal": state.get("goal"), "step": state.get("step"),
+        "requirement_id": state.get("requirement_id"),
         "current_task": state.get("current_task"), "tasks": tasks,
         **({"stage_view": copy.deepcopy(state["stage_view"])}
            if isinstance(state.get("stage_view"), dict) else {}),
@@ -1254,7 +1282,7 @@ def _phase_graph_values(
         if not callable(project):
             return {"phase_graph_error":
                     "phase graph projector is not configured"}
-        values = project(ws, state=state)
+        values = project(ws, state=state, require_bound=True)
         return {key: copy.deepcopy(values[key]) for key in (
             "design_graph", "plan_task_dag", "plan_waves", "module_impact")
             if key in values}
@@ -1269,7 +1297,13 @@ def _wave_metrics_values(
 ) -> dict[str, Any]:
     """Project the sealed receipt already present in the one selected state."""
     if not isinstance(state, dict) or state.get("wave_metrics_receipt") is None:
-        return {}
+        reason = "sealed terminal wave metrics receipt is unavailable"
+        unavailable = ((state or {}).get("wave_metrics_unavailable")
+                       if isinstance(state, dict) else None)
+        if isinstance(unavailable, dict) and unavailable.get("reason"):
+            reason = str(unavailable["reason"])
+        return {"wave_metrics": wave_metrics.unavailable_consumer_projection(
+            consumer="dashboard", reason=reason)}
     try:
         return {"wave_metrics": metrics_projector(
             state["wave_metrics_receipt"], consumer="dashboard")}
@@ -1281,6 +1315,21 @@ def _wave_metrics_values(
         }}
 
 
+def _authority_receipt_binding(state: Mapping[str, Any] | None) -> str | None:
+    """Return one non-secret authority receipt identity, when available."""
+    if not isinstance(state, Mapping):
+        return None
+    receipt = state.get("authority_receipt")
+    if isinstance(receipt, Mapping):
+        claimed = receipt.get("fingerprint") or receipt.get("receipt_id")
+        if isinstance(claimed, str) and claimed.strip():
+            return claimed.strip()
+        return _canonical_fingerprint(receipt)
+    if isinstance(receipt, str) and receipt.strip():
+        return receipt.strip()
+    return None
+
+
 def _next_dashboard_sequence(
         ws: str, source: dict[str, Any], *,
         publication_loader: Callable[..., Any],
@@ -1289,10 +1338,9 @@ def _next_dashboard_sequence(
     if prior is None:
         return 1
     current = HostSurfaceSnapshot.from_dict(prior["current"])
-    same_run = (current.workflow_id == "taskplane-loop" and
-                current.run_id == source["run_id"] and
-                current.target == source["target"])
-    return current.sequence + 1 if same_run else 1
+    # This is a publication epoch, not an identity-local counter.  Keeping it
+    # global makes delayed data from a prior run mechanically older.
+    return current.sequence + 1
 
 
 def _publication(
@@ -1353,6 +1401,29 @@ def refresh_dashboard_snapshot(
     metrics_values = _wave_metrics_values(
         state, metrics_projector=metrics_projector,
         error_formatter=error_formatter)
+    phase_values = _phase_graph_values(
+        ws, state, projector=graph_projector,
+        error_formatter=error_formatter)
+    publication_epoch = _next_dashboard_sequence(
+        ws, source, publication_loader=publication_loader)
+    graph_components = {
+        key: phase_values[key] for key in _DASHBOARD_GRAPH_KEYS
+        if isinstance(phase_values.get(key), Mapping)
+    }
+    graph_receipt = (_canonical_fingerprint(graph_components)
+                     if graph_components else None)
+    provenance = {
+        "schema": "taskplane.dashboard-provenance/v1",
+        "run_id": str(source["run_id"]),
+        "requirement_id": str((state or {}).get("requirement_id") or
+                              "unavailable"),
+        "stage": stage,
+        "revision": str(source.get("revision") or source_fingerprint),
+        "settings_digest": settings_digest,
+        "authority_receipt": _authority_receipt_binding(state),
+        "graph_receipt": graph_receipt,
+        "publication_epoch": publication_epoch,
+    }
     candidate_sha = (state or {}).get("baseline")
     candidate_value = ({"candidate_sha": candidate_sha}
                        if isinstance(candidate_sha, str) and
@@ -1367,15 +1438,12 @@ def refresh_dashboard_snapshot(
         "event_type": str(event_type), "outcome": outcome,
         **candidate_value,
         "loop": _bounded_loop_values(state),
-        **_phase_graph_values(
-            ws, state, projector=graph_projector,
-            error_formatter=error_formatter),
+        **phase_values,
+        "provenance": provenance,
         **metrics_values,
     }
     safe_actions: tuple[str, ...] = ()
-    metrics_receipt_present = isinstance(state, dict) and \
-        state.get("wave_metrics_receipt") is not None
-    metrics_signoff_ready = not metrics_receipt_present or \
+    metrics_signoff_ready = \
         ((metrics_values.get("wave_metrics") or {}).get("signoff") or {}).get(
             "ready") is True
     if healthy and stage in {"design_approval", "plan_approval"}:
@@ -1388,8 +1456,7 @@ def refresh_dashboard_snapshot(
     snapshot = HostSurfaceSnapshot.create(
         workflow_id="taskplane-loop", run_id=str(source["run_id"]),
         target=str(source["target"]), revision=revision,
-        sequence=_next_dashboard_sequence(
-            ws, source, publication_loader=publication_loader), stage=stage,
+        sequence=publication_epoch, stage=stage,
         state=stage if healthy else str(source["status"]), values=values,
         evidence=evidence, safe_actions=safe_actions)
     committed = snapshot_committer(ws, snapshot)
@@ -1402,9 +1469,10 @@ def refresh_dashboard_snapshot(
         replayed=bool(committed.get("replayed")),
         status=str(source["status"]))
 HOST_DASHBOARD_COMPONENTS = (
-    "workflow", "dor", "dependency_impact", "agents", "lenses",
+    "provenance", "workflow", "dor", "dependency_impact", "design_graph",
+    "plan_task_dag", "plan_waves", "module_impact", "agents", "lenses",
     "criteria", "findings", "validation", "artifacts", "wave_metrics",
-    "gate",
+    "gate", "loop",
 )
 
 

@@ -113,6 +113,7 @@ _STRICT_GRAPH_QUALITY = contextvars.ContextVar(
     "taskplane_strict_graph_quality", default=False)
 
 GRAPH_SCAN_QUALITY_SCHEMA = "taskplane.graph-scan-quality/v1"
+DESIGN_DECOMPOSITION_SCHEMA = "taskplane.design-decomposition-receipt/v1"
 GRAPH_SCAN_RECOVERY = (
     "repair the named source/producer and rerun `tp graph scan --strict`")
 ARCHITECTURE_MAP_SCHEMA = "taskplane.architecture-map-proof/v1"
@@ -854,6 +855,267 @@ def scan(ws: str, decompose: bool = False, *, strict: bool = False) -> dict:
     return graph
 
 
+def _canonical_fingerprint(value: object) -> str:
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def _safe_context_pattern(value: object) -> str:
+    """Validate one repository-relative pattern without touching the host FS."""
+    pattern = str(value or "").strip()
+    if not pattern or "\x00" in pattern or "\\" in pattern or \
+            posixpath.isabs(pattern) or any(
+                part == ".." for part in pattern.split("/")):
+        raise ValueError(
+            "Design decomposition context patterns must be safe relative paths")
+    while pattern.startswith("./"):
+        pattern = pattern[2:]
+    if not pattern:
+        raise ValueError(
+            "Design decomposition context patterns must be safe relative paths")
+    return pattern
+
+
+def _safe_graph_path(value: object) -> str:
+    path = str(value or "")
+    if not path or "\x00" in path or "\\" in path or \
+            posixpath.isabs(path) or any(
+                part in {"", ".", ".."} for part in path.split("/")):
+        raise ValueError("dependency graph contains an unsafe repository path")
+    return path
+
+
+def prepare_design_decomposition(
+        ws: str, context_files, *, settings_digest: str) -> dict:
+    """Refresh and project the mandatory component evidence for Design.
+
+    This is the orchestrator-owned production boundary: it deliberately calls
+    ``scan(..., decompose=True)`` while the ordinary CLI/default scan remains
+    backward compatible. Context globs are evaluated only against scanner-owned
+    repository paths, so wildcard input can never traverse the host filesystem.
+    The returned fingerprint binds the exact source HEAD, graph, complete
+    component layer, active floors, settings, expanded files, and degradation.
+    """
+    digest = str(settings_digest or "").strip()
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError("Design decomposition requires a settings digest")
+    if context_files is None:
+        requested: list[str] = []
+    elif isinstance(context_files, (list, tuple, set, frozenset)):
+        requested = sorted({_safe_context_pattern(item)
+                            for item in context_files})
+    else:
+        raise ValueError("Design decomposition context files must be a list")
+
+    head_before = str(tp.git_head(ws) or "")
+    if not head_before or head_before == "unknown":
+        raise ValueError("Design decomposition requires an exact git HEAD")
+    graph = scan(ws, decompose=True)
+    files = sorted(_safe_graph_path(path)
+                   for path in (graph.get("files") or {}))
+    if requested:
+        expanded = sorted({path for path in files for pattern in requested
+                           if glob_match.path_matches(path, pattern)})
+        unmatched = [pattern for pattern in requested if not any(
+            glob_match.path_matches(path, pattern) for path in files)]
+        scope_mode = "declared"
+    else:
+        expanded = files
+        unmatched = []
+        scope_mode = "all-scanned-files"
+
+    raw_components = graph.get("components")
+    components = raw_components if isinstance(raw_components, list) else []
+    component_fingerprint = _canonical_fingerprint(components)
+    expanded_set = set(expanded)
+    projected = []
+    for raw in components:
+        if not isinstance(raw, dict):
+            continue
+        component_files = sorted(
+            _safe_graph_path(path) for path in (raw.get("files") or []))
+        if not expanded_set.intersection(component_files):
+            continue
+        lens_map = raw.get("lens_map") or {}
+        dependencies = sorted({
+            (str(edge.get("to") or ""), str(edge.get("kind") or ""))
+            for edge in (raw.get("deps") or []) if isinstance(edge, dict)
+        })
+        projected.append({
+            "id": str(raw.get("id") or ""),
+            "module": str(raw.get("module") or ""),
+            "files": component_files,
+            "derived_by": str(raw.get("derived_by") or ""),
+            "degraded": bool(raw.get("degraded")),
+            "dependencies": [{"to": target, "kind": kind}
+                             for target, kind in dependencies],
+            "lens_candidates": sorted(
+                str(lens_id) for lens_id, verdict in lens_map.items()
+                if isinstance(verdict, dict) and
+                verdict.get("verdict") in {"deep", "light"}),
+        })
+    projected.sort(key=lambda row: row["id"])
+
+    quality = scan_quality(graph)
+    meta = graph.get("meta") or {}
+    floors = str((meta.get("decompose") or {}).get("floors") or "")
+    head = str(tp.git_head(ws) or "")
+    scanned_head = str(meta.get("scanned_head") or "")
+    degraded_reasons = []
+    if quality.get("degraded"):
+        degraded_reasons.append("graph-scan-quality")
+    if quality.get("mode") != "components" or not isinstance(
+            raw_components, list):
+        degraded_reasons.append("component-layer-unavailable")
+    if head_before != scanned_head or head != scanned_head or head != head_before:
+        degraded_reasons.append("scanned-head-mismatch")
+    if requested and unmatched:
+        degraded_reasons.append("unmatched-context-patterns")
+    if expanded and not projected:
+        degraded_reasons.append("expanded-files-have-no-components")
+    if any(row["degraded"] for row in projected):
+        degraded_reasons.append("selected-component-degraded")
+
+    receipt = {
+        "schema": DESIGN_DECOMPOSITION_SCHEMA,
+        "status": "degraded" if degraded_reasons else "ready",
+        "head": head,
+        "scanned_head": scanned_head,
+        "graph_fingerprint": str(meta.get("content_fingerprint") or ""),
+        "component_fingerprint": component_fingerprint,
+        "floors_fingerprint": floors,
+        "settings_digest": digest,
+        "context": {
+            "mode": scope_mode,
+            "patterns": requested,
+            "expanded_files": expanded,
+            "unmatched_patterns": unmatched,
+        },
+        "component_count": len(components),
+        "selected_component_count": len(projected),
+        "components": projected,
+        "degraded": bool(degraded_reasons),
+        "degraded_reasons": sorted(set(degraded_reasons)),
+        "quality_fingerprint": str(quality.get("fingerprint") or ""),
+    }
+    receipt["fingerprint"] = _canonical_fingerprint(receipt)
+    return receipt
+
+
+def validate_design_decomposition_receipt(value: object) -> dict:
+    """Authenticate one complete Design decomposition receipt.
+
+    A digest is freshness evidence only; this validator also checks the
+    behavioral shape that downstream graph publishers rely on.  It never
+    upgrades a degraded receipt to ready and never adopts legacy graph state.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("Design decomposition receipt must be an object")
+    required = {
+        "schema", "status", "head", "scanned_head", "graph_fingerprint",
+        "component_fingerprint", "floors_fingerprint", "settings_digest",
+        "context", "component_count", "selected_component_count",
+        "components", "degraded", "degraded_reasons",
+        "quality_fingerprint", "fingerprint",
+    }
+    if set(value) != required or value.get("schema") != \
+            DESIGN_DECOMPOSITION_SCHEMA:
+        raise ValueError("Design decomposition receipt shape is invalid")
+    material = {key: item for key, item in value.items()
+                if key != "fingerprint"}
+    if value.get("fingerprint") != _canonical_fingerprint(material):
+        raise ValueError("Design decomposition receipt fingerprint is stale")
+    status = value.get("status")
+    degraded = value.get("degraded")
+    reasons = value.get("degraded_reasons")
+    if status not in {"ready", "degraded"} or not isinstance(
+            degraded, bool) or not isinstance(reasons, list) or any(
+                not isinstance(reason, str) or not reason for reason in reasons):
+        raise ValueError("Design decomposition receipt status is invalid")
+    if (status == "degraded") != degraded or degraded != bool(reasons):
+        raise ValueError("Design decomposition degradation is inconsistent")
+    if not isinstance(value.get("head"), str) or not value["head"] or \
+            value.get("scanned_head") != value.get("head"):
+        raise ValueError("Design decomposition source HEAD is stale")
+    for field in (
+            "graph_fingerprint", "component_fingerprint",
+            "floors_fingerprint", "settings_digest", "quality_fingerprint"):
+        if re.fullmatch(r"[0-9a-f]{64}", str(value.get(field) or "")) is None:
+            raise ValueError(
+                f"Design decomposition {field} is not a SHA-256 digest")
+    context = value.get("context")
+    if not isinstance(context, dict) or set(context) != {
+            "mode", "patterns", "expanded_files", "unmatched_patterns"}:
+        raise ValueError("Design decomposition context is invalid")
+    for field in ("patterns", "expanded_files", "unmatched_patterns"):
+        rows = context.get(field)
+        if not isinstance(rows, list) or any(
+                not isinstance(row, str) for row in rows):
+            raise ValueError("Design decomposition context is invalid")
+    components = value.get("components")
+    total = value.get("component_count")
+    selected = value.get("selected_component_count")
+    if not isinstance(components, list) or isinstance(total, bool) or \
+            not isinstance(total, int) or total < 0 or isinstance(
+                selected, bool) or not isinstance(selected, int) or \
+            selected != len(components) or selected > total:
+        raise ValueError("Design decomposition component counts are invalid")
+    if len({str(row.get("id") or "") for row in components
+            if isinstance(row, dict)}) != len(components) or any(
+                not isinstance(row, dict) or not str(row.get("id") or "")
+                for row in components):
+        raise ValueError("Design decomposition components are invalid")
+    return copy.deepcopy(value)
+
+
+def publish_design_decomposition(ws: str, artifact_root,
+                                 receipt: object) -> dict:
+    """Publish a validated current-run graph receipt to its durable class.
+
+    The run-artifact manifest supplies the run, stage instance, candidate and
+    source binding.  Matching the stage and settings here prevents a valid
+    graph from another run/configuration being appended to this run.
+    """
+    checked = validate_design_decomposition_receipt(receipt)
+    current_head = str(tp.git_head(ws) or "")
+    current_graph = load(ws)
+    current_graph_fingerprint = str(
+        (current_graph.get("meta") or {}).get("content_fingerprint") or "")
+    if checked["head"] != current_head or \
+            checked["scanned_head"] != current_head or \
+            checked["graph_fingerprint"] != current_graph_fingerprint:
+        raise ValueError(
+            "Design decomposition is stale for the current workspace graph")
+    try:
+        from . import run_artifacts
+    except ImportError:  # pragma: no cover - direct CLI module loading
+        import run_artifacts  # type: ignore
+    manifest = run_artifacts.load_manifest(artifact_root)
+    binding = manifest.get("binding") or {}
+    if binding.get("stage_id") != "design":
+        raise ValueError(
+            "Design decomposition artifacts require a Design-stage manifest")
+    if binding.get("settings_digest") != checked["settings_digest"]:
+        raise ValueError(
+            "Design decomposition settings do not match the active run")
+    return run_artifacts.publish_artifact(
+        artifact_root,
+        "dependency-graphs",
+        checked,
+        metadata={
+            "producer": "taskplane.depgraph.prepare_design_decomposition",
+            "schema": DESIGN_DECOMPOSITION_SCHEMA,
+            "status": checked["status"],
+            "receipt_fingerprint": checked["fingerprint"],
+            "graph_fingerprint": checked["graph_fingerprint"],
+            "settings_digest": checked["settings_digest"],
+            "head": checked["head"],
+        },
+        media_type="application/json",
+    )
+
+
 def _scan_volatile_stripped(g: dict) -> str:
     """Canonical JSON of a graph minus the volatile meta timestamps — the
     only fields that move on a content-identical rescan."""
@@ -1183,13 +1445,13 @@ def _read_design_architecture(ws: str) -> dict:
                 "errors": ["design/contract.json root must be an object"]}
     architecture = contract.get("architecture_decomposition")
     requirement = str(contract.get("requirement") or "").strip()
-    if "architecture_decomposition" not in contract and requirement not in \
-            _CURRENT_GRAPH_AUTHORITY_FLOORS:
+    if "architecture_decomposition" not in contract:
         # An ordinary Design Contract does not opt into this engine's sealed
         # repository-architecture authority merely by existing.  Keep the
-        # proof absent unless the dedicated section is supplied; the accepted
-        # design(s) whose graph authority is pinned above still fail closed if
-        # that section is removed.
+        # proof absent unless the dedicated section is supplied.  Requirement
+        # ids are local to a knowledge store and can be reused, so an id from
+        # a historical store is not authority to activate an unrelated map.
+        # Designs that opt in still fail closed against both immutable floors.
         return {"configured": False, "nodes": [], "semantic_edges": [],
                 "design_edges": [], "singleton_sccs": [], "errors": []}
     errors = []

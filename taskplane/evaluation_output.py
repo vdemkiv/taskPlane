@@ -13,8 +13,14 @@ from copy import deepcopy
 
 import storage as runtime_storage
 
+if __package__:
+    from . import failure_routing
+else:  # pragma: no cover - direct CLI module loading
+    import failure_routing
+
 
 EVALUATOR_OUTPUT_SCHEMA_ID = "taskplane.evaluator-output/v2"
+EVALUATOR_READ_SCHEMA_ID = "taskplane.evaluator-read/v1"
 LENS_SLOT_OUTPUT_SCHEMA_ID = "taskplane.lens-slot-output/v2"
 WRITE_OBSERVATION_SCHEMA_ID = "taskplane.output-write-observation/v1"
 MAX_OUTPUT_BYTES = 1024 * 1024
@@ -123,9 +129,10 @@ def evaluator_output_schema() -> dict:
             "evaluation": evaluation,
             "criteria": {"type": "array", "items": criterion},
             "graph": graph,
-            "failures": {"type": "array", "items": _object({
-                "what": string, "repro": string, "where": string,
-            }, ["what", "repro", "where"])},
+            "failures": {
+                "type": "array",
+                "items": failure_routing.failure_record_schema(),
+            },
         }, ["schema", "task", "requirement", "verdict", "criteria",
             "graph", "failures"]),
     }
@@ -133,7 +140,12 @@ def evaluator_output_schema() -> dict:
 
 def validate_evaluator_value(
         value: dict, *, expected_lenses: list[str] | None = None) -> dict:
-    """Validate evaluator output and, when requested, zero-lens execution."""
+    """Validate evaluator output for admission to a governed decision.
+
+    Historical failure rows are intentionally rejected here.  They remain
+    readable through :func:`read_evaluator_value`, but cannot authorize a
+    correction route.
+    """
     if expected_lenses is not None:
         if not isinstance(expected_lenses, list):
             raise OutputValidationError(
@@ -155,7 +167,85 @@ def validate_evaluator_value(
                 "reason_code=none; omission or outage fallback is forbidden",
             )
     _validate(value, evaluator_output_schema())
+    failures = value["failures"]
+    if value["verdict"] == "pass":
+        if failures:
+            raise OutputValidationError(
+                "pass_has_failures",
+                "a passing evaluator result must not carry failures",
+            )
+        return value
+    try:
+        failure_routing.validate_failure_records(failures)
+    except failure_routing.FailureRoutingError as exc:
+        raise OutputValidationError(
+            "failure_admission", str(exc)) from None
     return value
+
+
+def _validate_legacy_failure(value: dict) -> dict:
+    fields = {"what", "repro", "where"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise OutputValidationError(
+            "legacy_failure_shape",
+            "legacy failure must contain exactly what, repro, and where",
+        )
+    for field in sorted(fields):
+        text = value.get(field)
+        if not isinstance(text, str) or not text.strip():
+            raise OutputValidationError(
+                "legacy_failure_shape",
+                f"legacy failure {field} must be a non-empty string",
+            )
+    return deepcopy(value)
+
+
+def read_evaluator_value(value: dict) -> dict:
+    """Read current or v1-compatible output without granting correction.
+
+    This is a display/audit compatibility boundary.  Callers seeking fix or
+    recovery authority must use :func:`validate_evaluator_value` and then the
+    failure router.
+    """
+    if not isinstance(value, dict):
+        raise OutputValidationError(
+            "type_mismatch", "evaluator output must be a mapping")
+    failures = value.get("failures")
+    if not isinstance(failures, list):
+        raise OutputValidationError(
+            "type_mismatch", "evaluator failures must be a list")
+
+    # Validate the common envelope using the live contract while validating
+    # failure rows below against their explicit current-or-legacy boundary.
+    envelope = deepcopy(value)
+    envelope["failures"] = []
+    _validate(envelope, evaluator_output_schema())
+
+    current: list[dict] = []
+    legacy: list[dict] = []
+    for failure in failures:
+        try:
+            current.append(failure_routing.validate_failure_record(failure))
+        except failure_routing.FailureRoutingError:
+            legacy.append(_validate_legacy_failure(failure))
+
+    routing = None
+    correction_authority = False
+    if value.get("verdict") == "fail" and current and not legacy:
+        try:
+            routing = failure_routing.route_failure_records(current)
+        except failure_routing.FailureRoutingError as exc:
+            raise OutputValidationError(
+                "failure_admission", str(exc)) from None
+        correction_authority = bool(routing["admitted"])
+    return {
+        "schema": EVALUATOR_READ_SCHEMA_ID,
+        "value": deepcopy(value),
+        "failure_records": current,
+        "legacy_failures": legacy,
+        "routing": routing,
+        "correction_authority": correction_authority,
+    }
 
 
 def lens_slot_output_schema(references: list[dict] | None = None) -> dict:
@@ -433,7 +523,10 @@ def validate_output_bytes(raw: bytes, contract: dict) -> dict:
     if len(raw) > int(contract.get("max_bytes") or MAX_OUTPUT_BYTES):
         raise OutputValidationError("output_too_large", "output exceeds limit")
     value = _decode(raw)
-    _validate(value, contract.get("output_schema") or {})
+    output_schema = contract.get("output_schema") or {}
+    _validate(value, output_schema)
+    if output_schema.get("$id") == EVALUATOR_OUTPUT_SCHEMA_ID:
+        validate_evaluator_value(value)
     body = canonical_bytes(value)
     return {"status": "valid", "value": value,
             "canonical_bytes": body,

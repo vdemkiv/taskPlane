@@ -96,11 +96,31 @@ Small, local, reversible, single-module work with an obvious implementation may 
 
 ## Drive the Design phase
 
-Call `loop next` once for the Design step and apply the same mandatory native
-dispatch rule from Start; wait for and collect the worker before the
-orchestrator gates the handoff.
+Call `loop next` exactly once for the Design step. Its
+`design_lens_dispatches` is the complete host-authorized quick-lens set, not a
+suggestion. Resolve every worker's package-relative `role_reference` against
+the currently installed taskplane package and require its content digest to
+match. Never substitute an absolute path, a role file from another checkout,
+or a previously emitted worker.
 
-The Design brief includes the requirement, accepted decisions, current-state inventory, baseline graph fingerprint, bounded impact, and the mandatory `solution-design` lens.
+Spawn every listed lens concurrently using its exact `task_name`, standalone
+`role_marker`, model when non-null, `reasoning_effort`, task slot, dispatch
+intent, brief, and child contract. Do not add a familiar lens or omit an
+unfamiliar one. Use the single emitted `design_lens_wait_policy` for the whole
+outstanding set; wake only for a terminal result or attention. Collect the
+exact selected set and let the engine validate host-issued assignment, start,
+identity, terminal, activity, and result receipts. Cancellation,
+interruption, handoff, usage, and evidence references remain terminal
+observations, not permission to silently shrink the set. Only after exact-set
+validation succeeds may the one `tp-designer` worker consolidate the Design
+Contract. If any authority, role digest, candidate binding, or result is
+missing, stale, foreign, or replayed, stop at Design with the returned
+recovery; never design inline.
+
+The Design brief includes the requirement, accepted decisions, current-state
+inventory, freshly decomposed dependency graph, bounded impact, and the
+dynamically selected minimum-sufficient lens evidence (always including the
+mandatory `solution-design` disposition).
 
 Have `tp-designer` inspect the cited code and write:
 

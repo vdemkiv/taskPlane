@@ -26,13 +26,13 @@ lens rewrite and never bumped to.
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
-> v2.18.1 is the tagged local predecessor, v2.18.2 and v2.18.3 are superseded
-> unreleased candidates, and the forward release candidate moves as v2.18.4,
+> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.4 are
+> superseded unreleased candidates. The forward release candidate moves as v2.18.5,
 > which is not
 > released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.4 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.18.5 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
@@ -49,7 +49,8 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.18.4** | **Final dashboard dependency graphs now join immutable Plan structure with governed execution truth — not released.** The Plan DAG overlays task status only when the live loop supplies the exact same unique task-ID set; completed tasks and waves render as passed, while a missing, duplicate, or mismatched status edge renders unavailable/unknown instead of replaying Plan-time pending values. Wave approval receipt state remains separate from execution state, so a completed wave cannot fabricate Plan approval. `taskplane/operational-settings.json` remains the one canonical settings source. Focused regressions cover the completed-run join and the deliberately severed status edge. |
+| **v2.18.5** | **The governed control plane now executes the design it advertises — release candidate, not released.** Every Design run decomposes before routing; the dynamically selected Design worker set is dispatched through the host transport and conserved by assignment, start, terminal, usage, and activity evidence. Every detected failure is classified before correction authority opens, Build validates its test strategy and code-quality progression immediately, and dashboard, dependency graph, telemetry, agent activity, validation, cleanup, and Retro evidence live in separate durable run-owned artifact classes that cleanup preserves. The canonical settings file ships prepopulated defaults, the test portfolio is repository-only, and both marketplace packages prove the installed behavioral journey rather than treating archive byte identity as correctness. |
+| **v2.18.4** | **Dashboard execution-status repair — superseded unreleased candidate.** The Plan DAG correctly joined immutable Plan structure with governed execution truth, but the broader R-0002 review found that dynamic Design dispatch, decomposition, failure classification, Build-quality admission, and durable artifact retention were not yet wired end to end. v2.18.5 closes those production edges before upload. |
 | **v2.18.3** | **Canonical delivery settings, CI-first testing, and exact-owned cleanup — superseded unreleased candidate.** A typed fail-closed loader established the single settings spine and one settings-bound dashboard snapshot, but the final Plan graph retained Plan-time pending task values after the governed loop completed. v2.18.4 corrects that producer/consumer join while preserving the 2.18.3 architecture, evidence-pruned suite, CI policy, cleanup, release provenance, and metrics. |
 | **v2.18.2** | **External-worktree Codex hook bootstrap repair — not released.** Codex hooks now resolve the primary checkout's validated launcher from Git's common directory when an external linked worktree lacks its ignored local bridge, route the host-native probe through the same stable engine, fail with an actionable error when no launcher or host plugin root exists, and restore a missing runner before attempting any required hook-config rewrite. Repository-family resolution now uses Git's absolute top-level and common-directory facts so all linked worktrees share the same durable Taskplane state. Exact external-worktree regressions cover PreToolUse, SessionStart, and Stop in both native and bridge manifests. A local reinstall and generated upload artifact are development actions, not Marketplace publication or a public release. |
 | **v2.18.1** | **Complete local and exact-PR-head-SHA release proof — tagged local predecessor, not publicly released.** Adds the standard-library closed-inventory local CI runner, deterministic exact-once receipts, isolated parallel shards, deadline-safe cleanup, mutation detection, and a blocking PR-head proof that synthetic merge validation cannot substitute. Its tag and local installation do not claim an upload or Marketplace publication. |

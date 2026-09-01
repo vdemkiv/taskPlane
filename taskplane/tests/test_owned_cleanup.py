@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import owned_cleanup as cleanup
-from taskplane import governed_commands
+from taskplane import governed_commands, run_artifacts
 from taskplane.command_runtime import CommandRuntime
 from taskplane.repository import RepositoryManager
 from taskplane import taskplane_lite as contract_engine
@@ -57,6 +57,20 @@ def _manifest(tmp_path: Path, name: str = "manifest.json") -> Path:
         evidence_root=tmp_path / "evidence",
     )
     return path
+
+
+def _durable_artifacts(tmp_path: Path) -> Path:
+    run_root = tmp_path / "run-store" / "runs" / "run-1"
+    run_root.mkdir(parents=True, exist_ok=True)
+    root = run_root / "artifacts"
+    binding = run_artifacts.create_binding(
+        repository_id="repo-1", run_id="run-1", stage_id="build",
+        stage_instance_id="build-1",
+        candidate={"id": "candidate-1", "fingerprint": "9" * 64,
+                   "working_tree": "8" * 64},
+        settings_digest="b" * 64, source_fingerprint="7" * 64)
+    run_artifacts.create_manifest(root, binding=binding)
+    return root
 
 
 def _publication(manifest: Path, source: Path, *, outcome: str,
@@ -510,6 +524,14 @@ def test_cleanup_runs_on_every_terminal_outcome(
 
 def test_cleanup_preserves_evidence_and_proves_zero_leaks(tmp_path):
     manifest = _manifest(tmp_path)
+    artifacts = _durable_artifacts(tmp_path)
+    run_artifacts.publish_artifact(
+        artifacts, "validation", {"result": "candidate-bound-green"})
+    run_artifacts.append_activity(
+        artifacts, event_type="terminal", agent_attempt_id="attempt-1",
+        worker_id="worker-1", task_id="task-1", lens="zero-lens-build",
+        details={"outcome": "failure"}, occurred_at_ns=1)
+    cleanup.bind_durable_artifacts(manifest, artifacts)
     root = tmp_path / "owned"
     first = _owned_file(
         manifest, root, "result.txt", evidence_ref="result")
@@ -569,6 +591,33 @@ def test_cleanup_preserves_evidence_and_proves_zero_leaks(tmp_path):
         "result", "publication-replay"}
     assert all(Path(row["sealed_path"]).parent == tmp_path / "evidence"
                for row in receipt["evidence"])
+    assert receipt["artifact_verification"]["before"]["status"] == \
+        "readable"
+    assert receipt["artifact_verification"]["after"]["status"] == \
+        "readable"
+    assert receipt["artifact_verification"]["readable"] is True
+    assert receipt["durable_cleanup_publication"]["status"] == "published"
+    cleanup_reference = receipt["durable_cleanup_artifact"]
+    artifact_manifest = run_artifacts.load_manifest(artifacts)
+    cleanup_entry = artifact_manifest["classes"]["cleanup"]["entries"][-1]
+    assert cleanup_reference == cleanup_entry
+    assert cleanup_entry["metadata"] == {
+        "cleanup_status": "clean",
+        "leak_count": 0,
+        "original_outcome": "failure",
+        "producer": "taskplane.owned_cleanup",
+    }
+    durable_receipt = json.loads(
+        (artifacts / cleanup_entry["locator"]).read_text(encoding="utf-8"))
+    assert durable_receipt["receipt_digest"] == receipt["receipt_digest"]
+    assert durable_receipt["original_outcome"] == "failure"
+    assert durable_receipt["leak_count"] == 0
+    assert receipt["durable_cleanup_publication"]["verification"][
+        "class_counts"]["cleanup"] == 1
+    assert run_artifacts.verify_manifest(artifacts)["artifact_count"] == 3
+    receipt_path = manifest.with_name(
+        manifest.name + ".cleanup-receipt.json")
+    assert json.loads(receipt_path.read_text(encoding="utf-8")) == receipt
 
     unsafe = tmp_path / "unsafe.json"
     cleanup.create_manifest(
@@ -587,10 +636,17 @@ def test_cleanup_preserves_evidence_and_proves_zero_leaks(tmp_path):
 @pytest.mark.parametrize("case", [
     "foreign", "dirty", "symlinked", "relocated", "pid-reused",
     "containment-invalid", "ambiguous", "stable-identity",
-    "directory-content",
+    "directory-content", "hardlinked", "durable-ancestor",
+    "durable-descendant", "nested-owned",
 ])
 def test_cleanup_refuses_ambiguous_or_unowned_targets(tmp_path, case, monkeypatch):
     manifest = _manifest(tmp_path)
+    artifacts = None
+    if case in {"durable-ancestor", "durable-descendant"}:
+        artifacts = _durable_artifacts(tmp_path)
+        run_artifacts.publish_artifact(
+            artifacts, "cleanup", {"proof": "must-survive"})
+        cleanup.bind_durable_artifacts(manifest, artifacts)
     root = tmp_path / "owned"
     if case == "directory-content":
         runtime = CommandRuntime(
@@ -653,6 +709,26 @@ def test_cleanup_refuses_ambiguous_or_unowned_targets(tmp_path, case, monkeypatc
         # Root inode/mode/link-count stay fixed; only the live cache content
         # changes, so removing the kind-specific content edge makes this red.
         (target / "entry.txt").write_text("substituted\n", encoding="utf-8")
+    elif case == "hardlinked":
+        os.link(target, tmp_path / "foreign-hardlink.txt")
+    elif case == "durable-ancestor":
+        cleanup._rewrite_for_test(
+            manifest, lambda row: row["resources"][resource_id].update(
+                containment_root=str(artifacts.parent.parent),
+                relative_name=artifacts.parent.name))
+    elif case == "durable-descendant":
+        cleanup._rewrite_for_test(
+            manifest, lambda row: row["resources"][resource_id].update(
+                containment_root=str(artifacts),
+                relative_name="cleanup"))
+    elif case == "nested-owned":
+        clone = copy.deepcopy(
+            cleanup.load_manifest(manifest)["resources"][resource_id])
+        clone["resource_id"] = "res-" + "e" * 32
+        clone["relative_name"] = "artifact.txt/child"
+        cleanup._rewrite_for_test(
+            manifest, lambda row: row["resources"].update(
+                {clone["resource_id"]: clone}))
 
     terminal = tmp_path / "terminal.json"
     terminal.write_text('{"outcome":"failure"}\n', encoding="utf-8")
@@ -665,6 +741,119 @@ def test_cleanup_refuses_ambiguous_or_unowned_targets(tmp_path, case, monkeypatc
     assert receipt["leak_count"] >= 1
     assert receipt["resources"][0]["status"] == "refused"
     assert target.exists() or target.is_symlink() or (root / "moved.txt").exists()
+    if artifacts is not None:
+        verification = run_artifacts.verify_manifest(artifacts)
+        assert verification["artifact_count"] == 2
+        assert verification["class_counts"]["cleanup"] == 2
+        reference = receipt["durable_cleanup_artifact"]
+        assert reference["class"] == "cleanup"
+        assert reference["metadata"]["cleanup_status"] == "attention"
+        assert reference["metadata"]["leak_count"] >= 1
+
+
+def test_cleanup_refuses_all_targets_when_durable_artifacts_are_unreadable(
+        tmp_path):
+    manifest = _manifest(tmp_path)
+    artifacts = _durable_artifacts(tmp_path)
+    reference = run_artifacts.publish_artifact(
+        artifacts, "telemetry", {"tokens": "unavailable"})
+    cleanup.bind_durable_artifacts(manifest, artifacts)
+    root = tmp_path / "owned"
+    _owned_file(manifest, root)
+    (artifacts / reference["locator"]).write_text(
+        '{"tokens":0}\n', encoding="utf-8")
+    terminal = tmp_path / "terminal-unreadable.json"
+    terminal.write_text('{"outcome":"failure"}\n', encoding="utf-8")
+
+    receipt = cleanup.seal_and_cleanup(
+        manifest, outcome="failure", evidence=_evidence(
+            manifest, outcome="failure", label="terminal", source=terminal))
+
+    assert receipt["cleanup_status"] == "attention"
+    assert receipt["artifact_verification"]["before"]["status"] == \
+        "unreadable"
+    assert receipt["artifact_verification"]["after"]["status"] == \
+        "unreadable"
+    assert receipt["resources"][0]["status"] == "refused"
+    assert "unreadable before cleanup" in receipt["resources"][0]["reason"]
+    assert (root / "artifact.txt").is_file()
+
+
+@pytest.mark.parametrize("outcome", (*OUTCOMES, "recovery"))
+def test_cleanup_publishes_durable_receipt_for_every_terminal_outcome(
+        tmp_path, outcome):
+    manifest = _manifest(tmp_path, f"durable-{outcome}.json")
+    artifacts = _durable_artifacts(tmp_path)
+    run_artifacts.publish_artifact(
+        artifacts, "validation", {"outcome": outcome, "status": "sealed"})
+    cleanup.bind_durable_artifacts(manifest, artifacts)
+    root = tmp_path / "owned"
+    _owned_file(manifest, root)
+    terminal = tmp_path / f"terminal-durable-{outcome}.json"
+    terminal.write_text(
+        json.dumps({"outcome": outcome}) + "\n", encoding="utf-8")
+
+    receipt = cleanup.seal_and_cleanup(
+        manifest, outcome=outcome, evidence=_evidence(
+            manifest, outcome=outcome, label="terminal", source=terminal,
+            trigger="handoff" if outcome == "handoff" else
+                    "recovery" if outcome == "recovery" else "terminal"))
+
+    assert receipt["original_outcome"] == outcome
+    assert receipt["cleanup_status"] == "clean"
+    assert receipt["leak_count"] == 0
+    assert receipt["durable_cleanup_publication"]["status"] == "published"
+    reference = receipt["durable_cleanup_artifact"]
+    assert reference["class"] == "cleanup"
+    assert reference["metadata"] == {
+        "cleanup_status": "clean", "leak_count": 0,
+        "original_outcome": outcome,
+        "producer": "taskplane.owned_cleanup",
+    }
+    assert not (root / "artifact.txt").exists()
+    verification = run_artifacts.verify_manifest(artifacts)
+    assert verification["readable"] is True
+    assert verification["class_counts"]["cleanup"] == 1
+
+
+def test_cleanup_publication_error_is_persisted_as_attention_without_rewrite(
+        tmp_path, monkeypatch):
+    manifest = _manifest(tmp_path)
+    artifacts = _durable_artifacts(tmp_path)
+    cleanup.bind_durable_artifacts(manifest, artifacts)
+    root = tmp_path / "owned"
+    _owned_file(manifest, root)
+    terminal = tmp_path / "terminal-publication-error.json"
+    terminal.write_text('{"outcome":"failure"}\n', encoding="utf-8")
+    calls = []
+
+    def refuse_publication(*_args, **_kwargs):
+        calls.append("refused")
+        raise run_artifacts.RunArtifactError("simulated cleanup class refusal")
+
+    monkeypatch.setattr(run_artifacts, "publish_artifact", refuse_publication)
+    evidence = _evidence(
+        manifest, outcome="failure", label="terminal", source=terminal)
+    receipt = cleanup.seal_and_cleanup(
+        manifest, outcome="failure", evidence=evidence)
+    replay = cleanup.seal_and_cleanup(
+        manifest, outcome="timeout", evidence=evidence)
+
+    assert receipt == replay
+    assert receipt["original_outcome"] == "failure"
+    assert receipt["cleanup_status"] == "attention"
+    assert receipt["leak_count"] == 0
+    assert receipt["durable_cleanup_artifact"] is None
+    assert receipt["durable_cleanup_publication"]["status"] == "refused"
+    assert "simulated cleanup class refusal" in \
+        receipt["durable_cleanup_publication"]["reason"]
+    assert calls == ["refused"]
+    assert not (root / "artifact.txt").exists()
+    persisted = json.loads(manifest.with_name(
+        manifest.name + ".cleanup-receipt.json").read_text(encoding="utf-8"))
+    assert persisted == receipt
+    assert run_artifacts.verify_manifest(artifacts)["class_counts"][
+        "cleanup"] == 0
 
 
 def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):

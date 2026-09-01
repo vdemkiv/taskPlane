@@ -1083,11 +1083,27 @@ def test_resolve_transition_seals_the_declared_control_output(
         tmp_path / "resolve-output", monkeypatch,
         stage_kind="engineering", stage_id="stage-engineering-resolve-root")
     state = loop.load(ws)
+    evidence = {"selector": "public acceptance journey", "returncode": 1}
+    product_failure = loop.failure_routing.route_failure_records([{
+        "schema": "taskplane.failure-record/v1",
+        "id": "failure-t01-product",
+        "source": "evaluate",
+        "stage": "evaluate",
+        "repro": "public acceptance journey still fails",
+        "evidence": evidence,
+        "evidence_digest": loop.failure_routing.evidence_digest(evidence),
+        "class": "product",
+        "reason": "the current product behavior violates acceptance",
+        "owner": "task:t01",
+        "cluster": "acceptance",
+        "route": "fix",
+        "candidate": {"id": "t01@candidate", "fingerprint": "b" * 64},
+    }])
     state.update({
         "step": "escalated", "current_task": 0,
         "tasks": [{
             "id": "t01", "scope": ["README.md"], "status": "failed",
-            "fix_cycles": 3,
+            "fix_cycles": 3, "failure_routing": product_failure,
         }],
     })
     loop.save(ws, state)
@@ -1106,6 +1122,34 @@ def test_resolve_transition_seals_the_declared_control_output(
     assert "taskplane.loop-resolution-result/v1" in payloads
     assert '"decision": "retry"' in payloads
     assert '"resulting_step": "fix"' in payloads
+
+
+def test_unclassified_escalated_retry_cannot_enter_product_fix(
+        tmp_path, monkeypatch) -> None:
+    ws, store, _stage, _started = _start_real_stage_loop(
+        tmp_path / "resolve-unclassified", monkeypatch,
+        stage_kind="engineering",
+        stage_id="stage-engineering-resolve-unclassified")
+    state = loop.load(ws)
+    state.update({
+        "step": "escalated", "current_task": 0,
+        "tasks": [{
+            "id": "t01", "scope": ["README.md"], "status": "failed",
+            "fix_cycles": 3,
+        }],
+    })
+    loop.save(ws, state)
+    monkeypatch.setattr(loop.tp, "trace", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop, "status", lambda _ws: {})
+
+    resolved = loop.resolve(ws, "retry")
+
+    assert "error" not in resolved, resolved
+    successor, handoff = _successor_handoff(
+        ws, store, resolved["stage_transition"])
+    assert successor["stage_kind"] == "evaluate"
+    payloads = _handoff_payload_text(ws, handoff)
+    assert '"resulting_step": "evaluate"' in payloads
 
 
 def test_replan_transition_seals_the_declared_control_output(

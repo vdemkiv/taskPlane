@@ -785,3 +785,71 @@ def test_real_browser_production_refresh_styles_and_shows_dependency_graph(
     assert visible["nodeFill"] != visible["textFill"]
     assert visible["bodyBackground"] not in {
         "rgba(0, 0, 0, 0)", "transparent"}
+
+
+def test_real_browser_current_design_dependency_graph_is_visible_and_accessible_at_390_and_768(
+        tmp_path):
+    """Current Design graph stays readable, labelled, and nonzero when compact."""
+    config = _json_fixture("environment.json")
+    topology = _json_fixture("topology.json")
+    root = tmp_path / "delivery"
+    published = _publish(root, 11, "responsive-design-11", topology=topology)
+    artifact = Path(published["delivery"]["artifacts"]["html"]["path"])
+
+    with _LoopbackServer(root) as server, _RealBrowser(tmp_path, config) as browser:
+        browser.navigate(server.url(_artifact_relative(root, published)))
+        browser.wait_for(
+            "document.body.dataset.dashboardFreshness === 'fresh'")
+        observations = {}
+        for width in (390, 768):
+            browser.call("Emulation.setDeviceMetricsOverride", {
+                "width": width, "height": 900, "deviceScaleFactor": 1,
+                "mobile": width == 390,
+            })
+            observations[str(width)] = browser.evaluate("""(() => {
+              const section = document.querySelector('#tp-design-graph');
+              const svg = section?.querySelector(
+                "svg[data-phase-graph='tp-design-graph']");
+              const title = svg?.querySelector('title');
+              const description = svg?.querySelector('desc');
+              const box = svg?.getBoundingClientRect();
+              const sectionBox = section?.getBoundingClientRect();
+              const firstNode = svg?.querySelector('rect');
+              const firstEdge = svg?.querySelector('line');
+              return {
+                viewport: innerWidth,
+                svgWidth: box?.width || 0,
+                svgHeight: box?.height || 0,
+                sectionWidth: sectionBox?.width || 0,
+                sectionClientWidth: section?.clientWidth || 0,
+                sectionScrollWidth: section?.scrollWidth || 0,
+                overflow: Math.max(0, document.documentElement.scrollWidth - innerWidth),
+                title: title?.textContent || '',
+                description: description?.textContent || '',
+                labelledBy: svg?.getAttribute('aria-labelledby') || '',
+                role: svg?.getAttribute('role') || '',
+                nodes: svg?.querySelectorAll('rect').length || 0,
+                edges: svg?.querySelectorAll('line').length || 0,
+                nodeFill: firstNode ? getComputedStyle(firstNode).fill : 'none',
+                edgeStroke: firstEdge ? getComputedStyle(firstEdge).stroke : 'none'
+              };
+            })()""")
+
+    for width, value in observations.items():
+        assert value["viewport"] == int(width)
+        assert value["svgWidth"] > 100
+        assert value["svgHeight"] > 100
+        assert value["overflow"] == 0
+        if int(width) == 390:
+            assert value["sectionScrollWidth"] > value["sectionClientWidth"]
+            assert value["svgWidth"] <= value["sectionScrollWidth"] + 1
+        else:
+            assert value["svgWidth"] <= value["sectionWidth"] + 1
+        assert value["role"] == "img"
+        assert value["labelledBy"]
+        assert "Design" in value["title"]
+        assert "source nodes" in value["description"]
+        assert value["nodes"] > 0
+        assert value["edges"] > 0
+        assert value["nodeFill"] not in {"none", "rgba(0, 0, 0, 0)"}
+        assert value["edgeStroke"] not in {"none", "rgba(0, 0, 0, 0)"}

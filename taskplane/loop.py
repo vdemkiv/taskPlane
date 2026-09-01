@@ -69,24 +69,40 @@ import yield_meter
 
 if __package__:
     from . import brief_projection
+    from . import build_quality
     from . import delivery_policy
     from . import dispatch_telemetry
     from . import em_outage
     from . import evaluation_output as evaluation_output
+    from . import failure_routing
     from . import lens_route_policy
+    from . import owned_cleanup
+    from . import settings as operational_settings
     from . import plan_topology
+    from . import run_artifacts
+    from . import run_store as run_store_engine
+    from . import test_strategy
     from . import producer_observation as producer_observation_policy
     from . import terminal_truth
+    from . import wave_metrics
     from .delivery_ports import SystemClock
 else:  # pragma: no cover - direct CLI module loading
     import brief_projection
+    import build_quality
     import delivery_policy
     import dispatch_telemetry
     import em_outage
+    import failure_routing
     import lens_route_policy
+    import owned_cleanup
+    import settings as operational_settings
     import plan_topology
+    import run_artifacts
+    import run_store as run_store_engine
+    import test_strategy
     import producer_observation as producer_observation_policy
     import terminal_truth
+    import wave_metrics
     from delivery_ports import SystemClock
 
 LOOP_FILE = "loop.json"
@@ -525,6 +541,11 @@ _FOCUSED_STAGE_DEFAULTS = {
     "plan": ("architecture", "project-management", "testability"),
 }
 _FOCUSED_STAGE_KEYWORDS = {
+    "architecture": ("architecture", "canonical", "control plane", "modular"),
+    "backend": ("loader", "orchestrator", "state machine", "typed"),
+    "frontend": ("browser", "dashboard", "html", "css", "visual"),
+    "qa": ("test strategy", "regression", "test suite", "failure"),
+    "testability": ("fixture", "selector", "test design", "test suite"),
     "security": ("auth", "credential", "permission", "security", "trust"),
     "privacy-compliance": ("personal data", "privacy", "retention"),
     "data-safety": ("backup", "data loss", "migration", "storage"),
@@ -539,7 +560,7 @@ _FOCUSED_STAGE_KEYWORDS = {
     "services-selection": ("provider", "service", "vendor"),
     "tradeoffs": ("alternative", "tradeoff", "trade-off"),
     "devops": ("deploy", "packaging", "pipeline", "release"),
-    "dba": ("database", "query", "schema"),
+    "dba": (" sql ", "database", "index", "relational query"),
     "sre": ("availability", "crash", "failure", "incident", "operational",
             "recovery", "retry", "rollback"),
 }
@@ -548,6 +569,7 @@ _FOCUSED_STAGE_KEYWORDS = {
 def _focused_stage_route(
         ws: str, *, stage: str, target: str, evidence: Mapping[str, object],
         mandatory_lenses: Iterable[str] | None = None,
+        maximum_lenses: int | None = None,
         expanded_route_provider_client:
         terminal_truth.ExpandedRouteProviderClient | None = None,
         expanded_route_provider_receipt:
@@ -595,10 +617,17 @@ def _focused_stage_route(
             not set(mandatory) <= known:
         raise lens_route_policy.LensRoutePolicyError(
             "mandatory focused lenses must be unique catalog ids")
+    if maximum_lenses is not None and (
+            isinstance(maximum_lenses, bool) or
+            not isinstance(maximum_lenses, int) or
+            maximum_lenses < len(mandatory)):
+        raise lens_route_policy.LensRoutePolicyError(
+            "focused lens maximum must cover every mandatory lens")
+    allowed = (known if stage == "design" else _FOCUSED_STAGE_LENSES[stage])
     positive = set(mandatory)
     keyword_hits = {
         lens_id for lens_id, words in _FOCUSED_STAGE_KEYWORDS.items()
-        if lens_id in _FOCUSED_STAGE_LENSES[stage] and
+        if lens_id in allowed and
         any(word in evidence_text for word in words)
     }
     mapped = {str(row.get("id") or ""): row
@@ -606,10 +635,19 @@ def _focused_stage_route(
               if isinstance(row, dict)}
     incumbent_hits = {
         lens_id for lens_id, row in mapped.items()
-        if lens_id in _FOCUSED_STAGE_LENSES[stage] and
+        if lens_id in allowed and
         str(row.get("verdict") or row.get("tier") or "n/a") != "n/a"
     }
-    if not explicit:
+    component_hits = {
+        str(lens_id) for lens_id in
+        material.get("component_lens_candidates") or []
+        if str(lens_id) in allowed
+    }
+    if not explicit or maximum_lenses is not None:
+        # A decomposed component may strengthen an independently detected
+        # risk; it may not admit a lens by itself. Broad/core components often
+        # map to most of the catalog and otherwise turn ``max`` into a fill
+        # target instead of a safety cap.
         candidates = (keyword_hits | incumbent_hits) - positive
         if stage == "plan":
             # The normal Plan path is bounded before policy dispatch. The
@@ -620,7 +658,14 @@ def _focused_stage_route(
                 -float((mapped.get(lens_id) or {}).get("score") or 0), lens_id))
             positive.update(ranked[:1])
         else:
-            positive.update(candidates)
+            ranked = sorted(candidates, key=lambda lens_id: (
+                -int(lens_id in component_hits),
+                -int(lens_id in keyword_hits),
+                -float((mapped.get(lens_id) or {}).get("score") or 0),
+                lens_id))
+            capacity = (len(ranked) if maximum_lenses is None else
+                        max(0, maximum_lenses - len(positive)))
+            positive.update(ranked[:capacity])
 
     catalog_fp = lens_route_policy.catalog_fingerprint(definitions)
     evidence_fp = lens_route_policy.fingerprint(material)
@@ -633,6 +678,8 @@ def _focused_stage_route(
         "execution_mode": "quick-only",
         "stage_input_fingerprint": evidence_fp,
         "mandatory_lenses": list(mandatory),
+        **({"maximum_lenses": maximum_lenses}
+           if maximum_lenses is not None else {}),
     }
     rows = []
     for index, definition in enumerate(definitions):
@@ -649,6 +696,9 @@ def _focused_stage_route(
             reasons.append(f"{stage} evidence matched focused risk: {lens_id}")
         if lens_id in incumbent_hits:
             reasons.extend(source_evidence[:3])
+        if lens_id in component_hits:
+            reasons.append(
+                f"{stage} decomposition selected component risk: {lens_id}")
         score = float(source.get("score") or 0)
         if lens_id in mandatory:
             score = max(score, 0.95 - index / 10000)
@@ -740,7 +790,7 @@ def _focused_stage_evidence(ws: str, state: Mapping[str, object],
 
     design = tp.load_json(
         os.path.join(ws, "design", "contract.json"), default={},
-        what="focused Design Contract")
+        what="focused Design Contract") if stage != "design" else {}
     design_material = ({
         key: _copy_json(design.get(key))
         for key in ("schema", "summary", "selected_approach", "modules",
@@ -752,23 +802,15 @@ def _focused_stage_evidence(ws: str, state: Mapping[str, object],
         return ({
             "approved_requirement": req_material,
             "acceptance": acceptance,
-            "proposed_solution": design_material,
-            "interfaces": _copy_json(
-                (design.get("interfaces") or design.get("contracts") or [])
-                if isinstance(design, dict) else []),
-            "data_boundaries": _copy_json(
-                design.get("data_boundaries") or []
-                if isinstance(design, dict) else []),
-            "trust_boundaries": _copy_json(
-                (design.get("trust_boundaries") or
-                 design.get("expanded_route_authority") or {})
-                if isinstance(design, dict) else {}),
-            "migration_risk": _copy_json(
-                (design.get("migration") or {})
-                if isinstance(design, dict) else {}),
-            "rollback_risk": _copy_json(
-                (design.get("rollback") or {})
-                if isinstance(design, dict) else {}),
+            # The Design team is selected before the current Design artifact
+            # exists. Checked-in predecessor artifacts are history, never
+            # evidence for this run's dynamic route.
+            "proposed_solution": {},
+            "interfaces": [],
+            "data_boundaries": [],
+            "trust_boundaries": {},
+            "migration_risk": {},
+            "rollback_risk": {},
             "files": files,
         }, None)
 
@@ -811,6 +853,662 @@ def _focused_stage_evidence(ws: str, state: Mapping[str, object],
         "task_to_ac_coverage": task_to_ac,
         "files": scope_files,
     }, mandatory)
+
+
+def _design_input_fingerprint(ws: str) -> str:
+    """Identify Design inputs while excluding this stage's own outputs."""
+    head = str(tp.git_head(ws) or "").strip()
+    if not head:
+        raise ValueError("Design input fingerprint requires git HEAD")
+    digest = hashlib.sha256(b"taskplane.design-input/v1\0" + head.encode())
+    paths = [path for path in tp.changed_files(ws, head)
+             if not path.startswith("design/")]
+    for relative in sorted(set(paths)):
+        if os.path.isabs(relative) or relative == ".." or \
+                relative.startswith("../") or "/../" in relative:
+            raise ValueError("Design input fingerprint found an unsafe path")
+        full = os.path.join(ws, relative)
+        digest.update(b"\0path\0" + relative.encode(
+            "utf-8", errors="surrogateescape"))
+        try:
+            info = os.lstat(full)
+            digest.update(f"\0mode:{info.st_mode:o}\0size:{info.st_size}\0".encode())
+            if os.path.islink(full):
+                digest.update(b"symlink\0" + os.readlink(full).encode(
+                    "utf-8", errors="surrogateescape"))
+            elif os.path.isfile(full):
+                with open(full, "rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+        except FileNotFoundError:
+            digest.update(b"\0deleted\0")
+    return digest.hexdigest()
+
+
+def _run_artifact_root(ws: str, state: Mapping[str, object]) -> str:
+    """Resolve this run's private artifact root from canonical run identity."""
+    run_id = str(state.get("run_id") or "").strip()
+    if not run_id:
+        raise run_artifacts.RunArtifactError(
+            "run artifacts require an active run id")
+    locator = runtime_storage.load_workspace_locator(ws)
+    if isinstance(locator, Mapping):
+        if locator.get("run_id") != run_id:
+            raise run_artifacts.RunArtifactError(
+                "workspace locator belongs to another run")
+    identity = runtime_storage.resolve_repository_identity(ws)
+    if isinstance(locator, Mapping) and \
+            locator.get("repo_id") != identity.repo_id:
+        raise run_artifacts.RunArtifactError(
+            "workspace locator belongs to another repository")
+    # Host dispatch and loop composition share this exact storage authority.
+    # A workspace locator proves identity but cannot redirect evidence to a
+    # second root.
+    store = _artifact_owner_store(ws)
+    manifest = store.load(run_id)
+    layout = runtime_storage.resolve_layout(
+        identity, home=store.home, run_id=run_id)
+    repository = manifest.get("repository") or {}
+    root = str((manifest.get("paths") or {}).get("artifacts") or "")
+    if repository.get("repo_id") != identity.repo_id or \
+            repository.get("checkout") != os.path.realpath(ws) or \
+            root != layout.artifact_root:
+        raise run_artifacts.RunArtifactError(
+            "canonical run artifact owner is foreign")
+    return os.path.realpath(root)
+
+
+def _artifact_owner_store(ws: str):
+    """Return the same canonical RunStore used by host transport."""
+    del ws
+    return run_store_engine.RunStore()
+
+
+def _ensure_run_artifact_parent(
+        ws: str, state: Mapping[str, object]) -> str:
+    """Create or authenticate the exact RunStore-owned artifact parent."""
+    run_id = str(state.get("run_id") or "").strip()
+    if not run_id:
+        raise run_artifacts.RunArtifactError(
+            "run artifacts require an active run id")
+    locator = runtime_storage.load_workspace_locator(ws)
+    store = _artifact_owner_store(ws)
+    identity = runtime_storage.resolve_repository_identity(ws)
+    if isinstance(locator, Mapping) and (
+            locator.get("run_id") != run_id or
+            locator.get("repo_id") != identity.repo_id):
+        raise run_artifacts.RunArtifactError(
+            "workspace locator is foreign to the active artifact run")
+    layout = runtime_storage.resolve_layout(
+        identity, home=store.home, run_id=run_id)
+    expected_target = {
+        "schema": "taskplane.loop-artifact-target/v1",
+        "run_id": run_id,
+        "baseline": str(state.get("baseline") or ""),
+        "goal_fingerprint": hashlib.sha256(
+            str(state.get("goal") or "").encode("utf-8")).hexdigest(),
+    }
+    expected_host = {
+        "schema": "taskplane.loop-artifact-owner/v1",
+        "kind": "legacy-local",
+        "workspace": os.path.realpath(ws),
+    }
+    if isinstance(locator, Mapping):
+        # A stage-native locator is valid only with its already-created
+        # canonical owner. Never synthesize a replacement for severed state.
+        manifest = store.load(run_id)
+    elif os.path.lexists(layout.run_root):
+        manifest = store.load(run_id)
+    else:
+        try:
+            manifest = store.create(
+                identity, run_id=run_id, checkout=ws,
+                host=expected_host, target=expected_target)
+        except run_store_engine.RunStoreError:
+            # A concurrent creator is acceptable only when its completed
+            # manifest proves the same exact ownership below.
+            manifest = store.load(run_id)
+    repository = manifest.get("repository") or {}
+    paths = manifest.get("paths") or {}
+    if manifest.get("run_id") != run_id or \
+            repository.get("repo_id") != identity.repo_id or \
+            repository.get("checkout") != os.path.realpath(ws) or \
+            paths.get("artifacts") != layout.artifact_root:
+        raise run_artifacts.RunArtifactError(
+            "run artifact parent belongs to another active run")
+    if not isinstance(locator, Mapping) and (
+            manifest.get("target") != expected_target or
+            manifest.get("host") != expected_host):
+        raise run_artifacts.RunArtifactError(
+            "local run artifact parent has foreign ownership metadata")
+    return os.path.realpath(layout.artifact_root)
+
+
+def _ensure_run_artifacts(
+        ws: str, state: Mapping[str, object], *,
+        settings_digest: str, stage_instance_id: str,
+        candidate_fingerprint: str, requirement_id: str,
+        requirement_fingerprint: str,
+        stage_id: str = "design") -> tuple[str, dict, dict]:
+    """Create or authenticate the one immutable artifact manifest binding."""
+    run_id = str(state.get("run_id") or "").strip()
+    locator = runtime_storage.load_workspace_locator(ws)
+    identity = runtime_storage.resolve_repository_identity(ws)
+    if isinstance(locator, Mapping) and \
+            locator.get("repo_id") != identity.repo_id:
+        raise run_artifacts.RunArtifactError(
+            "workspace locator belongs to another repository")
+    repository_id = identity.repo_id
+    candidate = {
+        "id": f"{requirement_id or 'unattached'}@{tp.git_head(ws)}",
+        "fingerprint": candidate_fingerprint,
+        "revision": str(tp.git_head(ws) or ""),
+        "requirement": requirement_id,
+        "requirement_fingerprint": requirement_fingerprint,
+        "goal_fingerprint": hashlib.sha256(
+            str(state.get("goal") or "").encode("utf-8")).hexdigest(),
+    }
+    binding = run_artifacts.create_binding(
+        repository_id=repository_id, run_id=run_id, stage_id=stage_id,
+        stage_instance_id=stage_instance_id, candidate=candidate,
+        settings_digest=settings_digest,
+        source_fingerprint=hashlib.sha256(json.dumps({
+            "candidate": candidate,
+            "baseline": str(state.get("baseline") or ""),
+        }, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            allow_nan=False).encode("utf-8")).hexdigest())
+    root = _ensure_run_artifact_parent(ws, state)
+    manifest_path = os.path.join(root, run_artifacts.MANIFEST_NAME)
+    if not os.path.exists(manifest_path):
+        run_artifacts.create_manifest(root, binding=binding)
+    manifest = run_artifacts.load_manifest(root)
+    if manifest.get("binding") != binding:
+        raise run_artifacts.RunArtifactError(
+            "run artifact manifest belongs to another current binding")
+    verification = run_artifacts.verify_manifest(
+        root, expected_binding=binding)
+    reference = {
+        **run_artifacts.manifest_locator_reference(),
+        "binding_fingerprint": binding["fingerprint"],
+        "verification_fingerprint": verification["fingerprint"],
+    }
+    return root, binding, reference
+
+
+def _ensure_owned_cleanup_manifest(
+        ws: str, artifact_root: str, artifact_binding: Mapping[str, object]
+        ) -> str:
+    """Initialize the one run-owned after-run cleanup authority."""
+    run_root = os.path.dirname(os.path.realpath(artifact_root))
+    path = os.path.join(run_root, "cleanup", "owned-resources.json")
+    evidence_root = os.path.join(run_root, "evidence", "cleanup")
+    workspace_fingerprint = hashlib.sha256(json.dumps({
+        "repository_id": artifact_binding.get("repository_id"),
+        "workspace": os.path.realpath(ws),
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8")).hexdigest()
+    expected_owner = {
+        "repository_id": str(artifact_binding.get("repository_id") or ""),
+        "workspace_fingerprint": workspace_fingerprint,
+        "settings_digest": str(artifact_binding.get("settings_digest") or ""),
+        "run_id": str(artifact_binding.get("run_id") or ""),
+        "task_id": "governed-run", "attempt": 1,
+    }
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        owned_cleanup.create_manifest(
+            path, **expected_owner, evidence_root=evidence_root,
+            durable_artifacts=artifact_root)
+    manifest = owned_cleanup.load_manifest(path)
+    if manifest.get("owner") != expected_owner:
+        raise owned_cleanup.OwnedCleanupError(
+            "owned cleanup manifest belongs to another governed run")
+    if manifest.get("durable_artifacts") is None:
+        owned_cleanup.bind_durable_artifacts(path, artifact_root)
+    return path
+
+
+def _prepare_run_control_plane(
+        ws: str, state: Mapping[str, object]) -> dict:
+    """Create or authenticate the one whole-run evidence/cleanup boundary.
+
+    Product, Design and Plan can each be the first governed stage.  The run
+    candidate is therefore minted once from the bytes present at ``init`` and
+    remains immutable; later Design input freshness is a separate binding.
+    """
+    step = str(state.get("run_start_step") or state.get("step") or "")
+    stage_id = _LOOP_STAGE_KINDS.get(step)
+    if stage_id not in {"product", "design", "plan"}:
+        raise run_artifacts.RunArtifactError(
+            "run control-plane initialization requires Product, Design, or Plan")
+    effective = operational_settings.load_settings(environment=os.environ)
+    requirement_id = str(state.get("requirement_id") or "").strip()
+    requirement_fingerprint = _dc.requirement_fingerprint(
+        ws, requirement_id)
+    existing_binding = state.get("run_artifact_binding")
+    candidate_fingerprint = str(
+        state.get("run_candidate_fingerprint") or
+        ((existing_binding.get("candidate") or {}).get("fingerprint")
+         if isinstance(existing_binding, Mapping) else "") or
+        _design_input_fingerprint(ws))
+    stage_instance_id = str(
+        state.get("run_stage_instance_id") or
+        f"{stage_id}-" + hashlib.sha256(
+            f"{state.get('run_id')}:{candidate_fingerprint}:"
+            f"{effective.digest}".encode("utf-8")).hexdigest()[:24])
+    root, binding, reference = _ensure_run_artifacts(
+        ws, state, settings_digest=effective.digest,
+        stage_instance_id=stage_instance_id,
+        candidate_fingerprint=candidate_fingerprint,
+        requirement_id=requirement_id,
+        requirement_fingerprint=requirement_fingerprint,
+        stage_id=stage_id)
+    cleanup_manifest = _ensure_owned_cleanup_manifest(ws, root, binding)
+    fields = {
+        "run_start_step": step,
+        "run_stage_instance_id": stage_instance_id,
+        "run_candidate_fingerprint": candidate_fingerprint,
+        "settings_digest": effective.digest,
+        "run_artifacts": reference,
+        "run_artifact_binding": binding,
+        "owned_cleanup_manifest": cleanup_manifest,
+    }
+    for key, value in fields.items():
+        if key in state and state.get(key) != value:
+            raise run_artifacts.RunArtifactError(
+                f"run control-plane binding changed at {key}")
+    return fields
+
+
+def _prepare_design_control_plane(ws: str, state: Mapping[str, object]
+                                  ) -> tuple[dict, object]:
+    """Produce and persist the mandatory, settings-bound Design inputs."""
+    run_id = str(state.get("run_id") or "").strip()
+    if not run_id:
+        proposed_run_id = "loop-" + secrets.token_hex(12)
+        with mutate(ws) as fresh:
+            if fresh is None or fresh.get("step") != "design":
+                raise ValueError("Design advanced before run binding")
+            fresh.setdefault("run_id", proposed_run_id)
+            fresh.setdefault("baseline", tp.git_head(ws))
+            run_id = str(fresh["run_id"])
+        state = {**dict(state), "run_id": run_id,
+                 "baseline": state.get("baseline") or tp.git_head(ws)}
+    effective = operational_settings.load_settings(environment=os.environ)
+    run_control = _prepare_run_control_plane(ws, state)
+    catalog = lens_router.load_catalog()
+    catalog_fingerprint = lens_route_policy.catalog_fingerprint(
+        list(catalog.get("lenses") or []))
+    catalog_ids = [str(row.get("id") or "")
+                   for row in catalog.get("lenses") or []
+                   if isinstance(row, Mapping) and row.get("id")]
+    policy = effective.lenses.policy_for("design", catalog_ids=catalog_ids)
+    requirement_id = str(state.get("requirement_id") or "").strip()
+    requirement = reqs.get_requirement(ws, requirement_id) \
+        if requirement_id else None
+    requirement_fingerprint = _dc.requirement_fingerprint(
+        ws, requirement_id)
+    input_fingerprint = _design_input_fingerprint(ws)
+    artifact_binding = run_control["run_artifact_binding"]
+    candidate_fingerprint = str(
+        (artifact_binding.get("candidate") or {}).get("fingerprint") or "")
+    context_files = ((requirement or {}).get("context_files") or []) \
+        if isinstance(requirement, Mapping) else []
+    receipt = depgraph.prepare_design_decomposition(
+        ws, context_files, settings_digest=effective.digest)
+    binding = {
+        "schema": "taskplane.design-control-plane-binding/v1",
+        "run_id": run_id,
+        # Host transport authenticates against the immutable whole-run
+        # artifact owner.  Keep the evolving Design input instance separate
+        # so Product-started runs do not sever that authority at Design.
+        "stage_instance_id": artifact_binding["stage_instance_id"],
+        "design_input_instance_id": "design-" + hashlib.sha256(
+            f"{run_id}:{input_fingerprint}:{effective.digest}".encode(
+                "utf-8")).hexdigest()[:24],
+        "requirement": requirement_id,
+        "requirement_fingerprint": requirement_fingerprint,
+        "goal_fingerprint": hashlib.sha256(
+            str(state.get("goal") or "").encode("utf-8")).hexdigest(),
+        "candidate_fingerprint": candidate_fingerprint,
+        "input_fingerprint": input_fingerprint,
+        "catalog_fingerprint": catalog_fingerprint,
+        "settings_digest": effective.digest,
+        "decomposition_fingerprint": receipt["fingerprint"],
+        "lens_policy": policy.to_dict(),
+    }
+    binding["fingerprint"] = hashlib.sha256(json.dumps(
+        binding, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+    artifact_root = _run_artifact_root(ws, {
+        **dict(state), **run_control})
+    artifact_reference = run_control["run_artifacts"]
+    artifact_manifest = run_artifacts.load_manifest(artifact_root)
+    cleanup_manifest = _ensure_owned_cleanup_manifest(
+        ws, artifact_root, artifact_binding)
+    graph_entries = artifact_manifest["classes"][
+        "dependency-graphs"]["entries"]
+    graph_reference = next((
+        row for row in graph_entries
+        if (row.get("metadata") or {}).get("receipt_fingerprint") ==
+        receipt["fingerprint"]), None)
+    if graph_reference is None:
+        graph_reference = depgraph.publish_design_decomposition(
+            ws, artifact_root, receipt)
+    changed = False
+    with mutate(ws) as fresh:
+        if fresh is None or fresh.get("step") != "design" or \
+                fresh.get("requirement_id") != state.get("requirement_id"):
+            raise ValueError("Design advanced while decomposition was running")
+        changed = fresh.get("design_control_plane_binding") != binding
+        fresh.update(run_control)
+        fresh["settings_digest"] = effective.digest
+        fresh["design_lens_policy"] = policy.to_dict()
+        fresh["design_decomposition_receipt"] = receipt
+        fresh["design_control_plane_binding"] = binding
+        fresh["design_graph_fingerprint"] = receipt["graph_fingerprint"]
+        fresh["run_artifacts"] = artifact_reference
+        fresh["run_artifact_binding"] = artifact_binding
+        fresh["owned_cleanup_manifest"] = cleanup_manifest
+        fresh.setdefault("run_artifact_refs", {})[
+            "design_decomposition"] = graph_reference
+    if changed:
+        tp.trace(
+            ws, "design_control_plane_ready",
+            requirement=requirement_id,
+            status=receipt["status"],
+            graph=receipt["graph_fingerprint"][:12],
+            components=receipt["component_count"],
+            selected_components=receipt["selected_component_count"],
+            settings=effective.digest[:12],
+            maximum_lenses=policy.max_count,
+            fingerprint=binding["fingerprint"])
+    return receipt, policy
+
+
+def _design_control_plane_errors(ws: str, state: Mapping[str, object]) \
+        -> list[str]:
+    """Refuse a missing, stale, degraded, or severed Design input binding."""
+    try:
+        effective = operational_settings.load_settings(environment=os.environ)
+        catalog = lens_router.load_catalog()
+        catalog_rows = list(catalog.get("lenses") or [])
+        catalog_ids = [str(row.get("id") or "")
+                       for row in catalog_rows
+                       if isinstance(row, Mapping) and row.get("id")]
+        policy = effective.lenses.policy_for(
+            "design", catalog_ids=catalog_ids)
+    except Exception as exc:
+        return ["Design control-plane validation failed: "
+                f"{exc.__class__.__name__}: {exc}"]
+    errors = []
+    receipt = state.get("design_decomposition_receipt")
+    binding = state.get("design_control_plane_binding")
+    if not isinstance(receipt, Mapping):
+        return ["Design decomposition receipt is missing"]
+    if not isinstance(binding, Mapping):
+        return ["Design control-plane binding is missing"]
+    receipt_material = {str(key): value for key, value in receipt.items()
+                        if key != "fingerprint"}
+    if receipt.get("fingerprint") != hashlib.sha256(json.dumps(
+            receipt_material, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest():
+        errors.append("Design decomposition receipt fingerprint is invalid")
+    binding_material = {str(key): value for key, value in binding.items()
+                        if key != "fingerprint"}
+    if binding.get("fingerprint") != hashlib.sha256(json.dumps(
+            binding_material, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest():
+        errors.append("Design control-plane binding fingerprint is invalid")
+    if receipt.get("status") != "ready":
+        errors.append("Design decomposition is degraded: " + ", ".join(
+            str(reason) for reason in receipt.get("degraded_reasons") or []))
+    graph_fingerprint = str(
+        (depgraph.load(ws).get("meta") or {}).get("content_fingerprint") or "")
+    if receipt.get("head") != tp.git_head(ws) or \
+            receipt.get("scanned_head") != tp.git_head(ws):
+        errors.append("Design decomposition is stale for the current HEAD")
+    if receipt.get("graph_fingerprint") != graph_fingerprint:
+        errors.append("Design decomposition graph fingerprint is stale")
+    if receipt.get("settings_digest") != effective.digest or \
+            state.get("settings_digest") != effective.digest:
+        errors.append("Design decomposition settings digest is stale")
+    if state.get("design_lens_policy") != policy.to_dict() or \
+            binding.get("lens_policy") != policy.to_dict():
+        errors.append("Design lens policy is stale or severed")
+    if binding.get("requirement") != state.get("requirement_id") or \
+            binding.get("decomposition_fingerprint") != receipt.get(
+                "fingerprint"):
+        errors.append("Design control-plane binding does not match this run")
+    if binding.get("run_id") != state.get("run_id"):
+        errors.append("Design control-plane run identity is stale or severed")
+    artifact_binding = state.get("run_artifact_binding")
+    if not isinstance(artifact_binding, Mapping) or \
+            binding.get("stage_instance_id") != artifact_binding.get(
+                "stage_instance_id") or \
+            binding.get("candidate_fingerprint") != (
+                artifact_binding.get("candidate") or {}).get("fingerprint"):
+        errors.append("Design host transport artifact authority is severed")
+    if binding.get("requirement_fingerprint") != _dc.requirement_fingerprint(
+            ws, state.get("requirement_id")):
+        errors.append("Design requirement content changed after decomposition")
+    if binding.get("goal_fingerprint") != hashlib.sha256(
+            str(state.get("goal") or "").encode("utf-8")).hexdigest():
+        errors.append("Design goal binding is stale or severed")
+    input_fingerprint = binding.get(
+        "input_fingerprint", binding.get("candidate_fingerprint"))
+    if input_fingerprint != _design_input_fingerprint(ws):
+        errors.append("Design source bytes changed after decomposition")
+    if binding.get("catalog_fingerprint") != \
+            lens_route_policy.catalog_fingerprint(catalog_rows):
+        errors.append("Design lens catalog changed after decomposition")
+    if policy.max_count > operational_settings.DESIGN_LENS_MAX:
+        errors.append("Design lens policy exceeds the immutable maximum")
+    return errors
+
+
+def _design_team_plan(
+    ws: str, state: Mapping[str, object], focused_route: Mapping[str, object],
+    dispatch: Mapping[str, object],
+) -> dict:
+    """Compile and authorize one native quick worker per selected lens."""
+    del dispatch  # Design workers resolve one canonical settings snapshot.
+    selected = [str(value) for value in
+                focused_route.get("dispatchable_selected") or []]
+    if not selected or len(selected) != len(set(selected)) or len(selected) > 16:
+        raise ValueError("Design lens team must contain 1-16 unique workers")
+    binding = state.get("design_control_plane_binding")
+    if not isinstance(binding, Mapping):
+        raise ValueError("Design lens team requires a control-plane binding")
+    catalog = lens_router.load_catalog()
+    briefs = {lens_id: lens_router.lens_brief(lens_id, catalog)
+              for lens_id in selected}
+    if any(value is None for value in briefs.values()):
+        raise ValueError("Design lens team contains an unknown catalog lens")
+    role_reference = tp.portable_role_reference("tp-lens")
+    effective = operational_settings.load_settings(environment=os.environ)
+    design_stage = effective.stages["design"]
+    workers = []
+    for lens_id in selected:
+        # ``tp-lens`` is intentionally host-neutral and therefore has no
+        # agent-to-stage mapping of its own.  The historical ``quick`` value
+        # fell through to Build settings.  Resolve the explicit Design tier
+        # against this same typed settings snapshot instead.
+        worker_dispatch = tp.dispatch_fields(
+            "lens", "tp-lens", f"design-{lens_id}", "deep",
+            settings_context=effective)
+        if worker_dispatch.get("model") != design_stage.model or \
+                worker_dispatch.get("reasoning_effort") != \
+                design_stage.reasoning or \
+                worker_dispatch.get("settings_digest") != effective.digest:
+            raise ValueError("Design lens dispatch severed canonical settings")
+        worker_identity = worker_dispatch["task_name"]
+        result_path = f"design/lenses/{lens_id}.json"
+        workers.append({
+            "lens": lens_id,
+            "task_name": worker_identity,
+            "role_marker": worker_dispatch["role_marker"],
+            "role_reference": dict(role_reference),
+            "model_tier": worker_dispatch["model_tier"],
+            "model": worker_dispatch.get("model"),
+            "reasoning_effort": worker_dispatch["reasoning_effort"],
+            "task_slot": f"design-lens-{lens_id}",
+            "output": result_path,
+            "contract": {
+                "read_only": True,
+                "write_allow": [result_path],
+            },
+            "brief": briefs[lens_id],
+        })
+    role_reference_fingerprint = role_reference["fingerprint"]
+    for worker in workers:
+        intent_material = {
+            "schema": "taskplane.design-lens-dispatch-intent/v1",
+            "run_id": binding.get("run_id"),
+            "stage_instance_id": binding.get("stage_instance_id"),
+            "candidate_fingerprint": binding.get("candidate_fingerprint"),
+            "lens": worker["lens"],
+            "task_name": worker["task_name"],
+            "task_slot": worker["task_slot"],
+            "role_reference_fingerprint": role_reference_fingerprint,
+            "model_tier": worker["model_tier"],
+            "model": worker.get("model"),
+            "reasoning_effort": worker["reasoning_effort"],
+            "settings_digest": effective.digest,
+            "output": worker["output"],
+        }
+        worker["dispatch_intent"] = {
+            **intent_material,
+            "fingerprint": hashlib.sha256(json.dumps(
+                intent_material, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False).encode(
+                    "utf-8")).hexdigest(),
+        }
+    material = {
+        "schema": "taskplane.design-team-plan/v1",
+        "run_id": binding.get("run_id"),
+        "stage_instance_id": binding.get("stage_instance_id"),
+        "requirement": binding.get("requirement"),
+        "requirement_fingerprint": binding.get("requirement_fingerprint"),
+        "candidate_fingerprint": binding.get("candidate_fingerprint"),
+        "settings_digest": binding.get("settings_digest"),
+        "catalog_fingerprint": binding.get("catalog_fingerprint"),
+        "decomposition_fingerprint": binding.get(
+            "decomposition_fingerprint"),
+        "route_fingerprint": focused_route.get("route_fingerprint"),
+        "selected": selected,
+        "selected_count": len(selected),
+        "workers": workers,
+        "concurrency": {"mode": "parallel", "waves": [selected]},
+        "status": "planned",
+    }
+    plan = {**material, "fingerprint": hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")).hexdigest()}
+    existing = state.get("design_team_plan")
+    if isinstance(existing, Mapping) and all(
+            existing.get(key) == plan.get(key) for key in (
+                "fingerprint", "run_id", "stage_instance_id",
+                "candidate_fingerprint", "settings_digest",
+                "route_fingerprint")):
+        return _copy_json(existing)
+
+    artifact_root = _run_artifact_root(ws, state)
+    artifact_binding = state.get("run_artifact_binding")
+    if not isinstance(artifact_binding, Mapping):
+        raise ValueError("Design team requires a run artifact binding")
+    authority = tp.register_design_lens_dispatch_plan(
+        ws, plan, artifact_root=artifact_root,
+        artifact_binding=dict(artifact_binding))
+    authority_workers = authority.get("workers") or {}
+    snapshot = tp.git_head(ws)
+    for worker in workers:
+        lens_id = str(worker["lens"])
+        worker_contract = tp.build_contract(
+            f"DESIGN LENS: {lens_id}", read_only=True,
+            write_allow=[str(worker["output"])],
+            tools=["Read", "Grep", "Glob", "Write"])
+        worker_contract["task_id"] = str(worker["task_slot"])
+        worker_contract["design_team_plan_fingerprint"] = plan["fingerprint"]
+        worker_contract["design_candidate_fingerprint"] = plan[
+            "candidate_fingerprint"]
+        # Local lifecycle authority may contain an absolute private root.  It
+        # is intentionally absent from the portable team plan and is rejected
+        # by the host if replayed against a different manifest binding.
+        worker_contract["run_artifact_root"] = artifact_root
+        worker_contract["run_artifact_binding"] = _copy_json(
+            artifact_binding)
+        prepared = tp.prepare_worker_contract(
+            ws, worker_contract, stage="design-lens", task=lens_id,
+            task_name=str(worker["task_name"]),
+            role_marker=str(worker["role_marker"]))
+        prepared = tp.attach_design_lens_host_authority(
+            prepared, authority_workers.get(lens_id),
+            artifact_root=artifact_root,
+            artifact_binding=dict(artifact_binding))
+        tp.activate(
+            ws, prepared, snapshot=snapshot,
+            task_slot_override=str(worker["task_slot"]))
+    return {**plan, "host_authority": authority}
+
+
+def _design_team_errors(ws: str, state: Mapping[str, object]) -> list[str]:
+    """Require every selected lens to have one bound terminal result."""
+    plan = state.get("design_team_plan")
+    if not isinstance(plan, Mapping):
+        return ["Design lens team plan is missing"]
+    material = {str(key): value for key, value in plan.items()
+                if key not in {"fingerprint", "host_authority"}}
+    if plan.get("fingerprint") != hashlib.sha256(json.dumps(
+            material, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest():
+        return ["Design lens team plan fingerprint is invalid"]
+    binding = state.get("design_control_plane_binding") or {}
+    errors = []
+    for key in ("run_id", "stage_instance_id", "requirement",
+                "requirement_fingerprint", "candidate_fingerprint",
+                "settings_digest", "catalog_fingerprint",
+                "decomposition_fingerprint"):
+        if plan.get(key) != binding.get(key):
+            errors.append(f"Design lens team {key} binding is stale")
+    selected = [str(value) for value in plan.get("selected") or []]
+    workers = [row for row in plan.get("workers") or []
+               if isinstance(row, Mapping)]
+    if len(selected) != plan.get("selected_count") or \
+            {str(row.get("lens")) for row in workers} != set(selected):
+        errors.append("Design selected and dispatched worker sets differ")
+    try:
+        completion = tp.validate_design_lens_dispatch_completion(
+            ws, dict(plan), plan.get("host_authority"))
+        if completion.get("valid") is not True:
+            errors.extend(str(value) for value in
+                          completion.get("errors") or [
+                              "Design host lifecycle is incomplete"])
+    except Exception as exc:
+        errors.append("Design host lifecycle validation failed: "
+                      f"{exc.__class__.__name__}: {exc}")
+    for worker in workers:
+        path = os.path.join(ws, str(worker.get("output") or ""))
+        result = tp.load_json(path, default=None,
+                              what="Design lens terminal result")
+        if not isinstance(result, Mapping):
+            errors.append(f"Design lens {worker.get('lens')} has no result")
+            continue
+        result_material = {str(key): value for key, value in result.items()
+                           if key != "fingerprint"}
+        expected = hashlib.sha256(json.dumps(
+            result_material, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+        if result.get("schema") != "taskplane.design-lens-result/v1" or \
+                result.get("lens") != worker.get("lens") or \
+                result.get("worker_identity") != worker.get("task_name") or \
+                result.get("team_plan_fingerprint") != plan.get(
+                    "fingerprint") or result.get("candidate_fingerprint") != \
+                plan.get("candidate_fingerprint") or \
+                result.get("outcome") not in {"pass", "changes-required"} or \
+                result.get("fingerprint") != expected:
+            errors.append(f"Design lens {worker.get('lens')} result is invalid")
+    return errors
 
 
 def bind_producer_observation(
@@ -1273,7 +1971,7 @@ def _stage_mutation_blocker(mode: str, manifest: Mapping[str, object],
             and singleton.get("current_task", 0) == 0
             and singleton.get("step") in {"pm", "design", "plan"}
             and not any(key in singleton for key in (
-                "baseline", "selection", "replan_history", "retro")))
+                "selection", "replan_history", "retro")))
         if not pristine_new_run or migration_fields:
             return ("new-run mode cannot promote an existing singleton or "
                     "migration-bound run; legacy read-only behavior remains "
@@ -4042,6 +4740,9 @@ def init(ws: str, goal: str, spec_path: str | None = None,
                  archived_to=archived_to)
     state = {
         "governance_revision": 2,
+        "run_id": ((root_authority or {}).get("run_id") or
+                   "loop-" + secrets.token_hex(12)),
+        "baseline": tp.git_head(ws),
         # Workers submit evidence; only the driver asks the engine to evaluate
         # a gate.  Older persisted loops omit this flag and remain resumable.
         "submission_required": True,
@@ -4072,6 +4773,14 @@ def init(ws: str, goal: str, spec_path: str | None = None,
             "_stage_native_root_authority": root_authority}
            if root_authority is not None else {}),
     }
+    try:
+        state.update(_prepare_run_control_plane(ws, state))
+    except Exception as exc:
+        return {
+            "error": "whole-run control-plane initialization failed closed: "
+                     f"{exc.__class__.__name__}: {exc}",
+            "refused": True, "step": state["step"],
+        }
     save(ws, state)
     tp.trace(ws, "loop_init", goal=goal, spec_path=spec_path,
              first_step=state["step"], max_fix_cycles=max_fix_cycles,
@@ -5949,7 +6658,10 @@ def next_action(
         return {"error": "expanded-route authority is limited to Plan",
                 "step": step, "status": status(ws)}
 
-    if step == "retro":
+    if step == "retro" or (
+            step == "failed" and
+            isinstance(state.get("run_artifact_binding"), Mapping) and
+            not isinstance(state.get("terminal_cleanup"), Mapping)):
         return {
             "step": "retro", "paused": False, "action": "loop_retro",
             "runtime_evals": runtime_eval.guidance("retro"),
@@ -6066,6 +6778,19 @@ def next_action(
                      task=(current_dispatch_task or {}).get("id"),
                      surface="next", reason="mandatory_replan_required")
             return {**staged_refusal, "status": status(ws)}
+    if step == "fix":
+        current_dispatch_task = _current_task(state) or {}
+        correction = current_dispatch_task.get("failure_routing")
+        if not isinstance(correction, Mapping) or \
+                correction.get("next") != "fix" or \
+                correction.get("product_fix_allowed") is not True:
+            return {
+                "error": "product Fix refused: the current candidate has no "
+                         "exclusive classified product-failure authority",
+                "step": step,
+                "failure_routing": correction,
+                "status": status(ws),
+            }
 
     # Per-task steps run in the task's own workspace when one was claimed.
     act_ws = ws
@@ -6085,7 +6810,26 @@ def next_action(
             tws = current.get("workspace")
             act_ws = tws if tws and os.path.isdir(tws) else ws
 
+    design_decomposition = None
+    design_lens_policy = None
     if step == "design" and not state.get("design_approved"):
+        try:
+            design_decomposition, design_lens_policy = \
+                _prepare_design_control_plane(ws, state)
+        except Exception as exc:
+            return {
+                "error": "mandatory Design decomposition failed closed: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "step": step, "status": status(ws),
+            }
+        if design_decomposition.get("status") != "ready":
+            return {
+                "error": "mandatory Design decomposition is degraded",
+                "step": step,
+                "decomposition": design_decomposition,
+                "status": status(ws),
+            }
+        state = load(ws) or state
         # H3 (v2.2.1): until the design is human-approved, the graph
         # baseline follows the CURRENT scan — capturing once from a stale
         # graph and then blocking on "rescan" left the stored fingerprint
@@ -6138,6 +6882,23 @@ def next_action(
                 "step": step, **dispatch}
 
     contract = _step_contract(step, state, act_ws)
+    if step in {"evaluate", "fix"} and worker_task is not None:
+        contract["failure_candidate"] = _failure_candidate_identity(
+            act_ws, worker_task)
+    if step == "fix" and worker_task is not None:
+        contract["failure_routing"] = _copy_json(
+            worker_task.get("failure_routing") or {})
+    if step == "design" and design_decomposition is not None and \
+            design_lens_policy is not None:
+        contract["design_decomposition"] = _copy_json(design_decomposition)
+        contract["design_lens_policy"] = design_lens_policy.to_dict()
+    artifact_binding = state.get("run_artifact_binding")
+    if isinstance(artifact_binding, Mapping):
+        # Lifecycle hooks preserve every governed stage worker beside the
+        # same run evidence.  This is a locator/binding only; it grants no
+        # transition, write, or correction authority.
+        contract["run_artifact_root"] = _run_artifact_root(ws, state)
+        contract["run_artifact_binding"] = _copy_json(artifact_binding)
     enforcement = ((state.get("enforcement") or {}).get("current"))
     if enforcement:
         contract["enforcement"] = enforcement
@@ -6239,6 +7000,24 @@ def next_action(
         try:
             stage_evidence, mandatory = _focused_stage_evidence(
                 ws, state, focused_stage)
+            maximum_lenses = None
+            if focused_stage == "design" and design_decomposition is not None \
+                    and design_lens_policy is not None:
+                stage_evidence = dict(stage_evidence)
+                stage_evidence["decomposition"] = _copy_json(
+                    design_decomposition)
+                stage_evidence["component_lens_candidates"] = sorted({
+                    str(lens_id)
+                    for component in design_decomposition.get("components") or []
+                    if isinstance(component, Mapping)
+                    for lens_id in component.get("lens_candidates") or []
+                    if str(lens_id)
+                })
+                stage_evidence["files"] = list(
+                    (design_decomposition.get("context") or {}).get(
+                        "expanded_files") or stage_evidence.get("files") or [])
+                mandatory = list(design_lens_policy.mandatory)
+                maximum_lenses = design_lens_policy.max_count
             focused_target = str(
                 state.get("requirement_id") or
                 f"goal-{hashlib.sha256(str(state.get('goal') or '').encode()).hexdigest()[:16]}")
@@ -6246,6 +7025,7 @@ def next_action(
                 _focused_stage_route(
                     ws, stage=focused_stage, target=focused_target,
                     evidence=stage_evidence, mandatory_lenses=mandatory,
+                    maximum_lenses=maximum_lenses,
                     expanded_route_provider_client=
                         expanded_route_provider_client,
                     expanded_route_provider_receipt=
@@ -6274,6 +7054,26 @@ def next_action(
         tp.trace(ws, "lens_route", step=step, requested_breadth=breadth,
                  engine_ran="signals" in (routing.get("context") or {}),
                  lenses=[[x["id"], x["mode"]] for x in routing["lenses"]])
+
+    design_team_plan = None
+    if step == "design" and isinstance(focused_route, Mapping):
+        try:
+            design_team_plan = _design_team_plan(
+                ws, state, focused_route, dispatch)
+            with mutate(ws) as fresh:
+                if fresh is None or fresh.get("step") != "design" or \
+                        fresh.get("design_control_plane_binding") != \
+                        state.get("design_control_plane_binding"):
+                    raise ValueError(
+                        "Design control plane changed during team selection")
+                fresh["design_team_plan"] = _copy_json(design_team_plan)
+            state = load(ws) or state
+        except Exception as exc:
+            return {
+                "error": "dynamic Design team planning failed closed: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "step": step, "status": status(ws),
+            }
 
     def heads():                    # lazy: only an emitting branch pays
         # The row must name the same canonical tree that supplied the graph
@@ -6512,6 +7312,25 @@ def next_action(
         **({"focused_route": focused_route} if focused_route else {}),
         **({"expanded_route_request": expanded_route_request}
            if expanded_route_request else {}),
+        **({"failure_candidate": contract.get("failure_candidate")}
+           if contract.get("failure_candidate") else {}),
+        **({"failure_routing": contract.get("failure_routing")}
+           if contract.get("failure_routing") else {}),
+        **({"design_decomposition": design_decomposition,
+            "design_lens_policy": design_lens_policy.to_dict()}
+           if step == "design" and design_decomposition is not None and
+           design_lens_policy is not None else {}),
+        **({"design_team_plan": design_team_plan,
+            "design_lens_dispatches": design_team_plan["workers"],
+            "design_lens_wait_policy": event_wait_policy(
+                "design-lens-wave", design_team_plan["selected_count"]),
+            "design_dispatch_order": [
+                "dispatch selected quick lens workers concurrently",
+                "wait once for the exact selected set",
+                "validate one bound terminal result per selected lens",
+                "run tp-designer to consolidate the current Design artifact",
+            ]}
+           if design_team_plan is not None else {}),
         # cross-host artifact: '/'-shaped out, host-shaped in state
         "task": tp.posix_workspace(task),
         "contract": {"read_only": bool(contract.get("read_only")),
@@ -6786,9 +7605,16 @@ _design_evidence_paths = _dc.design_evidence_paths
 _design_evidence_fingerprint = _dc.design_evidence_fingerprint
 _design_current_errors = _dc.design_current_errors
 _design_dor = _dc.design_dor
-_design_dod_errors = _dc.design_dod_errors
+_base_design_dod_errors = _dc.design_dod_errors
 _design_plan_errors = _dc.design_plan_errors
 _design_review_errors = _dc.design_review_errors
+
+
+def _design_dod_errors(ws: str, state: dict) -> list:
+    """Join the Design artifact DoD with its mandatory runtime inputs."""
+    return [*_base_design_dod_errors(ws, state),
+            *_design_control_plane_errors(ws, state),
+            *_design_team_errors(ws, state)]
 
 
 def _retained_production_authority_errors(ws: str) -> list[str]:
@@ -8013,6 +8839,219 @@ def _evaluation_unavailable_errors(ws: str, state: dict,
     return errors, verdict
 
 
+def _failure_candidate_identity(ws: str, task: Mapping[str, object]) -> dict:
+    head = str(tp.git_head(ws) or "").strip()
+    candidate_id = f"{str(task.get('id') or 'unknown')}@{head}"
+    return {
+        "id": candidate_id,
+        "fingerprint": hashlib.sha256(
+            candidate_id.encode("utf-8")).hexdigest(),
+    }
+
+
+def _detected_build_failure_routing(
+        ws: str, task: Mapping[str, object], submission: Mapping[str, object],
+        stage: str) -> dict:
+    """Persist detection truth without guessing product ownership.
+
+    A failed Build/Fix submission proves a red, but it does not prove whether
+    the product, test, environment, or infrastructure is wrong.  Detection
+    therefore mints a typed ``unknown`` record and a hold route.  A later
+    independent evaluator may replace it only with a complete candidate-bound
+    inventory; exclusively product records are the sole Fix authority.
+    """
+    candidate = _failure_candidate_identity(ws, task)
+    evidence = {
+        "submission_fingerprint": str(submission.get("fingerprint") or
+                                      "unavailable"),
+        "submission_outcome": str(submission.get("outcome") or "fail"),
+        "stage": stage,
+        "task": str(task.get("id") or "unknown"),
+    }
+    record = {
+        "schema": failure_routing.FAILURE_RECORD_SCHEMA_ID,
+        "id": "build-detection-" + hashlib.sha256(json.dumps(
+            evidence, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True).encode("utf-8")).hexdigest()[:24],
+        "source": "taskplane.loop.gate", "stage": stage,
+        "repro": "re-run the exact failed Build/Fix submission evidence",
+        "evidence": evidence,
+        "evidence_digest": failure_routing.evidence_digest(evidence),
+        "class": "unknown",
+        "reason": "Build failure detected; ownership is not yet classified",
+        "owner": "independent-evaluation", "cluster": "build-detection",
+        "route": failure_routing.route_for_class("unknown"),
+        "candidate": candidate,
+    }
+    checked = failure_routing.validate_failure_record(
+        record, expected_stage=stage, expected_candidate=candidate)
+    decision = failure_routing.route_failure_records([checked])
+    decision["fingerprint"] = hashlib.sha256(json.dumps(
+        decision, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    return decision
+
+
+def _build_quality_binding(
+        ws: str, state: Mapping[str, object], task: Mapping[str, object],
+        stage: str) -> dict:
+    """Derive the only Build-quality binding accepted by this loop head."""
+    candidate = _failure_candidate_identity(ws, task)
+    settings = operational_settings.load_settings(environment=os.environ)
+    runtime_digest = str(tp.engine_fingerprint() or "")
+    environment_digest = hashlib.sha256(json.dumps({
+        "python": [sys.version_info.major, sys.version_info.minor],
+        "platform": sys.platform,
+        "test_backend": settings.tests.backend,
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    stage_instance = hashlib.sha256(json.dumps({
+        "run_id": str(state.get("run_id") or ""),
+        "stage": stage,
+        "task": str(task.get("id") or ""),
+        "candidate": candidate,
+        "settings_digest": settings.digest,
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    return {
+        "candidate": candidate,
+        "run_id": str(state.get("run_id") or ""),
+        "stage_instance": f"{stage}-{stage_instance[:24]}",
+        "settings_digest": settings.digest,
+        "runtime_digest": runtime_digest,
+        "environment_digest": environment_digest,
+    }
+
+
+def record_build_quality(
+        ws: str, task_id: str, *, strategy: Mapping[str, object],
+        receipt: Mapping[str, object], stage: str | None = None) -> dict:
+    """Admit and persist current Build/Fix quality from its typed producer."""
+    state = load(ws)
+    if state is None:
+        return {"error": "no active loop"}
+    current_stage = str(stage or state.get("step") or "")
+    if current_stage not in {"execute", "fix"}:
+        return {"error": "Build quality may be recorded only during Build or Fix"}
+    if current_stage != state.get("step"):
+        return {"error": "Build-quality stage assertion does not match the "
+                         "current governed stage"}
+    task = next((row for row in state.get("tasks") or []
+                 if str(row.get("id") or "") == str(task_id)), None)
+    if task is None:
+        return {"error": f"no task {task_id}"}
+    task_ws = str(task.get("workspace") or ws)
+    expected = _build_quality_binding(task_ws, state, task, current_stage)
+    try:
+        validated_strategy = test_strategy.validate_strategy(strategy)
+        admitted = build_quality.admit_build_quality(
+            validated_strategy, receipt, expected_binding=expected)
+        artifact_root = _run_artifact_root(ws, state)
+        metadata = {
+            "producer": "taskplane.build_quality",
+            "schema": build_quality.BUILD_QUALITY_RECEIPT_SCHEMA_ID,
+            "task": str(task_id), "stage": current_stage,
+            "candidate_fingerprint": expected["candidate"]["fingerprint"],
+            "receipt_fingerprint": admitted["fingerprint"],
+        }
+        manifest = run_artifacts.load_manifest(artifact_root)
+        existing = [entry for entry in manifest["classes"]["validation"][
+            "entries"] if entry.get("metadata") == metadata]
+        if len(existing) > 1:
+            raise run_artifacts.RunArtifactError(
+                "Build-quality receipt has duplicate durable publications")
+        reference = (dict(existing[0]) if existing else
+                     run_artifacts.publish_artifact(
+                         artifact_root, "validation", admitted,
+                         metadata=metadata))
+    except Exception as exc:
+        return {"error": "Build quality refused: "
+                         f"{exc.__class__.__name__}: {exc}"}
+    with mutate(ws) as locked:
+        if locked is None or locked.get("step") != current_stage:
+            return {"error": "loop advanced while Build quality was validated"}
+        target = next((row for row in locked.get("tasks") or []
+                       if str(row.get("id") or "") == str(task_id)), None)
+        if target is None:
+            return {"error": f"no task {task_id}"}
+        target["test_strategy"] = validated_strategy
+        target["build_quality_receipt"] = admitted
+        target["build_quality_artifact"] = reference
+    tp.trace(ws, "build_quality_admitted", task=task_id,
+             stage=current_stage, receipt=admitted["fingerprint"])
+    return {"admitted": True, "task": str(task_id), "stage": current_stage,
+            "receipt": admitted, "artifact": reference}
+
+
+def _build_quality_errors(
+        ws: str, state: Mapping[str, object], task: Mapping[str, object],
+        stage: str) -> list[str]:
+    strategy = task.get("test_strategy")
+    receipt = task.get("build_quality_receipt")
+    if not isinstance(strategy, Mapping) or not isinstance(receipt, Mapping):
+        return ["current Build-quality strategy and receipt are required"]
+    try:
+        build_quality.admit_build_quality(
+            strategy, receipt,
+            expected_binding=_build_quality_binding(ws, state, task, stage))
+    except Exception as exc:
+        return ["current Build-quality receipt is invalid: "
+                f"{exc.__class__.__name__}: {exc}"]
+    reference = task.get("build_quality_artifact")
+    if not isinstance(reference, Mapping) or \
+            reference.get("fingerprint") != receipt.get("fingerprint"):
+        # Run-artifact entries and receipts use independent fingerprints.
+        # The exact receipt identity must instead be carried in metadata.
+        if not isinstance(reference, Mapping) or \
+                (reference.get("metadata") or {}).get(
+                    "receipt_fingerprint") != receipt.get("fingerprint"):
+            return ["Build-quality durable artifact reference is missing"]
+    return []
+
+
+def _build_quality_required(task: Mapping[str, object] | None) -> bool:
+    """New Design-authored test contracts opt into the contract-changing gate."""
+    return isinstance((task or {}).get("test_contract"), Mapping)
+
+
+def _evaluation_failure_routing(
+        ws: str, state: dict, task: dict) -> tuple[list, dict, dict]:
+    """Admit one classified evaluator inventory before any correction."""
+    del state
+    verdict, errors = _read_json(runtime_storage.evaluation_path(ws))
+    if errors:
+        return errors, verdict, {}
+    try:
+        evaluation_output.validate_evaluator_value(verdict)
+        records = failure_routing.validate_failure_records(
+            verdict.get("failures") or [],
+            expected_candidate=_failure_candidate_identity(ws, task))
+        if any(record.get("stage") not in {"build", "execute", "evaluate"}
+               for record in records):
+            raise failure_routing.FailureRoutingError(
+                "failure_stage",
+                "delivery correction only accepts Build or Evaluate failures")
+        decision = failure_routing.route_failure_records(records)
+        decision["fingerprint"] = hashlib.sha256(json.dumps(
+            decision, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+    except (evaluation_output.OutputValidationError,
+            failure_routing.FailureRoutingError) as exc:
+        code = getattr(exc, "code", "failure_admission")
+        errors.append(f"failure classification is invalid ({code}): {exc}")
+        return errors, verdict, {}
+    if verdict.get("task") != task.get("id"):
+        errors.append("failure inventory is for task "
+                      f"{verdict.get('task')!r}, expected {task.get('id')!r}")
+    availability = verdict.get("evaluation") or {}
+    if availability.get("status") != "complete" or \
+            availability.get("reason_code") != "none":
+        errors.append("ordinary failure routing requires a completed judgment")
+    if verdict.get("verdict") != "fail":
+        errors.append("failure routing requires evaluator verdict 'fail'")
+    return errors, verdict, decision
+
+
 # One canonical severity vocabulary (v2.3.0). Producers disagree — the lens
 # brief says high|med|low, the lens catalog's verdict schema says
 # blocker|major|minor|question|praise, free-form reviews say critical —
@@ -8439,6 +9478,67 @@ def _run_submit_checkpoint(ws: str, state: Mapping[str, object],
     return receipt
 
 
+def _task_submission_authority(
+        workspace: str, stage: str, task: Mapping[str, object]) -> dict:
+    """Project exact task-owned active contract evidence for one submission."""
+    binding = _worker_stage_binding(workspace, stage, task)
+    if not isinstance(binding, Mapping):
+        raise ValueError("exact task worker contract is missing")
+    contract = binding.get("contract") or {}
+    lifecycle = contract.get("worker_lifecycle") or {}
+    expected_scope = list(task.get("scope") or [])
+    actual_scope = list((contract.get("coding") or {}).get(
+        "scope_paths") or [])
+    if lifecycle.get("stage") != stage or \
+            lifecycle.get("task") != str(task.get("id") or "") or \
+            lifecycle.get("slot") != binding.get("slot") or \
+            actual_scope != expected_scope or \
+            lifecycle.get("status") not in {"active", "terminal"}:
+        raise ValueError("task worker contract does not match this submission")
+    material = {
+        "schema": "taskplane.task-submission-authority/v1",
+        "stage": stage,
+        "task": str(task.get("id") or ""),
+        "task_slot": str(binding.get("slot") or ""),
+        "contract_id": str(contract.get("task_id") or ""),
+        "expected_task_name": str(
+            lifecycle.get("expected_task_name") or ""),
+        "scope": actual_scope,
+        "workspace_fingerprint": hashlib.sha256(
+            os.path.realpath(workspace).encode("utf-8")).hexdigest(),
+    }
+    return {**material, "fingerprint": hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()}
+
+
+def _task_submission_authority_error(
+        workspace: str, submission: Mapping[str, object], stage: str,
+        task: Mapping[str, object]) -> str | None:
+    authority = submission.get("task_authority")
+    if not isinstance(authority, Mapping):
+        return "submission has no exact task-owned contract authority"
+    material = {str(key): value for key, value in authority.items()
+                if key != "fingerprint"}
+    expected_fingerprint = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    if authority.get("fingerprint") != expected_fingerprint:
+        return "submission task-owned contract authority is stale"
+    expected = {
+        "stage": stage,
+        "task": str(task.get("id") or ""),
+        "scope": list(task.get("scope") or []),
+        "workspace_fingerprint": hashlib.sha256(
+            os.path.realpath(workspace).encode("utf-8")).hexdigest(),
+    }
+    if any(authority.get(key) != value for key, value in expected.items()):
+        return "submission task-owned contract authority is foreign"
+    if authority.get("task_slot") != authority.get("contract_id"):
+        return "submission task slot and contract identity are severed"
+    return None
+
+
 def submit(ws: str, outcome: str, note: str = "",
            task_id: str | None = None) -> dict:
     """Worker submission — evidence request, never a state transition.
@@ -8590,6 +9690,17 @@ def submit(ws: str, outcome: str, note: str = "",
             "content_fingerprint")
     evidence_engine_ws = _submission_evidence_engine_workspace(
         ws, state, task, act_ws)
+    task_authority = None
+    if step in {"execute", "fix"} and _build_quality_required(task):
+        try:
+            task_authority = _task_submission_authority(
+                act_ws, step, task)
+        except Exception as exc:
+            return {
+                "error": "task-owned submission authority failed closed: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "submitted": False, "transitioned": False,
+            }
     submission = {
         "step": step,
         "task": (task or {}).get("id"),
@@ -8611,6 +9722,8 @@ def submit(ws: str, outcome: str, note: str = "",
         "evidence_engine_fingerprint":
             tp.workspace_engine_fingerprint(evidence_engine_ws),
         "submitted_at": int(time.time()),
+        **({"task_authority": task_authority}
+           if task_authority is not None else {}),
     }
     if checkpoint_receipt is not None:
         submission["checkpoint_receipt"] = checkpoint_receipt
@@ -8851,6 +9964,13 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         if submission.get("step") != step or submission.get("outcome") != outcome:
             return {"error": "gate request does not match the worker submission",
                     "step": step, "submission": submission}
+        if step in {"execute", "fix"} and \
+                _build_quality_required(task_for_submission):
+            authority_error = _task_submission_authority_error(
+                str(submission.get("workspace") or ws), submission, step,
+                task_for_submission)
+            if authority_error:
+                return {"error": authority_error, "step": step}
         stale = _submission_staleness(ws, submission)
         if stale:
             return {"error": stale + " — discard stale evidence and submit again",
@@ -8872,6 +9992,14 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         # destroy the work. Commit first, then gate.
         wt = wt_precheck.get("workspace")
         if outcome == "pass":
+            quality_errors = (_build_quality_errors(
+                wt or ws, state, wt_precheck, "execute")
+                if _build_quality_required(wt_precheck) else [])
+            if quality_errors:
+                tp.trace(ws, "loop_gate_blocked", step=step, task=task_id,
+                         reason="build_quality", errors=quality_errors)
+                return {"error": "Build quality failed — task remains running",
+                        "dod": {"passed": False, "errors": quality_errors}}
             with _claimed_execute_suite_binding():
                 dod_errors = _task_dod_errors(
                     wt or ws, state, wt_precheck,
@@ -8902,6 +10030,12 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     return {"error": stale + " during gate validation — "
                                      "submit the final state again",
                             "step": step}
+                if _build_quality_required(t):
+                    authority_error = _task_submission_authority_error(
+                        str(submission.get("workspace") or ws), submission,
+                        step, t)
+                    if authority_error:
+                        return {"error": authority_error, "step": step}
             prepared_registration = None
             if outcome == "pass":
                 try:
@@ -8923,6 +10057,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             t.pop("_submission", None)
             if outcome != "pass":
                 t["_build_failed"] = True
+                t["failure_routing"] = _detected_build_failure_routing(
+                    wt or ws, t, submission or {}, "execute")
             release_ws = t.get("workspace") or ws
             released_contracts = tp.release_worker_contracts_for_gate(
                 release_ws, stage=step, task=str(task_id))
@@ -9070,10 +10206,21 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
 
     unavailable_verdict = None
     evaluation_progress = None
+    failure_verdict = None
+    failure_decision = None
 
     # A reported PASS is a request to evaluate the gate. Evidence, not the
     # agent's assertion, determines whether the state machine advances.
     if outcome == "pass" and step in ("execute", "fix"):
+        quality_errors = (_build_quality_errors(
+            act_ws, state, task, step)
+            if _build_quality_required(task) else [])
+        if quality_errors:
+            tp.trace(ws, "loop_gate_blocked", step=step,
+                     reason="build_quality", errors=quality_errors)
+            return {"error": "Build quality failed — step did not advance",
+                    "step": step,
+                    "dod": {"passed": False, "errors": quality_errors}}
         with _claimed_execute_suite_binding():
             dod_errors = _task_dod_errors(
                 act_ws, state, task,
@@ -9085,6 +10232,12 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                              "advance", "step": step,
                     "dod": {"passed": False, "errors": dod_errors}}
     if outcome == "pass" and step == "evaluate":
+        if state.get("_build_failed") or (task or {}).get("_build_failed"):
+            return {
+                "error": "a detected Build failure must be classified before "
+                         "correction; an evaluator pass cannot erase it",
+                "step": step,
+            }
         # A4: the engine that PRODUCED this evidence vs the one about to
         # judge it — a pure pre-check (decision 0018), so equal engines
         # leave the walk below byte-unchanged.
@@ -9119,13 +10272,29 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             return {"error": "evaluation infrastructure is unavailable, not "
                              "a product defect — gate unavailable; no FIX "
                              "cycle was opened", "step": step}
-        try:
-            evaluation_progress = _canonical_evaluation_progress(
-                act_ws, state, task)
-        except Exception as exc:  # legacy/incomplete runs retain old fallback
-            tp.trace(ws, "review_convergence_unavailable",
-                     task=(task or {}).get("id"),
-                     error=f"{exc.__class__.__name__}: {exc}")
+        routing_errors = _producer_observation_errors(
+            act_ws, state, task, step, state.get("_submission"))
+        classified_errors, failure_verdict, failure_decision = \
+            _evaluation_failure_routing(act_ws, state, task)
+        routing_errors.extend(classified_errors)
+        if routing_errors:
+            tp.trace(ws, "loop_gate_blocked", step=step,
+                     reason="unclassified_evaluation_failure",
+                     errors=routing_errors)
+            return {
+                "error": "failure classification failed — no correction "
+                         "path was opened",
+                "step": step,
+                "dod": {"passed": False, "errors": routing_errors},
+            }
+        if failure_decision.get("next") == "fix":
+            try:
+                evaluation_progress = _canonical_evaluation_progress(
+                    act_ws, state, task)
+            except Exception as exc:
+                tp.trace(ws, "review_convergence_unavailable",
+                         task=(task or {}).get("id"),
+                         error=f"{exc.__class__.__name__}: {exc}")
     signoff_evidence = None
     if outcome == "pass" and step == "em":
         signoff_errors = _producer_observation_errors(
@@ -9177,6 +10346,14 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             if stale:
                 return {"error": stale + " during gate validation — submit "
                                  "the final state again", "step": step}
+            if step in {"execute", "fix"}:
+                locked_task = _current_task(state)
+                if _build_quality_required(locked_task):
+                    authority_error = _task_submission_authority_error(
+                        str(submission.get("workspace") or ws), submission,
+                        step, locked_task)
+                    if authority_error:
+                        return {"error": authority_error, "step": step}
         if outcome == "pass" and step == "evaluate":
             current = _current_task(state)
             try:
@@ -9315,10 +10492,37 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     verified_suite
             if outcome != "pass":
                 state["_build_failed"] = True
+                current = _current_task(state)
+                current["failure_routing"] = \
+                    _detected_build_failure_routing(
+                        act_ws, current, submission or {}, "execute")
         elif step == "evaluate":
             t = _current_task(state)
             build_failed = state.pop("_build_failed", False) or \
                 t.pop("_build_failed", False)
+            if outcome == "fail" and isinstance(failure_decision, dict):
+                t["failure_routing"] = _copy_json(failure_decision)
+                t["evaluation"] = {
+                    "task": t.get("id"),
+                    "status": "complete",
+                    "verdict": "fail",
+                    "reason_code": "classified_failure",
+                    "detail": ("classified before correction: "
+                               + str(failure_decision.get("next") or "hold")),
+                    "failures": _copy_json(
+                        (failure_verdict or {}).get("failures") or []),
+                    "routing": _copy_json(failure_decision),
+                }
+                tp.trace(
+                    ws, "failure_classified", task=t.get("id"),
+                    route=failure_decision.get("next"),
+                    classes=sorted({
+                        str(row.get("class")) for row in
+                        failure_decision.get("records") or []
+                        if isinstance(row, Mapping)}),
+                    product_fix_allowed=failure_decision.get(
+                        "product_fix_allowed") is True,
+                    fingerprint=failure_decision.get("fingerprint"))
             if outcome == "unavailable" and not build_failed:
                 availability = dict(
                     (unavailable_verdict or {}).get("evaluation") or {})
@@ -9372,6 +10576,12 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                         state["step"] = "execute"
                     else:
                         state["step"] = after_last
+            elif outcome == "fail" and (
+                    not isinstance(failure_decision, dict) or
+                    failure_decision.get("next") != "fix" or
+                    failure_decision.get("product_fix_allowed") is not True):
+                t["status"] = "failed"
+                state["step"] = "escalated"
             else:
                 t["fix_cycles"] = t.get("fix_cycles", 0) + 1
                 if isinstance(evaluation_progress, dict):
@@ -9437,6 +10647,12 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                 current = _current_task(state)
                 state.setdefault("_suite_evidence", {})[current["id"]] = \
                     verified_suite
+            if outcome != "pass":
+                current = _current_task(state)
+                current["failure_routing"] = \
+                    _detected_build_failure_routing(
+                        act_ws, current, submission or {}, "fix")
+                current["_build_failed"] = True
             state["step"] = "evaluate"
         elif step == "em":
             if outcome == "pass":
@@ -9682,6 +10898,553 @@ def _signoff_gate_dod(ws: str, state: dict) -> dict:
         "notices": [], "scope": [], "baseline": state.get("baseline"),
         "legacy_recovery": True,
     }
+
+
+def _seal_terminal_metrics_before_retro(state: dict) -> dict:
+    """Set measured or explicit attributable-unavailable terminal truth."""
+    existing = state.get("wave_metrics_receipt")
+    if isinstance(existing, Mapping):
+        state["wave_metrics_receipt"] = wave_metrics.validate_wave_receipt(
+            existing)
+        state.pop("wave_metrics_unavailable", None)
+        return {"status": "measured",
+                "fingerprint": state["wave_metrics_receipt"]["fingerprint"]}
+    binding = state.get("run_artifact_binding") or {}
+    candidate = str((binding.get("candidate") or {}).get("fingerprint") or "")
+    evidence = state.get("wave_metrics_evidence")
+    ledger = state.get("dispatch_telemetry")
+    upper_bound = state.get("wave_metrics_archive_upper_bound_tokens")
+    try:
+        if not candidate:
+            raise wave_metrics.WaveMetricsError(
+                "terminal metrics candidate binding is unavailable")
+        if not isinstance(evidence, Mapping):
+            raise wave_metrics.WaveMetricsError(
+                "terminal metrics evidence is unavailable")
+        if not isinstance(ledger, Mapping):
+            raise wave_metrics.WaveMetricsError(
+                "terminal dispatch ledger is unavailable")
+        if isinstance(upper_bound, bool) or not isinstance(upper_bound, int) \
+                or upper_bound < 0:
+            raise wave_metrics.WaveMetricsError(
+                "terminal archive upper bound is unavailable")
+        receipt = wave_metrics.seal_terminal_metrics(
+            evidence, dispatch_ledger=ledger, clock=SystemClock(),
+            candidate_fingerprint=candidate,
+            archive_upper_bound_tokens=upper_bound,
+            billing_total_tokens=state.get("wave_metrics_billing_total_tokens"))
+    except (wave_metrics.WaveMetricsError,
+            dispatch_telemetry.DispatchTelemetryError) as exc:
+        attempts = []
+        if isinstance(ledger, Mapping):
+            try:
+                attempts = dispatch_telemetry.terminal_attempt_attribution(
+                    ledger)
+            except dispatch_telemetry.DispatchTelemetryError:
+                attempts = []
+        reason = f"{exc.__class__.__name__}: {exc}"
+        unavailable = {
+            "schema": "taskplane.wave-metrics-unavailable/v1",
+            "candidate_fingerprint": candidate or None,
+            "reason": reason[:1024], "attempts": attempts,
+        }
+        unavailable["fingerprint"] = hashlib.sha256(json.dumps(
+            unavailable, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False).encode("utf-8")).hexdigest()
+        state["wave_metrics_unavailable"] = unavailable
+        state.pop("wave_metrics_receipt", None)
+        return {"status": "unavailable",
+                "fingerprint": unavailable["fingerprint"],
+                "reason": unavailable["reason"]}
+    state["wave_metrics_receipt"] = receipt
+    state.pop("wave_metrics_unavailable", None)
+    return {"status": "measured", "fingerprint": receipt["fingerprint"]}
+
+
+def _finalize_owned_run_cleanup(
+        ws: str, state: Mapping[str, object], *, outcome: str) -> dict:
+    """Seal terminal evidence, clean exact-owned resources, prove no leaks."""
+    path = str(state.get("owned_cleanup_manifest") or "")
+    artifact_binding = state.get("run_artifact_binding")
+    if not path and isinstance(artifact_binding, Mapping):
+        path = _ensure_owned_cleanup_manifest(
+            ws, _run_artifact_root(ws, state), artifact_binding)
+    if not path:
+        raise owned_cleanup.OwnedCleanupError(
+            "governed terminal cleanup manifest is unavailable")
+    manifest = owned_cleanup.load_manifest(path)
+    if manifest.get("terminal") is not None:
+        return owned_cleanup.cleanup_manifest(path)
+    artifact_root = _run_artifact_root(ws, state)
+    artifact_manifest = run_artifacts.load_manifest(artifact_root)
+    source_fingerprint = hashlib.sha256(json.dumps({
+        "binding": artifact_manifest["binding"]["fingerprint"],
+        "terminal_artifacts": state.get("terminal_artifacts"),
+        "outcome": outcome,
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    evidence_dir = os.path.join(os.path.dirname(path), "terminal-input")
+    os.makedirs(evidence_dir, exist_ok=True)
+    terminal_path = os.path.join(
+        evidence_dir, f"terminal-{source_fingerprint}.json")
+    publication_path = os.path.join(
+        evidence_dir, f"publication-{source_fingerprint}.json")
+    terminal_value = {
+        "schema": "taskplane.governed-terminal-evidence/v1",
+        "run_id": state.get("run_id"), "outcome": outcome,
+        "artifact_binding_fingerprint": artifact_manifest[
+            "binding"]["fingerprint"],
+        "terminal_artifacts": state.get("terminal_artifacts"),
+        "terminal_metrics": state.get("terminal_metrics"),
+    }
+    if not os.path.exists(terminal_path):
+        tp.atomic_write_json(terminal_path, terminal_value, sort_keys=True)
+    elif tp.load_json(terminal_path, what="terminal cleanup evidence") != \
+            terminal_value:
+        raise owned_cleanup.OwnedCleanupError(
+            "terminal cleanup evidence conflicts")
+    owner = manifest["owner"]
+    owned_cleanup.write_publication_replay(
+        publication_path, owner=owner, outcome=outcome,
+        source_revision=max(1, int(artifact_manifest.get("revision") or 1)),
+        source_fingerprint=source_fingerprint,
+        trigger=("handoff" if outcome == "handoff" else "terminal"))
+    receipt = owned_cleanup.seal_and_cleanup(
+        path, outcome=outcome,
+        evidence={"terminal": terminal_path,
+                  "publication-replay": publication_path})
+    if receipt.get("cleanup_status") != "clean" or \
+            receipt.get("leak_count") != 0 or not (
+                receipt.get("artifact_verification") or {}).get("readable"):
+        raise owned_cleanup.OwnedCleanupError(
+            "owned cleanup did not prove a clean readable terminal run")
+    return receipt
+
+
+_WHOLE_RUN_TERMINAL_OUTCOMES = frozenset({
+    "cancellation", "interruption", "handoff",
+})
+
+
+def _whole_run_terminal_paths(ws: str, state: Mapping[str, object]) \
+        -> tuple[str, str]:
+    run_root = os.path.dirname(_run_artifact_root(ws, state))
+    root = os.path.join(run_root, "terminal")
+    return (os.path.join(root, "whole-run-intent.json"),
+            os.path.join(root, "whole-run-receipt.json"))
+
+
+def _terminal_fingerprint(value: Mapping[str, object]) -> str:
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def _whole_run_terminal_authority(
+        state: Mapping[str, object], *, by: str) -> dict:
+    """Derive host-session authority; a worker cannot attest its own stop."""
+    try:
+        slot = tp.task_slot()
+    except Exception as exc:
+        raise ValueError("whole-run terminal authority has an invalid worker "
+                         f"slot: {exc}") from exc
+    if slot is not None:
+        raise ValueError(
+            "whole-run terminal authority is orchestrator-only; worker "
+            "self-attestation is refused")
+    actor = str(by or "").strip()
+    if not actor or _STAGE_ACTOR_IDENTIFIER.fullmatch(actor) is None:
+        raise ValueError(
+            "whole-run terminal authority requires an attributable --by "
+            "identifier")
+    session_id = str(
+        os.environ.get("TASKPLANE_SESSION_ID") or
+        os.environ.get("CODEX_THREAD_ID") or
+        os.environ.get("CLAUDE_SESSION_ID") or "").strip()
+    if not session_id or len(session_id.encode("utf-8")) > 256 or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in session_id):
+        raise ValueError(
+            "whole-run terminal authority requires an attributable host "
+            "session")
+    root = state.get("_stage_native_root_authority")
+    if isinstance(root, Mapping) and (
+            root.get("session_id") != session_id or
+            root.get("actor") != actor):
+        raise ValueError(
+            "whole-run terminal authority does not match the run root")
+    host = ("codex" if os.environ.get("CODEX_THREAD_ID") else
+            "claude" if os.environ.get("CLAUDE_SESSION_ID") else
+            "taskplane-host")
+    authority = {
+        "schema": "taskplane.whole-run-terminal-authority/v1",
+        "kind": "orchestrator-host-session", "host": host,
+        "session_id": session_id, "actor": actor,
+        "run_id": str(state.get("run_id") or ""),
+    }
+    return {**authority, "fingerprint": _terminal_fingerprint(authority)}
+
+
+def _validate_whole_run_terminal_intent(
+        ws: str, state: Mapping[str, object], intent: object) -> dict:
+    required = {
+        "schema", "run_id", "outcome", "candidate_fingerprint",
+        "artifact_binding_fingerprint", "workspace_revision",
+        "workspace_fingerprint", "authority", "created_at_ns",
+        "fingerprint",
+    }
+    if not isinstance(intent, Mapping) or set(intent) != required or \
+            intent.get("schema") != "taskplane.whole-run-terminal-intent/v1" or \
+            intent.get("outcome") not in _WHOLE_RUN_TERMINAL_OUTCOMES:
+        raise ValueError("whole-run terminal intent is invalid")
+    material = {key: value for key, value in intent.items()
+                if key != "fingerprint"}
+    if intent.get("fingerprint") != _terminal_fingerprint(material):
+        raise ValueError("whole-run terminal intent fingerprint is stale")
+    binding = run_artifacts.validate_binding(
+        state.get("run_artifact_binding"))
+    manifest = run_artifacts.load_manifest(_run_artifact_root(ws, state))
+    candidate = str((binding.get("candidate") or {}).get("fingerprint") or "")
+    if manifest.get("binding") != binding or \
+            intent.get("run_id") != state.get("run_id") or \
+            intent.get("candidate_fingerprint") != candidate or \
+            intent.get("artifact_binding_fingerprint") != binding.get(
+                "fingerprint") or \
+            intent.get("workspace_revision") != tp.git_head(ws) or \
+            intent.get("workspace_fingerprint") != tp.workspace_fingerprint(
+                ws, str(state.get("baseline") or "")):
+        raise ValueError(
+            "whole-run terminal intent is stale for the current run/candidate")
+    authority = intent.get("authority")
+    if not isinstance(authority, Mapping) or \
+            authority.get("kind") != "orchestrator-host-session" or \
+            authority.get("run_id") != state.get("run_id") or \
+            authority.get("fingerprint") != _terminal_fingerprint({
+                key: value for key, value in authority.items()
+                if key != "fingerprint"}):
+        raise ValueError("whole-run terminal intent authority is invalid")
+    return dict(intent)
+
+
+def _publish_whole_run_terminal_activity(
+        ws: str, state: Mapping[str, object], intent: Mapping[str, object]
+        ) -> dict:
+    root = _run_artifact_root(ws, state)
+    attempt_id = "terminal-" + str(intent["fingerprint"])[:32]
+    manifest = run_artifacts.load_manifest(root)
+    matches = [entry for entry in manifest["classes"]["agent-activity"][
+        "entries"] if (entry.get("metadata") or {}).get(
+            "agent_attempt_id") == attempt_id]
+    event_type = {"cancellation": "cancel", "interruption": "interruption",
+                  "handoff": "handoff"}[str(intent["outcome"])]
+    details = {
+        "outcome": intent["outcome"],
+        "authority_fingerprint": intent["authority"]["fingerprint"],
+        "intent_fingerprint": intent["fingerprint"],
+    }
+    if matches:
+        if len(matches) != 1 or matches[0]["metadata"].get(
+                "event_type") != event_type or matches[0]["metadata"].get(
+                    "details") != details:
+            raise run_artifacts.RunArtifactError(
+                "whole-run terminal activity replay is ambiguous")
+        return matches[0]
+    return run_artifacts.append_activity(
+        root, event_type=event_type, agent_attempt_id=attempt_id,
+        worker_id="orchestrator-" + str(
+            intent["authority"]["fingerprint"])[:24],
+        task_id="governed-run", lens="zero-lens-orchestrator",
+        details=details, occurred_at_ns=int(intent["created_at_ns"]))
+
+
+def _whole_run_terminal_stage_predecessor(
+        ws: str, state: Mapping[str, object]) -> dict | None:
+    """Close the exact canonical stage operation before its receipt exists."""
+    context = _stage_loop_context(ws, state)
+    if context is None:
+        return None
+    stage = context.get("stage")
+    if not isinstance(stage, Mapping) or stage.get("state") != "active":
+        raise ValueError(
+            "whole-run terminal stage predecessor is not exactly active")
+    from_step = str(state.get("step") or "")
+    from_kind = _LOOP_STAGE_KINDS.get(from_step)
+    if from_kind != stage.get("stage_kind"):
+        raise ValueError(
+            "whole-run terminal stage predecessor kind is severed")
+    try:
+        if __package__:
+            from . import stage_entities as stage_entities_module
+        else:
+            import stage_entities as stage_entities_module
+    except ImportError:
+        import stage_entities as stage_entities_module
+    material = _stage_loop_transition_operation_material(
+        state, run_id=str(context["run_id"]), from_step=from_step,
+        to_step="failed", from_kind=from_kind, to_kind=None,
+        terminal_outcome="closed", terminal_only=True,
+        predecessor_stage_id=stage["stage_id"],
+        predecessor_head_fingerprint=stage["fingerprint"])
+    predecessor = {
+        "schema": "taskplane.whole-run-terminal-stage-predecessor/v1",
+        "run_id": str(context["run_id"]),
+        "stage_id": str(stage["stage_id"]),
+        "stage_kind": str(stage["stage_kind"]),
+        "head_fingerprint": str(stage["fingerprint"]),
+        "loop_step": from_step,
+        "operation_id": _stage_loop_identity(
+            stage_entities_module, "loop-transition-", material),
+    }
+    return {**predecessor,
+            "fingerprint": _terminal_fingerprint(predecessor)}
+
+
+def _reconcile_whole_run_terminal_stage(
+        ws: str, state: Mapping[str, object],
+        predecessor: object) -> dict | None:
+    """Perform or verify the one receipt-bound canonical close operation."""
+    if predecessor is None:
+        return None
+    fields = {
+        "schema", "run_id", "stage_id", "stage_kind", "head_fingerprint",
+        "loop_step", "operation_id", "fingerprint",
+    }
+    if not isinstance(predecessor, Mapping) or set(predecessor) != fields or \
+            predecessor.get("schema") != \
+            "taskplane.whole-run-terminal-stage-predecessor/v1" or \
+            predecessor.get("fingerprint") != _terminal_fingerprint({
+                key: value for key, value in predecessor.items()
+                if key != "fingerprint"}) or \
+            predecessor.get("run_id") != state.get("run_id") or \
+            _LOOP_STAGE_KINDS.get(str(predecessor.get("loop_step") or "")) != \
+            predecessor.get("stage_kind"):
+        raise ValueError(
+            "whole-run terminal stage predecessor receipt is invalid")
+    locator = runtime_storage.load_workspace_locator(ws)
+    if not isinstance(locator, Mapping) or locator.get("run_id") != \
+            predecessor["run_id"]:
+        raise ValueError(
+            "whole-run terminal stage predecessor locator is severed")
+    store = _stage_store(ws, str(predecessor["run_id"]))
+    manifest = store.load(str(predecessor["run_id"]))
+    operation = (manifest.get("stage_operations") or {}).get(
+        predecessor["operation_id"])
+    if operation is None:
+        heads = manifest.get("stage_heads") or {}
+        head = heads.get(predecessor["stage_id"])
+        if not isinstance(head, Mapping):
+            raise ValueError(
+                "whole-run terminal stage predecessor head is missing")
+        stage = store.read_stage_object(
+            str(predecessor["run_id"]), head["object"])
+        if stage.get("state") != "active" or \
+                stage.get("fingerprint") != predecessor[
+                    "head_fingerprint"] or \
+                stage.get("stage_kind") != predecessor["stage_kind"]:
+            raise ValueError(
+                "whole-run terminal stage predecessor head changed")
+        transition_state = {
+            **dict(state), "step": predecessor["loop_step"]}
+        operation = _stage_loop_transition(
+            ws, transition_state, from_step=predecessor["loop_step"],
+            to_step="failed", terminal_outcome="closed",
+            terminal_only=True)
+    if not isinstance(operation, Mapping):
+        raise ValueError("whole-run terminal canonical stage was not closed")
+    checked = tp.verify_stage_receipt(
+        dict(operation), expected_operation="terminalize",
+        expected_stage_id=str(predecessor["stage_id"]))
+    if checked.get("operation_id") != predecessor["operation_id"]:
+        raise ValueError(
+            "whole-run terminal canonical operation identity changed")
+    current = store.load(str(predecessor["run_id"]))
+    head = (current.get("stage_heads") or {}).get(predecessor["stage_id"])
+    if not isinstance(head, Mapping) or checked.get("result", {}).get(
+            "head") != head:
+        raise ValueError("whole-run terminal canonical head is stale")
+    stage = store.read_stage_object(
+        str(predecessor["run_id"]), head["object"])
+    if stage.get("state") != "terminal" or stage.get("outcome") != "closed":
+        raise ValueError(
+            "whole-run terminal canonical stage is not terminal/closed")
+    return checked
+
+
+def _complete_whole_run_terminal(
+        ws: str, intent: Mapping[str, object]) -> dict:
+    """Replay one persisted exact terminal intent through existing owners."""
+    state = load(ws)
+    if state is None:
+        raise ValueError("whole-run terminal replay has no active run")
+    intent = _validate_whole_run_terminal_intent(ws, state, intent)
+    _intent_path, receipt_path = _whole_run_terminal_paths(ws, state)
+    if os.path.exists(receipt_path):
+        receipt = tp.load_json(receipt_path, what="whole-run terminal receipt")
+        material = {key: value for key, value in receipt.items()
+                    if key != "fingerprint"} if isinstance(receipt, Mapping) \
+            else {}
+        if material.get("intent_fingerprint") != intent["fingerprint"] or \
+                receipt.get("fingerprint") != _terminal_fingerprint(material):
+            raise ValueError("whole-run terminal receipt conflicts")
+        transition = _reconcile_whole_run_terminal_stage(
+            ws, state, receipt.get("stage_predecessor"))
+        with mutate(ws) as locked:
+            if locked is None:
+                raise ValueError("whole-run terminal replay lost its run")
+            locked["whole_run_terminal"] = dict(receipt)
+            locked["terminal_outcome"] = intent["outcome"]
+            locked["step"] = "failed"
+        return {**dict(receipt),
+                **({"stage_transition": transition}
+                   if transition is not None else {})}
+
+    # Stage-native startup is itself replay-safe and must occur only after the
+    # intent has been made durable.
+    _stage_bootstrap_pristine_root(ws, state)
+    with mutate(ws) as locked:
+        if locked is None:
+            raise ValueError("whole-run terminal replay lost its run")
+        _validate_whole_run_terminal_intent(ws, locked, intent)
+        locked["terminal_metrics"] = _seal_terminal_metrics_before_retro(
+            locked)
+    state = load(ws) or state
+    activity = _publish_whole_run_terminal_activity(ws, state, intent)
+    terminal_artifacts = state.get("terminal_artifacts")
+    if not isinstance(terminal_artifacts, Mapping):
+        unavailable = state.get("wave_metrics_unavailable")
+        report = {
+            "schema": "taskplane.non-normal-terminal-report/v1",
+            "terminal_intent": dict(intent),
+            "evaluator_summary": retro_engine.evaluator_summary(
+                list(state.get("tasks") or [])),
+            **({"wave_metrics_unavailable": dict(unavailable)}
+               if isinstance(unavailable, Mapping) else {}),
+        }
+        terminal_artifacts = retro_engine.publish_terminal_artifacts(
+            _run_artifact_root(ws, state),
+            wave_receipt=(dict(state["wave_metrics_receipt"])
+                          if isinstance(state.get("wave_metrics_receipt"),
+                                        Mapping) else None),
+            report=report, lifecycle_outcome=str(intent["outcome"]))
+        with mutate(ws) as locked:
+            if locked is None:
+                raise ValueError("terminal artifact publication lost its run")
+            locked["terminal_artifacts"] = dict(terminal_artifacts)
+            locked.setdefault("run_artifact_refs", {}).update({
+                "terminal_telemetry": terminal_artifacts["telemetry"],
+                "terminal_retro": terminal_artifacts["retro"],
+                "terminal_activity": activity,
+            })
+    state = load(ws) or state
+    cleanup = _finalize_owned_run_cleanup(
+        ws, state, outcome=str(intent["outcome"]))
+    with mutate(ws) as locked:
+        if locked is None:
+            raise ValueError("terminal cleanup lost its run")
+        locked["terminal_cleanup"] = cleanup
+        cleanup_ref = cleanup.get("durable_cleanup_artifact")
+        if isinstance(cleanup_ref, Mapping):
+            locked.setdefault("run_artifact_refs", {})[
+                "terminal_cleanup"] = dict(cleanup_ref)
+    state = load(ws) or state
+    stage_predecessor = _whole_run_terminal_stage_predecessor(ws, state)
+    receipt_material = {
+        "schema": "taskplane.whole-run-terminal-receipt/v1",
+        "run_id": intent["run_id"], "outcome": intent["outcome"],
+        "intent_fingerprint": intent["fingerprint"],
+        "candidate_fingerprint": intent["candidate_fingerprint"],
+        "artifact_binding_fingerprint": intent[
+            "artifact_binding_fingerprint"],
+        "authority_fingerprint": intent["authority"]["fingerprint"],
+        "terminal_metrics": state.get("terminal_metrics"),
+        "terminal_artifacts": state.get("terminal_artifacts"),
+        "terminal_cleanup": state.get("terminal_cleanup"),
+        "activity_fingerprint": activity["fingerprint"],
+        "stage_predecessor": stage_predecessor,
+    }
+    receipt = {**receipt_material,
+               "fingerprint": _terminal_fingerprint(receipt_material)}
+    tp.atomic_write_json(receipt_path, receipt, sort_keys=True)
+    transition = _reconcile_whole_run_terminal_stage(
+        ws, state, stage_predecessor)
+    with mutate(ws) as locked:
+        if locked is None:
+            raise ValueError("whole-run terminal transition lost its run")
+        locked["whole_run_terminal"] = receipt
+        locked["terminal_outcome"] = intent["outcome"]
+        locked["step"] = "failed"
+    return {**receipt, **({"stage_transition": transition}
+                          if transition is not None else {})}
+
+
+def terminalize_run(ws: str, outcome: str, *, by: str) -> dict:
+    """Public idempotent close for cancellation, interruption, or handoff."""
+    if outcome not in _WHOLE_RUN_TERMINAL_OUTCOMES:
+        return {"error": "whole-run terminal outcome must be cancellation, "
+                         "interruption, or handoff"}
+    state = load(ws)
+    if state is None:
+        return {"error": "no active loop"}
+    if state.get("step") in TERMINAL_STEPS and not state.get(
+            "whole_run_terminal"):
+        return {"error": "normal success/failure remains Retro-governed and "
+                         "cannot use the non-normal terminal operation",
+                "step": state.get("step")}
+    try:
+        authority = _whole_run_terminal_authority(state, by=by)
+        binding = run_artifacts.validate_binding(
+            state.get("run_artifact_binding"))
+        intent_material = {
+            "schema": "taskplane.whole-run-terminal-intent/v1",
+            "run_id": state["run_id"], "outcome": outcome,
+            "candidate_fingerprint": binding["candidate"]["fingerprint"],
+            "artifact_binding_fingerprint": binding["fingerprint"],
+            "workspace_revision": tp.git_head(ws),
+            "workspace_fingerprint": tp.workspace_fingerprint(
+                ws, str(state.get("baseline") or "")),
+            "authority": authority, "created_at_ns": time.time_ns(),
+        }
+        intent_path, _receipt_path = _whole_run_terminal_paths(ws, state)
+        if os.path.exists(intent_path):
+            persisted = tp.load_json(
+                intent_path, what="whole-run terminal intent")
+            # created_at is intentionally replayed from the first persisted
+            # request; all other requested authority and candidate fields must
+            # remain exact.
+            intent_material["created_at_ns"] = persisted.get(
+                "created_at_ns") if isinstance(persisted, Mapping) else None
+        intent = {**intent_material,
+                  "fingerprint": _terminal_fingerprint(intent_material)}
+        if os.path.exists(intent_path):
+            if persisted != intent:
+                raise ValueError("another whole-run terminal intent is active")
+        else:
+            tp.atomic_write_json(intent_path, intent, sort_keys=True)
+        return {**_complete_whole_run_terminal(ws, intent),
+                "terminalized": True}
+    except Exception as exc:
+        return {"error": "whole-run terminal operation failed closed: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "step": (load(ws) or {}).get("step")}
+
+
+def replay_terminal_intent(ws: str) -> dict | None:
+    """SessionStart replay of an existing intent; never infer terminality."""
+    state = load(ws)
+    if state is None or not isinstance(
+            state.get("run_artifact_binding"), Mapping):
+        return None
+    intent_path, _receipt_path = _whole_run_terminal_paths(ws, state)
+    if not os.path.exists(intent_path):
+        return None
+    try:
+        intent = tp.load_json(intent_path, what="whole-run terminal intent")
+        return {**_complete_whole_run_terminal(ws, intent),
+                "terminalized": True, "replayed": True}
+    except Exception as exc:
+        return {"error": "persisted whole-run terminal replay failed closed: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "step": (load(ws) or {}).get("step")}
 
 
 def _em_outage_repository_identity(ws: str) -> dict:
@@ -10351,6 +12114,8 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
             return {"error": "Definition of Done failed — sign-off cannot "
                              "complete until the evidence is repaired",
                     "step": "signoff", "dod": dod}
+        terminal_metrics = _seal_terminal_metrics_before_retro(state)
+        state["terminal_metrics"] = terminal_metrics
         state["step"] = "retro"
         tp.trace(ws, "loop_approve", gate="em_signoff", final="retro", by=by)
         # v2.3.0 wiring: the sign-off payload carries the review's design
@@ -10618,18 +12383,19 @@ def resolve(
     t = _current_task(state)
     cascaded = []
     if decision == "retry":
-        evaluation = t.get("evaluation") or {}
-        retry_evaluation = (
-            t.get("status") == "unavailable"
-            and evaluation.get("status") == "unavailable"
-            and evaluation.get("verdict") == "non-judged"
+        classified = t.get("failure_routing") or {}
+        retry_product_fix = (
+            isinstance(classified, Mapping)
+            and classified.get("next") == "fix"
+            and classified.get("product_fix_allowed") is True
         )
         t["fix_cycles"] = 0
         t["status"] = "running"
         # An unavailable evaluator produced no product judgment, so there is
-        # no implementation finding to fix. Retry the missing judgment itself.
-        # Judged product failures continue through the existing fix route.
-        state["step"] = "evaluate" if retry_evaluation else "fix"
+        # no implementation finding to fix. Non-product classifications also
+        # cannot enter product Fix; after their owned recovery/correction,
+        # retry the judgment. Only an exact product-only route reopens Fix.
+        state["step"] = "fix" if retry_product_fix else "evaluate"
     elif decision == "pass":
         evaluation = t.get("evaluation") or {}
         accept_errors = []
@@ -10857,6 +12623,22 @@ def retro(ws: str) -> dict:
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
 
+    # Abort/failure can enter Retro without passing human sign-off. Seal the
+    # same measured-or-attributable-unavailable terminal truth before Retro
+    # reads it; missing usage is never converted to zero.
+    opening = load(ws)
+    if isinstance(opening, Mapping) and isinstance(
+            opening.get("run_artifact_binding"), Mapping) and not (
+                isinstance(opening.get("wave_metrics_receipt"), Mapping) or
+                isinstance(opening.get("wave_metrics_unavailable"), Mapping)):
+        with mutate(ws) as locked:
+            if locked is None or locked.get("step") not in {
+                    "retro", "failed", "done"}:
+                return {"error": "terminal metrics cannot be sealed outside "
+                                 "Retro", "step": (locked or {}).get("step")}
+            locked["terminal_metrics"] = \
+                _seal_terminal_metrics_before_retro(locked)
+
     @contextlib.contextmanager
     def prepare_only_mutate(workspace: str):
         with mutate(workspace) as locked:
@@ -10878,6 +12660,71 @@ def retro(ws: str) -> dict:
     target_step = str(final.get("_retro_terminal_step") or final.get("step"))
     if target_step not in {"done", "failed"}:
         return result
+    terminal_artifacts = final.get("terminal_artifacts")
+    if terminal_artifacts is None and isinstance(
+            final.get("run_artifact_binding"), Mapping):
+        wave_receipt = final.get("wave_metrics_receipt")
+        unavailable_metrics = final.get("wave_metrics_unavailable")
+        if not isinstance(wave_receipt, Mapping) and not isinstance(
+                unavailable_metrics, Mapping):
+            return {
+                "error": "terminal run artifacts require measured or "
+                         "attributable-unavailable live wave metrics; missing "
+                         "usage cannot be converted to zero or cleaned up",
+                "step": "retro", "retro": result,
+            }
+        try:
+            artifact_root = _run_artifact_root(ws, final)
+            terminal_artifacts = retro_engine.publish_terminal_artifacts(
+                artifact_root,
+                wave_receipt=(dict(wave_receipt)
+                              if isinstance(wave_receipt, Mapping) else None),
+                report={**result, **({"wave_metrics_unavailable":
+                                      dict(unavailable_metrics)}
+                                     if isinstance(unavailable_metrics, Mapping)
+                                     else {})},
+                lifecycle_outcome=("success" if target_step == "done"
+                                   else "failure"))
+            with mutate(ws) as locked:
+                if locked is None or locked.get("step") != "retro":
+                    return {"error": "loop advanced while terminal artifacts "
+                                     "were being sealed", "step": (
+                                         locked or {}).get("step")}
+                locked["terminal_artifacts"] = terminal_artifacts
+                locked.setdefault("run_artifact_refs", {}).update({
+                    "terminal_telemetry": terminal_artifacts["telemetry"],
+                    "terminal_retro": terminal_artifacts["retro"],
+                })
+            final = load(ws) or final
+        except Exception as exc:
+            return {"error": "terminal run-artifact publication failed "
+                             "closed before cleanup: "
+                             f"{exc.__class__.__name__}: {exc}",
+                    "step": "retro", "retro": result}
+    terminal_cleanup = final.get("terminal_cleanup")
+    if terminal_cleanup is None and isinstance(
+            final.get("run_artifact_binding"), Mapping):
+        try:
+            terminal_cleanup = _finalize_owned_run_cleanup(
+                ws, final,
+                outcome=("success" if target_step == "done" else "failure"))
+            with mutate(ws) as locked:
+                if locked is None or locked.get("step") != "retro":
+                    return {"error": "loop advanced while owned cleanup was "
+                                     "being sealed", "step": (
+                                         locked or {}).get("step")}
+                locked["terminal_cleanup"] = terminal_cleanup
+                cleanup_ref = terminal_cleanup.get(
+                    "durable_cleanup_artifact")
+                if isinstance(cleanup_ref, Mapping):
+                    locked.setdefault("run_artifact_refs", {})[
+                        "terminal_cleanup"] = dict(cleanup_ref)
+            final = load(ws) or final
+        except Exception as exc:
+            return {"error": "owned terminal cleanup failed closed before "
+                             "transition: "
+                             f"{exc.__class__.__name__}: {exc}",
+                    "step": "retro", "retro": result}
     try:
         transition_kwargs = {"from_step": "retro", "to_step": target_step}
         if final.get("_retro_terminal_step"):
@@ -10926,6 +12773,10 @@ def retro(ws: str) -> dict:
         result = {**result, "stage_transition": transition}
     if terminal_authority is not None:
         result = {**result, "terminal_authority": terminal_authority}
+    if terminal_artifacts is not None:
+        result = {**result, "terminal_artifacts": terminal_artifacts}
+    if terminal_cleanup is not None:
+        result = {**result, "terminal_cleanup": terminal_cleanup}
     return result
 _load_tasks = loop_status.load_tasks
 status = loop_status.status
@@ -10989,3 +12840,4 @@ replan = _with_dashboard(replan)
 handle_host_input = _with_dashboard(handle_host_input)
 cleanup_replay = _with_dashboard(cleanup_replay)
 retro = _with_dashboard(retro)
+terminalize_run = _with_dashboard(terminalize_run)

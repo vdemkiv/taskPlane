@@ -20,9 +20,9 @@ facts rather than taste:
   * every skill, including `tp-tag`. Claude Tag is a Claude surface; the
     OpenAI archive excludes it because there is nothing there to drive it.
 
-Determinism: fixed timestamps, fixed permissions, sorted members. Building
-the same tree twice produces byte-identical bytes and therefore the same
-sha256, so a release archive can be verified against its source commit.
+Determinism: fixed timestamps, fixed permissions, sorted members. One explicit
+reproducibility digest may prove the build is stable; installed behavior and
+schemas, not archive byte identity, prove that the package is correct.
 """
 
 from __future__ import annotations
@@ -92,6 +92,17 @@ MUST_CONTAIN = (
     "taskplane/dashboard.py",
     "taskplane/runtime_eval.py",
     "taskplane/release_evidence.py",
+    "taskplane/settings.py",
+    "taskplane/design_host_transport.py",
+    "taskplane/collision_registry.json",
+    "taskplane/build_quality.py",
+    "taskplane/failure_routing.py",
+    "taskplane/run_artifacts.py",
+    "taskplane/run_store.py",
+    "taskplane/owned_cleanup.py",
+    "taskplane/dispatch_telemetry.py",
+    "taskplane/wave_metrics.py",
+    "taskplane/retro.py",
     "lenses/catalog.json",
     "docs/cli-reference.md",
     "skills/taskplane/SKILL.md",
@@ -123,7 +134,6 @@ RELEASE_SURFACE_FILES = (
 CANONICAL_AUTHORITY_FILES = (
     "taskplane/operational-settings.json",
     "taskplane/settings_inventory.json",
-    "taskplane/test_portfolio.json",
 )
 
 SUPPORTED_HOOK_ROOT_FIELDS = frozenset({"description", "hooks"})
@@ -187,12 +197,27 @@ def add_tree(files: set, base: Path, predicate) -> None:
             files.add(path)
 
 
+def expected_skill_files() -> tuple[str, ...]:
+    """Return the complete Claude skill surface required by an install."""
+    base = ROOT / "skills"
+    require(base.is_dir(), "release source is missing skills/")
+    return tuple(sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in base.rglob("*") if path.is_file()
+    ))
+
+
 def package_files() -> list:
     load_hook_manifest()
     files: set = {MANIFEST_PATH, MARKETPLACE_PATH}
     for relative in REQUIRED_FILES:
         path = ROOT / relative
         require(path.is_file(), f"required file is missing: {relative}")
+        files.add(path)
+    for relative in MUST_CONTAIN:
+        path = ROOT / relative
+        require(path.is_file(),
+                f"installed runtime member is missing: {relative}")
         files.add(path)
     for relative in CANONICAL_AUTHORITY_FILES:
         path = ROOT / relative
@@ -259,6 +284,10 @@ def validate_archive(path: Path, version: str) -> tuple:
             require(f"{ARCHIVE_ROOT}/{relative}" in names,
                     f"archive is missing a member the install needs: "
                     f"{relative}")
+        for relative in expected_skill_files():
+            require(f"{ARCHIVE_ROOT}/{relative}" in names,
+                    "archive is missing an installable skill member: "
+                    f"{relative}")
         for name in names:
             require(name.startswith(f"{ARCHIVE_ROOT}/"),
                     f"member escapes the archive root: {name}")
@@ -288,14 +317,47 @@ def validate_archive(path: Path, version: str) -> tuple:
             member = f"{ARCHIVE_ROOT}/{required}"
             require(member in names,
                     f"archive is missing canonical authority {required}")
-            require(archive.read(member) == (ROOT / required).read_bytes(),
-                    f"archive has stale canonical authority bytes for {required}")
+            try:
+                authority = json.loads(archive.read(member))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise PackageError(
+                    f"archive canonical authority is unreadable: {required}") from exc
+            require(isinstance(authority, dict),
+                    f"archive canonical authority is not an object: {required}")
+            expected_schema = (
+                "taskplane.operational-settings/v1"
+                if required.endswith("operational-settings.json")
+                else "taskplane.operational-settings-inventory/v1"
+            )
+            require(authority.get("schema") == expected_schema,
+                    f"archive canonical authority has an invalid schema: {required}")
         for required in RELEASE_SURFACE_FILES:
             member = f"{ARCHIVE_ROOT}/{required}"
             require(member in names,
                     f"archive is missing forward-release surface {required}")
-            require(archive.read(member) == (ROOT / required).read_bytes(),
-                    f"archive has stale forward-release bytes for {required}")
+            try:
+                body = archive.read(member).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise PackageError(
+                    f"archive forward-release surface is not UTF-8: {required}") from exc
+            require(bool(body.strip()),
+                    f"archive forward-release surface is empty: {required}")
+            if required == "taskplane/release_evidence.py":
+                try:
+                    tree = ast.parse(body, filename=member)
+                except SyntaxError as exc:
+                    raise PackageError(
+                        "archive release runtime is not valid Python") from exc
+                assignments = {
+                    node.targets[0].id: ast.literal_eval(node.value)
+                    for node in tree.body
+                    if isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == "CURRENT_VERSION"
+                }
+                require(assignments.get("CURRENT_VERSION") == version,
+                        "archive release runtime and manifest versions disagree")
         require(manifest.get("hostNative") == "../hooks/host-native.json",
                 "Claude manifest must retain supported host-native metadata")
         try:

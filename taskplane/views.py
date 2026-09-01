@@ -69,6 +69,7 @@ LARGE_DASHBOARD_INLINE_BYTES = host_native.LARGE_DASHBOARD_INLINE_BYTES
 _NO_EXPECTED_HEAD = host_native._NO_EXPECTED_HEAD
 canonical_dashboard_bytes = host_native.canonical_dashboard_bytes
 dashboard_freshness_state = host_native.dashboard_freshness_state
+dashboard_current_head = host_native.dashboard_current_head
 dashboard_publication_receipt_fingerprint = (
     host_native.dashboard_publication_receipt_fingerprint)
 validate_dashboard_publication_receipt = (
@@ -85,11 +86,13 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
                       expected_head=_NO_EXPECTED_HEAD) -> dict:
     """Compatibility facade over the acyclic host delivery implementation."""
     import dashboard as _dashboard
+    stylesheet = (html_stylesheet if html_stylesheet is not None else
+                  _dashboard.dashboard_document_style())
     return host_native.deliver_dashboard(
         output_dir, model, inline_threshold=inline_threshold,
         inline_renderer=_dashboard.render_lossless_dashboard_inline,
         html_renderer=html_renderer,
-        html_stylesheet=html_stylesheet,
+        html_stylesheet=stylesheet,
         host_acknowledgement=host_acknowledgement,
         expected_head=expected_head)
 def _transition_step(out: dict) -> str:
@@ -321,6 +324,74 @@ def _delivery_host_acknowledgement(out: Mapping) -> "Mapping | None":
     return None
 
 
+def preserve_dashboard_run_artifacts(
+        artifact_root: str, model: Mapping, delivery: Mapping) -> dict:
+    """Preserve dashboard and graph evidence in their separate run classes.
+
+    Content digests prove lossless storage only.  Correctness remains the
+    publication receipt and the provenance/graph contracts carried inside the
+    objects; this function never treats byte identity as behavioral proof.
+    """
+    try:
+        from . import run_artifacts
+    except (ImportError, ValueError):
+        import run_artifacts  # type: ignore
+    receipt = delivery.get("publication_receipt")
+    if not isinstance(receipt, Mapping):
+        raise ValueError("dashboard publication receipt is unavailable")
+    snapshot = receipt.get("snapshot")
+    if not isinstance(snapshot, Mapping):
+        raise ValueError("dashboard snapshot receipt is unavailable")
+    metadata = {
+        "kind": "dashboard-publication",
+        "snapshot_fingerprint": snapshot.get("fingerprint"),
+        "publication_epoch": snapshot.get("sequence"),
+        "publication_receipt": receipt.get("fingerprint"),
+    }
+    dashboard_ref = run_artifacts.publish_artifact(
+        artifact_root, "dashboard", {
+            "schema": "taskplane.dashboard-run-artifact/v1",
+            "snapshot": dict(model),
+            "publication_receipt": dict(receipt),
+            "current_head": delivery.get("current_head"),
+        }, metadata=metadata)
+    values_value = model.get("values")
+    values = values_value if isinstance(values_value, Mapping) else model
+    graphs = {
+        key: values[key] for key in (
+            "design_graph", "plan_task_dag", "plan_waves", "module_impact")
+        if isinstance(values.get(key), Mapping)
+    }
+    graph_ref = run_artifacts.publish_artifact(
+        artifact_root, "dependency-graphs", {
+            "schema": "taskplane.dashboard-graph-run-artifact/v1",
+            "snapshot_fingerprint": snapshot.get("fingerprint"),
+            "publication_epoch": snapshot.get("sequence"),
+            "graphs": graphs,
+            "graph_bindings": dict(receipt.get("graphs") or {}),
+        }, metadata={**metadata, "kind": "dashboard-dependency-graphs"})
+    return {
+        "status": "preserved", "dashboard": dashboard_ref,
+        "dependency_graphs": graph_ref,
+    }
+
+
+def _preserve_managed_dashboard_artifacts(
+        ws: str, model: Mapping, delivery: Mapping) -> dict:
+    """Use the initialized private run manifest, or report why it is absent."""
+    import storage as _runtime_storage
+    locator = _runtime_storage.load_workspace_locator(ws)
+    if not isinstance(locator, Mapping):
+        return {"status": "unavailable", "reason": "legacy workspace has no "
+                "private run-artifact manifest"}
+    root = str((locator.get("paths") or {}).get("artifacts") or "")
+    manifest = os.path.join(root, "run-artifacts.json")
+    if not root or not os.path.isfile(manifest):
+        return {"status": "unavailable", "reason": "run-artifact manifest "
+                "has not been initialized"}
+    return preserve_dashboard_run_artifacts(root, model, delivery)
+
+
 def refresh_views(ws: str, out: dict) -> dict:
     """Render the dashboard and publish the gate snapshot; annotate `out`.
 
@@ -337,16 +408,17 @@ def refresh_views(ws: str, out: dict) -> dict:
                         else ".taskplane/dashboard.html")
         fragment_path = os.path.splitext(p)[0] + ".fragment.html"
         delivery_root = os.path.join(os.path.dirname(p), "dashboard-delivery")
+        observed_head = dashboard_current_head(delivery_root)
+        expected_head = (None if observed_head is None else
+                         observed_head.get("receipt_fingerprint"))
         rendered: dict = {}
         import dashboard as _dash
+        model = _delivery_model(out)
 
         def presentation(_canonical: str) -> str:
-            fragment = _dash.report_widget(ws)
             canonical_model = json.loads(_canonical)
-            canonical_values = canonical_model.get("values") \
-                if isinstance(canonical_model.get("values"), Mapping) else {}
-            fragment += _dash.render_wave_metrics_projection(
-                canonical_values.get("wave_metrics"))
+            fragment = _dash.render_canonical_dashboard_snapshot(
+                canonical_model)
             rendered["fragment"] = fragment
             return fragment
 
@@ -355,11 +427,12 @@ def refresh_views(ws: str, out: dict) -> dict:
         # a true output port: it receives canonical bytes and cannot feed
         # semantic values back into the delivery model.
         delivery = deliver_dashboard(
-            delivery_root, _delivery_model(out),
+            delivery_root, model,
             inline_threshold=LARGE_DASHBOARD_INLINE_BYTES,
             html_renderer=presentation,
             html_stylesheet=_dash.dashboard_document_style(),
-            host_acknowledgement=_delivery_host_acknowledgement(out))
+            host_acknowledgement=_delivery_host_acknowledgement(out),
+            expected_head=expected_head)
         if delivery.get("inline"):
             inline = dict(delivery["inline"])
             inline_path = os.path.join(delivery_root, "dashboard.inline.html")
@@ -369,6 +442,16 @@ def refresh_views(ws: str, out: dict) -> dict:
             delivery["inline"] = inline
 
         out["dashboard"] = {"path": logical_path, "delivery": delivery}
+        try:
+            out["dashboard"]["run_artifacts"] = \
+                _preserve_managed_dashboard_artifacts(ws, model, delivery)
+        except Exception as exc:
+            artifact_error = f"{exc.__class__.__name__}: {exc}"
+            out["dashboard"]["run_artifacts"] = {
+                "status": "degraded", "reason": artifact_error}
+            with contextlib.suppress(Exception):
+                tp.trace(ws, "dashboard_artifact_preservation_failed",
+                         error=artifact_error)
         html_ref = delivery["artifacts"]["html"]
         if html_ref["status"] == "available":
             with open(html_ref["path"], "rb") as stream:

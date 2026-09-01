@@ -32,6 +32,7 @@ except (ImportError, ValueError):
 
 BOUNDED_STAGE_VIEW_SCHEMA = "taskplane.bounded-stage-view/v1"
 BOUNDED_STAGE_VIEW_MAX_ITEMS = 100
+DASHBOARD_REPLAY_BLOCK_SCHEMA = "taskplane.dashboard-replay-block/v1"
 _PHASE_GRAPH_PROJECTOR = None
 
 
@@ -239,6 +240,109 @@ def _include_stage_view(view: dict) -> bool:
     return view.get("status") in {"v4", "ambiguous", "corrupt"}
 
 
+def _canonical_fingerprint(value: object) -> str:
+    material = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _dashboard_block_path(ws: str) -> str:
+    managed = runtime_storage.managed_path(
+        ws, "state", "dashboard-publication-block.json")
+    return managed or os.path.join(
+        tp.tp_dir(ws), "dashboard-publication-block.json")
+
+
+def _dashboard_replay_block(ws: str) -> dict | None:
+    path = _dashboard_block_path(ws)
+    value = tp.load_json(
+        path, default=None, what="dashboard publication replay block")
+    if value is None:
+        return None
+    fields = {
+        "schema", "event_type", "outcome", "state_fingerprint",
+        "source_fingerprint", "error", "recorded_at", "fingerprint",
+    }
+    if not isinstance(value, dict) or set(value) != fields or \
+            value.get("schema") != DASHBOARD_REPLAY_BLOCK_SCHEMA:
+        raise ValueError("dashboard publication replay block is invalid")
+    payload = {key: value[key] for key in value if key != "fingerprint"}
+    if value.get("fingerprint") != _canonical_fingerprint(payload):
+        raise ValueError(
+            "dashboard publication replay block fingerprint is invalid")
+    for field in ("event_type", "outcome", "state_fingerprint", "error",
+                  "recorded_at"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            raise ValueError(
+                f"dashboard publication replay block {field} is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", value["state_fingerprint"]):
+        raise ValueError(
+            "dashboard publication replay block state identity is invalid")
+    source = value.get("source_fingerprint")
+    if source is not None and not (
+            isinstance(source, str) and re.fullmatch(r"[0-9a-f]{64}", source)):
+        raise ValueError(
+            "dashboard publication replay block source identity is invalid")
+    return value
+
+
+def _loop_state_fingerprint(ws: str) -> str | None:
+    import loop
+    state = loop.load(ws)
+    return _canonical_fingerprint(state) if isinstance(state, dict) else None
+
+
+def _dashboard_source_fingerprint(ws: str) -> str | None:
+    try:
+        source = _select_dashboard_source(ws)
+    except Exception:
+        return None
+    fingerprint = source.get("source_fingerprint")
+    return (fingerprint if isinstance(fingerprint, str) and
+            re.fullmatch(r"[0-9a-f]{64}", fingerprint) else None)
+
+
+def _write_dashboard_replay_block(
+        ws: str, *, event_type: str, outcome: str,
+        state_fingerprint: str, source_fingerprint: str | None,
+        error: str) -> dict:
+    payload = {
+        "schema": DASHBOARD_REPLAY_BLOCK_SCHEMA,
+        "event_type": str(event_type), "outcome": str(outcome),
+        "state_fingerprint": state_fingerprint,
+        "source_fingerprint": source_fingerprint,
+        "error": str(error),
+        "recorded_at": datetime.now(timezone.utc).isoformat().replace(
+            "+00:00", "Z"),
+    }
+    value = {**payload, "fingerprint": _canonical_fingerprint(payload)}
+    tp.atomic_write_json(_dashboard_block_path(ws), value, sort_keys=True)
+    return value
+
+
+def _clear_dashboard_replay_block(ws: str) -> None:
+    path = _dashboard_block_path(ws)
+    tp.safe_remove(path)
+    if os.path.lexists(path):
+        raise ValueError("dashboard publication replay block was not cleared")
+
+
+def _dashboard_block_status(ws: str) -> dict | None:
+    try:
+        block = _dashboard_replay_block(ws)
+    except Exception as exc:
+        return {"status": "blocked", "replay_required": True,
+                "error": _stage_view_error(exc)}
+    if block is None:
+        return None
+    return {
+        "status": "blocked", "replay_required": True,
+        "event_type": block["event_type"], "outcome": block["outcome"],
+        "error": block["error"], "fingerprint": block["fingerprint"],
+    }
+
+
 def load_tasks(ws: str, state: dict) -> None:
     path = os.path.join(ws, "plan", "tasks.json")
     if not os.path.exists(path):
@@ -269,11 +373,15 @@ def status(ws: str) -> dict:
     stage_view = bounded_stage_view(ws)
     state = loop.load(ws)
     if state is None:
-        return {
+        out = {
             "loop": "none",
             **({"stage_view": stage_view}
                if _include_stage_view(stage_view) else {}),
         }
+        blocked = _dashboard_block_status(ws)
+        if blocked is not None:
+            out["dashboard_publication"] = blocked
+        return out
     tasks = state.get("tasks") or []
     out = {
         "step": state["step"], "goal": state["goal"],
@@ -304,6 +412,9 @@ def status(ws: str) -> dict:
         ws, now=time.time(), state_dir=tp.tp_dir(ws))
     if _include_stage_view(stage_view):
         out["stage_view"] = stage_view
+    blocked = _dashboard_block_status(ws)
+    if blocked is not None:
+        out["dashboard_publication"] = blocked
     return out
 
 
@@ -381,6 +492,7 @@ def user_summary(ws: str, host: str | None = None,
         label = current.get("id") if current else step
         headline = (f"In progress — {settled}/{len(tasks)} task(s) settled; "
                     f"current: {label} ({step}).")
+    dashboard_block = _dashboard_block_status(ws)
     return {
         **({"budget": budget} if budget else {}),
         "state": step, "goal": state.get("goal"),
@@ -396,6 +508,8 @@ def user_summary(ws: str, host: str | None = None,
             or any(task.get("_submission") for task in tasks)),
         **({"stage_view": stage_view}
            if _include_stage_view(stage_view) else {}),
+        **({"dashboard_publication": dashboard_block}
+           if dashboard_block is not None else {}),
     }
 
 
@@ -433,11 +547,19 @@ def refresh_dashboard_snapshot(
         ws: str, *, event_type: str, outcome: str | None = None,
         committed_at: float | str | None = None, replay: bool = False) -> dict:
     settings = operational_settings.load_settings()
+    projector = _PHASE_GRAPH_PROJECTOR
+    if projector is None:
+        # ``loop`` is also a supported public API, not only the CLI
+        # composition root in tp.py. Resolve the same canonical projector at
+        # call time so direct governed transitions cannot silently publish a
+        # graph-less snapshot.
+        import dashboard
+        projector = dashboard.phase_graph_projection
     return host_native.refresh_dashboard_snapshot(
         ws, event_type=event_type, outcome=outcome,
         committed_at=committed_at, replay=replay,
         settings_digest=settings.digest, source_loader=_select_dashboard_source,
-        graph_projector=_PHASE_GRAPH_PROJECTOR,
+        graph_projector=projector,
         metrics_projector=wave_metrics.consumer_projection,
         publication_loader=runtime_storage.load_dashboard_publication,
         snapshot_committer=runtime_storage.commit_dashboard_snapshot,
@@ -449,11 +571,129 @@ def publish_artifacts(ws: str) -> "str | None":
     return views._publish_artifacts(ws)
 
 
+def _publication_problem(ws: str, publication: dict, result: dict) -> str | None:
+    """Return why this public transition is not sealed/current."""
+    import views
+    if publication.get("status") != "ready":
+        return ("dashboard snapshot source is not ready: "
+                f"{publication.get('status') or 'unknown'}")
+    snapshot = publication.get("snapshot")
+    if not isinstance(snapshot, dict) or not re.fullmatch(
+            r"[0-9a-f]{64}", str(snapshot.get("fingerprint") or "")):
+        return "dashboard snapshot receipt is missing or invalid"
+    if any(value != snapshot["fingerprint"] for value in
+           (publication.get("surfaces") or {}).values()):
+        return "dashboard snapshot surface bindings are severed"
+    values = snapshot.get("values")
+    if not isinstance(values, dict):
+        return "dashboard snapshot values are missing"
+    if values.get("phase_graph_error"):
+        return "dashboard dependency graph is unavailable: " + str(
+            values["phase_graph_error"])
+    graph_keys = {
+        key for key in (
+            "design_graph", "plan_task_dag", "plan_waves", "module_impact")
+        if isinstance(values.get(key), dict)
+    }
+
+    dashboard = result.get("dashboard")
+    if not isinstance(dashboard, dict):
+        return "dashboard delivery result is missing"
+    if dashboard.get("error"):
+        return "dashboard delivery is degraded: " + str(dashboard["error"])
+    delivery = dashboard.get("delivery")
+    if not isinstance(delivery, dict) or delivery.get("status") != "published":
+        return "dashboard delivery is not published"
+    receipt = delivery.get("publication_receipt")
+    head = delivery.get("current_head")
+    if not isinstance(receipt, dict) or \
+            receipt.get("fingerprint") != \
+            views.dashboard_publication_receipt_fingerprint(receipt):
+        return "dashboard publication receipt is invalid"
+    receipt_snapshot = receipt.get("snapshot")
+    if not isinstance(receipt_snapshot, dict) or \
+            receipt_snapshot.get("fingerprint") != snapshot["fingerprint"]:
+        return "dashboard rendered snapshot is stale"
+    if not isinstance(head, dict) or \
+            head.get("snapshot_fingerprint") != snapshot["fingerprint"] or \
+            head.get("receipt_fingerprint") != receipt.get("fingerprint"):
+        return "dashboard durable head is stale or contradictory"
+    graph_bindings = receipt.get("graphs")
+    if not isinstance(graph_bindings, dict) or set(graph_bindings) != graph_keys:
+        return "dashboard graph publication bindings are incomplete"
+    for key in graph_keys:
+        if graph_bindings.get(key) != _canonical_fingerprint(values[key]):
+            return f"dashboard graph publication binding is stale: {key}"
+    html = (delivery.get("artifacts") or {}).get("html")
+    if not isinstance(html, dict) or html.get("status") != "available":
+        return "dashboard HTML artifact is unavailable"
+    if runtime_storage.load_workspace_locator(ws) is not None:
+        preservation = dashboard.get("run_artifacts")
+        if not isinstance(preservation, dict) or \
+                preservation.get("status") != "preserved":
+            return "dashboard/graph run-artifact preservation is degraded"
+    return None
+
+
+def _publish_and_verify_dashboard(
+        ws: str, *, event_type: str, outcome: str, replay: bool) -> tuple[dict, dict]:
+    publication = refresh_dashboard_snapshot(
+        ws, event_type=event_type, outcome=outcome, replay=replay)
+    if publication.get("status") == "no_active":
+        raise ValueError("dashboard publication found no active governed run")
+    replay_result = {
+        "step": ((publication.get("snapshot") or {}).get("stage")),
+        "outcome": outcome, "dashboard_snapshot": publication,
+    }
+    import views
+    views.refresh_views(ws, replay_result)
+    problem = _publication_problem(ws, publication, replay_result)
+    if problem is not None:
+        raise ValueError(problem)
+    return publication, replay_result
+
+
+def _replay_dashboard_block(ws: str, block: dict) -> dict:
+    state_fingerprint = _loop_state_fingerprint(ws)
+    if state_fingerprint != block["state_fingerprint"]:
+        raise ValueError(
+            "dashboard replay block names another governed state")
+    source_fingerprint = _dashboard_source_fingerprint(ws)
+    if block["source_fingerprint"] is not None and \
+            source_fingerprint != block["source_fingerprint"]:
+        raise ValueError(
+            "dashboard replay block names another dashboard source")
+    publication, replay_result = _publish_and_verify_dashboard(
+        ws, event_type=block["event_type"], outcome=block["outcome"],
+        replay=True)
+    _clear_dashboard_replay_block(ws)
+    return {"status": "replayed", "snapshot": publication,
+            "dashboard": replay_result["dashboard"],
+            "block_fingerprint": block["fingerprint"]}
+
+
 def with_dashboard(fn):
     def wrapped(ws, *args, **kwargs):
         # Load before the wrapped transition so malformed settings cannot
         # follow a state write with a merely stale dashboard warning.
         settings = operational_settings.load_settings()
+        block = _dashboard_replay_block(ws)
+        replay_result = None
+        if block is not None:
+            try:
+                replay_result = _replay_dashboard_block(ws, block)
+            except Exception as exc:
+                return {
+                    "error": "dashboard publication replay is required before "
+                             f"the next governed transition: {_stage_view_error(exc)}",
+                    "dashboard_refresh": {
+                        "status": "blocked", "replay_required": True,
+                        "error": block["error"],
+                        "fingerprint": block["fingerprint"],
+                    },
+                    "status": status(ws),
+                }
+        before_fingerprint = _loop_state_fingerprint(ws)
         result = fn(ws, *args, **kwargs)
         if isinstance(result, dict):
             # A stage-native refusal is a proven read-only boundary.  Do not
@@ -471,17 +711,38 @@ def with_dashboard(fn):
                         f"settings: {fn.__name__}")
                 publication = refresh_dashboard_snapshot(
                     ws, event_type=fn.__name__, outcome=str(outcome))
-                if publication.get("status") != "no_active":
+                if publication.get("status") == "no_active":
+                    if _loop_state_fingerprint(ws) is not None:
+                        raise ValueError(
+                            "dashboard publication found no active governed run")
+                else:
                     result["dashboard_snapshot"] = publication
                     import views
                     views.refresh_views(ws, result)
+                    problem = _publication_problem(ws, publication, result)
+                    if problem is not None:
+                        raise ValueError(problem)
+                if replay_result is not None:
+                    result["dashboard_replay"] = replay_result
             except Exception as exc:
-                # The committed lifecycle outcome stays authoritative. A
-                # failed publication becomes replayable secondary evidence.
-                result["dashboard_refresh"] = {
-                    "status": "stale", "replay_required": True,
-                    "error": _stage_view_error(exc),
-                }
+                after_fingerprint = _loop_state_fingerprint(ws)
+                detail = _stage_view_error(exc)
+                if after_fingerprint is not None and \
+                        after_fingerprint != before_fingerprint:
+                    block = _write_dashboard_replay_block(
+                        ws, event_type=fn.__name__, outcome=str(outcome),
+                        state_fingerprint=after_fingerprint,
+                        source_fingerprint=_dashboard_source_fingerprint(ws),
+                        error=detail)
+                    result["dashboard_refresh"] = {
+                        "status": "blocked", "replay_required": True,
+                        "error": detail, "fingerprint": block["fingerprint"],
+                    }
+                else:
+                    result["dashboard_refresh"] = {
+                        "status": "stale", "replay_required": False,
+                        "error": detail,
+                    }
         return result
     wrapped.__name__ = fn.__name__
     wrapped.__doc__ = fn.__doc__

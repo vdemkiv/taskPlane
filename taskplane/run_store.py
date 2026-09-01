@@ -15,6 +15,10 @@ import uuid
 
 import storage
 import taskplane_lite as tp
+try:
+    from . import run_artifacts
+except ImportError:  # pragma: no cover - direct-module compatibility
+    import run_artifacts
 
 
 class RunStoreError(RuntimeError):
@@ -72,6 +76,7 @@ _STAGE_INDEX_KEYS = frozenset({
     "stage_heads", "lineage", "stage_operations",
     "active_stage_projection", "stage_journal_outbox",
 })
+_RUN_OWNED_FIELDS = frozenset({"schema", "run_artifacts"})
 _STAGE_MUTATION_KEYS = frozenset({
     "stage_heads", "lineage", "active_stage_projection",
 })
@@ -718,6 +723,13 @@ class RunStore:
         if not isinstance(value, dict) or value.get("schema") not in \
                 _RUN_SCHEMAS:
             raise RunStoreError(f"run manifest is invalid: {run_id}")
+        if "run_artifacts" in value:
+            try:
+                run_artifacts.validate_manifest_locator_reference(
+                    value["run_artifacts"])
+            except run_artifacts.RunArtifactError as exc:
+                raise RunStoreError(
+                    f"run artifact locator is invalid: {run_id}") from exc
         return value
 
     def create(self, identity: storage.RepositoryIdentity, *, run_id: str,
@@ -749,6 +761,7 @@ class RunStore:
                     "lenses": layout.lens_root,
                     "artifacts": layout.artifact_root,
                 },
+                "run_artifacts": run_artifacts.manifest_locator_reference(),
             }
             _atomic_write_json(path, manifest)
             _atomic_write_json(layout.repository_record, {
@@ -773,7 +786,7 @@ class RunStore:
                changes: dict) -> dict:
         if not isinstance(changes, dict):
             raise RunStoreError("run changes must be an object")
-        forbidden = set(changes) & ({"schema"} | _STAGE_INDEX_KEYS)
+        forbidden = set(changes) & (_RUN_OWNED_FIELDS | _STAGE_INDEX_KEYS)
         if forbidden:
             raise RunStoreError(
                 "generic run commit cannot change owned fields: " +

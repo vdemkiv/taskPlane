@@ -26,11 +26,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING or __package__:
     from .delivery_policy import DeliveryPolicyError
     from .delivery_ports import Clock, canonical_json, content_fingerprint
-    from .spend import normalize_usage
+    from .spend import WEIGHTS, normalize_usage
 else:  # pragma: no cover - direct module loading
     from delivery_policy import DeliveryPolicyError
     from delivery_ports import Clock, canonical_json, content_fingerprint
-    from spend import normalize_usage
+    from spend import WEIGHTS, normalize_usage
 
 
 LEDGER_SCHEMA = "taskplane.dispatch-telemetry-ledger/v1"
@@ -45,6 +45,8 @@ TRANSCRIPT_PROJECTION_SCHEMA = "taskplane.transcript-usage-checkpoint/v1"
 USAGE_CAPABILITY_SCHEMA = "taskplane.host-usage-capability/v1"
 LENS_ROUTE_TELEMETRY_SCHEMA = "taskplane.lens-route-telemetry/v1"
 WAVE_METRICS_SOURCE_SCHEMA = "taskplane.wave-metrics-dispatch-source/v1"
+TERMINAL_METRICS_SOURCE_SCHEMA = \
+    "taskplane.terminal-metrics-dispatch-source/v1"
 
 MAX_LENS_ROUTE_REASON_BYTES = 512
 MAX_LENS_ROUTE_ARTIFACT_BYTES = 128 * 1024
@@ -65,7 +67,11 @@ MAX_TRANSCRIPT_USAGE_IDENTITIES = 100_000
 THREAD_TYPES = frozenset({"main", "worker", "lens", "evaluator", "guardian"})
 EVENT_KINDS = frozenset({
     "progress", "complete", "attention", "failed", "cancelled",
-    "partial-host",
+    "interrupted", "handoff", "partial-host",
+})
+TERMINAL_EVENT_KINDS = frozenset({
+    "complete", "attention", "failed", "cancelled", "interrupted",
+    "handoff",
 })
 MAX_EVENT_BYTES = 64 * 1024
 MAX_EVENTS = 256
@@ -1240,6 +1246,155 @@ def closed_wave_metrics_source(
     }
     material["fingerprint"] = content_fingerprint(material)
     return material
+
+
+def terminal_metrics_source(
+        ledger: Mapping[str, Any], clock: Clock, *,
+        candidate_fingerprint: str,
+        billing_total_tokens: int | None = None,
+        archive_upper_bound_tokens: int | None = None) -> dict[str, Any]:
+    """Close real dispatch usage into one terminal metrics source.
+
+    This is the production-facing bridge between the live dispatch ledger and
+    the delivery metrics sealer.  It deliberately delegates closure, identity,
+    and missing-observation checks to :func:`closed_wave_metrics_source`.
+    Consequently a run with a bound dispatch whose provider usage was severed
+    cannot become a zero-token terminal receipt.
+
+    Effective tokens are derived from the same host-observed categories and
+    canonical weights used by ``spend.normalize_usage``.  Cache-creation input
+    is the reconciled remainder in the dispatch receipt; reasoning tokens are
+    already included in provider output and are never counted twice.
+    """
+    attempts = terminal_attempt_attribution(ledger)
+    unavailable = [row for row in attempts
+                   if row["usage_status"] != "measured"]
+    if unavailable:
+        raise DispatchTelemetryError(
+            "terminal dispatch usage is attributable but unavailable for "
+            f"{len(unavailable)} attempt(s)")
+    source = closed_wave_metrics_source(
+        ledger, clock, candidate_fingerprint=candidate_fingerprint,
+        billing_total_tokens=billing_total_tokens,
+        archive_upper_bound_tokens=archive_upper_bound_tokens)
+    sealed = validate_ledger(ledger)
+    rows = list(sealed.get("dispatches") or [])
+    if not rows:
+        raise DispatchTelemetryError(
+            "terminal metrics require at least one host-observed dispatch")
+    effective = 0.0
+    for row in rows:
+        usage = _usage({field: row.get(field) for field in _USAGE_FIELDS})
+        cache_creation = usage["total_tokens"] - usage["input_tokens"] - \
+            usage["output_tokens"]
+        effective += (
+            usage["uncached_input_tokens"] * WEIGHTS["input"]
+            + usage["cached_input_tokens"] * WEIGHTS["cache_read"]
+            + cache_creation * WEIGHTS["cache_write"]
+            + usage["output_tokens"] * WEIGHTS["output"])
+    material = {
+        **{key: value for key, value in source.items()
+           if key != "fingerprint"},
+        "schema": TERMINAL_METRICS_SOURCE_SCHEMA,
+        "observed": {**source["observed"],
+                     "effective_tokens": int(effective),
+                     "dispatches": len(rows)},
+        "attempts": attempts,
+    }
+    material["fingerprint"] = content_fingerprint(material)
+    return material
+
+
+def terminal_attempt_attribution(
+        ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Attribute every native attempt without exposing host identifiers.
+
+    A bound attempt remains present even when provider usage or its terminal
+    receipt is missing.  Such attempts carry ``None`` counters and an explicit
+    unavailable reason; they can never disappear into an invented zero.  A
+    retry is a distinct attempt row, so cancellation, interruption, handoff,
+    and later retry outcomes remain independently visible.
+    """
+    sealed = validate_ledger(ledger)
+    receipts = {
+        str(row.get("dispatch_id") or ""): row
+        for row in sealed.get("dispatches") or []
+    }
+    bindings = list(sealed.get("bindings") or [])
+    bound_ids = {str(row.get("dispatch_id") or "") for row in bindings}
+    # Legacy admitted receipts are retained as attributable unavailable
+    # rather than silently treated as provider-sourced measurements.
+    rows = bindings + [
+        {**receipt, "usage": {
+            field: receipt.get(field) for field in _USAGE_FIELDS},
+         "usage_source_fingerprint": None,
+         "finalized_receipt_fingerprint": receipt.get("fingerprint")}
+        for dispatch_id, receipt in receipts.items()
+        if dispatch_id not in bound_ids
+    ]
+    attributed: list[dict[str, Any]] = []
+    for binding in rows:
+        dispatch_id = str(binding.get("dispatch_id") or "")
+        receipt = receipts.get(dispatch_id)
+        events = list((receipt or binding).get("events") or [])
+        terminal = [event for event in events
+                    if event.get("kind") in TERMINAL_EVENT_KINDS]
+        outcome = str(terminal[-1]["kind"]) if terminal else None
+        source = binding.get("usage_source_fingerprint")
+        usage = binding.get("usage")
+        measured = receipt is not None and isinstance(usage, Mapping) and \
+            isinstance(source, str) and outcome is not None
+        reason = None
+        if not isinstance(usage, Mapping):
+            reason = "provider-usage-unavailable"
+        elif receipt is None:
+            reason = "terminal-receipt-unavailable"
+        elif not isinstance(source, str):
+            reason = "usage-source-unavailable"
+        elif outcome is None:
+            reason = "terminal-outcome-unavailable"
+        normalized = _usage(usage) if isinstance(usage, Mapping) else None
+        effective = None
+        if normalized is not None:
+            cache_creation = normalized["total_tokens"] - \
+                normalized["input_tokens"] - normalized["output_tokens"]
+            effective = int(
+                normalized["uncached_input_tokens"] * WEIGHTS["input"]
+                + normalized["cached_input_tokens"] * WEIGHTS["cache_read"]
+                + cache_creation * WEIGHTS["cache_write"]
+                + normalized["output_tokens"] * WEIGHTS["output"])
+        identity = {
+            "schema": "taskplane.dispatch-attempt-identity/v1",
+            "run_id": sealed["run_id"], "dispatch_id": dispatch_id,
+            "thread_id": str(binding.get("thread_id") or ""),
+            "task_id": str(binding.get("task_id") or ""),
+        }
+        attributed.append({
+            "attempt_fingerprint": content_fingerprint(identity),
+            "worker_fingerprint": content_fingerprint({
+                "run_id": sealed["run_id"],
+                "thread_id": str(binding.get("thread_id") or ""),
+            }),
+            "task_fingerprint": content_fingerprint({
+                "run_id": sealed["run_id"],
+                "task_id": str(binding.get("task_id") or ""),
+            }),
+            "thread_type": str(binding.get("thread_type") or ""),
+            "outcome": outcome,
+            "correction_count": int(binding.get("correction_count") or 0),
+            "usage_status": "measured" if measured else "unavailable",
+            "unavailable_reason": None if measured else reason,
+            "total_tokens": (normalized["total_tokens"]
+                             if measured and normalized is not None else None),
+            "uncached_input_tokens": (
+                normalized["uncached_input_tokens"]
+                if measured and normalized is not None else None),
+            "effective_tokens": effective if measured else None,
+            "receipt_fingerprint": (
+                receipt.get("fingerprint") if measured else None),
+            "usage_source_fingerprint": source if measured else None,
+        })
+    return attributed
 
 
 

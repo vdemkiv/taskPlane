@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
+from taskplane import run_artifacts
+
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = Path(__file__).with_name("fixtures") / "ci-runtime" / "contract.json"
 SPEC = importlib.util.spec_from_file_location(
-    "ci_local_runtime_contract", ROOT / "scripts" / "ci_local.py",
+    "ci_local_receipt_contract", ROOT / "scripts" / "ci_local.py",
 )
 
 
@@ -21,104 +23,79 @@ def _runner():
     return module
 
 
-def _browser():
-    return {
-        "executable": "/opt/chromium/chrome",
-        "version": "Chromium 131.0.0",
-        "flags": ["--headless=new", "--disable-gpu"],
-        "fixture_server": "1" * 64,
-        "snapshot": "2" * 64,
-        "dashboard_artifact": "3" * 64,
-        "selectors": "4" * 64,
-    }
+def _runtime(runner):
+    return runner.build_authoritative_ci_runtime(
+        source_sha=runner._git("rev-parse", "HEAD"),
+        event="pull_request", ref="482", run_id="9001",
+    )
 
 
-def test_browser_cell_is_required_isolated_candidate_bound_and_cleanup_safe(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize("outcome", ["cancellation", "interruption", "handoff"])
+def test_terminal_outcomes_preserve_durable_evidence_and_remove_only_owned_state(
+    tmp_path, outcome,
 ):
     runner = _runner()
-    contract = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    runtime = runner.build_authoritative_ci_runtime(
-        source_sha=runner._git("rev-parse", "HEAD"),
-        event="pull_request",
-        ref="482",
-        run_id="9001",
-        browser=_browser(),
-    )
-    browsers = [
-        cell for cell in runtime["plan"]["cells"] if cell["kind"] == "browser"
-    ]
-    assert len(browsers) == 1
-    browser = browsers[0]
-    assert browser["id"] == "dashboard-browser"
-    assert browser["matrix"] == "browser"
-    assert browser["execution"] == "ci-only"
-    assert browser["selectors"] == contract["browser_selectors"]
-    assert browser["candidate_fingerprint"] == runtime["candidate"]["fingerprint"]
-    assert browser["source_sha"] == runtime["candidate"]["source_sha"]
-    assert browser["browser_fingerprint"] == runtime["candidate"]["browser_fingerprint"]
-    assert browser["cleanup"]["registered_before_run"] is True
-    assert browser["cleanup"]["outcomes"] == [
-        "success", "failure", "cancellation", "interruption", "timeout", "handoff",
-    ]
-    assert all(
-        not set(browser["selectors"]).intersection(cell["selectors"])
-        for cell in runtime["plan"]["cells"] if cell["id"] != browser["id"]
-    )
-
-    target, registration = runner._owned_cell_root(
-        runtime, browser["id"], tmp_path,
-    )
-    assert target.name.startswith("taskplane-ci-")
-    assert len(target.name) <= 18
-    other_target, _ = runner._owned_cell_root(runtime, "pytest-1", tmp_path)
-    assert other_target.name != target.name
-    target.mkdir()
-    (target / "owned.txt").write_text("owned\n", encoding="utf-8")
-    cleanup = runner._cleanup_ci_cell_root(target, registration)
-    assert cleanup["status"] == "clean"
-    assert cleanup["leak_count"] == 0
-    assert not target.exists()
-
-    unsafe = tmp_path / "taskplane-ci-unowned"
-    unsafe.mkdir()
-    with pytest.raises(runner.RunnerError, match="ambiguous or unowned"):
-        runner._cleanup_ci_cell_root(unsafe, registration)
-    assert unsafe.exists()
-
+    runtime = _runtime(runner)
     runtime_path = tmp_path / "runtime.json"
     runner._atomic_write_json(runtime_path, runtime)
-    for outcome in ("cancellation", "interruption", "handoff"):
-        outcome_root = tmp_path / outcome
-        outcome_root.mkdir()
-        receipt_path = outcome_root / "receipt.json"
-        assert runner.run_authoritative_ci_cell(
-            runtime_path, "pytest-1", receipt_path,
-            environ={**runner.os.environ, "RUNNER_TEMP": str(outcome_root)},
-            forced_outcome=outcome,
-        ) == 1
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        cell = next(row for row in runtime["plan"]["cells"]
-                    if row["id"] == "pytest-1")
-        runner.validate_authoritative_ci_cell_receipt(receipt, runtime, cell)
-        assert receipt["outcome"] == outcome
-        assert receipt["classification"] is None
-        assert receipt["cleanup"]["outcome"] == outcome
-        assert receipt["cleanup"]["leak_count"] == 0
-        assert all(not Path(path).exists()
-                   for path in receipt["cleanup"]["resources"])
+    execution_root = tmp_path / outcome
+    execution_root.mkdir()
+    receipt_path = execution_root / "receipt.json"
 
-    drifted_browser = {**runtime["candidate"]["browser"], "version": "drifted"}
-    monkeypatch.setattr(runner, "_browser_identity", lambda _env: drifted_browser)
-    browser_root = tmp_path / "browser-drift"
-    browser_root.mkdir()
-    browser_receipt = browser_root / "receipt.json"
     assert runner.run_authoritative_ci_cell(
-        runtime_path, "dashboard-browser", browser_receipt,
-        environ={**runner.os.environ, "RUNNER_TEMP": str(browser_root)},
+        runtime_path, "pytest-1", receipt_path,
+        environ={**runner.os.environ, "RUNNER_TEMP": str(execution_root)},
+        forced_outcome=outcome,
     ) == 1
-    mismatch = json.loads(browser_receipt.read_text(encoding="utf-8"))
-    assert mismatch["classification"] == "environment"
-    assert mismatch["cleanup"]["leak_count"] == 0
-    with pytest.raises(runner.RunnerError, match="executing-runner identity"):
-        runner.validate_authoritative_ci_cell_receipt(mismatch, runtime, browser)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    cell = next(row for row in runtime["plan"]["cells"]
+                if row["id"] == "pytest-1")
+    runner.validate_authoritative_ci_cell_receipt(receipt, runtime, cell)
+
+    assert receipt["schema"] == runner.CI_DIRECT_CELL_SCHEMA
+    assert receipt["classification"] is None
+    assert receipt["failure_routing"]["next"] == "hold"
+    assert receipt["failure_routing"]["records"][0]["class"] == "unknown"
+    assert receipt["cleanup"]["outcome"] == outcome
+    assert receipt["cleanup"]["leak_count"] == 0
+    assert receipt["cleanup"]["durable_artifacts_preserved"] is True
+    assert all(not Path(path).exists() for path in receipt["cleanup"]["resources"])
+    verified = run_artifacts.verify_durable_reference(receipt["run_artifacts"])
+    assert verified["readable"] is True
+    assert verified["artifact_count"] >= 3
+
+
+def test_receipt_rejects_tampered_failure_and_cleanup_evidence(tmp_path):
+    runner = _runner()
+    runtime = _runtime(runner)
+    runtime_path = tmp_path / "runtime.json"
+    runner._atomic_write_json(runtime_path, runtime)
+    receipt_path = tmp_path / "receipt.json"
+    assert runner.run_authoritative_ci_cell(
+        runtime_path, "pytest-1", receipt_path,
+        environ={**runner.os.environ, "RUNNER_TEMP": str(tmp_path)},
+        forced_outcome="handoff",
+    ) == 1
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    cell = next(row for row in runtime["plan"]["cells"]
+                if row["id"] == "pytest-1")
+
+    tampered = deepcopy(receipt)
+    tampered["failure_routing"]["records"][0]["class"] = "product"
+    tampered["receipt"] = runner._sha256_json({
+        key: value for key, value in tampered.items() if key != "receipt"
+    })
+    with pytest.raises((runner.RunnerError, ValueError)):
+        runner.validate_authoritative_ci_cell_receipt(tampered, runtime, cell)
+
+    tampered = deepcopy(receipt)
+    tampered["cleanup"]["leak_count"] = 1
+    tampered["cleanup"]["fingerprint"] = runner._sha256_json({
+        key: value for key, value in tampered["cleanup"].items()
+        if key != "fingerprint"
+    })
+    tampered["receipt"] = runner._sha256_json({
+        key: value for key, value in tampered.items() if key != "receipt"
+    })
+    with pytest.raises(runner.RunnerError, match="cleanup"):
+        runner.validate_authoritative_ci_cell_receipt(tampered, runtime, cell)

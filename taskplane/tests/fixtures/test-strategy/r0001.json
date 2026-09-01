@@ -42,8 +42,8 @@
     {
       "id": "AC-TST2",
       "selectors": [
-        "taskplane/tests/test_ci_local.py::test_zero_token_no_egress_guard_executes_in_credential_empty_environment",
-        "taskplane/tests/test_release_tags.py::test_pushed_sha_proof_refuses_cached_ref_when_fetch_fails",
+        "taskplane/tests/test_r0002_ci_journey.py::test_r0002_credential_empty_guard_executes_one_no_egress_corpus",
+        "taskplane/tests/test_release_tags.py::test_pushed_sha_proof_refuses_when_remote_cannot_be_refreshed",
         "taskplane/tests/test_collision_integration.py::test_both_manifests_route_skill_to_dedicated_screen",
         "taskplane/tests/test_audit_sweep.py::TestAuditCadence::test_audit_due_fires_at_every_fifth_by_default"
       ]
@@ -51,28 +51,28 @@
     {
       "id": "AC-TST3",
       "selectors": [
-        "taskplane/tests/test_ci_execution_policy.py::test_validation_progression_requires_one_authoritative_ci_run"
+        "taskplane/tests/test_build_quality.py::test_receipt_proves_the_complete_build_progression_and_exact_binding"
       ]
     },
     {
       "id": "AC-CI1",
       "selectors": [
-        "taskplane/tests/test_ci_execution_policy.py::test_ci_shards_cleanup_and_candidate_freeze_are_authoritative",
-        "taskplane/tests/test_ci_execution_policy.py::test_ci_metrics_meet_declared_targets"
+        "taskplane/tests/test_ci_local.py::test_runner_plan_has_one_unsharded_suite_and_no_pytest_replays",
+        "taskplane/tests/test_ci_local.py::test_direct_topology_is_disjoint_and_names_only_justified_serialization"
       ]
     },
     {
       "id": "AC-CI2",
       "selectors": [
-        "taskplane/tests/test_ci_failure_batching.py::test_red_matrix_is_classified_once_and_corrected_as_one_wave",
-        "taskplane/tests/test_ci_failure_batching.py::test_third_plan_return_consolidates_coupled_surfaces"
+        "taskplane/tests/test_failure_routing.py::test_build_evaluate_and_ci_use_the_same_failure_contract",
+        "taskplane/tests/test_failure_routing.py::test_product_fix_requires_an_exclusively_product_inventory"
       ]
     },
     {
       "id": "AC-CLN1",
       "selectors": [
-        "taskplane/tests/test_owned_cleanup.py::test_cleanup_runs_on_every_terminal_outcome",
-        "taskplane/tests/test_owned_cleanup.py::test_cleanup_preserves_evidence_and_proves_zero_leaks"
+        "taskplane/tests/test_r0002_terminal_journey.py::test_public_non_normal_terminal_journey_is_bound_clean_and_replay_safe",
+        "taskplane/tests/test_r0002_terminal_journey.py::test_session_start_replays_only_an_already_persisted_exact_intent"
       ]
     },
     {
@@ -123,12 +123,12 @@
       "severed_edges": [
         {
           "consumer": "taskplane/dashboard.py",
-          "mutation": "delete snapshot-to-dashboard call",
-          "selector": "taskplane/tests/test_r0001_dashboard_pipeline.py::test_committed_events_publish_fresh_snapshot"
+          "mutation": "drop bound provenance while rendering the canonical snapshot",
+          "selector": "taskplane/tests/test_host_native_publication.py::test_complete_binding_is_visible_and_identical_in_native_projection"
         }
       ],
       "interface_fixtures": [
-        {"path": "taskplane/tests/fixtures/test-strategy/dashboard-snapshot.json", "slice": "DASHBOARD-CONTRACT"}
+        {"path": "taskplane/tests/fixtures/dashboard-contract/snapshot-v1.json", "slice": "DASHBOARD-CONTRACT"}
       ]
     },
     {
@@ -140,12 +140,14 @@
       "severed_edges": [
         {
           "consumer": "taskplane/views.py",
-          "mutation": "replace executable graph projection with metadata-only presence",
-          "selector": "taskplane/tests/test_dashboard_phase_graphs.py::test_design_plan_and_impact_graphs_remain_distinct"
+          "mutation": "reopen mutable workspace state instead of rendering the sealed graph",
+          "selector": "taskplane/tests/test_dashboard_stage_graph_provenance.py::test_durable_html_graph_comes_from_snapshot_after_workspace_mutation"
         }
       ],
       "interface_fixtures": [
-        {"path": "taskplane/tests/fixtures/test-strategy/dashboard-phase-graphs.json", "slice": "DASHBOARD-PROJECTION"}
+        {"path": "taskplane/tests/fixtures/dashboard-phase/design-contract.json", "slice": "DASHBOARD-PROJECTION"},
+        {"path": "taskplane/tests/fixtures/dashboard-phase/plan-tasks.json", "slice": "DASHBOARD-PROJECTION"},
+        {"path": "taskplane/tests/fixtures/dashboard-phase/module-impact.json", "slice": "DASHBOARD-PROJECTION"}
       ]
     },
     {
@@ -158,11 +160,12 @@
         {
           "consumer": "static HTML",
           "mutation": "leave stale page actionable after publisher failure",
-          "selector": "taskplane/tests/test_dashboard_delivery_html.py::test_stale_publication_is_read_only"
+          "selector": "taskplane/tests/test_host_native_publication.py::test_delayed_prior_run_and_wrong_expected_head_cannot_replace_current"
         }
       ],
       "interface_fixtures": [
-        {"path": "taskplane/tests/fixtures/test-strategy/dashboard-publication.json", "slice": "DASHBOARD-DELIVERY"}
+        {"path": "taskplane/tests/fixtures/dashboard-browser/environment.json", "slice": "DASHBOARD-DELIVERY"},
+        {"path": "taskplane/tests/fixtures/dashboard-browser/topology.json", "slice": "DASHBOARD-DELIVERY"}
       ]
     },
     {
@@ -174,8 +177,8 @@
       "severed_edges": [
         {
           "consumer": "all Build slices",
-          "mutation": "delete producer/consumer edge",
-          "selector": "taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete"
+          "mutation": "accept Build quality evidence after its candidate changes",
+          "selector": "taskplane/tests/test_r0002_build_quality_journey.py::test_recorded_build_quality_is_current_then_severs_when_candidate_moves"
         }
       ],
       "interface_fixtures": [

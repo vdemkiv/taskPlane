@@ -11,7 +11,7 @@
   "lenses": {
     "routing": {
       "product": ["product"],
-      "design": ["design"],
+      "design": ["solution-design"],
       "plan": ["plan"],
       "build": [],
       "evaluate": [],
@@ -19,7 +19,7 @@
     },
     "counts": {
       "product": 1,
-      "design": 1,
+      "design": 16,
       "plan": 3,
       "build": 0,
       "evaluate": 0,
@@ -76,7 +76,8 @@
         "handle_host_input",
         "cleanup_replay",
         "retro",
-        "worker_terminal"
+        "worker_terminal",
+        "terminalize_run"
       ],
       "session_event": "session_recovery",
       "replay_on_session_start": true

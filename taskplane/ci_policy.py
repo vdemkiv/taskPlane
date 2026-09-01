@@ -16,19 +16,18 @@ import re
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
+if __package__:
+    from . import build_quality
+else:  # pragma: no cover - direct CLI module loading
+    import build_quality
+
 
 CANDIDATE_SCHEMA = "taskplane.ci-candidate/v1"
 PLAN_SCHEMA = "taskplane.ci-plan/v1"
-VALIDATION_SCHEMA = "taskplane.ci-validation/v1"
+VALIDATION_SCHEMA = build_quality.VALIDATION_SCHEMA
 METRICS_SCHEMA = "taskplane.ci-metrics/v1"
 
-VALIDATION_LAYERS = (
-    "static",
-    "exact-selector",
-    "changed-radius",
-    "proportional-suite",
-    "authoritative-ci",
-)
+VALIDATION_LAYERS = build_quality.VALIDATION_LAYERS
 FINGERPRINT_INPUTS = (
     "source",
     "tests",
@@ -58,8 +57,7 @@ TERMINAL_OUTCOMES = (
     "handoff",
 )
 DECLARED_TARGETS = {
-    "first_matrix_hours": 2.0,
-    "matrix_count_max": 3.0,
+    "first_validation_hours": 2.0,
     "p50_minutes": 10.0,
     "p95_minutes": 15.0,
     "runner_minutes_max": 30.0,
@@ -189,74 +187,18 @@ def advance_validation(
     prior: Mapping[str, Any] | None = None,
     unchanged_green: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Advance exactly one validation layer without broad local execution."""
-
+    """Adapt a frozen CI candidate to the canonical quality progression."""
     frozen = _validated_candidate(candidate)
-    if layer not in VALIDATION_LAYERS:
-        raise CIPolicyError(f"unknown validation layer {layer!r}")
-    if execution not in {"local", "ci"}:
-        raise CIPolicyError("validation execution must be local or ci")
-    if execution == "local" and layer not in {"static", "exact-selector"}:
-        raise CIPolicyError("broad local validation is refused by default")
-    if layer == "authoritative-ci" and execution != "ci":
-        raise CIPolicyError("the authoritative matrix must run in CI")
-
-    completed: list[str] = []
-    cited: list[dict[str, str]] = []
-    matrix_runs = 0
-    if prior is not None:
-        previous = _mapping(prior, "prior validation evidence")
-        if previous.get("schema") != VALIDATION_SCHEMA:
-            raise CIPolicyError("prior validation evidence schema is unsupported")
-        previous_fingerprint = _fingerprint(
-            {key: value for key, value in previous.items() if key != "fingerprint"}
+    try:
+        return build_quality.advance_progression(
+            frozen["fingerprint"],
+            layer,
+            execution=execution,
+            prior=prior,
+            unchanged_green=unchanged_green,
         )
-        if previous.get("fingerprint") != previous_fingerprint:
-            raise CIPolicyError("prior validation evidence is stale")
-        if previous.get("candidate_fingerprint") != frozen["fingerprint"]:
-            raise CIPolicyError("validation layers must use one frozen candidate")
-        completed = list(previous.get("completed") or [])
-        if completed != list(VALIDATION_LAYERS[: len(completed)]):
-            raise CIPolicyError("prior validation progression is not contiguous")
-        cited = copy.deepcopy(list(previous.get("cited_unchanged_green") or []))
-        matrix_runs = int(previous.get("matrix_runs") or 0)
-    expected = (
-        VALIDATION_LAYERS[len(completed)]
-        if len(completed) < len(VALIDATION_LAYERS)
-        else None
-    )
-    if layer != expected:
-        raise CIPolicyError(f"validation must advance to {expected!r}, not {layer!r}")
-
-    mode = "executed"
-    if unchanged_green is not None:
-        if layer == "authoritative-ci":
-            raise CIPolicyError(
-                "authoritative CI must execute once for the frozen candidate"
-            )
-        green = _mapping(unchanged_green, "unchanged green receipt")
-        if green.get("layer") != layer:
-            raise CIPolicyError("unchanged green receipt names the wrong layer")
-        if green.get("candidate_fingerprint") != frozen["fingerprint"]:
-            raise CIPolicyError("unchanged green receipt is stale")
-        receipt = _require_digest(green.get("receipt"), "unchanged green receipt")
-        cited.append({"layer": layer, "receipt": receipt})
-        mode = "cited"
-    completed.append(layer)
-    if layer == "authoritative-ci" and mode == "executed":
-        matrix_runs += 1
-    if matrix_runs > 1:
-        raise CIPolicyError("only one authoritative matrix may run for a candidate")
-    payload = {
-        "schema": VALIDATION_SCHEMA,
-        "candidate_fingerprint": frozen["fingerprint"],
-        "completed": completed,
-        "cited_unchanged_green": cited,
-        "last_layer": {"name": layer, "execution": execution, "mode": mode},
-        "authoritative": completed == list(VALIDATION_LAYERS),
-        "matrix_runs": matrix_runs,
-    }
-    return {**payload, "fingerprint": _fingerprint(payload)}
+    except build_quality.BuildQualityError as exc:
+        raise CIPolicyError(str(exc)) from None
 
 
 def _settings_payload(declaration: Mapping[str, Any]) -> dict[str, Any]:
@@ -312,13 +254,11 @@ def build_ci_plan(
     if len(raw_cells) >= 4 and max_parallel < 4:
         raise CIPolicyError("four disjoint shards require at least 4x parallelism")
 
-    matrices = _strings(raw.get("matrices"), "CI matrices")
-    if len(matrices) > 3:
-        raise CIPolicyError("at most three CI matrices are allowed")
+    domains = _strings(
+        raw.get("validation_domains"), "CI validation domains")
 
     seen_ids: set[str] = set()
-    seen_selectors: set[str] = set()
-    seen_paths: set[str] = set()
+    selector_runtimes: dict[str, set[str]] = {}
     seen_resources: set[str] = set()
     cells: list[dict[str, Any]] = []
     browsers = 0
@@ -328,18 +268,26 @@ def build_ci_plan(
         if not isinstance(cell_id, str) or not cell_id or cell_id in seen_ids:
             raise CIPolicyError("CI cell ids must be non-empty and unique")
         seen_ids.add(cell_id)
-        if cell.get("matrix") not in matrices:
-            raise CIPolicyError(f"CI cell {cell_id} names an unknown matrix")
+        if cell.get("validation_domain") not in domains:
+            raise CIPolicyError(
+                f"CI cell {cell_id} names an unknown validation domain")
+        runtime = cell.get("runtime")
+        if runtime is not None and (
+            not isinstance(runtime, str) or not runtime.strip()
+        ):
+            raise CIPolicyError(f"CI cell {cell_id} runtime is invalid")
+        runtime_identity = runtime if isinstance(runtime, str) else ""
         selectors = _strings(cell.get("selectors"), f"CI cell {cell_id} selectors")
-        overlap = seen_selectors.intersection(selectors)
-        if overlap:
-            raise CIPolicyError("selector overlap across CI cells: " + ", ".join(sorted(overlap)))
-        seen_selectors.update(selectors)
+        for selector in selectors:
+            prior_runtimes = selector_runtimes.setdefault(selector, set())
+            if prior_runtimes and (
+                not runtime_identity or "" in prior_runtimes
+                or runtime_identity in prior_runtimes
+            ):
+                raise CIPolicyError(
+                    "selector overlap across CI cells: " + selector)
+            prior_runtimes.add(runtime_identity)
         paths = _strings(cell.get("paths"), f"CI cell {cell_id} paths")
-        path_overlap = seen_paths.intersection(paths)
-        if path_overlap:
-            raise CIPolicyError("path overlap across CI cells: " + ", ".join(sorted(path_overlap)))
-        seen_paths.update(paths)
         timeout = int(_positive_number(cell.get("timeout_seconds"), f"CI cell {cell_id} timeout"))
         if timeout > timeout_ceiling:
             raise CIPolicyError(f"CI cell {cell_id} timeout exceeds settings ceiling")
@@ -355,7 +303,7 @@ def build_ci_plan(
         normalized = {
             "id": cell_id,
             "kind": kind,
-            "matrix": cell["matrix"],
+            "validation_domain": cell["validation_domain"],
             "selectors": selectors,
             "paths": paths,
             "timeout_seconds": timeout,
@@ -367,6 +315,17 @@ def build_ci_plan(
                 "outcomes": list(TERMINAL_OUTCOMES),
             },
         }
+        excluded = cell.get("excluded_selectors")
+        if excluded is not None:
+            excluded_selectors = _strings(
+                excluded, f"CI cell {cell_id} excluded selectors")
+            if kind != "pytest":
+                raise CIPolicyError(
+                    "only the authoritative pytest suite may exclude a "
+                    "native-only selector")
+            normalized["excluded_selectors"] = excluded_selectors
+        if runtime is not None:
+            normalized["runtime"] = runtime
         if kind == "browser":
             browsers += 1
             if cell.get("execution") != "ci-only":
@@ -398,7 +357,13 @@ def build_ci_plan(
             raise CIPolicyError(f"serialization {name} names an unknown cell")
         if len(members) == len(cells):
             raise CIPolicyError("global serialization is forbidden")
-        serializations.append({"name": name, "cells": members})
+        reason = row.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise CIPolicyError(
+                f"serialization {name} requires a concrete reason")
+        serializations.append({
+            "name": name, "cells": members, "reason": reason,
+        })
 
     run = _mapping(raw.get("run"), "CI run")
     group = run.get("group")
@@ -430,7 +395,7 @@ def build_ci_plan(
         "source_sha": frozen["source_sha"],
         "settings_digest": settings["digest"],
         "candidate_frozen_before_cells": True,
-        "matrices": matrices,
+        "validation_domains": domains,
         "max_parallel": max_parallel,
         "cancellation": cancellation,
         "serializations": serializations,
@@ -460,20 +425,28 @@ def evaluate_ci_metrics(evidence: Mapping[str, Any]) -> dict[str, Any]:
 
     raw = _mapping(evidence, "CI metrics evidence")
     ready = _parse_time(raw.get("integration_ready_at"), "integration_ready_at")
-    started = _parse_time(raw.get("first_matrix_started_at"), "first_matrix_started_at")
+    started = _parse_time(
+        raw.get("first_validation_started_at"),
+        "first_validation_started_at",
+    )
     if started < ready:
-        raise CIPolicyError("first matrix cannot start before integration is ready")
+        raise CIPolicyError(
+            "first validation cannot start before integration is ready")
     first_hours = (started - ready).total_seconds() / 3600.0
 
-    matrix_ids = _strings(raw.get("matrix_ids"), "matrix ids")
-    durations_raw = raw.get("matrix_durations_minutes")
+    domain_ids = _strings(
+        raw.get("validation_domain_ids"), "validation domain ids")
+    durations_raw = raw.get("validation_domain_durations_minutes")
     if not isinstance(durations_raw, list) or not durations_raw:
-        raise CIPolicyError("matrix durations must be a non-empty list")
+        raise CIPolicyError(
+            "validation domain durations must be a non-empty list")
     durations = [
-        _positive_number(value, "matrix duration") for value in durations_raw
+        _positive_number(value, "validation domain duration")
+        for value in durations_raw
     ]
-    if len(durations) != len(matrix_ids):
-        raise CIPolicyError("each matrix id requires one elapsed duration")
+    if len(durations) != len(domain_ids):
+        raise CIPolicyError(
+            "each validation domain id requires one elapsed duration")
     cells_raw = raw.get("cells")
     if not isinstance(cells_raw, list) or not cells_raw:
         raise CIPolicyError("CI metrics need cell durations")
@@ -504,8 +477,7 @@ def evaluate_ci_metrics(evidence: Mapping[str, Any]) -> dict[str, Any]:
         for key in DECLARED_TARGETS
     }
     for key in (
-        "first_matrix_hours",
-        "matrix_count_max",
+        "first_validation_hours",
         "p50_minutes",
         "p95_minutes",
         "runner_minutes_max",
@@ -518,25 +490,22 @@ def evaluate_ci_metrics(evidence: Mapping[str, Any]) -> dict[str, Any]:
     runner_minutes = sum(cell_durations)
     parallelism = runner_minutes / elapsed
     values = {
-        "first_matrix_hours": round(first_hours, 3),
-        "matrix_count": len(matrix_ids),
+        "first_validation_hours": round(first_hours, 3),
         "p50_minutes": round(_nearest_rank(durations, 0.50), 3),
         "p95_minutes": round(_nearest_rank(durations, 0.95), 3),
         "runner_minutes": round(runner_minutes, 3),
         "parallelism": round(parallelism, 3),
     }
     comparisons = (
-        ("first_matrix_hours", values["first_matrix_hours"], targets["first_matrix_hours"], "max"),
-        ("matrix_count", values["matrix_count"], targets["matrix_count_max"], "max"),
+        ("first_validation_hours", values["first_validation_hours"], targets["first_validation_hours"], "max"),
         ("p50_minutes", values["p50_minutes"], targets["p50_minutes"], "max"),
         ("p95_minutes", values["p95_minutes"], targets["p95_minutes"], "max"),
         ("runner_minutes", values["runner_minutes"], targets["runner_minutes_max"], "max"),
         ("parallelism", values["parallelism"], targets["parallelism_min"], "min"),
     )
     checks = []
-    four_shards = raw.get("four_shards_exist") is True
     for name, value, target, direction in comparisons:
-        passed = value <= target if direction == "max" else (value >= target or not four_shards)
+        passed = value <= target if direction == "max" else value >= target
         checks.append(
             {
                 "name": name,

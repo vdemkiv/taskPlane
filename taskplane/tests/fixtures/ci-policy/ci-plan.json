@@ -11,15 +11,15 @@
     "group": "pull-request-482",
     "cancel_in_progress": true
   },
-  "matrices": ["primary", "compatibility-quality-package", "browser"],
+  "validation_domains": ["primary", "compatibility-quality-package", "browser"],
   "serializations": [
-    {"name": "package-index", "cells": ["package"]}
+    {"name": "package-index", "cells": ["package"], "reason": "package provenance consumes the built archive"}
   ],
   "cells": [
     {
       "id": "unit-core",
       "kind": "pytest",
-      "matrix": "primary",
+      "validation_domain": "primary",
       "selectors": ["taskplane/tests/test_loop.py::test_loop_status"],
       "paths": ["taskplane/loop.py"],
       "timeout_seconds": 480,
@@ -28,7 +28,7 @@
     {
       "id": "compatibility",
       "kind": "pytest",
-      "matrix": "compatibility-quality-package",
+      "validation_domain": "compatibility-quality-package",
       "selectors": ["taskplane/tests/test_codex_compat.py::test_native_projection"],
       "paths": ["taskplane/taskplane_lite.py"],
       "timeout_seconds": 480,
@@ -37,7 +37,7 @@
     {
       "id": "quality",
       "kind": "quality",
-      "matrix": "compatibility-quality-package",
+      "validation_domain": "compatibility-quality-package",
       "selectors": ["taskplane/tests/test_release_provenance.py::test_locks_are_hashed"],
       "paths": ["requirements-dev.lock"],
       "timeout_seconds": 300,
@@ -46,7 +46,7 @@
     {
       "id": "package",
       "kind": "package",
-      "matrix": "compatibility-quality-package",
+      "validation_domain": "compatibility-quality-package",
       "selectors": ["taskplane/tests/test_package.py::test_package_membership"],
       "paths": ["pyproject.toml"],
       "timeout_seconds": 300,
@@ -55,7 +55,7 @@
     {
       "id": "dashboard-browser",
       "kind": "browser",
-      "matrix": "browser",
+      "validation_domain": "browser",
       "execution": "ci-only",
       "selectors": ["taskplane/tests/test_dashboard_browser.py::test_current_dashboard_dom"],
       "paths": ["taskplane/tests/fixtures/dashboard-browser/current.html"],

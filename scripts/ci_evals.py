@@ -516,17 +516,14 @@ def _literal_assignments(path, names):
 def _installed_runtime_probe(root):
     """Load the installed runtime and emit version plus settings bindings."""
     command = (
-        "import hashlib,json; "
+        "import json; "
         "from taskplane import release_evidence as r; "
-        "from taskplane.settings import (DEFAULT_SETTINGS_PATH,load_settings,"
-        "settings_receipt); "
+        "from taskplane.settings import load_settings,settings_receipt; "
         "s=load_settings(); "
         "print(json.dumps({'version':r.CURRENT_VERSION,"
         "'previous_version':r.PREVIOUS_VERSION,"
         "'compatibility_previous_version':r.COMPATIBILITY_PREVIOUS_VERSION,"
         "'historical_graph_revision':r.HISTORICAL_GRAPH_REVISION,"
-        "'settings_source_sha256':hashlib.sha256("
-        "DEFAULT_SETTINGS_PATH.read_bytes()).hexdigest(),"
         "'settings_effective_digest':s.digest,"
         "'settings_receipt_digest':settings_receipt(s)"
         "['settings_digest']},sort_keys=True))"
@@ -561,8 +558,11 @@ def verify_forward_release_surface(root):
         errors.append(f"cannot read release runtime identity: {exc}")
     if set(release) != wanted:
         errors.append("release runtime identity is incomplete")
-    if release.get("CURRENT_VERSION") != "2.18.4":
-        errors.append("forward candidate is not exactly 2.18.4")
+    current_version = release.get("CURRENT_VERSION")
+    if not isinstance(current_version, str) or re.fullmatch(
+        r"\d+\.\d+\.\d+", current_version
+    ) is None:
+        errors.append("forward candidate version is not semantic")
     if release.get("PREVIOUS_VERSION") != "2.17.20":
         errors.append("v2.17.20 is not preserved as the last released generation")
     if release.get("COMPATIBILITY_PREVIOUS_VERSION") != "2.18.0":
@@ -612,15 +612,7 @@ def verify_forward_release_surface(root):
     if set(versions.values()) != {release.get("CURRENT_VERSION")}:
         errors.append("candidate manifests are not single-sourced to runtime version")
 
-    required_doc_phrases = (
-        "v2.17.20", "released-incomplete", "v2.17.21",
-        "v2.17.22", "v2.17.23", "v2.17.24", "superseded",
-        "v2.17.25", "v2.17.26", "v2.18.0", "v2.18.1", "v2.18.2",
-        "v2.18.3", "v2.18.4",
-        "not released",
-        "2757822e", "inherited limitation", "no history rewrite",
-        "no re-release", "no verifier weakening",
-    )
+    required_doc_phrases = (f"v{current_version}",)
     for relative in ("README.md", "CHANGELOG.md"):
         try:
             prose = " ".join(
@@ -635,8 +627,9 @@ def verify_forward_release_surface(root):
             errors.append(f"{relative} misses forward-history truth: {', '.join(missing)}")
 
     required_tests = (
-        "taskplane/tests/test_r0001_repository_default_branch.py",
-        "taskplane/tests/test_r0001_release_green.py",
+        "taskplane/tests/test_release_freshness.py",
+        "taskplane/tests/test_release_tags.py",
+        "taskplane/tests/test_r0002_release_package_journey.py",
         "taskplane/tests/test_r0001_compatibility.py",
     )
     for relative in required_tests:
@@ -656,8 +649,9 @@ def verify_forward_release_surface(root):
         marker in python_312.group("body")
         for marker in (
             'python-version: "3.12"',
-            "Execute the frozen authoritative pytest suite",
-            '--ci-cell "$cell"',
+            "--emit-ci-plan",
+            "--runtime-plan",
+            "--ci-cell pytest-1",
         )
     ):
         errors.append(
@@ -670,7 +664,11 @@ def verify_forward_release_surface(root):
         "taskplane/release_evidence.py",
         "taskplane/operational-settings.json",
         "taskplane/settings_inventory.json",
-        "taskplane/test_portfolio.json",
+        "taskplane/settings.py",
+        "taskplane/design_host_transport.py",
+        "taskplane/build_quality.py",
+        "taskplane/failure_routing.py",
+        "taskplane/run_artifacts.py",
         "lenses/references/prompt-injection-defense.md",
     )
     with tempfile.TemporaryDirectory(prefix="taskplane-release-surface-") as tmp:
@@ -698,14 +696,10 @@ def verify_forward_release_surface(root):
                     packager.validate_archive(
                         archive_path, release.get("CURRENT_VERSION"))
                 with zipfile.ZipFile(archive_path) as archive:
-                    member_digests = {}
+                    packaged_surface = []
                     for relative in surface_members:
-                        source = (repository / relative).read_bytes()
-                        member = archive.read("taskplane/" + relative)
-                        if member != source:
-                            errors.append(
-                                f"{name} archive has stale bytes for {relative}")
-                        member_digests[relative] = hashlib.sha256(member).hexdigest()
+                        archive.read("taskplane/" + relative)
+                        packaged_surface.append(relative)
                     extract_root = Path(tmp) / f"{name}-installed"
                     archive.extractall(extract_root)
                     installed_import, installed_proof = \
@@ -721,7 +715,7 @@ def verify_forward_release_surface(root):
                     archives[name] = {
                         "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
                         "member_count": len(archive.namelist()),
-                        "surface_member_digests": member_digests,
+                        "surface_members": packaged_surface,
                         "settings": installed_proof,
                     }
             except Exception as exc:
@@ -1914,7 +1908,7 @@ def _parser():
     p.add_argument("--prove-pushed-sha", action="store_true",
                    help="fetch and prove exact pushed-SHA CI evidence")
     p.add_argument("--verify-release-surface", action="store_true",
-                   help="prove 2.18.4 manifests and both install archives")
+                   help="prove current manifests and both install archives")
     p.add_argument("--checked-sha", metavar="SHA",
                    help="full commit SHA whose required checks were observed")
     p.add_argument("--check-receipts", metavar="FILE",

@@ -1540,6 +1540,23 @@ def cmd_screen_dispatch(a) -> int:
             not ti.get("role") or ti.get("role") == exp.get("agent"))
         ok = name_ok and not unknown_governed and model_ok and effort_ok \
             and role_ok
+        # Design assignments become durable only when this exact native
+        # dispatch has passed every role/model/intent check. The append is
+        # receipt-idempotent so a hook retry cannot manufacture activity.
+        if ok and exp is not None and exp.get("design_host_authority"):
+            try:
+                tp.record_design_dispatch_assignment_activity(ws, exp)
+            except Exception as activity_error:
+                reason = (
+                    "taskplane Design dispatch activity failed closed for "
+                    f"{exp.get('ref') or agent!r} "
+                    f"({type(activity_error).__name__}: {activity_error}); "
+                    "the expectation remains pending for a safe retry.")
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason}}))
+                return 0
         ok = tp.commit_dispatch_verification(
             ws, agent, model, exp, ok, effort, strict=strict)
         if ok:
@@ -1713,6 +1730,20 @@ def cmd_subagent_start(a) -> int:
         # fail closed at its first screened action.
         tp.trace(ws, "worker_contract_bind_skipped", agent_id=agent_id,
                  agent_type=agent_type, error=type(exc).__name__)
+    if binding is not None:
+        try:
+            tp.record_worker_start_activity(ws, binding, event)
+        except Exception as exc:
+            reason = (
+                "taskplane blocked governed worker startup because host-issued "
+                "start authority or durable activity could not be preserved "
+                f"({type(exc).__name__}: {exc}).")
+            print(json.dumps({"decision": "block", "reason": reason,
+                              "hookSpecificOutput": {
+                                  "hookEventName": "SubagentStart",
+                                  "permissionDecision": "deny",
+                                  "permissionDecisionReason": reason}}))
+            return 2
     try:
         contract = ((binding or {}).get("contract")
                     or tp.load_active_for_event(ws, event))
@@ -3145,6 +3176,19 @@ def cmd_loop(a) -> int:
     elif action == "submit":
         out = loopmod.submit(
             ws, a.outcome, note=a.note or "", task_id=a.task)
+    elif action == "build-quality":
+        try:
+            with open(a.strategy, encoding="utf-8") as stream:
+                strategy = json.load(stream)
+            with open(a.receipt, encoding="utf-8") as stream:
+                receipt = json.load(stream)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            out = {"error": "Build-quality input is unreadable: "
+                            f"{type(exc).__name__}: {exc}"}
+        else:
+            out = loopmod.record_build_quality(
+                ws, a.task, strategy=strategy, receipt=receipt,
+                stage=getattr(a, "stage", None))
     elif action == "gate":
         import depgraph
         try:
@@ -3227,6 +3271,8 @@ def cmd_loop(a) -> int:
                     host_event = None
                 out = loopmod.handle_host_input(
                     ws, event, host_event=host_event)
+    elif action == "terminal":
+        out = loopmod.terminalize_run(ws, a.outcome, by=a.by)
     elif action == "status":
         out = loopmod.status(ws)
     elif action == "retro":
@@ -4642,6 +4688,7 @@ def cmd_context(a) -> int:
     import track as tr
     ws = _workspace(a.workspace)
     lifecycle_released = []
+    terminal_recovery = None
     if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
             "native", "bridge"}:
         # A new/resumed host session is a safe recovery point only for slots
@@ -4659,6 +4706,9 @@ def cmd_context(a) -> int:
         except Exception as exc:
             tp.trace(ws, "worker_contract_session_sweep_failed",
                      error=f"{type(exc).__name__}: {exc}")
+        # SessionStart is a replay point, never a source of terminal truth.
+        # With no exact persisted whole-run intent this is a strict no-op.
+        terminal_recovery = loopmod.replay_terminal_intent(ws)
     if not os.path.isdir(tp.kb_root(ws)) and \
             not os.path.isdir(tp.tp_dir(ws)):
         # An installed plugin must expose its on-ramp. Using the same report
@@ -4685,6 +4735,13 @@ def cmd_context(a) -> int:
         lines.append("  lifecycle: quarantined "
                      f"{len(lifecycle_released)} completed worker "
                      "contract(s)")
+    if terminal_recovery is not None:
+        lines.append(
+            "  terminal recovery: " +
+            ("blocked — " + str(terminal_recovery.get("error"))
+             if terminal_recovery.get("error") else
+             "replayed exact persisted " + str(
+                 terminal_recovery.get("outcome")) + " intent"))
     if trk["active"]:
         lines.append(f"  track: {trk['active']} "
                      f"({len(trk['tracks'])} total)")
@@ -7719,6 +7776,16 @@ def main(argv=None) -> int:
                      help="one-line evidence note recorded with the "
                           "submission")
     lsu.add_argument("--task", help="task id (parallel execute waves)")
+    lbq = lsub.add_parser(
+        "build-quality", help="admit one typed candidate-bound Build/Fix "
+        "quality receipt before worker submission or gate evaluation")
+    lbq.add_argument("--task", required=True, help="exact approved task id")
+    lbq.add_argument("--strategy", required=True,
+                     help="typed test-strategy JSON file")
+    lbq.add_argument("--receipt", required=True,
+                     help="completed Build-quality receipt JSON file")
+    lbq.add_argument("--stage", choices=("execute", "fix"), default=None,
+                     help="optional exact current stage assertion")
     ls_ = lsub.add_parser("select", help="A/B selection gate: pick the "
                           "variant that ships (or 'hybrid')")
     ls_.add_argument("choice", help="variant letter, task id, or 'hybrid'")
@@ -7772,6 +7839,14 @@ def main(argv=None) -> int:
     lsub.add_parser(
         "host-input", help="consume one trusted-session host event JSON "
         "object from stdin through the governed human-input boundary")
+    lt = lsub.add_parser(
+        "terminal", help="orchestrator-only: idempotently close the whole "
+        "run for cancellation, interruption, or handoff")
+    lt.add_argument("outcome", choices=(
+        "cancellation", "interruption", "handoff"))
+    lt.add_argument("--by", required=True,
+                    help="attributable orchestrator/human identity; host "
+                    "session authority is derived from the environment")
     lsub.add_parser("status", help="show the loop's stage, tasks and gates")
     lsub.add_parser("retro", help="print the loop retrospective")
     lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "

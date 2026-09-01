@@ -24,6 +24,8 @@ from taskplane.settings_legacy import (
 DEFAULT_SETTINGS_PATH = Path(__file__).with_name("operational-settings.json")
 RECEIPT_SCHEMA = "taskplane.operational-settings-receipt/v1"
 STAGES = ("product", "design", "plan", "build", "evaluate", "fix")
+ZERO_LENS_STAGES = frozenset(("build", "evaluate", "fix"))
+DESIGN_LENS_MAX = 16
 REASONING = frozenset(("inherit", "low", "medium", "high", "xhigh", "max", "ultra"))
 TEST_SELECTIONS = frozenset(("targeted", "affected", "all"))
 _SECRET_PARTS = ("secret", "password", "credential", "private_key", "access_token", "api_key")
@@ -41,7 +43,7 @@ _LEGACY_ENV_TIERS = {
 REQUIRED_DASHBOARD_LIFECYCLE_EVENTS = (
     "gate", "submit", "next_action", "approve", "select", "resolve",
     "replan", "handle_host_input", "cleanup_replay", "retro",
-    "worker_terminal",
+    "worker_terminal", "terminalize_run",
 )
 
 _TOP = frozenset({
@@ -110,6 +112,33 @@ class StageSettings:
 
 
 @dataclass(frozen=True)
+class StageLensPolicy:
+    """One typed stage policy compiled from the canonical lens settings.
+
+    ``routing`` remains the persisted compatibility spelling.  At the runtime
+    boundary its entries are mandatory lens ids and ``counts`` is the maximum
+    number of independently justified workers, not an instruction to fill the
+    route with arbitrary lenses.
+    """
+
+    stage: str
+    mandatory: tuple[str, ...]
+    max_count: int
+
+    @property
+    def dynamic(self) -> bool:
+        return self.max_count > len(self.mandatory)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "mandatory": list(self.mandatory),
+            "max_count": self.max_count,
+            "dynamic": self.dynamic,
+        }
+
+
+@dataclass(frozen=True)
 class LensSettings:
     routing: Mapping[str, tuple[str, ...]]
     counts: Mapping[str, int]
@@ -119,6 +148,25 @@ class LensSettings:
             "routing": {key: list(value) for key, value in self.routing.items()},
             "counts": dict(self.counts),
         }
+
+    def policy_for(self, stage: str, *, catalog_ids: Sequence[str] | None = None
+                   ) -> StageLensPolicy:
+        """Return the executable typed policy without another config source."""
+        if stage not in STAGES:
+            raise SettingsError(f"unsupported lens policy stage: {stage}")
+        policy = StageLensPolicy(
+            stage=stage,
+            mandatory=tuple(self.routing[stage]),
+            max_count=int(self.counts[stage]),
+        )
+        if catalog_ids is not None:
+            known = {str(lens_id) for lens_id in catalog_ids}
+            unknown = sorted(set(policy.mandatory) - known)
+            if unknown:
+                raise SettingsError(
+                    f"lenses.routing.{stage} contains unknown catalog ids: "
+                    + ", ".join(unknown))
+        return policy
 
 
 @dataclass(frozen=True)
@@ -400,8 +448,18 @@ def _validate_and_type(data: Mapping[str, Any], receipt: Mapping[str, Any]) -> O
             raise SettingsError(f"lenses.routing.{name} contains conflicting duplicates")
         routing[name] = tuple(route)
         counts[name] = _positive_int(counts_raw.get(name), f"lenses.counts.{name}", zero=True)
-    if routing["build"] or counts["build"] != 0:
-        raise SettingsError("build must preserve the zero lens worker invariant")
+    for name in ZERO_LENS_STAGES:
+        if routing[name] or counts[name] != 0:
+            raise SettingsError(
+                f"{name} must preserve the zero lens worker invariant")
+    if counts["design"] > DESIGN_LENS_MAX:
+        raise SettingsError(
+            f"lenses.counts.design cannot exceed {DESIGN_LENS_MAX}")
+    if not routing["design"]:
+        raise SettingsError("lenses.routing.design requires a mandatory lens")
+    if len(routing["design"]) > counts["design"]:
+        raise SettingsError(
+            "lenses.routing.design cannot exceed its maximum count")
 
     build_raw = _plain_mapping(data.get("build"), "build")
     build_shards = _positive_int(build_raw.get("shards"), "build.shards")
@@ -797,6 +855,7 @@ __all__ = [
     "LensSettings", "LimitSettings", "ObservabilitySettings",
     "OperationalSettings", "OverrideSettings", "RuntimeSettings",
     "REQUIRED_DASHBOARD_LIFECYCLE_EVENTS", "SettingsError",
-    "StageSettings", "TestSettings", "WorkflowSettings", "load_settings",
+    "StageLensPolicy", "StageSettings", "TestSettings", "WorkflowSettings",
+    "ZERO_LENS_STAGES", "DESIGN_LENS_MAX", "load_settings",
     "settings_digest", "settings_receipt",
 ]

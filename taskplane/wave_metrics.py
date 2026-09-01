@@ -18,10 +18,12 @@ from typing import TYPE_CHECKING, Any
 # also supports direct loading from the ``taskplane/`` directory, so select
 # that compatibility import shape explicitly at runtime.
 if TYPE_CHECKING or __package__:
+    from . import dispatch_telemetry
     from .ci_policy import DECLARED_TARGETS as CI_TARGETS
     from .delivery_ports import content_fingerprint
     from .dispatch_telemetry import WAVE_BUDGET_CEILINGS
 else:  # pragma: no cover - direct module loading
+    import dispatch_telemetry
     from ci_policy import DECLARED_TARGETS as CI_TARGETS
     from delivery_ports import content_fingerprint
     from dispatch_telemetry import WAVE_BUDGET_CEILINGS
@@ -30,6 +32,7 @@ else:  # pragma: no cover - direct module loading
 EVIDENCE_SCHEMA = "taskplane.wave-metrics-evidence/v1"
 RECEIPT_SCHEMA = "taskplane.wave-metrics-receipt/v1"
 PROJECTION_SCHEMA = "taskplane.wave-metrics-projection/v1"
+TOKEN_USAGE_PROJECTION_SCHEMA = "taskplane.token-usage-summary/v1"
 
 SOURCE_NAMES = (
     "settings", "ci", "dashboard_publication", "cleanup", "portfolio",
@@ -48,9 +51,9 @@ CEILING_DEFINITIONS = {
         WAVE_BUDGET_CEILINGS["elapsed_seconds"] / 3600),
 }
 
-# Approved R-0001 measurement vocabulary.  These are product acceptance facts,
-# not operational defaults; configurable CI ceilings continue to be owned by
-# ci_policy and are supplied in its sealed evidence digest.
+# Current delivery measurement vocabulary.  These are baselines and reporting
+# targets, not operational defaults; configurable ceilings remain owned by the
+# canonical policy/settings producers and arrive through sealed evidence.
 METRIC_DEFINITIONS: dict[str, dict[str, Any]] = {
     "settings_spread_files": {
         "baseline": 258, "target": 0, "comparison": "max",
@@ -62,36 +65,32 @@ METRIC_DEFINITIONS: dict[str, dict[str, Any]] = {
         "baseline": None, "target": 0, "comparison": "max",
         "unit": "defaults", "source": "settings"},
     "suite_files": {
-        "baseline": 266, "target": 230, "comparison": "max",
+        "baseline": 229, "target": None, "comparison": "record",
         "unit": "files", "source": "portfolio"},
     "suite_cases": {
-        "baseline": 4909, "target": 4200, "comparison": "max",
+        "baseline": 4059, "target": None, "comparison": "record",
         "unit": "cases", "source": "portfolio"},
     "suite_loc": {
-        "baseline": 95601, "target": None, "comparison": "record",
+        "baseline": 84104, "target": None, "comparison": "record",
         "unit": "lines", "source": "portfolio"},
     "redundant_families_removed": {
-        "baseline": 0, "target": 6, "comparison": "min",
+        "baseline": 0, "target": None, "comparison": "record",
         "unit": "families", "source": "portfolio"},
     "exact_feedback_p95_seconds": {
-        "baseline": None, "target": 60, "comparison": "max",
+        "baseline": 4.01, "target": 60, "comparison": "max",
         "unit": "seconds", "source": "ci"},
     "proportional_feedback_p95_minutes": {
         "baseline": None, "target": 5, "comparison": "max",
         "unit": "minutes", "source": "ci"},
-    "ci_first_matrix_hours": {
-        "baseline": 31.617, "target": CI_TARGETS["first_matrix_hours"],
+    "ci_first_validation_hours": {
+        "baseline": 31.617, "target": CI_TARGETS["first_validation_hours"],
         "comparison": "max",
         "unit": "hours", "source": "ci"},
-    "ci_matrix_count": {
-        "baseline": 12, "target": CI_TARGETS["matrix_count_max"],
-        "comparison": "max",
-        "unit": "matrices", "source": "ci"},
-    "ci_red_matrices": {
+    "ci_red_validation_domains": {
         "baseline": 9, "target": 0, "comparison": "max",
-        "unit": "matrices", "source": "ci"},
+        "unit": "domains", "source": "ci"},
     "ci_critical_path_minutes": {
-        "baseline": 15, "target": CI_TARGETS["p95_minutes"],
+        "baseline": 13.167, "target": CI_TARGETS["p95_minutes"],
         "comparison": "max", "unit": "minutes", "source": "ci"},
     "ci_p50_minutes": {
         "baseline": None, "target": CI_TARGETS["p50_minutes"],
@@ -100,11 +99,11 @@ METRIC_DEFINITIONS: dict[str, dict[str, Any]] = {
         "baseline": 15, "target": CI_TARGETS["p95_minutes"],
         "comparison": "max", "unit": "minutes", "source": "ci"},
     "ci_runner_minutes": {
-        "baseline": 38, "target": CI_TARGETS["runner_minutes_max"],
+        "baseline": None, "target": CI_TARGETS["runner_minutes_max"],
         "comparison": "max",
         "unit": "runner-minutes", "source": "ci"},
     "ci_parallelism_factor": {
-        "baseline": 2.59, "target": CI_TARGETS["parallelism_min"],
+        "baseline": 2.11, "target": CI_TARGETS["parallelism_min"],
         "comparison": "min",
         "unit": "factor", "source": "ci"},
     "cleanup_leak_count": {
@@ -121,10 +120,10 @@ METRIC_DEFINITIONS: dict[str, dict[str, Any]] = {
         "comparison": "dynamic-max", "unit": "worktrees",
         "source": "worktrees"},
     "token_total_observed": {
-        "baseline": 540_300_000, "target": 100_000_000,
-        "comparison": "max", "unit": "tokens", "source": "token_usage"},
+        "baseline": None, "target": None,
+        "comparison": "record", "unit": "tokens", "source": "token_usage"},
     "token_uncached_observed": {
-        "baseline": None, "target": 15_000_000, "comparison": "max",
+        "baseline": None, "target": None, "comparison": "record",
         "unit": "tokens", "source": "token_usage"},
     "token_archive_upper_bound": {
         "baseline": 1_292_000_000, "target": None,
@@ -133,10 +132,10 @@ METRIC_DEFINITIONS: dict[str, dict[str, Any]] = {
         "baseline": None, "target": 8, "comparison": "max",
         "unit": "hours", "source": "dispatch"},
     "end_to_end_wave_hours": {
-        "baseline": 40.583, "target": 12, "comparison": "max",
+        "baseline": 24.969, "target": 12, "comparison": "max",
         "unit": "hours", "source": "dispatch"},
     "planned_sessions": {
-        "baseline": None, "target": 24, "comparison": "max",
+        "baseline": None, "target": None, "comparison": "record",
         "unit": "sessions", "source": "sessions"},
     "plan_returns": {
         "baseline": 21, "target": 2, "comparison": "max",
@@ -205,6 +204,56 @@ def _redaction_check(value: object) -> None:
     elif isinstance(value, (list, tuple)):
         for item in value:
             _redaction_check(item)
+
+
+def _terminal_attempts(value: object) -> list[dict[str, Any]]:
+    """Validate measured attempt attribution carried by a terminal receipt."""
+    if not isinstance(value, list) or not value:
+        raise WaveMetricsError(
+            "terminal attempt attribution must be a non-empty list")
+    required = {
+        "attempt_fingerprint", "worker_fingerprint", "task_fingerprint",
+        "thread_type", "outcome", "correction_count", "usage_status",
+        "unavailable_reason", "total_tokens", "uncached_input_tokens",
+        "effective_tokens", "receipt_fingerprint",
+        "usage_source_fingerprint",
+    }
+    allowed_threads = {"main", "worker", "lens", "evaluator", "guardian"}
+    allowed_outcomes = {
+        "complete", "attention", "failed", "cancelled", "interrupted",
+        "handoff",
+    }
+    normalized = []
+    identities = set()
+    for raw in value:
+        row = _mapping(raw, "terminal attempt")
+        _exact_keys(row, required, "terminal attempt")
+        for field in (
+                "attempt_fingerprint", "worker_fingerprint",
+                "task_fingerprint", "receipt_fingerprint",
+                "usage_source_fingerprint"):
+            _digest(row[field], f"terminal attempt {field}")
+        if row["attempt_fingerprint"] in identities:
+            raise WaveMetricsError(
+                "terminal attempt attribution contains a duplicate")
+        identities.add(row["attempt_fingerprint"])
+        if row["thread_type"] not in allowed_threads or \
+                row["outcome"] not in allowed_outcomes:
+            raise WaveMetricsError("terminal attempt lifecycle is invalid")
+        correction_count = _number(
+            row["correction_count"], "terminal attempt correction count")
+        if int(correction_count) != correction_count:
+            raise WaveMetricsError(
+                "terminal attempt correction count must be an integer")
+        if row["usage_status"] != "measured" or \
+                row["unavailable_reason"] is not None:
+            raise WaveMetricsError(
+                "a sealed terminal receipt may contain only measured attempts")
+        for field in (
+                "total_tokens", "uncached_input_tokens", "effective_tokens"):
+            _number(row[field], f"terminal attempt {field}")
+        normalized.append(row)
+    return normalized
 
 
 def _normalize_sources(raw: object, candidate: str, opened: str,
@@ -327,8 +376,13 @@ def seal_wave_receipt(evidence: Mapping[str, Any]) -> dict[str, Any]:
     if billing["value"] is not None:
         _number(billing["value"], "billing value")
     observed = _mapping(usage["observed"], "observed usage")
-    _exact_keys(observed, {"total_tokens", "uncached_input_tokens", "source_digest"},
-                "observed usage")
+    observed_fields = {
+        "total_tokens", "uncached_input_tokens", "source_digest"}
+    if "effective_tokens" in observed:
+        observed_fields.add("effective_tokens")
+    if "attempts" in observed:
+        observed_fields.add("attempts")
+    _exact_keys(observed, observed_fields, "observed usage")
     archive = _mapping(usage["archive_upper_bound"], "archive upper bound")
     _exact_keys(archive, {"total_tokens", "relation", "source_digest"},
                 "archive upper bound")
@@ -341,6 +395,19 @@ def seal_wave_receipt(evidence: Mapping[str, Any]) -> dict[str, Any]:
         raise WaveMetricsError("archive usage must remain an upper bound, not billing truth")
     for key in ("total_tokens", "uncached_input_tokens"):
         _number(observed[key], f"observed {key}")
+    if "effective_tokens" in observed:
+        _number(observed["effective_tokens"], "observed effective_tokens")
+    if "attempts" in observed:
+        attempts = _terminal_attempts(observed["attempts"])
+        if sum(row["total_tokens"] for row in attempts) != \
+                observed["total_tokens"] or sum(
+                    row["uncached_input_tokens"] for row in attempts) != \
+                observed["uncached_input_tokens"] or \
+                ("effective_tokens" in observed and sum(
+                    row["effective_tokens"] for row in attempts) !=
+                 observed["effective_tokens"]):
+            raise WaveMetricsError(
+                "terminal attempt usage contradicts observed totals")
     _number(archive["total_tokens"], "archive total tokens")
     if observed["total_tokens"] != metrics["token_total_observed"]["actual"] or \
             observed["uncached_input_tokens"] != metrics["token_uncached_observed"]["actual"] or \
@@ -458,6 +525,214 @@ def validate_wave_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
     return original
 
 
+def token_usage_projection(
+        receipt: Mapping[str, Any] | None, *,
+        reason: str | None = None,
+        attempts: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """Expose token truth without converting absence into numeric zero."""
+    if receipt is None:
+        unavailable_attempts = []
+        identities = set()
+        required = {
+            "attempt_fingerprint", "worker_fingerprint", "task_fingerprint",
+            "thread_type", "outcome", "correction_count", "usage_status",
+            "unavailable_reason", "total_tokens", "uncached_input_tokens",
+            "effective_tokens", "receipt_fingerprint",
+            "usage_source_fingerprint",
+        }
+        for raw in attempts or []:
+            row = _mapping(raw, "unavailable terminal attempt")
+            _exact_keys(row, required, "unavailable terminal attempt")
+            if row.get("usage_status") != "unavailable" or not isinstance(
+                    row.get("unavailable_reason"), str) or not row.get(
+                        "unavailable_reason"):
+                raise WaveMetricsError(
+                    "unavailable terminal attempt attribution is invalid")
+            for field in (
+                    "attempt_fingerprint", "worker_fingerprint",
+                    "task_fingerprint"):
+                _digest(row.get(field), f"unavailable attempt {field}")
+            if row["attempt_fingerprint"] in identities:
+                raise WaveMetricsError(
+                    "unavailable attempt attribution contains a duplicate")
+            identities.add(row["attempt_fingerprint"])
+            if row.get("thread_type") not in {
+                    "main", "worker", "lens", "evaluator", "guardian"} or \
+                    (row.get("outcome") is not None and row.get("outcome")
+                     not in {"complete", "attention", "failed", "cancelled",
+                             "interrupted", "handoff"}):
+                raise WaveMetricsError(
+                    "unavailable terminal attempt lifecycle is invalid")
+            correction_count = _number(
+                row.get("correction_count"),
+                "unavailable attempt correction count")
+            if int(correction_count) != correction_count:
+                raise WaveMetricsError(
+                    "unavailable attempt correction count must be an integer")
+            for field in (
+                    "total_tokens", "uncached_input_tokens",
+                    "effective_tokens", "receipt_fingerprint",
+                    "usage_source_fingerprint"):
+                if row.get(field) is not None:
+                    raise WaveMetricsError(
+                        "unavailable terminal usage cannot carry measured truth")
+            _redaction_check(row)
+            unavailable_attempts.append(row)
+        return {
+            "schema": TOKEN_USAGE_PROJECTION_SCHEMA,
+            "status": "unavailable", "total_tokens": None,
+            "uncached_input_tokens": None, "effective_tokens": None,
+            "attempts": unavailable_attempts,
+            "reason": str(reason or
+                          "sealed wave metrics receipt is unavailable"),
+        }
+    sealed = validate_wave_receipt(receipt)
+    observed = sealed["usage_truth"]["observed"]
+    effective = observed.get("effective_tokens")
+    available = isinstance(effective, (int, float)) and \
+        not isinstance(effective, bool)
+    return {
+        "schema": TOKEN_USAGE_PROJECTION_SCHEMA,
+        "status": "available" if available else "unavailable",
+        "total_tokens": observed["total_tokens"],
+        "uncached_input_tokens": observed["uncached_input_tokens"],
+        "effective_tokens": effective if available else None,
+        "attempts": copy.deepcopy(observed.get("attempts") or []),
+        "reason": (None if available else
+                   "effective token telemetry is unavailable in this receipt"),
+    }
+
+
+def unavailable_consumer_projection(*, consumer: str, reason: str,
+                                    attempts: list[Mapping[str, Any]] | None = None) \
+        -> dict[str, Any]:
+    """Return an explicit missing-receipt projection for terminal reporting."""
+    if consumer not in {"dashboard", "retro", "engineering", "release"}:
+        raise WaveMetricsError("unsupported wave metrics consumer")
+    material = {
+        "schema": PROJECTION_SCHEMA, "consumer": consumer,
+        "receipt_fingerprint": None, "candidate_fingerprint": None,
+        "integration_ready_at": None,
+        "signoff": {"ready": False,
+                    "blocking_reasons": ["token-usage-unavailable"],
+                    "unexplained_ceilings": []},
+        "metrics": {}, "source_digests": {},
+        "token_usage": token_usage_projection(
+            None, reason=reason, attempts=attempts),
+    }
+    return {**material, "fingerprint": content_fingerprint(material)}
+
+
+def seal_terminal_metrics(
+        evidence: Mapping[str, Any], *, dispatch_ledger: Mapping[str, Any],
+        clock: Any, candidate_fingerprint: str,
+        archive_upper_bound_tokens: int,
+        billing_total_tokens: int | None = None) -> dict[str, Any]:
+    """Seal terminal metrics using the real, closed dispatch ledger.
+
+    Non-dispatch metric producers remain explicit inputs in ``evidence``.  The
+    dispatch-owned source rows, actuals, samples, ceilings, and usage truth are
+    replaced atomically from the ledger.  Caller-supplied token placeholders
+    therefore cannot become terminal truth.
+    """
+    try:
+        source = dispatch_telemetry.terminal_metrics_source(
+            dispatch_ledger, clock,
+            candidate_fingerprint=candidate_fingerprint,
+            billing_total_tokens=billing_total_tokens,
+            archive_upper_bound_tokens=archive_upper_bound_tokens)
+    except dispatch_telemetry.DispatchTelemetryError as exc:
+        raise WaveMetricsError(
+            "terminal metrics require complete host-observed usage: "
+            + str(exc)) from exc
+    if source["archive_upper_bound"].get("status") != "available":
+        raise WaveMetricsError(
+            "terminal metrics require an explicit archive upper bound")
+
+    material = _mapping(evidence, "terminal metrics evidence")
+    run = _mapping(material.get("run"), "run")
+    if run.get("candidate_fingerprint") != candidate_fingerprint:
+        raise WaveMetricsError(
+            "terminal metrics candidate does not match dispatch evidence")
+    opened = str(run.get("opened_at") or "")
+    closed = str(run.get("closed_at") or "")
+    sources = _mapping(material.get("sources"), "sources")
+    for name in ("token_usage", "sessions", "dispatch"):
+        sources[name] = {
+            "digest": source["digests"][name],
+            "candidate_fingerprint": candidate_fingerprint,
+            "interval_opened_at": opened,
+            "interval_closed_at": closed,
+            "counting": "non-cumulative",
+        }
+    material["sources"] = sources
+
+    observed = source["observed"]
+    actuals = _mapping(material.get("actuals"), "actuals")
+    actuals.update({
+        "token_total_observed": observed["total_tokens"],
+        "token_uncached_observed": observed["uncached_input_tokens"],
+        "token_archive_upper_bound":
+            source["archive_upper_bound"]["total_tokens"],
+        "planned_sessions": observed["sessions"],
+        "active_delivery_hours": observed["elapsed_seconds"] / 3600,
+    })
+    material["actuals"] = actuals
+
+    dispatch_count = int(source["observed"]["dispatches"])
+    samples = _mapping(material.get("samples"), "samples")
+    samples.update({
+        "token_total_observed": {
+            "size": dispatch_count,
+            "method": "host-observed terminal dispatch receipts"},
+        "token_uncached_observed": {
+            "size": dispatch_count,
+            "method": "host-observed terminal dispatch receipts"},
+        "token_archive_upper_bound": {
+            "size": 1, "method": "separate archive upper bound"},
+        "planned_sessions": {
+            "size": max(1, int(observed["sessions"])),
+            "method": "unique terminal dispatch session ids"},
+        "active_delivery_hours": {
+            "size": 1, "method": "closed dispatch ledger interval"},
+    })
+    material["samples"] = samples
+
+    token_digest = sources["token_usage"]["digest"]
+    material["usage_truth"] = {
+        "billing": {
+            "status": source["billing"]["status"],
+            "value": source["billing"]["total_tokens"],
+            "source_digest": token_digest,
+        },
+        "observed": {
+            "total_tokens": observed["total_tokens"],
+            "uncached_input_tokens": observed["uncached_input_tokens"],
+            "effective_tokens": observed["effective_tokens"],
+            "attempts": copy.deepcopy(source["attempts"]),
+            "source_digest": token_digest,
+        },
+        "archive_upper_bound": {
+            "total_tokens": source["archive_upper_bound"]["total_tokens"],
+            "relation": "upper-bound-not-billing",
+            "source_digest": token_digest,
+        },
+    }
+    for ceiling in material.get("ceilings") or []:
+        if not isinstance(ceiling, dict):
+            continue
+        name = ceiling.get("name")
+        if name == "total_tokens":
+            ceiling["observed"] = observed["total_tokens"]
+        elif name == "uncached_input_tokens":
+            ceiling["observed"] = observed["uncached_input_tokens"]
+        elif name == "sessions":
+            ceiling["observed"] = observed["sessions"]
+        elif name == "active_delivery_hours":
+            ceiling["observed"] = observed["elapsed_seconds"] / 3600
+    return seal_wave_receipt(material)
+
+
 def consumer_projection(receipt: Mapping[str, Any], *, consumer: str) -> dict[str, Any]:
     """Project one sealed receipt without source reads or metric recounting."""
     if consumer not in {"dashboard", "retro", "engineering", "release"}:
@@ -472,12 +747,15 @@ def consumer_projection(receipt: Mapping[str, Any], *, consumer: str) -> dict[st
         "metrics": copy.deepcopy(sealed["metrics"]),
         "source_digests": {name: row["digest"]
                            for name, row in sealed["sources"].items()},
+        "token_usage": token_usage_projection(sealed),
     }
     return {**material, "fingerprint": content_fingerprint(material)}
 
 
 __all__ = [
     "CEILING_DEFINITIONS", "EVIDENCE_SCHEMA", "METRIC_DEFINITIONS", "PROJECTION_SCHEMA",
-    "RECEIPT_SCHEMA", "SOURCE_NAMES", "WaveMetricsError",
-    "consumer_projection", "seal_wave_receipt", "validate_wave_receipt",
+    "RECEIPT_SCHEMA", "SOURCE_NAMES", "TOKEN_USAGE_PROJECTION_SCHEMA",
+    "WaveMetricsError", "consumer_projection", "seal_terminal_metrics",
+    "seal_wave_receipt", "token_usage_projection",
+    "unavailable_consumer_projection", "validate_wave_receipt",
 ]

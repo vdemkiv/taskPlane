@@ -9,6 +9,7 @@ reuse the KB decision and trace receipt instead of duplicating either one.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import time
@@ -21,13 +22,27 @@ import taskplane_lite as tp
 import storage as runtime_storage
 
 try:
-    from . import plan_topology, wave_metrics
+    from . import plan_topology, run_artifacts, wave_metrics
 except ImportError:  # pragma: no cover - direct module loading
     import plan_topology
+    import run_artifacts
     import wave_metrics
 
 
 _STAGE_VIEW_LIMIT = 100
+TERMINAL_ARTIFACT_BUNDLE_SCHEMA = \
+    "taskplane.terminal-artifact-bundle/v1"
+_TERMINAL_OUTCOMES = frozenset({
+    "success", "failure", "cancellation", "interruption", "timeout",
+    "handoff", "recovery",
+})
+
+
+def _content_fingerprint(value: object) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def performance_projection(state: dict) -> dict:
@@ -35,18 +50,184 @@ def performance_projection(state: dict) -> dict:
     return plan_topology.execution_metrics(state)
 
 
-def sealed_wave_metrics_projection(state: dict) -> dict | None:
+def evaluator_summary(tasks: list) -> dict:
+    """Project supplied evaluator identities and outcomes without raw prose."""
+    rows = []
+    counts: dict[str, int] = {}
+    reasons: dict[str, int] = {}
+    for task in tasks:
+        if not isinstance(task, dict) or not isinstance(
+                task.get("evaluation"), dict):
+            continue
+        evaluation = task["evaluation"]
+        status = str(evaluation.get("status") or "unknown")
+        reason = str(evaluation.get("reason_code") or "unspecified")
+        outage = evaluation.get("outage_identity")
+        identity = (str(outage.get("fingerprint") or "")
+                    if isinstance(outage, dict) else "")
+        if len(identity) != 64 or any(
+                character not in "0123456789abcdef" for character in identity):
+            identity = ""
+        rows.append({
+            "task": str(task.get("id") or evaluation.get("task") or
+                        "unknown"),
+            "status": status, "verdict": str(
+                evaluation.get("verdict") or "unknown"),
+            "reason_code": reason,
+            "identity_fingerprint": identity or None,
+        })
+        counts[status] = counts.get(status, 0) + 1
+        reasons[reason] = reasons.get(reason, 0) + 1
+    return {
+        "total": len(rows), "by_status": dict(sorted(counts.items())),
+        "by_reason": dict(sorted(reasons.items())), "evaluators": rows,
+    }
+
+
+def sealed_wave_metrics_projection(state: dict) -> dict:
     """Consume a sealed wave receipt; never reconstruct metrics in Retro."""
     receipt = state.get("wave_metrics_receipt")
     if receipt is None:
-        # One-release compatibility for loops created before AC-MET.  New
-        # governed R-0001 runs bind the receipt before Engineering sign-off.
-        return None
+        unavailable = state.get("wave_metrics_unavailable")
+        reason = (str(unavailable.get("reason"))
+                  if isinstance(unavailable, dict) and
+                  unavailable.get("reason") else
+                  "sealed terminal wave metrics receipt is unavailable")
+        return wave_metrics.unavailable_consumer_projection(
+            consumer="retro", reason=reason,
+            attempts=(unavailable.get("attempts")
+                      if isinstance(unavailable, dict) else None))
     projection = wave_metrics.consumer_projection(receipt, consumer="retro")
     if projection["signoff"]["ready"] is not True:
         raise wave_metrics.WaveMetricsError(
             "wave metrics have blocking cleanup or ceiling evidence")
     return projection
+
+
+def publish_terminal_artifacts(
+        artifact_root: str, *, wave_receipt: dict | None, report: dict,
+        lifecycle_outcome: str, publication_attempt: int = 1) -> dict:
+    """Publish telemetry and Retro beside the run before cleanup begins.
+
+    The two class entries share one deterministic bundle fingerprint.  A
+    retry reuses already-published entries and fills only a missing peer,
+    while any cleanup entry refuses a late or reordered terminal publication.
+    The run-artifact manifest supplies the authoritative candidate binding.
+    """
+    if lifecycle_outcome not in _TERMINAL_OUTCOMES:
+        raise wave_metrics.WaveMetricsError(
+            "terminal artifact lifecycle outcome is invalid")
+    if isinstance(publication_attempt, bool) or not isinstance(
+            publication_attempt, int) or publication_attempt < 1:
+        raise wave_metrics.WaveMetricsError(
+            "terminal artifact publication attempt is invalid")
+    unavailable = report.get("wave_metrics_unavailable")
+    if wave_receipt is None:
+        if not isinstance(unavailable, dict) or unavailable.get("schema") != \
+                "taskplane.wave-metrics-unavailable/v1":
+            raise wave_metrics.WaveMetricsError(
+                "terminal metrics need a measured receipt or attributable "
+                "unavailable record")
+        material = {key: value for key, value in unavailable.items()
+                    if key != "fingerprint"}
+        if unavailable.get("fingerprint") != _content_fingerprint(material):
+            raise wave_metrics.WaveMetricsError(
+                "terminal unavailable metrics fingerprint is invalid")
+        projection = wave_metrics.unavailable_consumer_projection(
+            consumer="retro", reason=str(unavailable.get("reason") or ""),
+            attempts=list(unavailable.get("attempts") or []))
+        sealed = None
+    else:
+        sealed = wave_metrics.validate_wave_receipt(wave_receipt)
+        projection = wave_metrics.consumer_projection(
+            sealed, consumer="retro")
+    supplied = report.get("wave_metrics")
+    if supplied is not None and supplied != projection:
+        raise wave_metrics.WaveMetricsError(
+            "Retro report metrics do not match the sealed terminal receipt")
+    terminal_report = {**report, "wave_metrics": projection}
+    evaluators = terminal_report.get("evaluator_summary")
+    if not isinstance(evaluators, dict) or not isinstance(
+            evaluators.get("evaluators"), list):
+        raise wave_metrics.WaveMetricsError(
+            "terminal Retro requires evaluator identity and outcome summary")
+
+    manifest = run_artifacts.load_manifest(artifact_root)
+    binding = manifest["binding"]
+    metrics_candidate = (sealed["run"]["candidate_fingerprint"]
+                         if sealed is not None else
+                         unavailable.get("candidate_fingerprint"))
+    if metrics_candidate is not None and \
+            binding["candidate"].get("fingerprint") != metrics_candidate:
+        raise wave_metrics.WaveMetricsError(
+            "terminal artifacts belong to another working candidate")
+    if manifest["classes"]["cleanup"]["entries"]:
+        raise wave_metrics.WaveMetricsError(
+            "terminal metrics and Retro must be sealed before cleanup")
+
+    telemetry_payload = {
+        "schema": TERMINAL_ARTIFACT_BUNDLE_SCHEMA,
+        "role": "terminal-telemetry",
+        "lifecycle_outcome": lifecycle_outcome,
+        "wave_metrics_receipt": sealed,
+        "wave_metrics_unavailable": (None if sealed is not None else
+                                     dict(unavailable)),
+        "token_usage": projection["token_usage"],
+        "evaluator_summary": evaluators,
+    }
+    retro_payload = {
+        "schema": TERMINAL_ARTIFACT_BUNDLE_SCHEMA,
+        "role": "terminal-retro",
+        "lifecycle_outcome": lifecycle_outcome,
+        "report": terminal_report,
+    }
+    bundle_fingerprint = _content_fingerprint({
+        "schema": TERMINAL_ARTIFACT_BUNDLE_SCHEMA,
+        "binding_fingerprint": binding["fingerprint"],
+        "lifecycle_outcome": lifecycle_outcome,
+        "telemetry_fingerprint": _content_fingerprint(telemetry_payload),
+        "retro_fingerprint": _content_fingerprint(retro_payload),
+    })
+    metadata_base = {
+        "terminal_bundle_fingerprint": bundle_fingerprint,
+        "lifecycle_outcome": lifecycle_outcome,
+        "publication_attempt": publication_attempt,
+    }
+
+    def existing(artifact_class: str) -> dict | None:
+        current = run_artifacts.load_manifest(artifact_root)
+        matches = [entry for entry in current["classes"][artifact_class][
+            "entries"] if entry.get("metadata", {}).get(
+                "terminal_bundle_fingerprint") == bundle_fingerprint]
+        if len(matches) > 1:
+            raise wave_metrics.WaveMetricsError(
+                "terminal artifact retry found duplicate durable entries")
+        return matches[0] if matches else None
+
+    telemetry_entry = existing("telemetry")
+    if telemetry_entry is None:
+        telemetry_entry = run_artifacts.publish_artifact(
+            artifact_root, "telemetry", telemetry_payload,
+            metadata={**metadata_base, "artifact_role": "terminal-telemetry"})
+    current = run_artifacts.load_manifest(artifact_root)
+    if current["classes"]["cleanup"]["entries"]:
+        raise wave_metrics.WaveMetricsError(
+            "cleanup started before terminal Retro was sealed")
+    retro_entry = existing("retro")
+    if retro_entry is None:
+        retro_entry = run_artifacts.publish_artifact(
+            artifact_root, "retro", retro_payload,
+            metadata={**metadata_base, "artifact_role": "terminal-retro"})
+    verification = run_artifacts.verify_manifest(
+        artifact_root, expected_binding=binding)
+    return {
+        "schema": TERMINAL_ARTIFACT_BUNDLE_SCHEMA,
+        "bundle_fingerprint": bundle_fingerprint,
+        "lifecycle_outcome": lifecycle_outcome,
+        "publication_attempt": publication_attempt,
+        "telemetry": telemetry_entry, "retro": retro_entry,
+        "artifact_verification": verification,
+    }
 
 
 def _execution_state(tasks: list, events: list) -> dict:
@@ -241,6 +422,8 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
     wave = report.get("wave_metrics") or {}
     if wave:
         wave_signoff = wave.get("signoff") or {}
+        token_usage = wave.get("token_usage") or {}
+        token_status = str(token_usage.get("status") or "unavailable")
         lines.extend([
             "", "## Sealed wave metrics", "",
             f"- receipt: {wave.get('receipt_fingerprint')}",
@@ -249,7 +432,35 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
             f"- sign-off ready: {str(bool(wave_signoff.get('ready'))).lower()}",
             "- source digests: " + json.dumps(
                 wave.get("source_digests") or {}, sort_keys=True),
+            f"- token usage status: {token_status}",
+            "- observed total tokens: " + (
+                str(token_usage.get("total_tokens"))
+                if token_usage.get("total_tokens") is not None else
+                "unavailable"),
+            "- observed uncached input tokens: " + (
+                str(token_usage.get("uncached_input_tokens"))
+                if token_usage.get("uncached_input_tokens") is not None else
+                "unavailable"),
+            "- observed effective tokens: " + (
+                str(token_usage.get("effective_tokens"))
+                if token_usage.get("effective_tokens") is not None else
+                "unavailable"),
         ])
+        if token_usage.get("reason"):
+            lines.append("- token usage reason: " + str(
+                token_usage["reason"])[:512])
+    evaluators = report.get("evaluator_summary") or {}
+    lines.extend([
+        "", "## Evaluator outcomes", "",
+        f"- total: {evaluators.get('total', 0)}",
+        "- by status: " + json.dumps(
+            evaluators.get("by_status") or {}, sort_keys=True),
+        "- by reason: " + json.dumps(
+            evaluators.get("by_reason") or {}, sort_keys=True),
+    ])
+    lines.extend(
+        "- " + json.dumps(row, sort_keys=True)
+        for row in evaluators.get("evaluators") or [])
     foreign = report.get("foreign_interference") or {}
     if foreign.get("headline"):
         lines.extend(["", "## FOREIGN INTERFERENCE", "",
@@ -458,6 +669,12 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             lessons.append(
                 f"{severity_counts['high']} high finding(s) reached final "
                 "review — use their lens ownership to move detection earlier.")
+        metrics_projection = sealed_wave_metrics_projection(state)
+        if metrics_projection.get("token_usage", {}).get("status") != \
+                "available":
+            lessons.append(
+                "terminal token usage is unavailable — the run cannot claim "
+                "complete measurement or a clean telemetry outcome.")
         if not lessons:
             lessons.append("clean run — no scope friction, forecasts held.")
 
@@ -506,6 +723,7 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "lessons": lessons,
             "execution_metrics": execution_metrics,
             "execution_metric_source": execution_metric_source,
+            "evaluator_summary": evaluator_summary(tasks),
         }
         if metrics_projection is not None:
             report["wave_metrics"] = metrics_projection
