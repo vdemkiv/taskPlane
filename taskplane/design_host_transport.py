@@ -15,13 +15,19 @@ from pathlib import Path
 import re
 import stat
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING, TypeAlias
 
-try:
+if TYPE_CHECKING:
     from . import run_artifacts, storage
-except (ImportError, ValueError):  # direct-module compatibility
-    import run_artifacts
-    import storage
+else:
+    try:
+        from . import run_artifacts, storage
+    except (ImportError, ValueError):  # direct-module compatibility
+        import run_artifacts
+        import storage
+
+
+JsonDict: TypeAlias = dict[str, Any]
 
 
 ROLE_REFERENCE_SCHEMA = "taskplane.role-reference/v1"
@@ -49,7 +55,7 @@ def _fp(value: object) -> str:
         allow_nan=False).encode("utf-8")).hexdigest()
 
 
-def portable_role_reference(agent: str) -> dict:
+def portable_role_reference(agent: str) -> JsonDict:
     role = str(agent or "").strip()
     if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", role):
         raise ValueError("role reference agent is invalid")
@@ -68,7 +74,7 @@ def portable_role_reference(agent: str) -> dict:
     return {**material, "fingerprint": _fp(material)}
 
 
-def validate_role_reference(value: object, *, expected_agent: str) -> dict:
+def validate_role_reference(value: object, *, expected_agent: str) -> JsonDict:
     if not isinstance(value, dict) or set(value) != {
             "schema", "path", "bytes", "sha256", "fingerprint"} or \
             value.get("schema") != ROLE_REFERENCE_SCHEMA:
@@ -84,12 +90,12 @@ def validate_role_reference(value: object, *, expected_agent: str) -> dict:
     return current
 
 
-def _plan_fingerprint(plan: dict) -> str:
+def _plan_fingerprint(plan: JsonDict) -> str:
     return _fp({key: item for key, item in plan.items()
                 if key not in {"fingerprint", "host_authority"}})
 
 
-def _validate_plan(kernel: Any, plan: object) -> list[dict]:
+def _validate_plan(kernel: Any, plan: object) -> list[JsonDict]:
     if not isinstance(plan, dict) or not _DIGEST.fullmatch(str(
             plan.get("fingerprint") or "")) or plan.get(
                 "fingerprint") != _plan_fingerprint(plan):
@@ -153,8 +159,9 @@ def _validate_plan(kernel: Any, plan: object) -> list[dict]:
     return workers
 
 
-def _receipt(kernel: Any, workspace: str, *, event: str, plan: dict,
-             worker: dict, owner: dict | None, now: int | None = None) -> dict:
+def _receipt(kernel: Any, workspace: str, *, event: str, plan: JsonDict,
+             worker: JsonDict, owner: JsonDict | None,
+             now: int | None = None) -> JsonDict:
     if event not in {"assignment", "start"}:
         raise ValueError("worker host receipt event is unsupported")
     authority = kernel._worker_contract_authority(workspace, create=True)
@@ -187,7 +194,7 @@ def _receipt(kernel: Any, workspace: str, *, event: str, plan: dict,
     return value
 
 
-def _signed(kernel: Any, workspace: str, value: object, *, event: str) -> dict:
+def _signed(kernel: Any, workspace: str, value: object, *, event: str) -> JsonDict:
     if (not isinstance(value, dict) or set(value) != HOST_RECEIPT_FIELDS or
             value.get("schema") != HOST_RECEIPT_SCHEMA or
             value.get("event") != event):
@@ -204,8 +211,9 @@ def _signed(kernel: Any, workspace: str, value: object, *, event: str) -> dict:
 
 
 def verify_worker_host_receipt(kernel: Any, workspace: str, value: object,
-                               *, event: str, plan: dict, worker: dict,
-                               owner: dict | None = None) -> dict:
+                               *, event: str, plan: JsonDict,
+                               worker: JsonDict,
+                               owner: JsonDict | None = None) -> JsonDict:
     checked = _signed(kernel, workspace, value, event=event)
     role = validate_role_reference(
         worker.get("role_reference"), expected_agent="tp-lens")
@@ -232,8 +240,8 @@ def verify_worker_host_receipt(kernel: Any, workspace: str, value: object,
     return checked
 
 
-def _artifact_store(workspace: str, plan: dict, root: str,
-                    binding: dict) -> tuple[str, dict]:
+def _artifact_store(workspace: str, plan: JsonDict, root: str,
+                    binding: JsonDict) -> tuple[str, JsonDict]:
     identity = storage.resolve_repository_identity(workspace)
     expected_root = storage.resolve_layout(
         identity, run_id=str(plan.get("run_id") or "")).artifact_root
@@ -256,13 +264,14 @@ def _artifact_store(workspace: str, plan: dict, root: str,
 
 
 def register_design_lens_dispatch_plan(
-        kernel: Any, workspace: str, plan: dict, *, artifact_root: str,
-        artifact_binding: dict, now: int | None = None) -> dict:
+        kernel: Any, workspace: str, plan: JsonDict, *, artifact_root: str,
+        artifact_binding: JsonDict,
+        now: int | None = None) -> JsonDict:
     workers = _validate_plan(kernel, plan)
     root, binding = _artifact_store(
         workspace, plan, artifact_root, artifact_binding)
     path = kernel._dispatch_path(workspace, "expected_dispatch.json")
-    authorized: dict[str, dict] = {}
+    authorized: dict[str, JsonDict] = {}
     with kernel._file_lock(path):
         queue = kernel._load_queue_strict(path)
         for worker in workers:
@@ -345,8 +354,8 @@ def register_design_lens_dispatch_plan(
 
 
 def attach_design_lens_host_authority(
-        contract: dict, worker_authority: dict, *, artifact_root: str,
-        artifact_binding: dict) -> dict:
+        contract: JsonDict, worker_authority: JsonDict, *, artifact_root: str,
+        artifact_binding: JsonDict) -> JsonDict:
     if not isinstance(contract, dict) or contract.get("worker_scoped") is not True:
         raise ValueError("Design lens authority needs a prepared worker contract")
     lifecycle = contract.get("worker_lifecycle") or {}
@@ -358,7 +367,10 @@ def attach_design_lens_host_authority(
             assignment.get("task_name") != row.get("task_name") or
             assignment.get("task_slot") != row.get("task_slot")):
         raise ValueError("Design lens contract and assignment are severed")
-    output = json.loads(json.dumps(contract))
+    decoded: object = json.loads(json.dumps(contract))
+    if not isinstance(decoded, dict):
+        raise ValueError("Design lens contract cannot be represented as an object")
+    output: JsonDict = decoded
     output["worker_lifecycle"]["design_host_authority"] = {
         "schema": HOST_AUTHORITY_SCHEMA,
         "artifact_root": os.path.realpath(os.path.abspath(artifact_root)),
@@ -369,7 +381,7 @@ def attach_design_lens_host_authority(
 
 
 def _contract_authority(kernel: Any, workspace: str,
-                        contract: dict) -> dict | None:
+                        contract: JsonDict) -> JsonDict | None:
     private = (contract.get("worker_lifecycle") or {}).get(
         "design_host_authority")
     if private is None:
@@ -405,11 +417,12 @@ def _contract_authority(kernel: Any, workspace: str,
             "assignment": assignment}
 
 
-def _append_once(kernel: Any, workspace: str, authority: dict, *,
-                 event_type: str, receipt: dict, owner: dict | None,
-                 details: dict | None = None,
-                 usage_reference: dict | None = None,
-                 evidence_references: list[dict] | None = None) -> dict:
+def _append_once(kernel: Any, workspace: str, authority: JsonDict, *,
+                 event_type: str, receipt: JsonDict,
+                 owner: JsonDict | None,
+                 details: JsonDict | None = None,
+                 usage_reference: JsonDict | None = None,
+                 evidence_references: list[JsonDict] | None = None) -> JsonDict:
     root = authority["root"]
     manifest = run_artifacts.load_manifest(root)
     receipt_id = str(receipt.get("receipt_id") or "")
@@ -420,7 +433,7 @@ def _append_once(kernel: Any, workspace: str, authority: dict, *,
                 receipt_id):
             return dict(entry)
     assignment = authority["assignment"]
-    return run_artifacts.append_activity(
+    appended: object = run_artifacts.append_activity(
         root, event_type=event_type, agent_attempt_id=receipt_id,
         worker_id=str((owner or {}).get("agent_id") or
                       assignment["task_name"]),
@@ -430,10 +443,13 @@ def _append_once(kernel: Any, workspace: str, authority: dict, *,
                      "team_plan_fingerprint"], **dict(details or {})},
         usage_reference=usage_reference,
         evidence_references=evidence_references or [])
+    if not isinstance(appended, dict):
+        raise ValueError("Design lens activity append result is malformed")
+    return dict(appended)
 
 
 def record_design_dispatch_assignment_activity(
-        kernel: Any, workspace: str, expected: dict) -> dict | None:
+        kernel: Any, workspace: str, expected: JsonDict) -> JsonDict | None:
     private = (expected or {}).get("design_host_authority")
     if not isinstance(private, dict):
         return None
@@ -453,8 +469,8 @@ def record_design_dispatch_assignment_activity(
 
 
 def record_design_worker_start_activity(
-        kernel: Any, workspace: str, binding: dict, event: dict,
-        *, now: int | None = None) -> dict | None:
+        kernel: Any, workspace: str, binding: JsonDict, event: JsonDict,
+        *, now: int | None = None) -> JsonDict | None:
     contract = binding.get("contract") if isinstance(binding, dict) else None
     if not isinstance(contract, dict):
         return None
@@ -498,8 +514,9 @@ def record_design_worker_start_activity(
     return started
 
 
-def record_design_worker_activity(kernel: Any, workspace: str, event: dict,
-                                  *, event_type: str) -> dict | None:
+def record_design_worker_activity(kernel: Any, workspace: str,
+                                  event: JsonDict, *,
+                                  event_type: str) -> JsonDict | None:
     if event_type not in {"progress", "attention"}:
         raise ValueError("Design worker activity type is unsupported")
     contract = kernel.load_active_for_event(workspace, event)
@@ -519,8 +536,9 @@ def record_design_worker_activity(kernel: Any, workspace: str, event: dict,
                               "turn_id": str(event.get("turn_id") or "")[:160]})
 
 
-def design_terminal_activity(kernel: Any, workspace: str, contract: dict,
-                             receipt: dict, event: dict | None) -> list[dict]:
+def design_terminal_activity(kernel: Any, workspace: str, contract: JsonDict,
+                             receipt: JsonDict,
+                             event: JsonDict | None) -> list[JsonDict]:
     authority = _contract_authority(kernel, workspace, contract)
     if authority is None:
         return []
@@ -533,8 +551,10 @@ def design_terminal_activity(kernel: Any, workspace: str, contract: dict,
                 observed.get("evidence_references") or []
                 if isinstance(item, dict)]
     rows = []
-    semantic = {"cancellation": "cancel", "interruption": "interruption",
-                "handoff": "handoff"}.get(receipt.get("outcome"))
+    outcome = receipt.get("outcome")
+    semantic = ({"cancellation": "cancel", "interruption": "interruption",
+                 "handoff": "handoff"}.get(outcome)
+                if isinstance(outcome, str) else None)
     if semantic:
         rows.append(_append_once(
             kernel, workspace, authority, event_type=semantic,
@@ -559,8 +579,9 @@ def design_terminal_activity(kernel: Any, workspace: str, contract: dict,
     return rows
 
 
-def _authority_projection(kernel: Any, workspace: str, plan: dict,
-                          authority: object, workers: list[dict]) -> dict:
+def _authority_projection(kernel: Any, workspace: str, plan: JsonDict,
+                          authority: object,
+                          workers: list[JsonDict]) -> JsonDict:
     fields = {"schema", "team_plan_fingerprint", "run_id",
               "stage_instance_id", "candidate_fingerprint",
               "artifact_binding_fingerprint", "workers", "fingerprint"}
@@ -596,7 +617,8 @@ def _authority_projection(kernel: Any, workspace: str, plan: dict,
     return dict(authority)
 
 
-def _activities(workspace: str, plan: dict, authority: dict) -> list[dict]:
+def _activities(workspace: str, plan: JsonDict,
+                authority: JsonDict) -> list[JsonDict]:
     identity = storage.resolve_repository_identity(workspace)
     root = storage.resolve_layout(identity, run_id=str(plan["run_id"])).artifact_root
     manifest = run_artifacts.load_manifest(root)
@@ -613,18 +635,25 @@ def _activities(workspace: str, plan: dict, authority: dict) -> list[dict]:
     return list(manifest["classes"]["agent-activity"]["entries"])
 
 
-def _event_receipts(entries: list[dict], event_type: str,
-                    lens: str) -> list[dict]:
-    return [(entry.get("metadata") or {}).get("details", {}).get("receipt")
-            for entry in entries
-            if (entry.get("metadata") or {}).get("event_type") == event_type
-            and (entry.get("metadata") or {}).get("lens") == lens
-            and isinstance((entry.get("metadata") or {}).get(
-                "details", {}).get("receipt"), dict)]
+def _event_receipts(entries: list[JsonDict], event_type: str,
+                    lens: str) -> list[JsonDict]:
+    receipts: list[JsonDict] = []
+    for entry in entries:
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        details = metadata.get("details")
+        if not isinstance(details, dict):
+            continue
+        receipt = details.get("receipt")
+        if (metadata.get("event_type") == event_type and
+                metadata.get("lens") == lens and isinstance(receipt, dict)):
+            receipts.append(dict(receipt))
+    return receipts
 
 
-def _terminal(kernel: Any, workspace: str, receipt: object, *, worker: dict,
-              start: dict) -> dict:
+def _terminal(kernel: Any, workspace: str, receipt: object, *,
+              worker: JsonDict, start: JsonDict) -> JsonDict:
     if (not isinstance(receipt, dict) or set(receipt) != TERMINAL_FIELDS or
             receipt.get("schema") != kernel.WORKER_TERMINAL_RECEIPT_SCHEMA):
         raise ValueError("Design lens terminal receipt shape is invalid")
@@ -648,9 +677,10 @@ def _terminal(kernel: Any, workspace: str, receipt: object, *, worker: dict,
 
 
 def validate_design_lens_dispatch_completion(
-        kernel: Any, workspace: str, plan: dict, authority: object) -> dict:
+        kernel: Any, workspace: str, plan: JsonDict,
+        authority: object) -> JsonDict:
     errors: list[str] = []
-    results: dict[str, dict] = {}
+    results: dict[str, JsonDict] = {}
     try:
         workers = _validate_plan(kernel, plan)
         checked = _authority_projection(

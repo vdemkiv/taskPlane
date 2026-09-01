@@ -19,7 +19,7 @@ import re
 import stat
 import time
 import uuid
-from typing import BinaryIO, Iterator, Mapping, Sequence
+from typing import Any, BinaryIO, Iterator, Mapping, Sequence, TypeAlias, cast
 
 
 MANIFEST_SCHEMA = "taskplane.run-artifacts/v1"
@@ -70,6 +70,8 @@ _MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_ENTRIES = 20_000
 
+JsonObject: TypeAlias = dict[str, Any]
+
 
 class RunArtifactError(RuntimeError):
     """A run artifact is unsafe, stale, ambiguous, or unreadable."""
@@ -96,7 +98,8 @@ def _component_paths(path: Path) -> list[Path]:
 
 
 def _windows_close_handle(handle: int) -> None:
-    import ctypes
+    import ctypes as ctypes_module
+    ctypes = cast(Any, ctypes_module)
     if not ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle)):
         raise ctypes.WinError(ctypes.get_last_error())
 
@@ -116,7 +119,8 @@ def _windows_pin_directory(path: Path) -> int:
     Holding one such handle for every ancestor prevents a path component
     from being renamed or replaced while a fallback operation is in flight.
     """
-    import ctypes
+    import ctypes as ctypes_module
+    ctypes = cast(Any, ctypes_module)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.CreateFileW.restype = ctypes.c_void_p
     kernel.CreateFileW.argtypes = (
@@ -156,15 +160,16 @@ def _windows_pin_directory(path: Path) -> int:
 
 
 @contextmanager
-def _windows_private_security():
+def _windows_private_security() -> Iterator[tuple[Any, Any]]:
     """Yield SECURITY_ATTRIBUTES with a protected owner/System-only DACL."""
-    import ctypes
+    import ctypes as ctypes_module
+    ctypes = cast(Any, ctypes_module)
 
-    class _SecurityAttributes(ctypes.Structure):
+    class _SecurityAttributes(ctypes_module.Structure):
         _fields_ = [
-            ("length", ctypes.c_uint32),
-            ("security_descriptor", ctypes.c_void_p),
-            ("inherit_handle", ctypes.c_int),
+            ("length", ctypes_module.c_uint32),
+            ("security_descriptor", ctypes_module.c_void_p),
+            ("inherit_handle", ctypes_module.c_int),
         ]
 
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
@@ -192,7 +197,8 @@ def _windows_private_security():
 
 def _windows_apply_private(path: Path) -> None:
     """Protect one existing path with an owner/System-only DACL."""
-    import ctypes
+    import ctypes as ctypes_module
+    ctypes = cast(Any, ctypes_module)
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
     advapi.SetFileSecurityW.argtypes = (
         ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_void_p)
@@ -204,7 +210,8 @@ def _windows_apply_private(path: Path) -> None:
 
 def _windows_create_private_directory(path: Path) -> bool:
     """Create a directory with no broad-access window; return False if extant."""
-    import ctypes
+    import ctypes as ctypes_module
+    ctypes = cast(Any, ctypes_module)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.CreateDirectoryW.argtypes = (ctypes.c_wchar_p, ctypes.c_void_p)
     with _windows_private_security() as (_descriptor, attributes):
@@ -332,6 +339,7 @@ def _assert_no_symlink_components(path: Path) -> None:
 
 def _dir_fd_primitives_available() -> bool:
     required = ("O_DIRECTORY", "O_NOFOLLOW")
+    replace_parameters: Mapping[str, inspect.Parameter]
     try:
         replace_parameters = inspect.signature(os.replace).parameters
     except (TypeError, ValueError):
@@ -420,6 +428,9 @@ def _ensure_root(path: Path) -> DirectoryHandle:
     if not _dir_fd_primitives_available():
         parent = _open_directory(absolute.parent, "run artifact parent")
         try:
+            if not isinstance(parent, _PortableDirectory):
+                raise RunArtifactError(
+                    "portable run artifact parent is unavailable")
             parent_path = _directory_path(parent)
             candidate = parent_path / absolute.name
             created = (_windows_create_private_directory(candidate)
@@ -444,6 +455,9 @@ def _ensure_root(path: Path) -> DirectoryHandle:
         return descriptor
     _assert_no_symlink_components(absolute.parent)
     parent_fd = _open_directory(absolute.parent, "run artifact parent")
+    if not isinstance(parent_fd, int):
+        _close_directory(parent_fd)
+        raise RunArtifactError("run artifact fd backend is unavailable")
     try:
         try:
             os.mkdir(absolute.name, 0o700, dir_fd=parent_fd)
@@ -542,24 +556,26 @@ def _portable_existing_fd(path: Path) -> int:
 def _windows_file_fd(path: Path, *, desired_access: int, share_mode: int,
                      creation: int, os_flags: int) -> int:
     """Open one exact non-reparse file and transfer its handle to the CRT."""
-    import ctypes
-    import msvcrt
+    import ctypes as ctypes_module
+    import msvcrt as msvcrt_module
+    ctypes = cast(Any, ctypes_module)
+    msvcrt = cast(Any, msvcrt_module)
 
-    class _FileInformation(ctypes.Structure):
+    class _FileInformation(ctypes_module.Structure):
         _fields_ = [
-            ("attributes", ctypes.c_uint32),
-            ("creation_low", ctypes.c_uint32),
-            ("creation_high", ctypes.c_uint32),
-            ("access_low", ctypes.c_uint32),
-            ("access_high", ctypes.c_uint32),
-            ("write_low", ctypes.c_uint32),
-            ("write_high", ctypes.c_uint32),
-            ("volume_serial", ctypes.c_uint32),
-            ("size_high", ctypes.c_uint32),
-            ("size_low", ctypes.c_uint32),
-            ("links", ctypes.c_uint32),
-            ("index_high", ctypes.c_uint32),
-            ("index_low", ctypes.c_uint32),
+            ("attributes", ctypes_module.c_uint32),
+            ("creation_low", ctypes_module.c_uint32),
+            ("creation_high", ctypes_module.c_uint32),
+            ("access_low", ctypes_module.c_uint32),
+            ("access_high", ctypes_module.c_uint32),
+            ("write_low", ctypes_module.c_uint32),
+            ("write_high", ctypes_module.c_uint32),
+            ("volume_serial", ctypes_module.c_uint32),
+            ("size_high", ctypes_module.c_uint32),
+            ("size_low", ctypes_module.c_uint32),
+            ("links", ctypes_module.c_uint32),
+            ("index_high", ctypes_module.c_uint32),
+            ("index_low", ctypes_module.c_uint32),
         ]
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -598,7 +614,7 @@ def _windows_file_fd(path: Path, *, desired_access: int, share_mode: int,
                 _windows_normal_path(str(path)):
             raise RunArtifactError(
                 "portable artifact file resolved outside its path")
-        return msvcrt.open_osfhandle(int(handle), os_flags)
+        return int(msvcrt.open_osfhandle(int(handle), os_flags))
     except Exception:
         _windows_close_handle(int(handle))
         raise
@@ -813,7 +829,8 @@ def _lock(handle: BinaryIO) -> None:
         import fcntl
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
     except ImportError:  # pragma: no cover - Windows compatibility path
-        import msvcrt
+        import msvcrt as msvcrt_module
+        msvcrt = cast(Any, msvcrt_module)
         handle.seek(0, os.SEEK_END)
         if handle.tell() == 0:
             handle.write(b"\0")
@@ -827,13 +844,14 @@ def _unlock(handle: BinaryIO) -> None:
         import fcntl
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except ImportError:  # pragma: no cover - Windows compatibility path
-        import msvcrt
+        import msvcrt as msvcrt_module
+        msvcrt = cast(Any, msvcrt_module)
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 @contextmanager
-def _manifest_lock(root_fd: int) -> Iterator[None]:
+def _manifest_lock(root_fd: DirectoryHandle) -> Iterator[None]:
     with _lock_handle(root_fd) as handle:
         _lock(handle)
         try:
@@ -844,7 +862,8 @@ def _manifest_lock(root_fd: int) -> Iterator[None]:
 
 def create_binding(*, repository_id: str, run_id: str, stage_id: str,
                    stage_instance_id: str, candidate: Mapping[str, object],
-                   settings_digest: str, source_fingerprint: str) -> dict:
+                   settings_digest: str,
+                   source_fingerprint: str) -> JsonObject:
     """Close the complete identity repeated by every artifact and event."""
     if not isinstance(candidate, Mapping):
         raise RunArtifactError("working candidate must be an object")
@@ -870,7 +889,7 @@ def create_binding(*, repository_id: str, run_id: str, stage_id: str,
     return {**material, "fingerprint": _digest(material)}
 
 
-def validate_binding(value: object) -> dict:
+def validate_binding(value: object) -> JsonObject:
     if not isinstance(value, Mapping):
         raise RunArtifactError("run artifact binding must be an object")
     expected_fields = {
@@ -881,20 +900,20 @@ def validate_binding(value: object) -> dict:
     if set(value) != expected_fields or value.get("schema") != BINDING_SCHEMA:
         raise RunArtifactError("run artifact binding shape is invalid")
     rebuilt = create_binding(
-        repository_id=value.get("repository_id"),
-        run_id=value.get("run_id"),
-        stage_id=value.get("stage_id"),
-        stage_instance_id=value.get("stage_instance_id"),
-        candidate=value.get("candidate"),
-        settings_digest=value.get("settings_digest"),
-        source_fingerprint=value.get("source_fingerprint"),
+        repository_id=cast(str, value.get("repository_id")),
+        run_id=cast(str, value.get("run_id")),
+        stage_id=cast(str, value.get("stage_id")),
+        stage_instance_id=cast(str, value.get("stage_instance_id")),
+        candidate=cast(Mapping[str, object], value.get("candidate")),
+        settings_digest=cast(str, value.get("settings_digest")),
+        source_fingerprint=cast(str, value.get("source_fingerprint")),
     )
     if dict(value) != rebuilt:
         raise RunArtifactError("run artifact binding fingerprint is stale")
     return rebuilt
 
 
-def manifest_locator_reference() -> dict:
+def manifest_locator_reference() -> JsonObject:
     """Return the only run-state field: an immutable relative locator."""
     return {
         "schema": MANIFEST_REFERENCE_SCHEMA,
@@ -902,7 +921,7 @@ def manifest_locator_reference() -> dict:
     }
 
 
-def validate_manifest_locator_reference(value: object) -> dict:
+def validate_manifest_locator_reference(value: object) -> JsonObject:
     expected = manifest_locator_reference()
     if not isinstance(value, Mapping) or dict(value) != expected:
         raise RunArtifactError("run artifact manifest locator is invalid")
@@ -915,7 +934,7 @@ def _manifest_digest(value: Mapping[str, object]) -> str:
 
 
 def _validate_entry(entry: object, *, artifact_class: str,
-                    binding: Mapping[str, object]) -> dict:
+                    binding: Mapping[str, object]) -> JsonObject:
     if not isinstance(entry, Mapping):
         raise RunArtifactError("run artifact entry is invalid")
     required = {
@@ -956,7 +975,7 @@ def _validate_entry(entry: object, *, artifact_class: str,
     return copy.deepcopy(dict(entry))
 
 
-def _validate_manifest(value: object) -> dict:
+def _validate_manifest(value: object) -> JsonObject:
     if not isinstance(value, Mapping):
         raise RunArtifactError("run artifact manifest must be an object")
     expected_fields = {
@@ -1003,7 +1022,7 @@ def _validate_manifest(value: object) -> dict:
     return copy.deepcopy(dict(value))
 
 
-def _load_manifest_at(root_fd: int) -> dict:
+def _load_manifest_at(root_fd: DirectoryHandle) -> JsonObject:
     payload = _read_at(
         root_fd, MANIFEST_NAME, maximum=_MAX_MANIFEST_BYTES,
         label="run artifact manifest")
@@ -1014,7 +1033,8 @@ def _load_manifest_at(root_fd: int) -> dict:
     return _validate_manifest(value)
 
 
-def _save_manifest_at(root_fd: int, manifest: dict) -> dict:
+def _save_manifest_at(root_fd: DirectoryHandle,
+                      manifest: JsonObject) -> JsonObject:
     value = copy.deepcopy(manifest)
     value["manifest_digest"] = _manifest_digest(value)
     payload = _canonical(value) + b"\n"
@@ -1025,7 +1045,7 @@ def _save_manifest_at(root_fd: int, manifest: dict) -> dict:
 
 
 def create_manifest(root: str | os.PathLike[str], *, binding: Mapping[str, object]) \
-        -> dict:
+        -> JsonObject:
     """Create one private manifest and all seven separate class roots."""
     checked_binding = validate_binding(binding)
     root_path = Path(root).absolute()
@@ -1056,7 +1076,7 @@ def create_manifest(root: str | os.PathLike[str], *, binding: Mapping[str, objec
         _close_directory(root_fd)
 
 
-def load_manifest(root: str | os.PathLike[str]) -> dict:
+def load_manifest(root: str | os.PathLike[str]) -> JsonObject:
     root_fd = _open_directory(Path(root).absolute(), "run artifact root")
     try:
         if os.name == "nt":
@@ -1085,7 +1105,7 @@ def _payload_bytes(payload: object) -> tuple[bytes, str]:
 
 def _publish(root: Path, artifact_class: str, payload: bytes, *,
              media_type: str, metadata: Mapping[str, object],
-             schema: str) -> dict:
+             schema: str) -> JsonObject:
     if artifact_class not in ARTIFACT_CLASSES:
         raise RunArtifactError("run artifact class is not allowlisted")
     if schema == ACTIVITY_SCHEMA and artifact_class != "agent-activity":
@@ -1141,7 +1161,7 @@ def _publish(root: Path, artifact_class: str, payload: bytes, *,
 def publish_artifact(root: str | os.PathLike[str], artifact_class: str,
                      payload: object, *,
                      metadata: Mapping[str, object] | None = None,
-                     media_type: str | None = None) -> dict:
+                     media_type: str | None = None) -> JsonObject:
     """Atomically publish one bounded immutable object into an allowed class."""
     if artifact_class == "agent-activity":
         raise RunArtifactError(
@@ -1153,14 +1173,15 @@ def publish_artifact(root: str | os.PathLike[str], artifact_class: str,
         metadata=dict(metadata or {}), schema=ARTIFACT_SCHEMA)
 
 
-def _activity_metadata(event: Mapping[str, object]) -> dict:
+def _activity_metadata(event: Mapping[str, object]) -> JsonObject:
     required = {
         "event_type", "agent_attempt_id", "worker_id", "task_id", "lens",
         "occurred_at_ns", "details", "usage_reference",
         "evidence_references",
     }
-    if set(event) != required or event.get("event_type") not in \
-            ACTIVITY_EVENT_TYPES:
+    event_type = event.get("event_type")
+    if (set(event) != required or not isinstance(event_type, str) or
+            event_type not in ACTIVITY_EVENT_TYPES):
         raise RunArtifactError("agent activity event shape is invalid")
     for field in ("agent_attempt_id", "worker_id", "task_id", "lens"):
         _bounded_text(event.get(field), f"agent activity {field}")
@@ -1180,7 +1201,7 @@ def _activity_metadata(event: Mapping[str, object]) -> dict:
     if event.get("event_type") == "terminal" and not str(
             details.get("outcome") or "").strip():
         raise RunArtifactError("terminal activity needs an outcome")
-    expected_outcome = _DISTINCT_ACTIVITY_OUTCOMES.get(event.get("event_type"))
+    expected_outcome = _DISTINCT_ACTIVITY_OUTCOMES.get(event_type)
     if expected_outcome is not None and details.get("outcome") != \
             expected_outcome:
         raise RunArtifactError(
@@ -1196,7 +1217,7 @@ def append_activity(root: str | os.PathLike[str], *, event_type: str,
                     lens: str, details: Mapping[str, object] | None = None,
                     usage_reference: Mapping[str, object] | None = None,
                     evidence_references: Sequence[Mapping[str, object]] = (),
-                    occurred_at_ns: int | None = None) -> dict:
+                    occurred_at_ns: int | None = None) -> JsonObject:
     """Append one ordered candidate-bound worker activity event."""
     event = _activity_metadata({
         "event_type": event_type,
@@ -1224,7 +1245,8 @@ def append_activity(root: str | os.PathLike[str], *, event_type: str,
         schema=ACTIVITY_SCHEMA)
 
 
-def _read_entry(root_fd: int, entry: Mapping[str, object]) -> bytes:
+def _read_entry(root_fd: DirectoryHandle,
+                entry: Mapping[str, object]) -> bytes:
     locator = PurePath(str(entry.get("locator") or ""))
     if (locator.is_absolute() or len(locator.parts) != 2 or
             locator.parts[0] != entry.get("class") or
@@ -1255,7 +1277,8 @@ def _read_entry(root_fd: int, entry: Mapping[str, object]) -> bytes:
 
 
 def verify_manifest(root: str | os.PathLike[str], *,
-                    expected_binding: Mapping[str, object] | None = None) -> dict:
+                    expected_binding: Mapping[str, object] | None = None) \
+        -> JsonObject:
     """Read every indexed object, reject aliases/orphans, and seal a proof."""
     root_path = Path(root).absolute()
     root_fd = _open_directory(root_path, "run artifact root")
@@ -1304,7 +1327,7 @@ def verify_manifest(root: str | os.PathLike[str], *,
         _close_directory(root_fd)
 
 
-def durable_reference(root: str | os.PathLike[str]) -> dict:
+def durable_reference(root: str | os.PathLike[str]) -> JsonObject:
     """Return cleanup's immutable locator/reference, never lifecycle state."""
     root_path = Path(root).absolute()
     manifest = load_manifest(root_path)
@@ -1325,7 +1348,7 @@ def durable_reference(root: str | os.PathLike[str]) -> dict:
     }
 
 
-def validate_durable_reference(value: object) -> dict:
+def validate_durable_reference(value: object) -> JsonObject:
     if not isinstance(value, Mapping):
         raise RunArtifactError("durable run artifact reference is invalid")
     required = {
@@ -1352,7 +1375,7 @@ def validate_durable_reference(value: object) -> dict:
     return copy.deepcopy(dict(value))
 
 
-def verify_durable_reference(value: object) -> dict:
+def verify_durable_reference(value: object) -> JsonObject:
     """Authenticate a stored cleanup reference against current durable bytes."""
     reference = validate_durable_reference(value)
     root = Path(reference["root"])

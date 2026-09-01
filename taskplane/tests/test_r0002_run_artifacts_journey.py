@@ -358,6 +358,7 @@ def test_activity_log_is_bound_append_only_and_complete_for_every_worker_outcome
             run_id=run_id,
             stage_id="design-stage-r0002",
             candidate=CANDIDATE,
+            settings=SETTINGS,
         )
         for outcome, _raw, _event in WORKER_OUTCOMES
     ]

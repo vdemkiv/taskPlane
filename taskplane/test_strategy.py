@@ -11,9 +11,11 @@ import copy
 import hashlib
 import json
 import re
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
-if __package__:
+if TYPE_CHECKING:
+    from taskplane.build_quality import VALIDATION_LAYERS
+elif __package__:
     from .build_quality import VALIDATION_LAYERS
 else:  # pragma: no cover - direct CLI module loading
     from build_quality import VALIDATION_LAYERS

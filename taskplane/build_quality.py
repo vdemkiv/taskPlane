@@ -10,9 +10,11 @@ import copy
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-if __package__:
+if TYPE_CHECKING:
+    from taskplane import failure_routing
+elif __package__:
     from . import failure_routing
 else:  # pragma: no cover - direct CLI module loading
     import failure_routing
@@ -214,7 +216,9 @@ def advance_progression(
 
 
 def _strategy_module() -> Any:
-    if __package__:
+    if TYPE_CHECKING:
+        from taskplane import test_strategy
+    elif __package__:
         from . import test_strategy
     else:  # pragma: no cover - direct CLI module loading
         import test_strategy

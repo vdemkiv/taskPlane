@@ -1344,6 +1344,8 @@ def terminal_attempt_attribution(
         usage = binding.get("usage")
         measured = receipt is not None and isinstance(usage, Mapping) and \
             isinstance(source, str) and outcome is not None
+        receipt_fingerprint = receipt.get("fingerprint") \
+            if receipt is not None else None
         reason = None
         if not isinstance(usage, Mapping):
             reason = "provider-usage-unavailable"
@@ -1390,8 +1392,7 @@ def terminal_attempt_attribution(
                 normalized["uncached_input_tokens"]
                 if measured and normalized is not None else None),
             "effective_tokens": effective if measured else None,
-            "receipt_fingerprint": (
-                receipt.get("fingerprint") if measured else None),
+            "receipt_fingerprint": receipt_fingerprint if measured else None,
             "usage_source_fingerprint": source if measured else None,
         })
     return attributed

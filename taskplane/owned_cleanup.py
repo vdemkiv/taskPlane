@@ -20,7 +20,10 @@ import tempfile
 import time
 from contextlib import contextmanager
 from importlib import import_module
-from typing import Any, BinaryIO, Callable, Iterator, Mapping, Sequence, TypeAlias
+from typing import (
+    Any, BinaryIO, Callable, Iterator, Mapping, Protocol, Sequence, TypeAlias,
+    cast,
+)
 
 _file_lock: Any
 _windows_lock: Any
@@ -34,6 +37,31 @@ except ImportError:  # pragma: no cover - exercised by windows-latest
 
 JsonDict: TypeAlias = dict[str, Any]
 Publisher: TypeAlias = Callable[..., Mapping[str, object]]
+
+
+class _RunArtifactsModule(Protocol):
+    MANIFEST_NAME: str
+    RunArtifactError: type[Exception]
+
+    def validate_durable_reference(self, value: object) -> JsonDict: ...
+
+    def durable_reference(
+            self, root: str | os.PathLike[str]) -> JsonDict: ...
+
+    def verify_durable_reference(self, value: object) -> JsonDict: ...
+
+    def load_manifest(self, root: str | os.PathLike[str]) -> JsonDict: ...
+
+    def publish_artifact(
+            self, root: str | os.PathLike[str], artifact_class: str,
+            payload: object, *,
+            metadata: Mapping[str, object] | None = None,
+            media_type: str | None = None) -> JsonDict: ...
+
+    def verify_manifest(
+            self, root: str | os.PathLike[str], *,
+            expected_binding: Mapping[str, object] | None = None) \
+            -> JsonDict: ...
 
 
 MANIFEST_SCHEMA = "taskplane.owned-resource-manifest/v1"
@@ -211,11 +239,12 @@ def _closed_owner(value: object) -> JsonDict:
     return copy.deepcopy(value)
 
 
-def _run_artifacts_module():
+def _run_artifacts_module() -> _RunArtifactsModule:
     try:
-        return import_module("taskplane.run_artifacts")
+        module = import_module("taskplane.run_artifacts")
     except ImportError:
-        return import_module("run_artifacts")
+        module = import_module("run_artifacts")
+    return cast(_RunArtifactsModule, module)
 
 
 def _checked_durable_artifacts(
@@ -228,7 +257,10 @@ def _checked_durable_artifacts(
         if isinstance(value, Mapping):
             reference = module.validate_durable_reference(value)
         else:
-            selected = Path(os.fspath(value)).absolute()
+            if not isinstance(value, (str, os.PathLike)):
+                raise OwnedCleanupError(
+                    "durable run artifact reference is unavailable")
+            selected = Path(cast(str | os.PathLike[str], value)).absolute()
             root = selected.parent if selected.name == module.MANIFEST_NAME \
                 else selected
             reference = module.durable_reference(root)
@@ -244,7 +276,7 @@ def _checked_durable_artifacts(
     except (OSError, ValueError, module.RunArtifactError) as exc:
         raise OwnedCleanupError(
             "durable run artifact reference is unavailable") from exc
-    return copy.deepcopy(reference)
+    return copy.deepcopy(dict(reference))
 
 
 def _paths_overlap(first: str, second: str) -> bool:
@@ -413,8 +445,14 @@ def _assert_evidence_external(manifest: Mapping[str, object],
                 "cleanup evidence externality is invalid") from exc
         durable = manifest.get("durable_artifacts") if check_durable else None
         if durable is not None:
+            owner = manifest.get("owner")
+            if not isinstance(owner, Mapping):
+                raise OwnedCleanupError("cleanup owner identity is incomplete")
             reference = _checked_durable_artifacts(
-                durable, manifest.get("owner") or {}, verify=False)
+                durable, owner, verify=False)
+            if reference is None:
+                raise OwnedCleanupError(
+                    "durable run artifact reference is unavailable")
             durable_root = _absolute_lexical(reference["root"])
             if _paths_overlap(candidate, durable_root):
                 raise OwnedCleanupError(
@@ -475,13 +513,16 @@ def bind_durable_artifacts(path: str | os.PathLike[str],
                 "terminal manifest cannot change durable artifacts")
         reference = _checked_durable_artifacts(
             durable_artifacts, manifest["owner"], verify=True)
+        if reference is None:
+            raise OwnedCleanupError(
+                "durable run artifact reference is unavailable")
         current = manifest.get("durable_artifacts")
         if current is not None and current != reference:
             raise OwnedCleanupError(
                 "cleanup durable artifact reference already differs")
         manifest["durable_artifacts"] = reference
         _assert_evidence_external(manifest)
-        bound = copy.deepcopy(reference)
+        bound = copy.deepcopy(dict(reference))
 
     _mutate_manifest(manifest_path, mutate)
     return bound
@@ -1700,7 +1741,7 @@ def cleanup_consumer_evidence(receipt: Mapping[str, object]) -> JsonDict:
 def _artifact_readability(manifest: Mapping[str, object]) -> JsonDict:
     reference = manifest.get("durable_artifacts")
     if reference is None:
-        material = {
+        material: JsonDict = {
             "schema": CLEANUP_ARTIFACT_VERIFICATION_SCHEMA,
             "status": "not-bound",
             "readable": None,
@@ -1711,8 +1752,14 @@ def _artifact_readability(manifest: Mapping[str, object]) -> JsonDict:
         return {**material, "fingerprint": _digest(material)}
     module = _run_artifacts_module()
     try:
+        owner = manifest.get("owner")
+        if not isinstance(owner, Mapping):
+            raise OwnedCleanupError("cleanup owner identity is incomplete")
         checked = _checked_durable_artifacts(
-            reference, manifest.get("owner") or {}, verify=False)
+            reference, owner, verify=False)
+        if checked is None:
+            raise OwnedCleanupError(
+                "durable run artifact reference is unavailable")
         verification = module.verify_durable_reference(checked)
         material = {
             "schema": CLEANUP_ARTIFACT_VERIFICATION_SCHEMA,
@@ -1748,7 +1795,8 @@ def _cleanup_artifact_payload(receipt: Mapping[str, object]) -> JsonDict:
 
 
 def _existing_cleanup_artifact(
-        module, root: Path, payload: Mapping[str, object],
+        module: _RunArtifactsModule, root: Path,
+        payload: Mapping[str, object],
         metadata: Mapping[str, object]) -> JsonDict | None:
     """Recover an append completed before the local receipt acknowledgement."""
     encoded = json.dumps(
@@ -1756,12 +1804,17 @@ def _existing_cleanup_artifact(
         allow_nan=False).encode("utf-8") + b"\n"
     expected_sha256 = hashlib.sha256(encoded).hexdigest()
     manifest = module.load_manifest(root)
-    entries = manifest["classes"]["cleanup"]["entries"]
+    classes = manifest.get("classes")
+    cleanup = classes.get("cleanup") if isinstance(classes, Mapping) else None
+    entries = cleanup.get("entries") if isinstance(cleanup, Mapping) else None
+    if not isinstance(entries, list):
+        raise OwnedCleanupError("durable cleanup artifact index is invalid")
     for entry in reversed(entries):
-        if (entry.get("metadata") == dict(metadata) and
+        if (isinstance(entry, Mapping) and
+                entry.get("metadata") == dict(metadata) and
                 entry.get("sha256") == expected_sha256 and
                 entry.get("bytes") == len(encoded)):
-            return copy.deepcopy(entry)
+            return copy.deepcopy(dict(entry))
     return None
 
 
@@ -1772,6 +1825,8 @@ def _complete_durable_cleanup_publication(
     durable = manifest.get("durable_artifacts")
     if durable is None:
         return copy.deepcopy(receipt)
+    if not isinstance(durable, Mapping):
+        raise OwnedCleanupError("durable run artifact reference is invalid")
     publication = receipt.get("durable_cleanup_publication")
     if not isinstance(publication, Mapping) or \
             publication.get("status") != "pending":

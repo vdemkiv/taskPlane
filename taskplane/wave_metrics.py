@@ -721,14 +721,14 @@ def seal_terminal_metrics(
     for ceiling in material.get("ceilings") or []:
         if not isinstance(ceiling, dict):
             continue
-        name = ceiling.get("name")
-        if name == "total_tokens":
+        ceiling_name = ceiling.get("name")
+        if ceiling_name == "total_tokens":
             ceiling["observed"] = observed["total_tokens"]
-        elif name == "uncached_input_tokens":
+        elif ceiling_name == "uncached_input_tokens":
             ceiling["observed"] = observed["uncached_input_tokens"]
-        elif name == "sessions":
+        elif ceiling_name == "sessions":
             ceiling["observed"] = observed["sessions"]
-        elif name == "active_delivery_hours":
+        elif ceiling_name == "active_delivery_hours":
             ceiling["observed"] = observed["elapsed_seconds"] / 3600
     return seal_wave_receipt(material)
 

@@ -14,9 +14,11 @@ import json
 import math
 import re
 from datetime import datetime
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-if __package__:
+if TYPE_CHECKING:
+    from taskplane import build_quality
+elif __package__:
     from . import build_quality
 else:  # pragma: no cover - direct CLI module loading
     import build_quality
