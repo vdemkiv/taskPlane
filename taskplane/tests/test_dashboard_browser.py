@@ -726,3 +726,62 @@ def test_real_browser_svg_graphs_and_single_document_are_truthful(tmp_path):
             "fixture_server", "file_fallback", "snapshot",
             "dashboard_artifact", "dom", "svg", "selectors", "fingerprint",
         ))
+
+
+def test_real_browser_production_refresh_styles_and_shows_dependency_graph(
+        tmp_path, monkeypatch):
+    """The durable production artifact must visibly render its SVG graph."""
+    config = _json_fixture("environment.json")
+    topology = _json_fixture("topology.json")
+    graph = dashboard.render_phase_dependency_graphs(topology)
+    monkeypatch.setattr(
+        dashboard, "report_widget",
+        lambda _workspace: '<main id="dashboard-snapshot">' + graph + '</main>')
+
+    output = {
+        "step": "design",
+        "dashboard_snapshot": {
+            "snapshot": _snapshot_model(
+                10, "styled-topology-10", topology=topology),
+        },
+    }
+    views.refresh_views(str(tmp_path), output)
+    delivery = output["dashboard"]["delivery"]
+    assert delivery["status"] == "published"
+    artifact = Path(delivery["artifacts"]["html"]["path"])
+    root = artifact.parents[2]
+
+    with _LoopbackServer(root) as server, _RealBrowser(tmp_path, config) as browser:
+        browser.navigate(server.url(artifact.relative_to(root).as_posix()))
+        browser.wait_for(
+            "document.body.dataset.dashboardFreshness === 'fresh'")
+        visible = browser.evaluate("""(() => {
+          const svg = document.querySelector(
+            "#tp-design-graph svg[data-phase-graph='tp-design-graph']");
+          const line = svg?.querySelector('line');
+          const rect = svg?.querySelector('rect');
+          const text = svg?.querySelector('text');
+          const box = svg?.getBoundingClientRect();
+          const section = document.querySelector('#tp-design-graph');
+          return {
+            svgWidth: box?.width || 0,
+            svgHeight: box?.height || 0,
+            sectionHeight: section?.getBoundingClientRect().height || 0,
+            lineStroke: line ? getComputedStyle(line).stroke : 'none',
+            lineWidth: line ? parseFloat(getComputedStyle(line).strokeWidth) : 0,
+            nodeFill: rect ? getComputedStyle(rect).fill : 'none',
+            textFill: text ? getComputedStyle(text).fill : 'none',
+            bodyBackground: getComputedStyle(document.body).backgroundColor
+          };
+        })()""")
+
+    assert visible["svgWidth"] > 100
+    assert visible["svgHeight"] > 100
+    assert visible["sectionHeight"] >= visible["svgHeight"]
+    assert visible["lineStroke"] not in {"none", "rgba(0, 0, 0, 0)"}
+    assert visible["lineWidth"] > 0
+    assert visible["nodeFill"] not in {"none", "rgba(0, 0, 0, 0)"}
+    assert visible["textFill"] not in {"none", "rgba(0, 0, 0, 0)"}
+    assert visible["nodeFill"] != visible["textFill"]
+    assert visible["bodyBackground"] not in {
+        "rgba(0, 0, 0, 0)", "transparent"}

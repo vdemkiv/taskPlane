@@ -519,18 +519,23 @@ def _dashboard_freshness_controller(rendered_head: Mapping[str, Any],
 
 def _embedded_html(body: str, canonical: bytes, *,
                    rendered_head: Mapping[str, Any],
-                   actions_enabled: bool) -> bytes:
+                   actions_enabled: bool,
+                   stylesheet: str | None = None) -> bytes:
     fragment_shape = _html_shape(body)
     if fragment_shape.doctypes or any(fragment_shape.tags.values()):
         raise ValueError(
             "HTML renderer must return a fragment, not a document boundary")
     if not actions_enabled:
         body = _disable_unverified_actions(body)
+    css = str(stylesheet or "")
+    if "</style" in css.casefold():
+        raise ValueError("dashboard stylesheet must not close its style element")
+    style = f"<style>{css}</style>" if css else ""
     encoded = base64.b64encode(canonical).decode("ascii")
     document = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>Taskplane dashboard</title></head><body '
+        '<title>Taskplane dashboard</title>' + style + '</head><body '
         'data-dashboard-delivery-root="true" data-dashboard-freshness="'
         + ("fresh" if actions_enabled else "unverified") + '">'
         + body
@@ -911,6 +916,7 @@ def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
                       inline_threshold: int = LARGE_DASHBOARD_INLINE_BYTES,
                       inline_renderer: Callable[[str], object] | None = None,
                       html_renderer: Callable[[str], object] | None = None,
+                      html_stylesheet: str | None = None,
                       host_acknowledgement: Mapping[str, Any] | None = None,
                       expected_head: object = _NO_EXPECTED_HEAD,
                       ) -> dict[str, Any]:
@@ -962,7 +968,8 @@ def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
             body = str(html_renderer(canonical_text))
             html_payload = _embedded_html(
                 body, canonical, rendered_head=rendered_head,
-                actions_enabled=actions_enabled)
+                actions_enabled=actions_enabled,
+                stylesheet=html_stylesheet)
         except Exception as exc:
             html_error = f"{exc.__class__.__name__}: {exc}"
             structural_error = isinstance(exc, ValueError) and \
