@@ -58,6 +58,11 @@ def test_legacy_execute_run_migrates_only_for_attributable_non_normal_terminal_a
         tmp_path, monkeypatch, "legacy-journey")
     preserved_tasks = json.loads(json.dumps(legacy["tasks"]))
     preserved_evidence = json.loads(json.dumps(legacy["legacy_evidence"]))
+    Path(workspace, "owned.py").write_text("VALUE = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "owned.py"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "delivered candidate"],
+                   cwd=workspace, check=True)
+    observed_revision = loop.tp.git_head(workspace)
 
     terminal = loop.terminalize_run(
         workspace, "interruption", by="orchestrator")
@@ -75,12 +80,23 @@ def test_legacy_execute_run_migrates_only_for_attributable_non_normal_terminal_a
     ]
     assert stored["run_artifact_binding"]["candidate"][
         "execution_status"] == "unproven"
+    assert stored["run_artifact_binding"]["candidate"][
+        "observed_revision"] == observed_revision
+    assert terminal["dashboard"]["delivery"]["current_head"][
+        "candidate_sha"] == observed_revision
     assert stored["terminal_metrics"]["status"] == "unavailable"
     assert "wave_metrics_receipt" not in stored
     assert not ({"total_tokens", "uncached_input_tokens", "effective_tokens"}
                 & set(stored["wave_metrics_unavailable"]))
     assert stored["terminal_cleanup"]["cleanup_status"] == "clean"
     assert stored["terminal_cleanup"]["leak_count"] == 0
+    preservation = terminal["dashboard"]["run_artifacts"]
+    assert preservation["status"] == "preserved"
+    verified = run_artifacts.verify_manifest(
+        loop._run_artifact_root(workspace, stored),
+        expected_binding=stored["run_artifact_binding"])
+    assert verified["class_counts"]["dashboard"] == 1
+    assert verified["class_counts"]["dependency-graphs"] == 1
 
     retrospective = loop.retro(workspace)
     closed = loop.load(workspace)

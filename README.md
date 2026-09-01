@@ -147,19 +147,20 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
-> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.5 are
-> superseded unreleased candidates. The forward release candidate moves as v2.18.6,
+> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.6 are
+> superseded unreleased candidates. The forward release candidate moves as v2.18.7,
 > which is not
 > released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.6 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.18.7 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.18.6** | **The governed control plane now runs its designed workflow and can truthfully close an upgraded active run — release candidate, not released.** Design decomposes first and dispatches dynamically selected workers through the host; failure classification precedes correction; Build admits validated test and quality progression; and dashboard, dependency graph, telemetry, agent activity, validation, cleanup, and Retro remain separate preserved artifacts. A narrow fail-closed terminal migration binds legacy active-run evidence without changing task status or claiming unobserved execution. |
+| **v2.18.7** | **Terminal dashboard and artifact wiring repair — release candidate, not released.** Terminal failure retains the bound Design graph, Plan DAG, and waves; upgraded legacy runs publish dashboard and dependency-graph classes into their canonical private manifest; and dashboard receipts distinguish the original baseline from the actually observed delivered revision while retaining explicit unproven execution truth. |
+| **v2.18.6** | **Truthful legacy terminal migration — superseded unreleased candidate.** It could close an upgraded active run without changing task status or inventing execution, but its terminal dashboard dropped Design/Plan graphs, labeled the baseline as the delivered candidate, and failed to reuse the newly created private artifact manifest. v2.18.7 closes those presentation and preservation edges. |
 | **v2.18.5** | **Full control-plane wiring — superseded unreleased candidate.** It connected dynamic Design transport, decomposition, failure classification, Build-quality admission, settings defaults, and durable artifact classes, but its new-run artifact binding could not close an already-active legacy run after upgrade. v2.18.6 adds that terminal-only migration before upload. |
 | **v2.18.4** | **Dashboard execution-status repair — superseded unreleased candidate.** It corrected the Plan/live-status join, but the later whole-flow review found the dynamic Design transport, decomposition, classification, Build-quality, and durable artifact edges were still incomplete. v2.18.5 closes them before upload. |
 | **v2.18.3** | **Canonical delivery settings, CI-first testing, and exact-owned cleanup — superseded unreleased candidate.** It delivered the new dashboard pipeline, but its final Plan graph replayed Plan-time pending task status after the governed loop had completed. v2.18.4 corrects that live-status edge without weakening approval receipts or freshness checks. |

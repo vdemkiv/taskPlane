@@ -26,13 +26,13 @@ lens rewrite and never bumped to.
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
-> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.5 are
-> superseded unreleased candidates. The forward release candidate moves as v2.18.6,
+> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.6 are
+> superseded unreleased candidates. The forward release candidate moves as v2.18.7,
 > which is not
 > released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.6 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.18.7 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
@@ -49,7 +49,8 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.18.6** | **The governed control plane executes its designed workflow and truthfully closes upgraded active runs — release candidate, not released.** It retains the v2.18.5 dynamic Design, decomposition, failure-classification, Build-quality, settings, and durable-artifact architecture. A terminal-only migration now gives an attributable legacy active run one canonical artifact and cleanup boundary, records execution as explicitly unproven, preserves task status and prior evidence, refuses partial or foreign state, and then reuses the normal interruption/handoff/cancellation and Retro paths. |
+| **v2.18.7** | **Terminal dashboard and artifact wiring repair — release candidate, not released.** Terminal `failed` now retains the exact bound Design graph, Plan DAG, and waves. A migrated legacy run's dashboard publisher resolves the same RunStore-owned artifact root created by terminal migration, publishes dashboard and dependency-graph classes there, and makes preservation failure block the transition replay. Candidate receipts now name the observed delivered revision while rendering the original baseline and explicit `unproven` execution status separately. |
+| **v2.18.6** | **Truthful legacy terminal migration — superseded unreleased candidate.** It added the narrow fail-closed migration that preserves task status and prior evidence, but the terminal dashboard stage map omitted `failed`, the presentation layer ignored the migrated run's private manifest, and candidate receipts continued to name the baseline instead of the observed delivered revision. v2.18.7 repairs those existing graph, artifact, and candidate-authority edges before upload. |
 | **v2.18.5** | **Full R-0002 control-plane wiring — superseded unreleased candidate.** Every new Design run decomposed before dynamic host dispatch; failure classification preceded correction; Build enforced test-quality progression; and durable run-owned artifact classes preserved dashboard, graph, telemetry, activity, validation, cleanup, and Retro evidence. An active run initialized by the previous installed version lacked the new artifact binding, however, so 2.18.5 could not truthfully terminalize it after upgrade. v2.18.6 closes only that migration seam before upload. |
 | **v2.18.4** | **Dashboard execution-status repair — superseded unreleased candidate.** The Plan DAG correctly joined immutable Plan structure with governed execution truth, but the broader R-0002 review found that dynamic Design dispatch, decomposition, failure classification, Build-quality admission, and durable artifact retention were not yet wired end to end. v2.18.5 closes those production edges before upload. |
 | **v2.18.3** | **Canonical delivery settings, CI-first testing, and exact-owned cleanup — superseded unreleased candidate.** A typed fail-closed loader established the single settings spine and one settings-bound dashboard snapshot, but the final Plan graph retained Plan-time pending task values after the governed loop completed. v2.18.4 corrects that producer/consumer join while preserving the 2.18.3 architecture, evidence-pruned suite, CI policy, cleanup, release provenance, and metrics. |

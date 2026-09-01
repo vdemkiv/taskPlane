@@ -381,10 +381,28 @@ def _preserve_managed_dashboard_artifacts(
     """Use the initialized private run manifest, or report why it is absent."""
     import storage as _runtime_storage
     locator = _runtime_storage.load_workspace_locator(ws)
-    if not isinstance(locator, Mapping):
+    root = ""
+    if isinstance(locator, Mapping):
+        root = str((locator.get("paths") or {}).get("artifacts") or "")
+    else:
+        import loop as _loop
+        try:
+            from . import run_artifacts as _run_artifacts
+        except (ImportError, ValueError):
+            import run_artifacts as _run_artifacts  # type: ignore
+        state = _loop.load(ws)
+        if not isinstance(state, Mapping) or not any(
+                key in state for key in
+                ("run_artifacts", "run_artifact_binding")):
+            return {"status": "unavailable", "reason": "legacy workspace has no "
+                    "private run-artifact manifest"}
+        _run_artifacts.validate_manifest_locator_reference(
+            state.get("run_artifacts"))
+        _run_artifacts.validate_binding(state.get("run_artifact_binding"))
+        root = _loop._run_artifact_root(ws, state)  # noqa: SLF001
+    if not root:
         return {"status": "unavailable", "reason": "legacy workspace has no "
                 "private run-artifact manifest"}
-    root = str((locator.get("paths") or {}).get("artifacts") or "")
     manifest = os.path.join(root, "run-artifacts.json")
     if not root or not os.path.isfile(manifest):
         return {"status": "unavailable", "reason": "run-artifact manifest "
