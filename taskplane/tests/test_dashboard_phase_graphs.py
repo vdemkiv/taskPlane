@@ -100,6 +100,38 @@ def test_plan_graph_uses_live_governed_task_status_and_wave_execution(tmp_path):
     assert "approval planned · execution passed" in rendered
 
 
+def test_terminal_graph_uses_canonical_loop_tasks_when_plan_file_is_unbound(tmp_path):
+    ws = _workspace(tmp_path)
+    plan = _json("plan-tasks.json")
+    state = _state("failed", exact_receipt=True)
+    state.update({
+        "requirement_id": plan["requirement"],
+        "design_fingerprint": plan["design_fingerprint"],
+        "tasks": [
+            {**task, "status": "pending"}
+            for task in plan["tasks"]
+        ],
+    })
+    state["delivery_mode_receipt"]["plan_fingerprint"] = "0" * 64
+
+    projection = dashboard.phase_graph_projection(
+        str(ws), state, impact=_json("module-impact.json"),
+        require_bound=True)
+
+    assert projection["plan_task_dag"]["source"] == "loop-state#/tasks"
+    assert projection["plan_task_dag"]["task_total"] == 4
+    assert projection["plan_task_dag"]["edge_total"] == 4
+    assert projection["plan_waves"]["source"] == "loop-state#/tasks"
+    assert projection["plan_waves"]["approval"] == "unverified"
+    assert [wave["tasks"] for wave in projection["plan_waves"]["waves"]] == [
+        ["foundation"], ["api", "ui"], ["proof"],
+    ]
+    rendered = dashboard.render_phase_dependency_graphs(projection)
+    assert 'id="tp-plan-task-dag"' in rendered
+    assert 'id="tp-plan-waves"' in rendered
+    assert "approval unverified" in rendered
+
+
 def test_plan_graph_refuses_stale_status_when_loop_task_edge_is_severed(tmp_path):
     ws = _workspace(tmp_path)
     state = _state("done")

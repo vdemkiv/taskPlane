@@ -496,6 +496,105 @@ def dashboard_plan_projection(
     }
 
 
+def _governed_loop_plan_projection(
+    state: Mapping[str, Any],
+) -> dict[str, dict[str, Any]] | None:
+    """Render the task graph already sealed into governed loop state.
+
+    A terminal or migrated run can outlive its mutable ``plan/tasks.json``.
+    The loop task set remains the canonical execution graph in that case.
+    Its dependency levels are safe to visualize, but they do not recreate a
+    missing Plan approval receipt, so the derived waves stay unverified.
+    """
+    raw_tasks = state.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks or any(
+            not isinstance(row, Mapping) for row in raw_tasks):
+        return None
+    rows = _task_rows(raw_tasks)
+    dependencies = {row["id"]: list(row["deps"]) for row in rows}
+    order = _topological_order(dependencies)
+    statuses = {
+        row["id"]: str(row.get("status") or "unknown") for row in rows
+    }
+    tasks = [{
+        "id": row["id"],
+        "deps": list(row["deps"]),
+        "scope": list(row["scope"]),
+        "status": statuses[row["id"]],
+    } for row in rows]
+    edges = sorted(
+        ({"from": dependency, "to": row["id"], "kind": "depends"}
+         for row in rows for dependency in row["deps"]),
+        key=lambda edge: (edge["from"], edge["to"]),
+    )
+    status_counts: dict[str, int] = {}
+    for status in statuses.values():
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    remaining = set(dependencies)
+    completed: set[str] = set()
+    waves: list[dict[str, Any]] = []
+    while remaining:
+        ready = [task_id for task_id in order if task_id in remaining
+                 and set(dependencies[task_id]).issubset(completed)]
+        if not ready:  # defensive; _topological_order already rejects cycles
+            raise PlanTopologyError("governed loop task graph contains a cycle")
+        wave_counts: dict[str, int] = {}
+        for task_id in ready:
+            status = statuses[task_id]
+            wave_counts[status] = wave_counts.get(status, 0) + 1
+        waves.append({
+            "id": f"runtime-W{len(waves)}",
+            "index": len(waves),
+            "tasks": ready,
+            "after": sorted({dependency for task_id in ready
+                             for dependency in dependencies[task_id]}),
+            "serialization": "derived from governed task dependency edges",
+            "approval": "unverified",
+            "execution": _execution_status([statuses[task_id]
+                                             for task_id in ready]),
+            "status_counts": wave_counts,
+        })
+        completed.update(ready)
+        remaining.difference_update(ready)
+
+    source_fingerprint = content_fingerprint({
+        "run_id": state.get("run_id"),
+        "requirement_id": state.get("requirement_id"),
+        "tasks": tasks,
+    })
+    dag_material = {
+        "schema": PLAN_DASHBOARD_SCHEMA,
+        "source": "loop-state#/tasks",
+        "plan_fingerprint": source_fingerprint,
+        "tasks": tasks,
+        "edges": edges,
+        "task_total": len(tasks),
+        "edge_total": len(edges),
+        "topological_order": order,
+        "status_source": "governed-loop",
+        "status_counts": status_counts,
+    }
+    wave_material = {
+        "schema": PLAN_WAVES_DASHBOARD_SCHEMA,
+        "source": "loop-state#/tasks",
+        "plan_fingerprint": source_fingerprint,
+        "waves": waves,
+        "wave_total": len(waves),
+        "approval": "unverified",
+        "approval_receipt_fingerprint": None,
+        "execution": _execution_status(list(statuses.values())),
+        "status_source": "governed-loop",
+        "status_counts": status_counts,
+    }
+    return {
+        "dag": {**dag_material,
+                "fingerprint": content_fingerprint(dag_material)},
+        "waves": {**wave_material,
+                  "fingerprint": content_fingerprint(wave_material)},
+    }
+
+
 def _phase_escape(value: object) -> str:
     return html.escape(str(value), quote=True)
 
@@ -840,6 +939,11 @@ def phase_graph_projection(
                     if not require_bound or plan_bound:
                         dag = projected["dag"]
                         waves = projected["waves"]
+            if dag is None or waves is None:
+                runtime = _governed_loop_plan_projection(state)
+                if runtime is not None:
+                    dag = dag or runtime["dag"]
+                    waves = waves or runtime["waves"]
         if dag is not None:
             components["plan_task_dag"] = dag
         if waves is not None:
@@ -981,8 +1085,10 @@ def _render_plan_dag(component: Mapping[str, Any]) -> str:
 
 
 def _render_plan_waves(component: Mapping[str, Any]) -> str:
-    approval = ("approved" if component.get("approval") == "approved"
-                else "planned")
+    raw_approval = str(component.get("approval") or "planned")
+    approval = (raw_approval if raw_approval in {
+        "approved", "planned", "unverified",
+    } else "unverified")
     rows = []
     for wave in component.get("waves") or ():
         if not isinstance(wave, Mapping):
