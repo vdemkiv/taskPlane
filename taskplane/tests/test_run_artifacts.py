@@ -243,3 +243,27 @@ def test_portable_backend_is_semantic_private_atomic_and_alias_refusing(
         run_artifacts.publish_artifact(
             alias_root, "telemetry", {"must_not_escape": True})
     assert list(foreign.iterdir()) == []
+
+
+def test_windows_lock_privacy_uses_acl_contract_not_posix_mode_bits(
+        tmp_path, monkeypatch):
+    """A valid owner-only Windows DACL must not be rejected as POSIX 0666."""
+    root = tmp_path / "portable-lock"
+    root.mkdir()
+    portable = run_artifacts._PortableDirectory(root, "run artifact root")
+
+    def open_like_windows(path, **_kwargs):
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        os.chmod(path, 0o666)
+        return descriptor
+
+    try:
+        monkeypatch.setattr(run_artifacts.os, "name", "nt")
+        monkeypatch.setattr(run_artifacts, "_windows_file_fd",
+                            open_like_windows)
+        monkeypatch.setattr(run_artifacts, "_make_private",
+                            lambda *_args, **_kwargs: None)
+        with run_artifacts._lock_handle(portable) as handle:
+            assert handle.writable()
+    finally:
+        portable.close()

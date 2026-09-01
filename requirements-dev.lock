@@ -15,6 +15,14 @@
 # test-lock:     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
 # test-lock: pluggy==1.6.0 \
 # test-lock:     --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+# PyYAML is used only by the workflow-contract tests.  These three wheels are
+# the authoritative Python 3.12 Linux/Windows CI targets plus the Python 3.13
+# arm64 macOS developer target; expanding supported test hosts requires adding
+# their reviewed wheel hash here.
+# test-lock: PyYAML==6.0.3 \
+# test-lock:     --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc \
+# test-lock:     --hash=sha256:5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b \
+# test-lock:     --hash=sha256:2283a07e2c21a2aa78d9c4442724ec1eb15f5e42a723b99cb3d822d48f5f7ad1
 # test-lock: Pygments==2.21.0 \
 # test-lock:     --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
 # test-lock: tomli==2.2.1 ; python_version < "3.11" \

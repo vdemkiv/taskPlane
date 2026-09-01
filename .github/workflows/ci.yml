@@ -67,8 +67,7 @@ jobs:
       - name: Install sealed quality environment
         shell: bash
         run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
+          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r requirements-dev.lock
       - name: Initialize canonical settings and execute quality, package, and provenance
         id: execute
         shell: bash

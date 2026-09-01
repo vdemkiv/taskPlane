@@ -768,10 +768,14 @@ def _lock_handle(root_fd: DirectoryHandle) -> BinaryIO:
     except OSError as exc:
         raise RunArtifactError("run artifact lock is unavailable") from exc
     info = os.fstat(descriptor)
-    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
-            stat.S_IMODE(info.st_mode) & 0o077):
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         os.close(descriptor)
         raise RunArtifactError("run artifact lock is ambiguous")
+    try:
+        _private_mode(info, "run artifact lock")
+    except RunArtifactError:
+        os.close(descriptor)
+        raise
     return os.fdopen(descriptor, "a+b", closefd=True)
 
 
