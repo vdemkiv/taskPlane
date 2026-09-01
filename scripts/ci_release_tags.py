@@ -84,6 +84,14 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.18.5": {
+        "reason": "superseded local Marketplace candidate. Its new-run "
+                  "artifact boundary could not truthfully terminalize an "
+                  "active pre-2.18.5 run after upgrade; 2.18.6 adds a narrow "
+                  "fail-closed migration without inventing execution truth. "
+                  "It was never promoted to released truth.",
+        "superseded_by": "2.18.6",
+    },
     "2.18.4": {
         "reason": "superseded local Marketplace candidate. Its dashboard "
                   "status repair preceded the R-0002 control-plane wiring, "

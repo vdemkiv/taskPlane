@@ -15,6 +15,180 @@ from taskplane import loop, requirements, run_artifacts
 from taskplane import tp as tp_cli
 
 
+def _legacy_execute_workspace(tmp_path, monkeypatch, name: str):
+    workspace = tmp_path / name
+    workspace.mkdir()
+    (workspace / "owned.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Taskplane Test"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "add", "owned.py"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "legacy base"],
+                   cwd=workspace, check=True)
+    monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / f"private-{name}"))
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "legacy-terminal-owner")
+    monkeypatch.delenv("TASKPLANE_TASK", raising=False)
+    monkeypatch.delenv("TASKPLANE_STAGE_NATIVE", raising=False)
+    tasks = [
+        {"id": "LEGACY-A", "status": "pending", "deps": [],
+         "scope": ["owned.py"],
+         "legacy_evidence": {"source": "2.18.4", "preserve": True}},
+        {"id": "LEGACY-B", "status": "pending", "deps": ["LEGACY-A"],
+         "scope": ["owned.py"]},
+    ]
+    state = {
+        "governance_revision": 2,
+        "run_id": f"legacy-{name}",
+        "baseline": loop.tp.git_head(str(workspace)),
+        "settings_digest": "a" * 64,
+        "goal": "truthfully close an upgraded legacy run",
+        "step": "execute", "tasks": tasks, "current_task": 0,
+        "max_fix_cycles": 2, "checkpoints": ["plan", "em"],
+        "legacy_evidence": {"design": "approved-before-upgrade"},
+    }
+    loop.save(str(workspace), state)
+    return str(workspace), state
+
+
+def test_legacy_execute_run_migrates_only_for_attributable_non_normal_terminal_and_retro_stays_truthful(
+        tmp_path, monkeypatch) -> None:
+    workspace, legacy = _legacy_execute_workspace(
+        tmp_path, monkeypatch, "legacy-journey")
+    preserved_tasks = json.loads(json.dumps(legacy["tasks"]))
+    preserved_evidence = json.loads(json.dumps(legacy["legacy_evidence"]))
+
+    terminal = loop.terminalize_run(
+        workspace, "interruption", by="orchestrator")
+    stored = loop.load(workspace)
+
+    assert "error" not in terminal, terminal
+    assert stored["step"] == "failed"
+    assert stored["tasks"] == preserved_tasks
+    assert stored["legacy_evidence"] == preserved_evidence
+    migration = stored["legacy_terminal_control_plane_migration"]
+    assert migration["execution_status"] == "unproven"
+    assert migration["task_statuses_preserved"] == [
+        {"id": "LEGACY-A", "status": "pending"},
+        {"id": "LEGACY-B", "status": "pending"},
+    ]
+    assert stored["run_artifact_binding"]["candidate"][
+        "execution_status"] == "unproven"
+    assert stored["terminal_metrics"]["status"] == "unavailable"
+    assert "wave_metrics_receipt" not in stored
+    assert not ({"total_tokens", "uncached_input_tokens", "effective_tokens"}
+                & set(stored["wave_metrics_unavailable"]))
+    assert stored["terminal_cleanup"]["cleanup_status"] == "clean"
+    assert stored["terminal_cleanup"]["leak_count"] == 0
+
+    retrospective = loop.retro(workspace)
+    closed = loop.load(workspace)
+
+    assert "error" not in retrospective, retrospective
+    assert closed["step"] == "failed"
+    assert closed["tasks"] == preserved_tasks
+    assert retrospective["tasks"] == [
+        {"id": "LEGACY-A", "status": "pending", "fix_cycles": 0},
+        {"id": "LEGACY-B", "status": "pending", "fix_cycles": 0},
+    ]
+    assert retrospective["execution_metrics"]["active_worker_seconds"] == 0
+    assert retrospective["execution_metrics"]["delivery_wall_seconds"] == 0
+    assert retrospective["wave_metrics"]["token_usage"][
+        "status"] == "unavailable"
+
+
+@pytest.mark.parametrize("damage", ("partial", "foreign", "ambiguous"))
+def test_legacy_terminal_migration_refuses_partial_foreign_or_ambiguous_control_plane_state(
+        tmp_path, monkeypatch, damage) -> None:
+    workspace, legacy = _legacy_execute_workspace(
+        tmp_path, monkeypatch, f"legacy-{damage}")
+    preserved_tasks = json.loads(json.dumps(legacy["tasks"]))
+    state = loop.load(workspace)
+    if damage == "partial":
+        state["run_start_step"] = "plan"
+        loop.save(workspace, state)
+    elif damage == "ambiguous":
+        state["legacy_terminal_control_plane_migration"] = {}
+        loop.save(workspace, state)
+    else:
+        root = loop._ensure_run_artifact_parent(workspace, state)
+        identity = loop.runtime_storage.resolve_repository_identity(workspace)
+        foreign = run_artifacts.create_binding(
+            repository_id=identity.repo_id, run_id=state["run_id"],
+            stage_id="foreign", stage_instance_id="foreign-instance",
+            candidate={"id": "foreign", "fingerprint": "f" * 64},
+            settings_digest=state["settings_digest"],
+            source_fingerprint="e" * 64)
+        run_artifacts.create_manifest(root, binding=foreign)
+
+    refused = loop.terminalize_run(
+        workspace, "interruption", by="orchestrator")
+    current = loop.load(workspace)
+
+    assert "failed closed" in refused["error"]
+    assert current["step"] == "execute"
+    assert current["tasks"] == preserved_tasks
+    assert "whole_run_terminal" not in current
+    if damage == "partial":
+        assert "partial or ambiguous" in refused["error"]
+    elif damage == "ambiguous":
+        assert "partial or ambiguous" in refused["error"]
+    else:
+        assert "another binding" in refused["error"]
+    assert "run_artifact_binding" not in current
+
+
+def test_legacy_terminal_migration_crash_replays_one_binding_without_inventing_execution(
+        tmp_path, monkeypatch) -> None:
+    workspace, legacy = _legacy_execute_workspace(
+        tmp_path, monkeypatch, "legacy-crash")
+    preserved_tasks = json.loads(json.dumps(legacy["tasks"]))
+    production_save = loop.save
+    attempts = 0
+
+    def fail_first_state_commit(save_workspace, state):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("crash before legacy migration state commit")
+        production_save(save_workspace, state)
+
+    monkeypatch.setattr(loop, "save", fail_first_state_commit)
+    crashed = loop.terminalize_run.__wrapped__(
+        workspace, "handoff", by="orchestrator")
+    unchanged = loop.load(workspace)
+    artifact_root = loop._run_artifact_root(workspace, unchanged)
+    first_binding = run_artifacts.load_manifest(artifact_root)["binding"]
+
+    assert "failed closed" in crashed["error"]
+    assert unchanged["step"] == "execute"
+    assert unchanged["tasks"] == preserved_tasks
+    assert "run_artifact_binding" not in unchanged
+
+    monkeypatch.setattr(loop, "save", production_save)
+    recovered = loop.terminalize_run.__wrapped__(
+        workspace, "handoff", by="orchestrator")
+    stored = loop.load(workspace)
+    manifest = run_artifacts.load_manifest(
+        loop._run_artifact_root(workspace, stored))
+
+    assert "error" not in recovered, recovered
+    assert stored["step"] == "failed"
+    assert stored["tasks"] == preserved_tasks
+    assert stored["run_artifact_binding"] == first_binding
+    assert manifest["binding"] == first_binding
+    assert len(manifest["classes"]["agent-activity"]["entries"]) == 1
+    assert len(manifest["classes"]["telemetry"]["entries"]) == 1
+    assert len(manifest["classes"]["retro"]["entries"]) == 1
+    assert len(manifest["classes"]["cleanup"]["entries"]) == 1
+    assert stored["legacy_terminal_control_plane_migration"][
+        "execution_status"] == "unproven"
+    replayed = loop.replay_terminal_intent(workspace)
+    assert replayed["replayed"] is True
+    assert replayed["fingerprint"] == recovered["fingerprint"]
+
+
 @pytest.mark.parametrize(("start", "outcome"), (
     ("product", "cancellation"),
     ("plan", "interruption"),
