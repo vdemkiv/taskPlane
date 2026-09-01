@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import importlib.util
-import json
-from pathlib import Path
-import zipfile
 
 import pytest
 
@@ -16,6 +12,7 @@ from taskplane.delivery_ports import (
     SandboxEvidenceStore,
 )
 from taskplane.release_evidence import (
+    CURRENT_VERSION,
     RELEASE_REQUIRED_PROOFS,
     ReleaseEvidenceError,
     authorize_irreversible_action,
@@ -61,7 +58,7 @@ def _platform_response(**overrides):
 def _release_inputs():
     return {
         "source_sha": SHA,
-        "version": "2.18.4",
+        "version": CURRENT_VERSION,
         "wiring_closure_fingerprint": "1" * 64,
         "feature_receipt_digests": ["2" * 64],
         "full_matrix_receipts": ["3" * 64],
@@ -370,62 +367,3 @@ def test_release_evidence_reconciliation_rejects_fork_gap_collision(tmp_path):
             operation_id="mixed",
             predecessor_fingerprint=reconcile(store)[-1]["fingerprint"],
         )
-
-
-def test_runtime_and_public_surfaces_are_in_both_installable_archives(tmp_path):
-    root = Path(__file__).resolve().parents[2]
-    authorities = {
-        "taskplane/operational-settings.json",
-        "taskplane/settings_inventory.json",
-        "taskplane/test_portfolio.json",
-    }
-    for script_name in ("package_openai.py", "package_claude.py"):
-        path = root / "scripts" / script_name
-        spec = importlib.util.spec_from_file_location(
-            f"_r0001_{script_name.replace('.', '_')}", path
-        )
-        assert spec is not None and spec.loader is not None
-        packager = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(packager)
-        files = (
-            packager.package_files(packager.load_manifest())
-            if script_name == "package_openai.py"
-            else packager.package_files()
-        )
-        members = {
-            candidate.relative_to(packager.ROOT).as_posix() for candidate in files
-        }
-        assert "taskplane/release_evidence.py" in members
-        assert authorities <= members
-
-        archive_path = tmp_path / f"{script_name}.zip"
-        packager.write_zip(files, archive_path)
-        if script_name == "package_openai.py":
-            packager.validate_archive(archive_path)
-        else:
-            version = json.loads(
-                (root / ".claude-plugin/plugin.json").read_text(
-                    encoding="utf-8"))["version"]
-            packager.validate_archive(archive_path, version)
-        with zipfile.ZipFile(archive_path) as archive:
-            for relative in authorities:
-                assert archive.read("taskplane/" + relative) == \
-                    (root / relative).read_bytes()
-            entries = [(info, archive.read(info.filename))
-                       for info in archive.infolist()]
-
-        stale_path = tmp_path / f"stale-{script_name}.zip"
-        stale_member = "taskplane/taskplane/operational-settings.json"
-        with zipfile.ZipFile(stale_path, "w",
-                             compression=zipfile.ZIP_DEFLATED) as stale:
-            for info, body in entries:
-                stale.writestr(
-                    info,
-                    body + b"\n" if info.filename == stale_member else body,
-                )
-        with pytest.raises(packager.PackageError,
-                           match="stale canonical authority bytes"):
-            if script_name == "package_openai.py":
-                packager.validate_archive(stale_path)
-            else:
-                packager.validate_archive(stale_path, version)

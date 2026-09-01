@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import host_native  # noqa: E402
 import lens  # noqa: E402
 import loop  # noqa: E402
 import track  # noqa: E402
@@ -98,8 +99,13 @@ class TestRetro(unittest.TestCase):
         pending = loop.next_action(ws)
         self.assertEqual(pending["action"], "loop_retro")
         with open(os.path.join(ws, ".taskplane", "dashboard.html"),
-                  encoding="utf-8") as f:
-            self.assertIn("finalizing — retro + graph true-up", f.read())
+                  "rb") as f:
+            pending_dashboard = host_native.decode_dashboard_artifact(
+                "html", f.read())
+        self.assertEqual(
+            pending_dashboard, pending["dashboard_snapshot"]["snapshot"])
+        self.assertEqual(pending_dashboard["stage"], "retro")
+        self.assertEqual(pending_dashboard["values"]["loop"]["step"], "retro")
         rep = loop.retro(ws)
         self.assertEqual(rep["hook_denials"], 1)
         # score 0.9 predicted smooth, actual 2 fix cycles → forecast missed
@@ -114,12 +120,25 @@ class TestRetro(unittest.TestCase):
                              text=True, encoding="utf-8",
                              errors="replace").strip())
         self.assertTrue(rep["graph_true_up"]["content_fingerprint"])
-        self.assertEqual(loop.load(ws)["step"], "done")
+        completed = loop.load(ws)
+        self.assertEqual(completed["step"], "done")
+        self.assertEqual(completed["retro"]["status"], "complete")
+        self.assertEqual(completed["retro"]["report"]["graph_true_up"],
+                         rep["graph_true_up"])
         with open(os.path.join(ws, ".taskplane", "dashboard.html"),
-                  encoding="utf-8") as f:
-            dashboard = f.read()
-        self.assertIn("retro and graph true-up recorded", dashboard)
-        self.assertNotIn("run the retro</button>", dashboard)
+                  "rb") as f:
+            dashboard = host_native.decode_dashboard_artifact("html", f.read())
+        self.assertEqual(dashboard, rep["dashboard_snapshot"]["snapshot"])
+        self.assertEqual(dashboard["stage"], "done")
+        self.assertEqual(dashboard["state"], "done")
+        self.assertEqual(dashboard["values"]["event_type"], "retro")
+        self.assertEqual(dashboard["values"]["outcome"], "success")
+        self.assertEqual(dashboard["values"]["loop"]["step"], "done")
+        self.assertEqual(dashboard["safe_actions"], [])
+        self.assertIn(f"loop-state:{dashboard['revision']}",
+                      dashboard["evidence"])
+        self.assertEqual(dashboard["values"]["provenance"]["revision"],
+                         dashboard["revision"])
         titles = [d["title"] for d in kb.list_decisions(ws)]
         self.assertTrue(any(t.startswith("Retrospective") for t in titles))
 

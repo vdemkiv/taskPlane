@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Closed, isolated local equivalent of Taskplane's blocking CI.
+"""Direct, candidate-bound execution for Taskplane's blocking CI.
 
-This runner intentionally has no discovery mechanism: INVENTORY is the whole
-contract. The canonical CI profile runs the pytest inventory once; explicit
-non-authoritative profiles may still use the supported sharding capability.
+The authoritative profile has one unsharded Python 3.12 pytest cell.  Browser,
+quality/package, interpreter-import, native portability, and no-egress cells
+are separate only because they exercise different environments or commands.
+There is no aggregate/join cell and no compatibility pytest replay.
 """
 from __future__ import annotations
 
@@ -28,8 +29,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from taskplane import failure_routing, run_artifacts  # noqa: E402
 from taskplane.ci_policy import (  # noqa: E402
     BROWSER_INPUTS,
+    CIPolicyError,
+    TERMINAL_OUTCOMES,
     build_ci_plan,
     freeze_candidate,
 )
@@ -44,11 +48,11 @@ PYTHON = sys.executable
 SCHEMA = "taskplane.local-ci-equivalent/v1"
 CI_RUNTIME_SCHEMA = "taskplane.authoritative-ci-runtime/v1"
 CI_CELL_SCHEMA = "taskplane.authoritative-ci-cell/v1"
+CI_DIRECT_CELL_SCHEMA = "taskplane.authoritative-ci-cell/v2"
 CI_CLEANUP_SCHEMA = "taskplane.ci-cleanup-receipt/v1"
-CI_FAILURE_CLASSES = frozenset(("product", "test", "infrastructure", "environment"))
-CI_TERMINAL_OUTCOMES = frozenset((
-    "success", "failure", "cancellation", "interruption", "timeout", "handoff",
-))
+CI_DIRECT_CLEANUP_SCHEMA = "taskplane.ci-cleanup-receipt/v2"
+CI_TERMINAL_OUTCOMES = frozenset(TERMINAL_OUTCOMES)
+CI_FAILURE_CLASSES = frozenset(failure_routing.FAILURE_CLASSES)
 CI_CELL_FIELDS = frozenset((
     "schema", "id", "kind", "status", "outcome", "classification",
     "candidate_fingerprint", "source_sha", "plan_fingerprint",
@@ -56,14 +60,28 @@ CI_CELL_FIELDS = frozenset((
     "browser_observation", "selectors", "duration_ms", "commands",
     "output_digest", "ownership", "cleanup", "receipt",
 ))
+CI_DIRECT_CELL_FIELDS = frozenset(
+    (CI_CELL_FIELDS - {"schema", "receipt"}) |
+    {"schema", "failure_routing", "build_quality", "run_artifacts", "receipt"}
+)
 CI_BROWSER_SELECTORS = (
     "taskplane/tests/test_dashboard_browser.py::"
     "test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale",
     "taskplane/tests/test_dashboard_browser.py::"
     "test_real_browser_svg_graphs_and_single_document_are_truthful",
+    "taskplane/tests/test_dashboard_browser.py::"
+    "test_real_browser_production_refresh_styles_and_shows_dependency_graph",
+    "taskplane/tests/test_dashboard_browser.py::"
+    "test_real_browser_current_design_dependency_graph_is_visible_and_accessible_at_390_and_768",
 )
-CI_MATRICES = ("tests", "quality-package", "browser")
-CI_RUNNER_MINUTES_CEILING = 30
+CI_WINDOWS_SELECTORS = (
+    "taskplane/tests/test_em_h1_sandbox.py::"
+    "test_h34_windows_timeout_kills_child_and_grandchild",
+)
+CI_VALIDATION_DOMAINS = (
+    "tests", "quality-package", "browser", "interpreter-import",
+    "os-portability", "security-no-egress",
+)
 CI_RECEIPT_RESERVE_SECONDS = 60
 CI_LOGICAL_PYTHON = "taskplane-python"
 INVENTORY_VERSION = "REL-2181/2"
@@ -105,13 +123,10 @@ def _files_fingerprint(paths: Sequence[str]) -> str:
     return digest.hexdigest()
 
 
-def _ci_pytest_partitions(shard_count: int) -> tuple[tuple[str, ...], ...]:
-    files = tuple(
-        path for path in pytest_inventory()
-        if path != "taskplane/tests/test_dashboard_browser.py"
-    )
-    weights = {path: max(1, (ROOT / path).stat().st_size) for path in files}
-    return partition_pytest_files(files, weights, shard_count)
+def _authoritative_pytest_files() -> tuple[str, ...]:
+    """Return the accepted inventory once, excluding the isolated browser."""
+    return tuple(path for path in pytest_inventory()
+                 if path != "taskplane/tests/test_dashboard_browser.py")
 
 
 def _browser_identity(
@@ -180,6 +195,24 @@ def _browser_identity(
     return identity
 
 
+def _declared_browser_identity() -> dict[str, Any]:
+    """Stable plan identity; only the browser cell observes an executable."""
+    fixture = ROOT / "taskplane/tests/fixtures/dashboard-browser/environment.json"
+    topology = ROOT / "taskplane/tests/fixtures/dashboard-browser/topology.json"
+    config = json.loads(fixture.read_text(encoding="utf-8"))
+    return {
+        "executable": "/ci/runner-resolved-browser",
+        "version": "runner-resolved",
+        "flags": list(config.get("flags") or []),
+        "fixture_server": _sha256_json(config.get("fixture_server")),
+        "snapshot": _files_fingerprint((str(fixture.relative_to(ROOT)),
+                                         str(topology.relative_to(ROOT)))),
+        "dashboard_artifact": _files_fingerprint((
+            "taskplane/dashboard.py", "taskplane/views.py")),
+        "selectors": _sha256_json(config.get("selectors")),
+    }
+
+
 def _ci_settings(
     settings_path: str | Path = DEFAULT_SETTINGS_PATH,
 ) -> OperationalSettings:
@@ -189,7 +222,7 @@ def _ci_settings(
         raise RunnerError(f"authoritative CI settings were rejected: {exc}") from exc
     if (
         settings.tests.backend != "ci"
-        or settings.tests.shards < 1
+        or settings.tests.shards != 1
         or settings.build.concurrency != "native"
         or settings.receipt.get("precedence") != ["defaults", "file"]
     ):
@@ -216,29 +249,31 @@ def _ci_declaration(
         ref_kind = "release"
         group = f"release-{run_id}"
         cancel = False
-    partitions = _ci_pytest_partitions(settings.tests.shards)
     test_timeout = settings.limits.timeouts["task_seconds"]
     subprocess_timeout = settings.limits.timeouts["subprocess_seconds"]
-    cells: list[dict[str, Any]] = []
-    for index, selectors in enumerate(partitions, start=1):
-        cells.append({
-            "id": f"pytest-{index}",
+    pytest_files = list(_authoritative_pytest_files())
+    cells: list[dict[str, Any]] = [
+        {
+            "id": "pytest-1",
             "kind": "pytest",
-            "matrix": "tests",
-            "selectors": list(selectors),
-            "paths": list(selectors),
+            "validation_domain": "tests",
+            "runtime": "3.12",
+            "selectors": pytest_files,
+            "excluded_selectors": list(CI_WINDOWS_SELECTORS),
+            "paths": pytest_files,
             "timeout_seconds": test_timeout,
-            "cleanup_resources": [f"generated-state:pytest-{index}"],
-        })
-    cells.extend((
+            "cleanup_resources": ["generated-state:pytest-1"],
+        },
         {
             "id": "quality-package",
             "kind": "quality-package",
-            "matrix": "quality-package",
+            "validation_domain": "quality-package",
             "selectors": [
-                "command:compile-import", "command:ruff", "command:mypy",
-                "command:release-surface", "command:package-openai",
-                "command:package-claude",
+                "command:ruff", "command:mypy", "command:version-verify",
+                "command:release-surface", "command:release-history",
+                "command:import-cycle", "command:generated-lens-drift",
+                "command:generated-cli-drift", "command:package-openai",
+                "command:package-claude", "command:package-claude-plugin",
             ],
             "paths": [
                 "requirements-dev.lock", "pyproject.toml",
@@ -250,7 +285,7 @@ def _ci_declaration(
         {
             "id": "dashboard-browser",
             "kind": "browser",
-            "matrix": "browser",
+            "validation_domain": "browser",
             "execution": "ci-only",
             "selectors": list(CI_BROWSER_SELECTORS),
             "paths": [
@@ -262,7 +297,40 @@ def _ci_declaration(
                 "process:dashboard-browser", "generated-state:dashboard-browser",
             ],
         },
-    ))
+        *[
+            {
+                "id": f"interpreter-import-{version}",
+                "kind": "interpreter-import",
+                "validation_domain": "interpreter-import",
+                "runtime": version,
+                "selectors": ["command:compile-import"],
+                "paths": ["taskplane", "hooks"],
+                "timeout_seconds": subprocess_timeout,
+                "cleanup_resources": [f"generated-state:import-{version}"],
+            }
+            for version in ("3.10", "3.11", "3.13")
+        ],
+        {
+            "id": "os-portability-windows",
+            "kind": "os-portability",
+            "validation_domain": "os-portability",
+            "runtime": "3.12/windows",
+            "selectors": list(CI_WINDOWS_SELECTORS),
+            "paths": ["taskplane/tests/test_em_h1_sandbox.py"],
+            "timeout_seconds": subprocess_timeout,
+            "cleanup_resources": ["generated-state:os-portability-windows"],
+        },
+        {
+            "id": "security-no-egress",
+            "kind": "security-no-egress",
+            "validation_domain": "security-no-egress",
+            "runtime": "3.12/credential-empty",
+            "selectors": ["command:zero-token-corpus"],
+            "paths": ["scripts/ci_evals.py", "evals"],
+            "timeout_seconds": subprocess_timeout,
+            "cleanup_resources": ["generated-state:security-no-egress"],
+        },
+    ]
     return {
         "settings": {**settings.to_dict(), "digest": settings.digest},
         "run": {
@@ -271,8 +339,12 @@ def _ci_declaration(
             "group": group,
             "cancel_in_progress": cancel,
         },
-        "matrices": list(CI_MATRICES),
-        "serializations": [],
+        "validation_domains": list(CI_VALIDATION_DOMAINS),
+        "serializations": [{
+            "name": "package-build-before-provenance",
+            "cells": ["quality-package"],
+            "reason": "archive validation consumes package outputs",
+        }],
         "cells": cells,
     }
 
@@ -316,13 +388,13 @@ def build_authoritative_ci_runtime(
     candidate = freeze_candidate({
         "source_sha": source_sha,
         "fingerprints": fingerprints,
-        "browser": dict(browser) if browser is not None else _browser_identity(),
+        "browser": dict(browser) if browser is not None else
+        _declared_browser_identity(),
     })
-    plan = build_ci_plan(candidate, declaration)
-    if sum(cell["timeout_seconds"] for cell in plan["cells"]) > (
-        CI_RUNNER_MINUTES_CEILING * 60
-    ):
-        raise RunnerError("authoritative CI runner-minute ceiling was exceeded")
+    try:
+        plan = build_ci_plan(candidate, declaration)
+    except CIPolicyError as exc:
+        raise RunnerError(f"canonical CI policy rejected runtime: {exc}") from exc
     settings_receipt = {
         "schema": "taskplane.authoritative-ci-settings-receipt/v1",
         "source": str(Path(settings_path).resolve()),
@@ -349,19 +421,20 @@ PYTEST_CHECK_IDS = tuple(
     f"pytest-shard-{index + 1}" for index in range(PYTEST_SHARD_COUNT)
 )
 def pytest_inventory() -> tuple[str, ...]:
-    tracked = subprocess.run(
-        ["git", "ls-files", "--", "taskplane/tests/test_*.py"],
-        cwd=ROOT, check=True, capture_output=True, text=True, encoding="utf-8",
-    ).stdout.splitlines()
-    files = tuple(sorted(row for row in tracked if row))
+    """Discover the current runnable test surface from the checkout.
+
+    ``test_portfolio.json`` is targeted review evidence, not a packaged or
+    exhaustive allowlist.  Letting it admit tests made compact evidence able
+    to hide a real test file or authorize a nonexistent one.
+    """
     present = tuple(sorted(
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / "taskplane" / "tests").glob("test_*.py")
         if path.is_file()
     ))
-    if not files or files != present or len(files) != len(set(files)):
-        raise RunnerError("pytest inventory is missing, duplicate, or untracked")
-    return files
+    if not present or len(present) != len(set(present)):
+        raise RunnerError("current pytest inventory is missing or duplicate")
+    return present
 
 
 def pytest_weights(files: Sequence[str]) -> dict[str, int]:
@@ -740,18 +813,34 @@ def _internal(action: str) -> int:
         print(f"compiled and imported {len(shipped)} entries")
         return 0
     if action == "zero-token-corpus":
-        outputs = []
-        for _ in range(2):
-            result = subprocess.run([PYTHON, "scripts/ci_evals.py", "--corpus"], cwd=ROOT, env=_safe_env(Path(os.environ["TMPDIR"]).parent), capture_output=True, text=True)
-            if result.returncode:
-                print(result.stdout + result.stderr)
-                return result.returncode
-            outputs.append(result.stdout)
-        if outputs[0] != outputs[1]:
-            print("nondeterministic corpus output")
-            return 1
-        print(_digest(outputs[0]))
-        return 0
+        shard_root = Path(os.environ["TMPDIR"]).parent
+        guard = shard_root / "no-egress"
+        guard.mkdir()
+        (guard / "sitecustomize.py").write_text(
+            "import socket\n"
+            "class NoEgressError(OSError): pass\n"
+            "def deny(*_a, **_k): raise NoEgressError('network denied')\n"
+            "class DeniedSocket:\n"
+            "    def __new__(cls, *_a, **_k): return deny()\n"
+            "socket.socket = DeniedSocket\n"
+            "socket.SocketType = DeniedSocket\n"
+            "socket.create_connection = deny\n"
+            "socket.getaddrinfo = deny\n",
+            encoding="utf-8",
+        )
+        isolated = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(shard_root / "home"),
+            "TMPDIR": str(shard_root / "tmp"),
+            "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+            "PYTHONPATH": str(guard), "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        result = subprocess.run(
+            [PYTHON, "-B", "scripts/ci_evals.py", "--corpus"],
+            cwd=ROOT, env=isolated, capture_output=True, text=True,
+        )
+        print(result.stdout + result.stderr)
+        return result.returncode
     if action == "host-platform":
         print(canonical_json({"python": platform.python_version(), "implementation": platform.python_implementation(), "os": os.name, "platform": platform.system(), "disposition": "remote-required"}))
         return 0
@@ -777,12 +866,16 @@ def _internal(action: str) -> int:
             if result.returncode:
                 return result.returncode
         return 0 if _tree_digest(observed) == before_digest else 1
-    if action in {"package-openai", "package-claude"}:
+    if action in {"package-openai", "package-claude",
+                  "package-claude-plugin"}:
         script = "scripts/package_openai.py" if action.endswith("openai") else "scripts/package_claude.py"
         digests = []
         for label in ("a", "b"):
             output = shard_root / f"{action}-{label}"
-            result = subprocess.run([PYTHON, script, "--output-dir", str(output)], cwd=ROOT, env=_safe_env(shard_root))
+            command = [PYTHON, script, "--output-dir", str(output)]
+            if action == "package-claude-plugin":
+                command[2:2] = ["--ext", "plugin"]
+            result = subprocess.run(command, cwd=ROOT, env=_safe_env(shard_root))
             if result.returncode:
                 return result.returncode
             archives = sorted(list(output.glob("*.zip")) + list(output.glob("*.plugin")))
@@ -794,12 +887,18 @@ def _internal(action: str) -> int:
     raise RunnerError(f"unknown internal action: {action}")
 
 
-def _load_runtime_plan(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise RunnerError("authoritative CI runtime plan is unavailable") from exc
-    if not isinstance(value, dict) or value.get("schema") != CI_RUNTIME_SCHEMA:
+def validate_authoritative_ci_runtime(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Authenticate one runner's sealed runtime before consuming its cell.
+
+    The runtime includes runner-local evidence, so another platform's runtime
+    is never substituted for the cell that actually executed there.
+    """
+    if not isinstance(value, Mapping):
+        raise RunnerError("authoritative CI runtime plan schema is invalid")
+    value = dict(value)
+    if value.get("schema") != CI_RUNTIME_SCHEMA:
         raise RunnerError("authoritative CI runtime plan schema is invalid")
     expected = _sha256_json({
         key: item for key, item in value.items() if key != "fingerprint"
@@ -811,6 +910,21 @@ def _load_runtime_plan(path: Path) -> dict[str, Any]:
     receipt = value.get("settings_receipt")
     if not all(isinstance(item, dict) for item in (candidate, plan, receipt)):
         raise RunnerError("authoritative CI runtime plan is incomplete")
+    try:
+        rebuilt_candidate = freeze_candidate(candidate)
+    except CIPolicyError as exc:
+        raise RunnerError("authoritative CI candidate is invalid") from exc
+    if candidate != rebuilt_candidate:
+        raise RunnerError("authoritative CI candidate seal is stale")
+    expected_plan = _sha256_json({
+        key: item for key, item in plan.items() if key != "fingerprint"
+    })
+    expected_settings = _sha256_json({
+        key: item for key, item in receipt.items() if key != "fingerprint"
+    })
+    if plan.get("fingerprint") != expected_plan or \
+            receipt.get("fingerprint") != expected_settings:
+        raise RunnerError("CI plan or settings receipt seal is stale")
     if (
         plan.get("candidate_fingerprint") != candidate.get("fingerprint")
         or plan.get("source_sha") != candidate.get("source_sha")
@@ -818,7 +932,97 @@ def _load_runtime_plan(path: Path) -> dict[str, Any]:
         or receipt.get("settings_digest") != plan.get("settings_digest")
     ):
         raise RunnerError("CI plan, candidate, and settings receipt do not match")
-    return value
+    cells = plan.get("cells")
+    if not isinstance(cells, list) or not cells or any(
+        not isinstance(cell, dict)
+        or cell.get("candidate_fingerprint") != candidate.get("fingerprint")
+        or cell.get("source_sha") != candidate.get("source_sha")
+        for cell in cells
+    ):
+        raise RunnerError("CI plan cells do not bind the sealed candidate")
+    browser_cells = [cell for cell in cells if cell.get("kind") == "browser"]
+    if len(browser_cells) != 1 or (
+        browser_cells[0].get("browser_environment") != candidate.get("browser")
+        or browser_cells[0].get("browser_fingerprint")
+        != candidate.get("browser_fingerprint")
+    ):
+        raise RunnerError("CI browser plan does not bind its sealed runtime")
+    return json.loads(json.dumps(value, sort_keys=True))
+
+
+def _shared_browser_policy(browser: Mapping[str, Any]) -> dict[str, Any]:
+    """Return declared browser behavior without runner-local observation."""
+    return {
+        key: json.loads(json.dumps(browser[key], sort_keys=True))
+        for key in BROWSER_INPUTS
+        if key not in {"executable", "version"}
+    }
+
+
+def authoritative_ci_shared_authority(
+    runtime: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project one cell runtime onto the authority shared by every CI host.
+
+    Actual runner identity stays sealed in the cell-specific runtime and
+    observed-environment receipt.  Only that host-local field and absolute
+    settings-loader paths are excluded from the shared projection.
+    """
+    checked = validate_authoritative_ci_runtime(runtime)
+    candidate = checked["candidate"]
+    plan = checked["plan"]
+    settings = checked["settings_receipt"]
+    settings_source = str(settings.get("source") or "").replace("\\", "/")
+    canonical_settings_source = "taskplane/operational-settings.json"
+    if not settings_source.endswith("/" + canonical_settings_source):
+        raise RunnerError("authoritative CI settings source is not canonical")
+    browser_policy = _shared_browser_policy(candidate["browser"])
+    shared_plan = {
+        key: json.loads(json.dumps(item, sort_keys=True))
+        for key, item in plan.items()
+        if key not in {"candidate_fingerprint", "fingerprint"}
+    }
+    for cell in shared_plan.get("cells", []):
+        if isinstance(cell, dict):
+            cell.pop("candidate_fingerprint", None)
+            if cell.get("kind") == "browser":
+                cell.pop("browser_environment", None)
+                cell.pop("browser_fingerprint", None)
+    payload = {
+        "schema": "taskplane.authoritative-ci-shared-authority/v1",
+        "source_sha": candidate["source_sha"],
+        "candidate": {
+            "schema": candidate["schema"],
+            "source_sha": candidate["source_sha"],
+            "fingerprints": {
+                key: value for key, value in candidate["fingerprints"].items()
+                if key != "runner"
+            },
+            "browser_policy": browser_policy,
+            "frozen": candidate["frozen"],
+        },
+        "settings": {
+            "schema": settings["schema"],
+            "source": canonical_settings_source,
+            "precedence": settings["precedence"],
+            "candidate_sha": settings["candidate_sha"],
+            "settings_digest": settings["settings_digest"],
+            "effective": settings["effective"],
+            "loader_receipt": settings["loader_receipt"],
+        },
+        "plan": shared_plan,
+    }
+    return {**payload, "fingerprint": _sha256_json(payload)}
+
+
+def _load_runtime_plan(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RunnerError("authoritative CI runtime plan is unavailable") from exc
+    if not isinstance(value, dict):
+        raise RunnerError("authoritative CI runtime plan is invalid")
+    return validate_authoritative_ci_runtime(value)
 
 
 def _atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
@@ -833,18 +1037,32 @@ def _ci_cell_commands(cell: Mapping[str, Any], root: Path) -> list[list[str]]:
     PYTHON = CI_LOGICAL_PYTHON  # noqa: N806 - contract token, not executable path
     kind = cell.get("kind")
     selectors = [str(item) for item in cell.get("selectors") or []]
-    if kind in {"pytest", "browser"}:
-        return [[PYTHON, "-m", "pytest", "-q", *selectors]]
+    if kind in {"pytest", "browser", "os-portability"}:
+        deselected = [
+            f"--deselect={selector}"
+            for selector in cell.get("excluded_selectors") or []
+        ]
+        return [[PYTHON, "-m", "pytest", "-q", *selectors, *deselected]]
     if kind == "quality-package":
         return [
-            [PYTHON, __file__, "--internal", "compile-import"],
             [PYTHON, "-m", "ruff", "check", "--output-format=github",
              "taskplane", "hooks", "scripts"],
             [PYTHON, "-m", "mypy", "--strict", "--config-file", "pyproject.toml"],
+            [PYTHON, "taskplane/tp.py", "version", "--verify"],
             [PYTHON, "scripts/ci_evals.py", "--verify-release-surface", "--json"],
-            [PYTHON, "scripts/package_openai.py", "--output-dir", str(root / "openai")],
-            [PYTHON, "scripts/package_claude.py", "--output-dir", str(root / "claude")],
+            [PYTHON, "scripts/ci_release_tags.py", "--json"],
+            [PYTHON, "taskplane/import_cycles.py", "--root", ".", "--policy",
+             "taskplane/tests/fixtures/import-cycles.json", "--check"],
+            [PYTHON, __file__, "--internal", "generated-lens-drift"],
+            [PYTHON, __file__, "--internal", "generated-cli-drift"],
+            [PYTHON, __file__, "--internal", "package-openai"],
+            [PYTHON, __file__, "--internal", "package-claude"],
+            [PYTHON, __file__, "--internal", "package-claude-plugin"],
         ]
+    if kind == "interpreter-import":
+        return [[PYTHON, __file__, "--internal", "compile-import"]]
+    if kind == "security-no-egress":
+        return [[PYTHON, __file__, "--internal", "zero-token-corpus"]]
     raise RunnerError(f"unsupported authoritative CI cell kind: {kind}")
 
 
@@ -854,20 +1072,80 @@ def _materialize_ci_cell_command(command: Sequence[str]) -> list[str]:
     return [PYTHON, *command[1:]]
 
 
-def _classify_ci_failure(status: str, output: str) -> str | None:
-    if status == "green":
-        return None
-    folded = output.casefold()
-    if "environment failure" in folded or "no declared chrome" in folded:
-        return "environment"
-    if any(term in folded for term in (
-        "no space left", "runner", "network", "temporary failure",
-        "connection reset", "infrastructure failure",
-    )):
-        return "infrastructure"
-    if any(term in folded for term in ("fixture", "assertionerror: test", "collection error")):
-        return "test"
-    return "product"
+def _typed_failure_routing(
+    runtime: Mapping[str, Any], cell: Mapping[str, Any], *, outcome: str,
+    output_digest: str, command_receipts: Sequence[Mapping[str, Any]],
+    known_class: str | None = None,
+) -> dict[str, Any]:
+    """Create correction authority from typed facts, never output substrings."""
+    if outcome == "success":
+        payload = {
+            "schema": failure_routing.FAILURE_ROUTING_SCHEMA_ID,
+            "candidate": {
+                "id": runtime["candidate"]["source_sha"],
+                "fingerprint": runtime["candidate"]["fingerprint"],
+            },
+            "records": [], "classes": [], "routes": [],
+            "product_fix_authorized": False, "status": "clear",
+        }
+        return {**payload, "fingerprint": _sha256_json(payload)}
+    failure_class = known_class or (
+        "infrastructure" if outcome == "timeout" else "unknown"
+    )
+    route = failure_routing.route_for_class(failure_class)
+    evidence = {
+        "cell_id": cell["id"], "kind": cell["kind"], "outcome": outcome,
+        "output_digest": output_digest,
+        "commands": [dict(row) for row in command_receipts],
+    }
+    logical_commands = _ci_cell_commands(cell, Path("<owned>"))
+    record = {
+        "schema": failure_routing.FAILURE_RECORD_SCHEMA_ID,
+        "id": f"ci-{cell['id']}-{outcome}",
+        "source": f"ci:{cell['id']}", "stage": "ci",
+        "repro": (
+            f"execute frozen CI cell {cell['id']} command contract "
+            f"{_sha256_json(logical_commands)}"
+        ),
+        "evidence": evidence,
+        "evidence_digest": failure_routing.evidence_digest(evidence),
+        "class": failure_class,
+        "reason": (
+            "typed browser environment observation failed"
+            if failure_class == "environment" else
+            "cell exceeded its settings-derived deadline"
+            if failure_class == "infrastructure" else
+            "producer supplied no trustworthy product-versus-test classification"
+        ),
+        "owner": (
+            "ci-environment" if failure_class == "environment" else
+            "ci-infrastructure" if failure_class == "infrastructure" else
+            "ci-triage"
+        ),
+        "cluster": f"ci-{cell['kind']}", "route": route,
+        "candidate": {
+            "id": runtime["candidate"]["source_sha"],
+            "fingerprint": runtime["candidate"]["fingerprint"],
+        },
+    }
+    checked = failure_routing.validate_failure_record(record)
+    return failure_routing.route_failure_records([checked])
+
+
+def _build_quality_cell_receipt(
+    runtime: Mapping[str, Any], cell: Mapping[str, Any], *, status: str,
+    command_receipts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    payload = {
+        "schema": "taskplane.ci-build-quality-cell/v1",
+        "candidate_fingerprint": runtime["candidate"]["fingerprint"],
+        "settings_digest": runtime["settings_receipt"]["settings_digest"],
+        "cell_id": cell["id"], "layer": "authoritative-ci",
+        "status": status,
+        "selectors_digest": _sha256_json(cell["selectors"]),
+        "commands_digest": _sha256_json([dict(row) for row in command_receipts]),
+    }
+    return {**payload, "fingerprint": _sha256_json(payload)}
 
 
 def _owned_cell_root(
@@ -906,6 +1184,7 @@ def _owned_cell_root(
 
 def _cleanup_ci_cell_root(
     target: Path, registration: Mapping[str, Any], *, outcome: str = "success",
+    durable_artifacts: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if outcome not in CI_TERMINAL_OUTCOMES:
         raise RunnerError("CI cleanup terminal outcome is invalid")
@@ -925,11 +1204,24 @@ def _cleanup_ci_cell_root(
         "taskplane-ci-"
     ):
         raise RunnerError("CI cleanup target is ambiguous or unowned")
+    if durable_artifacts is not None:
+        try:
+            checked_artifacts = run_artifacts.validate_durable_reference(
+                durable_artifacts)
+            artifact_root = Path(checked_artifacts["root"]).resolve(strict=True)
+        except (OSError, run_artifacts.RunArtifactError) as exc:
+            raise RunnerError("durable CI artifacts are unavailable") from exc
+        if target == artifact_root or target in artifact_root.parents or \
+                artifact_root in target.parents:
+            raise RunnerError("CI cleanup target overlaps durable artifacts")
+    else:
+        checked_artifacts = None
     if target.exists():
         shutil.rmtree(target)
     leaks = [str(target)] if target.exists() or target.is_symlink() else []
     receipt = {
-        "schema": CI_CLEANUP_SCHEMA,
+        "schema": CI_DIRECT_CLEANUP_SCHEMA if checked_artifacts is not None
+        else CI_CLEANUP_SCHEMA,
         "registration_fingerprint": registration["fingerprint"],
         "outcome": outcome,
         "resources": [str(target)],
@@ -937,6 +1229,11 @@ def _cleanup_ci_cell_root(
         "leak_count": len(leaks),
         "leaks": leaks,
     }
+    if checked_artifacts is not None:
+        receipt["durable_artifacts"] = checked_artifacts
+        receipt["durable_artifacts_preserved"] = (
+            run_artifacts.verify_durable_reference(checked_artifacts)["readable"]
+        )
     return {**receipt, "fingerprint": _sha256_json(receipt)}
 
 
@@ -967,6 +1264,19 @@ def run_authoritative_ci_cell(
     target, registration = _owned_cell_root(runtime, cell_id, runner_temp)
     registration_path = receipt_path.with_suffix(".ownership.json")
     _atomic_write_json(registration_path, registration)
+    artifact_root = receipt_path.parent / f"{cell_id}-artifacts"
+    binding = run_artifacts.create_binding(
+        repository_id=env.get("GITHUB_REPOSITORY", "local/taskplane"),
+        run_id=env.get("GITHUB_RUN_ID", str(runtime["plan"]["source_sha"][:12])),
+        stage_id="ci", stage_instance_id=f"ci:{cell_id}",
+        candidate={
+            "id": candidate["source_sha"],
+            "fingerprint": candidate["fingerprint"],
+        },
+        settings_digest=runtime["settings_receipt"]["settings_digest"],
+        source_fingerprint=_sha256_json({"source_sha": candidate["source_sha"]}),
+    )
+    run_artifacts.create_manifest(artifact_root, binding=binding)
     target.mkdir()
     (target / "home").mkdir()
     (target / "tmp").mkdir()
@@ -1003,6 +1313,7 @@ def run_authoritative_ci_cell(
         for signum in (signal.SIGTERM, signal.SIGINT)
     }
     cleanup_receipt: dict[str, Any]
+    durable_reference: dict[str, Any]
     try:
         if cell.get("kind") == "browser" and forced_outcome is None:
             try:
@@ -1079,9 +1390,39 @@ def run_authoritative_ci_cell(
             except (OSError, AttributeError):
                 active.kill()
             active.wait()
+        output_before_cleanup = "".join(output_parts)
+        run_artifacts.publish_artifact(
+            artifact_root, "validation", output_before_cleanup,
+            media_type="text/plain; charset=utf-8",
+            metadata={"cell_id": cell_id, "kind": cell["kind"],
+                      "outcome": outcome, "producer": "scripts.ci_local"},
+        )
+        run_artifacts.publish_artifact(
+            artifact_root, "validation", {
+                "cell_id": cell_id, "outcome": outcome,
+                "commands": command_receipts,
+                "output_digest": _digest(output_before_cleanup),
+            }, metadata={"cell_id": cell_id, "producer": "scripts.ci_local"},
+        )
+        durable_reference = run_artifacts.durable_reference(artifact_root)
         cleanup_receipt = _cleanup_ci_cell_root(
             target, registration, outcome=outcome,
+            durable_artifacts=durable_reference,
         )
+        run_artifacts.publish_artifact(
+            artifact_root, "cleanup", {
+                key: value for key, value in cleanup_receipt.items()
+                if key not in {"durable_artifacts", "fingerprint"}
+            }, metadata={"cell_id": cell_id, "outcome": outcome,
+                         "producer": "scripts.ci_local"},
+        )
+        durable_reference = run_artifacts.durable_reference(artifact_root)
+        cleanup_receipt["durable_artifacts"] = durable_reference
+        cleanup_receipt["durable_artifacts_preserved"] = True
+        cleanup_receipt["fingerprint"] = _sha256_json({
+            key: value for key, value in cleanup_receipt.items()
+            if key != "fingerprint"
+        })
 
     output = "".join(output_parts)
     log_path = receipt_path.with_suffix(".log")
@@ -1095,12 +1436,26 @@ def run_authoritative_ci_cell(
         "platform": platform.system(),
         "machine": platform.machine(),
     }
+    known_class = None
+    if status == "red":
+        if cell.get("kind") == "browser" and browser_observation != candidate["browser"]:
+            known_class = "environment"
+        elif outcome == "timeout":
+            known_class = "infrastructure"
+    failure_route = _typed_failure_routing(
+        runtime, cell, outcome=outcome, output_digest=_digest(output),
+        command_receipts=command_receipts, known_class=known_class,
+    )
     classification = (
-        None if outcome in {"cancellation", "interruption", "handoff"}
-        else _classify_ci_failure(status, output)
+        None if status == "green" or outcome in {
+            "cancellation", "interruption", "handoff",
+        } else known_class or "unknown"
+    )
+    build_quality = _build_quality_cell_receipt(
+        runtime, cell, status=status, command_receipts=command_receipts,
     )
     payload = {
-        "schema": CI_CELL_SCHEMA,
+        "schema": CI_DIRECT_CELL_SCHEMA,
         "id": cell_id,
         "kind": cell["kind"],
         "status": status,
@@ -1125,6 +1480,9 @@ def run_authoritative_ci_cell(
         "output_digest": _digest(output),
         "ownership": registration,
         "cleanup": cleanup_receipt,
+        "failure_routing": failure_route,
+        "build_quality": build_quality,
+        "run_artifacts": durable_reference,
     }
     receipt = {**payload, "receipt": _sha256_json(payload)}
     _atomic_write_json(receipt_path, receipt)
@@ -1146,6 +1504,8 @@ def validate_authoritative_ci_cell_receipt(
 ) -> dict[str, Any]:
     """Authenticate one closed, exact-candidate cell receipt before aggregation."""
     receipt = dict(row)
+    if receipt.get("schema") == CI_DIRECT_CELL_SCHEMA:
+        return _validate_direct_ci_cell_receipt(receipt, runtime, cell)
     if set(receipt) != CI_CELL_FIELDS or receipt.get("schema") != CI_CELL_SCHEMA:
         raise RunnerError("CI cell receipt schema is not closed")
     material = {key: value for key, value in receipt.items() if key != "receipt"}
@@ -1197,6 +1557,11 @@ def validate_authoritative_ci_cell_receipt(
         or set(observed) != {"implementation", "python", "os", "platform", "machine"}
         or any(not isinstance(value, str) or not value for value in observed.values())
         or environment.get("observed_fingerprint") != _sha256_json(observed)
+        or candidate["fingerprints"]["runner"] != _sha256_json({
+            "implementation": observed["implementation"],
+            "python": observed["python"],
+            "platform": observed["platform"],
+        })
     ):
         raise RunnerError("CI cell observed environment receipt is invalid")
     browser = receipt.get("browser_observation")
@@ -1282,6 +1647,178 @@ def validate_authoritative_ci_cell_receipt(
     return receipt
 
 
+def _validate_direct_ci_cell_receipt(
+    receipt: dict[str, Any], runtime: Mapping[str, Any],
+    cell: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the direct-job receipt without inventing correction authority."""
+    if set(receipt) != CI_DIRECT_CELL_FIELDS:
+        raise RunnerError("direct CI cell receipt schema is not closed")
+    material = {key: value for key, value in receipt.items() if key != "receipt"}
+    if receipt.get("receipt") != _sha256_json(material):
+        raise RunnerError("direct CI cell receipt is stale")
+    candidate = runtime["candidate"]
+    if (
+        receipt.get("id") != cell.get("id")
+        or receipt.get("kind") != cell.get("kind")
+        or receipt.get("selectors") != cell.get("selectors")
+        or receipt.get("candidate_fingerprint") != candidate.get("fingerprint")
+        or receipt.get("source_sha") != candidate.get("source_sha")
+        or receipt.get("plan_fingerprint") != runtime["plan"].get("fingerprint")
+        or receipt.get("settings_receipt_fingerprint")
+        != runtime["settings_receipt"].get("fingerprint")
+        or not _valid_digest(receipt.get("output_digest"))
+    ):
+        raise RunnerError("direct CI cell exact candidate binding failed")
+    status = receipt.get("status")
+    outcome = receipt.get("outcome")
+    classification = receipt.get("classification")
+    if status not in {"green", "red"} or outcome not in CI_TERMINAL_OUTCOMES:
+        raise RunnerError("direct CI cell terminal status is invalid")
+    if status == "green" and (outcome != "success" or classification is not None):
+        raise RunnerError("green direct CI receipt has non-green evidence")
+    if status == "red" and outcome not in {
+        "cancellation", "interruption", "handoff",
+    } and classification not in CI_FAILURE_CLASSES:
+        raise RunnerError("red direct CI receipt lacks typed classification")
+    if classification == "product":
+        raise RunnerError("CI execution cannot infer product correction authority")
+    environment = receipt.get("environment")
+    if not isinstance(environment, dict) or set(environment) != {
+        "candidate_fingerprint", "observed", "observed_fingerprint",
+    }:
+        raise RunnerError("direct CI observed environment is incomplete")
+    observed = environment.get("observed")
+    if (
+        environment.get("candidate_fingerprint")
+        != candidate["fingerprints"]["environment"]
+        or not isinstance(observed, dict)
+        or set(observed) != {
+            "implementation", "python", "os", "platform", "machine",
+        }
+        or any(not isinstance(value, str) or not value
+               for value in observed.values())
+        or environment.get("observed_fingerprint") != _sha256_json(observed)
+        or candidate["fingerprints"]["runner"] != _sha256_json({
+            "implementation": observed["implementation"],
+            "python": observed["python"],
+            "platform": observed["platform"],
+        })
+    ):
+        raise RunnerError("direct CI observed environment is invalid")
+    browser = receipt.get("browser_observation")
+    if cell.get("kind") == "browser":
+        if receipt.get("browser_fingerprint") != \
+                candidate.get("browser_fingerprint") or (
+            browser is not None and (
+                browser != candidate.get("browser")
+                or _sha256_json(browser) != candidate.get("browser_fingerprint")
+            )
+        ) or (status == "green" and browser is None):
+            raise RunnerError("direct browser runner identity is mismatched")
+    elif browser is not None or receipt.get("browser_fingerprint") is not None:
+        raise RunnerError("non-browser direct cell carries browser authority")
+    routing = receipt.get("failure_routing")
+    if not isinstance(routing, dict) or routing.get("schema") != \
+            failure_routing.FAILURE_ROUTING_SCHEMA_ID:
+        raise RunnerError("direct CI failure routing is unavailable")
+    if status == "green":
+        if routing.get("status") != "clear" or routing.get("records") != []:
+            raise RunnerError("green direct CI receipt carries a failure route")
+    else:
+        records = routing.get("records")
+        if not isinstance(records, list) or len(records) != 1:
+            raise RunnerError("red direct CI receipt lacks one embedded failure record")
+        checked = failure_routing.route_failure_records(records)
+        if checked != routing:
+            raise RunnerError("direct CI failure routing is stale")
+        if records[0]["candidate"] != {
+            "id": candidate["source_sha"],
+            "fingerprint": candidate["fingerprint"],
+        }:
+            raise RunnerError("direct CI failure route is candidate-mismatched")
+        if records[0]["class"] in {"unknown", "mixed"} and \
+                routing.get("next") != "hold":
+            raise RunnerError("unknown or mixed direct CI failure must hold")
+    quality = receipt.get("build_quality")
+    if not isinstance(quality, dict):
+        raise RunnerError("direct CI build-quality receipt is unavailable")
+    quality_material = {key: value for key, value in quality.items()
+                        if key != "fingerprint"}
+    if (
+        quality.get("schema") != "taskplane.ci-build-quality-cell/v1"
+        or quality.get("fingerprint") != _sha256_json(quality_material)
+        or quality.get("candidate_fingerprint") != candidate["fingerprint"]
+        or quality.get("settings_digest")
+        != runtime["settings_receipt"]["settings_digest"]
+        or quality.get("cell_id") != cell["id"]
+        or quality.get("status") != status
+    ):
+        raise RunnerError("direct CI build-quality receipt is stale")
+    cleanup = receipt.get("cleanup")
+    expected_cleanup_fields = {
+        "schema", "registration_fingerprint", "outcome", "resources", "status",
+        "leak_count", "leaks", "durable_artifacts",
+        "durable_artifacts_preserved", "fingerprint",
+    }
+    cleanup_material = ({key: value for key, value in cleanup.items()
+                         if key != "fingerprint"}
+                        if isinstance(cleanup, dict) else {})
+    if (
+        not isinstance(cleanup, dict) or set(cleanup) != expected_cleanup_fields
+        or cleanup.get("schema") != CI_DIRECT_CLEANUP_SCHEMA
+        or cleanup.get("fingerprint") != _sha256_json(cleanup_material)
+        or cleanup.get("outcome") != outcome
+        or cleanup.get("status") != "clean"
+        or cleanup.get("leak_count") != 0
+        or cleanup.get("leaks") != []
+        or cleanup.get("durable_artifacts_preserved") is not True
+        or cleanup.get("durable_artifacts") != receipt.get("run_artifacts")
+    ):
+        raise RunnerError("direct CI cleanup evidence is invalid or leaking")
+    try:
+        verified = run_artifacts.verify_durable_reference(receipt["run_artifacts"])
+    except run_artifacts.RunArtifactError as exc:
+        raise RunnerError("direct CI durable artifacts are invalid") from exc
+    if verified.get("readable") is not True or verified.get("zero_unindexed_files") is not True:
+        raise RunnerError("direct CI durable artifacts are not preserved")
+    ownership = receipt.get("ownership")
+    if not isinstance(ownership, dict) or set(ownership) != {
+        "schema", "candidate_fingerprint", "source_sha", "cell_id",
+        "containment_root", "relative_name", "registered_before_run",
+        "fingerprint",
+    }:
+        raise RunnerError("direct CI ownership evidence is incomplete")
+    ownership_material = {
+        key: value for key, value in ownership.items() if key != "fingerprint"
+    }
+    if (
+        ownership.get("schema") != "taskplane.ci-owned-cell/v1"
+        or ownership.get("fingerprint") != _sha256_json(ownership_material)
+        or ownership.get("candidate_fingerprint") != candidate["fingerprint"]
+        or ownership.get("source_sha") != candidate["source_sha"]
+        or ownership.get("cell_id") != cell["id"]
+        or ownership.get("registered_before_run") is not True
+        or cleanup.get("registration_fingerprint") != ownership.get("fingerprint")
+    ):
+        raise RunnerError("direct CI cleanup is not ownership-bound")
+    expected_resource = str(
+        Path(str(ownership.get("containment_root"))) /
+        str(ownership.get("relative_name"))
+    )
+    if cleanup.get("resources") != [expected_resource]:
+        raise RunnerError("direct CI cleanup resource is not exact")
+    commands = receipt.get("commands")
+    if not isinstance(commands, list):
+        raise RunnerError("direct CI command receipts are invalid")
+    if status == "green":
+        expected = _ci_cell_commands(cell, Path(expected_resource))
+        if [row.get("argv") for row in commands] != expected or any(
+                row.get("returncode") != 0 for row in commands):
+            raise RunnerError("green direct CI command evidence is not exact")
+    return receipt
+
+
 def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = None) -> int:
     argsv = list(sys.argv[1:] if argv is None else argv)
     env = os.environ if environ is None else environ
@@ -1299,6 +1836,8 @@ def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = 
     parser.add_argument("--event")
     parser.add_argument("--ref")
     parser.add_argument("--run-id")
+    parser.add_argument("--observe-browser", action="store_true")
+    parser.add_argument("--github-output", type=Path)
     args = parser.parse_args(argsv)
     if args.internal:
         return _internal(args.internal)
@@ -1312,16 +1851,23 @@ def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = 
             event=args.event or "pull_request",
             ref=args.ref or "local",
             run_id=args.run_id or "local",
+            browser=_browser_identity(env) if args.observe_browser else None,
         )
         _atomic_write_json(args.emit_ci_plan, runtime)
+        if args.github_output is not None:
+            with args.github_output.open("a", encoding="utf-8") as output:
+                output.write(
+                    "retention-days="
+                    f"{runtime['settings_receipt']['effective']['cleanup']['artifacts_days']}\n"
+                )
         print(canonical_json({
             "runtime_fingerprint": runtime["fingerprint"],
             "candidate_fingerprint": runtime["candidate"]["fingerprint"],
             "plan_fingerprint": runtime["plan"]["fingerprint"],
-            "matrix": {"include": [
+            "validation_cells": [
                 {"id": cell["id"], "kind": cell["kind"]}
                 for cell in runtime["plan"]["cells"]
-            ]},
+            ],
             "max_parallel": runtime["plan"]["max_parallel"],
         }))
         return 0

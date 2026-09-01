@@ -39,7 +39,8 @@ def _assert_quick_complete(decision, projected):
     assert projected["context"]["execution_mode"] == "quick-only"
 
 
-def test_product_route_is_deterministic_complete_and_risk_sensitive(tmp_path):
+def test_product_route_is_deterministic_complete_and_risk_sensitive(
+        tmp_path, monkeypatch):
     evidence = {
         "goal": "Make account onboarding clearer",
         "requirement": {"title": "Account onboarding"},
@@ -67,7 +68,26 @@ def test_product_route_is_deterministic_complete_and_risk_sensitive(tmp_path):
         tmp_path, "product", security_evidence)
     assert changed["route_fingerprint"] != first["route_fingerprint"]
     assert "security" in changed["selected"]
+    assert len(changed["selected"]) <= 3
     _assert_quick_complete(changed, changed_projected)
+
+    # Three is a safety cap for Product's mandatory lens plus at most two
+    # independently evidenced risks. It is never a target that pads a route.
+    monkeypatch.setattr(loop.lens_router, "route", lambda *_a, **_k: {
+        "lenses": [], "context": {"status": "ready"}})
+    minimum, minimum_projected, minimum_request = _route(
+        tmp_path, "product", {
+            "goal": "Define success",
+            "requirement": {"title": "Success"},
+            "acceptance": ["Success is measurable"],
+            "domain": [],
+            "constraints": [],
+            "product_risk": [],
+            "files": [],
+        })
+    assert minimum["selected"] == ["product"]
+    assert minimum_request is None
+    _assert_quick_complete(minimum, minimum_projected)
 
 
 @pytest.mark.parametrize("risk,lens_id", [

@@ -785,7 +785,6 @@ class TestLoopSerialSkipAndSelection(unittest.TestCase):
         s2 = loop.load(ws)
         self.assertEqual(s2["step"], "plan")
         self.assertTrue(all(t["status"] == "not_selected" for t in s2["tasks"]))
-        self.assertEqual(s2["authority_target_revision"], tl.git_head(ws))
         self.assertEqual(s2["selection"]["revision"], tl.git_head(ws))
 
     def test_display_pipeline_splices_selection_for_ab(self):

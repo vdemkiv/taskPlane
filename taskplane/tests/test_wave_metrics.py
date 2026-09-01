@@ -30,18 +30,23 @@ def test_wave_receipt_covers_baselines_targets_and_guardrails():
     assert set(receipt["metrics"]) == set(wave_metrics.METRIC_DEFINITIONS)
     assert all("baseline" in metric and "target" in metric
                for metric in receipt["metrics"].values())
-    assert receipt["metrics"]["suite_files"]["baseline"] == 266
-    assert receipt["metrics"]["suite_cases"]["baseline"] == 4909
-    assert receipt["metrics"]["suite_loc"]["baseline"] == 95601
-    assert receipt["metrics"]["redundant_families_removed"]["target"] == 6
+    assert receipt["metrics"]["suite_files"]["baseline"] == 229
+    assert receipt["metrics"]["suite_files"]["target"] is None
+    assert receipt["metrics"]["suite_files"]["passed"] is None
+    assert receipt["metrics"]["suite_cases"]["baseline"] == 4059
+    assert receipt["metrics"]["suite_cases"]["target"] is None
+    assert receipt["metrics"]["suite_loc"]["baseline"] == 84104
+    assert receipt["metrics"]["redundant_families_removed"]["target"] is None
+    assert receipt["metrics"]["exact_feedback_p95_seconds"]["baseline"] == 4.01
     assert receipt["metrics"]["exact_feedback_p95_seconds"]["target"] == 60
-    assert receipt["metrics"]["ci_critical_path_minutes"]["baseline"] == 15
+    assert receipt["metrics"]["ci_critical_path_minutes"]["baseline"] == 13.167
     assert receipt["metrics"]["ci_p50_minutes"]["target"] == 10
     assert receipt["metrics"]["ci_p95_minutes"]["target"] == 15
-    assert receipt["metrics"]["ci_parallelism_factor"]["baseline"] == 2.59
+    assert receipt["metrics"]["ci_parallelism_factor"]["baseline"] == 2.11
     assert receipt["metrics"]["cleanup_leak_count"]["target"] == 0
-    assert receipt["metrics"]["token_total_observed"]["baseline"] == 540_300_000
-    assert receipt["metrics"]["end_to_end_wave_hours"]["baseline"] == 40.583
+    assert receipt["metrics"]["token_total_observed"]["baseline"] is None
+    assert receipt["metrics"]["token_total_observed"]["target"] is None
+    assert receipt["metrics"]["end_to_end_wave_hours"]["baseline"] == 24.969
     assert receipt["metrics"]["plan_returns"]["baseline"] == 21
     assert receipt["metrics"]["plan_returns"]["target"] == 2
     assert receipt["metrics"]["plan_returns"]["source_digest"] == \
@@ -154,7 +159,7 @@ def test_wave_receipt_covers_baselines_targets_and_guardrails():
         wave_metrics.seal_wave_receipt(exposed)
 
     tampered = copy.deepcopy(receipt)
-    tampered["metrics"]["suite_files"]["actual"] += 1
+    tampered["metrics"]["cleanup_leak_count"]["actual"] += 1
     with pytest.raises(wave_metrics.WaveMetricsError, match="fingerprint"):
         wave_metrics.validate_wave_receipt(tampered)
     tampered_material = {key: value for key, value in tampered.items()

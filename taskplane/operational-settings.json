@@ -6,24 +6,27 @@
     "plan": {"model": "inherit", "reasoning": "high"},
     "build": {"model": "inherit", "reasoning": "high"},
     "evaluate": {"model": "inherit", "reasoning": "high"},
-    "fix": {"model": "inherit", "reasoning": "high"}
+    "fix": {"model": "inherit", "reasoning": "high"},
+    "engineering": {"model": "inherit", "reasoning": "high"}
   },
   "lenses": {
     "routing": {
       "product": ["product"],
-      "design": ["design"],
-      "plan": ["plan"],
+      "design": ["solution-design"],
+      "plan": ["architecture", "project-management", "testability"],
       "build": [],
       "evaluate": [],
-      "fix": []
+      "fix": [],
+      "engineering": []
     },
     "counts": {
-      "product": 1,
-      "design": 1,
-      "plan": 3,
+      "product": 3,
+      "design": 16,
+      "plan": 4,
       "build": 0,
       "evaluate": 0,
-      "fix": 0
+      "fix": 0,
+      "engineering": 0
     }
   },
   "build": {"shards": 1, "concurrency": "native"},
@@ -76,7 +79,8 @@
         "handle_host_input",
         "cleanup_replay",
         "retro",
-        "worker_terminal"
+        "worker_terminal",
+        "terminalize_run"
       ],
       "session_event": "session_recovery",
       "replay_on_session_start": true

@@ -35,10 +35,37 @@ function requireSettings(args) {
   return { digest };
 }
 
+function requireSlots(args) {
+  if (!args || !Array.isArray(args.slots)) {
+    throw new Error('review workflow lacks canonical slots');
+  }
+  return args.slots.map((slot, index) => {
+    if (!slot || typeof slot !== 'object' ||
+        typeof slot.slot_id !== 'string' || !slot.slot_id ||
+        typeof slot.prompt !== 'string' || !slot.prompt ||
+        !slot.result_schema || typeof slot.result_schema !== 'object' ||
+        typeof slot.resume_identity !== 'string' || !slot.resume_identity ||
+        typeof slot.result_path !== 'string' || !slot.result_path ||
+        !slot.lease || typeof slot.lease !== 'object' ||
+        !Number.isInteger(slot.max_attempts) || slot.max_attempts < 1 ||
+        typeof slot.task_name !== 'string' || !slot.task_name ||
+        typeof slot.agent !== 'string' || !slot.agent ||
+        typeof slot.role_marker !== 'string' || !slot.role_marker ||
+        (slot.model !== null &&
+          (typeof slot.model !== 'string' || !slot.model)) ||
+        typeof slot.model_tier !== 'string' || !slot.model_tier ||
+        typeof slot.reasoning_effort !== 'string' || !slot.reasoning_effort) {
+      throw new Error('review workflow slot ' + index +
+        ' lacks its governed execution contract');
+    }
+    return slot;
+  });
+}
+
 export default async function reviewWave({ args, agent, parallel, phase }) {
   const settings = requireSettings(args);
+  const slots = requireSlots(args);
   phase('Lenses');
-  const slots = args.slots || [];
   const lensRuns = slots.map((b) => () =>
     agent(b.prompt, {
       label: 'lens:' + b.slot_id,
@@ -48,6 +75,12 @@ export default async function reviewWave({ args, agent, parallel, phase }) {
       resultPath: b.result_path,
       lease: b.lease,
       maxAttempts: b.max_attempts,
+      taskName: b.task_name,
+      agent: b.agent,
+      roleMarker: b.role_marker,
+      model: b.model,
+      modelTier: b.model_tier,
+      reasoningEffort: b.reasoning_effort,
     }));
   const results = await parallel(lensRuns);
 

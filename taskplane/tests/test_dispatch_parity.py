@@ -263,12 +263,47 @@ class TestDetectorFixtureCompleteness:
 # ------------------------------------- 4. workflow-args vs Task-path parity
 
 
+def _task_transport_workers(payload):
+    """Decode the workers a Task consumer would actually dispatch."""
+    briefs = list(payload.get("deep") or [])
+    if payload.get("sweep") is not None:
+        briefs.append(payload["sweep"])
+    return [{
+        "identity": brief["task_name"],
+        "agent": brief["agent"],
+        "role_marker": brief["role_marker"],
+        "model": brief["model"],
+        "model_tier": brief["model_tier"],
+        "reasoning_effort": brief["reasoning_effort"],
+        "lens_ids": list(brief.get("ids") or [brief["id"]]),
+        "prompt": brief["prompt"],
+        "result_path": brief["output"],
+        "task_slot": brief["task_slot"],
+        "lease": brief["contract"],
+    } for brief in briefs]
+
+
+def _review_wave_workers(args):
+    """Decode only the canonical input available to review-wave.js."""
+    return [{
+        "identity": slot["task_name"],
+        "agent": slot["agent"],
+        "role_marker": slot["role_marker"],
+        "model": slot["model"],
+        "model_tier": slot["model_tier"],
+        "reasoning_effort": slot["reasoning_effort"],
+        "lens_ids": list(slot["lens_ids"]),
+        "prompt": slot["prompt"],
+        "result_path": slot["result_path"],
+        "task_slot": slot["lease"]["task_slot"],
+        "lease": slot["lease"],
+    } for slot in args["slots"]]
+
+
 class TestWorkflowArgsParity:
-    def test_workflow_args_json_equal_task_path_payload(self, tmp_path,
-                                                        scrubbed_env):
-        """contract:lens-brief's core claim, fixture-verified with no JS
-        runtime: the workflow consumes the IDENTICAL payload the Task path
-        prints — `workflow.args` == Task-path stdout == golden."""
+    def test_transports_dispatch_the_same_routed_workers(self, tmp_path,
+                                                         scrubbed_env):
+        """Both transports preserve dispatch semantics, not JSON layout."""
         ws = _fixture_repo(tmp_path)
         rc_t, out_t = _dispatch(ws, "--emit", "task")
         rc_w, out_w = _dispatch(ws, "--emit", "workflow")
@@ -277,16 +312,21 @@ class TestWorkflowArgsParity:
         wf_payload = json.loads(out_w)
         assert wf_payload["dispatch_path"] == "workflow"
         args = wf_payload["workflow"]["args"]
-        assert args == task_payload  # JSON-equal, whole payload
+        assert (_review_wave_workers(args) ==
+                _task_transport_workers(task_payload))
         assert args["settings_digest"] == load_settings().digest
+        assert set(args) == {"settings_digest", "slots"}
 
-    def test_workflow_args_breadth_all_parity_including_sweep(self, tmp_path,
-                                                              scrubbed_env):
+    def test_breadth_all_preserves_the_sweep_worker(self, tmp_path,
+                                                    scrubbed_env):
         ws = _fixture_repo(tmp_path)
-        _, out_t = _dispatch(ws, "--all", "--emit", "task")
-        _, out_w = _dispatch(ws, "--all", "--emit", "workflow")
+        rc_t, out_t = _dispatch(ws, "--all", "--emit", "task")
+        rc_w, out_w = _dispatch(ws, "--all", "--emit", "workflow")
+        assert rc_t == 0 and rc_w == 0
         task_payload = json.loads(out_t)
         args = json.loads(out_w)["workflow"]["args"]
-        assert args == task_payload
-        assert args["sweep"] == task_payload["sweep"]
-        assert args["sweep"]["settings_digest"] == args["settings_digest"]
+        task_workers = _task_transport_workers(task_payload)
+        workflow_workers = _review_wave_workers(args)
+        assert workflow_workers == task_workers
+        assert any(worker["task_slot"] == "lens-sweep"
+                   for worker in workflow_workers)

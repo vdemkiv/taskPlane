@@ -1540,42 +1540,59 @@ def cmd_screen_dispatch(a) -> int:
             not ti.get("role") or ti.get("role") == exp.get("agent"))
         ok = name_ok and not unknown_governed and model_ok and effort_ok \
             and role_ok
+        # Design assignments become durable only when this exact native
+        # dispatch has passed every role/model/intent check. The append is
+        # receipt-idempotent so a hook retry cannot manufacture activity.
+        if ok and exp is not None and exp.get("design_host_authority"):
+            try:
+                tp.record_design_dispatch_assignment_activity(ws, exp)
+            except Exception as activity_error:
+                reason = (
+                    "taskplane Design dispatch activity failed closed for "
+                    f"{exp.get('ref') or agent!r} "
+                    f"({type(activity_error).__name__}: {activity_error}); "
+                    "the expectation remains pending for a safe retry.")
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason}}))
+                return 0
+        if ok and exp is not None and exp.get("intent_id"):
+            try:
+                import loop as _loop_runtime
+                observation = _loop_runtime.record_native_dispatch_observation(
+                    ws, expected=exp, native_task_name=str(agent))
+                if not isinstance(observation, dict) or \
+                        observation.get("status") == "unavailable":
+                    raise RuntimeError(
+                        "native dispatch observation was not committed")
+            except Exception as telemetry_error:
+                reason = (
+                    "taskplane native dispatch telemetry failed closed "
+                    f"for {exp.get('ref') or agent!r} "
+                    f"({type(telemetry_error).__name__}: "
+                    f"{telemetry_error}); the dispatch is denied before "
+                    "the native task starts and its expectation remains "
+                    "pending for a safe retry.")
+                try:
+                    tp.trace(
+                        ws, "native_dispatch_telemetry_unavailable",
+                        task=exp.get("ref"),
+                        error=f"{type(telemetry_error).__name__}: "
+                              f"{telemetry_error}")
+                except Exception:
+                    # Trace durability is secondary to the hook decision:
+                    # a broken audit sink must never turn this denial into
+                    # a permitted native start.
+                    pass
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason}}))
+                return 0
         ok = tp.commit_dispatch_verification(
             ws, agent, model, exp, ok, effort, strict=strict)
         if ok:
-            if exp is not None and exp.get("intent_id"):
-                try:
-                    import loop as _loop_runtime
-                    observation = \
-                        _loop_runtime.record_native_dispatch_observation(
-                        ws, expected=exp, native_task_name=str(agent))
-                    if not isinstance(observation, dict) or \
-                            observation.get("status") == "unavailable":
-                        raise RuntimeError(
-                            "native dispatch observation was not committed")
-                except Exception as telemetry_error:
-                    reason = (
-                        "taskplane native dispatch telemetry failed closed "
-                        f"for {exp.get('ref') or agent!r} "
-                        f"({type(telemetry_error).__name__}: "
-                        f"{telemetry_error}); the dispatch is denied before "
-                        "the native task starts.")
-                    try:
-                        tp.trace(
-                            ws, "native_dispatch_telemetry_unavailable",
-                            task=exp.get("ref"),
-                            error=f"{type(telemetry_error).__name__}: "
-                                  f"{telemetry_error}")
-                    except Exception:
-                        # Trace durability is secondary to the hook decision:
-                        # a broken audit sink must never turn this denial into
-                        # a permitted native start.
-                        pass
-                    print(json.dumps({"hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": reason}}))
-                    return 0
             if foreign_message:
                 print(json.dumps({"systemMessage": foreign_message}))
             return 0
@@ -1713,6 +1730,20 @@ def cmd_subagent_start(a) -> int:
         # fail closed at its first screened action.
         tp.trace(ws, "worker_contract_bind_skipped", agent_id=agent_id,
                  agent_type=agent_type, error=type(exc).__name__)
+    if binding is not None:
+        try:
+            tp.record_worker_start_activity(ws, binding, event)
+        except Exception as exc:
+            reason = (
+                "taskplane blocked governed worker startup because host-issued "
+                "start authority or durable activity could not be preserved "
+                f"({type(exc).__name__}: {exc}).")
+            print(json.dumps({"decision": "block", "reason": reason,
+                              "hookSpecificOutput": {
+                                  "hookEventName": "SubagentStart",
+                                  "permissionDecision": "deny",
+                                  "permissionDecisionReason": reason}}))
+            return 2
     try:
         contract = ((binding or {}).get("contract")
                     or tp.load_active_for_event(ws, event))
@@ -1831,12 +1862,46 @@ def cmd_subagent_stop(a) -> int:
         if (producer_error or submission and submission.get("block")) and \
                 tp.normalize_worker_terminal_outcome(raw_outcome) == "success":
             raw_outcome = "failure"
+        normalized_outcome = tp.normalize_worker_terminal_outcome(raw_outcome)
         submission_status = (
             "producer_error" if producer_error else
             str((submission or {}).get("status") or "not_required"))
         try:
+            telemetry = _seal_terminal_dispatch_telemetry(
+                ws, lifecycle_contract, event, outcome=normalized_outcome)
+        except Exception as exc:
+            reason = (
+                "taskplane blocked lifecycle completion because native "
+                "dispatch telemetry could not be sealed before contract "
+                f"release ({type(exc).__name__}: {exc}).")
+            tp.trace(ws, "worker_dispatch_telemetry_failed",
+                     task_id=_contract_dispatch_task_id(lifecycle_contract),
+                     error=type(exc).__name__)
+            print(json.dumps({"decision": "block", "reason": reason,
+                              "hookSpecificOutput": {
+                                  "hookEventName": "SubagentStop",
+                                  "permissionDecision": "deny",
+                                  "permissionDecisionReason": reason}}))
+            return 2
+        terminal_event = dict(event)
+        telemetry_receipt = telemetry.get("receipt") \
+            if isinstance(telemetry, dict) else None
+        if isinstance(telemetry_receipt, dict):
+            terminal_event["usage_reference"] = telemetry_receipt
+        elif isinstance(telemetry, dict) and telemetry.get("status") == \
+                "unavailable":
+            terminal_event["usage_reference"] = {
+                "schema": "taskplane.dispatch-usage-unavailable/v1",
+                "status": "unavailable",
+                "reason": str(telemetry.get("reason") or
+                              "provider usage unavailable")[:1024],
+            }
+            tp.trace(ws, "worker_dispatch_telemetry_unavailable",
+                     task_id=_contract_dispatch_task_id(lifecycle_contract),
+                     reason=terminal_event["usage_reference"]["reason"])
+        try:
             released = tp.terminalize_worker_contract(
-                ws, event, outcome=raw_outcome,
+                ws, terminal_event, outcome=raw_outcome,
                 submission_status=submission_status)
         except Exception as exc:
             reason = (
@@ -2228,6 +2293,19 @@ class MeterCorrupt(Exception):
     trusted, so the caller must fail CLOSED rather than reset it to zero."""
 
 
+def _contract_dispatch_task_id(contract: dict) -> str:
+    """Return the stable loop/lens identity shared with native telemetry."""
+    lifecycle = contract.get("worker_lifecycle") or {}
+    task_id = str(lifecycle.get("task") or "").strip()
+    return task_id or str(contract.get("task_id") or "").strip()
+
+
+def _contract_dispatch_intent_id(contract: dict) -> str:
+    """Return the exact run-bound native intent sealed into the contract."""
+    lifecycle = contract.get("worker_lifecycle") or {}
+    return str(lifecycle.get("dispatch_intent_id") or "").strip()
+
+
 def _dispatch_usage_observation_required(ws: str, task_id: str) -> bool:
     """Whether the active loop has one unfinalized usage consumer."""
     try:
@@ -2314,6 +2392,86 @@ def _bounded_transcript_projection(
         if updated is not None:
             tp.atomic_write_json(checkpoint_path, updated, sort_keys=True)
     return projection
+
+
+def _normalized_dispatch_projection(projection: dict) -> dict:
+    """Adapt one authenticated transcript projection for the loop ledger."""
+    if not isinstance(projection, dict) or \
+            projection.get("status") != "available" or \
+            not isinstance(projection.get("usage"), dict):
+        raise ValueError("authenticated provider usage is unavailable")
+    usage = dict(projection["usage"])
+    cache_creation = int(usage["total_tokens"]) - int(
+        usage["input_tokens"]) - int(usage["output_tokens"])
+    if cache_creation < 0:
+        raise ValueError("authenticated provider usage does not reconcile")
+    usage.update({
+        "schema": "taskplane.token-usage/v2",
+        "available": True,
+        "provider": projection["provider"],
+        "reason": None,
+        "cache_creation_tokens": cache_creation,
+        "raw_total_tokens": usage["total_tokens"],
+        "effective_tokens": projection["effective_tokens"],
+    })
+    return usage
+
+
+def _hook_usage_provider(event: dict) -> str:
+    explicit = str(event.get("provider") or event.get("host") or "").lower()
+    if "claude" in explicit:
+        return "claude"
+    if "codex" in explicit:
+        return "codex"
+    # Native Codex task lifecycle events carry the exact emitted task_name.
+    # Claude may also expose a turn id, so turn_id alone is not a provider
+    # discriminator.
+    return "codex" if str(event.get("task_name") or "").strip() else "claude"
+
+
+def _seal_terminal_dispatch_telemetry(
+        ws: str, contract: dict, event: dict, *, outcome: str) -> dict:
+    """Observe and finalize the exact native attempt before slot release."""
+    import loop as _loop_runtime
+
+    task_id = _contract_dispatch_task_id(contract)
+    lifecycle = contract.get("worker_lifecycle") or {}
+    native_task_name = str(lifecycle.get("expected_task_name") or "").strip()
+    dispatch_id = _contract_dispatch_intent_id(contract)
+    if not task_id or not _dispatch_usage_observation_required(ws, task_id):
+        return {"status": "not-bound"}
+    import spend as _spend
+    transcript = _spend.event_transcript(event)
+    if not transcript:
+        result = _loop_runtime.finalize_observed_dispatch_usage(
+            ws, task_id=task_id, outcome=outcome,
+            native_task_name=native_task_name, usage_unavailable=True,
+            unavailable_reason="host transcript path is unavailable",
+            dispatch_id=dispatch_id or None)
+        return {**result, "reason":
+                "host transcript path is unavailable"}
+    provider = _hook_usage_provider(event)
+    projection = _bounded_transcript_projection(
+        ws, transcript, provider)
+    if projection.get("status") != "available":
+        result = _loop_runtime.finalize_observed_dispatch_usage(
+            ws, task_id=task_id, outcome=outcome,
+            native_task_name=native_task_name, usage_unavailable=True,
+            unavailable_reason=str(projection.get("reason") or
+                                   "authenticated provider usage is "
+                                   "unavailable"),
+            dispatch_id=dispatch_id or None)
+        return {**result, "reason": str(projection.get("reason") or
+                                        "authenticated provider usage is "
+                                        "unavailable")}
+    _loop_runtime.record_observed_dispatch_usage(
+        ws, task_id=task_id,
+        normalized_usage=_normalized_dispatch_projection(projection),
+        source_fingerprint=str(projection["source_fingerprint"]),
+        native_task_name=native_task_name, dispatch_id=dispatch_id or None)
+    return _loop_runtime.finalize_observed_dispatch_usage(
+        ws, task_id=task_id, outcome=outcome,
+        native_task_name=native_task_name, dispatch_id=dispatch_id or None)
 
 
 def _meter_load(ws, strict=False) -> dict:
@@ -2600,7 +2758,9 @@ def _screen(a) -> int:
         _projection = None
         _budget = contract.get("budget") or {}
         _token_ceiling = _budget.get("max_tokens") is not None
-        _telemetry_consumer = _dispatch_usage_observation_required(ws, tid)
+        _telemetry_task_id = _contract_dispatch_task_id(contract)
+        _telemetry_consumer = _dispatch_usage_observation_required(
+            ws, _telemetry_task_id)
         if _token_ceiling or _telemetry_consumer:
             try:
                 import spend as _spend
@@ -2632,29 +2792,19 @@ def _screen(a) -> int:
         if _telemetry_consumer and _tpath and isinstance(_projection, dict) \
                 and _projection.get("status") == "available":
             try:
-                _observed = dict(_projection["usage"])
-                _observed.update({
-                    "schema": "taskplane.token-usage/v2",
-                    "available": True, "provider": _projection["provider"],
-                    "reason": None,
-                    "cache_creation_tokens": 0,
-                    "raw_total_tokens": _observed["total_tokens"],
-                    "effective_tokens": _projection["effective_tokens"],
-                })
-                # dispatch_usage expects provider-shaped normalized fields,
-                # where total input is split into cached and uncached.
-                _observed["cached_input_tokens"] = \
-                    _projection["usage"]["cached_input_tokens"]
-                _observed["uncached_input_tokens"] = \
-                    _projection["usage"]["uncached_input_tokens"]
-                _observed["output_tokens"] = \
-                    _projection["usage"]["output_tokens"]
-                _observed["reasoning_tokens"] = \
-                    _projection["usage"]["reasoning_tokens"]
                 import loop as _loop_runtime
+                _native_task_name = str(
+                    ((contract.get("worker_lifecycle") or {}).get(
+                        "expected_task_name") or "")).strip()
                 _loop_runtime.record_observed_dispatch_usage(
-                    ws, task_id=str(tid),
-                    normalized_usage=_observed, source=_tpath)
+                    ws, task_id=_telemetry_task_id,
+                    normalized_usage=_normalized_dispatch_projection(
+                        _projection),
+                    source_fingerprint=str(
+                        _projection["source_fingerprint"]),
+                    native_task_name=_native_task_name,
+                    dispatch_id=(
+                        _contract_dispatch_intent_id(contract) or None))
             except Exception:
                 pass
         if _token_denial is not None:
@@ -3145,6 +3295,19 @@ def cmd_loop(a) -> int:
     elif action == "submit":
         out = loopmod.submit(
             ws, a.outcome, note=a.note or "", task_id=a.task)
+    elif action == "build-quality":
+        try:
+            with open(a.strategy, encoding="utf-8") as stream:
+                strategy = json.load(stream)
+            with open(a.receipt, encoding="utf-8") as stream:
+                receipt = json.load(stream)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            out = {"error": "Build-quality input is unreadable: "
+                            f"{type(exc).__name__}: {exc}"}
+        else:
+            out = loopmod.record_build_quality(
+                ws, a.task, strategy=strategy, receipt=receipt,
+                stage=getattr(a, "stage", None))
     elif action == "gate":
         import depgraph
         try:
@@ -3227,6 +3390,8 @@ def cmd_loop(a) -> int:
                     host_event = None
                 out = loopmod.handle_host_input(
                     ws, event, host_event=host_event)
+    elif action == "terminal":
+        out = loopmod.terminalize_run(ws, a.outcome, by=a.by)
     elif action == "status":
         out = loopmod.status(ws)
     elif action == "retro":
@@ -3556,7 +3721,9 @@ def _record_parallel_expectations(ws: str, payload: dict) -> None:
             reasoning_effort=entry.get("reasoning_effort"),
             role_marker_value=entry.get("role_marker"),
             intent_id=((entry.get("dispatch_intent") or {}).get(
-                "intent_id")))
+                "intent_id")),
+            intent_run_id=(((entry.get("dispatch_intent") or {}).get(
+                "identity") or {}).get("run_id")))
 
 
 def _stage_activation(slot: str) -> str:
@@ -3861,11 +4028,141 @@ def _resume_filter(ws: str, briefs: dict) -> dict:
     return out
 
 
+_REVIEW_FINDINGS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["lens", "findings"],
+    "properties": {
+        "lens": {"type": "string"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["severity", "class", "file", "line", "title",
+                             "scenario", "fix"],
+                "properties": {
+                    "lens": {"type": "string"},
+                    "severity": {"enum": ["high", "med", "low"]},
+                    "class": {"enum": ["regression", "pre-existing",
+                                         "observation"]},
+                    "file": {"type": "string"},
+                    "line": {"type": "integer", "minimum": 1},
+                    "title": {"type": "string"},
+                    "scenario": {"type": "string"},
+                    "fix": {"type": "string"},
+                },
+            },
+        },
+        "clean": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+
+def _review_workflow_args(briefs: dict) -> dict:
+    """Project Task-path lens briefs into the workflow's governed slots.
+
+    The Task payload remains the portable fallback contract.  The workflow
+    receives an explicit execution projection so every routed brief has the
+    schema, result path, lease, retry ceiling, and semantic resume identity
+    its host runtime needs.  Missing execution authority refuses emission
+    instead of silently compiling an empty wave.
+    """
+    digest = briefs.get("settings_digest")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("review dispatch lacks canonical settings digest")
+    from taskplane.settings import load_settings
+    settings = load_settings(environment=os.environ)
+    if settings.digest != digest:
+        raise ValueError("review dispatch settings changed during composition")
+    raw = list(briefs.get("deep") or [])
+    if briefs.get("sweep") is not None:
+        raw.append(briefs["sweep"])
+    slots = []
+    for index, brief in enumerate(raw):
+        if not isinstance(brief, dict):
+            raise ValueError(f"review brief {index} is not an object")
+        slot_id = str(brief.get("id") or (
+            "sweep" if brief is briefs.get("sweep") else ""))
+        prompt = brief.get("prompt")
+        result_path = brief.get("output")
+        lease = brief.get("contract")
+        task_slot = lease.get("task_slot") if isinstance(lease, dict) else None
+        if not slot_id or not isinstance(prompt, str) or not prompt or \
+                not isinstance(result_path, str) or not result_path or \
+                not isinstance(lease, dict) or not lease or \
+                task_slot != brief.get("task_slot"):
+            raise ValueError(
+                f"review brief {index} lacks its governed execution contract")
+        worker = {key: brief.get(key) for key in (
+            "task_name", "agent", "role_marker", "model", "model_tier",
+            "reasoning_effort")}
+        if any(not isinstance(worker[key], str) or not worker[key]
+               for key in ("task_name", "agent", "role_marker", "model_tier",
+                           "reasoning_effort")) or \
+                worker["model"] is not None and \
+                (not isinstance(worker["model"], str) or not worker["model"]):
+            raise ValueError(
+                f"review brief {index} lacks its canonical worker route")
+        schema = json.loads(json.dumps(_REVIEW_FINDINGS_SCHEMA))
+        identity_material = {
+            "settings_digest": digest, "slot_id": slot_id,
+            "prompt": prompt, "result_schema": schema,
+            "result_path": result_path, "lease": lease, "worker": worker,
+        }
+        resume_identity = hashlib.sha256(json.dumps(
+            identity_material, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False).encode("utf-8")).hexdigest()
+        slots.append({
+            "slot_id": slot_id,
+            "lens_ids": list(brief.get("ids") or [slot_id]),
+            "prompt": prompt, "result_schema": schema,
+            "resume_identity": resume_identity,
+            "result_path": result_path, "lease": dict(lease),
+            "max_attempts": settings.runtime.review_max_attempts,
+            **worker,
+        })
+    return {"settings_digest": digest, "slots": slots}
+
+
 def cmd_lens(a) -> int:
     """Route / list / show / dispatch lenses."""
-    import lens as lensmod
     ws = _workspace(a.workspace)
     action = getattr(a, "lens_action", "route")
+
+    # ``lens dispatch`` is the standalone review-wave surface.  A live
+    # delivery loop owns all of its native dispatches through run-bound
+    # intents and worker lifecycle contracts; admitting this legacy surface
+    # inside that run would create a screened expectation with no terminal
+    # usage binding and let the terminal census silently omit the worker.
+    # Refuse before routing or writing shared review context.  Terminal and
+    # absent loops retain the standalone behavior for compatibility.
+    if action == "dispatch":
+        try:
+            import loop as loopmod
+            active_loop = loopmod.load(ws)
+        except Exception as exc:
+            print(
+                "taskplane: standalone lens dispatch refused because "
+                "Taskplane cannot prove that no governed delivery run is "
+                f"active ({type(exc).__name__}: {exc}). Recover the loop "
+                "state before dispatching review workers.",
+                file=sys.stderr,
+            )
+            return 1
+        if isinstance(active_loop, dict) and active_loop.get("step") not in \
+                loopmod.TERMINAL_STEPS:
+            print(
+                "taskplane: standalone lens dispatch refused while a "
+                "governed delivery run is active at step="
+                f"{active_loop.get('step')!r}. Continue through `tp loop "
+                "next`; the active flow owns its run-bound dispatch and "
+                "terminal telemetry.",
+                file=sys.stderr,
+            )
+            return 1
+
+    import lens as lensmod
 
     if action == "list":
         cat = lensmod.catalog_summary()
@@ -4077,9 +4374,10 @@ def cmd_lens(a) -> int:
             out = dict(briefs)
             out["dispatch_path"] = "workflow"
             out["reason"] = reason
-            # args IS the unmodified dispatch payload — the workflow and
-            # the Task path consume the identical contract:lens-brief set.
-            workflow_args = briefs
+            # Compile the portable Task briefs into the workflow runtime's
+            # explicit governed slot contract.  This must never omit routed
+            # deep/sweep work: review-wave refuses a missing slots array.
+            workflow_args = _review_workflow_args(briefs)
             out["workflow"] = {"name": "review-wave",
                                "args": workflow_args}
             print(json.dumps(out, indent=2))
@@ -4642,6 +4940,7 @@ def cmd_context(a) -> int:
     import track as tr
     ws = _workspace(a.workspace)
     lifecycle_released = []
+    terminal_recovery = None
     if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
             "native", "bridge"}:
         # A new/resumed host session is a safe recovery point only for slots
@@ -4659,6 +4958,9 @@ def cmd_context(a) -> int:
         except Exception as exc:
             tp.trace(ws, "worker_contract_session_sweep_failed",
                      error=f"{type(exc).__name__}: {exc}")
+        # SessionStart is a replay point, never a source of terminal truth.
+        # With no exact persisted whole-run intent this is a strict no-op.
+        terminal_recovery = loopmod.replay_terminal_intent(ws)
     if not os.path.isdir(tp.kb_root(ws)) and \
             not os.path.isdir(tp.tp_dir(ws)):
         # An installed plugin must expose its on-ramp. Using the same report
@@ -4685,6 +4987,13 @@ def cmd_context(a) -> int:
         lines.append("  lifecycle: quarantined "
                      f"{len(lifecycle_released)} completed worker "
                      "contract(s)")
+    if terminal_recovery is not None:
+        lines.append(
+            "  terminal recovery: " +
+            ("blocked — " + str(terminal_recovery.get("error"))
+             if terminal_recovery.get("error") else
+             "replayed exact persisted " + str(
+                 terminal_recovery.get("outcome")) + " intent"))
     if trk["active"]:
         lines.append(f"  track: {trk['active']} "
                      f"({len(trk['tracks'])} total)")
@@ -7719,6 +8028,16 @@ def main(argv=None) -> int:
                      help="one-line evidence note recorded with the "
                           "submission")
     lsu.add_argument("--task", help="task id (parallel execute waves)")
+    lbq = lsub.add_parser(
+        "build-quality", help="admit one typed candidate-bound Build/Fix "
+        "quality receipt before worker submission or gate evaluation")
+    lbq.add_argument("--task", required=True, help="exact approved task id")
+    lbq.add_argument("--strategy", required=True,
+                     help="typed test-strategy JSON file")
+    lbq.add_argument("--receipt", required=True,
+                     help="completed Build-quality receipt JSON file")
+    lbq.add_argument("--stage", choices=("execute", "fix"), default=None,
+                     help="optional exact current stage assertion")
     ls_ = lsub.add_parser("select", help="A/B selection gate: pick the "
                           "variant that ships (or 'hybrid')")
     ls_.add_argument("choice", help="variant letter, task id, or 'hybrid'")
@@ -7772,6 +8091,14 @@ def main(argv=None) -> int:
     lsub.add_parser(
         "host-input", help="consume one trusted-session host event JSON "
         "object from stdin through the governed human-input boundary")
+    lt = lsub.add_parser(
+        "terminal", help="orchestrator-only: idempotently close the whole "
+        "run for cancellation, interruption, or handoff")
+    lt.add_argument("outcome", choices=(
+        "cancellation", "interruption", "handoff"))
+    lt.add_argument("--by", required=True,
+                    help="attributable orchestrator/human identity; host "
+                    "session authority is derived from the environment")
     lsub.add_parser("status", help="show the loop's stage, tasks and gates")
     lsub.add_parser("retro", help="print the loop retrospective")
     lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "

@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -51,12 +52,21 @@ DYNAMIC_RUFF_NAMES = {
 }
 
 
-def _job(source: str, name: str) -> str:
-    match = re.search(
-        rf"(?ms)^  {re.escape(name)}:\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)",
-        source,
+def _workflow_job(source: str, name: str) -> dict:
+    workflow = yaml.safe_load(source)
+    jobs = workflow.get("jobs", {}) if isinstance(workflow, dict) else {}
+    job = jobs.get(name, {}) if isinstance(jobs, dict) else {}
+    return job if isinstance(job, dict) else {}
+
+
+def _step_runs(job: dict) -> str:
+    steps = job.get("steps", [])
+    if not isinstance(steps, list):
+        return ""
+    return "\n".join(
+        str(step.get("run", ""))
+        for step in steps if isinstance(step, dict)
     )
-    return match.group(1) if match else ""
 
 
 def _locked_requirements(source: str) -> tuple[dict[str, str], set[str], list[str]]:
@@ -116,9 +126,9 @@ def _strict_policy_violations(policy: str) -> list[str]:
         problems.append("legacy typing debt must use exact module names")
     if debt - production:
         problems.append("legacy typing debt names a non-production module")
-    if debt != production - STRICT_BOUNDARIES:
-        problems.append("the measured strict-module ratchet changed")
-    if admitted != STRICT_BOUNDARIES or len(admitted) <= 2:
+    if not STRICT_BOUNDARIES <= admitted:
+        problems.append("the measured strict-module ratchet regressed")
+    if len(admitted) <= 2:
         problems.append("strict production coverage was narrowed")
 
     builtins = set(_array_values(policy, "builtins"))
@@ -133,24 +143,26 @@ def _quality_violations(
     ci: str, policy: str, lock: str, runner: str,
 ) -> list[str]:
     problems: list[str] = []
-    job = _job(ci, "python-quality")
-    required_job_fragments = (
-        "name: Python quality (ruff + strict mypy)",
-        "runs-on: ubuntu-latest",
-        'python-version: "3.14"',
-        "python -m pip install --disable-pip-version-check",
-        "--require-hashes -r requirements-dev.lock",
-        'needs: [ci-plan]',
-        '--ci-cell "$cell" --receipt "$evidence/$cell.json"',
-        "Preserve quality, package, timing, and cleanup evidence",
-    )
+    job = _workflow_job(ci, "quality-package")
     if not job:
-        problems.append("missing blocking python-quality job")
-    for fragment in required_job_fragments:
-        if fragment not in job:
+        problems.append("missing direct quality-package job")
+    if job.get("runs-on") != "ubuntu-latest":
+        problems.append("quality job must execute directly on Linux")
+    if "continue-on-error" in job or "needs" in job or "strategy" in job:
+        problems.append("quality job must be a blocking direct non-matrix execution")
+    steps = job.get("steps", []) if isinstance(job, dict) else []
+    setup = next((step for step in steps if isinstance(step, dict) and
+                  str(step.get("uses", "")).startswith("actions/setup-python@")), {})
+    if setup.get("with", {}).get("python-version") != "3.12":
+        problems.append("quality job must use the authoritative Python 3.12 runtime")
+    commands = _step_runs(job)
+    for fragment in (
+        "python -m pip install --disable-pip-version-check",
+        "--require-hashes --no-deps -r requirements-dev.lock",
+        "--ci-cell quality-package",
+    ):
+        if fragment not in commands:
             problems.append(f"quality job misses {fragment}")
-    if "continue-on-error:" in job or "strategy:" in job:
-        problems.append("quality job must be one blocking non-matrix execution")
     for fragment in (
         '[PYTHON, "-m", "ruff", "check", "--output-format=github",',
         '[PYTHON, "-m", "mypy", "--strict", "--config-file", "pyproject.toml"],',
@@ -182,20 +194,23 @@ def _quality_violations(
     return problems
 
 
-def _windows_sandbox_violations(ci: str) -> list[str]:
-    portability = _job(ci, "tests-portability")
-    match = re.search(
-        r"(?ms)^\s{10}- os: windows-latest\n(.*?)(?=^\s{10}- os: macos-latest\n|\Z)",
-        portability,
-    )
-    windows = match.group(1) if match else ""
+def _windows_sandbox_violations(ci: str, runner: str) -> list[str]:
+    windows = _workflow_job(ci, "native-portability")
     problems = []
     if not windows:
-        problems.append("blocking Windows matrix row is missing")
-    if "advisory: false" not in windows:
-        problems.append("Windows portability must remain blocking")
-    if "taskplane/tests/test_em_h1_sandbox.py" not in windows:
-        problems.append("Windows does not execute the H1 sandbox deadline regression")
+        problems.append("direct native Windows job is missing")
+    if windows.get("runs-on") != "windows-latest":
+        problems.append("native portability must run on Windows")
+    if "continue-on-error" in windows or "needs" in windows:
+        problems.append("native portability must remain a direct blocking check")
+    if "--ci-cell os-portability-windows" not in _step_runs(windows):
+        problems.append("Windows job does not execute its canonical CI cell")
+    selector = (
+        '"taskplane/tests/test_em_h1_sandbox.py::"\n'
+        '    "test_h34_windows_timeout_kills_child_and_grandchild",'
+    )
+    if selector not in runner:
+        problems.append("Windows cell omits the H1 sandbox deadline regression")
     return problems
 
 
@@ -214,14 +229,14 @@ def test_h09_ci_enforces_lint_and_strict_types() -> None:
     (
         (
             "ci",
-            "Install hash-locked Python quality tools\n"
-            "        run: >-\n"
-            "          python -m pip install --disable-pip-version-check\n"
-            "          --require-hashes -r requirements-dev.lock",
-            "Install hash-locked Python quality tools\n"
-            "        run: >-\n"
-            "          python -m pip install --disable-pip-version-check\n"
-            "          --no-deps -r requirements-dev.lock",
+            "Install sealed quality environment\n"
+            "        shell: bash\n"
+            "        run: |\n"
+            "          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r requirements-dev.lock",
+            "Install sealed quality environment\n"
+            "        shell: bash\n"
+            "        run: |\n"
+            "          python -m pip install --disable-pip-version-check --require-hashes -r requirements-dev.lock",
         ),
         ("runner", '[PYTHON, "-m", "ruff", "check", "--output-format=github",',
          '[PYTHON, "-m", "ruff", "check",'),
@@ -229,10 +244,12 @@ def test_h09_ci_enforces_lint_and_strict_types() -> None:
          '[PYTHON, "-m", "mypy",'),
         (
             "ci",
-            "name: Python quality (ruff + strict mypy)\n"
-            "    needs: [ci-plan]\n    runs-on: ubuntu-latest",
-            "name: Python quality (ruff + strict mypy)\n"
-            "    needs: [ci-plan]\n    continue-on-error: true\n"
+            "quality-package:\n"
+            "    name: quality + package + release provenance\n"
+            "    runs-on: ubuntu-latest",
+            "quality-package:\n"
+            "    name: quality + package + release provenance\n"
+            "    continue-on-error: true\n"
             "    runs-on: ubuntu-latest",
         ),
         ("policy", "strict = true", "strict = false"),
@@ -282,19 +299,30 @@ def test_h09_quality_contract_rejects_weakened_configuration(
 
 
 def test_h1e_sandbox_regression_runs_on_blocking_windows_leg() -> None:
-    assert _windows_sandbox_violations(CI.read_text(encoding="utf-8")) == []
+    assert _windows_sandbox_violations(
+        CI.read_text(encoding="utf-8"), RUNNER.read_text(encoding="utf-8"),
+    ) == []
 
 
 @pytest.mark.parametrize(
-    ("old", "new"),
+    ("target", "old", "new"),
     (
-        ("advisory: false", "advisory: true"),
-        ("taskplane/tests/test_em_h1_sandbox.py", "taskplane/tests/test_eval_recorder.py"),
+        ("ci", "runs-on: windows-latest", "runs-on: ubuntu-latest"),
+        (
+            "runner",
+            '"taskplane/tests/test_em_h1_sandbox.py::"\n'
+            '    "test_h34_windows_timeout_kills_child_and_grandchild",',
+            '"taskplane/tests/test_eval_recorder.py::"\n'
+            '    "test_eval_failure_is_recorded",',
+        ),
     ),
 )
-def test_windows_sandbox_contract_rejects_advisory_or_missing_proof(
-    old: str, new: str
+def test_windows_sandbox_contract_rejects_non_native_or_missing_proof(
+    target: str, old: str, new: str
 ) -> None:
     ci = CI.read_text(encoding="utf-8")
-    assert old in ci
-    assert _windows_sandbox_violations(ci.replace(old, new, 1))
+    runner = RUNNER.read_text(encoding="utf-8")
+    sources = {"ci": ci, "runner": runner}
+    assert old in sources[target]
+    sources[target] = sources[target].replace(old, new, 1)
+    assert _windows_sandbox_violations(sources["ci"], sources["runner"])

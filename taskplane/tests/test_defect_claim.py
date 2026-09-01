@@ -15,9 +15,14 @@ These tests pin the two properties that make the bar honest:
      blocking; the frozen finding_blocks rule still decides which findings
      block at all.
 """
+import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import defect_claim as dc  # noqa: E402
@@ -86,14 +91,6 @@ class TestItOnlyMakesBlockingHarder(unittest.TestCase):
         rows = [_f(), _f(kind="note"), _f(claim=CLAIM), {"junk": True}]
         self.assertEqual(dc.blocking_errors(rows, lambda f: False), [])
 
-    def test_the_frozen_block_rule_still_owns_which_findings_block(self):
-        """The bar takes the predicate as an argument — it must never grow
-        its own opinion about what blocks."""
-        src = open(dc.__file__, encoding="utf-8").read()
-        self.assertNotIn("regression", src.split('"""', 2)[-1],
-                         "defect_claim must not reimplement the class rule")
-
-
 class TestPartitionKeepsEverything(unittest.TestCase):
     def test_nothing_is_dropped(self):
         rows = [_f(claim=CLAIM), _f(), _f(kind="note")]
@@ -115,22 +112,111 @@ class TestPartitionKeepsEverything(unittest.TestCase):
         self.assertEqual(out["unclaimed"][0]["severity"], "high")
 
 
-class TestWiredIntoTheEmGate(unittest.TestCase):
-    def test_the_gate_consults_the_bar(self):
-        import audit
-        src = open(audit.__file__, encoding="utf-8").read()
-        self.assertIn("defect_claim.blocking_errors", src)
+class TestEngineeringGateBehaviorJourney(unittest.TestCase):
+    """Exercise the public EM transition, not implementation source text."""
 
-    def test_the_gate_passes_the_frozen_predicate(self):
-        """The bar must never grow its own opinion about what blocks — the
-        em gate hands it loop.finding_blocks."""
-        import audit
-        src = open(audit.__file__, encoding="utf-8").read()
-        self.assertIn("loop.finding_blocks(f, changed)", src)
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.ws = os.path.join(self.tmp, "ws")
+        os.makedirs(self.ws)
+        with open(os.path.join(self.ws, "README.md"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("reviewed product\n")
+        for command in (
+                ("git", "init", "-q"),
+                ("git", "config", "user.email", "test@example.invalid"),
+                ("git", "config", "user.name", "TaskPlane Test"),
+                ("git", "add", "README.md"),
+                ("git", "commit", "-qm", "reviewed revision")):
+            subprocess.run(command, cwd=self.ws, check=True)
 
-    def test_loop_calls_it_at_the_review_gate(self):
-        src = open(loop.__file__, encoding="utf-8").read()
-        self.assertIn("_blocking_claim_errors(ws, state, rows)", src)
+        state_dir = os.path.join(self.tmp, "state")
+        state_patch = mock.patch.object(loop, "_state_dir",
+                                        return_value=state_dir)
+        state_patch.start()
+        self.addCleanup(state_patch.stop)
+        loop.save(self.ws, {
+            "schema": "taskplane.run/v3",
+            "run_id": "defect-claim-gate-journey",
+            "goal": "exercise the Engineering claim gate",
+            "step": "em",
+            "baseline": loop.tp.git_head(self.ws),
+            "tasks": [],
+            "current_task": 0,
+            "max_fix_cycles": 2,
+            "checkpoints": ["em"],
+        })
+        review_dir = os.path.join(self.ws, ".em-review")
+        os.makedirs(review_dir)
+        with open(os.path.join(review_dir, "report.md"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("# Engineering review\n\nEvidence checked.\n")
+
+    def _write_findings(self, rows):
+        coverage = {
+            entry["id"]: "sweep"
+            for entry in loop.lens_router.load_catalog()["lenses"]
+        }
+        with open(os.path.join(self.ws, ".em-review", "findings.json"),
+                  "w", encoding="utf-8") as stream:
+            json.dump({
+                "meta": {
+                    "lens_coverage": coverage,
+                    "impact": {"touched": []},
+                    "tests": ["focused gate journey: pass"],
+                    "gate": {"verdict": "recommend-pass"},
+                },
+                "findings": rows,
+            }, stream)
+
+    def _gate(self):
+        binding = {"workspace": self.ws, "run_id": "review-run"}
+        with mock.patch.object(loop, "review_kernel_binding",
+                               return_value=binding), \
+                mock.patch("review._load_state", return_value={
+                    "status": "complete", "stage": "review"}), \
+                mock.patch("review_evidence._read_current", return_value={}), \
+                mock.patch.object(loop.kb, "lint", return_value=[]), \
+                mock.patch.object(loop, "record_audit_review", return_value=1), \
+                mock.patch.object(loop, "audit_due", return_value=False), \
+                mock.patch.object(loop.tp, "trace"), \
+                mock.patch.object(loop.tp, "release_worker_contracts_for_gate",
+                                  return_value=["em-contract"]), \
+                mock.patch.object(loop.yield_meter, "gate_snapshot"):
+            return loop.gate(self.ws, "pass")
+
+    def test_blocking_finding_without_complete_claim_refuses_transition(self):
+        self._write_findings([_f(severity="low", claim={
+            "trigger": CLAIM["trigger"],
+            "outcome": CLAIM["outcome"],
+        })])
+
+        result = self._gate()
+
+        self.assertIn("engineering review is incomplete", result["error"])
+        self.assertTrue(any("claim.repro" in error
+                            for error in result["dod"]["errors"]))
+        self.assertEqual(loop.load(self.ws)["step"], "em")
+
+    def test_complete_current_claim_advances_to_signoff(self):
+        self._write_findings([_f(severity="low", claim=CLAIM)])
+
+        result = self._gate()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["step"], "signoff")
+        self.assertEqual(loop.load(self.ws)["step"], "signoff")
+
+    def test_nonblocking_observation_remains_nonblocking(self):
+        self._write_findings([_f(severity="low", **{
+            "class": "observation",
+        })])
+
+        result = self._gate()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(loop.load(self.ws)["step"], "signoff")
 
 
 class TestTheSuiteDoesNotLeakTempDirs(unittest.TestCase):
@@ -168,24 +254,6 @@ class TestTheSuiteDoesNotLeakTempDirs(unittest.TestCase):
         self.assertTrue(
             pkg._TMP_ROOT.startswith(os.path.realpath(tf.gettempdir()))
             or pkg._TMP_ROOT.startswith("/tmp"))
-
-    def test_both_runners_opt_into_the_scoped_guard(self):
-        """Both runners request isolation without making package import
-        mutate process-global state.  Unittest enters through ``load_tests``;
-        pytest requests the lazy compatibility bootstrap from conftest."""
-        import taskplane.tests as pkg
-        src = open(pkg.__file__, encoding="utf-8").read()
-        conftest = open(os.path.join(os.path.dirname(pkg.__file__),
-                                    "conftest.py"), encoding="utf-8").read()
-        self.assertIn("def isolated_test_runtime", src)
-        self.assertIn("class _RunnerScopedSuite", src)
-        self.assertIn("def load_tests", src)
-        self.assertIn("tempfile.tempdir = tmp_root", src)
-        self.assertIn("tempfile.tempdir = saved_tempdir", src)
-        self.assertIn("atexit.register", src)
-        self.assertIn("from taskplane.tests import _SESSION_HOME", conftest)
-        self.assertNotIn("tempfile.tempdir = _TMP_ROOT", src)
-
 
 if __name__ == "__main__":
     unittest.main()

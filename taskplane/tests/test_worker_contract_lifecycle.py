@@ -10,6 +10,7 @@ import pytest
 
 from taskplane import taskplane_lite as tp
 from taskplane import tp as cli
+from taskplane import run_artifacts
 
 
 def _event(tmp_path, *, name="tp_step_product_pm_deadbeef",
@@ -29,9 +30,13 @@ def _event(tmp_path, *, name="tp_step_product_pm_deadbeef",
 
 
 def _active_worker(tmp_path, *, stage="pm", task="pm",
-                   name="tp_step_product_pm_deadbeef", snapshot=""):
+                   name="tp_step_product_pm_deadbeef", snapshot="",
+                   artifact_root=None, artifact_binding=None):
     contract = tp.build_contract(
         "PM: lifecycle", read_only=True, write_allow=["specs/**"])
+    if artifact_root is not None or artifact_binding is not None:
+        contract["run_artifact_root"] = str(artifact_root)
+        contract["run_artifact_binding"] = artifact_binding
     contract = tp.prepare_worker_contract(
         str(tmp_path), contract, stage=stage, task=task,
         task_name=name, role_marker="taskplane-role:tp-product", now=10)
@@ -107,6 +112,53 @@ def test_every_worker_terminal_path_removes_active_slot(
     assert len(rows) == 1
     archived = json.loads(rows[0].read_text(encoding="utf-8"))
     assert archived["worker_lifecycle"]["terminal"]["outcome"] == expected
+
+
+def test_zero_lens_stage_activity_is_preserved_for_every_delivery_stage(
+        tmp_path, monkeypatch):
+    artifact_root = tmp_path / "run-artifacts"
+    artifact_binding = run_artifacts.create_binding(
+        repository_id="repo-runtime", run_id="run-runtime",
+        stage_id="design", stage_instance_id="design-runtime",
+        candidate={"id": "candidate", "fingerprint": "a" * 64},
+        settings_digest="b" * 64, source_fingerprint="c" * 64)
+    run_artifacts.create_manifest(
+        artifact_root, binding=artifact_binding)
+    monkeypatch.setattr(tp, "_refresh_dashboard_lifecycle", lambda *_a, **_k: None)
+    paths = [
+        ("execute", "success", None),
+        ("fix", "cancelled", "cancel"),
+        ("evaluate", "interrupted", "interruption"),
+        ("em", "handoff", "handoff"),
+        ("plan", "failed", None),
+    ]
+    for index, (stage, outcome, semantic) in enumerate(paths, start=1):
+        task = f"task-{index}"
+        name = f"tp_step_executor_{stage}_{index:08d}"
+        contract = _active_worker(
+            tmp_path, stage=stage, task=task, name=name,
+            artifact_root=artifact_root, artifact_binding=artifact_binding)
+        event = _event(tmp_path, name=name, agent=f"agent-{index}")
+        binding = tp.bind_worker_contract_event(
+            str(tmp_path), event, now=10 + index)
+        tp.record_worker_start_activity(
+            str(tmp_path), binding, event, now=10 + index)
+        tp.terminalize_worker_contract(
+            str(tmp_path), {**event, "outcome": outcome}, outcome=outcome,
+            submission_status="valid", now=20 + index)
+
+        manifest = run_artifacts.load_manifest(artifact_root)
+        stage_entries = [
+            entry["metadata"] for entry in
+            manifest["classes"]["agent-activity"]["entries"]
+            if entry["metadata"]["task_id"] == task]
+        events = [entry["event_type"] for entry in stage_entries]
+        assert events[:4] == [
+            "assignment", "worker-identity", "start", "progress"]
+        if semantic is not None:
+            assert semantic in events
+        assert events[-1] == "terminal"
+        assert stage_entries[-1]["lens"] == f"zero-lens-{stage}"
 
 
 def test_session_start_sweeps_only_loop_proven_completed_worker(tmp_path):

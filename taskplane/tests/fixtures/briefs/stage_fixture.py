@@ -100,10 +100,49 @@ def build_task(ws: str, tid: str, module: str) -> None:
 
 
 def to_fix_step(ws: str) -> None:
-    """Fail the current evaluation → the loop enters FIX for that task."""
+    """Classify one product failure, then enter FIX for that task."""
     import loop
+    import evaluation_output
+    import failure_routing
+
     assert loop.submit(ws, "fail", note="repro: alpha regression").get(
         "submitted")
+    state = loop.load(ws)
+    task = state["tasks"][state["current_task"]]
+    act_ws = task.get("workspace") or ws
+    evidence = {
+        "selector": "stage_fixture::alpha_regression",
+        "returncode": 1,
+    }
+    candidate = loop._failure_candidate_identity(act_ws, task)
+    verdict = {
+        "schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        "task": task["id"],
+        "requirement": str(task.get("req") or ""),
+        "verdict": "fail",
+        "evaluation": {"status": "complete", "reason_code": "none",
+                       "detail": "typed product failure"},
+        "criteria": [{"criterion": task["criteria"][0],
+                      "status": "not-met", "evidence": "failure-alpha"}],
+        "graph": {"dispositions": [], "requirements_checked": [],
+                  "contracts_checked": []},
+        "failures": [{
+            "schema": failure_routing.FAILURE_RECORD_SCHEMA_ID,
+            "id": "failure-alpha", "source": "pytest",
+            "stage": "evaluate",
+            "repro": "run stage_fixture::alpha_regression",
+            "evidence": evidence,
+            "evidence_digest": failure_routing.evidence_digest(evidence),
+            "class": "product", "reason": "alpha behavior regressed",
+            "owner": "product-code", "cluster": "alpha-regression",
+            "route": "fix", "candidate": candidate,
+        }],
+    }
+    verdict_path = loop.runtime_storage.evaluation_path(act_ws)
+    os.makedirs(os.path.dirname(verdict_path), exist_ok=True)
+    with open(verdict_path, "w", encoding="utf-8") as handle:
+        json.dump(verdict, handle, sort_keys=True)
+        handle.write("\n")
     out = loop.gate(ws, "fail")
     assert out.get("step") == "fix", out
 

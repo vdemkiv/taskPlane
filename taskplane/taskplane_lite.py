@@ -5365,6 +5365,12 @@ WORKER_TERMINAL_RECEIPT_SCHEMA = \
     "taskplane.worker-contract-terminal-receipt/v1"
 WORKER_CONTRACT_AUTHORITY_SCHEMA = \
     "taskplane.worker-contract-authority/v1"
+ROLE_REFERENCE_SCHEMA = "taskplane.role-reference/v1"
+DESIGN_LENS_DISPATCH_INTENT_SCHEMA = \
+    "taskplane.design-lens-dispatch-intent/v1"
+DESIGN_LENS_HOST_AUTHORITY_SCHEMA = \
+    "taskplane.design-lens-host-authority/v1"
+WORKER_HOST_RECEIPT_SCHEMA = "taskplane.worker-host-receipt/v1"
 _WORKER_RELEASE_FIELDS = frozenset({
     "schema", "key_id", "action_id", "workspace_fingerprint", "slot",
     "contract_id", "stage", "task", "issued_at", "signature",
@@ -5375,6 +5381,21 @@ _WORKER_TERMINAL_FIELDS = frozenset({
     "owner", "outcome", "submission_status", "terminal_at", "authority",
     "signature",
 })
+
+
+def _design_host_transport():
+    if __package__:
+        from . import design_host_transport as runtime
+    else:  # direct CLI import
+        import design_host_transport as runtime
+    return runtime
+def portable_role_reference(agent: str) -> dict:
+    return _design_host_transport().portable_role_reference(agent)
+
+
+def validate_role_reference(value: object, *, expected_agent: str) -> dict:
+    return _design_host_transport().validate_role_reference(
+        value, expected_agent=expected_agent)
 
 
 def _worker_contract_authority_path(workspace: str) -> str:
@@ -5425,6 +5446,22 @@ def _worker_signed_bytes(value: dict) -> bytes:
 def _worker_signature(secret: bytes, value: dict) -> str:
     return hmac.new(secret, _worker_signed_bytes(value),
                     hashlib.sha256).hexdigest()
+
+
+def verify_worker_host_receipt(
+        workspace: str, value: object, *, event: str, plan: dict,
+        worker: dict, owner: dict | None = None) -> dict:
+    return _design_host_transport().verify_worker_host_receipt(
+        sys.modules[__name__], workspace, value, event=event, plan=plan,
+        worker=worker, owner=owner)
+
+
+def register_design_lens_dispatch_plan(
+        workspace: str, plan: dict, *, artifact_root: str,
+        artifact_binding: dict, now: int | None = None) -> dict:
+    return _design_host_transport().register_design_lens_dispatch_plan(
+        sys.modules[__name__], workspace, plan, artifact_root=artifact_root,
+        artifact_binding=artifact_binding, now=now)
 
 
 def _worker_lifecycle_error(workspace: str, reason: str) -> StateError:
@@ -5675,6 +5712,135 @@ def bind_worker_contract_event(workspace: str, event: dict, *,
     return {"slot": slot, "contract": contract, "replay": False}
 
 
+def attach_design_lens_host_authority(
+        contract: dict, worker_authority: dict, *, artifact_root: str,
+        artifact_binding: dict) -> dict:
+    return _design_host_transport().attach_design_lens_host_authority(
+        contract, worker_authority, artifact_root=artifact_root,
+        artifact_binding=artifact_binding)
+
+
+def record_design_dispatch_assignment_activity(
+        workspace: str, expected: dict) -> dict | None:
+    return _design_host_transport().record_design_dispatch_assignment_activity(
+        sys.modules[__name__], workspace, expected)
+
+
+def record_design_worker_start_activity(
+        workspace: str, binding: dict, event: dict,
+        *, now: int | None = None) -> dict | None:
+    return _design_host_transport().record_design_worker_start_activity(
+        sys.modules[__name__], workspace, binding, event, now=now)
+
+
+def _generic_activity_authority(workspace: str, contract: dict) \
+        -> tuple[str, dict] | None:
+    """Authenticate the run-artifact locator carried by a stage contract.
+
+    Design lenses retain their stricter signed host authority and are
+    deliberately excluded here.  This adapter only preserves lifecycle
+    evidence; it cannot activate, release, gate, or route a worker.
+    """
+    lifecycle = contract.get("worker_lifecycle") or {}
+    if lifecycle.get("design_host_authority") is not None:
+        return None
+    root = contract.get("run_artifact_root")
+    binding = contract.get("run_artifact_binding")
+    if root is None and binding is None:
+        return None
+    if not isinstance(root, str) or not isinstance(binding, dict):
+        raise _worker_lifecycle_error(
+            workspace, "stage activity artifact authority is incomplete")
+    try:
+        if __package__:
+            from . import run_artifacts as activity_store
+        else:
+            import run_artifacts as activity_store
+        checked = activity_store.validate_binding(binding)
+        manifest = activity_store.load_manifest(root)
+        if manifest.get("binding") != checked:
+            raise ValueError("manifest binding differs")
+        activity_store.verify_manifest(root, expected_binding=checked)
+    except Exception as exc:
+        raise _worker_lifecycle_error(
+            workspace, "stage activity artifact authority is foreign") from exc
+    return os.path.realpath(root), checked
+
+
+def _generic_activity_attempt(contract: dict) -> str:
+    lifecycle = contract.get("worker_lifecycle") or {}
+    owner = lifecycle.get("owner") or {}
+    material = {
+        "slot": lifecycle.get("slot"), "stage": lifecycle.get("stage"),
+        "task": lifecycle.get("task"), "started_at": lifecycle.get("started_at"),
+        "owner": {key: owner.get(key) for key in (
+            "session_id", "agent_id", "task_name")},
+    }
+    return "attempt-" + hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True).encode("utf-8")).hexdigest()[:32]
+
+
+def _append_generic_activity_once(
+        workspace: str, contract: dict, *, event_type: str,
+        details: dict, usage_reference: dict | None = None,
+        evidence_references=()) -> dict | None:
+    authority = _generic_activity_authority(workspace, contract)
+    if authority is None:
+        return None
+    root, _binding = authority
+    if __package__:
+        from . import run_artifacts as activity_store
+    else:
+        import run_artifacts as activity_store
+    lifecycle = contract.get("worker_lifecycle") or {}
+    attempt = _generic_activity_attempt(contract)
+    manifest = activity_store.load_manifest(root)
+    for entry in manifest["classes"]["agent-activity"]["entries"]:
+        metadata = entry.get("metadata") or {}
+        if metadata.get("event_type") == event_type and \
+                metadata.get("agent_attempt_id") == attempt:
+            return dict(entry)
+    owner = lifecycle.get("owner") or {}
+    worker_material = str(owner.get("agent_id") or
+                          lifecycle.get("expected_task_name") or attempt)
+    worker_id = "worker-" + hashlib.sha256(
+        worker_material.encode("utf-8")).hexdigest()[:32]
+    stage = str(lifecycle.get("stage") or "stage")
+    return activity_store.append_activity(
+        root, event_type=event_type, agent_attempt_id=attempt,
+        worker_id=worker_id,
+        task_id=str(lifecycle.get("task") or contract.get("task_id") or stage),
+        lens="zero-lens-" + re.sub(r"[^a-z0-9-]+", "-", stage.lower()).strip("-")[:96],
+        details=dict(details), usage_reference=usage_reference,
+        evidence_references=evidence_references)
+
+
+def record_worker_start_activity(
+        workspace: str, binding: dict, event: dict,
+        *, now: int | None = None) -> dict | None:
+    """Preserve start activity for Design and every zero-lens stage."""
+    design = record_design_worker_start_activity(
+        workspace, binding, event, now=now)
+    if design is not None:
+        return design
+    contract = binding.get("contract") if isinstance(binding, dict) else None
+    if not isinstance(contract, dict):
+        return None
+    lifecycle = contract.get("worker_lifecycle") or {}
+    details = {"stage": lifecycle.get("stage"),
+               "task": lifecycle.get("task"), "state": "active"}
+    _append_generic_activity_once(
+        workspace, contract, event_type="assignment", details=details)
+    _append_generic_activity_once(
+        workspace, contract, event_type="worker-identity", details=details)
+    started = _append_generic_activity_once(
+        workspace, contract, event_type="start", details=details)
+    _append_generic_activity_once(
+        workspace, contract, event_type="progress", details=details)
+    return started
+
+
 def _worker_contract_for_event(workspace: str, event: dict) \
         -> tuple[str, dict] | None:
     owner = _worker_event_owner(event)
@@ -5782,6 +5948,42 @@ def record_worker_terminal(
     }
     receipt["signature"] = _worker_signature(
         authority_key["secret"], receipt)
+    observed = event if isinstance(event, dict) else {}
+    usage = next((dict(observed[key]) for key in (
+        "usage_reference", "usage", "token_usage")
+                  if isinstance(observed.get(key), dict)), None)
+    evidence = [dict(item) for item in
+                observed.get("evidence_references") or []
+                if isinstance(item, dict)]
+    semantic = {"cancellation": "cancel", "interruption": "interruption",
+                "handoff": "handoff"}.get(normalized)
+    try:
+        if semantic:
+            _append_generic_activity_once(
+                workspace, contract, event_type=semantic,
+                details={"outcome": normalized})
+        if usage is not None:
+            _append_generic_activity_once(
+                workspace, contract, event_type="usage-reference",
+                details={"outcome": normalized}, usage_reference=usage)
+        if evidence:
+            _append_generic_activity_once(
+                workspace, contract, event_type="evidence-reference",
+                details={"outcome": normalized},
+                evidence_references=evidence)
+        _append_generic_activity_once(
+            workspace, contract, event_type="terminal",
+            details={"outcome": normalized,
+                     "submission_status": receipt["submission_status"],
+                     "authority": authority},
+            usage_reference=usage, evidence_references=evidence)
+    except Exception as exc:
+        raise _worker_lifecycle_error(
+            workspace, "stage terminal activity could not be preserved") \
+            from exc
+    # Preserve required run activity before changing the local lifecycle to
+    # terminal. A failed artifact append therefore remains exactly retryable
+    # instead of stranding an already-terminal contract without its evidence.
     terminal_path = _worker_terminal_path(workspace, slot)
     os.makedirs(os.path.dirname(terminal_path), exist_ok=True)
     atomic_write_json(terminal_path, receipt, sort_keys=True)
@@ -5796,6 +5998,19 @@ def record_worker_terminal(
         workspace, event_type="worker_terminal", outcome=normalized,
         member_terminal=True)
     return receipt
+
+
+def _design_terminal_activity(
+        workspace: str, contract: dict, receipt: dict,
+        event: dict | None) -> list[dict]:
+    return _design_host_transport().design_terminal_activity(
+        sys.modules[__name__], workspace, contract, receipt, event)
+
+
+def record_design_worker_activity(
+        workspace: str, event: dict, *, event_type: str) -> dict | None:
+    return _design_host_transport().record_design_worker_activity(
+        sys.modules[__name__], workspace, event, event_type=event_type)
 
 
 def _verify_worker_release_action(workspace: str, slot: str,
@@ -5907,10 +6122,28 @@ def terminalize_worker_contract(
     receipt = record_worker_terminal(
         workspace, slot, event=event, outcome=outcome,
         submission_status=submission_status, now=now)
-    return release_worker_contract(
+    activity_error = None
+    try:
+        _design_terminal_activity(workspace, contract, receipt, event)
+    except Exception as exc:
+        activity_error = exc
+    released = release_worker_contract(
         workspace, slot,
         action=contract["worker_lifecycle"]["release_action"],
         terminal_receipt=receipt)
+    released["terminal_receipt"] = receipt
+    if activity_error is not None:
+        raise _worker_lifecycle_error(
+            workspace,
+            "Design lens terminal activity could not be preserved") \
+            from activity_error
+    return released
+
+
+def validate_design_lens_dispatch_completion(
+        workspace: str, plan: dict, authority: object) -> dict:
+    return _design_host_transport().validate_design_lens_dispatch_completion(
+        sys.modules[__name__], workspace, plan, authority)
 
 
 def _worker_loop_completed(contract: dict, state: dict | None) -> bool:
@@ -6603,7 +6836,7 @@ def _default_tier_models() -> dict:
             "deep": settings.stages["design"].model}
 
 
-def reasoning_for_tier(tier: str | None) -> str:
+def reasoning_for_tier(tier: str | None) -> str | None:
     """Resolve a capability tier to Codex's native reasoning effort.
 
     Unlike model ids, reasoning effort is provider-neutral metadata: every
@@ -6634,7 +6867,7 @@ def dispatch_fields(kind: str, agent: str, ref: str,
         "tp-product": "product", "tp-designer": "design",
         "tp-planner": "plan", "tp-executor": "build",
         "tp-evaluator": "evaluate", "tp-fixer": "fix",
-        "tp-engineering": "evaluate",
+        "tp-engineering": "engineering",
     }.get(agent)
     selected = stage or {
         "cheap": "evaluate", "standard": "build", "deep": "design",
@@ -6727,7 +6960,8 @@ def record_expected_dispatch(workspace: str, kind: str, agent: str,
                              reasoning_effort: str | None = None,
                              role_marker_value: str | None = None,
                              dispatch_route: dict | None = None,
-                             intent_id: str | None = None) -> None:
+                             intent_id: str | None = None,
+                             intent_run_id: str | None = None) -> None:
     """Called when a brief is emitted (`loop next` / `lens dispatch`): what
     agent SHOULD be dispatched next, on what model. A queue, not a scalar —
     a parallel wave emits many briefs with different tiers at once."""
@@ -6743,6 +6977,7 @@ def record_expected_dispatch(workspace: str, kind: str, agent: str,
                  reasoning_for_tier(model_tier), "matched": False}
         if intent_id is not None:
             entry["intent_id"] = intent_id
+            entry["intent_run_id"] = intent_run_id
         if isinstance(dispatch_route, dict):
             entry["dispatch_route"] = dispatch_route
         # Emission is observational and may be repeated (refreshing a wave,
@@ -6805,6 +7040,30 @@ def mark_expectation(workspace: str, expected: dict,
                 _save_queue(path, q)
                 return True
     return False
+
+
+def cancel_expected_dispatch(workspace: str, intent_id: str, *,
+                             reason: str) -> bool:
+    """Cancel one never-launched intent after its prepared slot fails."""
+    intent_id = str(intent_id or "").strip()
+    if not intent_id:
+        raise ValueError("dispatch cancellation requires an intent id")
+    path = _dispatch_path(workspace, "expected_dispatch.json")
+    with _file_lock(path):
+        queue = _load_queue_strict(path)
+        matches = [row for row in queue
+                   if row.get("intent_id") == intent_id]
+        if len(matches) != 1:
+            raise StateError(
+                path, "dispatch cancellation is absent or ambiguous")
+        row = matches[0]
+        if row.get("matched") and not row.get("cancelled"):
+            raise StateError(path, "started dispatch cannot be cancelled")
+        row["matched"] = True
+        row["cancelled"] = True
+        row["cancellation_reason"] = str(reason or "")[:512]
+        _save_queue(path, queue)
+    return True
 
 
 def record_observed_dispatch(workspace: str, agent: str, model: str | None,
@@ -6918,6 +7177,54 @@ def dispatch_report(workspace: str) -> dict:
             "dropped, so 'unobserved' and 'mismatches' are a LOWER BOUND "
             "for this run")
     return rep
+
+
+def dispatch_intent_census(workspace: str, run_id: str) -> dict:
+    """Return the emitted native intents for one exact governed run.
+
+    The dispatch audit queue is the live PreToolUse source, not a reconstructed
+    history.  A capped queue cannot prove completeness and is reported as
+    truncated so terminal metrics fail toward unavailable instead of silently
+    undercounting attempts.
+    """
+    run_id = str(run_id or "").strip()
+    if not run_id:
+        raise ValueError("dispatch intent census requires a run id")
+    path = _dispatch_path(workspace, "expected_dispatch.json")
+    with _file_lock(path):
+        queue = _load_queue_strict(path)
+        dropped = _queue_dropped(path)
+    rows = [
+        {
+            "intent_id": str(row.get("intent_id") or ""),
+            "matched": bool(row.get("matched")),
+            "kind": str(row.get("kind") or ""),
+            "ref": str(row.get("ref") or ""),
+            "task_name": str(row.get("task_name") or ""),
+        }
+        for row in queue
+        if row.get("intent_id") and row.get("intent_run_id") == run_id and
+        not row.get("cancelled")
+    ]
+    cancelled = sorted({
+        str(row.get("intent_id")) for row in queue
+        if row.get("intent_id") and row.get("intent_run_id") == run_id and
+        row.get("cancelled")
+    })
+    intent_ids = [row["intent_id"] for row in rows]
+    return {
+        "run_id": run_id,
+        "rows": rows,
+        "intent_ids": sorted(set(intent_ids)),
+        "unmatched_intent_ids": sorted({
+            row["intent_id"] for row in rows if not row["matched"]}),
+        "duplicate_intent_ids": sorted({
+            intent_id for intent_id in intent_ids
+            if intent_ids.count(intent_id) > 1}),
+        "truncated": bool(dropped or len(queue) >= _QUEUE_CAP),
+        "dropped": dropped,
+        "cancelled_intent_ids": cancelled,
+    }
 
 
 def _now() -> float:

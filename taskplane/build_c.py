@@ -13,11 +13,11 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
 import json
-import marshal
 import math
 import os
 import re
 import threading
+from types import CodeType
 
 import depgraph
 import checkpoint
@@ -124,21 +124,20 @@ def _alias_equivalent_loop_callable(left: Callable,
     identical even though their production source is.  Equivalence remains
     fail-closed: both names must be the exact supported alias pair, their
     resolved source location and callable metadata must match, and their code
-    objects must have the same content fingerprint.  Same-module replacements
-    and lookalike functions from any other module are therefore rejected.
+    objects must be structurally equal.  Same-module replacements and
+    lookalike functions from any other module are therefore rejected.
     """
 
     if not _normalized_loop_alias_pair(left, right):
         return False
     left_code = getattr(left, "__code__", None)
     right_code = getattr(right, "__code__", None)
-    if left_code is None or right_code is None:
+    if not isinstance(left_code, CodeType) or not isinstance(
+            right_code, CodeType):
         return False
     try:
         left_source = os.path.realpath(left_code.co_filename)
         right_source = os.path.realpath(right_code.co_filename)
-        left_digest = hashlib.sha256(marshal.dumps(left_code)).digest()
-        right_digest = hashlib.sha256(marshal.dumps(right_code)).digest()
     except (OSError, TypeError, ValueError):
         return False
     return (
@@ -147,7 +146,7 @@ def _alias_equivalent_loop_callable(left: Callable,
         and left_code.co_name == right_code.co_name
         and getattr(left, "__qualname__", None)
         == getattr(right, "__qualname__", None)
-        and left_digest == right_digest
+        and left_code == right_code
         and getattr(left, "__defaults__", None)
         == getattr(right, "__defaults__", None)
         and getattr(left, "__kwdefaults__", None)

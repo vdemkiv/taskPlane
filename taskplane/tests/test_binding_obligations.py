@@ -314,19 +314,6 @@ class TheStopHookReportsWhatWasNeverShown(_Ws):
         self.assertEqual(self.run_verify().returncode, 0)
 
 
-class TheEngineStillCannotSeeAnyOfThis(_Ws):
-    """The deletability contract, unchanged. The block lives in the SHELL."""
-
-    def test_the_engine_does_not_read_the_ledger(self):
-        for name in ("loop.py", "taskplane_lite.py", "lens.py", "evidence.py",
-                     "audit.py", "dashboard.py", "depgraph.py"):
-            with io.open(os.path.join(ROOT, "taskplane", name),
-                         encoding="utf-8") as f:
-                src = f.read()
-            for forbidden in ("obligations.status", "obligations.blocking",
-                              "obligations.blocked_reason"):
-                self.assertNotIn(forbidden, src, f"{name}: {forbidden}")
-
 class TheHooksAreWired(unittest.TestCase):
 
     def cfg(self):

@@ -30,11 +30,13 @@ red; about 15 critical-path minutes, 38 runner-minutes, and 2.59x parallelism;
 132 stale worktrees using 17.3 GB; 540.3M host-observed tokens; a separate
 1.292B cumulative archive upper bound; and 40h35m end-to-end.
 
-Targets are 100% settings ownership and zero duplicate defaults; at most 230
-test files and 4,200 cases with at least six redundant families removed; exact
+Targets are 100% settings ownership and zero duplicate defaults; at most 4,200
+test cases with no file-count deletion quota and at least six redundant
+families removed; exact
 p95 at most 60 seconds and proportional p95 at most five minutes; first CI
-within two hours, at most three matrices, at most 30 runner-minutes, and at
-least 4x parallelism when four shards exist; zero leaks and active worktrees at
+within two hours, one authoritative workflow with one unsharded suite, at
+most 28 runner-minutes, and at least 4x parallelism when four disjoint
+validation domains exist; zero leaks and active worktrees at
 most active shards plus one; 100M total and 15M uncached observed tokens; at
 most 24 planned sessions; active delivery at most eight hours and the phase
 through Retro at most twelve hours.

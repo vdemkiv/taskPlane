@@ -7,7 +7,6 @@ that boundary and the genuine external producer observation required for
 accepting evaluator bytes.
 """
 import hashlib
-import inspect
 import json
 import os
 import subprocess
@@ -22,17 +21,8 @@ import review  # noqa: E402
 import producer_observation  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
-LOOP_SRC = os.path.join(ROOT, "taskplane", "loop.py")
-
 TASK = {"id": "t1", "scope": ["src/app/**", "hooks/**"], "tests": "true",
         "criteria": ["feature works"], "new_modules": ["app", "hooks"]}
-
-
-def _loop_src() -> str:
-    with open(LOOP_SRC, encoding="utf-8") as f:
-        return f.read()
 
 
 def _repo(tmp) -> str:
@@ -152,19 +142,6 @@ class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
-    def test_constant_is_build_and_single_sourced(self):
-        self.assertEqual(loop.EVALUATE_ROUTE_STAGE, "build")
-        src = _loop_src()
-        # The shared kernel retains stage identity; Evaluate's adapter removes
-        # lens authority while final EM consumes the same delivery receipt.
-        self.assertIn('stage = "review" if step == "em" else EVALUATE_ROUTE_STAGE',
-                      src)
-        # Validator consumes the persisted decision and checks its stage;
-        # it must not invoke a second mapper derivation.
-        validator = inspect.getsource(loop._evaluation_errors)
-        self.assertIn('kernel.get("stage") != EVALUATE_ROUTE_STAGE', validator)
-        self.assertNotIn("route_git_diff", validator)
-
     def test_evaluate_brief_has_zero_lens_delivery_contract(self):
         ws = _repo(self.tmp)
         act = _to_evaluate(ws, {"src/app/feature.py":
@@ -189,34 +166,6 @@ class TestEvaluateBriefRoutesBuildStage(unittest.TestCase):
         self.assertNotIn("lenses", act)
         kernel = review._load_state(ws)
         self.assertNotIn("routing", kernel)
-
-
-class TestEmUsesZeroLensDeliveryKernel(unittest.TestCase):
-    """Final EM consumes the sealed delivery receipt without lens workers."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-
-    def test_em_has_no_normal_breadth_all_fallback(self):
-        self.assertNotIn('"all" if step == "em" else "routed"', _loop_src())
-
-    def test_evaluate_and_em_use_the_same_bounded_sparse_graph_adapter(self):
-        graph = {
-            "symbol_edges": [
-                {"caller": "api", "callee": "changed",
-                 "contract": "http"},
-                {"caller": "job", "callee": "api"},
-            ]}
-        bounds = {"max_symbols": 8, "max_hops": 4, "max_edges": 16,
-                  "timeout_seconds": 2, "max_callers": 16}
-        direct = review.bounded_caller_expander(graph)(
-            snapshot={"ignored": "ambient"},
-            changed_symbols=["changed"], bounds=bounds)
-        self.assertEqual(direct["callers"], ["api", "job"])
-        source = inspect.getsource(loop._review_kernel)
-        self.assertIn("caller_expander = review.bounded_caller_expander(graph)",
-                      source)
-        self.assertIn("caller_expander=caller_expander", source)
 
 
 class TestCanonicalFindingEnforcement(unittest.TestCase):
@@ -310,17 +259,6 @@ class TestEvaluationErrorsZeroLensSet(unittest.TestCase):
         self.assertTrue(any("producer observation" in err or
                             "leased slot collection" in err
                             for err in errors), errors)
-
-
-class TestWorkflowAgnostic(unittest.TestCase):
-    """(g) loop.py stays workflow-agnostic after the wiring change."""
-
-    def test_zero_workflow_substrings(self):
-        src = _loop_src()
-        for marker in ("workflows/", "TASKPLANE_WORKFLOWS",
-                       "CLAUDE_CODE_WORKFLOWS", "workflow_available(",
-                       "review-wave"):
-            self.assertNotIn(marker, src)
 
 
 if __name__ == "__main__":

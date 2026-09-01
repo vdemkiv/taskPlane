@@ -3,74 +3,37 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>R-0001 canonical settings, dashboard publication, and lifecycle flow</title>
+  <title>R-0002 current-run control plane</title>
   <style>
-    :root{color-scheme:dark;--bg:#0b1020;--card:#151d33;--line:#7184b7;--text:#eef3ff;--muted:#aab6d6;--blue:#64a8ff;--green:#62d5a4;--amber:#f4c76b;--red:#ff8796}
-    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#1c2a52 0,var(--bg) 48%);color:var(--text);font:15px/1.45 ui-sans-serif,system-ui,sans-serif}
-    main{max-width:1180px;margin:auto;padding:32px}h1{font-size:28px;margin:0 0 8px}h2.section{margin:34px 0 10px}p{color:var(--muted);margin:0 0 24px}.grid{display:grid;grid-template-columns:1fr 1.1fr 1fr;gap:18px;align-items:stretch}.col{display:grid;gap:12px}.box{background:linear-gradient(145deg,#18223d,#10182c);border:1px solid #33446f;border-radius:14px;padding:16px;box-shadow:0 10px 30px #0005}.box h2{font-size:15px;margin:0 0 7px;color:var(--blue)}.box strong{color:var(--text)}.source{border-color:var(--amber)}.source h2{color:var(--amber)}.core{border-color:var(--green);min-height:150px}.core h2{color:var(--green)}.danger{border-color:var(--red)}.danger h2{color:var(--red)}.arrow{text-align:center;color:var(--line);font-size:25px;align-self:center}.flow{display:grid;grid-template-columns:1fr 50px 1.1fr 50px 1fr;gap:6px;align-items:center}.stack{display:grid;gap:12px}.foot{margin-top:20px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.tag{display:inline-block;border:1px solid #516698;border-radius:999px;padding:3px 8px;margin:3px 4px 0 0;color:#d7e2ff;font-size:12px}.graph-meta{margin-top:22px}.graph-meta summary{cursor:pointer;color:var(--green);font-weight:700}.edges{max-height:520px;overflow:auto;padding-right:12px}.edges li{margin:8px 0;color:var(--muted)}code{color:#d9e5ff}.dash{margin-top:18px}.dash .core{min-height:unset}@media(max-width:900px){.flow{grid-template-columns:1fr}.arrow{transform:rotate(90deg)}.foot{grid-template-columns:1fr}.grid{grid-template-columns:1fr}}
+    :root{color-scheme:dark;background:#08111f;color:#e7eefb;font:16px/1.45 system-ui,sans-serif}body{margin:0;padding:28px;max-width:1180px;margin-inline:auto}h1{font-size:clamp(1.5rem,4vw,2.5rem)}.flow{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}.node{border:1px solid #486385;border-radius:12px;padding:14px;background:#101d30}.node strong{display:block;color:#91c9ff}.protected{border-color:#79e0bb}.hold{border-color:#ffb56b}.note{color:#b8c7dd}ol{padding-left:1.2rem}@media(max-width:520px){body{padding:16px}.flow{grid-template-columns:1fr}}
   </style>
 </head>
-<body><main>
-  <h1>One settings authority, one host snapshot, one cleanup truth</h1>
-  <p>R-0001 proposed data flow. Workflow state remains authoritative; settings and dashboard consumers receive frozen snapshots or sealed projections, never local defaults or reconstructed renderer state.</p>
-  <section class="flow">
-    <div class="stack">
-      <article class="box source"><h2>Sole persisted authority</h2><strong>operational-settings.json</strong><br>Defaults · override classes · stage routes · shards · timeouts · budgets · transport · cleanup</article>
-      <article class="box"><h2>Inputs, not authorities</h2>Safe CLI/environment overlays<br>Legacy aliases (one release)<br>Typed host observations</article>
-    </div>
-    <div class="arrow">→</div>
-    <div class="stack">
-      <article class="box core"><h2>Typed fail-closed boundary</h2><strong>settings.py → immutable SettingsContext</strong><br>Closed validation · precedence · portable bytes · effective digest · redacted receipt</article>
-      <article class="box danger"><h2>Stops before side effects</h2>Unknown/malformed/conflicting value · incompatible host · unsafe override · partial wiring · stale digest</article>
-    </div>
-    <div class="arrow">→</div>
-    <div class="stack">
-      <article class="box"><h2>Governed consumers</h2>CLI/preflight/flows · hooks/skills/workflows · worker/handoff · cache/dashboard · package/release</article>
-      <article class="box"><h2>Validation authority</h2>Exact selector → radius → proportional → one frozen-SHA GitHub Actions matrix</article>
-      <article class="box"><h2>Lifecycle authority</h2>Reserve-before-create manifest → all-outcome handlers → cleanup receipt → zero-leak barrier</article>
-    </div>
+<body>
+  <h1>R-0002 current-run control plane</h1>
+  <p class="note">One settings authority and one active-run snapshot sequence every producer. Boxes are responsibility boundaries, not new state stores.</p>
+  <section class="flow" aria-label="Design and delivery sequence">
+    <div class="node"><strong>ActiveRunSnapshot</strong>run · requirement · candidate · settings · authority</div>
+    <div class="node"><strong>Design</strong>decompose → select → auto-assign → parallel lenses → consolidate</div>
+    <div class="node"><strong>Build quality</strong>static · collect · exact tests · consumers · proportional</div>
+    <div class="node hold"><strong>Classify before correction</strong>product · test · infrastructure · environment · mixed · unknown</div>
+    <div class="node"><strong>Authoritative CI</strong>one unsharded Python 3.12 suite + disjoint validations</div>
+    <div class="node"><strong>Sign-off</strong>Engineering → metrics seal → cleanup → Retro</div>
   </section>
-  <section class="foot">
-    <article class="box"><h2>Parallel by default</h2><span class="tag">disjoint Build slices</span><span class="tag">CI shards</span><span class="tag">package/quality/graph</span><span class="tag">independent cleanup handlers</span></article>
-    <article class="box"><h2>Serialized only by named authority</h2><span class="tag">schema before adapters</span><span class="tag">reserve before create</span><span class="tag">evidence before delete</span><span class="tag">freeze before CI</span><span class="tag">green main before tag</span></article>
-    <article class="box"><h2>Final proof</h2><span class="tag">0 duplicate defaults</span><span class="tag">≤230 files</span><span class="tag">≤4200 cases</span><span class="tag">≥4× CI</span><span class="tag">0 leaks</span><span class="tag">≤12h phase</span></article>
+  <h2>Current graph publication</h2>
+  <ol>
+    <li>Seal the current stage graph into the canonical snapshot.</li>
+    <li>Render dashboard, native, JSON, Markdown, and HTML from that snapshot only.</li>
+    <li>Publish by expected-head compare-and-swap; reject delayed prior-run or prior-stage output.</li>
+  </ol>
+  <h2>Durable evidence boundary</h2>
+  <section class="flow" aria-label="Run artifact classes">
+    <div class="node protected"><strong>dashboard/</strong>generations + publication receipts</div>
+    <div class="node protected"><strong>dependency-graphs/</strong>decomposition + phase graph snapshots</div>
+    <div class="node protected"><strong>telemetry/</strong>dispatch + token/evaluator receipts</div>
+    <div class="node protected"><strong>agent-activity/</strong>assignment, progress, attention, terminal events</div>
+    <div class="node protected"><strong>validation/</strong>Build quality + CI receipts</div>
+    <div class="node protected"><strong>cleanup/ and retro/</strong>zero-leak proof + minimized export</div>
   </section>
-  <h2 class="section">Dashboard publication correction</h2>
-  <section class="flow dash" aria-label="Canonical dashboard publication flow">
-    <div class="stack">
-      <article class="box source"><h2>Committed inputs</h2>Loop/stage event · failed or successful gate · worker/lens terminal · cancel/interruption/timeout · handoff/recovery</article>
-      <article class="box"><h2>Phase sources stay distinct</h2>Design proposed graph · Plan task DAG/waves · repository module impact with truthful totals</article>
-    </div>
-    <div class="arrow">→</div>
-    <div class="stack">
-      <article class="box core"><h2>One existing v1 snapshot</h2><strong>loop_status → HostSurfaceSnapshot</strong><br>one source-mode read · revision · monotonic sequence · committed generated_at · settings/graph digests · fingerprint</article>
-      <article class="box danger"><h2>Fail closed before projection</h2>stale · contradictory · identity change · post-terminal · invalid graph · mixed legacy/v4</article>
-    </div>
-    <div class="arrow">→</div>
-    <div class="stack">
-      <article class="box"><h2>Sibling native path</h2>HostNativeRecovery → capability selection → Codex/Claude projection</article>
-      <article class="box"><h2>Sibling static path</h2>JSON + Markdown + one HTML document → generation fsync → atomic current pointer</article>
-      <article class="box"><h2>No silent stale page</h2>Exact host acknowledgement or visible STATIC/UNVERIFIED/STALE alert with actions disabled</article>
-    </div>
-  </section>
-  <details class="box graph-meta">
-    <summary>Complete proposed graph — 42 modules / 58 edges</summary>
-    <p>All proposed modules and every directed edge are enumerated below; this is the visualization of the machine graph in <code>design/contract.json</code>, not the repository blast-radius sample.</p>
-    <div class="module-list">
-      <span class="tag">taskplane/tp.py</span><span class="tag">taskplane/taskplane_lite.py</span><span class="tag">taskplane/loop.py</span><span class="tag">taskplane/loop_status.py</span><span class="tag">taskplane/views.py</span><span class="tag">taskplane/host_native.py</span><span class="tag">hooks/host_native_runtime.py</span><span class="tag">taskplane/depgraph.py</span><span class="tag">taskplane/plan_topology.py</span><span class="tag">taskplane/preflight.py</span><span class="tag">taskplane/storage.py</span><span class="tag">taskplane/host_capabilities.py</span><span class="tag">taskplane/delivery_ports.py</span><span class="tag">taskplane/stage_handoff.py</span><span class="tag">taskplane/worktree_cleanup.py</span><span class="tag">taskplane/command_runtime.py</span><span class="tag">taskplane/governed_commands.py</span><span class="tag">taskplane/release_evidence.py</span><span class="tag">taskplane/dashboard.py</span><span class="tag">taskplane/retro.py</span><span class="tag">hooks</span><span class="tag">agents</span><span class="tag">skills</span><span class="tag">workflows</span><span class="tag">.github/workflows</span><span class="tag">scripts</span><span class="tag">docs</span><span class="tag">specs</span><span class="tag">design</span><span class="tag">plan</span><span class="tag">(root)</span><span class="tag">taskplane/tests</span><span class="tag">taskplane/operational-settings.json</span><span class="tag">taskplane/settings.py</span><span class="tag">taskplane/settings_legacy.py</span><span class="tag">taskplane/settings_inventory.json</span><span class="tag">taskplane/test_strategy.py</span><span class="tag">taskplane/test_portfolio.json</span><span class="tag">taskplane/ci_policy.py</span><span class="tag">taskplane/ci_failure_batching.py</span><span class="tag">taskplane/owned_cleanup.py</span><span class="tag">taskplane/wave_metrics.py</span>
-    </div>
-    <ol class="edges">
-      <li>operational-settings.json —configures→ settings.py</li><li>settings_legacy.py —adapts→ settings.py</li><li>host_capabilities.py —observes→ settings.py</li>
-      <li>settings.py —provides→ effective-settings contract</li><li>settings.py —provides→ effective-settings receipt</li><li>settings.py —initializes→ tp.py</li><li>settings.py —injects→ loop.py</li><li>settings.py —injects→ preflight.py</li><li>settings.py —binds→ stage_handoff.py</li><li>settings.py —provides→ flow-initialization contract</li><li>settings_inventory.json —verifies→ flow-initialization contract</li>
-      <li>test_strategy.py —provides→ test-strategy contract</li><li>test_portfolio.json —adjudicates→ test-strategy contract</li><li>ci_policy.py —provides→ authoritative-CI contract</li><li>ci_failure_batching.py —classifies→ authoritative-CI contract</li><li>.github/workflows —executes→ authoritative-CI contract</li>
-      <li>owned_cleanup.py —provides→ owned-cleanup contract</li><li>worktree_cleanup.py —adapts→ owned_cleanup.py</li><li>command_runtime.py —identifies→ owned_cleanup.py</li><li>owned_cleanup.py —provides→ cleanup receipt</li>
-      <li>release_evidence.py —enforces→ protected-main release contract</li><li>scripts —verifies→ protected-main release contract</li><li>wave_metrics.py —provides→ wave-metrics receipt</li><li>wave_metrics.py —projects→ dashboard.py</li>
-      <li>loop.py —commits→ loop_status.py</li><li>tp.py —notifies→ loop_status.py</li><li>taskplane_lite.py —adapts→ loop_status.py</li><li>storage.py —provides→ loop_status.py</li><li>loop_status.py —assembles→ host_native.py</li><li>host_native.py —provides→ canonical-dashboard-state contract</li><li>loop_status.py —publishes→ views.py</li><li>host_native.py —injects→ views.py</li><li>host_native.py —recovers→ host_native_runtime.py</li><li>host_capabilities.py —selects→ host_native_runtime.py</li><li>host_native_runtime.py —projects→ dashboard.py</li><li>views.py —provides→ dashboard-publication receipt</li><li>dashboard-publication receipt —verifies→ canonical-dashboard-state contract</li>
-      <li>design —provides→ phase-dependency-graphs contract</li><li>plan —provides→ phase-dependency-graphs contract</li><li>depgraph.py —projects→ dashboard.py</li><li>plan_topology.py —projects→ dashboard.py</li><li>dashboard.py —projects→ phase-dependency-graphs contract</li><li>settings.py —binds→ canonical-dashboard-state contract</li><li>tests —verifies→ canonical-dashboard-state contract</li><li>tests —verifies→ phase-dependency-graphs contract</li>
-      <li>tests —verifies→ effective-settings contract</li><li>tests —verifies→ test-strategy contract</li><li>tests —verifies→ authoritative-CI contract</li><li>tests —verifies→ owned-cleanup contract</li><li>tests —verifies→ protected-main release contract</li>
-      <li>specs —declares→ test-strategy contract</li><li>design —declares→ flow-initialization contract</li><li>plan —decomposes→ test-strategy contract</li><li>agents —consumes→ flow-initialization contract</li><li>skills —consumes→ flow-initialization contract</li><li>workflows —consumes→ flow-initialization contract</li><li>hooks —consumes→ flow-initialization contract</li><li>(root) —documents→ wave-metrics receipt</li>
-    </ol>
-    <p>These are the exact 58 directed edges in the adjacent machine contract; full reasons remain there. No edge or module is represented by the repository module-impact sample.</p>
-  </details>
-</main></body>
+  <p class="note">Cleanup removes only inventory-owned temporary state. The run-artifact root is excluded and re-read after cleanup.</p>
+</body>
 </html>

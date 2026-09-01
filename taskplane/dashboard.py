@@ -189,6 +189,19 @@ def _read_trace(ws: str, limit: int = 24) -> list:
     return _read_trace_all(ws)[-limit:][::-1]
 
 
+def _current_run_events(events: list[dict]) -> list[dict]:
+    """Return only events belonging to the latest initialized loop.
+
+    The audit log intentionally spans runs.  Dashboard execution counters and
+    its live feed do not: showing prior agents/waves as active-run progress is
+    a provenance bug.  Legacy logs have no run id, so the latest durable
+    ``loop_init`` is the conservative boundary.
+    """
+    boundary = next((index for index in range(len(events) - 1, -1, -1)
+                     if events[index].get("event") == "loop_init"), None)
+    return events[boundary:] if boundary is not None else events
+
+
 # ------------------------------------------------------- message catalog
 # Complete message templates live in locale resources.  Locale resolution is
 # intentionally per render/call (not mutable import-time state), making
@@ -1661,6 +1674,33 @@ _DOC_VARS = """
   .tp-kicker{font-family:var(--font-mono);font-size:10px;letter-spacing:1.6px;
     text-transform:uppercase;color:var(--text-muted);margin:0 0 4px;}
   .tp-lede{font-size:13px;color:var(--text-secondary);line-height:1.65;margin:2px 0 0;}
+  #tp-dashboard-freshness-status{position:sticky;top:0;z-index:10;
+    padding:9px 14px;border-bottom:1px solid var(--border-strong);
+    background:var(--surface-1);color:var(--text-secondary);
+    font:600 12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
+  #tp-dashboard-freshness-status[data-status="stale"],
+  #tp-dashboard-freshness-status[data-status="unverified"]{
+    color:var(--text-warning);background:var(--bg-warning);}
+  #dashboard-snapshot{box-sizing:border-box;max-width:940px;margin:0 auto;
+    padding:26px 22px 56px;overflow:hidden;}
+  .tp-binding{display:grid;grid-template-columns:minmax(9rem,auto) minmax(0,1fr);
+    gap:6px 14px;margin:10px 0 0;}
+  .tp-binding dt{font:600 10.5px/1.4 var(--font-mono);color:var(--text-muted);
+    text-transform:uppercase;letter-spacing:.7px;}
+  .tp-binding dd{margin:0;font:12px/1.5 var(--font-mono);
+    overflow-wrap:anywhere;word-break:break-word;}
+  .tp-phase-graph{box-sizing:border-box;max-width:100%;overflow-x:auto;
+    overflow-y:hidden;overscroll-behavior-inline:contain;padding:10px 0;}
+  .tp-phase-graph svg{display:block;width:100%;height:auto;min-height:104px;
+    overflow:visible;}
+  .tp-phase-graph text{paint-order:stroke;stroke:var(--surface-1);
+    stroke-width:.35px;}
+  @media (max-width:767px){
+    #dashboard-snapshot{padding:18px 14px 40px;}
+    .tp-binding{grid-template-columns:1fr;gap:2px;}
+    .tp-binding dd{margin-bottom:7px;}
+    .tp-phase-graph svg{width:max(100%,680px);min-width:680px;min-height:112px;}
+  }
   hr.pg{border:0;border-top:1px solid var(--border);margin:26px 0 0;}
 """
 
@@ -3147,12 +3187,13 @@ def phase_graph_projection(
     snapshot_values: Mapping[str, Any] | None = None,
     impact: Mapping[str, Any] | None = None,
     module_impact_limit: int = 8,
+    require_bound: bool = False,
 ) -> dict[str, Any]:
-    """Compatibility facade over the canonical acyclic phase projector."""
-    return _pt.phase_graph_projection(
+    """Compatibility facade over the canonical read-model composition."""
+    import loop_status
+    return loop_status.phase_graph_projection(
         workspace, state, snapshot_values=snapshot_values, impact=impact,
-        module_impact_limit=module_impact_limit, loop_loader=_load_loop,
-        impact_loader=lambda ws, tasks: _current_graph_impact(ws, tasks))
+        module_impact_limit=module_impact_limit, require_bound=require_bound)
 
 
 render_phase_dependency_graphs = _pt.render_phase_dependency_graphs
@@ -3548,7 +3589,8 @@ def _graph_panel(ws, tasks, state=None, snapshot_values=None):
     current_impact = _current_graph_impact(ws, tasks)
     phase_html = render_phase_dependency_graphs(phase_graph_projection(
         ws, state, snapshot_values=snapshot_values,
-        impact=current_impact if current_impact else None))
+        impact=current_impact if current_impact else None,
+        require_bound=True))
     g = _dg.load(ws)          # external store, via the graph owner's loader
     if not (g.get("modules") or g.get("edges")):
         return (phase_html
@@ -4773,7 +4815,8 @@ def _widget_parts(ws: str) -> dict:
     tasks = (state or {}).get("tasks") or []
     parallel = bool((state or {}).get("parallel"))
     tstats = {}
-    all_ev = _read_trace_all(ws, stats=tstats)   # the trace: parsed ONCE
+    all_ev = _current_run_events(
+        _read_trace_all(ws, stats=tstats))       # parsed once, run-bound once
     trace = all_ev[-8:][::-1]
     full_trace = all_ev[::-1]
     denials = sum(1 for e in full_trace
@@ -5057,6 +5100,115 @@ def report_widget(ws: str) -> str:
         + p["hero"] + p["dor"] + p["stats"]
         + p["workflow"] + p["graph"] + execution + context
         + p["gatebar"] + '</div>' + _WIDGET_JS)
+
+
+def render_canonical_dashboard_snapshot(snapshot: Mapping[str, Any]) -> str:
+    """Render the durable dashboard from one frozen snapshot only.
+
+    Durable publication runs after the workflow transition has committed.  A
+    renderer that opens loop state, Design, Plan, or graph files again can
+    cross that boundary and show a different run/revision than the canonical
+    JSON embedded beside it.  This deliberately compact report consumes only
+    snapshot values; richer live widgets remain available through
+    :func:`report_widget` for non-durable interactive use.
+    """
+    if not isinstance(snapshot, Mapping):
+        raise TypeError("canonical dashboard snapshot must be a mapping")
+    values_value = snapshot.get("values")
+    values = values_value if isinstance(values_value, Mapping) else {}
+    loop_value = values.get("loop")
+    loop = loop_value if isinstance(loop_value, Mapping) else {}
+    stage = str(snapshot.get("stage") or loop.get("step") or "unknown")
+    goal = _visible_text(loop.get("goal") or snapshot.get("target") or
+                         "Taskplane run", 120)
+    phase = {"schema": _PHASE_GRAPH_SCHEMA, "step": stage}
+    for key in ("design_graph", "plan_task_dag", "plan_waves",
+                "module_impact"):
+        component = values.get(key)
+        if isinstance(component, Mapping):
+            phase[key] = dict(component)
+    phase["fingerprint"] = _pt._phase_digest(phase)
+    graphs = render_phase_dependency_graphs(phase)
+    graph_error = values.get("phase_graph_error")
+    if not graphs:
+        graphs = (
+            '<section class="tp-phase-graph" id="tp-phase-graphs-pending" '
+            'data-status="pending"><p class="tp-kicker">dependency graph</p>'
+            '<p class="tp-lede">No graph artifact is bound to this run and '
+            'stage yet. Prior workspace artifacts were not reused.</p></section>')
+    if graph_error:
+        graphs = (
+            '<section class="tp-phase-graph" id="tp-phase-graphs-degraded" '
+            'data-status="degraded" role="status"><p class="tp-kicker">'
+            'dependency graph · degraded</p><p class="tp-lede">'
+            + _esc(graph_error) + '</p></section>' + graphs)
+
+    provenance_value = values.get("provenance")
+    provenance = (provenance_value if isinstance(provenance_value, Mapping)
+                  else {})
+    binding_rows = (
+        ("run", snapshot.get("run_id")),
+        ("requirement", provenance.get("requirement_id") or
+         loop.get("requirement_id")),
+        ("stage", stage),
+        ("revision", snapshot.get("revision")),
+        ("settings", provenance.get("settings_digest") or
+         values.get("settings_digest")),
+        ("authority receipt", provenance.get("authority_receipt")),
+        ("snapshot", snapshot.get("fingerprint")),
+        ("graph receipt", provenance.get("graph_receipt") or
+         phase.get("fingerprint")),
+        ("publication epoch", provenance.get("publication_epoch") or
+         snapshot.get("sequence")),
+    )
+    binding = (
+        '<section class="tp-sec" id="tp-canonical-provenance" '
+        'aria-labelledby="tp-canonical-provenance-label"><p class="tp-kicker" '
+        'id="tp-canonical-provenance-label">current snapshot binding</p>'
+        '<dl class="tp-binding">' + "".join(
+            '<dt>' + _esc(label) + '</dt><dd data-binding="' +
+            _attr(label.replace(" ", "-")) + '">' +
+            _esc(value if value not in (None, "") else "unavailable") +
+            '</dd>' for label, value in binding_rows) + '</dl></section>')
+
+    tasks = [row for row in (loop.get("tasks") or ())
+             if isinstance(row, Mapping)]
+    task_rows = "".join(
+        '<li><code>' + _esc(row.get("id", "?")) + '</code> · '
+        + _esc(row.get("status", "unknown")) + '</li>' for row in tasks)
+    execution = (
+        '<section class="tp-sec" id="tp-canonical-execution">'
+        '<p class="tp-kicker">current execution</p><p class="tp-lede">'
+        + str(len(tasks)) + ' governed tasks from the frozen snapshot</p>'
+        + ('<ol>' + task_rows + '</ol>' if task_rows else
+           '<p class="tp-lede">No task set is bound at this stage.</p>')
+        + '</section>')
+    actions = "".join(
+        '<button data-dashboard-action="' + _attr(action) + '">' +
+        _esc(action) + '</button>'
+        for action in snapshot.get("safe_actions") or ()
+        if isinstance(action, str))
+    action_panel = (
+        '<section class="tp-sec" id="tp-canonical-actions">'
+        '<p class="tp-kicker">governed actions</p>' + actions + '</section>'
+        if actions else "")
+    metrics = render_wave_metrics_projection(values.get("wave_metrics"))
+    stage_status = (" · finalizing — retro + graph true-up"
+                    if stage == "retro" else "")
+    return (
+        _WIDGET_CSS
+        + '<main id="dashboard-snapshot" data-dashboard-source="canonical" '
+          'data-run-id="' + _attr(snapshot.get("run_id", "")) + '" '
+          'data-revision="' + _attr(snapshot.get("revision", "")) + '">'
+        + '<p class="tp-kicker">taskplane · canonical governed snapshot</p>'
+        + '<h1 style="font-size:21px;margin:4px 0">' + _esc(goal) + '</h1>'
+        + '<p class="tp-lede">stage <code>' + _esc(stage)
+        + '</code> · sequence ' + _esc(snapshot.get("sequence", ""))
+        + stage_status + '</p>'
+        + binding
+        + '<section class="tp-sec" id="tp-canonical-phase-graphs">'
+          '<p class="tp-kicker">stage dependency graph</p>' + graphs
+        + '</section>' + execution + metrics + action_panel + '</main>')
 
 
 def _page_bytes(html: str) -> int:

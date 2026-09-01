@@ -216,7 +216,16 @@ explicit approval in conversation. Never run the loop silently.
    `loop next` again while it is running, or replace its contract. The PM
    worker returns one R-id; attach it on its mechanical gate with
    `$TP loop gate pass --req R-XXXX`. Product/planner return artifacts; only
-   execute/fix/evaluate/engineering workers submit. Design writes
+   execute/fix/evaluate/engineering workers submit. Before the Design owner
+   runs, execute the complete `design_lens_dispatches` set returned by that
+   same `loop next`: resolve every package-relative role reference and digest,
+   spawn all selected quick lenses concurrently with their exact host fields
+   and child contracts, wait once using `design_lens_wait_policy`, and collect
+   exactly one bound terminal result for each selected lens. Do not choose the
+   workers yourself, reuse a prior route, add a familiar lens, or serialize
+   pairwise-disjoint lenses. Missing, stale, foreign, or replayed host
+   authority blocks Design. After that exact set validates, dispatch the
+   emitted `tp-designer` owner once to consolidate the result. Design writes
    `design/contract.json` and
    `design/design.md`, compares alternatives, declares a proposed graph
    overlay with bounded contract-level boundaries, runs the mandatory

@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -149,15 +150,72 @@ class DesignWorkflowTest(unittest.TestCase):
                 if visualization_required else
                 "The design document and graph edge are sufficient."
             },
-            "lens_evidence": [
-                {"lens": "solution-design", "verdict": "pass",
-                 "blockers": 0,
-                 "evidence": "alternatives, boundaries, and drift policy checked",
-                 "produced_by": "tp-lens solution-design run",
-                 "independent": True}
-            ],
+            "lens_evidence": [],
             "open_questions": []
         }
+        state = loop.load(self.ws)
+        plan = state["design_team_plan"]
+        authority = plan["host_authority"]
+        artifact_root = loop._run_artifact_root(self.ws, state)
+        artifact_binding = state["run_artifact_binding"]
+        for index, worker in enumerate(plan["workers"], start=1):
+            expectation = tp.peek_expectation(
+                self.ws, worker["task_name"], strict=True)
+            self.assertIsNotNone(expectation)
+            tp.record_design_dispatch_assignment_activity(
+                self.ws, expectation)
+            self.assertTrue(tp.commit_dispatch_verification(
+                self.ws, worker["task_name"], worker["model"], expectation,
+                True, worker["reasoning_effort"], strict=True))
+            worker_contract = tp.build_contract(
+                f"DESIGN LENS: {worker['lens']}", read_only=True,
+                write_allow=[worker["output"]], tools=["Read", "Write"])
+            worker_contract["task_id"] = worker["task_slot"]
+            worker_contract = tp.prepare_worker_contract(
+                self.ws, worker_contract, stage="design-lens",
+                task=worker["lens"], task_name=worker["task_name"],
+                role_marker=worker["role_marker"])
+            worker_contract = tp.attach_design_lens_host_authority(
+                worker_contract, authority["workers"][worker["lens"]],
+                artifact_root=artifact_root,
+                artifact_binding=artifact_binding)
+            tp.activate(
+                self.ws, worker_contract, snapshot=tp.git_head(self.ws),
+                task_slot_override=worker["task_slot"])
+            event = {
+                "cwd": self.ws, "session_id": "design-workflow-session",
+                "agent_id": f"design-workflow-agent-{index}",
+                "agent_type": worker["task_name"],
+                "task_name": worker["task_name"],
+                "turn_id": f"design-workflow-turn-{index}",
+            }
+            host_binding = tp.bind_worker_contract_event(self.ws, event)
+            tp.record_design_worker_start_activity(
+                self.ws, host_binding, event)
+            result_material = {
+                "schema": "taskplane.design-lens-result/v1",
+                "lens": worker["lens"],
+                "worker_identity": worker["task_name"],
+                "team_plan_fingerprint": plan["fingerprint"],
+                "candidate_fingerprint": plan["candidate_fingerprint"],
+                "outcome": "pass", "findings": [],
+            }
+            result_material["fingerprint"] = hashlib.sha256(json.dumps(
+                result_material, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False).encode(
+                    "utf-8")).hexdigest()
+            result_path = os.path.join(self.ws, worker["output"])
+            os.makedirs(os.path.dirname(result_path), exist_ok=True)
+            with open(result_path, "w", encoding="utf-8") as stream:
+                json.dump(result_material, stream)
+            tp.terminalize_worker_contract(
+                self.ws, {**event, "outcome": "success"},
+                outcome="success", submission_status="not_required")
+            contract["lens_evidence"].append({
+                "lens": worker["lens"], "verdict": "pass", "blockers": 0,
+                "evidence": "the assigned Design concern was checked",
+                "produced_by": worker["task_name"], "independent": True,
+            })
         os.makedirs(os.path.join(self.ws, "design"), exist_ok=True)
         with open(os.path.join(self.ws, "design", "design.md"), "w", encoding="utf-8") as f:
             f.write("# Governed Design\n\nUse an optional loop state.\n")
@@ -165,8 +223,9 @@ class DesignWorkflowTest(unittest.TestCase):
             with open(os.path.join(self.ws, "design", "visual.html"), "w", encoding="utf-8") as f:
                 f.write("<div>Product → Design → Approve → Plan</div>\n")
         # v2.3.0: lens evidence is bound to the exact design content judged.
-        contract["lens_evidence"][0]["content_fingerprint"] = \
-            dc.design_content_fingerprint(self.ws, contract)
+        content_fingerprint = dc.design_content_fingerprint(self.ws, contract)
+        for evidence in contract["lens_evidence"]:
+            evidence["content_fingerprint"] = content_fingerprint
         with open(os.path.join(self.ws, "design", "contract.json"), "w", encoding="utf-8") as f:
             json.dump(contract, f, indent=2)
         return contract
@@ -206,8 +265,12 @@ class DesignWorkflowTest(unittest.TestCase):
                   requirement_id=self.req["id"], design=True)
         action = loop.next_action(self.ws)
         self.assertEqual(action["role"], "tp-designer")
-        self.assertEqual({x["id"] for x in action["lenses"]},
-                         {x["id"] for x in lens.load_catalog()["lenses"]})
+        selected = {x["lens"] for x in action["design_lens_dispatches"]}
+        state = loop.load(self.ws)
+        self.assertEqual(selected, set(state["design_team_plan"]["selected"]))
+        self.assertLessEqual(len(selected), 16)
+        self.assertEqual(state["design_decomposition_receipt"]["status"],
+                         "ready")
         solution = next(x for x in action["lenses"]
                         if x["id"] == "solution-design")
         self.assertNotEqual(solution["mode"], "none")

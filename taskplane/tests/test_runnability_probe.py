@@ -22,9 +22,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import lens                     # noqa: E402
+import loop                     # noqa: E402
 import runnability              # noqa: E402
 import taskplane_lite as tp     # noqa: E402
 
@@ -318,21 +320,47 @@ class TestEveryBriefCarriesTheVerdict(unittest.TestCase):
 class TestItIsInformationNotEnforcement(unittest.TestCase):
     """The deletability contract in spirit: runnability may never gate."""
 
-    def test_no_gate_or_screener_consults_the_probe(self):
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for mod in ("loop.py", "taskplane_lite.py", "obligations.py"):
-            with open(os.path.join(root, mod), encoding="utf-8") as f:
-                src = f.read()
-            self.assertNotIn("runnability", src,
-                             f"{mod} consults the runnability probe — it is "
-                             f"information, not a gate")
+    def test_pm_gate_is_invariant_under_absent_green_and_broken_probes(self):
+        verdicts = {
+            "absent": None,
+            "green": runnability.RUNS,
+            "broken": runnability.BROKEN,
+        }
+        for label, verdict in verdicts.items():
+            with self.subTest(probe=label), tempfile.TemporaryDirectory() as ws:
+                os.makedirs(os.path.join(ws, "specs"))
+                with open(os.path.join(ws, "specs", "spec.md"), "w",
+                          encoding="utf-8") as f:
+                    f.write("A current product requirement.\n")
+                subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+                subprocess.run(["git", "config", "user.email", "t@t"],
+                               cwd=ws, check=True)
+                subprocess.run(["git", "config", "user.name", "t"],
+                               cwd=ws, check=True)
+                subprocess.run(["git", "add", "-A"], cwd=ws, check=True)
+                subprocess.run(["git", "commit", "-qm", "base"], cwd=ws,
+                               check=True)
 
-    def test_the_probe_module_denies_nothing(self):
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "runnability.py"), encoding="utf-8") as f:
-            src = f.read()
-        for word in ("def deny", "blocked_reason", "sys.exit(2)"):
-            self.assertNotIn(word, src)
+                with mock.patch.dict(
+                        os.environ, {"TASKPLANE_STAGE_NATIVE": "disabled"}):
+                    self.assertEqual(loop.init(ws, "goal")["step"], "pm")
+                    if verdict is not None:
+                        runnability.store(ws, {
+                            "fingerprint": runnability.fingerprint(ws),
+                            "checks": [{
+                                "id": "python", "tool": "python3",
+                                "command": "pytest", "verdict": verdict,
+                                "detail": "ok" if verdict == runnability.RUNS
+                                else "dependency failure",
+                            }],
+                            "summary": "pytest runs" if verdict ==
+                            runnability.RUNS else
+                            "pytest could not run — dependency failure",
+                        })
+                    result = loop.gate(ws, "pass")
+
+                self.assertNotIn("error", result, result)
+                self.assertEqual(result["step"], "plan")
 
 
 class TestSummaryLine(unittest.TestCase):
@@ -362,13 +390,28 @@ class TestSummaryLine(unittest.TestCase):
 
 
 class TestNoLocaleDecoding(unittest.TestCase):
-    def test_the_probe_pins_its_encoding(self):
-        """v2.9.0's CI red: text=True without encoding= decodes with the
-        ambient locale, which is ascii on a bare runner."""
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "runnability.py"), encoding="utf-8") as f:
-            src = f.read()
-        self.assertIn('encoding="utf-8"', src)
+    def test_hostile_locale_preserves_non_ascii_probe_output(self):
+        """The verdict remains usable when a C-locale child emits UTF-8."""
+        spec = {
+            "id": "unicode", "markers": ("tool.marker",),
+            "tool": "python3", "test_cmd": "unicode tests",
+            "probe": (
+                sys.executable, "-c",
+                "import sys; sys.stdout.buffer.write("
+                "'café — ✓\\n'.encode('utf-8')); raise SystemExit(1)",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as ws:
+            open(os.path.join(ws, "tool.marker"), "w").close()
+            with mock.patch.object(runnability, "SPECS", (spec,)), \
+                    mock.patch.object(runnability, "_BY_ID", {"unicode": spec}), \
+                    mock.patch.object(runnability.shutil, "which",
+                                      return_value=sys.executable), \
+                    mock.patch.dict(os.environ, {"LC_ALL": "C", "LANG": "C"}):
+                result = runnability.probe(ws, only=["unicode"])
+
+        self.assertEqual(result["checks"][0]["verdict"], runnability.BROKEN)
+        self.assertEqual(result["checks"][0]["detail"], "café — ✓")
 
 
 if __name__ == "__main__":

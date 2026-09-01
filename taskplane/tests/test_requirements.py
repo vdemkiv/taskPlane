@@ -1,4 +1,3 @@
-import inspect
 import json
 import os
 import sys
@@ -31,13 +30,6 @@ def _req_from_inputs(fi):
 def _old_cycles(n_gaps):
     """Pre-recalibration forecast: every gap ~0.5 cycles, (n+1)//2."""
     return 0 if n_gaps == 0 else (n_gaps + 1) // 2
-
-
-def _functional_complete(fi):
-    """Does a corpus entry's recorded inputs have a COMPLETE functional
-    axis (the precondition for any NFR discount to apply at all)?"""
-    return bool(fi["functional_count"] and fi["acceptance_count"]
-                and not fi["open_questions_count"])
 
 
 class TestRequirementRecords(unittest.TestCase):
@@ -525,24 +517,6 @@ class TestRiskBearingNfrAxesAreNeverDiscounted(unittest.TestCase):
                 self.assertGreaterEqual(one["score"], 0.6)
                 self.assertEqual(
                     req.forecast_detail(one["gaps"])["cycles"], 0)
-
-    def test_the_discount_comment_does_not_claim_corpus_evidence(self):
-        """The corpus has ZERO entries in the population the discount
-        governs (every phase-1 row is functionally INCOMPLETE, every
-        phase-2 row has no NFR gap), so the comment may not claim it shows
-        anything about that population."""
-        src = inspect.getsource(req)
-        head = src[:src.index("GAP_WEIGHT_FUNCTIONAL")]
-        self.assertNotIn("rarely cost a cycle", head)
-        self.assertIn("ZERO entries", head)
-        governed = [e["task"] for e in _load("phase1-2-corpus.json")["entries"]
-                    if _functional_complete(e["forecast_inputs"])
-                    and set(e["forecast_inputs"]["applicable_nfr"])
-                    - set(e["forecast_inputs"]["covered_nfr"])]
-        self.assertEqual(governed, [], "the corpus now HAS entries in the "
-                         "discounted population — re-word the comment and "
-                         "calibrate the weight against them")
-
 
 class TestKBCoexistence(unittest.TestCase):
     def test_requirements_and_decisions_share_index(self):

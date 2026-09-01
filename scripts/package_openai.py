@@ -96,6 +96,17 @@ STAGE_RUNTIME_FILES = (
     "taskplane/dashboard.py",
     "taskplane/runtime_eval.py",
     "taskplane/release_evidence.py",
+    "taskplane/settings.py",
+    "taskplane/design_host_transport.py",
+    "taskplane/collision_registry.json",
+    "taskplane/build_quality.py",
+    "taskplane/failure_routing.py",
+    "taskplane/run_artifacts.py",
+    "taskplane/run_store.py",
+    "taskplane/owned_cleanup.py",
+    "taskplane/dispatch_telemetry.py",
+    "taskplane/wave_metrics.py",
+    "taskplane/retro.py",
     "docs/cli-reference.md",
     "skills/taskplane/SKILL.md",
     "skills/taskplane/flow.json",
@@ -127,7 +138,6 @@ RELEASE_SURFACE_FILES = (
 CANONICAL_AUTHORITY_FILES = (
     "taskplane/operational-settings.json",
     "taskplane/settings_inventory.json",
-    "taskplane/test_portfolio.json",
 )
 
 RELEASE_COMPATIBILITY_RECEIPT_FIELDS = frozenset({
@@ -1193,6 +1203,25 @@ def add_tree(files: set[Path], base: Path, predicate) -> None:
         files.add(path)
 
 
+def expected_skill_files(root: Path) -> tuple[str, ...]:
+    """Return every installable skill member for archive validation.
+
+    Skills are executable host inputs.  Checking only for one ``SKILL.md``
+    allowed a valid-looking archive to omit the dynamically selected Design
+    role or one of its references.  Derive the closed expectation from the
+    source generation being packaged, while retaining the intentional Codex
+    exclusion for the Claude-only tag surface.
+    """
+    base = root / "skills"
+    require(base.is_dir(), "release source is missing skills/")
+    return tuple(sorted(
+        path.relative_to(root).as_posix()
+        for path in base.rglob("*")
+        if path.is_file()
+        and path.relative_to(base).parts[0] not in OPENAI_EXCLUDED_SKILLS
+    ))
+
+
 def package_files(manifest: dict) -> list[Path]:
     validate_manifest(manifest)
     load_hook_manifest()
@@ -1200,6 +1229,10 @@ def package_files(manifest: dict) -> list[Path]:
     for relative in REQUIRED_FILES:
         path = ROOT / relative
         require(path.is_file(), f"required file is missing: {relative}")
+        files.add(path)
+    for relative in STAGE_RUNTIME_FILES:
+        path = ROOT / relative
+        require(path.is_file(), f"stage runtime member is missing: {relative}")
         files.add(path)
     for relative in CANONICAL_AUTHORITY_FILES:
         path = ROOT / relative
@@ -1277,6 +1310,7 @@ def validate_archive(
     require(path.stat().st_size <= 100 * 1024 * 1024, "compressed ZIP exceeds 100 MB")
     normalized: set[str] = set()
     uncompressed = 0
+    expected_surface_root = release_surface_root or ROOT
     with zipfile.ZipFile(path) as archive:
         members = archive.infolist()
         require(0 < len(members) <= 5000, "ZIP must contain 1-5000 entries")
@@ -1328,26 +1362,59 @@ def validate_archive(
         for required in stage_runtime_files:
             require(f"{ARCHIVE_ROOT}/{required}" in names,
                     f"ZIP is missing stage runtime member {required}")
+        for required in expected_skill_files(expected_surface_root):
+            require(f"{ARCHIVE_ROOT}/{required}" in names,
+                    f"ZIP is missing installable skill member {required}")
         package_version = (
             expected_version or release_runtime_constants()["CURRENT_VERSION"]
         )
         require(packaged_manifest.get("version") == package_version,
                 "ZIP Codex manifest does not match release runtime version")
-        expected_surface_root = release_surface_root or ROOT
         for required in canonical_authority_files:
             member = f"{ARCHIVE_ROOT}/{required}"
             require(member in names,
                     f"ZIP is missing canonical authority {required}")
-            require(archive.read(member) ==
-                    (expected_surface_root / required).read_bytes(),
-                    f"ZIP has stale canonical authority bytes for {required}")
+            try:
+                authority = json.loads(archive.read(member))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise PackageError(
+                    f"ZIP canonical authority is unreadable: {required}") from exc
+            require(isinstance(authority, Mapping),
+                    f"ZIP canonical authority is not an object: {required}")
+            expected_schema = (
+                "taskplane.operational-settings/v1"
+                if required.endswith("operational-settings.json")
+                else "taskplane.operational-settings-inventory/v1"
+            )
+            require(authority.get("schema") == expected_schema,
+                    f"ZIP canonical authority has an invalid schema: {required}")
         for required in release_surface_files:
             member = f"{ARCHIVE_ROOT}/{required}"
             require(member in names,
                     f"ZIP is missing forward-release surface {required}")
-            require(archive.read(member) ==
-                    (expected_surface_root / required).read_bytes(),
-                    f"ZIP has stale forward-release bytes for {required}")
+            try:
+                body = archive.read(member).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise PackageError(
+                    f"ZIP forward-release surface is not UTF-8: {required}") from exc
+            require(bool(body.strip()),
+                    f"ZIP forward-release surface is empty: {required}")
+            if required == "taskplane/release_evidence.py":
+                try:
+                    tree = ast.parse(body, filename=member)
+                except SyntaxError as exc:
+                    raise PackageError(
+                        "ZIP release runtime is not valid Python") from exc
+                assignments = {
+                    node.targets[0].id: ast.literal_eval(node.value)
+                    for node in tree.body
+                    if isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == "CURRENT_VERSION"
+                }
+                require(assignments.get("CURRENT_VERSION") == package_version,
+                        "ZIP release runtime and manifest versions disagree")
         try:
             hook_manifest = json.loads(
                 archive.read(f"{ARCHIVE_ROOT}/hooks/hooks.json"))

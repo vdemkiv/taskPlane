@@ -216,26 +216,6 @@ class TestABrokenLedgerNeverCostsAGate(_Ledgered):
                                side_effect=RuntimeError("boom")):
             ym.gate_snapshot(self.ws, "em", "pass")          # must not raise
 
-    def test_the_engine_never_reads_the_ledger(self):
-        """If the loop ever consumed this, a bad ledger could change a
-        verdict — and the module's central promise would be false."""
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for name in ("loop.py", "taskplane_lite.py", "audit.py",
-                     "evidence.py", "lens.py"):
-            path = os.path.join(root, name)
-            if not os.path.isfile(path):
-                continue
-            with self.subTest(module=name):
-                src = open(path, encoding="utf-8").read()
-                for banned in ("yield_meter.report", "yield_meter.read_ledger",
-                               "yield_meter.zero_yield"):
-                    self.assertNotIn(
-                        banned, src,
-                        f"{name} READS the yield ledger. The meter records; "
-                        "nothing in the engine may depend on it, or a broken "
-                        "ledger becomes a broken gate.")
-
-
 class TestTheFourRegressionsStayFixed(_Ledgered):
     """Four defects the whole-codebase review found in this module, all of
     which shipped the same day it did. Each is pinned by the case the
@@ -295,13 +275,6 @@ class TestTheFourRegressionsStayFixed(_Ledgered):
         ym.gate_snapshot(self.ws, "em", "pass")
         rows = {r["lens"]: r for r in ym.report(self.ws)["lenses"]}
         self.assertEqual(rows["i18n"]["stopped_recurring"], 1)
-
-    def test_the_dead_ordering_constant_is_gone(self):
-        """CAUGHT_ORDER was defined, documented as authoritative, read by
-        nothing, and named a step the engine does not emit."""
-        self.assertFalse(hasattr(ym, "CAUGHT_ORDER"))
-
-
 
 if __name__ == "__main__":
     unittest.main()

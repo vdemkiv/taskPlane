@@ -147,23 +147,16 @@ class TestTheInstrumentGatesNothing(_Ws):
         self.assertNotIn("error", out)
         self.assertIn("dashboard", out)
 
-    def test_leaving_an_obligation_open_blocks_no_gate(self):
+    def test_corrupt_and_open_instrument_ledger_blocks_no_real_gate(self):
         loop.init(self.ws, "goal")
         loop.next_action(self.ws)
         self.assertTrue(obligations.status(self.ws)["open"])
+        with open(obligations.ledger_path(self.ws), "a", encoding="utf-8") as f:
+            f.write("{corrupt ledger row\n")
+        self.assertTrue(any(row.get("event") == "unparseable"
+                            for row in obligations.read(self.ws)))
         out = loop.gate(self.ws, "pass")
         self.assertNotIn("error", out)
-
-    def test_the_engine_never_reads_the_ledger(self):
-        """Pinned the way the yield meter is: the engine may WRITE the
-        instrument and must never let it influence a decision."""
-        for name in ("loop.py", "taskplane_lite.py", "lens.py",
-                     "evidence.py", "audit.py"):
-            src = open(os.path.join(REPO, "taskplane", name),
-                       encoding="utf-8").read()
-            with self.subTest(module=name):
-                self.assertNotIn("obligations.status", src)
-                self.assertNotIn("obligations.read", src)
 
 
 class TestThePayloadCarriesTheObligation(_Ws):
@@ -175,10 +168,13 @@ class TestThePayloadCarriesTheObligation(_Ws):
         self.assertIn("do not render or acknowledge", d["render"])
 
     def test_a_human_gate_names_one_delivery_and_ack(self):
+        import loop_status
         import views
         loop.init(self.ws, "goal")
         internal = loop.next_action(self.ws)["dashboard"]["obligation"]
-        out = {"step": "plan_approval"}
+        publication = loop_status.refresh_dashboard_snapshot(
+            self.ws, event_type="gate", outcome="success")
+        out = {"step": "plan_approval", "dashboard_snapshot": publication}
         views.refresh_views(self.ws, out)
         d = out["dashboard"]
         self.assertEqual(d["obligation"], internal)
@@ -199,10 +195,13 @@ class TestThePayloadCarriesTheObligation(_Ws):
         """Demanding that someone show an artifact that was never built
         would make the instrument's own numbers fiction."""
         import dashboard
-        original = dashboard.report_widget
-        dashboard.report_widget = lambda *a, **k: (_ for _ in ()).throw(
+        original = dashboard.render_canonical_dashboard_snapshot
+        dashboard.render_canonical_dashboard_snapshot = \
+            lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError("renderer down"))
-        self.addCleanup(setattr, dashboard, "report_widget", original)
+        self.addCleanup(
+            setattr, dashboard, "render_canonical_dashboard_snapshot",
+            original)
         import views
         views._VIEW_FAILED_WARNED = True
         loop.init(self.ws, "goal")

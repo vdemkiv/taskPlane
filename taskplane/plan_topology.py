@@ -525,8 +525,14 @@ _PHASE_ORDER = {
     "execute": 5,
     "build": 5,
     "evaluate": 5,
+    "validate": 5,
+    "validation": 5,
+    "selection": 5,
     "fix": 5,
     "em": 6,
+    "engineering": 6,
+    "escalated": 6,
+    "resolve": 6,
     "signoff": 7,
     "retro": 8,
     "done": 9,
@@ -589,6 +595,86 @@ def _design_graph_projection(ws: str) -> dict[str, Any] | None:
         "module_total": len(modules),
         "edge_total": len(edges),
         "depth_policy": dict(graph.get("depth_policy") or {}),
+    }
+    return {**material, "fingerprint": _phase_digest(material)}
+
+
+def _design_decomposition_projection(
+    state: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Project the active run's sealed Design decomposition.
+
+    The decomposition receipt is the first authoritative Design graph.  It is
+    available before ``design/contract.json`` exists, which is precisely when
+    operators need the dashboard to explain the review team's inputs.  Refuse
+    a receipt unless both it and its requirement/settings binding recompute;
+    this presentation path never repairs or adopts legacy state.
+    """
+    receipt = state.get("design_decomposition_receipt")
+    binding = state.get("design_control_plane_binding")
+    if not isinstance(receipt, Mapping) or not isinstance(binding, Mapping):
+        return None
+    if receipt.get("schema") != "taskplane.design-decomposition-receipt/v1" \
+            or receipt.get("status") not in {"ready", "degraded"}:
+        return None
+    receipt_material = {str(key): value for key, value in receipt.items()
+                        if key != "fingerprint"}
+    receipt_fingerprint = _phase_digest(receipt_material)
+    if receipt.get("fingerprint") != receipt_fingerprint:
+        return None
+    binding_material = {str(key): value for key, value in binding.items()
+                        if key != "fingerprint"}
+    if binding.get("fingerprint") != _phase_digest(binding_material):
+        return None
+    if binding.get("requirement") != state.get("requirement_id") or \
+            binding.get("settings_digest") != state.get("settings_digest") or \
+            binding.get("decomposition_fingerprint") != receipt_fingerprint or \
+            (state.get("run_id") and
+             binding.get("run_id") != state.get("run_id")):
+        return None
+
+    raw_components = receipt.get("components")
+    if not isinstance(raw_components, list) or not raw_components:
+        return None
+    components = [row for row in raw_components if isinstance(row, Mapping)]
+    modules = [str(row.get("id") or "") for row in components]
+    if any(not value for value in modules) or len(set(modules)) != len(modules):
+        return None
+    known = set(modules)
+    edges: list[dict[str, str]] = []
+    for row in components:
+        source = str(row.get("id") or "")
+        for dependency in row.get("dependencies") or ():
+            if not isinstance(dependency, Mapping):
+                continue
+            target = str(dependency.get("to") or "")
+            if target not in known:
+                continue
+            edges.append({
+                "from": source,
+                "to": target,
+                "kind": str(dependency.get("kind") or "dependency"),
+                "reason": "scanner-owned component dependency",
+            })
+    material = {
+        "schema": _DESIGN_GRAPH_SCHEMA,
+        "source": "loop-state#/design_decomposition_receipt",
+        "design_graph_fingerprint": receipt.get("graph_fingerprint"),
+        "modules": modules,
+        "edges": edges,
+        "module_total": len(modules),
+        "edge_total": len(edges),
+        "depth_policy": {"scope": "selected-current-run-components"},
+        "decomposition_fingerprint": receipt_fingerprint,
+        "graph_state": receipt.get("status"),
+        "degraded_reasons": [str(reason) for reason in
+                             receipt.get("degraded_reasons") or ()],
+        "run_id": binding.get("run_id"),
+        "stage_instance_id": binding.get("stage_instance_id"),
+        "requirement": binding.get("requirement"),
+        "settings_digest": binding.get("settings_digest"),
+        "candidate_fingerprint": binding.get("candidate_fingerprint"),
+        "binding_fingerprint": binding.get("fingerprint"),
     }
     return {**material, "fingerprint": _phase_digest(material)}
 
@@ -676,6 +762,8 @@ def phase_graph_projection(
     module_impact_limit: int = 8,
     loop_loader=None,
     impact_loader=None,
+    require_bound: bool = False,
+    design_artifact_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Return distinct stage-aware graph components for every renderer.
 
@@ -692,11 +780,24 @@ def phase_graph_projection(
     rank = _PHASE_ORDER.get(step, -1)
     components: dict[str, dict[str, Any]] = {}
 
+    frozen_values = isinstance(snapshot_values, Mapping)
+
     if rank >= _PHASE_ORDER["design"]:
         design = _snapshot_component(
             snapshot_values, "design_graph", _DESIGN_GRAPH_SCHEMA)
-        if design is None:
-            design = _design_graph_projection(workspace)
+        if design is None and not frozen_values:
+            candidate = _design_graph_projection(workspace)
+            if candidate is not None and (not require_bound or (
+                    isinstance(state.get("design_fingerprint"), str)
+                    and state.get("design_fingerprint")
+                    == design_artifact_fingerprint
+                    and str(state.get("requirement_id") or "")
+                    == str((_read_dashboard_json(os.path.join(
+                        workspace, "design", "contract.json")) or {}).get(
+                            "requirement") or ""))):
+                design = candidate
+            if design is None:
+                design = _design_decomposition_projection(state)
         if design is not None:
             components["design_graph"] = design
 
@@ -705,7 +806,12 @@ def phase_graph_projection(
             snapshot_values, "plan_task_dag", PLAN_DASHBOARD_SCHEMA)
         waves = _snapshot_component(
             snapshot_values, "plan_waves", PLAN_WAVES_DASHBOARD_SCHEMA)
-        if dag is None or waves is None:
+        # A canonical snapshot is an atomic graph source.  Never fill a
+        # missing half of its Plan projection from mutable workspace files.
+        if (dag is None or waves is None) and frozen_values:
+            dag = None
+            waves = None
+        elif dag is None or waves is None:
             plan = _read_dashboard_json(
                 os.path.join(workspace, "plan", "tasks.json"))
             if plan is not None:
@@ -723,8 +829,16 @@ def phase_graph_projection(
                 except PlanTopologyError:
                     projected = None
                 if projected is not None:
-                    dag = dag or projected["dag"]
-                    waves = waves or projected["waves"]
+                    plan_bound = (
+                        projected["waves"].get("approval") == "approved"
+                        and str(plan.get("requirement") or "")
+                        == str(state.get("requirement_id") or "")
+                        and (not state.get("design_fingerprint") or
+                             plan.get("design_fingerprint")
+                             == state.get("design_fingerprint")))
+                    if not require_bound or plan_bound:
+                        dag = projected["dag"]
+                        waves = projected["waves"]
         if dag is not None:
             components["plan_task_dag"] = dag
         if waves is not None:
@@ -734,7 +848,7 @@ def phase_graph_projection(
         snapshot_values, "module_impact", _MODULE_IMPACT_SCHEMA)
     if canonical_impact is not None:
         components["module_impact"] = canonical_impact
-    else:
+    elif not frozen_values:
         raw_impact = impact
         if raw_impact is None:
             tasks = state.get("tasks") if isinstance(state.get("tasks"), list) else []
@@ -815,15 +929,21 @@ def _render_design_graph(component: Mapping[str, Any]) -> str:
     modules = [str(value) for value in component.get("modules") or ()]
     edges = [row for row in component.get("edges") or ()
              if isinstance(row, Mapping)]
+    decomposition = str(component.get("source") or "").endswith(
+        "/design_decomposition_receipt")
+    label = ("Design component dependency graph" if decomposition else
+             "Design proposed module & edge graph")
+    graph_state = str(component.get("graph_state") or "ready")
     return (
         '<section class="tp-phase-graph" id="tp-design-graph" '
         f'data-schema="{_phase_escape(component.get("schema", ""))}" '
         f'data-source="{_phase_escape(component.get("source", ""))}">'
-        '<p class="tp-kicker">Design proposed module &amp; edge graph</p>'
-        f'<p class="tp-lede">source {int(component.get("module_total", 0))} '
+        f'<p class="tp-kicker">{_phase_escape(label)}</p>'
+        f'<p class="tp-lede">state {_phase_escape(graph_state)} · source '
+        f'{int(component.get("module_total", 0))} '
         f'modules · {int(component.get("edge_total", 0))} edges · '
         f'<code>{_phase_escape(component.get("source", ""))}</code></p>'
-        + _bounded_graph_svg("tp-design-graph", "Design proposed graph",
+        + _bounded_graph_svg("tp-design-graph", label,
                              modules, edges) + '</section>')
 
 
