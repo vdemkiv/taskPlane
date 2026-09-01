@@ -900,12 +900,18 @@ def _internal(action: str) -> int:
     raise RunnerError(f"unknown internal action: {action}")
 
 
-def _load_runtime_plan(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise RunnerError("authoritative CI runtime plan is unavailable") from exc
-    if not isinstance(value, dict) or value.get("schema") != CI_RUNTIME_SCHEMA:
+def validate_authoritative_ci_runtime(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Authenticate one runner's sealed runtime before consuming its cell.
+
+    The runtime includes runner-local evidence, so another platform's runtime
+    is never substituted for the cell that actually executed there.
+    """
+    if not isinstance(value, Mapping):
+        raise RunnerError("authoritative CI runtime plan schema is invalid")
+    value = dict(value)
+    if value.get("schema") != CI_RUNTIME_SCHEMA:
         raise RunnerError("authoritative CI runtime plan schema is invalid")
     expected = _sha256_json({
         key: item for key, item in value.items() if key != "fingerprint"
@@ -917,6 +923,21 @@ def _load_runtime_plan(path: Path) -> dict[str, Any]:
     receipt = value.get("settings_receipt")
     if not all(isinstance(item, dict) for item in (candidate, plan, receipt)):
         raise RunnerError("authoritative CI runtime plan is incomplete")
+    try:
+        rebuilt_candidate = freeze_candidate(candidate)
+    except CIPolicyError as exc:
+        raise RunnerError("authoritative CI candidate is invalid") from exc
+    if candidate != rebuilt_candidate:
+        raise RunnerError("authoritative CI candidate seal is stale")
+    expected_plan = _sha256_json({
+        key: item for key, item in plan.items() if key != "fingerprint"
+    })
+    expected_settings = _sha256_json({
+        key: item for key, item in receipt.items() if key != "fingerprint"
+    })
+    if plan.get("fingerprint") != expected_plan or \
+            receipt.get("fingerprint") != expected_settings:
+        raise RunnerError("CI plan or settings receipt seal is stale")
     if (
         plan.get("candidate_fingerprint") != candidate.get("fingerprint")
         or plan.get("source_sha") != candidate.get("source_sha")
@@ -924,7 +945,97 @@ def _load_runtime_plan(path: Path) -> dict[str, Any]:
         or receipt.get("settings_digest") != plan.get("settings_digest")
     ):
         raise RunnerError("CI plan, candidate, and settings receipt do not match")
-    return value
+    cells = plan.get("cells")
+    if not isinstance(cells, list) or not cells or any(
+        not isinstance(cell, dict)
+        or cell.get("candidate_fingerprint") != candidate.get("fingerprint")
+        or cell.get("source_sha") != candidate.get("source_sha")
+        for cell in cells
+    ):
+        raise RunnerError("CI plan cells do not bind the sealed candidate")
+    browser_cells = [cell for cell in cells if cell.get("kind") == "browser"]
+    if len(browser_cells) != 1 or (
+        browser_cells[0].get("browser_environment") != candidate.get("browser")
+        or browser_cells[0].get("browser_fingerprint")
+        != candidate.get("browser_fingerprint")
+    ):
+        raise RunnerError("CI browser plan does not bind its sealed runtime")
+    return json.loads(json.dumps(value, sort_keys=True))
+
+
+def _shared_browser_policy(browser: Mapping[str, Any]) -> dict[str, Any]:
+    """Return declared browser behavior without runner-local observation."""
+    return {
+        key: json.loads(json.dumps(browser[key], sort_keys=True))
+        for key in BROWSER_INPUTS
+        if key not in {"executable", "version"}
+    }
+
+
+def authoritative_ci_shared_authority(
+    runtime: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project one cell runtime onto the authority shared by every CI host.
+
+    Actual runner identity stays sealed in the cell-specific runtime and
+    observed-environment receipt.  Only that host-local field and absolute
+    settings-loader paths are excluded from the shared projection.
+    """
+    checked = validate_authoritative_ci_runtime(runtime)
+    candidate = checked["candidate"]
+    plan = checked["plan"]
+    settings = checked["settings_receipt"]
+    settings_source = str(settings.get("source") or "").replace("\\", "/")
+    canonical_settings_source = "taskplane/operational-settings.json"
+    if not settings_source.endswith("/" + canonical_settings_source):
+        raise RunnerError("authoritative CI settings source is not canonical")
+    browser_policy = _shared_browser_policy(candidate["browser"])
+    shared_plan = {
+        key: json.loads(json.dumps(item, sort_keys=True))
+        for key, item in plan.items()
+        if key not in {"candidate_fingerprint", "fingerprint"}
+    }
+    for cell in shared_plan.get("cells", []):
+        if isinstance(cell, dict):
+            cell.pop("candidate_fingerprint", None)
+            if cell.get("kind") == "browser":
+                cell.pop("browser_environment", None)
+                cell.pop("browser_fingerprint", None)
+    payload = {
+        "schema": "taskplane.authoritative-ci-shared-authority/v1",
+        "source_sha": candidate["source_sha"],
+        "candidate": {
+            "schema": candidate["schema"],
+            "source_sha": candidate["source_sha"],
+            "fingerprints": {
+                key: value for key, value in candidate["fingerprints"].items()
+                if key != "runner"
+            },
+            "browser_policy": browser_policy,
+            "frozen": candidate["frozen"],
+        },
+        "settings": {
+            "schema": settings["schema"],
+            "source": canonical_settings_source,
+            "precedence": settings["precedence"],
+            "candidate_sha": settings["candidate_sha"],
+            "settings_digest": settings["settings_digest"],
+            "effective": settings["effective"],
+            "loader_receipt": settings["loader_receipt"],
+        },
+        "plan": shared_plan,
+    }
+    return {**payload, "fingerprint": _sha256_json(payload)}
+
+
+def _load_runtime_plan(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RunnerError("authoritative CI runtime plan is unavailable") from exc
+    if not isinstance(value, dict):
+        raise RunnerError("authoritative CI runtime plan is invalid")
+    return validate_authoritative_ci_runtime(value)
 
 
 def _atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
@@ -1459,6 +1570,11 @@ def validate_authoritative_ci_cell_receipt(
         or set(observed) != {"implementation", "python", "os", "platform", "machine"}
         or any(not isinstance(value, str) or not value for value in observed.values())
         or environment.get("observed_fingerprint") != _sha256_json(observed)
+        or candidate["fingerprints"]["runner"] != _sha256_json({
+            "implementation": observed["implementation"],
+            "python": observed["python"],
+            "platform": observed["platform"],
+        })
     ):
         raise RunnerError("CI cell observed environment receipt is invalid")
     browser = receipt.get("browser_observation")
@@ -1580,6 +1696,41 @@ def _validate_direct_ci_cell_receipt(
         raise RunnerError("red direct CI receipt lacks typed classification")
     if classification == "product":
         raise RunnerError("CI execution cannot infer product correction authority")
+    environment = receipt.get("environment")
+    if not isinstance(environment, dict) or set(environment) != {
+        "candidate_fingerprint", "observed", "observed_fingerprint",
+    }:
+        raise RunnerError("direct CI observed environment is incomplete")
+    observed = environment.get("observed")
+    if (
+        environment.get("candidate_fingerprint")
+        != candidate["fingerprints"]["environment"]
+        or not isinstance(observed, dict)
+        or set(observed) != {
+            "implementation", "python", "os", "platform", "machine",
+        }
+        or any(not isinstance(value, str) or not value
+               for value in observed.values())
+        or environment.get("observed_fingerprint") != _sha256_json(observed)
+        or candidate["fingerprints"]["runner"] != _sha256_json({
+            "implementation": observed["implementation"],
+            "python": observed["python"],
+            "platform": observed["platform"],
+        })
+    ):
+        raise RunnerError("direct CI observed environment is invalid")
+    browser = receipt.get("browser_observation")
+    if cell.get("kind") == "browser":
+        if receipt.get("browser_fingerprint") != \
+                candidate.get("browser_fingerprint") or (
+            browser is not None and (
+                browser != candidate.get("browser")
+                or _sha256_json(browser) != candidate.get("browser_fingerprint")
+            )
+        ) or (status == "green" and browser is None):
+            raise RunnerError("direct browser runner identity is mismatched")
+    elif browser is not None or receipt.get("browser_fingerprint") is not None:
+        raise RunnerError("non-browser direct cell carries browser authority")
     routing = receipt.get("failure_routing")
     if not isinstance(routing, dict) or routing.get("schema") != \
             failure_routing.FAILURE_ROUTING_SCHEMA_ID:
@@ -1645,8 +1796,24 @@ def _validate_direct_ci_cell_receipt(
     if verified.get("readable") is not True or verified.get("zero_unindexed_files") is not True:
         raise RunnerError("direct CI durable artifacts are not preserved")
     ownership = receipt.get("ownership")
-    if not isinstance(ownership, dict) or cleanup.get(
-            "registration_fingerprint") != ownership.get("fingerprint"):
+    if not isinstance(ownership, dict) or set(ownership) != {
+        "schema", "candidate_fingerprint", "source_sha", "cell_id",
+        "containment_root", "relative_name", "registered_before_run",
+        "fingerprint",
+    }:
+        raise RunnerError("direct CI ownership evidence is incomplete")
+    ownership_material = {
+        key: value for key, value in ownership.items() if key != "fingerprint"
+    }
+    if (
+        ownership.get("schema") != "taskplane.ci-owned-cell/v1"
+        or ownership.get("fingerprint") != _sha256_json(ownership_material)
+        or ownership.get("candidate_fingerprint") != candidate["fingerprint"]
+        or ownership.get("source_sha") != candidate["source_sha"]
+        or ownership.get("cell_id") != cell["id"]
+        or ownership.get("registered_before_run") is not True
+        or cleanup.get("registration_fingerprint") != ownership.get("fingerprint")
+    ):
         raise RunnerError("direct CI cleanup is not ownership-bound")
     expected_resource = str(
         Path(str(ownership.get("containment_root"))) /

@@ -920,18 +920,73 @@ def _walk_design_contract(ws, req):
         "rollout": {"strategy": "opt-in flag", "rollback": "init without"},
         "visualization": {"required": False, "kind": "none", "path": None,
                           "reason": "doc + graph edge suffice"},
-        "lens_evidence": [{"lens": "solution-design", "verdict": "pass",
-                           "blockers": 0,
-                           "evidence": "alternatives + boundaries checked",
-                           "produced_by": "tp-lens solution-design run",
-                           "independent": True}],
+        "lens_evidence": [],
         "open_questions": [],
     }
+    state = loop.load(ws)
+    plan = state["design_team_plan"]
+    authority = plan["host_authority"]
+    artifact_root = loop._run_artifact_root(ws, state)
+    artifact_binding = state["run_artifact_binding"]
+    for index, worker in enumerate(plan["workers"], start=1):
+        expectation = tp_lite.peek_expectation(
+            ws, worker["task_name"], strict=True)
+        assert expectation is not None
+        tp_lite.record_design_dispatch_assignment_activity(ws, expectation)
+        assert tp_lite.commit_dispatch_verification(
+            ws, worker["task_name"], worker["model"], expectation, True,
+            worker["reasoning_effort"], strict=True)
+        worker_contract = tp_lite.build_contract(
+            f"DESIGN LENS: {worker['lens']}", read_only=True,
+            write_allow=[worker["output"]], tools=["Read", "Write"])
+        worker_contract["task_id"] = worker["task_slot"]
+        worker_contract = tp_lite.prepare_worker_contract(
+            ws, worker_contract, stage="design-lens", task=worker["lens"],
+            task_name=worker["task_name"], role_marker=worker["role_marker"])
+        worker_contract = tp_lite.attach_design_lens_host_authority(
+            worker_contract, authority["workers"][worker["lens"]],
+            artifact_root=artifact_root, artifact_binding=artifact_binding)
+        tp_lite.activate(
+            ws, worker_contract, snapshot=tp_lite.git_head(ws),
+            task_slot_override=worker["task_slot"])
+        event = {
+            "cwd": ws, "session_id": "stage-walk-design-session",
+            "agent_id": f"stage-walk-design-agent-{index}",
+            "agent_type": worker["task_name"],
+            "task_name": worker["task_name"],
+            "turn_id": f"stage-walk-design-turn-{index}",
+        }
+        host_binding = tp_lite.bind_worker_contract_event(ws, event)
+        tp_lite.record_design_worker_start_activity(ws, host_binding, event)
+        result = {
+            "schema": "taskplane.design-lens-result/v1",
+            "lens": worker["lens"],
+            "worker_identity": worker["task_name"],
+            "team_plan_fingerprint": plan["fingerprint"],
+            "candidate_fingerprint": plan["candidate_fingerprint"],
+            "outcome": "pass", "findings": [],
+        }
+        result["fingerprint"] = hashlib.sha256(json.dumps(
+            result, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+        result_path = os.path.join(ws, worker["output"])
+        os.makedirs(os.path.dirname(result_path), exist_ok=True)
+        with open(result_path, "w", encoding="utf-8") as stream:
+            json.dump(result, stream)
+        tp_lite.terminalize_worker_contract(
+            ws, {**event, "outcome": "success"}, outcome="success",
+            submission_status="not_required")
+        contract["lens_evidence"].append({
+            "lens": worker["lens"], "verdict": "pass", "blockers": 0,
+            "evidence": "the assigned Design concern was checked",
+            "produced_by": worker["task_name"], "independent": True,
+        })
     os.makedirs(os.path.join(ws, "design"), exist_ok=True)
     with open(os.path.join(ws, "design", "design.md"), "w", encoding="utf-8") as f:
         f.write("# Governed walk\n\nOptional design phase.\n")
-    contract["lens_evidence"][0]["content_fingerprint"] = \
-        dc.design_content_fingerprint(ws, contract)
+    content_fingerprint = dc.design_content_fingerprint(ws, contract)
+    for evidence in contract["lens_evidence"]:
+        evidence["content_fingerprint"] = content_fingerprint
     with open(os.path.join(ws, "design", "contract.json"), "w", encoding="utf-8") as f:
         json.dump(contract, f, indent=2)
     return contract

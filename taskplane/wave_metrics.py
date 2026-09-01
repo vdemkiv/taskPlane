@@ -8,7 +8,7 @@ projection of it; they never walk traces, archives, DOM state, or CI reruns.
 from __future__ import annotations
 
 import copy
-from datetime import datetime
+from datetime import datetime, timezone
 import math
 import re
 from collections.abc import Mapping
@@ -33,6 +33,8 @@ EVIDENCE_SCHEMA = "taskplane.wave-metrics-evidence/v1"
 RECEIPT_SCHEMA = "taskplane.wave-metrics-receipt/v1"
 PROJECTION_SCHEMA = "taskplane.wave-metrics-projection/v1"
 TOKEN_USAGE_PROJECTION_SCHEMA = "taskplane.token-usage-summary/v1"
+TERMINAL_EVIDENCE_SCHEMA = "taskplane.terminal-wave-metrics-evidence/v1"
+TERMINAL_RECEIPT_SCHEMA = "taskplane.terminal-wave-metrics-receipt/v1"
 
 SOURCE_NAMES = (
     "settings", "ci", "dashboard_publication", "cleanup", "portfolio",
@@ -487,6 +489,9 @@ def seal_wave_receipt(evidence: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_wave_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
     """Return an intact sealed receipt or fail closed on drift or re-sealing."""
+    if isinstance(receipt, Mapping) and \
+            receipt.get("schema") == TERMINAL_RECEIPT_SCHEMA:
+        return _validate_terminal_receipt(receipt)
     value = _mapping(receipt, "wave metrics receipt")
     if value.get("schema") != RECEIPT_SCHEMA:
         raise WaveMetricsError("wave metrics receipt schema is unsupported")
@@ -623,10 +628,380 @@ def unavailable_consumer_projection(*, consumer: str, reason: str,
     return {**material, "fingerprint": content_fingerprint(material)}
 
 
+def _evaluator_summary(value: object) -> dict[str, Any]:
+    """Validate the redacted evaluator identity/outcome projection."""
+    summary = _mapping(value, "evaluator summary")
+    _exact_keys(summary, {
+        "total", "by_status", "by_reason", "evaluators",
+    }, "evaluator summary")
+    total = _number(summary["total"], "evaluator total")
+    if int(total) != total:
+        raise WaveMetricsError("evaluator total must be an integer")
+    rows = summary["evaluators"]
+    if not isinstance(rows, list):
+        raise WaveMetricsError("evaluator identities must be a list")
+    normalized = []
+    status_counts: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
+    for raw in rows:
+        row = _mapping(raw, "evaluator identity")
+        _exact_keys(row, {
+            "task", "status", "verdict", "reason_code",
+            "identity_fingerprint",
+        }, "evaluator identity")
+        for field in ("task", "status", "verdict", "reason_code"):
+            if not isinstance(row[field], str) or not row[field].strip():
+                raise WaveMetricsError(
+                    f"evaluator identity {field} must be non-empty")
+        identity = row["identity_fingerprint"]
+        if identity is not None:
+            _digest(identity, "evaluator identity fingerprint")
+        status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+        reason_counts[row["reason_code"]] = reason_counts.get(
+            row["reason_code"], 0) + 1
+        normalized.append(row)
+    if len(normalized) != int(total):
+        raise WaveMetricsError("evaluator total contradicts identities")
+
+    def counts(raw: object, label: str) -> dict[str, int]:
+        values = _mapping(raw, label)
+        normalized_counts: dict[str, int] = {}
+        for key, item in values.items():
+            if not key.strip():
+                raise WaveMetricsError(f"{label} has an empty key")
+            count = _number(item, f"{label} {key}")
+            if int(count) != count:
+                raise WaveMetricsError(f"{label} values must be integers")
+            normalized_counts[key] = int(count)
+        return normalized_counts
+
+    by_status = counts(summary["by_status"], "evaluator status counts")
+    by_reason = counts(summary["by_reason"], "evaluator reason counts")
+    if by_status != status_counts or by_reason != reason_counts:
+        raise WaveMetricsError("evaluator counts contradict identities")
+    result = {
+        "total": int(total), "by_status": by_status,
+        "by_reason": by_reason, "evaluators": normalized,
+    }
+    _redaction_check(result)
+    return result
+
+
+def _utc_timestamp(value: object, label: str) -> str:
+    seconds = _number(value, label)
+    try:
+        return datetime.fromtimestamp(
+            float(seconds), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    except (OverflowError, OSError, ValueError) as exc:
+        raise WaveMetricsError(f"{label} is outside the supported range") from exc
+
+
+def produce_terminal_evidence(
+        *, dispatch_ledger: Mapping[str, Any], clock: Any,
+        candidate_fingerprint: str, evaluator_summary: Mapping[str, Any],
+        settings_digest: str, billing_total_tokens: int | None = None,
+        archive_upper_bound_tokens: int | None = None) -> dict[str, Any]:
+    """Produce one closed, non-cumulative fact from the authenticated ledger.
+
+    Unlike the historical broad delivery-score fixture, this production
+    boundary records only facts that the live host actually measured.  An
+    absent provider observation raises and is represented by the caller as
+    explicit unavailable evidence; it can never become a zero-token receipt.
+    """
+    candidate = _digest(candidate_fingerprint, "terminal candidate")
+    settings = _digest(settings_digest, "terminal settings digest")
+    evaluators = _evaluator_summary(evaluator_summary)
+    try:
+        source = dispatch_telemetry.terminal_metrics_source(
+            dispatch_ledger, clock, candidate_fingerprint=candidate,
+            billing_total_tokens=billing_total_tokens,
+            archive_upper_bound_tokens=archive_upper_bound_tokens)
+        ledger = dispatch_telemetry.validate_ledger(dispatch_ledger)
+    except dispatch_telemetry.DispatchTelemetryError as exc:
+        raise WaveMetricsError(
+            "terminal evidence requires complete host-observed usage: "
+            + str(exc)) from exc
+    opened_at = _utc_timestamp(source["interval"]["opened_at"], "opened_at")
+    closed_at = _utc_timestamp(source["interval"]["closed_at"], "closed_at")
+    material = {
+        "schema": TERMINAL_EVIDENCE_SCHEMA,
+        "run": {
+            "run_fingerprint": content_fingerprint({
+                "run_id": ledger["run_id"],
+                "candidate_fingerprint": candidate,
+                "ledger_fingerprint": source["ledger_fingerprint"],
+            }),
+            "candidate_fingerprint": candidate,
+            "status": "closed", "opened_at": opened_at,
+            "integration_ready_at": closed_at, "closed_at": closed_at,
+        },
+        "source": copy.deepcopy(source),
+        "settings_digest": settings,
+        "evaluator_summary": evaluators,
+    }
+    _redaction_check(material)
+    return {**material, "fingerprint": content_fingerprint(material)}
+
+
+def validate_terminal_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = _mapping(value, "terminal wave metrics evidence")
+    _exact_keys(evidence, {
+        "schema", "run", "source", "settings_digest",
+        "evaluator_summary", "fingerprint",
+    }, "terminal wave metrics evidence")
+    if evidence["schema"] != TERMINAL_EVIDENCE_SCHEMA:
+        raise WaveMetricsError("terminal wave metrics evidence is unsupported")
+    fingerprint = evidence.pop("fingerprint")
+    if fingerprint != content_fingerprint(evidence):
+        raise WaveMetricsError("terminal wave metrics evidence fingerprint mismatch")
+    run = _mapping(evidence["run"], "terminal run")
+    _exact_keys(run, {
+        "run_fingerprint", "candidate_fingerprint", "status", "opened_at",
+        "integration_ready_at", "closed_at",
+    }, "terminal run")
+    _digest(run["run_fingerprint"], "terminal run fingerprint")
+    candidate = _digest(
+        run["candidate_fingerprint"], "terminal candidate fingerprint")
+    if run["status"] != "closed":
+        raise WaveMetricsError("terminal evidence requires a closed run")
+    opened = _time(run["opened_at"], "terminal opened_at")
+    ready = _time(run["integration_ready_at"], "terminal integration_ready_at")
+    closed = _time(run["closed_at"], "terminal closed_at")
+    if not opened <= ready <= closed:
+        raise WaveMetricsError("terminal evidence interval is invalid")
+    source = _mapping(evidence["source"], "terminal dispatch source")
+    if source.get("schema") != \
+            dispatch_telemetry.TERMINAL_METRICS_SOURCE_SCHEMA:
+        raise WaveMetricsError("terminal dispatch source schema is unsupported")
+    source_fingerprint = source.pop("fingerprint", None)
+    if source_fingerprint != content_fingerprint(source):
+        raise WaveMetricsError("terminal dispatch source fingerprint mismatch")
+    source["fingerprint"] = source_fingerprint
+    if source.get("candidate_fingerprint") != candidate:
+        raise WaveMetricsError("terminal dispatch candidate is stale")
+    _digest(source.get("ledger_fingerprint"), "terminal ledger fingerprint")
+    interval = _mapping(source.get("interval"), "terminal dispatch interval")
+    if interval.get("status") != "closed" or \
+            _utc_timestamp(interval.get("opened_at"), "source opened_at") != \
+            run["opened_at"] or \
+            _utc_timestamp(interval.get("closed_at"), "source closed_at") != \
+            run["closed_at"]:
+        raise WaveMetricsError("terminal dispatch interval is stale")
+    _digest(evidence["settings_digest"], "terminal settings digest")
+    evidence["evaluator_summary"] = _evaluator_summary(
+        evidence["evaluator_summary"])
+    evidence["source"] = source
+    checked = {**evidence, "fingerprint": fingerprint}
+    _redaction_check(checked)
+    return checked
+
+
+def _terminal_metric(name: str, actual: int | float, *, sample_size: int,
+                     method: str, source_digest: str) -> dict[str, Any]:
+    definition = METRIC_DEFINITIONS[name]
+    target, passed = _result(actual, definition, 0)
+    return {
+        "baseline": definition["baseline"], "target": target,
+        "actual": actual, "unit": definition["unit"],
+        "comparison": definition["comparison"], "passed": passed,
+        "sample_size": sample_size, "counting_method": method,
+        "source_digest": source_digest,
+    }
+
+
+def seal_terminal_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Seal the live terminal evidence without inventing unrelated metrics."""
+    checked = validate_terminal_evidence(evidence)
+    run = checked["run"]
+    source = checked["source"]
+    observed = _mapping(source["observed"], "terminal observed usage")
+    attempts = _terminal_attempts(source.get("attempts"))
+    dispatches = int(_number(
+        observed.get("dispatches"), "terminal dispatch count"))
+    if dispatches < 1 or dispatches != observed.get("dispatches") or \
+            dispatches != len(attempts):
+        raise WaveMetricsError("terminal dispatch count contradicts attempts")
+    for field in (
+            "total_tokens", "uncached_input_tokens", "effective_tokens",
+            "sessions", "elapsed_seconds"):
+        _number(observed.get(field), f"terminal observed {field}")
+    if sum(row["total_tokens"] for row in attempts) != \
+            observed["total_tokens"] or sum(
+                row["uncached_input_tokens"] for row in attempts) != \
+            observed["uncached_input_tokens"] or sum(
+                row["effective_tokens"] for row in attempts) != \
+            observed["effective_tokens"]:
+        raise WaveMetricsError("terminal attempts contradict observed usage")
+
+    candidate = run["candidate_fingerprint"]
+    opened = run["opened_at"]
+    closed = run["closed_at"]
+    evaluator_digest = content_fingerprint(checked["evaluator_summary"])
+    source_rows = {
+        "settings": checked["settings_digest"],
+        "token_usage": source["digests"]["token_usage"],
+        "sessions": source["digests"]["sessions"],
+        "dispatch": source["digests"]["dispatch"],
+        "evaluators": evaluator_digest,
+    }
+    sources = {
+        name: {
+            "digest": _digest(digest, f"terminal {name} source digest"),
+            "candidate_fingerprint": candidate,
+            "interval_opened_at": opened, "interval_closed_at": closed,
+            "counting": "non-cumulative",
+        }
+        for name, digest in source_rows.items()
+    }
+    token_digest = sources["token_usage"]["digest"]
+    metrics = {
+        "token_total_observed": _terminal_metric(
+            "token_total_observed", observed["total_tokens"],
+            sample_size=dispatches,
+            method="authenticated terminal dispatch receipts",
+            source_digest=token_digest),
+        "token_uncached_observed": _terminal_metric(
+            "token_uncached_observed", observed["uncached_input_tokens"],
+            sample_size=dispatches,
+            method="authenticated terminal dispatch receipts",
+            source_digest=token_digest),
+        "planned_sessions": _terminal_metric(
+            "planned_sessions", observed["sessions"],
+            sample_size=max(1, int(observed["sessions"])),
+            method="unique authenticated terminal session pseudonyms",
+            source_digest=sources["sessions"]["digest"]),
+        "active_delivery_hours": _terminal_metric(
+            "active_delivery_hours", observed["elapsed_seconds"] / 3600,
+            sample_size=1, method="closed authenticated ledger interval",
+            source_digest=sources["dispatch"]["digest"]),
+    }
+    archive = _mapping(
+        source["archive_upper_bound"], "terminal archive upper bound")
+    archive_status = archive.get("status")
+    archive_total = archive.get("total_tokens")
+    if archive_status not in {"available", "unavailable"} or \
+            (archive_status == "available") != (archive_total is not None):
+        raise WaveMetricsError("terminal archive upper bound status is invalid")
+    if archive_total is not None:
+        _number(archive_total, "terminal archive upper bound")
+        metrics["token_archive_upper_bound"] = _terminal_metric(
+            "token_archive_upper_bound", archive_total, sample_size=1,
+            method="separate authenticated archive upper bound",
+            source_digest=token_digest)
+    billing = _mapping(source["billing"], "terminal billing truth")
+    billing_status = billing.get("status")
+    billing_total = billing.get("total_tokens")
+    if billing_status not in {"available", "unavailable"} or \
+            (billing_status == "available") != (billing_total is not None):
+        raise WaveMetricsError("terminal billing status is invalid")
+    if billing_total is not None:
+        _number(billing_total, "terminal billing total")
+
+    ceiling_values = {
+        "total_tokens": observed["total_tokens"],
+        "uncached_input_tokens": observed["uncached_input_tokens"],
+        "sessions": observed["sessions"],
+        "active_delivery_hours": observed["elapsed_seconds"] / 3600,
+    }
+    ceilings = [{
+        "name": name, "observed": value,
+        "ceiling": source["ceilings"][name], "classification": None,
+        "breached": value >= source["ceilings"][name],
+    } for name, value in ceiling_values.items()]
+    unexplained = [row["name"] for row in ceilings if row["breached"]]
+    material = {
+        "schema": TERMINAL_RECEIPT_SCHEMA,
+        "evidence_fingerprint": checked["fingerprint"],
+        "run": copy.deepcopy(run), "sources": sources, "metrics": metrics,
+        "usage_truth": {
+            "billing": {"status": billing_status, "value": billing_total,
+                        "source_digest": token_digest},
+            "observed": {
+                "total_tokens": observed["total_tokens"],
+                "uncached_input_tokens": observed["uncached_input_tokens"],
+                "effective_tokens": observed["effective_tokens"],
+                "attempts": attempts, "source_digest": token_digest,
+            },
+            "archive_upper_bound": {
+                "status": archive_status, "total_tokens": archive_total,
+                "relation": "upper-bound-not-billing",
+                "source_digest": token_digest,
+            },
+        },
+        "evaluator_summary": copy.deepcopy(checked["evaluator_summary"]),
+        "ceilings": ceilings,
+        "signoff": {
+            "ready": not unexplained,
+            "blocking_reasons": (
+                ["unclassified-ceiling-breach"] if unexplained else []),
+            "unexplained_ceilings": unexplained,
+        },
+        "redaction": {"paths": "omitted", "host_identity": "omitted",
+                      "raw_logs": "omitted"},
+    }
+    _redaction_check(material)
+    return {**material, "fingerprint": content_fingerprint(material)}
+
+
+def _validate_terminal_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    value = _mapping(receipt, "terminal wave metrics receipt")
+    expected = {
+        "schema", "evidence_fingerprint", "run", "sources", "metrics",
+        "usage_truth", "evaluator_summary", "ceilings", "signoff",
+        "redaction", "fingerprint",
+    }
+    _exact_keys(value, expected, "terminal wave metrics receipt")
+    if value["schema"] != TERMINAL_RECEIPT_SCHEMA:
+        raise WaveMetricsError("terminal wave metrics receipt is unsupported")
+    fingerprint = value.pop("fingerprint")
+    if fingerprint != content_fingerprint(value):
+        raise WaveMetricsError("terminal wave metrics receipt fingerprint mismatch")
+    _digest(value["evidence_fingerprint"], "terminal evidence fingerprint")
+    run = _mapping(value["run"], "terminal receipt run")
+    candidate = _digest(
+        run.get("candidate_fingerprint"), "terminal receipt candidate")
+    if run.get("status") != "closed":
+        raise WaveMetricsError("terminal receipt run is not closed")
+    opened = _time(run.get("opened_at"), "terminal receipt opened_at")
+    ready = _time(
+        run.get("integration_ready_at"), "terminal receipt integration_ready_at")
+    closed = _time(run.get("closed_at"), "terminal receipt closed_at")
+    if not opened <= ready <= closed:
+        raise WaveMetricsError("terminal receipt interval is invalid")
+    for name, source in _mapping(
+            value["sources"], "terminal receipt sources").items():
+        row = _mapping(source, f"terminal source {name}")
+        _digest(row.get("digest"), f"terminal source {name} digest")
+        if row.get("candidate_fingerprint") != candidate or \
+                row.get("interval_opened_at") != run.get("opened_at") or \
+                row.get("interval_closed_at") != run.get("closed_at") or \
+                row.get("counting") != "non-cumulative":
+            raise WaveMetricsError("terminal receipt source is outside its run")
+    value["evaluator_summary"] = _evaluator_summary(
+        value["evaluator_summary"])
+    observed = _mapping(
+        _mapping(value["usage_truth"], "terminal usage truth").get(
+            "observed"), "terminal observed truth")
+    attempts = _terminal_attempts(observed.get("attempts"))
+    for field in (
+            "total_tokens", "uncached_input_tokens", "effective_tokens"):
+        _number(observed.get(field), f"terminal receipt {field}")
+    if sum(row["total_tokens"] for row in attempts) != \
+            observed["total_tokens"] or sum(
+                row["uncached_input_tokens"] for row in attempts) != \
+            observed["uncached_input_tokens"] or sum(
+                row["effective_tokens"] for row in attempts) != \
+            observed["effective_tokens"]:
+        raise WaveMetricsError("terminal receipt attempts contradict totals")
+    checked = {**value, "fingerprint": fingerprint}
+    _redaction_check(checked)
+    return checked
+
+
 def seal_terminal_metrics(
         evidence: Mapping[str, Any], *, dispatch_ledger: Mapping[str, Any],
         clock: Any, candidate_fingerprint: str,
-        archive_upper_bound_tokens: int,
+        archive_upper_bound_tokens: int | None,
         billing_total_tokens: int | None = None) -> dict[str, Any]:
     """Seal terminal metrics using the real, closed dispatch ledger.
 
@@ -635,6 +1010,22 @@ def seal_terminal_metrics(
     replaced atomically from the ledger.  Caller-supplied token placeholders
     therefore cannot become terminal truth.
     """
+    material = _mapping(evidence, "terminal metrics evidence")
+    if material.get("schema") == TERMINAL_EVIDENCE_SCHEMA:
+        checked = validate_terminal_evidence(material)
+        try:
+            ledger = dispatch_telemetry.validate_ledger(dispatch_ledger)
+        except dispatch_telemetry.DispatchTelemetryError as exc:
+            raise WaveMetricsError(
+                "terminal metrics ledger is invalid: " + str(exc)) from exc
+        if content_fingerprint(ledger) != checked["source"][
+                "ledger_fingerprint"]:
+            raise WaveMetricsError(
+                "terminal metrics evidence is stale for the dispatch ledger")
+        if checked["run"]["candidate_fingerprint"] != candidate_fingerprint:
+            raise WaveMetricsError(
+                "terminal metrics candidate does not match dispatch evidence")
+        return seal_terminal_evidence(checked)
     try:
         source = dispatch_telemetry.terminal_metrics_source(
             dispatch_ledger, clock,
@@ -649,7 +1040,6 @@ def seal_terminal_metrics(
         raise WaveMetricsError(
             "terminal metrics require an explicit archive upper bound")
 
-    material = _mapping(evidence, "terminal metrics evidence")
     run = _mapping(material.get("run"), "run")
     if run.get("candidate_fingerprint") != candidate_fingerprint:
         raise WaveMetricsError(
@@ -754,8 +1144,10 @@ def consumer_projection(receipt: Mapping[str, Any], *, consumer: str) -> dict[st
 
 __all__ = [
     "CEILING_DEFINITIONS", "EVIDENCE_SCHEMA", "METRIC_DEFINITIONS", "PROJECTION_SCHEMA",
-    "RECEIPT_SCHEMA", "SOURCE_NAMES", "TOKEN_USAGE_PROJECTION_SCHEMA",
-    "WaveMetricsError", "consumer_projection", "seal_terminal_metrics",
-    "seal_wave_receipt", "token_usage_projection",
+    "RECEIPT_SCHEMA", "SOURCE_NAMES", "TERMINAL_EVIDENCE_SCHEMA",
+    "TERMINAL_RECEIPT_SCHEMA", "TOKEN_USAGE_PROJECTION_SCHEMA",
+    "WaveMetricsError", "consumer_projection", "produce_terminal_evidence",
+    "seal_terminal_evidence", "seal_terminal_metrics", "seal_wave_receipt",
+    "token_usage_projection", "validate_terminal_evidence",
     "unavailable_consumer_projection", "validate_wave_receipt",
 ]

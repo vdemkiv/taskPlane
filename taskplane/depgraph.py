@@ -1073,9 +1073,10 @@ def publish_design_decomposition(ws: str, artifact_root,
                                  receipt: object) -> dict:
     """Publish a validated current-run graph receipt to its durable class.
 
-    The run-artifact manifest supplies the run, stage instance, candidate and
-    source binding.  Matching the stage and settings here prevents a valid
-    graph from another run/configuration being appended to this run.
+    The run-artifact manifest supplies the run, initial stage instance,
+    candidate and source binding.  Product may own the immutable whole-run
+    manifest before the run advances to Design, so Design publication
+    authenticates that governed owner and its settings without rebinding it.
     """
     checked = validate_design_decomposition_receipt(receipt)
     current_head = str(tp.git_head(ws) or "")
@@ -1093,9 +1094,10 @@ def publish_design_decomposition(ws: str, artifact_root,
         import run_artifacts  # type: ignore
     manifest = run_artifacts.load_manifest(artifact_root)
     binding = manifest.get("binding") or {}
-    if binding.get("stage_id") != "design":
+    if binding.get("stage_id") not in {"product", "design"}:
         raise ValueError(
-            "Design decomposition artifacts require a Design-stage manifest")
+            "Design decomposition artifacts require a governed root-stage "
+            "manifest")
     if binding.get("settings_digest") != checked["settings_digest"]:
         raise ValueError(
             "Design decomposition settings do not match the active run")

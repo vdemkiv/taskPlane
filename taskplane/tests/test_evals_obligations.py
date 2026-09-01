@@ -175,10 +175,13 @@ class TestThePayloadCarriesTheObligation(_Ws):
         self.assertIn("do not render or acknowledge", d["render"])
 
     def test_a_human_gate_names_one_delivery_and_ack(self):
+        import loop_status
         import views
         loop.init(self.ws, "goal")
         internal = loop.next_action(self.ws)["dashboard"]["obligation"]
-        out = {"step": "plan_approval"}
+        publication = loop_status.refresh_dashboard_snapshot(
+            self.ws, event_type="gate", outcome="success")
+        out = {"step": "plan_approval", "dashboard_snapshot": publication}
         views.refresh_views(self.ws, out)
         d = out["dashboard"]
         self.assertEqual(d["obligation"], internal)
@@ -199,10 +202,13 @@ class TestThePayloadCarriesTheObligation(_Ws):
         """Demanding that someone show an artifact that was never built
         would make the instrument's own numbers fiction."""
         import dashboard
-        original = dashboard.report_widget
-        dashboard.report_widget = lambda *a, **k: (_ for _ in ()).throw(
+        original = dashboard.render_canonical_dashboard_snapshot
+        dashboard.render_canonical_dashboard_snapshot = \
+            lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError("renderer down"))
-        self.addCleanup(setattr, dashboard, "report_widget", original)
+        self.addCleanup(
+            setattr, dashboard, "render_canonical_dashboard_snapshot",
+            original)
         import views
         views._VIEW_FAILED_WARNED = True
         loop.init(self.ws, "goal")

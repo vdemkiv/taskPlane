@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import copy
+import subprocess
 import sys
 
 import pytest
@@ -585,13 +586,22 @@ def test_preview_session_event_rejects_stale_revision_and_replay_atomically(
 
 
 def test_workspace_state_needs_no_host_signing_authority(
-        monkeypatch):
+        monkeypatch, tmp_path):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Taskplane Test"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-qm", "base"],
+                   cwd=workspace, check=True)
     saved = {}
     monkeypatch.setattr(loop, "load", lambda ws: None)
     monkeypatch.setattr(loop, "save", lambda ws, state: saved.update(state))
     monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
 
-    result = loop.init("/repo", "secure host input")
+    result = loop.init(str(workspace), "secure host input")
 
     assert not hasattr(authority, "issue_host_input_receipt")
     assert "host_input_secret" not in saved
@@ -818,7 +828,9 @@ def test_selection_revision_fence_rolls_back_post_commit_git_change(
 
 
 def test_select_rejects_stale_checkout_and_resumed_current_selection(
-        monkeypatch):
+        monkeypatch, tmp_path):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
     base = {"step": "selection", "goal": "choose", "baseline": "r1",
             "authority_target_revision": "r1", "tasks": [
                 {"id": "a", "variant": "A", "scope": []},
@@ -834,7 +846,7 @@ def test_select_rejects_stale_checkout_and_resumed_current_selection(
 
     monkeypatch.setattr(loop, "mutate", stale_mutate)
     monkeypatch.setattr(loop.tp, "git_head", lambda ws: "r2")
-    stale = loop.select("/repo", "a")
+    stale = loop.select(str(workspace), "a")
     assert "stale" in stale["error"].lower()
     assert stale["expected_revision"] == "r1"
     assert stale["actual_revision"] == "r2"
@@ -852,7 +864,7 @@ def test_select_rejects_stale_checkout_and_resumed_current_selection(
     monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
     monkeypatch.setattr(loop.kb, "record_decision", lambda *args, **kwargs: None)
     monkeypatch.setattr(loop, "status", lambda ws: {"step": "em"})
-    resumed = loop.select("/repo", "a", note="resumed choice")
+    resumed = loop.select(str(workspace), "a", note="resumed choice")
     assert resumed["step"] == "em"
     assert resumed["selection"]["revision"] == "r1"
     assert saved["selection"]["choice"] == "a"

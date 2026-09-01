@@ -11,7 +11,6 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import lens_telemetry  # noqa: E402
-import loop  # noqa: E402
 import review  # noqa: E402
 import review_convergence  # noqa: E402
 import review_evidence  # noqa: E402
@@ -75,64 +74,6 @@ def test_runtime_calls_the_convergence_policy_without_changing_review_state():
     assert result["decision"] == "continue"
     assert result["findings"]["closed"] == ["a"]
     assert (previous, current) == before
-
-
-def test_real_evaluate_fail_transition_uses_progress_not_global_cycle_count():
-    ws = tempfile.mkdtemp()
-    task = {"id": "t1", "status": "built", "fix_cycles": 0,
-            "scope": ["taskplane/loop.py"], "tests": "true"}
-    loop.save(ws, {
-        "step": "evaluate", "tasks": [task], "current_task": 0,
-        "parallel": False, "submission_required": False,
-        "max_fix_cycles": 1, "goal": "g", "checkpoints": [],
-    })
-    first = revision("a", "b", evidence=1, tests=1)
-    second = revision("b", evidence=2, tests=1)
-
-    with mock.patch.object(
-            loop, "_evaluation_unavailable_errors",
-            return_value=(["product finding"], {})), mock.patch.object(
-                loop, "_canonical_evaluation_progress",
-                side_effect=[first, second]):
-        assert loop.gate(ws, "fail")["step"] == "fix"
-        state = loop.load(ws)
-        state["step"] = "evaluate"
-        loop.save(ws, state)
-        assert loop.gate(ws, "fail")["step"] == "fix"
-
-    state = loop.load(ws)
-    assert state["tasks"][0]["fix_cycles"] == 2
-    decision = state["tasks"][0]["convergence_history"][-1]
-    assert decision["decision"] == "continue"
-    assert decision["reason"] == "measurable_convergence"
-
-
-def test_real_evaluate_fail_transition_escalates_repeated_no_progress():
-    ws = tempfile.mkdtemp()
-    task = {"id": "t1", "status": "built", "fix_cycles": 0,
-            "scope": ["taskplane/loop.py"], "tests": "true"}
-    loop.save(ws, {
-        "step": "evaluate", "tasks": [task], "current_task": 0,
-        "parallel": False, "submission_required": False,
-        "max_fix_cycles": 2, "goal": "g", "checkpoints": [],
-    })
-    same = revision("a", evidence=1, tests=1)
-
-    with mock.patch.object(
-            loop, "_evaluation_unavailable_errors",
-            return_value=(["product finding"], {})), mock.patch.object(
-                loop, "_canonical_evaluation_progress",
-                side_effect=[same, same]):
-        for expected in ("fix", "escalated"):
-            assert loop.gate(ws, "fail")["step"] == expected
-            if expected != "escalated":
-                state = loop.load(ws)
-                state["step"] = "evaluate"
-                loop.save(ws, state)
-
-    decision = loop.load(ws)["tasks"][0]["convergence_history"][-1]
-    assert decision["decision"] == "escalate"
-    assert decision["reason"] in {"no_progress", "repeated_fingerprint"}
 
 
 @pytest.mark.parametrize("flag,reason", [

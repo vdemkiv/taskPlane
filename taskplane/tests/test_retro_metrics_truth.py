@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from taskplane import dispatch_telemetry, retro, run_artifacts, wave_metrics
+from taskplane import dispatch_telemetry, loop, retro, run_artifacts, wave_metrics
 from taskplane.delivery_ports import FakeClock
 
 
@@ -112,6 +112,75 @@ def test_real_terminal_ledger_renders_token_and_evaluator_truth(tmp_path):
     assert '"unavailable": 1' in rendered
     assert "producer_receipt_unavailable" in rendered
     assert "e" * 64 in rendered
+
+
+def test_loop_produces_and_replays_current_terminal_metrics_without_archive():
+    ledger, _clock = _closed_ledger()
+    tasks = [{"id": "EVAL-1", "evaluation": {
+        "status": "complete", "verdict": "pass", "reason_code": "none",
+        "outage_identity": {"fingerprint": "e" * 64}}}]
+    state = {
+        "tasks": tasks, "dispatch_telemetry": ledger,
+        "settings_digest": "c" * 64,
+        "run_artifact_binding": {
+            "candidate": {"fingerprint": CANDIDATE},
+            "settings_digest": "c" * 64,
+        },
+    }
+
+    first = loop._seal_terminal_metrics_before_retro(state)
+    evidence = json.loads(json.dumps(state["wave_metrics_evidence"]))
+    receipt = json.loads(json.dumps(state["wave_metrics_receipt"]))
+    second = loop._seal_terminal_metrics_before_retro(state)
+
+    assert first == second == {
+        "status": "measured", "fingerprint": receipt["fingerprint"]}
+    assert state["wave_metrics_evidence"] == evidence
+    assert state["wave_metrics_receipt"] == receipt
+    assert evidence["schema"] == \
+        "taskplane.terminal-wave-metrics-evidence/v1"
+    assert receipt["schema"] == \
+        "taskplane.terminal-wave-metrics-receipt/v1"
+    assert receipt["usage_truth"]["observed"][
+        "effective_tokens"] == 250
+    assert receipt["usage_truth"]["archive_upper_bound"] == {
+        "status": "unavailable", "total_tokens": None,
+        "relation": "upper-bound-not-billing",
+        "source_digest": receipt["sources"]["token_usage"]["digest"],
+    }
+    assert "token_archive_upper_bound" not in receipt["metrics"]
+    assert receipt["evaluator_summary"] == retro.evaluator_summary(tasks)
+
+
+def test_loop_persists_attributable_unavailable_instead_of_zero():
+    ledger = dispatch_telemetry.new_ledger(
+        run_id="run-missing", source_sha="a" * 40,
+        design_fingerprint="design", plan_fingerprint="plan", started_at=0)
+    dispatch_telemetry.bind_dispatch(
+        ledger, _dispatch("missing", "thread-missing", 1))
+    state = {
+        "tasks": [], "dispatch_telemetry": ledger,
+        "settings_digest": "c" * 64,
+        "run_artifact_binding": {
+            "candidate": {"fingerprint": CANDIDATE},
+            "settings_digest": "c" * 64,
+        },
+    }
+
+    result = loop._seal_terminal_metrics_before_retro(state)
+    first_evidence = json.loads(json.dumps(state["wave_metrics_evidence"]))
+    replay = loop._seal_terminal_metrics_before_retro(state)
+    projection = retro.sealed_wave_metrics_projection(state)
+
+    assert result["status"] == replay["status"] == "unavailable"
+    assert state["wave_metrics_evidence"] == first_evidence
+    assert first_evidence["schema"] == \
+        "taskplane.terminal-wave-metrics-unavailable-evidence/v1"
+    assert first_evidence["attempts"][0]["usage_status"] == "unavailable"
+    assert projection["token_usage"]["status"] == "unavailable"
+    assert projection["token_usage"]["total_tokens"] is None
+    assert projection["token_usage"]["uncached_input_tokens"] is None
+    assert projection["token_usage"]["effective_tokens"] is None
 
 
 def test_severed_usage_refuses_sealing_and_retro_reports_unknown(tmp_path):

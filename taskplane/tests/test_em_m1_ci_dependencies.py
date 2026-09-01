@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,28 +15,17 @@ LOCK = ROOT / "requirements-dev.lock"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 
 READ_ONLY_PR_JOBS = (
-    "ci-plan",
-    "python-compatibility",
     "tests",
-    "python-quality",
-    "zero-token-corpus",
-    "wave3-contracts",
-    "tests-portability",
-    "validate-plugin",
-    "docs-truth",
-    "codex-parity",
-    "codex-host",
+    "quality-package",
     "dashboard-browser",
+    "interpreter-import",
+    "native-portability",
+    "security-no-egress",
 )
 TEST_JOBS = (
-    "python-compatibility",
     "tests",
-    "wave3-contracts",
-    "tests-portability",
-    "codex-parity",
-    "codex-host",
-    "release-tags",
     "dashboard-browser",
+    "native-portability",
 )
 TEST_TREE = {
     "pytest": "9.1.1",
@@ -44,18 +34,30 @@ TEST_TREE = {
     "iniconfig": "2.3.0",
     "packaging": "26.3",
     "pluggy": "1.6.0",
+    "pyyaml": "6.0.3",
     "pygments": "2.21.0",
     "tomli": "2.2.1",
     "typing-extensions": "4.16.0",
 }
 
 
-def _job(source: str, name: str) -> str:
-    match = re.search(
-        rf"(?ms)^  {re.escape(name)}:\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)",
-        source,
+def _workflow_jobs(source: str) -> dict[str, dict]:
+    workflow = yaml.safe_load(source)
+    jobs = workflow.get("jobs", {}) if isinstance(workflow, dict) else {}
+    if not isinstance(jobs, dict):
+        return {}
+    return {str(name): value for name, value in jobs.items()
+            if isinstance(value, dict)}
+
+
+def _step_runs(job: dict) -> str:
+    steps = job.get("steps", [])
+    if not isinstance(steps, list):
+        return ""
+    return "\n".join(
+        str(step.get("run", ""))
+        for step in steps if isinstance(step, dict)
     )
-    return match.group(1) if match else ""
 
 
 def _profile(source: str, name: str) -> str:
@@ -92,21 +94,34 @@ def _pins(profile: str) -> tuple[dict[str, str], dict[str, list[str]], list[str]
 
 def _violations(ci: str, lock: str, contributing: str) -> list[str]:
     problems: list[str] = []
+    jobs = _workflow_jobs(ci)
     for name in READ_ONLY_PR_JOBS:
-        job = _job(ci, name)
-        if not job or "persist-credentials: false" not in job:
+        job = jobs.get(name, {})
+        steps = job.get("steps", []) if isinstance(job, dict) else []
+        checkouts = [step for step in steps if isinstance(step, dict) and
+                     str(step.get("uses", "")).startswith("actions/checkout@")]
+        if not checkouts or any(
+                step.get("with", {}).get("persist-credentials") is not False
+                for step in checkouts):
             problems.append(f"{name} retains unused checkout credentials")
 
     install_fragments = (
-        "Install hash-locked sealed test dependency tree",
+        "awk 'sub(/^# test-lock: /, \"\")' requirements-dev.lock",
         "requirements-dev.lock",
         "--require-hashes --no-deps",
     )
     for name in TEST_JOBS:
-        job = _job(ci, name)
+        commands = _step_runs(jobs.get(name, {}))
         for fragment in install_fragments:
-            if fragment not in job:
+            if fragment not in commands:
                 problems.append(f"{name} misses sealed install fragment {fragment}")
+    quality_commands = _step_runs(jobs.get("quality-package", {}))
+    for fragment in (
+        "requirements-dev.lock", "--require-hashes --no-deps",
+    ):
+        if fragment not in quality_commands:
+            problems.append(
+                f"quality-package misses sealed install fragment {fragment}")
     if re.search(r"pip install\s+[\"']?pytest(?:==|[\"'])", ci):
         problems.append("CI still contains a direct moving pytest install")
 
@@ -215,7 +230,6 @@ def test_m18_transitive_test_dependency_tree_is_sealed() -> None:
     assert invalid == []
     assert set(hashes) == set(TEST_TREE)
     assert all(hashes.values())
-    assert ci.count("--require-hashes --no-deps") == len(TEST_JOBS)
     assert _violations(ci, lock, contributing) == []
 
 

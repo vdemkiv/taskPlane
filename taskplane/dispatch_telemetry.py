@@ -1296,6 +1296,7 @@ def terminal_metrics_source(
         **{key: value for key, value in source.items()
            if key != "fingerprint"},
         "schema": TERMINAL_METRICS_SOURCE_SCHEMA,
+        "ledger_fingerprint": content_fingerprint(sealed),
         "observed": {**source["observed"],
                      "effective_tokens": int(effective),
                      "dispatches": len(rows)},

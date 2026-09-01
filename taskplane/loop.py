@@ -1025,13 +1025,12 @@ def _ensure_run_artifacts(
     if manifest.get("binding") != binding:
         raise run_artifacts.RunArtifactError(
             "run artifact manifest belongs to another current binding")
-    verification = run_artifacts.verify_manifest(
-        root, expected_binding=binding)
-    reference = {
-        **run_artifacts.manifest_locator_reference(),
-        "binding_fingerprint": binding["fingerprint"],
-        "verification_fingerprint": verification["fingerprint"],
-    }
+    # The state locator is immutable identity, not a snapshot of manifest
+    # contents.  Verification is deliberately refreshed on every replay; its
+    # fingerprint naturally changes whenever an owned artifact is appended.
+    # The complete immutable owner remains in ``run_artifact_binding``.
+    run_artifacts.verify_manifest(root, expected_binding=binding)
+    reference = run_artifacts.manifest_locator_reference()
     return root, binding, reference
 
 
@@ -10914,20 +10913,49 @@ def _seal_terminal_metrics_before_retro(state: dict) -> dict:
     evidence = state.get("wave_metrics_evidence")
     ledger = state.get("dispatch_telemetry")
     upper_bound = state.get("wave_metrics_archive_upper_bound_tokens")
+    unavailable_schema = \
+        "taskplane.terminal-wave-metrics-unavailable-evidence/v1"
+    if isinstance(evidence, Mapping) and evidence.get("schema") == \
+            unavailable_schema:
+        unavailable = {
+            "schema": "taskplane.wave-metrics-unavailable/v1",
+            "candidate_fingerprint": evidence.get("candidate_fingerprint"),
+            "reason": evidence.get("reason"),
+            "attempts": list(evidence.get("attempts") or []),
+        }
+        unavailable["fingerprint"] = hashlib.sha256(json.dumps(
+            unavailable, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False).encode("utf-8")).hexdigest()
+        state["wave_metrics_unavailable"] = unavailable
+        state.pop("wave_metrics_receipt", None)
+        return {"status": "unavailable",
+                "fingerprint": unavailable["fingerprint"],
+                "reason": unavailable["reason"]}
     try:
         if not candidate:
             raise wave_metrics.WaveMetricsError(
                 "terminal metrics candidate binding is unavailable")
-        if not isinstance(evidence, Mapping):
-            raise wave_metrics.WaveMetricsError(
-                "terminal metrics evidence is unavailable")
         if not isinstance(ledger, Mapping):
             raise wave_metrics.WaveMetricsError(
                 "terminal dispatch ledger is unavailable")
-        if isinstance(upper_bound, bool) or not isinstance(upper_bound, int) \
-                or upper_bound < 0:
+        if upper_bound is not None and (
+                isinstance(upper_bound, bool) or
+                not isinstance(upper_bound, int) or upper_bound < 0):
             raise wave_metrics.WaveMetricsError(
-                "terminal archive upper bound is unavailable")
+                "terminal archive upper bound is invalid")
+        if not isinstance(evidence, Mapping):
+            evidence = wave_metrics.produce_terminal_evidence(
+                dispatch_ledger=ledger, clock=SystemClock(),
+                candidate_fingerprint=candidate,
+                evaluator_summary=retro_engine.evaluator_summary(
+                    list(state.get("tasks") or [])),
+                settings_digest=str(
+                    state.get("settings_digest") or
+                    binding.get("settings_digest") or ""),
+                archive_upper_bound_tokens=upper_bound,
+                billing_total_tokens=state.get(
+                    "wave_metrics_billing_total_tokens"))
+            state["wave_metrics_evidence"] = evidence
         receipt = wave_metrics.seal_terminal_metrics(
             evidence, dispatch_ledger=ledger, clock=SystemClock(),
             candidate_fingerprint=candidate,
@@ -10943,6 +10971,18 @@ def _seal_terminal_metrics_before_retro(state: dict) -> dict:
             except dispatch_telemetry.DispatchTelemetryError:
                 attempts = []
         reason = f"{exc.__class__.__name__}: {exc}"
+        evaluators = retro_engine.evaluator_summary(
+            list(state.get("tasks") or []))
+        unavailable_evidence = {
+            "schema": unavailable_schema,
+            "candidate_fingerprint": candidate or None,
+            "reason": reason[:1024], "attempts": attempts,
+            "evaluator_summary": evaluators,
+        }
+        unavailable_evidence["fingerprint"] = hashlib.sha256(json.dumps(
+            unavailable_evidence, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False).encode("utf-8")).hexdigest()
+        state["wave_metrics_evidence"] = unavailable_evidence
         unavailable = {
             "schema": "taskplane.wave-metrics-unavailable/v1",
             "candidate_fingerprint": candidate or None,

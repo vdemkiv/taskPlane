@@ -149,7 +149,10 @@ def _real_pristine_run(
     revision = _git(workspace, "rev-parse", "HEAD")
     run_id = "run-cross-host-pristine"
     identity = storage.resolve_repository_identity(str(workspace))
-    store = run_store.RunStore(home=str(tmp_path / "pristine-home"))
+    # The whole-run settings/artifact control plane and stage transport share
+    # one canonical TASKPLANE_HOME.  A fixture-local second store is now a
+    # deliberately severed authority edge, not an isolated test shortcut.
+    store = run_store.RunStore()
     initial = store.create(
         identity,
         run_id=run_id,
@@ -198,7 +201,10 @@ def _real_loop_stage(
 
     run_id = "run-cross-host-loop"
     identity = storage.resolve_repository_identity(str(workspace))
-    store = run_store.RunStore(home=str(tmp_path / "home"))
+    # Keep the stage aggregate in the same canonical store used by the
+    # whole-run artifact/settings loader.  Tests that need a foreign store
+    # construct one explicitly at the corruption/authority boundary.
+    store = run_store.RunStore()
     initial = store.create(
         identity,
         run_id=run_id,

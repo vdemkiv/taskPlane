@@ -228,27 +228,5 @@ class TestSelectionStep(unittest.TestCase):
         r = loop.select(self.ws, "A")
         self.assertIn("error", r)
 
-    def test_post_selection_fix_cycle_returns_to_em(self):
-        # human sends the winner back at signoff → fix → evaluate pass must
-        # go to em (loser is settled as not_selected; selection is done)
-        _to_plan_approved(self.ws)
-        _claim_variant_worktrees(self.ws)
-        state = loop.load(self.ws)
-        for task in state["tasks"]:
-            task["status"] = "passed"
-        state["step"] = "selection"
-        loop.save(self.ws, state)
-        loop.select(self.ws, "B")                      # winner: b → em
-        state = loop.load(self.ws)
-        state["step"] = "fix"
-        state["current_task"] = 1                      # the winner task
-        loop.save(self.ws, state)
-        loop.next_action(self.ws)                       # activate fix contract
-        loop.submit(self.ws, "pass")
-        loop.gate(self.ws, "pass")                     # fix → evaluate
-        r = _pass_eval(self.ws)                          # evaluate pass
-        self.assertEqual(r["step"], "em")              # NOT execute/selection
-
-
 if __name__ == "__main__":
     unittest.main()

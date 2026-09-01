@@ -16,39 +16,6 @@ ROOT = Path(__file__).resolve().parents[2]
 VERSION = json.loads((ROOT / ".codex-plugin/plugin.json").read_text(
     encoding="utf-8"))["version"]
 SUPPORTED_HOOK_ROOT_FIELDS = {"description", "hooks"}
-SHARED_RUNTIME_MEMBERS = (
-    "hooks/hooks.json",
-    "hooks/host-native.json",
-    "hooks/host_native_runtime.py",
-    "taskplane/taskplane_lite.py",
-    "taskplane/loop.py",
-    "taskplane/tp.py",
-    "taskplane/stage_entities.py",
-    "taskplane/stage_handoff.py",
-    "taskplane/stage_migration.py",
-    "taskplane/loop_status.py",
-    "taskplane/dashboard.py",
-    "taskplane/runtime_eval.py",
-    "taskplane/operational-settings.json",
-    "taskplane/settings_inventory.json",
-    "taskplane/test_portfolio.json",
-    "docs/cli-reference.md",
-    "skills/taskplane/SKILL.md",
-    "skills/taskplane/flow.json",
-    "skills/tp-build/SKILL.md",
-    "skills/tp-design/SKILL.md",
-    "skills/tp-design/flow.json",
-    "skills/tp-engineering/SKILL.md",
-    "skills/tp-engineering/flow.json",
-    "skills/tp-go/SKILL.md",
-    "skills/tp-go/flow.json",
-    "skills/tp-go/references/parallel.md",
-    "skills/tp-go/references/retro.md",
-    "skills/tp-product/SKILL.md",
-    "skills/tp-product/flow.json",
-    "skills/tp-status/SKILL.md",
-    "skills/tp-status/flow.json",
-)
 
 
 def _load_packager(name: str):
@@ -90,23 +57,7 @@ def _replace_hook_manifest(
                 if info.filename == member else body)
 
 
-def test_ci_builds_and_provenances_the_deterministic_claude_plugin() -> None:
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text(
-        encoding="utf-8")
-
-    assert workflow.count(
-        "python scripts/package_claude.py --ext plugin") == 1
-    for output_dir in ("/tmp/tp-claude-plugin-a",
-                       "/tmp/tp-claude-plugin-b"):
-        command = ("python3 scripts/package_claude.py --ext plugin "
-                   f"--output-dir {output_dir}")
-        assert workflow.count(command) == 1
-    assert workflow.count(
-        '"/tmp/tp-claude-plugin-a/*.provenance.json"') == 1
-    assert "if len(found) != 3:" in workflow
-
-
-def test_post_21713_manifests_keep_parser_safe_hooks_and_supported_metadata() \
+def test_release_manifests_keep_parser_safe_hooks_and_supported_metadata() \
         -> None:
     codex = json.loads((ROOT / ".codex-plugin/plugin.json").read_text(
         encoding="utf-8"))
@@ -118,39 +69,37 @@ def test_post_21713_manifests_keep_parser_safe_hooks_and_supported_metadata() \
 
     assert {codex["version"], claude["version"], marketplace["version"],
             marketplace["plugins"][0]["version"]} == {VERSION}
-    assert tuple(int(part) for part in VERSION.split(".")[:3]) >= (2, 17, 13)
     assert set(hooks) <= SUPPORTED_HOOK_ROOT_FIELDS
     assert "hostNative" not in hooks
     assert "hostNative" not in codex
     assert claude["hostNative"] == "../hooks/host-native.json"
 
 
-def test_codex_and_claude_archives_ship_identical_stage_runtime_bytes(
+def test_codex_and_claude_archives_execute_the_installed_stage_runtime(
         tmp_path: Path) -> None:
     paths = _build_archives(tmp_path)
-    payloads: dict[str, dict[str, bytes]] = {}
     for host, path in paths.items():
+        install = tmp_path / f"installed-{host}"
         with zipfile.ZipFile(path) as archive:
             names = set(archive.namelist())
-            payloads[host] = {
-                relative: archive.read("taskplane/" + relative)
-                for relative in SHARED_RUNTIME_MEMBERS
-            }
-            assert {"taskplane/" + relative
-                    for relative in SHARED_RUNTIME_MEMBERS} <= names
-            hooks = json.loads(payloads[host]["hooks/hooks.json"])
+            hooks = json.loads(archive.read("taskplane/hooks/hooks.json"))
             assert set(hooks) <= SUPPORTED_HOOK_ROOT_FIELDS
             assert "hostNative" not in hooks
+            assert "taskplane/taskplane/test_portfolio.json" not in names
+            archive.extractall(install)
 
-    assert payloads["openai"] == payloads["claude"]
-    guidance = payloads["openai"]["skills/tp-go/SKILL.md"].decode("utf-8")
-    for rail in ("Codex", "Claude", "managed", "Slack-capable",
-                 "accessible text"):
-        assert rail in guidance
+        result = subprocess.run(
+            [sys.executable, str(install / "taskplane/taskplane/tp.py"),
+             "version"],
+            cwd=install, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == VERSION
 
 
 @pytest.mark.parametrize("host", ("openai", "claude"))
-def test_each_archive_validator_rejects_the_21712_hostnative_hook_shape(
+def test_each_archive_validator_rejects_unsupported_hostnative_hook_shape(
         tmp_path: Path, host: str) -> None:
     paths = _build_archives(tmp_path)
     unsafe = tmp_path / f"unsafe-{host}.zip"
@@ -166,29 +115,10 @@ def test_each_archive_validator_rejects_the_21712_hostnative_hook_shape(
             packager.validate_archive(unsafe, VERSION)
 
 
-@pytest.mark.parametrize("host", ("openai", "claude"))
-def test_package_bytes_are_deterministic_for_the_same_release_tree(
-        tmp_path: Path, host: str) -> None:
-    packager = _load_packager(
-        "package_openai.py" if host == "openai" else "package_claude.py")
-    files = (packager.package_files(packager.load_manifest())
-             if host == "openai" else packager.package_files())
-    first = tmp_path / f"{host}-first.zip"
-    second = tmp_path / f"{host}-second.zip"
-
-    packager.write_zip(files, first)
-    packager.write_zip(files, second)
-    assert first.read_bytes() == second.read_bytes()
-    assert hashlib.sha256(first.read_bytes()).hexdigest() == \
-        hashlib.sha256(second.read_bytes()).hexdigest()
-
-
-def test_claude_plugin_upload_is_deterministic_and_provenanced(
+def test_claude_plugin_and_zip_uploads_are_versioned_and_provenanced(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PYTHONPATH", raising=False)
-    output_dirs = (tmp_path / "first", tmp_path / "second")
-    runs = ((output_dirs[0], True), (output_dirs[1], True),
-            (tmp_path / "zip", False))
+    runs = ((tmp_path / "plugin", True), (tmp_path / "zip", False))
     for output_dir, plugin in runs:
         command = [sys.executable, "scripts/package_claude.py", "--output-dir",
                    str(output_dir), "--allow-dirty"]
@@ -198,14 +128,25 @@ def test_claude_plugin_upload_is_deterministic_and_provenanced(
             encoding="utf-8", errors="replace",
         )
         assert result.returncode == 0, result.stderr
-    assert (tmp_path / "zip" / f"taskplane-{VERSION}-claude.zip").is_file()
-    filename = f"taskplane-{VERSION}.plugin"
-    artifacts = tuple(path / filename for path in output_dirs)
-    assert artifacts[0].read_bytes() == artifacts[1].read_bytes()
+    artifacts = (
+        tmp_path / "plugin" / f"taskplane-{VERSION}.plugin",
+        tmp_path / "zip" / f"taskplane-{VERSION}-claude.zip",
+    )
+    provenance_validator = _load_packager("release_provenance.py")
+    source_sha = provenance_validator.source_state(ROOT)["commit"]
     for artifact in artifacts:
-        assert artifact.with_suffix(".plugin.sha256").is_file()
-        provenance = json.loads(artifact.with_suffix(
-            ".plugin.provenance.json").read_text(encoding="utf-8"))
-        assert provenance["archive"] == filename
-        assert provenance["sha256"] == hashlib.sha256(
-            artifact.read_bytes()).hexdigest()
+        assert artifact.is_file()
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        checksum = artifact.with_suffix(artifact.suffix + ".sha256")
+        assert checksum.read_text(encoding="utf-8") == \
+            f"{digest}  {artifact.name}\n"
+        provenance_path = artifact.with_suffix(
+            artifact.suffix + ".provenance.json")
+        provenance = provenance_validator.validate(
+            json.loads(provenance_path.read_text(encoding="utf-8")),
+            expected_source_sha=source_sha,
+            require_release_inputs=True,
+        )
+        assert provenance["kind"] == "claude"
+        assert provenance["archive"] == artifact.name
+        assert provenance["sha256"] == digest

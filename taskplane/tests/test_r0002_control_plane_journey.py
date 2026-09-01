@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from taskplane import loop, run_artifacts
 
 
@@ -37,7 +39,11 @@ def test_fresh_design_creates_exact_runstore_owned_artifact_parent(
     assert binding["repository_id"] == owner["repository"]["repo_id"]
     assert run_artifacts.verify_manifest(
         root, expected_binding=binding)["zero_unindexed_files"] is True
-    assert reference["binding_fingerprint"] == binding["fingerprint"]
+    assert reference == run_artifacts.manifest_locator_reference()
+
+    run_artifacts.publish_artifact(
+        root, "dashboard", {"status": "ready"},
+        metadata={"producer": "control-plane-journey"})
 
     replay = loop._ensure_run_artifacts(
         str(workspace), state, settings_digest="b" * 64,
@@ -45,6 +51,61 @@ def test_fresh_design_creates_exact_runstore_owned_artifact_parent(
         candidate_fingerprint="c" * 64, requirement_id="R-0002",
         requirement_fingerprint="d" * 64)
     assert replay == (root, binding, reference)
+
+    with pytest.raises(run_artifacts.RunArtifactError,
+                       match="another current binding"):
+        loop._ensure_run_artifacts(
+            str(workspace), state, settings_digest="b" * 64,
+            stage_instance_id="design-stage-fresh",
+            candidate_fingerprint="e" * 64, requirement_id="R-0002",
+            requirement_fingerprint="d" * 64)
+
+
+def test_control_plane_refreshes_verification_but_rejects_tampered_identity(
+        tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    private_store = tmp_path / "private-store"
+    state = {
+        "run_id": "loop-r0002-refresh", "baseline": "a" * 40,
+        "goal": "refresh governed artifacts", "step": "design",
+    }
+    monkeypatch.setattr(loop.runtime_storage, "load_workspace_locator",
+                        lambda _ws: None)
+    monkeypatch.setenv("TASKPLANE_HOME", str(private_store))
+    monkeypatch.setattr(loop.tp, "git_head", lambda _ws: "a" * 40)
+
+    prepared = loop._prepare_run_control_plane(str(workspace), state)
+    root = private_store / "runs" / state["run_id"] / "artifacts"
+    run_artifacts.publish_artifact(
+        root, "dashboard", {"status": "ready"},
+        metadata={"producer": "control-plane-refresh"})
+
+    persisted = {**state, **prepared}
+    assert loop._prepare_run_control_plane(str(workspace), persisted) == \
+        prepared
+
+    tampered_locator = {
+        **persisted,
+        "run_artifacts": {
+            **persisted["run_artifacts"],
+            "verification_fingerprint": "0" * 64,
+        },
+    }
+    with pytest.raises(run_artifacts.RunArtifactError,
+                       match="changed at run_artifacts"):
+        loop._prepare_run_control_plane(str(workspace), tampered_locator)
+
+    tampered_binding = {
+        **persisted,
+        "run_artifact_binding": {
+            **persisted["run_artifact_binding"],
+            "fingerprint": "0" * 64,
+        },
+    }
+    with pytest.raises(run_artifacts.RunArtifactError,
+                       match="changed at run_artifact_binding"):
+        loop._prepare_run_control_plane(str(workspace), tampered_binding)
 
 
 def test_dynamic_design_team_creates_one_portable_authorized_worker_per_lens(

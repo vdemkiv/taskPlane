@@ -426,19 +426,80 @@ def _git_exact(root, *args):
     return output
 
 
-def _sha256_json(value):
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+def authenticate_direct_ci_matrix(cell_runtimes, cell_receipts):
+    """Authenticate each CI cell on its host and one shared source authority."""
+    import ci_local
+    from taskplane import release_evidence
+
+    if not isinstance(cell_runtimes, Mapping) or \
+            not isinstance(cell_receipts, Mapping) or not cell_runtimes:
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI direct runtimes and receipts are incomplete")
+    if set(cell_runtimes) != set(cell_receipts) or any(
+        not isinstance(cell_id, str) or not cell_id
+        for cell_id in cell_runtimes
+    ):
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI direct runtime and receipt identities disagree")
+    try:
+        runtimes = {
+            cell_id: ci_local.validate_authoritative_ci_runtime(runtime)
+            for cell_id, runtime in cell_runtimes.items()
+        }
+        authorities = {
+            cell_id: ci_local.authoritative_ci_shared_authority(runtime)
+            for cell_id, runtime in runtimes.items()
+        }
+    except (TypeError, ci_local.RunnerError) as exc:
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI direct runtime is invalid") from exc
+    authority_fingerprints = {
+        row["fingerprint"] for row in authorities.values()
+    }
+    if len(authority_fingerprints) != 1:
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI direct runtimes do not share one candidate authority")
+    authority = next(iter(authorities.values()))
+    planned_cells = authority.get("plan", {}).get("cells")
+    if not isinstance(planned_cells, list) or not planned_cells:
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI shared plan is incomplete")
+    planned_ids = [
+        row.get("id") for row in planned_cells if isinstance(row, Mapping)
+    ]
+    if len(planned_ids) != len(planned_cells) or \
+            any(not isinstance(cell_id, str) for cell_id in planned_ids) or \
+            set(planned_ids) != set(cell_runtimes):
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI direct runtimes do not cover the shared plan")
+    checked_cells = []
+    try:
+        for cell_id in planned_ids:
+            runtime = runtimes[cell_id]
+            matches = [
+                row for row in runtime["plan"]["cells"]
+                if row.get("id") == cell_id
+            ]
+            if len(matches) != 1:
+                raise ci_local.RunnerError(
+                    "CI cell is absent or ambiguous in its sealed runtime")
+            checked_cells.append(
+                ci_local.validate_authoritative_ci_cell_receipt(
+                    cell_receipts[cell_id], runtime, matches[0],
+                )
+            )
+    except (KeyError, TypeError, ci_local.RunnerError) as exc:
+        raise release_evidence.ReleaseEvidenceError(
+            "authoritative CI direct receipt is invalid") from exc
+    return authority, checked_cells
 
 
-def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
+def assemble_protected_main_gate(root, *, pull_request_head_sha, cell_runtimes,
                                  cell_receipts, dashboard,
                                  dashboard_current, wave_metrics, cleanup,
                                  openai_provenance,
                                  claude_provenance):
     """Assemble release truth only from existing sealed producer receipts."""
-    import ci_local
     import release_provenance
     from taskplane import owned_cleanup, release_evidence, views
     from taskplane import wave_metrics as wave_metrics_module
@@ -461,63 +522,11 @@ def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
             "release assembly requires the exact merge-created first-parent topology")
     first_parent = parent_rows[1]
 
-    # The runtime producer validates its own candidate, settings, plan and
-    # fingerprints; writing a lookalike dict cannot cross this boundary.
-    # Avoid any ambient or durable intermediate: validate the already-read
-    # object through the same rules without writing it back to the repository.
-    if runtime.get("schema") != "taskplane.authoritative-ci-runtime/v1":
+    authority, checked_cells = authenticate_direct_ci_matrix(
+        cell_runtimes, cell_receipts)
+    if authority.get("source_sha") != source_sha:
         raise release_evidence.ReleaseEvidenceError(
-            "authoritative CI runtime receipt schema is invalid")
-    runtime_projection = {
-        key: value for key, value in runtime.items() if key != "fingerprint"
-    }
-    if runtime.get("fingerprint") != _sha256_json(runtime_projection):
-        raise release_evidence.ReleaseEvidenceError(
-            "authoritative CI runtime receipt is stale")
-    candidate = runtime.get("candidate")
-    plan = runtime.get("plan")
-    settings_receipt = runtime.get("settings_receipt")
-    if not all(isinstance(row, Mapping)
-               for row in (candidate, plan, settings_receipt)):
-        raise release_evidence.ReleaseEvidenceError(
-            "authoritative CI runtime receipt is incomplete")
-    if settings_receipt.get("fingerprint") != _sha256_json({
-        key: value for key, value in settings_receipt.items()
-        if key != "fingerprint"
-    }) or plan.get("fingerprint") != _sha256_json({
-        key: value for key, value in plan.items() if key != "fingerprint"
-    }):
-        raise release_evidence.ReleaseEvidenceError(
-            "authoritative CI runtime child receipt is stale")
-    if candidate.get("source_sha") != source_sha or \
-            plan.get("source_sha") != source_sha or \
-            settings_receipt.get("candidate_sha") != source_sha:
-        raise release_evidence.ReleaseEvidenceError(
-            "authoritative CI runtime names another protected-main SHA")
-    planned_cells = plan.get("cells")
-    if not isinstance(planned_cells, list) or not planned_cells or \
-            not isinstance(cell_receipts, Mapping):
-        raise release_evidence.ReleaseEvidenceError(
-            "authoritative CI direct receipts are incomplete")
-    planned_ids = [
-        row.get("id") for row in planned_cells if isinstance(row, Mapping)
-    ]
-    if len(planned_ids) != len(planned_cells) or \
-            any(not isinstance(cell_id, str) for cell_id in planned_ids) or \
-            set(cell_receipts) != set(planned_ids):
-        raise release_evidence.ReleaseEvidenceError(
-            "authoritative CI direct receipts do not match the plan")
-    checked_cells = []
-    try:
-        for cell in planned_cells:
-            checked_cells.append(
-                ci_local.validate_authoritative_ci_cell_receipt(
-                    cell_receipts[cell["id"]], runtime, cell,
-                )
-            )
-    except (KeyError, TypeError, ci_local.RunnerError) as exc:
-        raise release_evidence.ReleaseEvidenceError(
-            "authoritative CI direct receipt is invalid") from exc
+            "authoritative CI shared authority names another protected-main SHA")
     if any(row["status"] != "green" for row in checked_cells) or \
             sum(row["kind"] == "browser" for row in checked_cells) != 1:
         raise release_evidence.ReleaseEvidenceError(
@@ -536,7 +545,7 @@ def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
     except wave_metrics_module.WaveMetricsError as exc:
         raise release_evidence.ReleaseEvidenceError(
             "sealed wave metrics evidence is invalid") from exc
-    if metrics["run"]["candidate_fingerprint"] != candidate["fingerprint"] or \
+    if metrics["run"]["candidate_fingerprint"] != authority["fingerprint"] or \
             metrics["signoff"]["ready"] is not True:
         raise release_evidence.ReleaseEvidenceError(
             "sealed wave metrics do not bind the exact release candidate")
@@ -588,7 +597,7 @@ def assemble_protected_main_gate(root, *, pull_request_head_sha, runtime,
         "supply_chain": supply,
         "receipts": {
             "settings": {"digest": inputs["settings_digest"]},
-            "candidate": {"digest": candidate["fingerprint"],
+            "candidate": {"digest": authority["fingerprint"],
                           "source_sha": source_sha},
             "checks": {
                 row["id"]: {
@@ -633,13 +642,13 @@ def main():
         manifest_path = Path(args.assembly_manifest).resolve()
         manifest = _read_json_object(manifest_path, "release assembly manifest")
         expected = {
-            "schema", "pull_request_head_sha", "runtime", "cell_receipts",
+            "schema", "pull_request_head_sha", "cell_runtimes", "cell_receipts",
             "dashboard", "dashboard_current", "wave_metrics",
             "cleanup",
             "openai_provenance", "claude_provenance",
         }
         if set(manifest) != expected or manifest.get("schema") != \
-                "taskplane.release-gate-assembly/v1":
+                "taskplane.release-gate-assembly/v2":
             parser.error("release assembly manifest fields are not closed")
 
         def artifact(name):
@@ -651,11 +660,29 @@ def main():
                 path = manifest_path.parent / path
             return _read_json_object(path, name.replace("_", " ") + " receipt")
 
+        def artifact_map(name):
+            value = manifest.get(name)
+            if not isinstance(value, Mapping) or not value or any(
+                not isinstance(cell_id, str) or not cell_id or
+                not isinstance(path, str) or not path
+                for cell_id, path in value.items()
+            ):
+                raise ValueError(
+                    f"release assembly {name} path map is invalid")
+            result = {}
+            for cell_id, value_path in value.items():
+                path = Path(value_path)
+                if not path.is_absolute():
+                    path = manifest_path.parent / path
+                result[cell_id] = _read_json_object(
+                    path, f"{name} {cell_id} receipt")
+            return result
+
         gate = assemble_protected_main_gate(
             args.root,
             pull_request_head_sha=manifest["pull_request_head_sha"],
-            runtime=artifact("runtime"),
-            cell_receipts=artifact("cell_receipts"),
+            cell_runtimes=artifact_map("cell_runtimes"),
+            cell_receipts=artifact_map("cell_receipts"),
             dashboard=artifact("dashboard"),
             dashboard_current=artifact("dashboard_current"),
             wave_metrics=artifact("wave_metrics"),

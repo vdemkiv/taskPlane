@@ -233,10 +233,28 @@ class TestUnavailableModelEvaluationDoesNotOpenAProductFix(_AtEvaluate):
         for index, row in enumerate(verdict["criteria"]):
             row["status"] = "not-met" if not_met and index == 0 else "met"
             row["evidence"] = "mechanical evidence remains available"
+        state = loop.load(self.ws)
+        task = state["tasks"][state["current_task"]]
+        candidate = loop._failure_candidate_identity(self.ws, task)
+        evidence = {
+            "attempt": 1,
+            "host": "native-model-evaluation",
+            "result": "agent_timeout",
+        }
         verdict["failures"] = [{
-            "what": "native model evaluation was unavailable",
+            "schema": loop.failure_routing.FAILURE_RECORD_SCHEMA_ID,
+            "id": "evaluator-outage-attempt-1",
+            "source": "independent-evaluator",
+            "stage": "evaluate",
             "repro": "one bounded dispatch attempt",
-            "where": "host:model-evaluation",
+            "evidence": evidence,
+            "evidence_digest": loop.failure_routing.evidence_digest(evidence),
+            "class": "environment",
+            "reason": "the bounded independent evaluator timed out",
+            "owner": "host:native-model-evaluation",
+            "cluster": "evaluator-availability",
+            "route": "environment-recovery",
+            "candidate": candidate,
         }]
         path = os.path.join(self.ws, ".eval", "verdict.json")
         os.makedirs(os.path.dirname(path), exist_ok=True)

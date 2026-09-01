@@ -151,6 +151,10 @@ def publish_terminal_artifacts(
             evaluators.get("evaluators"), list):
         raise wave_metrics.WaveMetricsError(
             "terminal Retro requires evaluator identity and outcome summary")
+    if sealed is not None and sealed.get("evaluator_summary") is not None \
+            and sealed.get("evaluator_summary") != evaluators:
+        raise wave_metrics.WaveMetricsError(
+            "terminal Retro evaluator summary does not match metrics evidence")
 
     manifest = run_artifacts.load_manifest(artifact_root)
     binding = manifest["binding"]

@@ -736,7 +736,15 @@ def with_dashboard(fn):
         # Load before the wrapped transition so malformed settings cannot
         # follow a state write with a merely stale dashboard warning.
         settings = operational_settings.load_settings()
-        block = _dashboard_replay_block(ws)
+        try:
+            block = _dashboard_replay_block(ws)
+        except runtime_storage.StorageIdentityError as exc:
+            return {
+                "error": "stage-native transition refused because workspace "
+                         "storage identity is unreadable: "
+                         f"{_stage_view_error(exc)}",
+                "stage_native": "read-only",
+            }
         replay_result = None
         if block is not None:
             try:

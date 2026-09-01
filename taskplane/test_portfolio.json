@@ -734,14 +734,14 @@
     {
       "path": "taskplane/tests/test_loop.py",
       "classification": "rewrite",
-      "reason": "Mixed file adjudicated: semantic contracts retained; low-value source/prose/byte/count/history evidence excluded.",
+      "reason": "Retains current lifecycle, authority, worktree, graph, and sign-off contracts; removes obsolete automatic Evaluate-to-Fix journeys and a duplicated legacy v3 locator-reconstruction replay superseded by current storage and exact worktree graph contracts.",
       "replacement_selectors": [],
       "fixture_consumers": []
     },
     {
       "path": "taskplane/tests/test_loop_context_traces.py",
-      "classification": "retain",
-      "reason": "Retained current behavioral contract.",
+      "classification": "rewrite",
+      "reason": "Retains direct behavioral privacy, refusal, workspace-binding, and graph-freshness checks; removes source-derived loop rewrites, self-comparison replay, and source-shape/count assertions.",
       "replacement_selectors": [],
       "fixture_consumers": []
     },
@@ -1101,8 +1101,8 @@
     },
     {
       "path": "taskplane/tests/test_review_convergence_telemetry.py",
-      "classification": "retain",
-      "reason": "Retained current behavioral contract.",
+      "classification": "rewrite",
+      "reason": "Retains convergence and telemetry policy contracts; removes direct internal gate patches that bypass classified failure authority and replay obsolete automatic Evaluate-to-Fix routing.",
       "replacement_selectors": [],
       "fixture_consumers": []
     },
@@ -1339,8 +1339,8 @@
     },
     {
       "path": "taskplane/tests/test_selection.py",
-      "classification": "retain",
-      "reason": "Retained current behavioral contract.",
+      "classification": "rewrite",
+      "reason": "Retains public selection behavior; removes a manufactured Fix state with no exclusive classified product-failure authority.",
       "replacement_selectors": [],
       "fixture_consumers": []
     },

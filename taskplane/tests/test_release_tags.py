@@ -2,6 +2,7 @@
 from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import ci_evals  # noqa: E402
+import ci_local  # noqa: E402
 import ci_release_tags as gate  # noqa: E402
 from taskplane import release_evidence  # noqa: E402
 
@@ -213,3 +215,125 @@ def test_current_candidate_has_an_explicit_nonrelease_predecessor():
     disposition = gate.NOT_RELEASED["2.18.4"]
     assert disposition["superseded_by"] == "2.18.5"
     assert "never promoted" in disposition["reason"]
+
+
+def _runtime_with_fingerprint(
+    runtime: dict, digest: str, *, name: str = "runner",
+    browser: dict | None = None,
+) -> dict:
+    varied = deepcopy(runtime)
+    candidate = varied["candidate"]
+    fingerprints = dict(candidate["fingerprints"])
+    fingerprints[name] = digest
+    varied["candidate"] = ci_local.freeze_candidate({
+        "source_sha": candidate["source_sha"],
+        "fingerprints": fingerprints,
+        "browser": browser or candidate["browser"],
+    })
+    varied["plan"]["candidate_fingerprint"] = varied["candidate"]["fingerprint"]
+    for cell in varied["plan"]["cells"]:
+        cell["candidate_fingerprint"] = varied["candidate"]["fingerprint"]
+        if cell["kind"] == "browser":
+            cell["browser_environment"] = varied["candidate"]["browser"]
+            cell["browser_fingerprint"] = \
+                varied["candidate"]["browser_fingerprint"]
+    varied["plan"]["fingerprint"] = ci_local._sha256_json({
+        key: value for key, value in varied["plan"].items()
+        if key != "fingerprint"
+    })
+    varied["fingerprint"] = ci_local._sha256_json({
+        key: value for key, value in varied.items() if key != "fingerprint"
+    })
+    return ci_local.validate_authoritative_ci_runtime(varied)
+
+
+def test_direct_ci_release_matrix_authenticates_each_host_runtime(tmp_path):
+    source_sha = _git(ROOT, "rev-parse", "HEAD")
+    base = ci_local.build_authoritative_ci_runtime(
+        source_sha=source_sha, event="push", ref="refs/heads/main",
+        run_id="release-matrix-journey",
+    )
+    runtimes = {}
+    receipts = {}
+    observed_browser = {
+        **base["candidate"]["browser"],
+        "executable": "/opt/host/chrome",
+        "version": "Google Chrome 130.0.0",
+    }
+    for cell in base["plan"]["cells"]:
+        cell_id = cell["id"]
+        observed = {
+            "implementation": "CPython",
+            "python": str(cell.get("runtime") or "3.12").split("/")[0],
+            "os": "nt" if cell["kind"] == "os-portability" else "posix",
+            "platform": (
+                "Windows" if cell["kind"] == "os-portability" else "Linux"
+            ),
+            "machine": "AMD64" if cell["kind"] == "os-portability" else "x86_64",
+        }
+        runtime = _runtime_with_fingerprint(
+            base, ci_local._sha256_json({
+                key: observed[key]
+                for key in ("implementation", "python", "platform")
+            }), browser=observed_browser if cell["kind"] == "browser" else None)
+        cell_root = tmp_path / cell_id
+        cell_root.mkdir()
+        runtime_path = cell_root / "runtime.json"
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+        receipt_path = cell_root / "receipt.json"
+        result = ci_local.run_authoritative_ci_cell(
+            runtime_path, cell_id, receipt_path,
+            environ={**os.environ, "RUNNER_TEMP": str(cell_root / "runner")},
+            forced_outcome="handoff",
+        )
+        assert result == 1
+        runtimes[cell_id] = runtime
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["environment"]["observed"] = observed
+        receipt["environment"]["observed_fingerprint"] = \
+            ci_local._sha256_json(observed)
+        if cell["kind"] == "browser":
+            receipt["browser_observation"] = observed_browser
+        receipt["receipt"] = ci_local._sha256_json({
+            key: value for key, value in receipt.items() if key != "receipt"
+        })
+        receipts[cell_id] = receipt
+
+    authority, checked = gate.authenticate_direct_ci_matrix(runtimes, receipts)
+    assert authority["source_sha"] == source_sha
+    assert {row["id"] for row in checked} == set(runtimes)
+    assert len({
+        runtime["candidate"]["fingerprints"]["runner"]
+        for runtime in runtimes.values()
+    }) == 5
+    assert authority["candidate"]["browser_policy"] == {
+        key: value for key, value in observed_browser.items()
+        if key not in {"executable", "version"}
+    }
+    assert "executable" not in authority["candidate"]["browser_policy"]
+    assert "version" not in authority["candidate"]["browser_policy"]
+
+    crossed = dict(receipts)
+    first, second = list(crossed)[:2]
+    crossed[first], crossed[second] = crossed[second], crossed[first]
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="direct receipt is invalid"):
+        gate.authenticate_direct_ci_matrix(runtimes, crossed)
+
+    changed_browser = deepcopy(receipts["dashboard-browser"])
+    changed_browser["browser_observation"]["version"] = "Google Chrome 131.0.0"
+    changed_browser["receipt"] = ci_local._sha256_json({
+        key: value for key, value in changed_browser.items() if key != "receipt"
+    })
+    changed_receipts = {**receipts, "dashboard-browser": changed_browser}
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="direct receipt is invalid"):
+        gate.authenticate_direct_ci_matrix(runtimes, changed_receipts)
+
+    divergent = dict(runtimes)
+    divergent[first] = _runtime_with_fingerprint(
+        runtimes[first], hashlib.sha256(
+            b"different-test-inventory").hexdigest(), name="tests")
+    with pytest.raises(release_evidence.ReleaseEvidenceError,
+                       match="do not share one candidate authority"):
+        gate.authenticate_direct_ci_matrix(divergent, receipts)

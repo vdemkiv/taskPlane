@@ -277,7 +277,6 @@ def test_every_operational_setting_has_one_canonical_owner():
     package_authorities = {
         "taskplane/operational-settings.json",
         "taskplane/settings_inventory.json",
-        "taskplane/test_portfolio.json",
     }
     for script_name in ("package_openai.py", "package_claude.py"):
         script = ROOT / "scripts" / script_name
@@ -286,6 +285,7 @@ def test_every_operational_setting_has_one_canonical_owner():
         assert spec is not None and spec.loader is not None
         packager = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(packager)
+        assert set(packager.CANONICAL_AUTHORITY_FILES) == package_authorities
         files = (packager.package_files(packager.load_manifest())
                  if script_name == "package_openai.py"
                  else packager.package_files())

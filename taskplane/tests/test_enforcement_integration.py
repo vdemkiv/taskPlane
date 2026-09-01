@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 import dashboard
 import host_capabilities as hc
@@ -33,6 +34,13 @@ def _snapshot(workspace: str, *, live: bool):
 def _strict(monkeypatch, tmp_path, *, live: bool):
     workspace = str(tmp_path / "repo")
     os.makedirs(workspace)
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Taskplane Test"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-qm", "base"],
+                   cwd=workspace, check=True)
     monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("CLAUDE_SESSION_ID", "claude-session")
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)

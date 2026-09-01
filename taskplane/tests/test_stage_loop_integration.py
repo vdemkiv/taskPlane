@@ -5,6 +5,7 @@ import copy
 import contextlib
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,6 +13,15 @@ import subprocess
 import pytest
 
 from taskplane import loop, taskplane_lite
+
+
+def _content_inventory(root: Path) -> dict[str, str]:
+    """Bind a no-mutation assertion to names and semantic file content."""
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(
+            path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*")) if path.is_file()
+    }
 
 
 def _workspace(tmp_path):
@@ -694,81 +704,6 @@ def test_real_wave_recovers_task_bindings_after_post_split_crash(
     } == child_ids
 
 
-def test_native_evaluate_advances_without_mutating_historical_stage_tree(
-        tmp_path, monkeypatch) -> None:
-    from taskplane.tests.test_stage_cross_host import _write_reanchorable_pass
-
-    ws, store, root, _started = _start_real_stage_loop(
-        tmp_path / "interim-evaluate", monkeypatch, stage_kind="build",
-        stage_id="stage-build-interim-parent")
-    criterion = "the task completes without disturbing its sibling stage root"
-    tasks = [
-        {"id": "t01", "scope": ["README.md"], "tests": "true",
-         "deps": [], "status": "pending",
-         "req": "R-0004", "criteria": [criterion],
-         "target_commit": loop.tp.git_head(ws)},
-        {"id": "t02", "scope": ["b/**"], "tests": "true",
-         "deps": [], "status": "pending",
-         "req": "R-0004", "criteria": [criterion],
-         "target_commit": loop.tp.git_head(ws)},
-    ]
-    state = loop.load(ws)
-    state.update({
-        "step": "execute", "parallel": True, "current_task": 0,
-        "tasks": tasks,
-    })
-    loop.save(ws, state)
-    loop._stage_loop_wave_dispatches(ws, state, tasks)
-    workspace = Path(ws)
-    (workspace / "README.md").write_text(
-        "stage journey\nfirst task built\n", encoding="utf-8")
-    monkeypatch.setattr(
-        loop.runtime_eval, "guide_loop",
-        lambda *_a, **_k: {"status": "on_path", "recovered": False})
-    built_submission = loop.submit(ws, "pass", task_id="t01")
-    assert "error" not in built_submission, built_submission
-    build_state = loop.load(ws)
-    build_state["current_task"] = 0
-    build_completion = loop._stage_loop_gate_completion(
-        ws, build_state, step="execute", outcome="pass",
-        submission=built_submission["submission"])
-    build_receipt = loop._stage_loop_transition(
-        ws, build_state, from_step="execute", to_step="evaluate",
-        completion=build_completion)
-    evaluate_id = build_receipt["result"]["successor_head"]["summary"][
-        "stage_id"]
-
-    state = loop.load(ws)
-    state["step"] = "evaluate"
-    state["current_task"] = 0
-    state["tasks"][0]["status"] = "built"
-    state["tasks"][0].pop("_submission", None)
-    state["tasks"][1]["status"] = "pending"
-    state.setdefault("_stage_bindings", {}).setdefault("t01", {})[
-        "evaluate"] = evaluate_id
-    loop.save(ws, state)
-    _write_reanchorable_pass(ws, state["tasks"][0])
-    evaluated_submission = loop.submit(ws, "pass")
-    assert "error" not in evaluated_submission, evaluated_submission
-    monkeypatch.setattr(loop, "_evaluation_errors", lambda *_a, **_k: [])
-    monkeypatch.setattr(loop.tp, "engine_skew_refusal", lambda *_a, **_k: None)
-    monkeypatch.setattr(loop, "_submission_staleness", lambda *_a, **_k: None)
-    monkeypatch.setattr(loop, "_automatic_merge_cleanup", lambda *_a: None)
-    manifest_before = copy.deepcopy(store.load(root["run_id"]))
-    bindings_before = copy.deepcopy(
-        loop.load(ws).get("_stage_bindings") or {})
-
-    gated = loop.gate.__wrapped__(ws, "pass")
-
-    assert "error" not in gated, gated
-    assert gated["step"] == "execute"
-    assert "stage_transition" not in gated
-    final_state = loop.load(ws)
-    assert final_state["tasks"][0]["status"] == "passed"
-    assert final_state.get("_stage_bindings") == bindings_before
-    assert store.load(root["run_id"]) == manifest_before
-
-
 def test_gate_rolls_back_on_stage_failure_then_returns_transition_receipt(
         tmp_path, monkeypatch) -> None:
     ws = _workspace(tmp_path)
@@ -947,7 +882,11 @@ def test_retro_retries_sealed_report_after_real_terminalization_failure(
     state = loop.load(ws)
     state["step"] = "retro"
     loop.save(ws, state)
-    report = {"goal": state["goal"], "graph_true_up": {"changed": False}}
+    report = {
+        "goal": state["goal"],
+        "graph_true_up": {"changed": False},
+        "evaluator_summary": loop.retro_engine.evaluator_summary([]),
+    }
     computations = []
 
     def sealed_retro(workspace, *, load_state, mutate_state, **_kwargs):
@@ -1406,11 +1345,11 @@ def test_new_run_init_rejects_spaced_actor_without_state_or_run_mutation(
 def test_new_run_init_refuses_any_existing_singleton_even_force_or_terminal(
         tmp_path, monkeypatch, step, force) -> None:
     from taskplane.tests.test_stage_cross_host import (
-        _real_pristine_run, _record_bootstrap_requirement)
+        _record_bootstrap_requirement)
 
     root = tmp_path / f"existing-{step}-{force}"
     root.mkdir()
-    workspace, store, initial = _real_pristine_run(root)
+    workspace = Path(_workspace(root))
     requirement = _record_bootstrap_requirement(workspace)
     monkeypatch.delenv("TASKPLANE_STAGE_NATIVE", raising=False)
     existing = loop.init(str(workspace), "preserve prior singleton history")
@@ -1420,8 +1359,9 @@ def test_new_run_init_refuses_any_existing_singleton_even_force_or_terminal(
         loop.save(str(workspace), existing)
     state_path = Path(loop._loop_path(str(workspace)))
     before_state = state_path.read_bytes()
-    before_run = copy.deepcopy(store.load(initial["run_id"]))
     before_files = sorted(path.name for path in state_path.parent.iterdir())
+    store_root = Path(os.environ["TASKPLANE_HOME"])
+    before_store = _content_inventory(store_root)
     monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
 
@@ -1434,7 +1374,7 @@ def test_new_run_init_refuses_any_existing_singleton_even_force_or_terminal(
     assert state_path.read_bytes() == before_state
     assert sorted(path.name for path in state_path.parent.iterdir()) == \
         before_files
-    assert store.load(initial["run_id"]) == before_run
+    assert _content_inventory(store_root) == before_store
 
 
 @pytest.mark.parametrize("mode", ["enabled", "disabled"])

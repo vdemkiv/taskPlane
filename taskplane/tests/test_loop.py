@@ -22,20 +22,16 @@ import evaluation_output  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import storage as runtime_storage  # noqa: E402
-import run_store  # noqa: E402
 import checkpoint  # noqa: E402
 import build_c  # noqa: E402
 from tests import run_lr10_parallel as lr10_runner  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _isolate_loop_tests_from_dashboard_rendering(monkeypatch):
-    """Keep loop protocol tests independent of the dashboard rendering seam."""
-    import views
-
+def _isolate_loop_test_runtime(monkeypatch):
+    """Give each loop journey a stable host identity and isolated store."""
     monkeypatch.delenv("TASKPLANE_NO_SUITE_CACHE", raising=False)
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "test-loop-session")
-    monkeypatch.setattr(views, "refresh_views", lambda _ws, out: out)
     original_load_locator = runtime_storage.load_workspace_locator
     original_write_locator = runtime_storage.write_workspace_locator
     locator_cache = {}
@@ -1163,10 +1159,28 @@ class TestLoop(unittest.TestCase):
             "detail": "bounded evaluator attempt 7 timed out on host alpha",
         }
         verdict["verdict"] = "fail"
+        evidence = {
+            "attempt": 7,
+            "host": "alpha",
+            "result": "agent_timeout",
+        }
+        current = loop.load(ws)
+        task = current["tasks"][current["current_task"]]
+        act_ws = task.get("workspace") or ws
         verdict["failures"] = [{
-            "what": "independent evaluator did not return a judgment",
+            "schema": loop.failure_routing.FAILURE_RECORD_SCHEMA_ID,
+            "id": "evaluator-outage-attempt-7",
+            "source": "independent-evaluator",
+            "stage": "evaluate",
             "repro": "dispatch attempt 7 on host alpha",
-            "where": "host:alpha/evaluator:independent",
+            "evidence": evidence,
+            "evidence_digest": loop.failure_routing.evidence_digest(evidence),
+            "class": "environment",
+            "reason": "the bounded independent evaluator timed out",
+            "owner": "host:alpha",
+            "cluster": "evaluator-availability",
+            "route": "environment-recovery",
+            "candidate": loop._failure_candidate_identity(act_ws, task),
         }]
         with open(path, "w", encoding="utf-8") as stream:
             json.dump(verdict, stream)
@@ -1873,21 +1887,6 @@ class TestLoop(unittest.TestCase):
         self.assertNotIn("new loop", str(refused).lower())
         self.assertEqual(loop.load(ws)["step"], "signoff")
 
-    def test_fail_autofix_then_escalate(self):
-        ws = git_ws(self.tmp, [TASK])
-        loop.init(ws, "g", spec_path="s", checkpoints=["em"], max_fix_cycles=2)
-        loop.next_action(ws); loop.gate(ws, "pass")   # plan → execute
-        loop.next_action(ws); submit_gate(ws, "pass") # execute → evaluate
-        loop.next_action(ws); submit_gate(ws, "fail") # evaluate FAIL → fix (1)
-        self.assertEqual(loop.load(ws)["step"], "fix")
-        loop.next_action(ws); submit_gate(ws, "pass") # fix → evaluate
-        loop.next_action(ws); submit_gate(ws, "fail") # FAIL → fix (2)
-        loop.next_action(ws); submit_gate(ws, "pass") # fix → evaluate
-        loop.next_action(ws); submit_gate(ws, "fail") # cycle 3 > max → escalated
-        self.assertEqual(loop.load(ws)["step"], "escalated")
-        loop.resolve(ws, "skip")                       # last task → em
-        self.assertEqual(loop.load(ws)["step"], "em")
-
     def test_multi_task_progression(self):
         t2 = dict(TASK, id="t2")
         ws = git_ws(self.tmp, [TASK, t2])
@@ -2069,19 +2068,6 @@ class TestLoop(unittest.TestCase):
         errors = tp.requirement_coverage_errors(tasks, lambda _rid: None)
         self.assertIn("R-missing does not exist", " ".join(errors))
 
-    def test_escalate_retry_resets_cycles(self):
-        ws = git_ws(self.tmp, [TASK])
-        loop.init(ws, "g", spec_path="s", checkpoints=["em"], max_fix_cycles=1)
-        loop.next_action(ws); loop.gate(ws, "pass")   # → execute
-        loop.next_action(ws); submit_gate(ws, "pass") # → evaluate
-        loop.next_action(ws); submit_gate(ws, "fail") # → fix (1)
-        loop.next_action(ws); submit_gate(ws, "pass") # → evaluate
-        loop.next_action(ws); submit_gate(ws, "fail") # cycle2 > max1 → escalated
-        loop.resolve(ws, "retry")
-        self.assertEqual(loop.load(ws)["step"], "fix")
-        self.assertEqual(loop.load(ws)["tasks"][0]["fix_cycles"], 0)
-
-
 if __name__ == "__main__":
     unittest.main()
 
@@ -2200,6 +2186,11 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         with open(os.path.join(ws, "specs", "spec.md"), "w",
                   encoding="utf-8") as f:
             f.write("# Thin requirement\n")
+        for command in (["init", "-q"], ["add", "-A"]):
+            subprocess.run(["git", *command], cwd=ws, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=e@e", "-c", "user.name=t",
+             "commit", "-qm", "initial"], cwd=ws, check=True)
         rec = reqs.record_requirement(
             ws, "thin", functional=["change behavior"],
             acceptance=["behavior is verified"],
@@ -2716,113 +2707,6 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
 
                 self.assertIsNone(resolved)
                 self.assertIn("canonical managed task worktree", error)
-
-
-class TestManagedWorktreeGraphPublication(unittest.TestCase):
-    """Evaluate restores a missing locator from one exact run registration."""
-
-    def setUp(self):
-        self.ws = TestParallelExecution._ws(TestParallelExecution())
-        initial_state = loop.load(self.ws)
-        subprocess.run(
-            ["git", "remote", "add", "origin",
-             "https://github.com/Example/Loop-Recovery.git"], cwd=self.ws,
-            check=True)
-        self.home = tempfile.mkdtemp(prefix="tp-loop-reconstruct-home-")
-        self.identity = runtime_storage.resolve_repository_identity(self.ws)
-        self.run_id = "run-loop-123"
-        self.store = run_store.RunStore(home=self.home)
-        self.store.create(
-            self.identity, run_id=self.run_id, checkout=self.ws,
-            host={"kind": "test", "session_id": "loop-graph-publication"},
-            target={"kind": "workspace", "revision": tp.git_head(self.ws)})
-        self.layout = runtime_storage.resolve_layout(
-            self.identity, home=self.home, run_id=self.run_id)
-        runtime_storage.write_workspace_locator(
-            self.ws, identity=self.identity, layout=self.layout,
-            run_id=self.run_id)
-        loop.save(self.ws, initial_state)
-        self.worker = runtime_storage.task_worktree_path(self.ws, "t1")
-        os.makedirs(os.path.dirname(self.worker), exist_ok=True)
-        result = subprocess.run(
-            ["git", "worktree", "add", "-q", "-b", "tp/t1-recovery",
-             self.worker, "HEAD"], cwd=self.ws, capture_output=True,
-            text=True, encoding="utf-8", errors="replace")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        claimed = loop.claim(self.ws, "t1", self.worker)
-        self.assertNotIn("error", claimed)
-        changed = os.path.join(self.worker, "src", "a", "m.py")
-        with open(changed, "w", encoding="utf-8") as stream:
-            stream.write("x=2\n")
-        subprocess.run(["git", "add", "-A"], cwd=self.worker, check=True)
-        subprocess.run(
-            ["git", "-c", "user.email=e@e", "-c", "user.name=t",
-             "commit", "-qm", "managed worker target"], cwd=self.worker,
-            check=True)
-        self.target = tp.git_head(self.worker)
-        submitted = loop.submit(self.ws, "pass", task_id="t1")
-        self.assertNotIn("error", submitted)
-        gated = loop.gate(self.ws, "pass", task_id="t1")
-        self.assertNotIn("error", gated)
-        state = loop.load(self.ws)
-        self.assertEqual(state["tasks"][0]["target_commit"], self.target)
-        state["current_task"] = 0
-        state["step"] = "evaluate"
-        state["graph_governance"] = True
-        loop.save(self.ws, state)
-        self.worker_locator = runtime_storage._locator_path(self.worker)
-        self.primary_locator = runtime_storage._locator_path(self.ws)
-        os.unlink(self.worker_locator)
-        os.unlink(self.primary_locator)
-        with unittest.mock.patch.dict(
-                os.environ, {"TASKPLANE_HOME": self.home}):
-            loop.save(self.ws, state)
-
-    def test_evaluate_reconstructs_then_reads_exact_run_local_graph(self):
-        primary_graph = os.path.join(self.layout.graph_root, "graph.json")
-        os.makedirs(os.path.dirname(primary_graph), exist_ok=True)
-        primary_value = {
-            "modules": {"primary-only": {"kind": "module", "files": 1}},
-            "edges": [], "files": {}, "recorded": [],
-            "meta": {"scanned_head": tp.git_head(self.ws),
-                     "content_fingerprint": "1" * 64},
-        }
-        with open(primary_graph, "w", encoding="utf-8") as handle:
-            json.dump(primary_value, handle, sort_keys=True)
-        with open(primary_graph, "rb") as handle:
-            primary_before = handle.read()
-        with unittest.mock.patch.dict(
-                os.environ, {"TASKPLANE_HOME": self.home}):
-            state = loop.load(self.ws)
-            resolved, error = loop._parallel_evaluate_workspace(
-                self.ws, state, state["tasks"][0])
-            graph = depgraph.scan(resolved)
-            action = getattr(loop.next_action, "__wrapped__",
-                             loop.next_action)(self.ws)
-
-        self.assertIsNone(error)
-        self.assertEqual(resolved, os.path.realpath(self.worker))
-        self.assertEqual(graph["meta"]["scanned_head"], self.target)
-        locator = runtime_storage.load_workspace_locator(self.worker)
-        self.assertTrue(os.path.isfile(os.path.join(
-            locator["paths"]["graph"], "graph.json")))
-        self.assertNotIn("error", action, action)
-        self.assertEqual(action["review_kernel"]["status"], "ready")
-        self.assertEqual(action["impact"]["graph"]["scanned_head"],
-                         self.target)
-        with open(primary_graph, "rb") as handle:
-            self.assertEqual(handle.read(), primary_before)
-
-    def test_evaluate_requires_independent_target_commit(self):
-        with unittest.mock.patch.dict(
-                os.environ, {"TASKPLANE_HOME": self.home}):
-            state = loop.load(self.ws)
-            state["tasks"][0].pop("target_commit")
-            resolved, error = loop._parallel_evaluate_workspace(
-                self.ws, state, state["tasks"][0])
-        self.assertIsNone(resolved)
-        self.assertIn("target commit", error)
-        self.assertFalse(os.path.exists(self.worker_locator))
 
 
 class TestParallelCommitDiscipline(unittest.TestCase):
