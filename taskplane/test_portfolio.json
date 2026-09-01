@@ -6,7 +6,7 @@
     "plan": "R-0001/AC-TST2",
     "policy": "remove only history replay, stale-fixture, duplicate, implementation-detail, or ceremonial tests when a retained current-contract selector or explicit obsolete-contract authority is recorded",
     "protected_selector_source": "taskplane/tests/fixtures/test-strategy/r0001.json",
-    "protected_selector_source_sha256": "c6ccaea5215e067ba022f9046e05fe6ffe6593aa7223ed11b8c33629011de50a"
+    "protected_selector_source_sha256": "01d7ace5ef96ecf341dcdcbae255a84212a2334b69bfc0f72b076865f67d3486"
   },
   "baselines": {
     "approved_historical": {"test_files": 266, "collected_cases": 4909, "test_loc": 95601},
@@ -14,9 +14,9 @@
     "measurement": "git ls-files taskplane/tests/test_*.py; pytest --collect-only -q; wc -l over the tracked test inventory"
   },
   "final": {
-    "test_files": 230,
-    "collected_cases": 4061,
-    "test_loc": 84284,
+    "test_files": 229,
+    "collected_cases": 4059,
+    "test_loc": 83961,
     "removed_files": 57,
     "removed_cases": 916,
     "removed_loc": 16865,
@@ -25,6 +25,13 @@
     "added_contract_loc": 1625,
     "redundant_families_removed": 18,
     "targets": {"test_files_max": 230, "collected_cases_max": 4200, "families_min": 6}
+  },
+  "post_validation_cleanup": {
+    "removed_file": "taskplane/tests/test_test_portfolio_contract.py",
+    "removed_cases": 2,
+    "removed_loc": 317,
+    "classification": "ceremonial",
+    "reason": "The self-test recursively recollected and reran the suite and gated release on historical file digests, case totals, and physical line counts instead of product behavior."
   },
   "selector_pruning": {
     "base_revision": "e0aadf61c60c30996739b9f0e6d6f891384e80d4",

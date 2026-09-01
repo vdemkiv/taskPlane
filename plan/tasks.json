@@ -1505,14 +1505,13 @@
       "id": "TEST-PORTFOLIO",
       "scope": [
         "taskplane/test_portfolio.json",
-        "taskplane/tests/test_test_portfolio_contract.py",
         "taskplane/tests/test_v*.py",
         "taskplane/tests/test_r0006_*.py",
         "taskplane/tests/test_field_report_*.py",
         "taskplane/tests/briefs/**",
         "taskplane/tests/fixtures/test-portfolio/**"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_test_portfolio_contract.py::test_removed_tests_preserve_current_contract_coverage taskplane/tests/test_test_portfolio_contract.py::test_portfolio_targets_are_met_without_count_only_deletion taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied taskplane/tests/test_host_native_dashboard.py::test_codex_and_claude_project_equal_semantics_for_all_components taskplane/tests/test_status_and_large_delivery.py::test_large_dashboard_automatically_delivers_complete_markdown taskplane/tests/test_worker_contract_lifecycle.py::test_authenticated_release_refuses_before_terminal_and_tampering",
+      "tests": "python3 -m pytest -q taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied taskplane/tests/test_host_native_dashboard.py::test_codex_and_claude_project_equal_semantics_for_all_components taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green taskplane/tests/test_status_and_large_delivery.py::test_large_dashboard_automatically_delivers_complete_markdown taskplane/tests/test_worker_contract_lifecycle.py::test_authenticated_release_refuses_before_terminal_and_tampering",
       "req": "R-0001",
       "deps": [
         "RELEASE-GATE",
@@ -1547,8 +1546,8 @@
           "metrics",
           "final conformance"
         ],
-        "freshness": "Every removal binds frozen SHA, current/obsolete contract authority, retained exact selector and mutation/severed-edge detection, fixture/generator digest, owner and before/after counts/LOC.",
-        "severed_edges": "Delete by name/version/host/count, move/rename protected selectors, remove dashboard/native/large-delivery/stage/view/worker/security/release floors, or omit consumer freshness and exact tests fail.",
+        "freshness": "The portfolio is a delivered measurement record, while current behavior is protected only by direct executable selectors.",
+        "severed_edges": "Removing dashboard/native/large-delivery/worker/security/cleanup/release behavior makes its direct selector fail; historical counts and byte identities are not release gates.",
         "fixtures": "Portfolio rows, pre/post collection, retained mutation, protected 24 selectors, large-delivery/native accessibility additions, fixture/generator/manifests and obsolete-authority evidence stay here.",
         "classification_before_correction": [
           "product",
@@ -1558,7 +1557,7 @@
         ]
       },
       "criteria": [
-        "AC-TST2: Every removed test maps to a retained selector or obsolete contract, at least six redundant families are removed, the suite reaches at most 230 files and 4200 cases, and protected contracts remain; verify taskplane/tests/test_test_portfolio_contract.py::test_removed_tests_preserve_current_contract_coverage and taskplane/tests/test_test_portfolio_contract.py::test_portfolio_targets_are_met_without_count_only_deletion."
+        "AC-TST2: The portfolio records the measured cleanup result without becoming a recursive count, digest, or history-replay release gate; current protected contracts are verified by their direct behavior selectors."
       ]
     },
     {

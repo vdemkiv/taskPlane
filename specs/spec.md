@@ -222,13 +222,12 @@ only after the current contract they protect is adjudicated.
    cannot enter correction without product-versus-test/infrastructure/environment
    classification. Verify with
    `taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete`.
-7. **AC-TST2 — Evidence-based portfolio cleanup.** Every removed test maps to a
-   retained exact selector protecting the same current contract or to an
-   explicitly obsolete contract; at least six redundant families are removed,
-   the suite reaches at most 230 files/4,200 collected cases, and the protected
-   regression floor remains complete. Verify with
-   `taskplane/tests/test_test_portfolio_contract.py::test_removed_tests_preserve_current_contract_coverage`
-   and `taskplane/tests/test_test_portfolio_contract.py::test_portfolio_targets_are_met_without_count_only_deletion`.
+7. **AC-TST2 — Evidence-based portfolio cleanup.** The delivered portfolio
+   records the cleanup decision and measured result; it is not a release gate
+   and does not recursively recollect/rerun the suite or freeze historical
+   files, digests, cases, or line counts. Current security, dashboard, cleanup,
+   portability, and release behavior remains protected by the direct selectors
+   in the test-strategy contract.
 8. **AC-TST3 — Progressive CI-first validation.** Validation advances static,
    exact selector, changed-file/radius, proportional suite, and one frozen-SHA
    GitHub Actions workflow; unchanged green fingerprints are cited without

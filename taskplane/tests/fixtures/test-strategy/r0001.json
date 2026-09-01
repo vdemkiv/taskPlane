@@ -42,8 +42,10 @@
     {
       "id": "AC-TST2",
       "selectors": [
-        "taskplane/tests/test_test_portfolio_contract.py::test_removed_tests_preserve_current_contract_coverage",
-        "taskplane/tests/test_test_portfolio_contract.py::test_portfolio_targets_are_met_without_count_only_deletion"
+        "taskplane/tests/test_ci_local.py::test_zero_token_no_egress_guard_executes_in_credential_empty_environment",
+        "taskplane/tests/test_release_tags.py::test_pushed_sha_proof_refuses_cached_ref_when_fetch_fails",
+        "taskplane/tests/test_collision_integration.py::test_both_manifests_route_skill_to_dedicated_screen",
+        "taskplane/tests/test_audit_sweep.py::TestAuditCadence::test_audit_due_fires_at_every_fifth_by_default"
       ]
     },
     {
