@@ -651,11 +651,21 @@ def verify_forward_release_surface(root):
     if "python scripts/ci_evals.py --verify-release-surface --json" not in workflow:
         errors.append("CI does not execute the forward-release surface proof")
     python_312 = re.search(
-        r'- python: "3\.12"(?P<body>.*?)(?:\n\s*- python:|\n\s*steps:)',
+        r"\n  tests:\n(?P<body>.*?)(?=\n  [a-zA-Z0-9_-]+:\n)",
         workflow, re.DOTALL,
     )
-    if python_312 is None or "taskplane/tests" not in python_312.group("body"):
-        errors.append("Python 3.12 CI does not select the complete taskplane test surface")
+    if python_312 is None or not all(
+        marker in python_312.group("body")
+        for marker in (
+            'python-version: "3.12"',
+            "Execute the frozen authoritative pytest suite",
+            '--ci-cell "$cell"',
+        )
+    ):
+        errors.append(
+            "the real Python 3.12 tests job does not execute the complete "
+            "settings-derived test surface"
+        )
 
     archives = {}
     surface_members = (
