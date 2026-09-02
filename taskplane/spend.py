@@ -1,4 +1,4 @@
-"""What a governed run actually COSTS, read from the host's transcript.
+"""What a governed pickup actually consumed, read from native counters.
 
 The action ceiling was the only budget this product had, and an action is a
 terrible proxy for cost. Measured on one real review: 777k effective tokens
@@ -8,22 +8,18 @@ lens agent reading a large file is twenty-five thousand. The meter counted
 them identically, so "raise the limit from 40 to 80" was never a fine-tune;
 it was buying another ~440k tokens sight unseen.
 
-Tokens are the thing that is actually scarce, and the host already writes
-them down: every assistant message in the transcript JSONL carries a `usage`
-block. This module reads it. Nothing here estimates, models, or predicts —
-it sums what was recorded.
+Tokens are the thing that is actually scarce, and the host already writes a
+cumulative native counter.  The Codex adapter consumes that counter directly;
+legacy provider projections remain compatibility inputs.  Nothing estimates
+or reconstructs a native total.
 
-EFFECTIVE tokens, not raw. Cache reads are cheap and cache writes and output
-are not, so a raw sum tells you almost nothing about cost: the same review
-was ~22M raw and ~3.8M effective. The weights below are the ones the host's
-own usage report uses, and they live in one place so a budget, a report and
-a gate cannot disagree about what a token cost.
+The hard pickup ceiling uses native total tokens. Effective tokens remain a
+separate cost projection for reports; cache/output weights never redefine the
+provider-owned counter used by the gate.
 
-This is a CEILING input, never a source of truth about billing. It fails
-OPEN in every direction — no transcript, an unreadable line, a missing usage
-block — because a budget that blocks when its instrument breaks would make a
-broken instrument into a broken product. The action ceiling still stands
-underneath it.
+This is a CEILING input, never billing truth. Governed pickups fail closed when
+their native counter is missing, null, zero at dispatch, or unavailable at
+terminal release; no missing value becomes a fictional zero.
 """
 import json
 import os
@@ -458,15 +454,14 @@ def status(contract: dict, spent: int) -> tuple:
         return True, "no token ceiling set"
     if spent >= cap:
         return False, (
-            f"TOKEN BUDGET exhausted ({spent:,}/{cap:,} effective tokens) — "
-            f"STOP. This ceiling counts what the host recorded, weighted the "
-            f"way cost actually falls (cache reads x0.1, cache writes x2, "
-            f"output x5), so it tracks spend rather than tool-call count. A "
+            f"TOKEN BUDGET exhausted ({spent:,}/{cap:,} native tokens) — "
+            f"STOP. This per-pickup ceiling uses the host's cumulative native "
+            f"counter rather than a reconstructed estimate. A "
             f"human raises it from OUTSIDE this workspace: `tp.py budget "
             f"--grant-tokens N --workspace <ws>`, or ends the task with "
             f"`tp.py clear --workspace <ws>`. You cannot grant yourself "
             f"budget; do not retry.")
-    return True, f"{spent:,}/{cap:,} effective tokens"
+    return True, f"{spent:,}/{cap:,} native tokens"
 
 
 def cost_per_action(spent: int, actions: int) -> float:

@@ -911,9 +911,10 @@ def seal_terminal_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
     if billing_total is not None:
         _number(billing_total, "terminal billing total")
 
+    # Tokens are enforced per pickup before actions and terminal release.
+    # They remain measured metrics here, but cannot become a second aggregate
+    # program wall at sign-off.
     ceiling_values = {
-        "total_tokens": observed["total_tokens"],
-        "uncached_input_tokens": observed["uncached_input_tokens"],
         "sessions": observed["sessions"],
         "active_delivery_hours": observed["elapsed_seconds"] / 3600,
     }

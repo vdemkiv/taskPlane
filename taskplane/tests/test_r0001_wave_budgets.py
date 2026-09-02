@@ -149,11 +149,9 @@ def test_delta_projection_preserves_existing_stage_task_path() -> None:
     [
         ("elapsed_seconds", 28_800),
         ("sessions", 60),
-        ("total_tokens", 150_000_000),
-        ("uncached_input_tokens", 25_000_000),
     ],
 )
-def test_any_binding_budget_ceiling_stops_for_human_scope_review(
+def test_wave_level_time_or_session_ceiling_stops_for_human_scope_review(
     field: str, ceiling: int
 ) -> None:
     below = {
@@ -201,6 +199,25 @@ def test_any_binding_budget_ceiling_stops_for_human_scope_review(
     )
     assert owner_stop["dispatch_allowed"] is False
     assert owner_stop["status"] == "human_scope_review"
+
+
+@pytest.mark.parametrize(
+    ("field", "observed"),
+    [("total_tokens", 1_000_000_000),
+     ("uncached_input_tokens", 100_000_000)],
+)
+def test_aggregate_tokens_remain_visible_without_program_level_stop(
+        field: str, observed: int) -> None:
+    usage = {"elapsed_seconds": 0, "sessions": 10,
+             "total_tokens": 0, "uncached_input_tokens": 0}
+    usage[field] = observed
+
+    projected = brief_projection.project(_loop_action(), wave_usage=usage)
+
+    assert projected["status"] == "ready"
+    assert projected["budget"]["dispatch_allowed"] is True
+    assert projected["budget"]["usage"][field] == observed
+    assert projected["budget"]["triggered"] == []
 
 
 @pytest.mark.parametrize(
@@ -365,7 +382,7 @@ def test_dispatch_telemetry_records_all_required_fields_and_thread_types() -> No
         (0, 25_000_000, 25_000_000, "uncached_input_tokens"),
     ],
 )
-def test_observed_production_usage_stops_the_next_live_wave_at_equality(
+def test_observed_aggregate_tokens_do_not_stop_the_next_live_wave(
     tmp_path, monkeypatch, cached: int, uncached: int, total: int,
     trigger: str,
 ) -> None:
@@ -416,16 +433,11 @@ def test_observed_production_usage_stops_the_next_live_wave_at_equality(
     )
     admitted = loop.finalize_observed_dispatch_usage(
         str(tmp_path), task_id="a", ended_at=2)
-    stopped = loop.wave(str(tmp_path))
+    continued = loop.wave(str(tmp_path))
 
     assert admitted["status"] == "admitted"
-    assert stopped["step"] == "human_scope_review"
-    assert stopped["wave"] == []
-    assert stopped["budget"]["triggered"] == [{
-        "field": trigger,
-        "observed": dispatch_telemetry.WAVE_BUDGET_CEILINGS[trigger],
-        "ceiling": dispatch_telemetry.WAVE_BUDGET_CEILINGS[trigger],
-    }]
+    assert continued["step"] == "execute"
+    assert continued.get("paused") is not True
     assert dispatch_telemetry.wave_usage(
         state["dispatch_telemetry"], FakeClock(wall_time=2)
     )[trigger] == dispatch_telemetry.WAVE_BUDGET_CEILINGS[trigger]

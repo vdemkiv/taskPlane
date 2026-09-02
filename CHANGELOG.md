@@ -26,13 +26,13 @@ lens rewrite and never bumped to.
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
-> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.7 are
-> superseded unreleased candidates. The forward release candidate moves as v2.18.8,
+> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.8 are
+> superseded unreleased candidates. The forward release candidate moves as v2.18.9,
 > which is not
 > released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.8 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.18.9 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
@@ -49,7 +49,8 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.18.8** | **Canonical terminal Plan graph fallback — release candidate, not released.** When a migrated or terminal run outlives the mutable Plan file bound by its approval receipt, the dashboard now visualizes the authoritative task DAG already sealed in governed loop state and derives dependency-level waves labeled `unverified`. It never hides canonical execution dependencies and never invents Plan approval. |
+| **v2.18.9** | **Native telemetry, isolated pickups, and one current dashboard — release candidate, not released.** Provider-owned Codex counters are captured at spawn and terminal boundaries, resumed sessions are delta-attributed without double counting, null or zero metering fails closed, and non-zero per-pickup targets and ceilings from canonical settings reach actual hook enforcement. Workers inherit zero conversation turns. Retro and dashboard consumers receive measured totals, while the surfaced dashboard is the full styled current document with a browser-verified visible dependency graph rather than a stale fragment. |
+| **v2.18.8** | **Canonical terminal Plan graph fallback — superseded unreleased candidate.** It restored the authoritative terminal task DAG and truthful unverified waves, but native counter enforcement, zero-context spawn binding, and the exact surfaced dashboard document were not wired end to end. v2.18.9 closes those runtime edges. |
 | **v2.18.7** | **Terminal dashboard and artifact wiring repair — superseded unreleased candidate.** Terminal `failed` retained the bound Design graph and migrated private artifact classes, but a real run with a drifted mutable Plan file still hid its Plan DAG and waves even though canonical task dependencies remained in loop state. v2.18.8 closes that real-run projection gap. |
 | **v2.18.6** | **Truthful legacy terminal migration — superseded unreleased candidate.** It added the narrow fail-closed migration that preserves task status and prior evidence, but the terminal dashboard stage map omitted `failed`, the presentation layer ignored the migrated run's private manifest, and candidate receipts continued to name the baseline instead of the observed delivered revision. v2.18.7 repairs those existing graph, artifact, and candidate-authority edges before upload. |
 | **v2.18.5** | **Full R-0002 control-plane wiring — superseded unreleased candidate.** Every new Design run decomposed before dynamic host dispatch; failure classification preceded correction; Build enforced test-quality progression; and durable run-owned artifact classes preserved dashboard, graph, telemetry, activity, validation, cleanup, and Retro evidence. An active run initialized by the previous installed version lacked the new artifact binding, however, so 2.18.5 could not truthfully terminalize it after upgrade. v2.18.6 closes only that migration seam before upload. |

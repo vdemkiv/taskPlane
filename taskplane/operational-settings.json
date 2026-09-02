@@ -49,13 +49,18 @@
       "max_actions": 60,
       "lens_deep_max_actions": 45,
       "lens_sweep_max_actions": 30,
-      "max_tokens": null,
+      "target_tokens": 12000000,
+      "max_tokens": 17000000,
       "max_cost_usd": null
     }
   },
   "workflow": {
     "transport": "native",
-    "worker_inheritance": {"model": true, "reasoning": true}
+    "worker_inheritance": {
+      "model": true,
+      "reasoning": true,
+      "context": "none"
+    }
   },
   "cleanup": {"worktrees": "after-merge", "artifacts_days": 30},
   "runtime": {

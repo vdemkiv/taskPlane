@@ -26,10 +26,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING or __package__:
     from .delivery_policy import DeliveryPolicyError
     from .delivery_ports import Clock, canonical_json, content_fingerprint
+    from . import native_session_meter
     from .spend import WEIGHTS, normalize_usage
 else:  # pragma: no cover - direct module loading
     from delivery_policy import DeliveryPolicyError
     from delivery_ports import Clock, canonical_json, content_fingerprint
+    import native_session_meter
     from spend import WEIGHTS, normalize_usage
 
 
@@ -81,6 +83,10 @@ WAVE_BUDGET_CEILINGS = {
     "total_tokens": 150_000_000,
     "uncached_input_tokens": 25_000_000,
 }
+# Token ceilings are per pickup and enforced by the active worker contract.
+# Aggregating them into a program wall penalizes legitimate parallel breadth
+# and was the source of repeated false scope-review stops.
+ADMISSION_BUDGET_FIELDS = ("elapsed_seconds", "sessions")
 
 _IDENTITY_FIELDS = frozenset({
     "run_id", "source_sha", "design_fingerprint", "plan_fingerprint",
@@ -242,6 +248,42 @@ def project_transcript_usage(
             byte_limit <= 0 or byte_limit > MAX_TRANSCRIPT_PROJECTION_BYTES:
         raise DispatchTelemetryError(
             "transcript projection byte limit is invalid")
+    if str(provider).lower() == "codex":
+        try:
+            snapshot = native_session_meter.read_snapshot(path)
+        except native_session_meter.NativeSessionMeterError as exc:
+            return _unavailable_transcript_projection(
+                provider, str(exc), byte_limit=byte_limit), None
+        usage = dict(snapshot["usage"])
+        effective = int(
+            usage["uncached_input_tokens"] * WEIGHTS["input"]
+            + usage["cached_input_tokens"] * WEIGHTS["cache_read"]
+            + usage["output_tokens"] * WEIGHTS["output"]
+        )
+        return {
+            "schema": TRANSCRIPT_PROJECTION_SCHEMA,
+            "status": "available",
+            "provider": "codex",
+            "reason": None,
+            "path_fingerprint": snapshot["source"]["path_fingerprint"],
+            "device": snapshot["source"]["device"],
+            "inode": snapshot["source"]["inode"],
+            "offset": snapshot["source"]["size"],
+            "size": snapshot["source"]["size"],
+            "bytes_read": min(
+                snapshot["source"]["size"],
+                native_session_meter.MAX_METADATA_BYTES
+                + native_session_meter.MAX_COUNTER_TAIL_BYTES,
+            ),
+            "byte_limit": byte_limit,
+            "messages": 1,
+            "duplicates_removed": 0,
+            "effective_tokens": effective,
+            "usage": usage,
+            "source_fingerprint": snapshot[
+                "source_identity_fingerprint"],
+            "native_session": snapshot,
+        }, None
     authority = _checkpoint_authority(checkpoint_authority)
     selected = os.path.realpath(str(path or ""))
     try:
@@ -1510,7 +1552,7 @@ def budget_projection(ledger: Mapping[str, Any], clock: Clock, *,
     triggered = [
         {"field": field, "observed": usage[field], "ceiling": ceiling}
         for field, ceiling in WAVE_BUDGET_CEILINGS.items()
-        if usage[field] >= ceiling
+        if field in ADMISSION_BUDGET_FIELDS and usage[field] >= ceiling
     ]
     return {
         "schema": BUDGET_SCHEMA,

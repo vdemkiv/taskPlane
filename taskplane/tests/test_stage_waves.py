@@ -703,16 +703,38 @@ def _walk_design_contract(ws, req, monkeypatch):
     authority = plan["host_authority"]
     artifact_root = loop._run_artifact_root(ws, state)
     artifact_binding = state["run_artifact_binding"]
+    root_transcript = os.path.join(
+        ws, ".taskplane", "test-transcripts", "orchestrator.jsonl")
+    os.makedirs(os.path.dirname(root_transcript), exist_ok=True)
+    with open(root_transcript, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "timestamp": "2026-09-01T00:00:00Z",
+            "type": "session_meta",
+            "payload": {"session_id": "stage-walk-root",
+                        "id": "stage-walk-root",
+                        "timestamp": "2026-09-01T00:00:00Z",
+                        "thread_source": "root"},
+        }) + "\n")
+        stream.write(json.dumps({
+            "timestamp": "2026-09-01T00:00:01Z", "ordinal": 1,
+            "type": "event_msg", "payload": {"type": "token_count",
+            "info": {"total_token_usage": {
+                "input_tokens": 10, "cached_input_tokens": 4,
+                "output_tokens": 2, "reasoning_output_tokens": 0,
+                "total_tokens": 12}}},
+        }) + "\n")
     for index, worker in enumerate(plan["workers"], start=1):
         expectation = tp_lite.peek_expectation(
             ws, worker["task_name"], strict=True)
         assert expectation is not None
         hook_event = {
             "cwd": ws,
+            "transcript_path": root_transcript,
             "tool_input": {
                 "task_name": worker["task_name"],
                 "model": worker["model"],
                 "reasoning_effort": worker["reasoning_effort"],
+                "fork_turns": "none",
                 "message": worker["role_marker"],
             },
         }
@@ -750,7 +772,7 @@ def _walk_design_contract(ws, req, monkeypatch):
             task_slot_override=worker["task_slot"])
         event = {
             "hook_event_name": "SubagentStart", "cwd": ws,
-            "session_id": "stage-walk-design-session",
+            "session_id": f"stage-walk-design-session-{index}",
             "agent_id": f"stage-walk-design-agent-{index}",
             "agent_type": worker["task_name"],
             "task_name": worker["task_name"],
@@ -781,15 +803,29 @@ def _walk_design_contract(ws, req, monkeypatch):
             ws, ".taskplane", "test-transcripts", f"design-{index}.jsonl")
         os.makedirs(os.path.dirname(transcript), exist_ok=True)
         with open(transcript, "w", encoding="utf-8") as stream:
-            stream.write(json.dumps({"message": {
-                "id": f"design-usage-{index}",
-                "usage": {
-                    "input_tokens": 10,
-                    "input_tokens_details": {"cached_tokens": 4},
-                    "output_tokens": 2,
-                    "total_tokens": 12,
+            stream.write(json.dumps({
+                "timestamp": "2026-09-01T00:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "session_id": f"stage-walk-design-session-{index}",
+                    "id": f"stage-walk-design-session-{index}",
+                    "timestamp": "2026-09-01T00:00:00Z",
+                    "thread_source": "subagent",
                 },
-            }}) + "\n")
+            }) + "\n")
+            stream.write(json.dumps({
+                "timestamp": "2026-09-01T00:00:01Z",
+                "ordinal": 1,
+                "type": "event_msg",
+                "payload": {"type": "token_count", "info": {
+                    "total_token_usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 4,
+                        "output_tokens": 2,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 12,
+                    }}},
+            }) + "\n")
         stop_event = {
             **event, "hook_event_name": "SubagentStop",
             "outcome": "success", "agent_transcript_path": transcript,
