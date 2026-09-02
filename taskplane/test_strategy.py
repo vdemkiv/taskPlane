@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from pathlib import Path
 import re
 from typing import Any, Mapping
 
@@ -260,7 +261,9 @@ def validate_strategy(strategy: Mapping[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(dict(strategy))
 
 
-def current_value_obligations(impact_manifest: Mapping[str, Any]) -> dict:
+def current_value_obligations(
+        impact_manifest: Mapping[str, Any], *,
+        workspace: str | Path | None = None) -> dict:
     """Validate the test-design work an Evaluate attempt must discharge.
 
     These are behavioral obligations, not proof.  The child producer must
@@ -272,6 +275,10 @@ def current_value_obligations(impact_manifest: Mapping[str, Any]) -> dict:
     tests = impact_manifest.get("tests")
     if not isinstance(tests, list) or not tests:
         raise StrategyContractError("impacted tests must not be empty")
+    test_files = impact_manifest.get("test_files")
+    if not isinstance(test_files, list) or not test_files:
+        raise StrategyContractError("impacted test files must not be empty")
+    normalized_tests = {str(path).replace("\\", "/") for path in test_files}
     selectors = []
     for row in tests:
         if not isinstance(row, Mapping):
@@ -284,6 +291,10 @@ def current_value_obligations(impact_manifest: Mapping[str, Any]) -> dict:
             raise StrategyContractError(
                 f"impacted test {selector} needs a current contract"
             )
+        selector_file = selector.split("::", 1)[0]
+        if selector_file not in normalized_tests:
+            raise StrategyContractError(
+                f"impacted selector {selector} is outside impacted test files")
         selectors.append(selector)
     if len(selectors) != len(set(selectors)):
         raise StrategyContractError("impacted test selectors contain duplicates")
@@ -352,6 +363,17 @@ def current_value_obligations(impact_manifest: Mapping[str, Any]) -> dict:
                 raise StrategyContractError(
                     "changed interface fixture must stay in the same slice"
                 )
+            fixture_path = str(fixture["path"]).replace("\\", "/")
+            if fixture_path not in normalized_tests:
+                raise StrategyContractError(
+                    "changed interface fixture must be an impacted test file")
+            if workspace is not None:
+                relative = Path(fixture_path)
+                target = Path(workspace) / relative
+                if relative.is_absolute() or ".." in relative.parts or \
+                        not target.is_file() or target.is_symlink():
+                    raise StrategyContractError(
+                        "changed interface fixture must be an existing safe file")
         elif fixture is not None:
             raise StrategyContractError(
                 "in-process interface must use a real consumer journey"

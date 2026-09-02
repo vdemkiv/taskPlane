@@ -31,6 +31,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 
 # Verdicts. "runs" is the only optimistic one and it is deliberately weak:
 # the probe proves the command starts, not that the suite is green.
@@ -85,6 +86,18 @@ _LANGUAGE_TOOLCHAINS = {
     "go": "go",
     "python": "python",
     "typescript": "typescript",
+}
+
+_LANGUAGE_QUALITY_CHECKS = {
+    "python": (
+        {"id": "lint", "module": "ruff", "arguments": ("check",)},
+        {"id": "format", "module": "ruff",
+         "arguments": ("format", "--check")},
+        {"id": "strict-typing", "module": "mypy",
+         "arguments": ("--strict", "--config-file", "pyproject.toml")},
+        {"id": "security-static", "module": "bandit",
+         "arguments": ("-r", "taskplane", "-ll")},
+    ),
 }
 
 
@@ -231,6 +244,59 @@ def probe_language_toolchains(root: str, languages, *,
         row["language"] = language
         row["fingerprint"] = checkout_fingerprint
         rows.append(row)
+    return rows
+
+
+def probe_language_quality_toolchains(root: str, languages, *,
+                                      timeout: int = DEFAULT_TIMEOUT) -> list[dict]:
+    """Resolve every hard quality gate required by the pinned language guide.
+
+    This is an availability probe, not a quality run.  Each returned argv is
+    executable as-is once the caller appends its candidate-bound selectors.
+    Missing lint, format, strict typing, or security tooling remains explicit
+    so Evaluate can fail closed before dispatching an evidence producer.
+    """
+    requested = [str(item) for item in languages or []]
+    if not requested or len(requested) != len(set(requested)):
+        raise ValueError("impacted language quality mapping is empty or duplicate")
+    unsupported = sorted(set(requested) - set(_LANGUAGE_QUALITY_CHECKS))
+    if unsupported:
+        raise ValueError(
+            "unsupported impacted language quality toolchain: " +
+            ", ".join(unsupported))
+    rows = []
+    for language in sorted(requested):
+        checks = []
+        for spec in _LANGUAGE_QUALITY_CHECKS[language]:
+            module = spec["module"]
+            argv = [sys.executable, "-m", module, *spec["arguments"]]
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-m", module, "--version"], cwd=root,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace",
+                    timeout=timeout)
+            except subprocess.TimeoutExpired:
+                verdict, version = UNKNOWN, "version probe timed out"
+            except OSError as exc:
+                verdict = UNKNOWN
+                version = f"version probe could not start ({exc.__class__.__name__})"
+            else:
+                verdict = RUNS if proc.returncode == 0 else UNAVAILABLE
+                version = _first_useful_line(proc.stdout) or \
+                    f"module {module} is unavailable"
+            checks.append({
+                "id": spec["id"], "argv": argv, "tool": module,
+                "tool_version": version, "verdict": verdict,
+            })
+        material = json.dumps(
+            checks, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True).encode("utf-8")
+        rows.append({
+            "language": language,
+            "fingerprint": hashlib.sha256(material).hexdigest(),
+            "checks": checks,
+        })
     return rows
 
 

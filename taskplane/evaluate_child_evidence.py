@@ -1,684 +1,512 @@
-"""Fail-closed, non-lens evidence contracts for an Evaluate attempt.
-
-Evaluate still makes the verdict directly.  This module only binds and
-validates two read-only evidence producers: language code quality and test
-design.  It deliberately contains no dispatch, gate, mutation, classification
-authority, or repair API.
-"""
+"""Evaluate child contracts backed only by the canonical run ledger."""
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping
+import re
+from typing import Any, Mapping, Sequence
 
 if __package__:
-    from . import lens, runnability, test_strategy
-else:  # pragma: no cover - direct plugin module loading
+    from . import lens, run_artifacts, run_store, runnability, test_strategy
+else:  # pragma: no cover
     import lens
+    import run_artifacts
+    import run_store
     import runnability
     import test_strategy
 
-
 IMPACT_MANIFEST_SCHEMA = "taskplane.evaluate-impact-manifest/v1"
-ASSIGNMENT_SCHEMA = "taskplane.evaluate-child-assignment/v1"
+ASSIGNMENT_SCHEMA = "taskplane.evaluate-child-assignment/v2"
 LIFECYCLE_SCHEMA = "taskplane.evaluate-child-lifecycle/v1"
-LANGUAGE_RESULT_SCHEMA = "taskplane.evaluate-language-code-quality/v1"
-TEST_DESIGN_RESULT_SCHEMA = "taskplane.evaluate-test-design/v1"
-EVIDENCE_RUN_SCHEMA = "taskplane.evaluate-child-evidence-run/v1"
-CONSUMPTION_SCHEMA = "taskplane.evaluate-evidence-consumption/v1"
-
+LANGUAGE_RESULT_SCHEMA = "taskplane.evaluate-language-code-quality/v2"
+TEST_DESIGN_RESULT_SCHEMA = "taskplane.evaluate-test-design/v2"
+RESULT_INDEX_SCHEMA = "taskplane.evaluate-child-result-index/v1"
+CONSUMPTION_SCHEMA = "taskplane.evaluate-evidence-consumption/v2"
 LANGUAGE_PRODUCER = "language-code-quality"
 TEST_DESIGN_PRODUCER = "test-design"
 PRODUCER_KINDS = (LANGUAGE_PRODUCER, TEST_DESIGN_PRODUCER)
 LIFECYCLE_KINDS = ("assignment", "start", "activity", "result", "terminal")
-BINDING_FIELDS = (
-    "requirement_id",
-    "candidate_sha",
-    "source_tree",
-    "design_fingerprint",
-    "plan_fingerprint",
-    "settings_digest",
-    "evaluator_attempt_id",
-    "impact_manifest_fingerprint",
-)
+QUALITY_CHECK_IDS = ("lint", "format", "strict-typing", "security-static")
+REJECTED_EVIDENCE_KINDS = test_strategy.REJECTED_BEHAVIORAL_EVIDENCE
 FORBIDDEN_AUTHORITIES = (
-    "verdict",
-    "gate",
-    "dispatch",
-    "mutation",
-    "delivery-classification",
+    "verdict", "gate", "dispatch", "mutation", "delivery-classification",
     "repair",
 )
-_FORBIDDEN_RESULT_FIELDS = {
-    "verdict", "gate", "dispatch", "mutation", "delivery_classification",
-    "delivery-classification", "repair",
+BINDING_FIELDS = (
+    "task_id", "requirement_id", "candidate_sha", "source_tree",
+    "design_fingerprint", "plan_fingerprint", "settings_digest",
+    "evaluator_attempt_id", "impact_manifest_fingerprint",
+)
+EVENT_TYPES = ("assignment", "start", "progress", "evidence-reference", "terminal")
+RESULT_SCHEMAS = {
+    LANGUAGE_PRODUCER: LANGUAGE_RESULT_SCHEMA,
+    TEST_DESIGN_PRODUCER: TEST_DESIGN_RESULT_SCHEMA,
 }
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 class EvidenceContractError(ValueError):
-    """Evidence cannot authorize an evaluator pass."""
+    """Evidence cannot authorize an evaluator decision."""
 
 
-def _canonical(value: Any) -> bytes:
+def _canonical(value: object) -> bytes:
     try:
-        text = json.dumps(
-            value, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=True, allow_nan=False,
-        )
+        return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=True, allow_nan=False) + "\n").encode()
     except (TypeError, ValueError) as exc:
-        raise EvidenceContractError(f"evidence is not canonical JSON: {exc}") \
-            from None
-    return text.encode("utf-8")
+        raise EvidenceContractError(f"evidence is not canonical JSON: {exc}") from None
 
 
-def _digest(value: Any) -> str:
+def _digest(value: object) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 
-def _nonempty(value: Any, context: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise EvidenceContractError(f"{context} must be non-empty")
+def _text(value: object, label: str, minimum: int = 1) -> str:
+    if not isinstance(value, str) or len(value.strip()) < minimum:
+        raise EvidenceContractError(f"{label} must be substantive")
     return value
 
 
-def _unique_strings(value: Any, context: str, *, allow_empty=False) -> list[str]:
-    if not isinstance(value, list) or (not value and not allow_empty):
-        raise EvidenceContractError(f"{context} must be a non-empty list")
-    rows = [_nonempty(item, context) for item in value]
-    if len(rows) != len(set(rows)):
-        raise EvidenceContractError(f"{context} contains duplicate values")
-    return rows
+def _list(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise EvidenceContractError(f"{label} must be a non-empty list")
+    result = [_text(item, label) for item in value]
+    if len(result) != len(set(result)):
+        raise EvidenceContractError(f"{label} contains duplicates")
+    return result
 
 
-def impact_manifest_fingerprint(value: Mapping[str, Any]) -> str:
-    if not isinstance(value, Mapping) or \
-            value.get("schema") != IMPACT_MANIFEST_SCHEMA:
-        raise EvidenceContractError(
-            f"impact manifest schema must be {IMPACT_MANIFEST_SCHEMA}"
-        )
-    implementation = _unique_strings(
-        value.get("implementation_files"), "implementation files"
-    )
-    _unique_strings(value.get("test_files"), "test files")
-    if any(Path(item).is_absolute() or ".." in Path(item).parts
-           for item in implementation + list(value["test_files"])):
+def _reject_authority(value: object, parent: str = "") -> None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            name = str(key).replace("_", "-").lower()
+            if name in FORBIDDEN_AUTHORITIES and not (
+                    name == "mutation" and parent == "severed-edge"):
+                raise EvidenceContractError(f"child claims forbidden authority: {name}")
+            _reject_authority(child, name)
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for child in value:
+            _reject_authority(child, parent)
+
+
+def _manifest_digest(value: Mapping[str, Any]) -> str:
+    if value.get("schema") != IMPACT_MANIFEST_SCHEMA:
+        raise EvidenceContractError("impact manifest schema is invalid")
+    paths = _list(value.get("implementation_files"), "implementation files") + \
+        _list(value.get("test_files"), "test files")
+    if any(Path(item).is_absolute() or ".." in Path(item).parts for item in paths):
         raise EvidenceContractError("impact manifest paths must be relative")
     return _digest(dict(value))
 
 
-def _validate_binding(binding: Mapping[str, Any], impact_digest: str) -> dict:
-    if not isinstance(binding, Mapping):
-        raise EvidenceContractError("evidence binding must be an object")
-    complete = copy.deepcopy(dict(binding))
-    supplied = complete.get("impact_manifest_fingerprint")
-    if supplied is not None and supplied != impact_digest:
-        raise EvidenceContractError("impact manifest fingerprint is stale")
-    complete["impact_manifest_fingerprint"] = impact_digest
-    if set(complete) != set(BINDING_FIELDS):
-        missing = sorted(set(BINDING_FIELDS) - set(complete))
-        extra = sorted(set(complete) - set(BINDING_FIELDS))
+def _ledger(root: str | Path | None = None, run_id: str | None = None) -> tuple[Path, dict]:
+    try:
+        if run_id is not None:
+            owner = run_store.RunStore().load(run_id)
+            selected = Path(owner["paths"]["artifacts"]).absolute()
+        elif root is not None:
+            selected = Path(root).absolute()
+        else:
+            raise KeyError("ledger identity")
+        manifest = run_artifacts.load_manifest(selected)
+        owner = run_store.RunStore().load(manifest["binding"]["run_id"])
+        if Path(owner["paths"]["artifacts"]).absolute() != selected:
+            raise EvidenceContractError("durable evidence ledger is foreign")
+        run_artifacts.verify_manifest(selected, expected_binding=manifest["binding"])
+        return selected, manifest
+    except (KeyError, OSError, run_artifacts.RunArtifactError,
+            run_store.RunStoreError) as exc:
         raise EvidenceContractError(
-            f"evidence binding is incomplete (missing={missing}, extra={extra})"
-        )
-    for name in BINDING_FIELDS:
-        _nonempty(complete[name], f"binding {name}")
-    return complete
+            f"durable evidence ledger is unavailable or corrupt: {exc}") from None
 
 
-def _assignment_digest(assignment: Mapping[str, Any]) -> str:
-    return _digest({key: copy.deepcopy(value)
-                    for key, value in assignment.items()
+def _assignment_digest(value: Mapping[str, Any]) -> str:
+    return _digest({key: copy.deepcopy(item) for key, item in value.items()
                     if key != "assignment_digest"})
 
 
-def _reuse_key(producer_kind: str, binding: Mapping[str, Any],
-               obligations: Mapping[str, Any]) -> dict:
-    material = {
-        "producer_kind": producer_kind,
-        "binding": copy.deepcopy(dict(binding)),
+def _reuse_key(kind: str, binding: Mapping[str, Any], obligations: Mapping[str, Any],
+               ledger_fingerprint: str) -> str:
+    stable = {key: copy.deepcopy(item) for key, item in binding.items()
+              if key != "evaluator_attempt_id"}
+    return _digest({
+        "producer_kind": kind, "binding": stable,
+        "ledger_binding_fingerprint": ledger_fingerprint,
         "obligations": copy.deepcopy(dict(obligations)),
-    }
-    return {"material": material, "digest": _digest(material)}
+        "lifecycle": [LIFECYCLE_SCHEMA, *LIFECYCLE_KINDS, *EVENT_TYPES],
+        "result_schema": RESULT_SCHEMAS[kind],
+    })
 
 
 def prepare_assignments(workspace: str | Path, binding: Mapping[str, Any],
-                        impact_manifest: Mapping[str, Any]) -> list[dict]:
-    """Create exactly two candidate-bound read-only producer assignments."""
-    impact_digest = impact_manifest_fingerprint(impact_manifest)
-    bound = _validate_binding(binding, impact_digest)
+                        impact_manifest: Mapping[str, Any], *,
+                        artifact_root: str | Path) -> list[dict]:
+    """Bind two non-lens producers to the current candidate and durable run."""
+    _, manifest = _ledger(root=artifact_root)
+    impact_digest = _manifest_digest(impact_manifest)
+    bound = copy.deepcopy(dict(binding))
+    if bound.get("impact_manifest_fingerprint") not in (None, impact_digest):
+        raise EvidenceContractError("impact manifest fingerprint is stale")
+    bound["impact_manifest_fingerprint"] = impact_digest
+    if set(bound) != set(BINDING_FIELDS):
+        raise EvidenceContractError("evidence binding is incomplete")
+    for field in BINDING_FIELDS:
+        _text(bound[field], f"binding {field}")
+    ledger_binding = manifest["binding"]
+    candidate = ledger_binding["candidate"]
+    if bound["settings_digest"] != ledger_binding["settings_digest"] or \
+            bound["candidate_sha"] != candidate.get("revision") or \
+            candidate.get("source_tree", bound["source_tree"]) != bound["source_tree"]:
+        raise EvidenceContractError("evidence candidate is foreign")
     implementation = list(impact_manifest["implementation_files"])
     try:
         registry = lens.language_quality_registry(implementation)
-    except (ValueError, FileNotFoundError) as exc:
-        raise EvidenceContractError(str(exc)) from None
-    languages = [row["language"] for row in registry]
-    try:
-        probes = runnability.probe_language_toolchains(
-            str(workspace), languages
-        )
-    except ValueError as exc:
-        raise EvidenceContractError(str(exc)) from None
-    if len(probes) != len(registry):
-        raise EvidenceContractError("language toolchain probe is ambiguous")
-    probe_by_language = {row.get("language"): row for row in probes}
-    if len(probe_by_language) != len(probes):
-        raise EvidenceContractError("duplicate language toolchain probe")
-    language_obligations = []
-    for reference in registry:
-        check = probe_by_language.get(reference["language"])
-        if not isinstance(check, dict):
-            raise EvidenceContractError(
-                f"missing toolchain for {reference['language']}"
-            )
-        if check.get("verdict") != runnability.RUNS:
-            raise EvidenceContractError(
-                f"toolchain for {reference['language']} is unsupported or "
-                f"unavailable: {check.get('detail', 'no detail')}"
-            )
-        language_obligations.append({
-            "language": reference["language"],
-            "reference": copy.deepcopy(reference),
-            "toolchain": copy.deepcopy(check),
-            "required_commands": [check["command"]],
-            "required_selectors": sorted(
-                path for path in implementation
-                if reference["language"] in lens.implementation_languages(
-                    [path]
-                )
-            ),
-        })
-    try:
+        probes = runnability.probe_language_quality_toolchains(
+            str(workspace), [row["language"] for row in registry])
         test_obligations = test_strategy.current_value_obligations(
-            impact_manifest
-        )
-    except test_strategy.StrategyContractError as exc:
+            impact_manifest, workspace=workspace)
+    except (ValueError, FileNotFoundError,
+            test_strategy.StrategyContractError) as exc:
         raise EvidenceContractError(str(exc)) from None
-
-    assignments = []
-    for kind, obligations in (
-        (LANGUAGE_PRODUCER, {
-            "implementation_files": implementation,
-            "language_obligations": language_obligations,
-        }),
-        (TEST_DESIGN_PRODUCER, {"test_obligations": test_obligations}),
-    ):
-        assignment = {
-            "schema": ASSIGNMENT_SCHEMA,
-            "producer_kind": kind,
+    by_language = {row.get("language"): row for row in probes}
+    if len(by_language) != len(probes) or set(by_language) != {
+            row["language"] for row in registry}:
+        raise EvidenceContractError("language quality toolchain is ambiguous")
+    language_rows = []
+    for reference in registry:
+        probe = by_language[reference["language"]]
+        checks = probe.get("checks")
+        if not isinstance(checks, list) or [row.get("id") for row in checks] != \
+                list(QUALITY_CHECK_IDS):
+            raise EvidenceContractError("language quality checks are incomplete")
+        if any(row.get("verdict") != runnability.RUNS for row in checks):
+            raise EvidenceContractError("required language quality tool is unavailable")
+        required = [{
+            "id": row["id"], "argv": _list(row.get("argv"), "quality argv"),
+            "tool": _text(row.get("tool"), "quality tool"),
+            "tool_version": _text(row.get("tool_version"), "quality tool version"),
+        } for row in checks]
+        language_rows.append({
+            "language": reference["language"], "reference": copy.deepcopy(reference),
+            "toolchain_fingerprint": _text(probe.get("fingerprint"), "toolchain"),
+            "implementation_files": sorted(
+                path for path in implementation if reference["language"] in
+                lens.implementation_languages([path])),
+            "required_commands": required,
+        })
+    obligations = {
+        LANGUAGE_PRODUCER: {"implementation_files": implementation,
+                            "language_obligations": language_rows},
+        TEST_DESIGN_PRODUCER: {"test_obligations": test_obligations},
+    }
+    result = []
+    ledger_fp = ledger_binding["fingerprint"]
+    for kind in PRODUCER_KINDS:
+        row = {
+            "schema": ASSIGNMENT_SCHEMA, "producer_kind": kind,
             "binding": copy.deepcopy(bound),
+            "ledger_binding_fingerprint": ledger_fp,
             "capabilities": {name: False for name in FORBIDDEN_AUTHORITIES},
-            **copy.deepcopy(obligations),
+            **copy.deepcopy(obligations[kind]),
         }
-        assignment["reuse_key"] = _reuse_key(kind, bound, obligations)
-        assignment["assignment_digest"] = _assignment_digest(assignment)
-        assignments.append(assignment)
-    return assignments
+        row["reuse_key_digest"] = _reuse_key(kind, bound, obligations[kind], ledger_fp)
+        row["assignment_digest"] = _assignment_digest(row)
+        result.append(row)
+    return result
 
 
-def _validate_assignment(value: Mapping[str, Any]) -> dict:
-    if not isinstance(value, Mapping) or value.get("schema") != ASSIGNMENT_SCHEMA:
-        raise EvidenceContractError("child assignment schema is invalid")
-    kind = value.get("producer_kind")
-    if kind not in PRODUCER_KINDS:
-        raise EvidenceContractError("child producer kind is invalid")
-    capabilities = value.get("capabilities")
-    if capabilities != {name: False for name in FORBIDDEN_AUTHORITIES}:
-        raise EvidenceContractError("child assignment grants forbidden authority")
-    binding = value.get("binding")
+def _validate_assignment(value: object) -> dict:
+    if not isinstance(value, Mapping) or value.get("schema") != ASSIGNMENT_SCHEMA or \
+            value.get("producer_kind") not in PRODUCER_KINDS or \
+            value.get("capabilities") != {
+                name: False for name in FORBIDDEN_AUTHORITIES}:
+        raise EvidenceContractError("child assignment is invalid")
+    row = copy.deepcopy(dict(value))
+    binding = row.get("binding")
     if not isinstance(binding, Mapping) or set(binding) != set(BINDING_FIELDS):
         raise EvidenceContractError("child assignment binding is incomplete")
-    for field in BINDING_FIELDS:
-        _nonempty(binding[field], f"binding {field}")
-    reuse = value.get("reuse_key")
-    if not isinstance(reuse, Mapping) or set(reuse) != {"material", "digest"} \
-            or reuse.get("digest") != _digest(reuse.get("material")):
-        raise EvidenceContractError("child evidence reuse key is incomplete")
-    if reuse["material"].get("producer_kind") != kind or \
-            reuse["material"].get("binding") != dict(binding):
-        raise EvidenceContractError("child evidence reuse key is stale")
-    if value.get("assignment_digest") != _assignment_digest(value):
-        raise EvidenceContractError("child assignment digest is stale")
-    return copy.deepcopy(dict(value))
+    obligations = ({"implementation_files": row.get("implementation_files"),
+                    "language_obligations": row.get("language_obligations")}
+                   if row["producer_kind"] == LANGUAGE_PRODUCER else
+                   {"test_obligations": row.get("test_obligations")})
+    expected = _reuse_key(row["producer_kind"], binding, obligations,
+                          _text(row.get("ledger_binding_fingerprint"), "ledger"))
+    if row.get("reuse_key_digest") != expected or \
+            row.get("assignment_digest") != _assignment_digest(row):
+        raise EvidenceContractError("child assignment or reuse key is stale")
+    return row
 
 
-def _receipt_digest(value: Mapping[str, Any]) -> str:
-    return _digest({key: copy.deepcopy(item) for key, item in value.items()
-                    if key != "receipt_digest"})
-
-
-def complete_lifecycle(assignment: Mapping[str, Any], result: Mapping[str, Any]) \
-        -> list[dict]:
-    """Build the five host-persistable lifecycle receipt payloads.
-
-    A host still owns persistence/observation.  This helper only produces the
-    canonical values it must attest and is also useful to non-mocked journey
-    tests at that storage boundary.
-    """
-    checked = _validate_assignment(assignment)
-    result_digest = _digest(dict(result))
-    details = (
-        {"assigned": True},
-        {"started": True},
-        {"work_units": 1, "activity": "candidate evidence inspected"},
-        {"result_digest": result_digest},
-        {"status": "complete", "result_digest": result_digest},
-    )
-    receipts = []
-    for ordinal, (kind, detail) in enumerate(zip(LIFECYCLE_KINDS, details), 1):
-        receipt = {
-            "schema": LIFECYCLE_SCHEMA,
-            "producer_kind": checked["producer_kind"],
-            "assignment_digest": checked["assignment_digest"],
-            "binding": copy.deepcopy(checked["binding"]),
-            "kind": kind,
-            "ordinal": ordinal,
-            "detail": detail,
-        }
-        receipt["receipt_digest"] = _receipt_digest(receipt)
-        receipts.append(receipt)
-    return receipts
-
-
-def _reject_authority_fields(value: Mapping[str, Any]) -> None:
-    forbidden = set(value) & _FORBIDDEN_RESULT_FIELDS
-    if forbidden:
-        raise EvidenceContractError(
-            "child result claims forbidden authority: " + sorted(forbidden)[0]
-        )
-
-
-def _validate_language_result(assignment: Mapping[str, Any],
-                              result: Mapping[str, Any]) -> dict:
-    if not isinstance(result, Mapping) or \
-            result.get("schema") != LANGUAGE_RESULT_SCHEMA or \
-            result.get("producer_kind") != LANGUAGE_PRODUCER:
-        raise EvidenceContractError("language result schema is invalid")
-    _reject_authority_fields(result)
-    if result.get("assignment_digest") != assignment["assignment_digest"]:
-        raise EvidenceContractError("language result assignment is stale")
-    coverage = result.get("language_coverage")
-    if not isinstance(coverage, list) or not coverage:
-        raise EvidenceContractError("language evidence is empty")
-    obligations = {row["language"]: row
-                   for row in assignment["language_obligations"]}
-    if len(coverage) != len(obligations):
-        raise EvidenceContractError("language coverage is missing or duplicate")
-    seen = set()
-    substantive = 0
-    impacted = set(assignment["implementation_files"])
-    for row in coverage:
-        if not isinstance(row, Mapping):
-            raise EvidenceContractError("language coverage row is invalid")
-        language = row.get("language")
-        if language in seen:
-            raise EvidenceContractError("language coverage contains duplicate rows")
-        seen.add(language)
-        obligation = obligations.get(language)
-        if not obligation:
-            raise EvidenceContractError("language coverage is ambiguous")
-        reference = obligation["reference"]
-        toolchain = obligation["toolchain"]
-        if row.get("reference_id") != reference["path"] or \
-                row.get("reference_sha256") != reference["content_sha256"] or \
-                row.get("toolchain_id") != toolchain["id"] or \
-                row.get("toolchain_fingerprint") != toolchain["fingerprint"]:
-            raise EvidenceContractError("language reference/toolchain is stale")
-        inspected = set(_unique_strings(
-            row.get("inspected_files"), "inspected language files"
-        ))
-        if not inspected.issubset(impacted):
-            raise EvidenceContractError("language evidence inspects foreign files")
-        commands = row.get("command_receipts")
-        findings = row.get("findings")
-        if not isinstance(commands, list) or not isinstance(findings, list):
-            raise EvidenceContractError("language result details are invalid")
-        seen_commands = []
-        failed_commands = 0
-        for command in commands:
-            if not isinstance(command, Mapping):
-                raise EvidenceContractError("language command receipt is invalid")
-            _nonempty(command.get("command"), "language command")
-            seen_commands.append(command["command"])
-            if command.get("selectors") != obligation["required_selectors"]:
-                raise EvidenceContractError(
-                    "language command selectors are stale"
-                )
-            facts = command.get("passing_facts")
-            exit_code = command.get("exit_code")
-            if not isinstance(exit_code, int) or isinstance(exit_code, bool) \
-                    or not isinstance(facts, int) or isinstance(facts, bool) \
-                    or facts < 0 or (exit_code == 0 and facts <= 0):
-                raise EvidenceContractError(
-                    "language command evidence must be substantive"
-                )
-            if exit_code != 0:
-                failed_commands += 1
-            substantive += facts
-        if seen_commands != obligation["required_commands"]:
-            raise EvidenceContractError(
-                "language command evidence is missing or ambiguous"
-            )
-        for finding in findings:
-            if not isinstance(finding, Mapping):
-                raise EvidenceContractError("language finding is invalid")
-            _nonempty(finding.get("title"), "language finding title")
-            _nonempty(finding.get("evidence"), "language finding evidence")
-            substantive += 1
-        if failed_commands and not findings:
-            raise EvidenceContractError(
-                "failed language commands require substantive findings"
-            )
-        if not commands and not findings:
-            raise EvidenceContractError("language evidence is non-substantive")
-    if seen != set(obligations) or substantive <= 0:
-        raise EvidenceContractError("language evidence is incomplete")
-    return {
-        "digest": _digest(dict(result)),
-        "language_count": len(coverage),
-        "substantive_count": substantive,
-    }
-
-
-def _validate_test_design_result(assignment: Mapping[str, Any],
-                                 result: Mapping[str, Any]) -> dict:
-    if not isinstance(result, Mapping) or \
-            result.get("schema") != TEST_DESIGN_RESULT_SCHEMA or \
-            result.get("producer_kind") != TEST_DESIGN_PRODUCER:
-        raise EvidenceContractError("test-design result schema is invalid")
-    _reject_authority_fields(result)
-    if result.get("assignment_digest") != assignment["assignment_digest"]:
-        raise EvidenceContractError("test-design result assignment is stale")
-    obligations = assignment["test_obligations"]
-    current = result.get("current_value")
-    if not isinstance(current, list) or not current:
-        raise EvidenceContractError("current-value test evidence is empty")
-    expected_tests = {row["selector"]: row for row in obligations["tests"]}
-    seen_tests = set()
-    for row in current:
-        if not isinstance(row, Mapping):
-            raise EvidenceContractError("current-value evidence row is invalid")
-        selector = row.get("selector")
-        if selector in seen_tests or selector not in expected_tests:
-            raise EvidenceContractError("current-value evidence is duplicate or foreign")
-        seen_tests.add(selector)
-        if row.get("classification") not in {
-            "protects-current-contract", "obsolete-replace", "obsolete-remove"
-        } or row.get("contract") != expected_tests[selector]["contract"]:
-            raise EvidenceContractError("current-value classification is invalid")
-        _nonempty(row.get("evidence"), "current-value evidence")
-    if seen_tests != set(expected_tests):
-        raise EvidenceContractError("current-value evidence misses impacted tests")
-
-    consumers = result.get("producer_consumers")
-    expected_edges = {(row["producer"], row["consumer"], row["selector"])
-                      for row in obligations["producer_consumer_edges"]}
-    if not isinstance(consumers, list) or len(consumers) != len(expected_edges):
-        raise EvidenceContractError("producer-consumer evidence is incomplete")
-    seen_edges = set()
-    for row in consumers:
-        if not isinstance(row, Mapping):
-            raise EvidenceContractError("producer-consumer evidence row is invalid")
-        key = (row.get("producer"), row.get("consumer"), row.get("selector"))
-        if key in seen_edges or key not in expected_edges:
-            raise EvidenceContractError("producer-consumer evidence is duplicate or foreign")
-        seen_edges.add(key)
-        _nonempty(row.get("freshness_evidence"), "freshness evidence")
-        _nonempty(row.get("severed_edge_evidence"), "severed-edge evidence")
-
-    fixtures = result.get("same_slice_fixtures")
-    if not isinstance(fixtures, list):
-        raise EvidenceContractError("same-slice fixtures must be a list")
-    expected_fixtures = {
-        (row["producer"], row["fixture"]["path"], row["slice"])
-        for row in obligations["changed_interfaces"]
-        if row["kind"] in {"serialized", "external"}
-    }
-    actual_fixtures = set()
-    for row in fixtures:
-        if not isinstance(row, Mapping):
-            raise EvidenceContractError("same-slice fixture row is invalid")
-        key = (row.get("producer"), row.get("path"), row.get("slice"))
-        if key in actual_fixtures:
-            raise EvidenceContractError("same-slice fixture is duplicate")
-        actual_fixtures.add(key)
-    if actual_fixtures != expected_fixtures:
-        raise EvidenceContractError("changed interface fixture is not in the same slice")
-
-    failures = result.get("failure_classifications")
-    if not isinstance(failures, list):
-        raise EvidenceContractError("failure classifications must be a list")
-    expected_failure_ids = {row["id"] for row in obligations["failures"]}
-    actual_failure_ids = set()
-    for row in failures:
-        if not isinstance(row, Mapping) or row.get("id") in actual_failure_ids:
-            raise EvidenceContractError("failure classification is duplicate")
-        actual_failure_ids.add(row.get("id"))
-        if row.get("classification") not in \
-                test_strategy.EVIDENCE_FAILURE_CLASSES or \
-                row.get("classified_before_repair") is not True:
-            raise EvidenceContractError("failure must be classified before repair")
-    if actual_failure_ids != expected_failure_ids:
-        raise EvidenceContractError("failure classifications are incomplete")
-
-    rejected = result.get("rejected_evidence")
-    if not isinstance(rejected, list):
-        raise EvidenceContractError("rejected evidence must be a list")
-    rejected_kinds = []
-    for row in rejected:
-        if not isinstance(row, Mapping):
-            raise EvidenceContractError("rejected evidence row is invalid")
-        rejected_kinds.append(row.get("kind"))
-        _nonempty(row.get("evidence"), "rejected evidence")
-    if rejected_kinds != obligations["rejected_evidence_kinds"]:
-        raise EvidenceContractError(
-            "ceremonial/source/AST/prose-shape/byte-only rejection is incomplete"
-        )
-    counts = {
-        "current_value_count": len(current),
-        "producer_consumer_count": len(consumers),
-        "severed_edge_count": len(consumers),
-        "same_slice_fixture_count": len(fixtures),
-        "failure_class_count": len(failures),
-        "rejected_ceremonial_count": len(rejected),
-    }
-    substantive = sum(counts.values())
-    if substantive <= 0:
-        raise EvidenceContractError("test-design evidence is non-substantive")
-    return {"digest": _digest(dict(result)), **counts,
-            "substantive_count": substantive}
-
-
-def _validate_receipts(assignment: Mapping[str, Any], receipts: list,
-                       result_digest: str, substantive_count: int) -> None:
-    if not isinstance(receipts, list) or len(receipts) != len(LIFECYCLE_KINDS):
-        raise EvidenceContractError("child lifecycle receipt cardinality is invalid")
-    if [row.get("kind") for row in receipts] != list(LIFECYCLE_KINDS):
-        raise EvidenceContractError("child lifecycle receipts are missing or duplicate")
-    for ordinal, row in enumerate(receipts, 1):
-        if not isinstance(row, Mapping) or row.get("schema") != LIFECYCLE_SCHEMA \
-                or row.get("producer_kind") != assignment["producer_kind"] \
-                or row.get("assignment_digest") != assignment["assignment_digest"] \
-                or row.get("binding") != assignment["binding"] \
-                or row.get("ordinal") != ordinal \
-                or row.get("receipt_digest") != _receipt_digest(row):
-            raise EvidenceContractError("child lifecycle receipt is stale or invalid")
-    activity = receipts[2].get("detail") or {}
-    if not isinstance(activity.get("work_units"), int) or \
-            isinstance(activity.get("work_units"), bool) or \
-            activity["work_units"] <= 0:
-        raise EvidenceContractError("child activity must be non-null and nonzero")
-    if (receipts[3].get("detail") or {}).get("result_digest") != result_digest \
-            or (receipts[4].get("detail") or {}).get("result_digest") != result_digest \
-            or substantive_count <= 0:
-        raise EvidenceContractError("child result lifecycle is not bound")
-
-
-def seal_evidence_run(assignments, receipts, results) -> dict:
-    """Validate two full lifecycles and seal their substantive results."""
-    if not isinstance(assignments, list) or len(assignments) != 2:
-        raise EvidenceContractError("Evaluate requires exactly two child assignments")
-    checked = [_validate_assignment(row) for row in assignments]
-    by_kind = {row["producer_kind"]: row for row in checked}
-    if set(by_kind) != set(PRODUCER_KINDS) or len(by_kind) != 2:
-        raise EvidenceContractError("Evaluate child producer cardinality is invalid")
-    if not isinstance(results, Mapping) or set(results) != set(PRODUCER_KINDS):
-        raise EvidenceContractError("Evaluate requires exactly two child results")
-    if not isinstance(receipts, list):
-        raise EvidenceContractError("Evaluate child receipts must be a list")
-    summaries = {
-        LANGUAGE_PRODUCER: _validate_language_result(
-            by_kind[LANGUAGE_PRODUCER], results[LANGUAGE_PRODUCER]
-        ),
-        TEST_DESIGN_PRODUCER: _validate_test_design_result(
-            by_kind[TEST_DESIGN_PRODUCER], results[TEST_DESIGN_PRODUCER]
-        ),
-    }
-    producers = []
-    for kind in PRODUCER_KINDS:
-        assignment = by_kind[kind]
-        lifecycle = [row for row in receipts
-                     if isinstance(row, Mapping)
-                     and row.get("producer_kind") == kind]
-        _validate_receipts(
-            assignment, lifecycle, summaries[kind]["digest"],
-            summaries[kind]["substantive_count"],
-        )
-        producers.append({
-            "producer_kind": kind,
-            "assignment_digest": assignment["assignment_digest"],
-            "binding": copy.deepcopy(assignment["binding"]),
-            "reuse_key_digest": assignment["reuse_key"]["digest"],
-            "lifecycle_kinds": list(LIFECYCLE_KINDS),
-            "activity_count": lifecycle[2]["detail"]["work_units"],
-            "result_substantive_count": summaries[kind]["substantive_count"],
-        })
-    run = {
-        "schema": EVIDENCE_RUN_SCHEMA,
-        "producer_count": 2,
-        "catalog_lens_count": 0,
-        "executed": True,
-        "producers": producers,
-        "results": summaries,
-        "result_payloads": copy.deepcopy(dict(results)),
-    }
-    run["run_digest"] = _digest(run)
-    return run
-
-
-def _validate_run(run: Mapping[str, Any]) -> dict:
-    if not isinstance(run, Mapping) or run.get("schema") != EVIDENCE_RUN_SCHEMA \
-            or run.get("producer_count") != 2 \
-            or run.get("catalog_lens_count") != 0:
-        raise EvidenceContractError("evidence run envelope is invalid")
-    material = {key: copy.deepcopy(value) for key, value in run.items()
-                if key != "run_digest"}
-    if run.get("run_digest") != _digest(material):
-        raise EvidenceContractError("evidence run digest is stale")
-    producers = run.get("producers")
-    results = run.get("results")
-    payloads = run.get("result_payloads")
-    if not isinstance(producers, list) or len(producers) != 2 or \
-            {row.get("producer_kind") for row in producers} != set(PRODUCER_KINDS) \
-            or not isinstance(results, Mapping) or set(results) != set(PRODUCER_KINDS) \
-            or not isinstance(payloads, Mapping) or set(payloads) != set(PRODUCER_KINDS):
-        raise EvidenceContractError("evidence run producer/result set is invalid")
-    for kind in PRODUCER_KINDS:
-        summary = results[kind]
-        if not isinstance(summary, Mapping) or \
-                not isinstance(summary.get("substantive_count"), int) or \
-                summary["substantive_count"] <= 0 or \
-                summary.get("digest") != _digest(payloads[kind]):
-            raise EvidenceContractError("evidence run result is empty or stale")
-    return copy.deepcopy(dict(run))
-
-
-def reuse_or_execute(assignments, prior_run: Mapping[str, Any]) -> dict:
-    """Reuse only a complete, content-identical two-producer evidence key."""
-    checked = [_validate_assignment(row) for row in assignments]
-    if len(checked) != 2 or \
-            {row["producer_kind"] for row in checked} != set(PRODUCER_KINDS):
-        raise EvidenceContractError("reuse requires exactly two assignments")
-    try:
-        prior = _validate_run(prior_run)
-    except EvidenceContractError:
-        return {"executed": True, "reason": "prior-evidence-incomplete",
-                "results": None}
-    prior_keys = {row["producer_kind"]: row["reuse_key_digest"]
-                  for row in prior["producers"]}
-    current_keys = {row["producer_kind"]: row["reuse_key"]["digest"]
-                    for row in checked}
-    if prior_keys != current_keys:
-        return {"executed": True, "reason": "evidence-key-changed",
-                "results": None}
-    return {
-        "executed": False,
-        "reason": "complete-content-identical-key",
-        "results": copy.deepcopy(prior["results"]),
-    }
-
-
-def consume_evidence(run: Mapping[str, Any]) -> dict:
-    """Return the exact evidence block directly consumed by the evaluator."""
-    checked = _validate_run(run)
-    value = {
-        "schema": CONSUMPTION_SCHEMA,
-        "catalog_lens_count": 0,
-        "producer_count": 2,
-        "results": {
-            kind: {
-                "digest": checked["results"][kind]["digest"],
-                "consumed": True,
-                "substantive_count": checked["results"][kind]["substantive_count"],
-                "execution": "executed" if checked.get("executed") else "reused",
-            }
-            for kind in PRODUCER_KINDS
-        },
-        "children": {"forbidden_authorities": list(FORBIDDEN_AUTHORITIES)},
-        "evaluator": {"verdict_owner": "evaluator"},
-        "evidence_run_digest": checked["run_digest"],
-    }
-    value["consumption_digest"] = _digest(value)
+def _runtime(value: object, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or value.get("evidence_kind") != "runtime":
+        raise EvidenceContractError(f"{label} requires runtime evidence")
     return value
 
 
-def validate_consumption(value: Mapping[str, Any]) -> dict:
-    if not isinstance(value, Mapping) or value.get("schema") != CONSUMPTION_SCHEMA \
-            or value.get("catalog_lens_count") != 0 \
-            or value.get("producer_count") != 2:
-        raise EvidenceContractError("evaluator evidence consumption is invalid")
-    results = value.get("results")
-    if not isinstance(results, Mapping) or set(results) != set(PRODUCER_KINDS):
-        raise EvidenceContractError("evaluator did not consume exactly two results")
-    for kind in PRODUCER_KINDS:
-        row = results[kind]
-        if not isinstance(row, Mapping) or row.get("consumed") is not True or \
-                not isinstance(row.get("substantive_count"), int) or \
-                isinstance(row.get("substantive_count"), bool) or \
-                row["substantive_count"] <= 0 or \
-                not isinstance(row.get("digest"), str) or \
-                len(row["digest"]) != 64 or \
-                row.get("execution") not in {"executed", "reused"}:
-            raise EvidenceContractError(
-                f"{kind} result was not substantively consumed"
-            )
-    if value.get("children") != {
-        "forbidden_authorities": list(FORBIDDEN_AUTHORITIES)
-    } or value.get("evaluator") != {"verdict_owner": "evaluator"}:
-        raise EvidenceContractError("child/evaluator authority boundary is invalid")
-    _nonempty(value.get("evidence_run_digest"), "evidence run digest")
-    material = {key: copy.deepcopy(item) for key, item in value.items()
-                if key != "consumption_digest"}
-    if value.get("consumption_digest") != _digest(material):
-        raise EvidenceContractError("evaluator evidence consumption is stale")
-    return copy.deepcopy(dict(value))
+def _language_substance(assignment: Mapping[str, Any], result: Mapping[str, Any]) -> int:
+    expected = {row["language"]: row for row in assignment["language_obligations"]}
+    rows = result.get("language_coverage")
+    if not isinstance(rows, list) or len(rows) != len(expected):
+        raise EvidenceContractError("language evidence is incomplete")
+    facts = 0
+    for row in rows:
+        obligation = expected.get(row.get("language")) if isinstance(row, Mapping) else None
+        if obligation is None or row.get("reference_id") != obligation["reference"]["path"] or \
+                row.get("reference_sha256") != obligation["reference"]["content_sha256"] or \
+                row.get("toolchain_fingerprint") != obligation["toolchain_fingerprint"] or \
+                row.get("inspected_files") != obligation["implementation_files"]:
+            raise EvidenceContractError("language evidence is foreign or stale")
+        commands = row.get("command_receipts")
+        if not isinstance(commands, list) or len(commands) != len(
+                obligation["required_commands"]):
+            raise EvidenceContractError("language command evidence is incomplete")
+        for actual, required in zip(commands, obligation["required_commands"]):
+            actual = _runtime(actual, "language command")
+            count = actual.get("passing_facts")
+            if actual.get("check_id") != required["id"] or \
+                    actual.get("argv") != required["argv"] or \
+                    actual.get("tool_version") != required["tool_version"] or \
+                    actual.get("exit_code") != 0 or isinstance(count, bool) or \
+                    not isinstance(count, int) or count < 1:
+                raise EvidenceContractError("language command evidence did not pass")
+            facts += count
+        if not isinstance(row.get("findings"), list):
+            raise EvidenceContractError("language findings are invalid")
+    return facts
 
 
-def evaluator_route_summary() -> dict:
-    """Public proof that evidence producers are not catalog lens workers."""
+def _test_substance(assignment: Mapping[str, Any], result: Mapping[str, Any]) -> int:
+    obligations = assignment["test_obligations"]
+    tests = {row["selector"]: row for row in obligations["tests"]}
+    current = result.get("current_value")
+    if not isinstance(current, list) or len(current) != len(tests):
+        raise EvidenceContractError("current-value evidence is incomplete")
+    facts = 0
+    for row in current:
+        expected = tests.get(row.get("selector")) if isinstance(row, Mapping) else None
+        run = _runtime(row.get("execution"), "current-value evidence")
+        count = run.get("passing_facts")
+        if expected is None or row.get("contract") != expected["contract"] or \
+                row.get("classification") not in {
+                    "protects-current-contract", "obsolete-replace", "obsolete-remove"} or \
+                run.get("argv") != ["python3", "-m", "pytest", "-q", row["selector"]] or \
+                run.get("exit_code") != 0 or isinstance(count, bool) or \
+                not isinstance(count, int) or count < 1:
+            raise EvidenceContractError("current-value exact selector did not pass")
+        facts += count
+    edges = {(row["producer"], row["consumer"], row["selector"]): row
+             for row in obligations["producer_consumer_edges"]}
+    actual_edges = result.get("producer_consumers")
+    if not isinstance(actual_edges, list) or len(actual_edges) != len(edges):
+        raise EvidenceContractError("producer-consumer evidence is incomplete")
+    for row in actual_edges:
+        key = (row.get("producer"), row.get("consumer"), row.get("selector"))
+        expected = edges.get(key)
+        fresh = _runtime(row.get("freshness"), "freshness")
+        severed = _runtime(row.get("severed_edge"), "severed edge")
+        before, after = fresh.get("before_fingerprint"), fresh.get("after_fingerprint")
+        if expected is None or fresh.get("inputs") != expected["freshness_inputs"] or \
+                not isinstance(before, str) or not _DIGEST.fullmatch(before) or \
+                not isinstance(after, str) or not _DIGEST.fullmatch(after) or before == after or \
+                fresh.get("stale_rejected") is not True or fresh.get("exit_code") != 0 or \
+                severed.get("mutation") != expected["severed_edge"]["mutation"] or \
+                severed.get("selector") != expected["severed_edge"]["selector"] or \
+                severed.get("failure_observed") is not True or \
+                severed.get("restored_pass") is not True or severed.get("exit_code") != 0:
+            raise EvidenceContractError("freshness or severed-edge evidence is not observable")
+        facts += 2
+    expected_fixtures = {(row["producer"], row["fixture"]["path"], row["slice"])
+                         for row in obligations["changed_interfaces"]
+                         if row["kind"] in {"serialized", "external"}}
+    fixtures = result.get("same_slice_fixtures")
+    actual_fixtures = {(row.get("producer"), row.get("path"), row.get("slice"))
+                       for row in fixtures or [] if isinstance(row, Mapping)}
+    if not isinstance(fixtures, list) or actual_fixtures != expected_fixtures or any(
+            _runtime(row, "fixture").get("verified_exists") is not True for row in fixtures):
+        raise EvidenceContractError("same-slice fixture evidence is incomplete")
+    failures = result.get("failure_classifications")
+    expected_failures = {row["id"]: row for row in obligations["failures"]}
+    if not isinstance(failures, list) or len(failures) != len(expected_failures):
+        raise EvidenceContractError("failure classifications are incomplete")
+    for row in failures:
+        expected = expected_failures.get(row.get("id")) if isinstance(row, Mapping) else None
+        if expected is None or row.get("classification") != expected["classification"] or \
+                row.get("classified_before_repair") is not True:
+            raise EvidenceContractError("failure classification is stale")
+        _text(row.get("reason"), "failure reason", 12)
+        _text(row.get("owner"), "failure owner", 3)
+        _text(row.get("cluster"), "failure cluster", 3)
+    return facts + len(fixtures) + len(failures)
+
+
+def validate_result(assignment: Mapping[str, Any], result: Mapping[str, Any]) -> dict:
+    """Validate one result and return its canonical durable index metadata."""
+    checked = _validate_assignment(assignment)
+    _reject_authority(result)
+    kind = checked["producer_kind"]
+    if result.get("schema") != RESULT_SCHEMAS[kind] or \
+            result.get("producer_kind") != kind or \
+            result.get("reuse_key_digest") != checked["reuse_key_digest"]:
+        raise EvidenceContractError("child result binding is stale")
+    count = (_language_substance(checked, result) if kind == LANGUAGE_PRODUCER
+             else _test_substance(checked, result))
+    if count < 1:
+        raise EvidenceContractError("child result is non-substantive")
     return {
-        "catalog_lens_count": 0,
-        "producer_count": 2,
-        "producer_kinds": list(PRODUCER_KINDS),
+        "schema": RESULT_INDEX_SCHEMA, "producer_kind": kind,
+        "assignment_digest": checked["assignment_digest"],
+        "reuse_key_digest": checked["reuse_key_digest"],
+        "result_schema": RESULT_SCHEMAS[kind], "substantive_count": count,
+        "status": "complete",
     }
+
+
+def _entry(manifest: Mapping[str, Any], reference: object) -> dict:
+    if not isinstance(reference, Mapping):
+        raise EvidenceContractError("durable result reference is invalid")
+    rows = [row for row in manifest["classes"]["validation"]["entries"]
+            if row.get("fingerprint") == reference.get("fingerprint")]
+    if len(rows) != 1 or rows[0] != dict(reference):
+        raise EvidenceContractError("durable result reference is foreign")
+    return rows[0]
+
+
+def _producer(root: Path, manifest: Mapping[str, Any], assignment: Mapping[str, Any]) -> dict:
+    checked = _validate_assignment(assignment)
+    attempt_id = checked["binding"]["evaluator_attempt_id"] + "-" + checked["producer_kind"]
+    rows = [row for row in manifest["classes"]["agent-activity"]["entries"]
+            if row["metadata"].get("agent_attempt_id") == attempt_id]
+    if len(rows) != 5 or [row["metadata"]["event_type"] for row in rows] != \
+            list(EVENT_TYPES):
+        raise EvidenceContractError("child lifecycle is incomplete, duplicate, or unordered")
+    events = [row["metadata"] for row in rows]
+    if events[0]["details"].get("assignment") != checked:
+        raise EvidenceContractError("durable assignment is stale")
+    for kind, event in zip(LIFECYCLE_KINDS, events):
+        details = event.get("details")
+        if not isinstance(details, Mapping) or details.get("schema") != LIFECYCLE_SCHEMA or \
+                details.get("receipt_kind") != kind or \
+                details.get("assignment_digest") != checked["assignment_digest"] or \
+                details.get("reuse_key_digest") != checked["reuse_key_digest"] or \
+                event.get("task_id") != checked["binding"]["task_id"] or \
+                event.get("worker_id") != checked["producer_kind"] or \
+                event.get("lens") != "non-lens-" + checked["producer_kind"]:
+            raise EvidenceContractError("child lifecycle receipt is stale")
+    units = events[2]["details"].get("work_units")
+    refs = events[3].get("evidence_references")
+    if isinstance(units, bool) or not isinstance(units, int) or units < 1 or \
+            not isinstance(refs, list) or len(refs) != 1 or \
+            events[4].get("evidence_references") != refs or \
+            events[4]["details"].get("outcome") != "success":
+        raise EvidenceContractError("child lifecycle has no substantive terminal result")
+    result_entry = _entry(manifest, refs[0])
+    try:
+        payload = (root / result_entry["locator"]).read_bytes()
+        result = json.loads(payload)
+    except (OSError, ValueError) as exc:
+        raise EvidenceContractError(f"durable result is unreadable: {exc}") from None
+    execution = events[3]["details"].get("execution")
+    metadata = validate_result(checked, result)
+    if execution == "reused":
+        reusable = find_reusable_result(root, checked)
+        if reusable != result_entry:
+            raise EvidenceContractError("reused child result is not authoritative")
+        metadata["assignment_digest"] = result_entry["metadata"].get(
+            "assignment_digest")
+    if hashlib.sha256(payload).hexdigest() != result_entry["sha256"] or \
+            _canonical(result) != payload or result_entry["metadata"] != metadata:
+        raise EvidenceContractError("durable result bytes or index are stale")
+    if execution not in {"executed", "reused"} or \
+            events[4]["details"].get("execution") != execution or any(
+                event["details"].get("result_fingerprint") != result_entry["fingerprint"] or
+                event["details"].get("result_sha256") != result_entry["sha256"]
+                for event in events[3:]):
+        raise EvidenceContractError("child result lineage is stale")
+    if execution == "executed" and metadata["assignment_digest"] != \
+            checked["assignment_digest"]:
+        raise EvidenceContractError("executed child result is foreign")
+    return {
+        "producer_kind": checked["producer_kind"],
+        "assignment_digest": checked["assignment_digest"],
+        "reuse_key_digest": checked["reuse_key_digest"],
+        "receipt_sequences": [row["sequence"] for row in rows],
+        "lifecycle_kinds": list(LIFECYCLE_KINDS),
+        "result_locator": result_entry["locator"],
+        "result_sha256": result_entry["sha256"],
+        "result_fingerprint": result_entry["fingerprint"],
+        "substantive_count": metadata["substantive_count"],
+        "execution": execution, "consumed": True,
+    }
+
+
+def find_reusable_result(root: str | Path, assignment: Mapping[str, Any]) -> dict | None:
+    """Resolve one complete identical result from the authoritative ledger."""
+    selected, manifest = _ledger(root=root)
+    checked = _validate_assignment(assignment)
+    candidates = {}
+    for row in manifest["classes"]["agent-activity"]["entries"]:
+        details = row["metadata"].get("details")
+        prior = details.get("assignment") if isinstance(details, Mapping) else None
+        if not isinstance(prior, Mapping) or prior.get("producer_kind") != \
+                checked["producer_kind"] or prior.get("reuse_key_digest") != \
+                checked["reuse_key_digest"] or prior.get("assignment_digest") == \
+                checked["assignment_digest"]:
+            continue
+        try:
+            summary = _producer(selected, manifest, prior)
+        except EvidenceContractError:
+            continue
+        entry = next(row for row in manifest["classes"]["validation"]["entries"]
+                     if row["fingerprint"] == summary["result_fingerprint"])
+        candidates[entry["fingerprint"]] = entry
+    if len(candidates) > 1:
+        raise EvidenceContractError("reusable child evidence is ambiguous")
+    return copy.deepcopy(next(iter(candidates.values()))) if candidates else None
+
+
+def consume_evidence(*, run_id: str, evaluator_attempt_id: str) -> dict:
+    """Derive consumption from durable records, never caller-authored digests."""
+    root, manifest = _ledger(run_id=_text(run_id, "run id"))
+    attempt = _text(evaluator_attempt_id, "evaluator attempt id")
+    assignments = []
+    for row in manifest["classes"]["agent-activity"]["entries"]:
+        details = row["metadata"].get("details")
+        value = details.get("assignment") if isinstance(details, Mapping) else None
+        if isinstance(value, Mapping) and (value.get("binding") or {}).get(
+                "evaluator_attempt_id") == attempt:
+            assignments.append(_validate_assignment(value))
+    by_kind = {row["producer_kind"]: row for row in assignments}
+    if len(assignments) != 2 or set(by_kind) != set(PRODUCER_KINDS):
+        raise EvidenceContractError("Evaluate requires exactly two durable children")
+    tasks = {row["binding"]["task_id"] for row in assignments}
+    requirements = {row["binding"]["requirement_id"] for row in assignments}
+    if len(tasks) != 1 or len(requirements) != 1:
+        raise EvidenceContractError("durable child binding is ambiguous")
+    return {
+        "schema": CONSUMPTION_SCHEMA, "run_id": run_id,
+        "evaluator_attempt_id": attempt, "task_id": next(iter(tasks)),
+        "requirement_id": next(iter(requirements)), "catalog_lens_count": 0,
+        "producers": [_producer(root, manifest, by_kind[kind])
+                      for kind in PRODUCER_KINDS],
+    }
+
+
+def validate_consumption(value: Mapping[str, Any], *, expected_task: str | None = None,
+                         expected_requirement: str | None = None) -> dict:
+    if not isinstance(value, Mapping):
+        raise EvidenceContractError("evidence consumption is invalid")
+    derived = consume_evidence(
+        run_id=_text(value.get("run_id"), "run id"),
+        evaluator_attempt_id=_text(value.get("evaluator_attempt_id"), "attempt"))
+    if dict(value) != derived:
+        raise EvidenceContractError("consumption does not match durable records")
+    if expected_task is not None and derived["task_id"] != expected_task:
+        raise EvidenceContractError("child evidence belongs to another task")
+    if expected_requirement is not None and derived["requirement_id"] != expected_requirement:
+        raise EvidenceContractError("child evidence belongs to another requirement")
+    if any(row["substantive_count"] < 1 or row["consumed"] is not True
+           for row in derived["producers"]):
+        raise EvidenceContractError("child results were not substantively consumed")
+    return derived

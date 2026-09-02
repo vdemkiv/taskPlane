@@ -13,21 +13,6 @@ import lens  # noqa: E402
 import loop  # noqa: E402
 import requirements as reqs  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
-import evaluate_child_evidence as child_evidence  # noqa: E402
-
-
-def test_evaluate_evidence_children_do_not_count_as_catalog_lenses():
-    summary = child_evidence.evaluator_route_summary()
-
-    assert summary["catalog_lens_count"] == 0
-    assert summary["producer_count"] == 2
-    assert summary["producer_kinds"] == [
-        "language-code-quality", "test-design"
-    ]
-    catalog_ids = {row["id"] for row in lens.load_catalog()["lenses"]}
-    assert catalog_ids.isdisjoint(summary["producer_kinds"])
-
-
 class DesignWorkflowTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

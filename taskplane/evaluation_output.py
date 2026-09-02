@@ -129,10 +129,8 @@ def evaluator_output_schema() -> dict:
             "evaluation": evaluation,
             "criteria": {"type": "array", "items": criterion},
             "graph": graph,
-            # Compatibility: older sealed evaluator records predate the
-            # child-evidence contract. New control-plane callers set
-            # ``require_child_evidence`` at admission and this object is then
-            # mandatory and validated semantically below.
+            # Historical records stay readable through read_evaluator_value;
+            # a current pass must carry durable child evidence at admission.
             "child_evidence": {"type": "object"},
             "failures": {
                 "type": "array",
@@ -144,8 +142,7 @@ def evaluator_output_schema() -> dict:
 
 
 def validate_evaluator_value(
-        value: dict, *, expected_lenses: list[str] | None = None,
-        require_child_evidence: bool = False) -> dict:
+        value: dict, *, expected_lenses: list[str] | None = None) -> dict:
     """Validate evaluator output for admission to a governed decision.
 
     Historical failure rows are intentionally rejected here.  They remain
@@ -173,11 +170,17 @@ def validate_evaluator_value(
                 "reason_code=none; omission or outage fallback is forbidden",
             )
     _validate(value, evaluator_output_schema())
+    failures = value["failures"]
+    if value["verdict"] == "pass" and failures:
+        raise OutputValidationError(
+            "pass_has_failures",
+            "a passing evaluator result must not carry failures",
+        )
     child_evidence = value.get("child_evidence")
-    if require_child_evidence and not isinstance(child_evidence, dict):
+    if value["verdict"] == "pass" and not isinstance(child_evidence, dict):
         raise OutputValidationError(
             "child_evidence_required",
-            "evaluator pass admission requires two substantive child results",
+            "evaluator pass child evidence is required",
         )
     if child_evidence is not None:
         if __package__:
@@ -185,17 +188,13 @@ def validate_evaluator_value(
         else:  # pragma: no cover - direct CLI module loading
             import evaluate_child_evidence
         try:
-            evaluate_child_evidence.validate_consumption(child_evidence)
+            evaluate_child_evidence.validate_consumption(
+                child_evidence, expected_task=value["task"],
+                expected_requirement=value["requirement"])
         except evaluate_child_evidence.EvidenceContractError as exc:
             raise OutputValidationError(
                 "child_evidence_admission", str(exc)) from None
-    failures = value["failures"]
     if value["verdict"] == "pass":
-        if failures:
-            raise OutputValidationError(
-                "pass_has_failures",
-                "a passing evaluator result must not carry failures",
-            )
         return value
     try:
         failure_routing.validate_failure_records(failures)
@@ -205,16 +204,16 @@ def validate_evaluator_value(
     return value
 
 
-def attach_child_evidence(value: dict, evidence_run: dict) -> dict:
-    """Attach the exact two-result consumption block to evaluator output."""
+def attach_child_evidence(
+        value: dict, *, run_id: str, evaluator_attempt_id: str) -> dict:
+    """Attach consumption derived from the canonical durable run ledger."""
     if __package__:
         from . import evaluate_child_evidence
     else:  # pragma: no cover - direct CLI module loading
         import evaluate_child_evidence
     attached = deepcopy(value)
     attached["child_evidence"] = evaluate_child_evidence.consume_evidence(
-        evidence_run
-    )
+        run_id=run_id, evaluator_attempt_id=evaluator_attempt_id)
     return attached
 
 
