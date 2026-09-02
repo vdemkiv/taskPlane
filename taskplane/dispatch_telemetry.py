@@ -254,11 +254,11 @@ def project_transcript_usage(
         except native_session_meter.NativeSessionMeterError as exc:
             return _unavailable_transcript_projection(
                 provider, str(exc), byte_limit=byte_limit), None
-        usage = dict(snapshot["usage"])
+        native_usage = dict(snapshot["usage"])
         effective = int(
-            usage["uncached_input_tokens"] * WEIGHTS["input"]
-            + usage["cached_input_tokens"] * WEIGHTS["cache_read"]
-            + usage["output_tokens"] * WEIGHTS["output"]
+            native_usage["uncached_input_tokens"] * WEIGHTS["input"]
+            + native_usage["cached_input_tokens"] * WEIGHTS["cache_read"]
+            + native_usage["output_tokens"] * WEIGHTS["output"]
         )
         return {
             "schema": TRANSCRIPT_PROJECTION_SCHEMA,
@@ -279,7 +279,7 @@ def project_transcript_usage(
             "messages": 1,
             "duplicates_removed": 0,
             "effective_tokens": effective,
-            "usage": usage,
+            "usage": native_usage,
             "source_fingerprint": snapshot[
                 "source_identity_fingerprint"],
             "native_session": snapshot,
