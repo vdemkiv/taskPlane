@@ -748,8 +748,15 @@ def test_real_browser_production_refresh_styles_and_shows_dependency_graph(
     views.refresh_views(str(tmp_path), output)
     delivery = output["dashboard"]["delivery"]
     assert delivery["status"] == "published"
-    artifact = Path(delivery["artifacts"]["html"]["path"])
-    root = artifact.parents[2]
+    assert output["dashboard"]["inline"]["path"] == \
+        output["dashboard"]["path"]
+    surfaced = Path(output["dashboard"]["inline"]["path"])
+    artifact = surfaced if surfaced.is_absolute() else tmp_path / surfaced
+    assert artifact.is_file()
+    assert not (tmp_path / ".taskplane" / "dashboard.fragment.html").exists()
+    assert not (tmp_path / ".taskplane" / "dashboard-delivery" /
+                "dashboard.inline.html").exists()
+    root = tmp_path
 
     with _LoopbackServer(root) as server, _RealBrowser(tmp_path, config) as browser:
         browser.navigate(server.url(artifact.relative_to(root).as_posix()))

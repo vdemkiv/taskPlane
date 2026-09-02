@@ -74,9 +74,10 @@ _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
         "lens_wait_seconds", "lens_minimum_wait_seconds")),
     ("limits", "budgets"): frozenset((
         "max_actions", "lens_deep_max_actions", "lens_sweep_max_actions",
-        "max_tokens", "max_cost_usd")),
+        "target_tokens", "max_tokens", "max_cost_usd")),
     ("workflow",): frozenset(("transport", "worker_inheritance")),
-    ("workflow", "worker_inheritance"): frozenset(("model", "reasoning")),
+    ("workflow", "worker_inheritance"): frozenset((
+        "model", "reasoning", "context")),
     ("cleanup",): frozenset(("worktrees", "artifacts_days")),
     ("runtime",): frozenset((
         "audit_every", "inline_max_bytes", "orphan_ttl_seconds",
@@ -211,7 +212,7 @@ class LimitSettings:
 @dataclass(frozen=True)
 class WorkflowSettings:
     transport: str
-    worker_inheritance: Mapping[str, bool]
+    worker_inheritance: Mapping[str, bool | str]
 
     def to_dict(self) -> dict[str, Any]:
         return {"transport": self.transport,
@@ -521,11 +522,17 @@ def _validate_and_type(
         for key in (
             "max_actions", "lens_deep_max_actions",
             "lens_sweep_max_actions")}
-    for key in ("max_tokens", "max_cost_usd"):
+    for key in ("target_tokens", "max_tokens", "max_cost_usd"):
         value = budgets_raw.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0):
             raise SettingsError(f"limits.budgets.{key} must be null or positive")
         budgets[key] = value
+    if budgets["target_tokens"] is None or budgets["max_tokens"] is None:
+        raise SettingsError(
+            "limits.budgets target_tokens and max_tokens must be non-null")
+    if budgets["target_tokens"] >= budgets["max_tokens"]:
+        raise SettingsError(
+            "limits.budgets.target_tokens must be below max_tokens")
 
     workflow_raw = _plain_mapping(data.get("workflow"), "workflow")
     if workflow_raw.get("transport") != "native":
@@ -536,6 +543,9 @@ def _validate_and_type(
     if not all(inheritance_raw[key] for key in ("model", "reasoning")):
         raise SettingsError(
             "workflow worker inheritance cannot disable canonical dispatch fields")
+    if inheritance_raw.get("context") != "none":
+        raise SettingsError(
+            "workflow worker context inheritance must be 'none'")
 
     cleanup_raw = _plain_mapping(data.get("cleanup"), "cleanup")
     if cleanup_raw.get("worktrees") not in {"after-merge", "retain", "manual"}:

@@ -538,10 +538,13 @@ _TP_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 
 
 def _screen_once(ws, tool_name, tool_input):
+    from taskplane.tests.native_meter_support import attach_native_counter
+    event = attach_native_counter(
+        {"cwd": ws, "tool_name": tool_name, "tool_input": tool_input}, ws,
+        label="action-budget-screen")
     r = subprocess.run(
         [sys.executable, _TP_PY, "screen"],
-        input=json.dumps({"cwd": ws, "tool_name": tool_name,
-                          "tool_input": tool_input}),
+        input=json.dumps(event),
         capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.stdout
 
@@ -721,7 +724,7 @@ class TestActionBudgetEnforced(unittest.TestCase):
         tl.activate(ws, c)
         inp = {"file_path": "in_scope.py", "content": "x"}
         first = _screen_once(ws, "Write", inp)
-        self.assertIn('"approve"', first)          # used 0 < 1 → approve
+        self.assertEqual(first, "")                # Codex: silence → continue
         second = _screen_once(ws, "Write", inp)
         self.assertIn('"block"', second)           # used 1 >= 1 → block
         self.assertIn("ACTION BUDGET", second)
@@ -738,7 +741,7 @@ class TestActionBudgetEnforced(unittest.TestCase):
         tl.activate(ws, c)
         ok = _screen_once(ws, "Write", {"file_path": "server/a.py",
                                         "content": "x"})
-        self.assertIn('"approve"', ok)
+        self.assertEqual(ok, "")
         bad = _screen_once(ws, "Write", {"file_path": "other/a.py",
                                          "content": "x"})
         self.assertIn('"block"', bad)

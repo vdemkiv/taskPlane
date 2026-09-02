@@ -18,10 +18,13 @@ For every brief:
    context and a scoped view. Pass those references and fingerprints unchanged;
    never paste the full diff/impact into the message or ask the child to run
    `git diff`, graph impact, routing, or runnability discovery again.
-2. Call Codex's native `spawn_agent` with the brief's exact `task_name` and
-   `reasoning_effort`. Pass `model` only when it is non-null; null means let
-   the subagent inherit Codex's model choice. The human-facing taskplane role
-   remains the payload's `role`/`agent` and must not be renamed.
+2. Call Codex's native `spawn_agent` with the brief's exact `task_name`,
+   `reasoning_effort`, and `fork_turns`. The emitted value is currently
+   `fork_turns="none"`; pass it explicitly so the child receives zero parent
+   conversation turns. Never omit the field or substitute the host default.
+   Pass `model` only when it is non-null; null means let the subagent inherit
+   Codex's model choice. The human-facing taskplane role remains the payload's
+   `role`/`agent` and must not be renamed.
 3. Independent, scope-disjoint briefs may be spawned concurrently. Never give
    two write-capable agents the same checkout: use the worktree and contract
    slot emitted for a parallel build wave.

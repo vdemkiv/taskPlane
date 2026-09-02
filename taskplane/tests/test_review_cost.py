@@ -340,8 +340,10 @@ class OneCallOpening(_WS):
 
     def test_a_token_ceiling_can_be_set_at_the_opening(self):
         _, d, _ = self._start("--max-tokens", "750000")
-        self.assertEqual(tp.load_active(self.ws)["budget"]["max_tokens"],
-                         750000)
+        contract = tp.load_active(self.ws)
+        self.assertEqual(contract["budget"]["max_tokens"], 750000)
+        self.assertGreater(contract["budget"]["target_tokens"], 0)
+        self.assertLess(contract["budget"]["target_tokens"], 750000)
 
 
 # ------------------------------------- 3. one copy of the diff, not four
@@ -533,21 +535,6 @@ class TokenCeilingThroughTheScreener(_WS):
                     "cache_creation_input_tokens": 2000,
                     "output_tokens": 3000}}}) + "\n")
         return p          # 500,000 effective
-
-    def test_over_the_ceiling_blocks(self):
-        tr = self._contract_with(200_000)
-        decision, why = self._screen("grep -rn foo .", tr)
-        self.assertEqual(decision, "block")
-        self.assertIn("TOKEN BUDGET exhausted", why)
-
-    def test_telemetry_failure_cannot_lift_the_token_ceiling(self):
-        tr = self._contract_with(200_000)
-        with mock.patch(
-                "loop.record_observed_dispatch_usage",
-                side_effect=RuntimeError("telemetry unavailable")):
-            decision, why = self._screen("grep -rn foo .", tr)
-        self.assertEqual(decision, "block")
-        self.assertIn("TOKEN BUDGET exhausted", why)
 
     def test_under_the_ceiling_still_obeys_read_only_shell_denial(self):
         tr = self._contract_with(900_000)

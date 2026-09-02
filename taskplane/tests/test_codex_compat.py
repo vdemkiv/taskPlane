@@ -155,6 +155,43 @@ def _patch(*paths):
     return "\n".join(chunks)
 
 
+def _hook_usage_transcript(ws, *, codex, label="screen"):
+    root = os.path.join(ws, ".taskplane", "test-host-usage")
+    os.makedirs(root, exist_ok=True)
+    path = os.path.join(root, f"{label}-{'codex' if codex else 'claude'}.jsonl")
+    if codex:
+        rows = [{
+            "timestamp": "2026-09-01T00:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "session_id": f"session-{label}",
+                "id": f"session-{label}",
+                "timestamp": "2026-09-01T00:00:00Z",
+                "thread_source": "subagent",
+            },
+        }, {
+            "timestamp": "2026-09-01T00:00:01Z",
+            "ordinal": 1,
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {
+                "total_token_usage": {
+                    "input_tokens": 7, "cached_input_tokens": 2,
+                    "output_tokens": 3, "reasoning_output_tokens": 0,
+                    "total_tokens": 10,
+                },
+            }},
+        }]
+    else:
+        rows = [{"message": {"usage": {
+            "input_tokens": 7, "cache_read_input_tokens": 2,
+            "cache_creation_input_tokens": 0, "output_tokens": 3,
+        }}}]
+    with open(path, "w", encoding="utf-8") as stream:
+        for row in rows:
+            stream.write(json.dumps(row) + "\n")
+    return path
+
+
 class TestCodexApplyPatch(unittest.TestCase):
     def setUp(self):
         self.ws = _repo()
@@ -213,6 +250,9 @@ class TestCodexHookProtocol(unittest.TestCase):
         tp.activate(self.ws, contract, snapshot=tp.git_head(self.ws))
 
     def _run(self, event):
+        event = dict(event)
+        event.setdefault("transcript_path", _hook_usage_transcript(
+            self.ws, codex="turn_id" in event))
         return subprocess.run([sys.executable, TPPY, "screen"],
                               cwd=self.ws, input=json.dumps(event), text=True,
                               capture_output=True, encoding="utf-8", errors="replace")
@@ -285,11 +325,15 @@ class TestCodexHookProtocol(unittest.TestCase):
                 self.assertIn("every shell command tool is blocked", reason)
 
     def test_claude_and_codex_write_hooks_authorize_leased_results(self):
-        for host_event in (
+        for host_seed in (
                 {"session_id": "claude-session"},
                 {"turn_id": "codex-turn"}):
+            host_event = dict(host_seed)
             with self.subTest(host=next(iter(host_event))):
                 ws = _repo()
+                host_event["transcript_path"] = _hook_usage_transcript(
+                    ws, codex="turn_id" in host_event,
+                    label=next(iter(host_seed)))
                 target = {"fingerprint": "target-1", "head": "head-1"}
                 graph = {"meta": {"scanned_head": "head-1",
                                     "content_fingerprint": "graph-1"},

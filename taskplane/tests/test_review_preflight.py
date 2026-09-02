@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 import tp as taskplane_cli  # noqa: E402
+from taskplane.tests.native_meter_support import attach_native_counter  # noqa: E402
 
 
 def _host_receipt(*, action_id, response, actor="human", run_id="run-1"):
@@ -903,6 +904,8 @@ def test_host_screen_resolves_exact_leased_contract_without_task_slot(
         **child, "cwd": ws, "tool_name": "Write",
         "tool_input": {"file_path": absolute, "content": "{}"},
     }
+    event = attach_native_counter(
+        event, ws, total_tokens=7, label="leased-contract-screen")
     monkeypatch.delenv("TASKPLANE_TASK", raising=False)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
 

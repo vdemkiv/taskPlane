@@ -48,7 +48,7 @@ def test_current_version_authority_agrees_across_runtime_and_manifests() -> None
     compatibility = json.loads((ROOT / "design/compatibility.json").read_text(
         encoding="utf-8"))
 
-    assert current == "2.18.8"
+    assert current == "2.18.9"
     assert {
         release_evidence.CURRENT_VERSION,
         claude["version"],
@@ -59,7 +59,7 @@ def test_current_version_authority_agrees_across_runtime_and_manifests() -> None
     } == {current}
     assert release_evidence.PREVIOUS_VERSION == "2.17.20"
     assert release_evidence.COMPATIBILITY_PREVIOUS_VERSION == "2.18.0"
-    assert release_evidence.SUPERSEDED_CANDIDATE_VERSION == "2.18.6"
+    assert release_evidence.SUPERSEDED_CANDIDATE_VERSION == "2.18.8"
 
     for relative in ("README.md", "CHANGELOG.md"):
         body = (ROOT / relative).read_text(encoding="utf-8")

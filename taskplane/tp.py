@@ -1030,6 +1030,17 @@ def _standalone_review_budget(max_tokens: int | None) -> dict:
     }
 
 
+def _apply_contract_token_ceiling(contract: dict, max_tokens: int) -> None:
+    """Apply one explicit pickup ceiling without severing its target."""
+    ceiling = int(max_tokens)
+    if ceiling < 1:
+        raise ValueError("contract token ceiling must be positive")
+    budget = contract["budget"]
+    budget["max_tokens"] = ceiling
+    budget["target_tokens"] = max(1, min(
+        int(budget.get("target_tokens") or ceiling), ceiling - 1))
+
+
 def cmd_new(a) -> int:
     ws = _workspace(a.workspace)
     if _bare_root(ws):
@@ -1090,7 +1101,7 @@ def cmd_new(a) -> int:
     c["budget"]["max_cost_usd"] = float(a.budget) if a.budget is not None \
         else DEFAULT_MAX_COST_USD
     if getattr(a, "max_tokens", None) is not None:
-        c["budget"]["max_tokens"] = int(a.max_tokens)
+        _apply_contract_token_ceiling(c, int(a.max_tokens))
 
     # BIND THE CONTRACT TO A TREE (v2.12.0). A review's target used to be
     # free text in `task`, which is why two field reviews of one PR could
@@ -1513,6 +1524,7 @@ def cmd_screen_dispatch(a) -> int:
                  or ti.get("agent_type") or "")
         model = ti.get("model")
         effort = ti.get("reasoning_effort")
+        observed_context = ti.get("fork_turns")
         message = ti.get("message") or ti.get("prompt") or ""
         if not isinstance(message, str):
             message = ""
@@ -1531,6 +1543,10 @@ def cmd_screen_dispatch(a) -> int:
                                   else expected_model is None or
                                   model == expected_model)
         effort_ok = exp is None or not native_codex or effort == expected_effort
+        expected_context = tp._canonical_operational_settings().workflow.\
+            worker_inheritance["context"]
+        context_ok = exp is None or not native_codex or \
+            observed_context == expected_context
         marker = exp and (exp.get("role_marker") or tp.role_marker(
             exp.get("agent", "")))
         marker_present = bool(marker) and any(
@@ -1539,7 +1555,38 @@ def cmd_screen_dispatch(a) -> int:
             marker_present if native_codex else
             not ti.get("role") or ti.get("role") == exp.get("agent"))
         ok = name_ok and not unknown_governed and model_ok and effort_ok \
-            and role_ok
+            and context_ok and role_ok
+        if ok and exp is not None and exp.get("intent_id"):
+            try:
+                import spend as _spend
+                import loop as _loop_runtime
+                transcript = _spend.event_transcript(event)
+                if not transcript:
+                    raise ValueError(
+                        "host transcript path is unavailable")
+                projection = _bounded_transcript_projection(
+                    ws, transcript, "codex")
+                native_snapshot = projection.get("native_session")
+                if projection.get("status") != "available" or not isinstance(
+                        native_snapshot, dict) or int(
+                            (projection.get("usage") or {}).get(
+                                "total_tokens") or 0) <= 0:
+                    raise ValueError(
+                        str(projection.get("reason") or
+                            "native counter is null or zero"))
+                _loop_runtime.record_native_orchestrator_snapshot(
+                    ws, snapshot=native_snapshot)
+            except Exception as meter_error:
+                reason = (
+                    "taskplane native dispatch preflight failed closed: "
+                    "a non-zero native orchestrator counter is required "
+                    f"before dispatch ({type(meter_error).__name__}: "
+                    f"{meter_error}).")
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason}}))
+                return 0
         # Design assignments become durable only when this exact native
         # dispatch has passed every role/model/intent check. The append is
         # receipt-idempotent so a hook retry cannot manufacture activity.
@@ -1614,7 +1661,9 @@ def cmd_screen_dispatch(a) -> int:
                       f"{expected_effort}; observed task_name={agent}, "
                       f"role_marker={'present' if marker_present else 'missing'}, "
                       f"model={model or '<inherit>'}, reasoning_effort="
-                      f"{effort or '<unset>'}. Re-dispatch with the exact "
+                      f"{effort or '<unset>'}, fork_turns="
+                      f"{observed_context or '<unset>'} (required "
+                      f"{expected_context}). Re-dispatch with the exact "
                       "native Codex fields from the brief.")
         if mode == "strict":
             print(json.dumps({"hookSpecificOutput": {
@@ -1887,7 +1936,11 @@ def cmd_subagent_stop(a) -> int:
         telemetry_receipt = telemetry.get("receipt") \
             if isinstance(telemetry, dict) else None
         if isinstance(telemetry_receipt, dict):
-            terminal_event["usage_reference"] = telemetry_receipt
+            terminal_event["usage_reference"] = {
+                "schema": "taskplane.native-dispatch-usage-reference/v1",
+                "dispatch_receipt": telemetry_receipt,
+                "native_session": telemetry.get("native_session"),
+            }
         elif isinstance(telemetry, dict) and telemetry.get("status") == \
                 "unavailable":
             terminal_event["usage_reference"] = {
@@ -2442,7 +2495,13 @@ def _seal_terminal_dispatch_telemetry(
         return {"status": "not-bound"}
     import spend as _spend
     transcript = _spend.event_transcript(event)
+    usage_required = bool((contract.get("budget") or {}).get(
+        "token_usage_required"))
     if not transcript:
+        if usage_required:
+            raise ValueError(
+                "native terminal counter is required but the host transcript "
+                "path is unavailable")
         result = _loop_runtime.finalize_observed_dispatch_usage(
             ws, task_id=task_id, outcome=outcome,
             native_task_name=native_task_name, usage_unavailable=True,
@@ -2454,6 +2513,10 @@ def _seal_terminal_dispatch_telemetry(
     projection = _bounded_transcript_projection(
         ws, transcript, provider)
     if projection.get("status") != "available":
+        if usage_required:
+            raise ValueError(
+                "native terminal counter is required but unavailable: "
+                + str(projection.get("reason") or "unknown reason"))
         result = _loop_runtime.finalize_observed_dispatch_usage(
             ws, task_id=task_id, outcome=outcome,
             native_task_name=native_task_name, usage_unavailable=True,
@@ -2464,14 +2527,44 @@ def _seal_terminal_dispatch_telemetry(
         return {**result, "reason": str(projection.get("reason") or
                                         "authenticated provider usage is "
                                         "unavailable")}
+    terminal_ok, terminal_reason = _spend.status(
+        contract, int((projection.get("usage") or {})["total_tokens"]))
+    if not terminal_ok:
+        raise ValueError(terminal_reason)
+    metered_projection = dict(projection)
+    native_record = None
+    native_snapshot = projection.get("native_session")
+    if isinstance(native_snapshot, dict):
+        native_record = _loop_runtime.record_native_session_snapshot(
+            ws, task_id=task_id, dispatch_id=dispatch_id,
+            snapshot=native_snapshot)
+        dispatch_usage = dict(native_record["dispatch_usage"])
+        metered_projection["usage"] = dispatch_usage
+        metered_projection["effective_tokens"] = int(
+            dispatch_usage["uncached_input_tokens"] *
+            _spend.WEIGHTS["input"]
+            + dispatch_usage["cached_input_tokens"] *
+            _spend.WEIGHTS["cache_read"]
+            + dispatch_usage["output_tokens"] *
+            _spend.WEIGHTS["output"])
     _loop_runtime.record_observed_dispatch_usage(
         ws, task_id=task_id,
-        normalized_usage=_normalized_dispatch_projection(projection),
+        normalized_usage=_normalized_dispatch_projection(metered_projection),
         source_fingerprint=str(projection["source_fingerprint"]),
         native_task_name=native_task_name, dispatch_id=dispatch_id or None)
-    return _loop_runtime.finalize_observed_dispatch_usage(
+    result = _loop_runtime.finalize_observed_dispatch_usage(
         ws, task_id=task_id, outcome=outcome,
         native_task_name=native_task_name, dispatch_id=dispatch_id or None)
+    if isinstance(native_record, dict):
+        result = {**result, "native_session": {
+            "schema": "taskplane.native-session-reference/v1",
+            "session_id": native_record["session_id"],
+            "snapshot_fingerprint": native_record[
+                "snapshot_fingerprint"],
+            "attributed_usage": native_record["attributed_usage"],
+            "dispatch_usage": native_record["dispatch_usage"],
+        }}
+    return result
 
 
 def _meter_load(ws, strict=False) -> dict:
@@ -2573,6 +2666,38 @@ def _governed_root(cwd: str) -> str:
         cur = parent
 
 
+def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
+    """Capture the root native counter on its real main-session hook path."""
+    if "turn_id" not in event:
+        return
+    try:
+        import loop as _loop_runtime
+        import spend as _spend
+        if _loop_runtime.load(ws) is None:
+            return
+        transcript = _spend.event_transcript(event)
+        if not transcript:
+            raise ValueError("host transcript path is unavailable")
+        projection = _bounded_transcript_projection(ws, transcript, "codex")
+        snapshot = projection.get("native_session")
+        total = int((projection.get("usage") or {}).get("total_tokens") or 0)
+        if projection.get("status") != "available" or not isinstance(
+                snapshot, dict) or total <= 0:
+            raise ValueError(str(
+                projection.get("reason") or "native counter is null or zero"))
+        _loop_runtime.record_native_orchestrator_snapshot(
+            ws, snapshot=snapshot)
+    except Exception as exc:
+        # An ungoverned main action still defers to the host. Dispatch and
+        # terminal boundaries perform the fail-closed checks; this path keeps
+        # the cumulative root meter fresh without inventing broader authority.
+        try:
+            tp.trace(ws, "native_orchestrator_meter_unavailable",
+                     error=type(exc).__name__)
+        except Exception:
+            pass
+
+
 def _screen(a) -> int:
     """The screening body — wrapped by cmd_screen so ANY unexpected error
     fails CLOSED (blocks) instead of emitting no decision."""
@@ -2645,6 +2770,7 @@ def _screen(a) -> int:
     contract = (_review_authority["contract"] if _review_authority
                 else tp.load_active_for_event(ws, event))
     if contract is None:
+        _observe_active_loop_orchestrator(ws, event)
         # Distinguish "no contract at all" (ungoverned → ABSTAIN) from
         # "contract file present but unreadable/corrupt" (tamper or breakage
         # → fail CLOSED). A governed workspace whose control plane is
@@ -2772,11 +2898,13 @@ def _screen(a) -> int:
                         "reason": "host transcript path is unavailable",
                     })
                 if _projection.get("status") == "available":
+                    _observed_tokens = int(
+                        (_projection.get("usage") or {})["total_tokens"])
                     _tok_ok, _tok_why = _spend.status(
-                        contract, int(_projection["effective_tokens"]))
+                        contract, _observed_tokens)
                     if not _tok_ok:
                         _token_denial = (
-                            _tok_why, int(_projection["effective_tokens"]))
+                            _tok_why, _observed_tokens)
                 elif bool(_budget.get("token_usage_required")):
                     _token_denial = (
                         "TOKEN BUDGET telemetry unavailable — " +
@@ -2809,6 +2937,13 @@ def _screen(a) -> int:
                 pass
         if _token_denial is not None:
             _tok_why, _effective = _token_denial
+            # A broken meter must fail closed, but it must not hide a more
+            # specific authority boundary.  Preserve the contract's direct
+            # tool/command refusal when both checks deny the same action.
+            _contract_allows, _contract_why = tp.screen_tool(
+                contract, tool_name, tool_input, ws)
+            if not _contract_allows:
+                _tok_why = _contract_why
             _meter_bump(ws, tid, "denies")
             tp.trace(ws, "token_budget_deny", tool=tool_name,
                      effective=_effective)
@@ -6146,6 +6281,7 @@ def cmd_review(a) -> int:
         c["enforcement"] = enforcement
     c["budget"].update(_standalone_review_budget(
         getattr(a, "max_tokens", None)))
+    _apply_contract_token_ceiling(c, c["budget"]["max_tokens"])
     c["target"] = {k: rec.get(k) for k in
                    ("origin", "head", "base", "base_ref", "branch",
                     "merge_base", "shallow", "fingerprint", "target",

@@ -4488,10 +4488,11 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
     — a CLI `tp new --scope` contract never does, so a governed agent cannot
     re-mint its own path into .git/hooks, CI, deploy or lockfiles."""
     import uuid
+    effective_settings = _canonical_operational_settings()
+    canonical_budgets = effective_settings.limits.budgets
     if max_actions is None:
         max_actions = DEFAULT_MAX_ACTIONS_RO if read_only \
-            else _canonical_operational_settings().limits.budgets[
-                "max_actions"]
+            else canonical_budgets["max_actions"]
     max_actions = int(max_actions)
     if max_actions < 0:
         raise ValueError(
@@ -4509,9 +4510,15 @@ def build_contract(task: str, *, scope=None, read_only=False, write_allow=None,
         "task_id": "task_" + uuid.uuid4().hex[:8],
         "task": task,
         "allowed_tools": list(tools or []),
-        "budget": {"max_actions": int(max_actions),
-                   "note": "actions are hook-enforced; dollar spend is "
-                           "cooperative (not intercepted pre-spend)"},
+        "budget": {
+            "max_actions": int(max_actions),
+            "target_tokens": int(canonical_budgets["target_tokens"]),
+            "max_tokens": int(canonical_budgets["max_tokens"]),
+            "token_meter": "native_total_tokens",
+            "token_usage_required": True,
+            "note": "actions and the native per-pickup token ceiling are "
+                    "hook-enforced; the target is observable planning data",
+        },
         "coding": {
             "scope_paths": list(scope or []),
             "out_of_scope_paths": list(DEFAULT_OUT_OF_SCOPE),

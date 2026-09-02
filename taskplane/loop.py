@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 import base64
+import copy
 import contextlib
 import contextvars
 import hashlib
@@ -76,6 +77,7 @@ if __package__:
     from . import evaluation_output as evaluation_output
     from . import failure_routing
     from . import lens_route_policy
+    from . import native_session_meter
     from . import owned_cleanup
     from . import settings as operational_settings
     from . import plan_topology
@@ -94,6 +96,7 @@ else:  # pragma: no cover - direct CLI module loading
     import em_outage
     import failure_routing
     import lens_route_policy
+    import native_session_meter
     import owned_cleanup
     import settings as operational_settings
     import plan_topology
@@ -4226,6 +4229,11 @@ def _native_dispatch_intent(
         }, sort_keys=True, separators=(",", ":"))
         run_id = "loop-" + hashlib.sha256(material.encode("utf-8")).hexdigest()
     role = str(dispatch.get("role") or STEP_ROLE.get(step) or step)
+    context_inheritance = str(
+        operational_settings.load_settings(
+            environment=os.environ
+        ).workflow.worker_inheritance["context"]
+    )
     result = governed_command(ws, "dispatch", {
         "authorization": f"loop-dispatch:{run_id}",
         "consumer": f"{role}:{task_id}",
@@ -4236,7 +4244,7 @@ def _native_dispatch_intent(
             "role": role,
             "task_name": dispatch.get("task_name"),
             "wait_policy": dict(wait_policy),
-            "fork_turns": "none",
+            "fork_turns": context_inheritance,
             "inherited_turns": 0,
         },
         "run_id": run_id,
@@ -4244,7 +4252,7 @@ def _native_dispatch_intent(
         "wave_id": wave_id,
     })
     result["wait_policy"] = dict(wait_policy)
-    result["fork_turns"] = "none"
+    result["fork_turns"] = context_inheritance
     result["inherited_turns"] = 0
     return result
 
@@ -5966,6 +5974,144 @@ def record_observed_dispatch_usage(
             source_fingerprint=observed_source)
         _invalidate_terminal_metrics(locked)
         return result
+
+
+def record_native_session_snapshot(
+        ws: str, *, task_id: str, dispatch_id: str,
+        snapshot: Mapping[str, object]) -> dict:
+    """Persist native lineage and return the non-duplicated attempt delta."""
+    checked = native_session_meter.validate_snapshot(snapshot)
+    with mutate(ws) as locked:
+        if locked is None:
+            raise dispatch_telemetry.DispatchTelemetryError("no active loop")
+        dispatch_ledger = locked.get("dispatch_telemetry")
+        dispatch_telemetry.validate_ledger(dispatch_ledger)
+        binding = _dispatch_binding_for_attempt(
+            dispatch_ledger, str(task_id), None, str(dispatch_id))
+        if binding is None:
+            raise dispatch_telemetry.DispatchTelemetryError(
+                "native session snapshot has no dispatch binding")
+        ledger = locked.setdefault("native_session_telemetry", {
+            "schema": "taskplane.native-session-ledger/v1",
+            "records": [],
+        })
+        if not isinstance(ledger, dict) or ledger.get("schema") != \
+                "taskplane.native-session-ledger/v1" or not isinstance(
+                    ledger.get("records"), list):
+            raise dispatch_telemetry.DispatchTelemetryError(
+                "native session ledger is invalid")
+        for record in ledger["records"]:
+            if not isinstance(record, Mapping):
+                raise dispatch_telemetry.DispatchTelemetryError(
+                    "native session ledger record is invalid")
+            if record.get("snapshot_fingerprint") == checked["fingerprint"]:
+                if record.get("dispatch_id") != dispatch_id:
+                    raise dispatch_telemetry.DispatchTelemetryError(
+                        "native session snapshot is bound to another dispatch")
+                return copy.deepcopy(dict(record))
+        prior = []
+        for record in ledger["records"]:
+            if not isinstance(record, Mapping):
+                continue
+            prior_snapshot = record.get("snapshot")
+            if isinstance(prior_snapshot, Mapping) and \
+                    prior_snapshot.get("source_identity_fingerprint") == \
+                    checked["source_identity_fingerprint"]:
+                prior.append(record)
+        previous_usage = {key: 0 for key in checked["usage"]}
+        if prior:
+            prior_snapshot = prior[-1].get("snapshot")
+            prior_usage = (prior_snapshot.get("usage")
+                           if isinstance(prior_snapshot, Mapping) else None)
+            if not isinstance(prior_usage, Mapping):
+                raise dispatch_telemetry.DispatchTelemetryError(
+                    "native session ledger record is invalid")
+            previous_usage = dict(prior_usage)
+        attributed = {
+            key: int(checked["usage"][key]) - int(previous_usage[key])
+            for key in checked["usage"]
+        }
+        if any(value < 0 for value in attributed.values()):
+            raise dispatch_telemetry.DispatchTelemetryError(
+                "native physical-segment counter moved backwards")
+        record = {
+            "dispatch_id": str(dispatch_id),
+            "task_id": str(task_id),
+            "session_id": checked["session_id"],
+            "snapshot_fingerprint": checked["fingerprint"],
+            "snapshot": checked,
+            "attributed_usage": attributed,
+        }
+        ledger["records"].append(record)
+        record["dispatch_usage"] = {
+            key: sum(int(row["attributed_usage"][key])
+                     for row in ledger["records"]
+                     if row["dispatch_id"] == dispatch_id)
+            for key in attributed
+        }
+        ledger["aggregate"] = native_session_meter.aggregate([
+            row["snapshot"] for row in ledger["records"]
+        ])
+        material = {key: value for key, value in ledger.items()
+                    if key != "fingerprint"}
+        ledger["fingerprint"] = hashlib.sha256(json.dumps(
+            material, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False).encode("utf-8")).hexdigest()
+        _invalidate_terminal_metrics(locked)
+        return copy.deepcopy(record)
+
+
+def record_native_orchestrator_snapshot(
+        ws: str, *, snapshot: Mapping[str, object]) -> dict:
+    """Bind a native root/resume segment to the wave's measured main work."""
+    checked = native_session_meter.validate_snapshot(snapshot)
+    _ensure_dispatch_telemetry(ws)
+    dispatch_id = "native-main-" + str(
+        checked["source_identity_fingerprint"])[:32]
+    clock = SystemClock()
+    with mutate(ws) as locked:
+        if locked is None:
+            raise dispatch_telemetry.DispatchTelemetryError("no active loop")
+        ledger = locked.get("dispatch_telemetry")
+        dispatch_telemetry.validate_ledger(ledger)
+        existing = next((row for row in ledger.get("bindings") or []
+                         if row.get("dispatch_id") == dispatch_id), None)
+        if existing is None:
+            dispatch_telemetry.bind_dispatch(ledger, {
+                "dispatch_id": dispatch_id,
+                "thread_id": str(checked["session_id"]),
+                "thread_type": "main",
+                "task_id": "orchestrator",
+                "dependencies": [],
+                "shared_owner": None,
+                "started_at": clock.wall_time(),
+                "ended_at": clock.wall_time(),
+                "wait_duration_seconds": 0,
+                "correction_count": 0,
+                "events": [],
+            })
+    record = record_native_session_snapshot(
+        ws, task_id="orchestrator", dispatch_id=dispatch_id,
+        snapshot=checked)
+    usage = dict(record["dispatch_usage"])
+    normalized = {
+        "schema": "taskplane.token-usage/v2",
+        "available": True,
+        "provider": "codex",
+        "reason": None,
+        **usage,
+        "cache_creation_tokens": 0,
+        "raw_total_tokens": usage["total_tokens"],
+        "effective_tokens": int(
+            usage["uncached_input_tokens"] * spend.WEIGHTS["input"]
+            + usage["cached_input_tokens"] * spend.WEIGHTS["cache_read"]
+            + usage["output_tokens"] * spend.WEIGHTS["output"]),
+    }
+    observed = record_observed_dispatch_usage(
+        ws, task_id="orchestrator", normalized_usage=normalized,
+        source_fingerprint=str(checked["source_identity_fingerprint"]),
+        dispatch_id=dispatch_id)
+    return {"dispatch": observed, "native_session": record}
 
 
 def finalize_observed_dispatch_usage(
@@ -11383,6 +11529,15 @@ def _seal_terminal_metrics_before_retro(ws: str, state: dict) -> dict:
         if not isinstance(ledger, Mapping):
             raise wave_metrics.WaveMetricsError(
                 "terminal dispatch ledger is unavailable")
+        for binding_row in ledger.get("bindings") or []:
+            if not isinstance(binding_row, Mapping) or \
+                    binding_row.get("thread_type") != "main" or \
+                    binding_row.get("finalized_receipt_fingerprint"):
+                continue
+            dispatch_telemetry.finalize_usage(
+                ledger, dispatch_id=str(binding_row["dispatch_id"]),
+                ended_at=SystemClock().wall_time(), clock=SystemClock(),
+                events=[{"kind": "complete", "sequence": 1}])
         run_id = str(state.get("run_id") or "").strip()
         if not run_id:
             raise wave_metrics.WaveMetricsError(
@@ -11401,7 +11556,7 @@ def _seal_terminal_metrics_before_retro(ws: str, state: dict) -> dict:
         observed_intents = {
             str(row.get("dispatch_id") or "")
             for row in ledger.get("bindings") or []
-            if isinstance(row, Mapping)
+            if isinstance(row, Mapping) and row.get("thread_type") != "main"
         }
         if not expected_intents or expected_intents != observed_intents:
             missing = sorted(expected_intents - observed_intents)

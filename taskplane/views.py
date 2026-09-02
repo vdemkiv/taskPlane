@@ -83,7 +83,8 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
                       html_renderer=None,
                       html_stylesheet: "str | None" = None,
                       host_acknowledgement: "Mapping | None" = None,
-                      expected_head=_NO_EXPECTED_HEAD) -> dict:
+                      expected_head=_NO_EXPECTED_HEAD,
+                      current_head_hrefs=("../../current.json",)) -> dict:
     """Compatibility facade over the acyclic host delivery implementation."""
     import dashboard as _dashboard
     stylesheet = (html_stylesheet if html_stylesheet is not None else
@@ -94,7 +95,8 @@ def deliver_dashboard(output_dir: str, model: Mapping, *,
         html_renderer=html_renderer,
         html_stylesheet=stylesheet,
         host_acknowledgement=host_acknowledgement,
-        expected_head=expected_head)
+        expected_head=expected_head,
+        current_head_hrefs=current_head_hrefs)
 def _transition_step(out: dict) -> str:
     state = out.get("status") or out.get("state") or {}
     return str((state.get("step") if isinstance(state, dict) else None)
@@ -424,7 +426,6 @@ def refresh_views(ws: str, out: dict) -> dict:
         human_gate = step in _HUMAN_DASHBOARD_STEPS
         logical_path = (p if _runtime_storage.load_workspace_locator(ws)
                         else ".taskplane/dashboard.html")
-        fragment_path = os.path.splitext(p)[0] + ".fragment.html"
         delivery_root = os.path.join(os.path.dirname(p), "dashboard-delivery")
         observed_head = dashboard_current_head(delivery_root)
         expected_head = (None if observed_head is None else
@@ -450,15 +451,11 @@ def refresh_views(ws: str, out: dict) -> dict:
             html_renderer=presentation,
             html_stylesheet=_dash.dashboard_document_style(),
             host_acknowledgement=_delivery_host_acknowledgement(out),
-            expected_head=expected_head)
-        if delivery.get("inline"):
-            inline = dict(delivery["inline"])
-            inline_path = os.path.join(delivery_root, "dashboard.inline.html")
-            _write_delivery_artifact(
-                inline_path, inline.pop("content").encode("utf-8"))
-            inline["path"] = inline_path
-            delivery["inline"] = inline
-
+            expected_head=expected_head,
+            current_head_hrefs=(
+                "../../current.json",
+                "dashboard-delivery/current.json",
+            ))
         out["dashboard"] = {"path": logical_path, "delivery": delivery}
         try:
             out["dashboard"]["run_artifacts"] = \
@@ -474,11 +471,12 @@ def refresh_views(ws: str, out: dict) -> dict:
         if html_ref["status"] == "available":
             with open(html_ref["path"], "rb") as stream:
                 _write_delivery_artifact(p, stream.read())
-            fragment = rendered.get("fragment")
-            if isinstance(fragment, str):
-                _write_delivery_artifact(
-                    fragment_path, fragment.encode("utf-8"))
-                out["dashboard"]["inline"] = {"path": fragment_path}
+            current_document = {
+                "path": logical_path,
+                "format": "html",
+                "surface": "current-dashboard-document",
+            }
+            out["dashboard"]["inline"] = current_document
             out["dashboard"]["render"] = (
                 "human gate — render inline.path with the host widget before "
                 "asking for approval or rejection; path is fallback only"

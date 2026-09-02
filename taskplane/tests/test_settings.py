@@ -45,10 +45,13 @@ def test_valid_canonical_settings_load_typed():
     assert settings.limits.timeouts["task_seconds"] == 1200
     assert settings.limits.budgets["lens_deep_max_actions"] == 45
     assert settings.limits.budgets["lens_sweep_max_actions"] == 30
+    assert settings.limits.budgets["target_tokens"] == 12_000_000
+    assert settings.limits.budgets["max_tokens"] == 17_000_000
     assert settings.limits.timeouts["lens_wait_seconds"] == 1800
     assert settings.limits.timeouts["lens_minimum_wait_seconds"] == 300
     assert settings.limits.timeouts["subprocess_seconds"] == 300
     assert settings.workflow.transport == "native"
+    assert settings.workflow.worker_inheritance["context"] == "none"
     assert len(settings.digest) == 64
     with pytest.raises(FrozenInstanceError):
         settings.build.shards = 2
@@ -84,6 +87,18 @@ def test_invalid_or_unknown_settings_fail_closed(tmp_path):
     invalid_cache_age["tests"]["cache_max_age_seconds"] = -1
     with pytest.raises(SettingsError, match="finite number"):
         load_settings(_write(tmp_path, invalid_cache_age))
+
+    null_meter = json.loads(
+        DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    null_meter["limits"]["budgets"]["max_tokens"] = None
+    with pytest.raises(SettingsError, match="must be non-null"):
+        load_settings(_write(tmp_path, null_meter))
+
+    inverted_meter = json.loads(
+        DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    inverted_meter["limits"]["budgets"]["target_tokens"] = 18_000_000
+    with pytest.raises(SettingsError, match="must be below"):
+        load_settings(_write(tmp_path, inverted_meter))
 
 
 @pytest.mark.parametrize("stage", STAGES)

@@ -104,7 +104,8 @@ def test_missing_or_malformed_host_usage_fails_closed_before_next_dispatch() -> 
 
 
 def test_breach_stops_before_any_next_spawn() -> None:
-    for field, ceiling in dispatch_telemetry.WAVE_BUDGET_CEILINGS.items():
+    for field in dispatch_telemetry.ADMISSION_BUDGET_FIELDS:
+        ceiling = dispatch_telemetry.WAVE_BUDGET_CEILINGS[field]
         stopped = _screen(_ledger(), **{field: ceiling})
         assert stopped["dispatch_allowed"] is False
         assert stopped["status"] == "human_scope_review"
@@ -119,7 +120,7 @@ def test_breach_stops_before_any_next_spawn() -> None:
         assert stopped["fingerprint"]
 
 
-def test_budget_screen_overrides_are_conservative_floors_only() -> None:
+def test_aggregate_token_observation_is_preserved_without_program_stop() -> None:
     ledger = _ledger()
     ceiling = dispatch_telemetry.WAVE_BUDGET_CEILINGS["total_tokens"]
     dispatch_telemetry.bind_dispatch(
@@ -132,16 +133,14 @@ def test_budget_screen_overrides_are_conservative_floors_only() -> None:
         ledger, elapsed_seconds=0, sessions=0,
         total_tokens=0, uncached_input_tokens=0)
 
-    assert stopped["dispatch_allowed"] is False
+    assert stopped["dispatch_allowed"] is True
     assert stopped["observed_usage"] == {
         "elapsed_seconds": 5,
         "sessions": 1,
         "total_tokens": ceiling,
         "uncached_input_tokens": 0,
     }
-    assert stopped["budget"]["triggered"] == [{
-        "field": "total_tokens", "observed": ceiling, "ceiling": ceiling,
-    }]
+    assert stopped["budget"]["triggered"] == []
 
 
 def test_active_usage_contributes_to_all_four_budget_totals() -> None:

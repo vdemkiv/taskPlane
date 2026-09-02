@@ -15,7 +15,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from taskplane import delivery_policy
+from taskplane import delivery_policy, dispatch_telemetry
 
 
 DELTA_SCHEMA = "taskplane.loop-next-delta/v1"
@@ -43,15 +43,10 @@ _HANDOFF_REFERENCE_FIELDS = frozenset({
     "schema", "kind", "fingerprint", "bytes",
 })
 
-# These are the binding R-0001 ceilings.  This module only projects their
-# consequence.  Dispatch admission remains owned by delivery_policy and
-# dispatch_telemetry; loop/build adapters must refuse before invoking a host.
-WAVE_BUDGET_CEILINGS = {
-    "elapsed_seconds": 28_800,
-    "sessions": 60,
-    "total_tokens": 150_000_000,
-    "uncached_input_tokens": 25_000_000,
-}
+# Compatibility name for the one dispatch-telemetry owner.  Token totals stay
+# visible in this projection but are governed per pickup, never as a program
+# aggregate.
+WAVE_BUDGET_CEILINGS = dispatch_telemetry.WAVE_BUDGET_CEILINGS
 
 _ACTION_FIELDS = (
     "step",
@@ -364,7 +359,8 @@ def _usage_projection(wave_usage: Mapping[str, Any] | None) -> dict[str, Any]:
         if observed < 0:
             raise BriefProjectionError(f"wave_usage.{field} cannot be negative")
         normalized[field] = observed
-        if observed >= ceiling:
+        if field in dispatch_telemetry.ADMISSION_BUDGET_FIELDS and \
+                observed >= ceiling:
             triggered.append(
                 {"field": field, "observed": observed, "ceiling": ceiling}
             )

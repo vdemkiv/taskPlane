@@ -463,17 +463,28 @@ def _disable_unverified_actions(fragment: str) -> str:
     return action.sub(closed, fragment)
 
 
-def _dashboard_freshness_controller(rendered_head: Mapping[str, Any],
-                                    *, actions_enabled: bool) -> str:
+def _dashboard_freshness_controller(
+        rendered_head: Mapping[str, Any], *, actions_enabled: bool,
+        current_head_hrefs: Sequence[str] = ("../../current.json",),
+) -> str:
     encoded_head = base64.b64encode(canonical_dashboard_bytes(
         rendered_head)).decode("ascii")
+    hrefs = [str(value) for value in current_head_hrefs]
+    if not hrefs or any(
+            not re.fullmatch(r"[A-Za-z0-9._/-]+", value)
+            or value.startswith("/") or "//" in value
+            for value in hrefs):
+        raise ValueError("dashboard current-head routes are invalid")
+    encoded_hrefs = base64.b64encode(canonical_dashboard_bytes(
+        {"routes": hrefs})).decode("ascii")
     initial = "fresh" if actions_enabled else "unverified"
     # The old document never enables itself from a newer head.  It navigates
     # to the content-addressed generation, whose own controller must then
     # prove an exact head match.  file:// never attempts network fetch.
     return (
         '<script>(function(){'
-        'var root=document.body,rendered=JSON.parse(atob("' + encoded_head + '"));'
+        'var root=document.body,rendered=JSON.parse(atob("' + encoded_head + '")),'
+        'headRoutes=JSON.parse(atob("' + encoded_hrefs + '")).routes;'
         'var wasStale=false;'
         'function mutations(){return Array.from(document.querySelectorAll('
         '"[data-dashboard-action]"))'
@@ -512,13 +523,15 @@ def _dashboard_freshness_controller(rendered_head: Mapping[str, Any],
         'if(bridge){Promise.resolve(window.openai.getDashboardHead()).then(apply,'
         'function(){state("unverified","trusted head bridge failed",false);});}'
         'else if(window.location&&window.location.protocol!=="file:"&&'
-        'typeof window.fetch==="function"){window.fetch("../../current.json",'
-        '{cache:"no-store",credentials:"same-origin"}).then(function(response){'
+        'typeof window.fetch==="function"){(function load(index){'
+        'if(index>=headRoutes.length){state("unverified",'
+        '"durable dashboard head could not be fetched",false);return;}'
+        'window.fetch(headRoutes[index],{cache:"no-store",'
+        'credentials:"same-origin"}).then(function(response){'
         'if(!response.ok)throw new Error("head unavailable");return response.json()'
         '.then(function(head){if(head.html_href&&typeof URL==="function")'
         '{head.html_href=new URL(head.html_href,response.url).href;}return head;});})'
-        '.then(apply,function(){state("unverified",'
-        '"durable dashboard head could not be fetched",false);});}'
+        '.then(apply,function(){load(index+1);});})(0);}'
         'else{state("unverified",window.location&&window.location.protocol==="file:"?'
         '"file dashboard has no trusted head bridge; network refresh is not attempted":'
         '"dashboard head transport is unavailable",false);}'
@@ -528,7 +541,9 @@ def _dashboard_freshness_controller(rendered_head: Mapping[str, Any],
 def _embedded_html(body: str, canonical: bytes, *,
                    rendered_head: Mapping[str, Any],
                    actions_enabled: bool,
-                   stylesheet: str | None = None) -> bytes:
+                   stylesheet: str | None = None,
+                   current_head_hrefs: Sequence[str] = (
+                       "../../current.json",)) -> bytes:
     fragment_shape = _html_shape(body)
     if fragment_shape.doctypes or any(fragment_shape.tags.values()):
         raise ValueError(
@@ -555,7 +570,8 @@ def _embedded_html(body: str, canonical: bytes, *,
         + '<script type="application/x-taskplane-json-base64" '
           f'data-taskplane-canonical="true">{encoded}</script>'
         + _dashboard_freshness_controller(
-            rendered_head, actions_enabled=actions_enabled)
+            rendered_head, actions_enabled=actions_enabled,
+            current_head_hrefs=current_head_hrefs)
         + '</body></html>')
     shape = _html_shape(document)
     if shape.doctypes != 1 or shape.tags != {
@@ -946,6 +962,8 @@ def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
                       html_stylesheet: str | None = None,
                       host_acknowledgement: Mapping[str, Any] | None = None,
                       expected_head: object = _NO_EXPECTED_HEAD,
+                      current_head_hrefs: Sequence[str] = (
+                          "../../current.json",),
                       ) -> dict[str, Any]:
     """Publish one canonical snapshot through disjoint delivery projections.
 
@@ -996,7 +1014,8 @@ def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
             html_payload = _embedded_html(
                 body, canonical, rendered_head=rendered_head,
                 actions_enabled=actions_enabled,
-                stylesheet=html_stylesheet)
+                stylesheet=html_stylesheet,
+                current_head_hrefs=current_head_hrefs)
         except Exception as exc:
             html_error = f"{exc.__class__.__name__}: {exc}"
             structural_error = isinstance(exc, ValueError) and \
