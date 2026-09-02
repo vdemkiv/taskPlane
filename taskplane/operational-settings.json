@@ -1,5 +1,5 @@
 {
-  "schema": "taskplane.operational-settings/v1",
+  "schema": "taskplane.operational-settings/v2",
   "stages": {
     "product": {"model": "inherit", "reasoning": "high"},
     "design": {"model": "inherit", "reasoning": "high"},
@@ -60,6 +60,12 @@
       "model": true,
       "reasoning": true,
       "context": "none"
+    },
+    "root_session": {
+      "resume": "forbidden",
+      "seed": "digest-only",
+      "seed_budget_tokens": 40000,
+      "root_budget_tokens": 40000000
     }
   },
   "cleanup": {"worktrees": "after-merge", "artifacts_days": 30},

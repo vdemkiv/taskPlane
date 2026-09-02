@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from taskplane import loop_status, settings as operational_settings, tp
+from taskplane import loop_status, root_seed, settings as operational_settings, tp
 from taskplane.settings import DEFAULT_SETTINGS_PATH, SettingsError, load_settings
 
 
@@ -101,3 +101,77 @@ def test_dashboard_refresh_policy_has_one_settings_owner_and_digest(
         settings.digest
     assert set(publication["surfaces"].values()) == {
         publication["snapshot"]["fingerprint"]}
+
+
+def _assert_root_session_wiring(tmp_path, monkeypatch):
+    canonical = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    expected = {
+        "resume", "seed", "seed_budget_tokens", "root_budget_tokens"}
+    assert set(canonical["workflow"]["root_session"]) == expected
+
+    for missing in sorted(expected):
+        value = copy.deepcopy(canonical)
+        value["workflow"]["root_session"].pop(missing)
+        path = tmp_path / f"missing-{missing}.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with pytest.raises(SettingsError, match="root_session"):
+            load_settings(path)
+
+    value = copy.deepcopy(canonical)
+    value["workflow"]["root_session"]["rotate_at_context_tokens"] = 1
+    path = tmp_path / "unwired.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(SettingsError, match="root_session.*unknown"):
+        load_settings(path)
+
+    settings = load_settings()
+    consumed = settings.workflow.root_session.consumer_projection(
+        "root-seed.prepare")
+    assert set(consumed) == expected
+    with pytest.raises(SettingsError, match="unknown root_session consumer"):
+        settings.workflow.root_session.consumer_projection("unwired.consumer")
+
+    calls = []
+    original = operational_settings.load_settings
+
+    def tracked(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(operational_settings, "load_settings", tracked)
+    assert tp.main(["version"]) == 0
+    snapshot = tp._effective_settings_snapshot()
+    assert tp._effective_settings_snapshot() is snapshot
+    assert len(calls) == 1
+
+    seed = root_seed.build_root_seed({
+        "run_id": "run-wiring", "wave_id": "W1",
+        "candidate_sha": "a" * 40, "settings": snapshot,
+        "delivery_mode": "iteration",
+        "design": {"path": "design/contract.json",
+                   "fingerprint": "b" * 64},
+        "plan": {"path": "plan/tasks.json", "fingerprint": "c" * 64},
+        "prepared_at": "2026-09-02T04:00:00Z",
+        "operation_id": "prepare-run-wiring-w1",
+    }, {
+        "pickups": [{
+            "id": "P10", "write_scopes": ["taskplane/settings.py"],
+            "disjointness_receipt_fingerprint": "d" * 64,
+        }],
+        "wave_budgets": {"max_actions": 60,
+                         "target_tokens": 12_000_000,
+                         "max_tokens": 17_000_000},
+        "outstanding_human_gates": [],
+        "predecessor_terminal_projection": {"status": "none"},
+    })
+    assert seed["settings_fingerprint"] == snapshot.digest
+
+
+def test_root_session_settings_severed_edge_refuses_missing_extra_invalid_or_unconsumed_fields(
+        tmp_path, monkeypatch):
+    _assert_root_session_wiring(tmp_path, monkeypatch)
+
+
+def test_every_accepted_setting_has_one_production_consumer_or_is_rejected_and_transition_reuses_one_snapshot(
+        tmp_path, monkeypatch):
+    _assert_root_session_wiring(tmp_path, monkeypatch)

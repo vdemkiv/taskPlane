@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+import copy
+import json
+
+import pytest
+
+from taskplane import root_seed, tp
+from taskplane.settings import load_settings
+
+
+def _context(settings=None):
+    return {
+        "run_id": "run-38",
+        "wave_id": "W1",
+        "candidate_sha": "a" * 40,
+        "settings": settings or load_settings(),
+        "delivery_mode": "iteration",
+        "design": {"path": "design/contract.json", "fingerprint": "b" * 64},
+        "plan": {"path": "plan/tasks.json", "fingerprint": "c" * 64},
+        "prepared_at": "2026-09-02T04:00:00Z",
+        "operation_id": "prepare-root-run-38-w1",
+    }
+
+
+def _inputs():
+    return {
+        "pickups": [
+            {"id": "P12", "write_scopes": ["taskplane/z.py", "taskplane/a.py"],
+             "disjointness_receipt_fingerprint": "d" * 64},
+            {"id": "P11", "write_scopes": ["taskplane/b.py"],
+             "disjointness_receipt_fingerprint": "e" * 64},
+        ],
+        "wave_budgets": {"max_actions": 60, "target_tokens": 12_000_000,
+                         "max_tokens": 17_000_000},
+        "outstanding_human_gates": [
+            {"id": "final-signoff", "owner": "human:operator"}],
+        "predecessor_terminal_projection": {
+            "path": "runs/prior/terminal-projection.json",
+            "fingerprint": "f" * 64,
+        },
+    }
+
+
+def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start_and_wave(
+        tmp_path, capsys):
+    context = _context()
+    inputs = _inputs()
+    first = root_seed.build_root_seed(context, inputs)
+
+    reordered = copy.deepcopy(inputs)
+    reordered["pickups"].reverse()
+    reordered["pickups"][1]["write_scopes"].reverse()
+    assert root_seed.build_root_seed(context, reordered) == first
+    assert set(first) == root_seed.ROOT_SEED_FIELDS
+    assert first["schema"] == "taskplane.root-seed/v1"
+    assert first["run_id"] == "run-38"
+    assert first["wave_id"] == "W1"
+    assert first["settings_fingerprint"] == context["settings"].digest
+    assert first["budgets"]["seed_budget_tokens"] == 40_000
+    assert first["budgets"]["root_budget_tokens"] == 40_000_000
+    assert [row["id"] for row in first["pickups"]] == ["P11", "P12"]
+    assert first["pickups"][1]["write_scopes"] == [
+        "taskplane/a.py", "taskplane/z.py"]
+    assert len(first["seed_fingerprint"]) == 64
+    assert len(json.dumps(first, sort_keys=True).encode("utf-8")) < 64 * 1024
+
+    root = tmp_path / "export"
+    receipt = root_seed.prepare_root_seed(
+        root, "waves/W1/root-seed.json", context, inputs)
+    stored = json.loads((root / "waves/W1/root-seed.json").read_text(
+        encoding="utf-8"))
+    assert stored == first
+    assert receipt["seed_fingerprint"] == first["seed_fingerprint"]
+    assert len(json.dumps(receipt, sort_keys=True).encode("utf-8")) < 4096
+
+    binding = root_seed.seed_binding(first)
+    assert binding == {
+        "candidate_sha": "a" * 40,
+        "run_id": "run-38",
+        "settings_fingerprint": context["settings"].digest,
+        "seed_fingerprint": first["seed_fingerprint"],
+        "wave_id": "W1",
+    }
+    root_seed.verify_seed_binding(first, binding, surface="host root start")
+    root_seed.verify_seed_binding(first, dict(binding), surface="wave seal")
+    mismatched = dict(binding, wave_id="W2")
+    with pytest.raises(root_seed.RootSeedError, match="wave seal binding"):
+        root_seed.verify_seed_binding(first, mismatched, surface="wave seal")
+
+    cli_context = {key: value for key, value in context.items()
+                   if key != "settings"}
+    request_path = tmp_path / "root-seed-request.json"
+    request_path.write_text(json.dumps({
+        "context": cli_context, "inputs": inputs,
+    }), encoding="utf-8")
+    cli_workspace = tmp_path / "cli-workspace"
+    cli_workspace.mkdir()
+    assert tp.main([
+        "root-seed", "--request", str(request_path),
+        "--output", "waves/W1/root-seed.json",
+        "--workspace", str(cli_workspace),
+    ]) == 0
+    cli_receipt = json.loads(capsys.readouterr().out)
+    assert cli_receipt["seed_fingerprint"] == first["seed_fingerprint"]
+    assert json.loads((cli_workspace / "waves/W1/root-seed.json").read_text(
+        encoding="utf-8")) == first
+
+
+@pytest.mark.parametrize("field", [
+    "prompt", "transcript", "conversation", "worker_output", "raw_test_log",
+])
+def test_root_seed_rejects_unknown_transcript_prompt_worker_output_log_and_native_path_fields(
+        tmp_path, field):
+    context = _context()
+    inputs = _inputs()
+    inputs[field] = "must not be retained"
+    with pytest.raises(root_seed.RootSeedError, match="unknown seed input"):
+        root_seed.build_root_seed(context, inputs)
+
+    native_paths = [
+        "/Users/operator/private/design.json",
+        "C:\\Users\\operator\\design.json",
+        "../outside/plan.json",
+        "\\\\server\\share\\plan.json",
+    ]
+    for native_path in native_paths:
+        bad = _context()
+        bad["design"]["path"] = native_path
+        with pytest.raises(root_seed.RootSeedError, match="portable relative"):
+            root_seed.build_root_seed(bad, _inputs())
+
+    with pytest.raises(root_seed.RootSeedError, match="portable relative"):
+        root_seed.prepare_root_seed(
+            tmp_path, "/tmp/root-seed.json", _context(), _inputs())
