@@ -210,6 +210,79 @@ def test_managed_v4_non_finite_json_values_are_non_actionable(non_finite):
     assert "not JSON compliant" in " ".join(source["evidence"])
 
 
+@pytest.mark.parametrize(("case", "malformed", "mode", "target"), [
+    ("locator-load-error", None, "managed", "run"),
+    ("invalid-locator", float("nan"), "managed", "run"),
+    ("manifest-load-error", None, "managed", "run"),
+    ("root-manifest", float("nan"), "managed", "run"),
+    ("root-manifest", float("inf"), "managed", "run"),
+    ("root-manifest", float("-inf"), "managed", "run"),
+    ("unsupported-manifest", {"tokens": float("nan")}, "managed", "run"),
+    ("unsupported-manifest", {"tokens": object()}, "managed", "run"),
+    ("v3-state-load-error", None, "v3", "run"),
+    ("v3-state", {"tokens": float("inf")}, "v3", "run"),
+    ("v4-manifest", {"tokens": float("-inf")}, "v4", "active-stage"),
+])
+def test_every_corrupt_dashboard_source_path_has_a_safe_fingerprint(
+        case, malformed, mode, target):
+    locator = {"run_id": "managed-run"}
+    manifest = {
+        "schema": "taskplane.run/v4", "run_id": "managed-run",
+        "active_stage_projection": {
+            "active_stage_ids": [], "foreground_stage_id": None,
+        },
+        "stage_heads": {},
+    }
+    state = {"step": "execute", "tasks": []}
+
+    def load_locator(_workspace):
+        if case == "locator-load-error":
+            raise ValueError("locator unavailable")
+        if case == "invalid-locator":
+            return {"run_id": malformed}
+        return locator
+
+    def load_manifest(_workspace, _locator):
+        if case == "manifest-load-error":
+            raise ValueError("manifest unavailable")
+        if case == "root-manifest":
+            return malformed
+        if case == "unsupported-manifest":
+            return {
+                "schema": "taskplane.run/v99", "run_id": "managed-run",
+                "telemetry": malformed,
+            }
+        if case == "v3-state-load-error" or case == "v3-state":
+            return {"schema": "taskplane.run/v3", "run_id": "managed-run"}
+        if case == "v4-manifest":
+            return {**manifest, "telemetry": malformed}
+        return manifest
+
+    def load_state(_workspace):
+        if case == "v3-state-load-error":
+            raise ValueError("state unavailable")
+        if case == "v3-state":
+            return {**state, "telemetry": malformed}
+        return state
+
+    source = select_dashboard_source(
+        "/managed-workspace", locator_loader=load_locator,
+        manifest_loader=load_manifest, legacy_loader=load_state,
+        manifest_validator=lambda candidate: candidate,
+        error_formatter=lambda exc: f"{exc.__class__.__name__}: {exc}",
+    )
+
+    assert source["mode"] == mode
+    assert source["status"] == "corrupt"
+    assert source["run_id"]
+    assert source["target"] == target
+    assert source["state"] is None
+    assert isinstance(source["source_fingerprint"], str)
+    assert len(source["source_fingerprint"]) == 64
+    assert source["evidence"]
+    assert all(isinstance(item, str) and item for item in source["evidence"])
+
+
 @pytest.mark.parametrize("schema", ["taskplane.run/v3", "taskplane.run/v4"])
 def test_managed_manifest_identity_mismatch_refuses_without_state_fallback(
         schema):

@@ -1151,6 +1151,50 @@ def _canonical_fingerprint(value: object) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
+def _corrupt_dashboard_source(
+        *, mode: str, run_id: str, revision: object, target: str,
+        error: Exception, error_formatter: Callable[[Exception], str],
+) -> dict[str, Any]:
+    """Return one bounded corrupt source without reprocessing rejected input."""
+    def safe_text(value: object, fallback: str) -> str:
+        try:
+            text = value if isinstance(value, str) else str(value)
+        except Exception:
+            return fallback
+        text = text.encode(
+            "utf-8", errors="backslashreplace").decode("utf-8")
+        return text or fallback
+
+    try:
+        formatted = error_formatter(error)
+    except Exception as formatter_error:
+        formatted = (
+            f"{error.__class__.__name__}: dashboard source error; "
+            f"formatter failed: {formatter_error.__class__.__name__}")
+    if not isinstance(formatted, str):
+        try:
+            formatted = json.dumps(
+                formatted, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=True, allow_nan=False)
+        except (TypeError, ValueError):
+            formatted = (
+                f"{error.__class__.__name__}: error evidence is not "
+                "JSON serializable")
+    error_text = safe_text(
+        formatted, f"{error.__class__.__name__}: dashboard source error")
+    source = {
+        "mode": safe_text(mode, "managed"), "status": "corrupt",
+        "run_id": safe_text(run_id, "unknown-managed"),
+        "revision": safe_text(revision or "unknown", "unknown"),
+        "target": safe_text(target, "run"), "state": None,
+    }
+    return {**source,
+        "source_fingerprint": _canonical_fingerprint({
+            **source, "error": error_text}),
+        "evidence": [error_text],
+    }
+
+
 def _generated_at(value: float | str | None) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -1207,17 +1251,10 @@ def _v4_dashboard_source(
                 "run-manifest:" + _canonical_fingerprint(manifest)],
         }
     except Exception as exc:
-        error = str(error_formatter(exc))
-        return {
-            "mode": "v4", "status": "corrupt", "run_id": run_id,
-            "revision": str(manifest.get("revision") or "unknown"),
-            "target": "active-stage", "state": None,
-            "source_fingerprint": _canonical_fingerprint({
-                "mode": "v4", "run_id": run_id, "status": "corrupt",
-                "error": error,
-            }),
-            "evidence": [error],
-        }
+        return _corrupt_dashboard_source(
+            mode="v4", run_id=run_id, revision=manifest.get("revision"),
+            target="active-stage", error=exc,
+            error_formatter=error_formatter)
 
 
 def _v3_dashboard_source(
@@ -1251,17 +1288,9 @@ def _v3_dashboard_source(
         manifest_fingerprint = _canonical_fingerprint(manifest)
         state_fingerprint = _canonical_fingerprint(state)
     except Exception as exc:
-        error = str(error_formatter(exc))
-        return {
-            "mode": "v3", "status": "corrupt", "run_id": run_id,
-            "revision": str(manifest.get("revision") or "unknown"),
-            "target": "run", "state": None,
-            "source_fingerprint": _canonical_fingerprint({
-                "mode": "v3", "run_id": run_id, "status": "corrupt",
-                "error": error,
-            }),
-            "evidence": [error],
-        }
+        return _corrupt_dashboard_source(
+            mode="v3", run_id=run_id, revision=manifest.get("revision"),
+            target="run", error=exc, error_formatter=error_formatter)
 
     return {
         "mode": "v3", "status": "ready", "run_id": run_id,
@@ -1285,48 +1314,31 @@ def select_dashboard_source(
     try:
         locator = locator_loader(ws)
     except Exception as exc:
-        return {
-            "mode": "managed", "status": "corrupt",
-            "run_id": "unknown-managed", "revision": "unknown",
-            "target": "run", "state": None,
-            "source_fingerprint": _canonical_fingerprint(
-                {"locator_error": error_formatter(exc)}),
-            "evidence": [error_formatter(exc)],
-        }
+        return _corrupt_dashboard_source(
+            mode="managed", run_id="unknown-managed", revision="unknown",
+            target="run", error=exc, error_formatter=error_formatter)
     if locator is None:
         return {"mode": "none", "status": "no_active", "state": None,
                 "evidence": []}
     if not isinstance(locator, dict) or not isinstance(
             locator.get("run_id"), str) or not locator["run_id"]:
         error = ValueError("workspace locator has no valid run identity")
-        return {
-            "mode": "managed", "status": "corrupt",
-            "run_id": "unknown-managed", "revision": "unknown",
-            "target": "run", "state": None,
-            "source_fingerprint": _canonical_fingerprint(
-                {"locator_error": error_formatter(error)}),
-            "evidence": [error_formatter(error)],
-        }
+        return _corrupt_dashboard_source(
+            mode="managed", run_id="unknown-managed", revision="unknown",
+            target="run", error=error, error_formatter=error_formatter)
 
     run_id = locator["run_id"]
     try:
         manifest = manifest_loader(ws, locator)
     except Exception as exc:
-        return {
-            "mode": "managed", "status": "corrupt", "run_id": run_id,
-            "revision": "unknown", "target": "run", "state": None,
-            "source_fingerprint": _canonical_fingerprint(
-                {"run_id": run_id, "error": error_formatter(exc)}),
-            "evidence": [error_formatter(exc)],
-        }
+        return _corrupt_dashboard_source(
+            mode="managed", run_id=run_id, revision="unknown", target="run",
+            error=exc, error_formatter=error_formatter)
     if not isinstance(manifest, dict):
         error = ValueError("run manifest is not an object")
-        return {
-            "mode": "managed", "status": "corrupt", "run_id": run_id,
-            "revision": "unknown", "target": "run", "state": None,
-            "source_fingerprint": _canonical_fingerprint(manifest),
-            "evidence": [error_formatter(error)],
-        }
+        return _corrupt_dashboard_source(
+            mode="managed", run_id=run_id, revision="unknown", target="run",
+            error=error, error_formatter=error_formatter)
     schema = manifest.get("schema")
     if schema == "taskplane.run/v4":
         return _v4_dashboard_source(
@@ -1339,26 +1351,16 @@ def select_dashboard_source(
         try:
             state = legacy_loader(ws)
         except Exception as exc:
-            return {
-                "mode": "v3", "status": "corrupt", "run_id": run_id,
-                "revision": str(manifest.get("revision") or "unknown"),
-                "target": "run", "state": None,
-                "source_fingerprint": _canonical_fingerprint({
-                    "manifest": manifest,
-                    "state_error": error_formatter(exc),
-                }),
-                "evidence": [error_formatter(exc)],
-            }
+            return _corrupt_dashboard_source(
+                mode="v3", run_id=run_id,
+                revision=manifest.get("revision"), target="run", error=exc,
+                error_formatter=error_formatter)
         return _v3_dashboard_source(
             state, manifest, run_id, error_formatter=error_formatter)
     error = ValueError("run manifest schema is not taskplane.run/v3 or v4")
-    return {
-        "mode": "managed", "status": "corrupt", "run_id": run_id,
-        "revision": str(manifest.get("revision") or "unknown"),
-        "target": "run", "state": None,
-        "source_fingerprint": _canonical_fingerprint(manifest),
-        "evidence": [error_formatter(error)],
-    }
+    return _corrupt_dashboard_source(
+        mode="managed", run_id=run_id, revision=manifest.get("revision"),
+        target="run", error=error, error_formatter=error_formatter)
 
 
 def _bounded_loop_values(
