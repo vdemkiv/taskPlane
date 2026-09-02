@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 
 from taskplane.settings import OperationalSettings, SettingsError
@@ -415,15 +416,56 @@ def verify_prepare_receipt(
         raise RootSeedError("root seed prepare receipt exceeds 4096 bytes")
 
 
+def _seed_target(
+    repository_root: str | Path, seed_ref: str, *, create: bool,
+) -> tuple[str, Path]:
+    """Resolve lexically and reject links in every repository-relative parent."""
+    portable_ref = _relative_path(seed_ref, "seed_ref")
+    root = Path(repository_root)
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+    root = root.resolve()
+    parent = root
+    for part in portable_ref.split("/")[:-1]:
+        parent /= part
+        try:
+            status = parent.lstat()
+        except FileNotFoundError:
+            if not create:
+                raise RootSeedError("persisted root seed is unreadable") from None
+            parent.mkdir()
+            status = parent.lstat()
+        if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
+            raise RootSeedError(
+                "seed_ref contains a symlink or non-directory component")
+    return portable_ref, parent / portable_ref.rsplit("/", 1)[-1]
+
+
 def _read_persisted_seed(
     target: Path, *, unreadable_label: str,
 ) -> tuple[bytes, dict[str, object]]:
-    """Read no more than the persisted contract permits, then validate."""
+    """Open one regular identity without following its final component."""
     try:
-        with target.open("rb") as handle:
-            body = handle.read(MAX_SEED_BYTES + 1)
+        before = target.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise RootSeedError(
+                f"{unreadable_label} must be a regular file, not a symlink")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(
+            os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(target, flags)
+        opened = os.fstat(descriptor)
+        after = target.lstat()
+        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(
+                before, opened) or not os.path.samestat(opened, after):
+            raise RootSeedError(f"{unreadable_label} identity changed")
+        body = os.read(descriptor, MAX_SEED_BYTES + 1)
+    except RootSeedError:
+        raise
     except OSError as exc:
         raise RootSeedError(f"{unreadable_label} is unreadable") from exc
+    finally:
+        if "descriptor" in locals():
+            os.close(descriptor)
     if len(body) > MAX_SEED_BYTES:
         raise RootSeedError("root seed exceeds the 65536-byte bound")
     try:
@@ -437,13 +479,8 @@ def load_root_seed(
     repository_root: str | Path, seed_ref: str,
 ) -> dict[str, object]:
     """Read one bounded persisted seed through the same strict validator."""
-    portable_ref = _relative_path(seed_ref, "seed_ref")
-    root = Path(repository_root).resolve()
-    target = (root / portable_ref).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise RootSeedError("seed_ref must be a portable relative path") from exc
+    _, target = _seed_target(
+        repository_root, seed_ref, create=False)
     _, seed = _read_persisted_seed(
         target, unreadable_label="persisted root seed")
     return seed
@@ -456,22 +493,13 @@ def prepare_root_seed(
     inputs: object,
 ) -> dict[str, object]:
     """Persist one owned seed atomically and return a bounded receipt."""
-    portable_ref = _relative_path(seed_ref, "seed_ref")
-    root = Path(repository_root).resolve()
-    target = (root / portable_ref).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise RootSeedError("seed_ref must be a portable relative path") from exc
+    portable_ref, target = _seed_target(
+        repository_root, seed_ref, create=True)
     seed = build_root_seed(context, inputs)
     payload = _canonical(seed)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        prior_body, prior = _read_persisted_seed(
-            target, unreadable_label="existing root seed")
-        if prior_body != payload or prior != seed:
-            raise RootSeedError("root seed target already contains other data")
-    else:
+    try:
+        target.lstat()
+    except FileNotFoundError:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=".root-seed-", suffix=".tmp", dir=target.parent)
         try:
@@ -479,12 +507,22 @@ def prepare_root_seed(
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary_name, target)
+            try:
+                os.link(temporary_name, target)
+            except FileExistsError:
+                pass
         finally:
             try:
                 os.unlink(temporary_name)
             except FileNotFoundError:
                 pass
+        prior_body, prior = _read_persisted_seed(
+            target, unreadable_label="existing root seed")
+    else:
+        prior_body, prior = _read_persisted_seed(
+            target, unreadable_label="existing root seed")
+    if prior_body != payload or prior != seed:
+        raise RootSeedError("root seed target already contains other data")
     binding = seed_binding(seed)
     receipt: dict[str, object] = {
         "schema": PREPARE_RECEIPT_SCHEMA,

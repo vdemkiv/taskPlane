@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-from pathlib import Path
-from unittest.mock import Mock, call, mock_open
 
 import pytest
 
@@ -152,24 +150,6 @@ def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start
     assert not (cli_workspace / "waves/W1/oversized.json").exists()
 
 
-def test_persisted_seed_boundaries_read_at_most_limit_plus_one(
-        tmp_path, monkeypatch):
-    seed_ref = "waves/W1/root-seed.json"
-    context = _context()
-    inputs = _inputs()
-    root_seed.prepare_root_seed(tmp_path, seed_ref, context, inputs)
-    target = (tmp_path / seed_ref).resolve()
-    opened = mock_open(read_data=target.read_bytes())
-    monkeypatch.setattr(Path, "open", opened)
-    assert root_seed.load_root_seed(tmp_path, seed_ref)["run_id"] == "run-38"
-    assert root_seed.prepare_root_seed(
-        tmp_path, seed_ref, context, inputs)["status"] == "prepared"
-    assert opened().read.call_args_list == [
-        call(root_seed.MAX_SEED_BYTES + 1),
-        call(root_seed.MAX_SEED_BYTES + 1),
-    ]
-
-
 def test_prepare_existing_seed_accepts_only_exact_valid_idempotent_bytes(
         tmp_path):
     seed_ref = "waves/W1/root-seed.json"
@@ -238,20 +218,78 @@ def test_prepare_existing_seed_refuses_contract_invalid_equal_python_value(
             tmp_path, seed_ref, _context(), _inputs())
 
 
-def test_persisted_seed_boundaries_refuse_unreadable_file(
+@pytest.mark.parametrize(
+    "shape", ["final-symlink", "symlinked-parent", "directory"])
+def test_persisted_seed_reference_refuses_symlinks_and_nonregular_targets(
+        tmp_path, shape):
+    """Both public consumers refuse aliases and non-file seed identities."""
+    seed_ref = "waves/W1/root-seed.json"
+    canonical = root_seed._canonical(
+        root_seed.build_root_seed(_context(), _inputs()))
+    actual_parent = tmp_path / "actual"
+    actual_parent.mkdir()
+    actual = actual_parent / "root-seed.json"
+    actual.write_bytes(canonical)
+    target = tmp_path / seed_ref
+
+    if shape == "final-symlink":
+        target.parent.mkdir(parents=True)
+        try:
+            target.symlink_to(actual)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+    elif shape == "symlinked-parent":
+        target.parent.parent.mkdir()
+        try:
+            target.parent.symlink_to(actual_parent, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+    else:
+        target.mkdir(parents=True)
+
+    for operation in (
+        lambda: root_seed.load_root_seed(tmp_path, seed_ref),
+        lambda: root_seed.prepare_root_seed(
+            tmp_path, seed_ref, _context(), _inputs()),
+    ):
+        with pytest.raises(
+                root_seed.RootSeedError, match="symlink|regular file"):
+            operation()
+
+
+def test_persisted_seed_reference_accepts_one_regular_file_identity(tmp_path):
+    seed_ref = "waves/W1/root-seed.json"
+
+    receipt = root_seed.prepare_root_seed(
+        tmp_path, seed_ref, _context(), _inputs())
+    loaded = root_seed.load_root_seed(tmp_path, seed_ref)
+
+    assert receipt["seed_ref"] == seed_ref
+    assert receipt["seed_fingerprint"] == loaded["seed_fingerprint"]
+    assert (tmp_path / seed_ref).is_file()
+    assert not (tmp_path / seed_ref).is_symlink()
+
+
+def test_prepare_does_not_clobber_a_target_created_during_publish(
         tmp_path, monkeypatch):
     seed_ref = "waves/W1/root-seed.json"
-    context = _context()
-    inputs = _inputs()
     target = tmp_path / seed_ref
-    target.parent.mkdir(parents=True)
-    target.touch()
-    monkeypatch.setattr(Path, "open", Mock(side_effect=OSError("denied")))
-    with pytest.raises(root_seed.RootSeedError, match="unreadable"):
-        root_seed.load_root_seed(tmp_path, seed_ref)
-    with pytest.raises(root_seed.RootSeedError, match="unreadable"):
+    competing_context = _context()
+    competing_context["wave_id"] = "W2"
+    competing_context["operation_id"] = "prepare-root-run-38-w2"
+    competing = root_seed._canonical(
+        root_seed.build_root_seed(competing_context, _inputs()))
+    publish = root_seed.os.link
+
+    def publish_after_competitor(source, destination):
+        target.write_bytes(competing)
+        return publish(source, destination)
+
+    monkeypatch.setattr(root_seed.os, "link", publish_after_competitor)
+    with pytest.raises(root_seed.RootSeedError, match="other data"):
         root_seed.prepare_root_seed(
-            tmp_path, seed_ref, context, inputs)
+            tmp_path, seed_ref, _context(), _inputs())
+    assert target.read_bytes() == competing
 
 
 def test_root_seed_consumer_boundary_rejects_rehashed_malformed_seed():
