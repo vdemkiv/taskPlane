@@ -395,6 +395,10 @@ def _test_substance(assignment: Mapping[str, Any], result: Mapping[str, Any], *,
                  workspace=workspace, run_id=run_id, assignment=assignment,
                  argv=["python3", "-m", "pytest", "-q", expected["selector"]],
                  consumed=consumed)
+        _runtime(row.get("severed_edge_execution"), "severed-edge evidence",
+                 workspace=workspace, run_id=run_id, assignment=assignment,
+                 argv=["python3", "-m", "pytest", "-q",
+                       expected["severed_edge"]["selector"]], consumed=consumed)
         if key in covered_edges:
             raise EvidenceContractError("producer-consumer obligation is covered more than once")
         covered_edges.add(key)

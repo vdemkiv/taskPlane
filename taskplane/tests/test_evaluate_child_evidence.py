@@ -169,6 +169,10 @@ def _results(assignments: list[dict]) -> dict[str, dict]:
             "execution": _execution_ref(
                 design, ["python3", "-m", "pytest", "-q", edge["selector"]],
                 "edge:" + edge["producer"] + ":" + edge["consumer"]),
+            "severed_edge_execution": _execution_ref(
+                design, ["python3", "-m", "pytest", "-q",
+                         edge["severed_edge"]["selector"]],
+                "severed:" + edge["producer"] + ":" + edge["consumer"]),
         }],
         "same_slice_fixtures": [{
             "producer": row["producer"], "path": row["fixture"]["path"],
@@ -397,6 +401,33 @@ def test_selectors_and_obligations_require_exact_unique_observed_coverage(
         evidence.validate_result(
             assignments[1], result, workspace=ROOT,
             run_id="run-evaluator-evidence")
+
+
+def test_nonexistent_edge_or_severed_selector_refuses_assignment(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, _ = _run(tmp_path, monkeypatch)
+    for location in ("edge", "severed"):
+        impact = _impact()
+        selector = ("taskplane/tests/test_evaluate_child_evidence.py::"
+                    "does_not_exist_edge")
+        if location == "edge":
+            impact["producer_consumer_edges"][0]["selector"] = selector
+        else:
+            impact["producer_consumer_edges"][0]["severed_edge"]["selector"] = selector
+        with pytest.raises(evidence.EvidenceContractError, match="collect"):
+            _assign(root, impact=impact)
+
+
+def test_one_receipt_cannot_cover_freshness_and_severed_edge(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, run_id = _run(tmp_path, monkeypatch)
+    assignments = _assign(root)
+    result = _results(assignments)[evidence.TEST_DESIGN_PRODUCER]
+    edge = result["producer_consumers"][0]
+    edge["severed_edge_execution"] = edge["execution"]
+    with pytest.raises(evidence.EvidenceContractError, match="reuses"):
+        evidence.validate_result(
+            assignments[1], result, workspace=ROOT, run_id=run_id)
 
 
 def test_fixture_content_freshness_and_repeated_reuse_are_finite(

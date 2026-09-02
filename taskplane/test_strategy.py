@@ -316,8 +316,6 @@ def current_value_obligations(
         selectors.append(selector)
     if len(selectors) != len(set(selectors)):
         raise StrategyContractError("impacted test selectors contain duplicates")
-    if workspace is not None:
-        _collect_exact_selectors(workspace, selectors)
 
     edges = impact_manifest.get("producer_consumer_edges")
     if not isinstance(edges, list) or not edges:
@@ -350,12 +348,15 @@ def current_value_obligations(
         if not isinstance(severed.get("mutation"), str) or not \
                 severed["mutation"].strip():
             raise StrategyContractError("severed edge mutation must be non-empty")
-        _require_exact_selector(
+        severed_selector = _require_exact_selector(
             severed.get("selector"), "severed edge selector"
         )
+        selectors.extend((selector, severed_selector))
         edge_keys.append((producer, consumer, selector))
     if len(edge_keys) != len(set(edge_keys)):
         raise StrategyContractError("producer-consumer edges contain duplicates")
+    if workspace is not None:
+        _collect_exact_selectors(workspace, list(dict.fromkeys(selectors)))
 
     interfaces = copy.deepcopy(impact_manifest.get("changed_interfaces", []))
     if not isinstance(interfaces, list):
