@@ -44,10 +44,9 @@ _BINDING_FIELDS = frozenset({
     "candidate_sha", "run_id", "wave_id", "settings_fingerprint",
     "seed_fingerprint",
 })
-_CONSUMER_BINDING_FIELDS = frozenset({"host_root_start", "wave_seal"})
 _PREPARE_RECEIPT_FIELDS = frozenset({
     "schema", "status", "seed_ref", "seed_fingerprint", "binding",
-    "consumer_bindings", "prepared_at", "operation_id",
+    "prepared_at", "operation_id",
 })
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
@@ -395,7 +394,7 @@ def verify_prepare_receipt(
     settings: OperationalSettings | None = None,
     expected_seed_ref: str | None = None,
 ) -> None:
-    """Consume a prepared binding for both required downstream surfaces."""
+    """Verify one authenticated producer receipt for later P13 consumers."""
     validated_seed = validate_root_seed(seed, settings=settings)
     row = _exact(
         receipt, _PREPARE_RECEIPT_FIELDS, "root seed prepare receipt")
@@ -412,16 +411,26 @@ def verify_prepare_receipt(
         raise RootSeedError("root seed prepare receipt is stale")
     verify_seed_binding(
         validated_seed, row["binding"], surface="prepare receipt")
-    consumers = _exact(
-        row["consumer_bindings"], _CONSUMER_BINDING_FIELDS,
-        "root seed prepare receipt consumer_bindings")
-    verify_seed_binding(
-        validated_seed, consumers["host_root_start"],
-        surface="host root start")
-    verify_seed_binding(
-        validated_seed, consumers["wave_seal"], surface="wave seal")
     if len(_canonical(row)) > MAX_RECEIPT_BYTES:
         raise RootSeedError("root seed prepare receipt exceeds 4096 bytes")
+
+
+def _read_persisted_seed(
+    target: Path, *, unreadable_label: str,
+) -> tuple[bytes, dict[str, object]]:
+    """Read no more than the persisted contract permits, then validate."""
+    try:
+        with target.open("rb") as handle:
+            body = handle.read(MAX_SEED_BYTES + 1)
+    except OSError as exc:
+        raise RootSeedError(f"{unreadable_label} is unreadable") from exc
+    if len(body) > MAX_SEED_BYTES:
+        raise RootSeedError("root seed exceeds the 65536-byte bound")
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RootSeedError(f"{unreadable_label} is unreadable") from exc
+    return body, validate_root_seed(parsed)
 
 
 def load_root_seed(
@@ -435,17 +444,9 @@ def load_root_seed(
         target.relative_to(root)
     except ValueError as exc:
         raise RootSeedError("seed_ref must be a portable relative path") from exc
-    try:
-        body = target.read_bytes()
-    except OSError as exc:
-        raise RootSeedError("persisted root seed is unreadable") from exc
-    if len(body) > MAX_SEED_BYTES + 1:
-        raise RootSeedError("root seed exceeds the 65536-byte bound")
-    try:
-        parsed = json.loads(body.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise RootSeedError("persisted root seed is unreadable") from exc
-    return validate_root_seed(parsed)
+    _, seed = _read_persisted_seed(
+        target, unreadable_label="persisted root seed")
+    return seed
 
 
 def prepare_root_seed(
@@ -463,14 +464,12 @@ def prepare_root_seed(
     except ValueError as exc:
         raise RootSeedError("seed_ref must be a portable relative path") from exc
     seed = build_root_seed(context, inputs)
-    payload = _canonical(seed) + b"\n"
+    payload = _canonical(seed)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
-        try:
-            prior = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise RootSeedError("existing root seed is unreadable") from exc
-        if prior != seed:
+        prior_body, prior = _read_persisted_seed(
+            target, unreadable_label="existing root seed")
+        if prior_body != payload or prior != seed:
             raise RootSeedError("root seed target already contains other data")
     else:
         descriptor, temporary_name = tempfile.mkstemp(
@@ -493,10 +492,6 @@ def prepare_root_seed(
         "seed_ref": portable_ref,
         "seed_fingerprint": seed["seed_fingerprint"],
         "binding": binding,
-        "consumer_bindings": {
-            "host_root_start": dict(binding),
-            "wave_seal": dict(binding),
-        },
         "prepared_at": seed["prepared_at"],
         "operation_id": seed["operation_id"],
     }

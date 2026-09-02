@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
+from unittest.mock import Mock, call, mock_open
 
 import pytest
 
@@ -44,6 +46,7 @@ def _inputs():
 
 def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start_and_wave(
         tmp_path, monkeypatch, capsys):
+    """Prove P10's producer binding only; actual consumers belong to P13."""
     context = _context()
     inputs = _inputs()
     first = root_seed.build_root_seed(context, inputs)
@@ -72,12 +75,11 @@ def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start
         encoding="utf-8"))
     assert stored == first
     assert receipt["seed_fingerprint"] == first["seed_fingerprint"]
-    assert set(receipt["consumer_bindings"]) == {
-        "host_root_start", "wave_seal"}
-    assert receipt["consumer_bindings"]["host_root_start"] == \
-        root_seed.seed_binding(first)
-    assert receipt["consumer_bindings"]["wave_seal"] == \
-        root_seed.seed_binding(first)
+    assert receipt["binding"] == root_seed.seed_binding(first)
+    assert set(receipt) == {
+        "schema", "status", "seed_ref", "seed_fingerprint", "binding",
+        "prepared_at", "operation_id",
+    }
     assert len(json.dumps(receipt, sort_keys=True).encode("utf-8")) < 4096
 
     binding = root_seed.seed_binding(first)
@@ -88,11 +90,14 @@ def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start
         "seed_fingerprint": first["seed_fingerprint"],
         "wave_id": "W1",
     }
-    root_seed.verify_seed_binding(first, binding, surface="host root start")
-    root_seed.verify_seed_binding(first, dict(binding), surface="wave seal")
+    root_seed.verify_seed_binding(
+        first, binding, surface="future host root start")
+    root_seed.verify_seed_binding(
+        first, dict(binding), surface="future wave seal")
     mismatched = dict(binding, wave_id="W2")
-    with pytest.raises(root_seed.RootSeedError, match="wave seal binding"):
-        root_seed.verify_seed_binding(first, mismatched, surface="wave seal")
+    with pytest.raises(root_seed.RootSeedError, match="future wave seal binding"):
+        root_seed.verify_seed_binding(
+            first, mismatched, surface="future wave seal")
 
     cli_context = {key: value for key, value in context.items()
                    if key != "settings"}
@@ -109,8 +114,7 @@ def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start
     ]) == 0
     cli_receipt = json.loads(capsys.readouterr().out)
     assert cli_receipt["seed_fingerprint"] == first["seed_fingerprint"]
-    assert set(cli_receipt["consumer_bindings"]) == {
-        "host_root_start", "wave_seal"}
+    assert cli_receipt["binding"] == binding
     assert json.loads((cli_workspace / "waves/W1/root-seed.json").read_text(
         encoding="utf-8")) == first
 
@@ -118,7 +122,7 @@ def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start
 
     def stale_prepare(*args, **kwargs):
         stale = original_prepare(*args, **kwargs)
-        stale["consumer_bindings"]["wave_seal"]["wave_id"] = "W2"
+        stale["binding"]["wave_id"] = "W2"
         return stale
 
     monkeypatch.setattr(root_seed, "prepare_root_seed", stale_prepare)
@@ -131,7 +135,7 @@ def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start
     ]) == 1
     refusal = json.loads(capsys.readouterr().out)
     assert refusal["status"] == "refused"
-    assert "wave seal binding" in refusal["error"]
+    assert "prepare receipt binding" in refusal["error"]
     monkeypatch.setattr(root_seed, "prepare_root_seed", original_prepare)
 
     oversized_request = tmp_path / "oversized-root-seed-request.json"
@@ -146,6 +150,108 @@ def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start
     assert refusal["status"] == "refused"
     assert "exceeds the 65536-byte bound" in refusal["error"]
     assert not (cli_workspace / "waves/W1/oversized.json").exists()
+
+
+def test_persisted_seed_boundaries_read_at_most_limit_plus_one(
+        tmp_path, monkeypatch):
+    seed_ref = "waves/W1/root-seed.json"
+    context = _context()
+    inputs = _inputs()
+    root_seed.prepare_root_seed(tmp_path, seed_ref, context, inputs)
+    target = (tmp_path / seed_ref).resolve()
+    opened = mock_open(read_data=target.read_bytes())
+    monkeypatch.setattr(Path, "open", opened)
+    assert root_seed.load_root_seed(tmp_path, seed_ref)["run_id"] == "run-38"
+    assert root_seed.prepare_root_seed(
+        tmp_path, seed_ref, context, inputs)["status"] == "prepared"
+    assert opened().read.call_args_list == [
+        call(root_seed.MAX_SEED_BYTES + 1),
+        call(root_seed.MAX_SEED_BYTES + 1),
+    ]
+
+
+def test_prepare_existing_seed_accepts_only_exact_valid_idempotent_bytes(
+        tmp_path):
+    seed_ref = "waves/W1/root-seed.json"
+    context = _context()
+    inputs = _inputs()
+    first = root_seed.prepare_root_seed(tmp_path, seed_ref, context, inputs)
+    target = tmp_path / seed_ref
+    exact = target.read_bytes()
+
+    assert root_seed.prepare_root_seed(
+        tmp_path, seed_ref, context, inputs) == first
+    assert target.read_bytes() == exact
+
+    valid_seed = root_seed.build_root_seed(context, inputs)
+    target.write_text(json.dumps(valid_seed, indent=2), encoding="utf-8")
+    with pytest.raises(root_seed.RootSeedError, match="other data"):
+        root_seed.prepare_root_seed(tmp_path, seed_ref, context, inputs)
+
+    conflicting_context = _context()
+    conflicting_context["wave_id"] = "W2"
+    conflicting_context["operation_id"] = "prepare-root-run-38-w2"
+    conflicting = root_seed.build_root_seed(conflicting_context, inputs)
+    target.write_text(json.dumps(
+        conflicting, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    with pytest.raises(root_seed.RootSeedError, match="other data"):
+        root_seed.prepare_root_seed(tmp_path, seed_ref, context, inputs)
+
+
+@pytest.mark.parametrize("kind, error", [
+    ("invalid-utf8", "unreadable"),
+    ("invalid-json", "unreadable"),
+    ("oversized", "65536-byte bound"),
+])
+def test_persisted_seed_boundaries_refuse_malformed_or_oversized_bytes(
+        tmp_path, kind, error):
+    body = {
+        "invalid-utf8": b"\xff",
+        "invalid-json": b"{",
+        "oversized": b" " * (root_seed.MAX_SEED_BYTES + 1),
+    }[kind]
+    seed_ref = "waves/W1/root-seed.json"
+    target = tmp_path / seed_ref
+    target.parent.mkdir(parents=True)
+    target.write_bytes(body)
+
+    with pytest.raises(root_seed.RootSeedError, match=error):
+        root_seed.load_root_seed(tmp_path, seed_ref)
+    with pytest.raises(root_seed.RootSeedError, match=error):
+        root_seed.prepare_root_seed(
+            tmp_path, seed_ref, _context(), _inputs())
+
+
+def test_prepare_existing_seed_refuses_contract_invalid_equal_python_value(
+        tmp_path):
+    seed_ref = "waves/W1/root-seed.json"
+    invalid = root_seed.build_root_seed(_context(), _inputs())
+    invalid["version"] = True
+    target = tmp_path / seed_ref
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(invalid), encoding="utf-8")
+
+    with pytest.raises(root_seed.RootSeedError, match="version must be 1"):
+        root_seed.load_root_seed(tmp_path, seed_ref)
+    with pytest.raises(root_seed.RootSeedError, match="version must be 1"):
+        root_seed.prepare_root_seed(
+            tmp_path, seed_ref, _context(), _inputs())
+
+
+def test_persisted_seed_boundaries_refuse_unreadable_file(
+        tmp_path, monkeypatch):
+    seed_ref = "waves/W1/root-seed.json"
+    context = _context()
+    inputs = _inputs()
+    target = tmp_path / seed_ref
+    target.parent.mkdir(parents=True)
+    target.touch()
+    monkeypatch.setattr(Path, "open", Mock(side_effect=OSError("denied")))
+    with pytest.raises(root_seed.RootSeedError, match="unreadable"):
+        root_seed.load_root_seed(tmp_path, seed_ref)
+    with pytest.raises(root_seed.RootSeedError, match="unreadable"):
+        root_seed.prepare_root_seed(
+            tmp_path, seed_ref, context, inputs)
 
 
 def test_root_seed_consumer_boundary_rejects_rehashed_malformed_seed():
