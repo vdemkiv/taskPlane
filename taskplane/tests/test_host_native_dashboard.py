@@ -13,7 +13,11 @@ from taskplane.dashboard import (
     native_dashboard_projection,
     render_native_dashboard_surface,
 )
-from taskplane.host_native import HostSurfaceSnapshot
+from taskplane.host_native import (
+    HostSurfaceSnapshot,
+    refresh_dashboard_snapshot,
+    select_dashboard_source,
+)
 
 
 def _snapshot(items=()):
@@ -36,6 +40,338 @@ def _items(n):
 
 def _semantic(projection):
     return {k: v for k, v in projection.items() if k != "presentation"}
+
+
+def test_managed_v3_locator_uses_v3_adapter_without_v4_reclassification():
+    calls = []
+    locator = {
+        "schema": "taskplane.workspace/v1",
+        "run_id": "managed-v3",
+    }
+    manifest = {
+        "schema": "taskplane.run/v3",
+        "run_id": "managed-v3",
+        "revision": 7,
+    }
+    state = {
+        "goal": "preserve the managed v3 adapter",
+        "step": "execute",
+        "baseline": "candidate-v3",
+        "tasks": [{"id": "P00", "status": "running"}],
+        "current_task": 0,
+    }
+
+    def load_locator(workspace):
+        calls.append(("locator", workspace))
+        return locator
+
+    def load_manifest(workspace, selected_locator):
+        calls.append(("manifest", workspace, selected_locator))
+        return manifest
+
+    def load_v3_state(workspace):
+        calls.append(("v3", workspace))
+        return state
+
+    source = select_dashboard_source(
+        "/managed-workspace", locator_loader=load_locator,
+        legacy_loader=load_v3_state, manifest_loader=load_manifest,
+        manifest_validator=lambda _manifest: pytest.fail(
+            "the v4 validator must not classify a v3 manifest"),
+        error_formatter=lambda exc: f"{exc.__class__.__name__}: {exc}")
+
+    assert calls == [
+        ("locator", "/managed-workspace"),
+        ("manifest", "/managed-workspace", locator),
+        ("v3", "/managed-workspace"),
+    ]
+    assert source["mode"] == "v3"
+    assert source["status"] == "ready"
+    assert source["run_id"] == "managed-v3"
+    assert source["state"] == state
+
+
+def test_managed_v3_malformed_selected_task_is_non_actionable():
+    source = select_dashboard_source(
+        "/managed-workspace",
+        locator_loader=lambda _workspace: {"run_id": "managed-v3"},
+        manifest_loader=lambda _workspace, _locator: {
+            "schema": "taskplane.run/v3", "run_id": "managed-v3",
+        },
+        legacy_loader=lambda _workspace: {
+            "step": "execute", "tasks": ["not-an-object"],
+            "current_task": 0,
+        },
+        manifest_validator=lambda _manifest: None,
+        error_formatter=lambda exc: f"{exc.__class__.__name__}: {exc}",
+    )
+
+    assert source["mode"] == "v3"
+    assert source["status"] == "corrupt"
+    assert source["state"] is None
+    assert source["target"] == "run"
+    assert "selected task is not an object" in " ".join(source["evidence"])
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"),
+                                         float("-inf")])
+@pytest.mark.parametrize("container", ["manifest", "state"])
+def test_managed_v3_non_finite_json_values_are_non_actionable(
+        non_finite, container):
+    manifest = {
+        "schema": "taskplane.run/v3", "run_id": "managed-v3",
+        "revision": 7,
+    }
+    state = {
+        "step": "execute", "tasks": [{"id": "P00"}], "current_task": 0,
+    }
+    target = manifest if container == "manifest" else state
+    target["telemetry"] = {"tokens": non_finite}
+
+    source = select_dashboard_source(
+        "/managed-workspace",
+        locator_loader=lambda _workspace: {"run_id": "managed-v3"},
+        manifest_loader=lambda _workspace, _locator: manifest,
+        legacy_loader=lambda _workspace: state,
+        manifest_validator=lambda _manifest: None,
+        error_formatter=lambda exc: f"{exc.__class__.__name__}: {exc}",
+    )
+
+    assert source["mode"] == "v3"
+    assert source["status"] == "corrupt"
+    assert source["state"] is None
+    assert source["target"] == "run"
+    assert source["source_fingerprint"]
+    assert "not JSON compliant" in " ".join(source["evidence"])
+
+
+def test_managed_v4_routes_to_the_active_stage_without_legacy_fallback():
+    manifest = {
+        "schema": "taskplane.run/v4", "run_id": "managed-v4",
+        "revision": 8,
+        "active_stage_projection": {
+            "active_stage_ids": ["design-1"],
+            "foreground_stage_id": "design-1",
+        },
+        "stage_heads": {
+            "design-1": {"summary": {"stage_kind": "design"}},
+        },
+    }
+
+    source = select_dashboard_source(
+        "/managed-workspace",
+        locator_loader=lambda _workspace: {"run_id": "managed-v4"},
+        manifest_loader=lambda _workspace, _locator: manifest,
+        legacy_loader=lambda _workspace: pytest.fail(
+            "a managed v4 run must not read v3 loop state"),
+        manifest_validator=lambda candidate: candidate,
+        error_formatter=str,
+    )
+
+    assert source["mode"] == "v4"
+    assert source["status"] == "ready"
+    assert source["target"] == "design-1"
+    assert source["state"]["stage_view"]["current_stage"] == {
+        "stage_kind": "design",
+    }
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"),
+                                         float("-inf")])
+def test_managed_v4_non_finite_json_values_are_non_actionable(non_finite):
+    manifest = {
+        "schema": "taskplane.run/v4", "run_id": "managed-v4",
+        "revision": 8,
+        "active_stage_projection": {
+            "active_stage_ids": ["design-1"],
+            "foreground_stage_id": "design-1",
+        },
+        "stage_heads": {
+            "design-1": {"summary": {"stage_kind": "design"}},
+        },
+        "telemetry": {"tokens": non_finite},
+    }
+
+    source = select_dashboard_source(
+        "/managed-workspace",
+        locator_loader=lambda _workspace: {"run_id": "managed-v4"},
+        manifest_loader=lambda _workspace, _locator: manifest,
+        legacy_loader=lambda _workspace: pytest.fail(
+            "a managed v4 run must not read v3 loop state"),
+        manifest_validator=lambda candidate: candidate,
+        error_formatter=lambda exc: f"{exc.__class__.__name__}: {exc}",
+    )
+
+    assert source["mode"] == "v4"
+    assert source["status"] == "corrupt"
+    assert source["state"] is None
+    assert source["target"] == "active-stage"
+    assert source["source_fingerprint"]
+    assert "not JSON compliant" in " ".join(source["evidence"])
+
+
+@pytest.mark.parametrize(("case", "malformed", "mode", "target"), [
+    ("locator-load-error", None, "managed", "run"),
+    ("invalid-locator", float("nan"), "managed", "run"),
+    ("manifest-load-error", None, "managed", "run"),
+    ("root-manifest", float("nan"), "managed", "run"),
+    ("root-manifest", float("inf"), "managed", "run"),
+    ("root-manifest", float("-inf"), "managed", "run"),
+    ("unsupported-manifest", {"tokens": float("nan")}, "managed", "run"),
+    ("unsupported-manifest", {"tokens": object()}, "managed", "run"),
+    ("v3-state-load-error", None, "v3", "run"),
+    ("v3-state", {"tokens": float("inf")}, "v3", "run"),
+    ("v4-manifest", {"tokens": float("-inf")}, "v4", "active-stage"),
+])
+def test_every_corrupt_dashboard_source_path_has_a_safe_fingerprint(
+        case, malformed, mode, target):
+    locator = {"run_id": "managed-run"}
+    manifest = {
+        "schema": "taskplane.run/v4", "run_id": "managed-run",
+        "active_stage_projection": {
+            "active_stage_ids": [], "foreground_stage_id": None,
+        },
+        "stage_heads": {},
+    }
+    state = {"step": "execute", "tasks": []}
+
+    def load_locator(_workspace):
+        if case == "locator-load-error":
+            raise ValueError("locator unavailable")
+        if case == "invalid-locator":
+            return {"run_id": malformed}
+        return locator
+
+    def load_manifest(_workspace, _locator):
+        if case == "manifest-load-error":
+            raise ValueError("manifest unavailable")
+        if case == "root-manifest":
+            return malformed
+        if case == "unsupported-manifest":
+            return {
+                "schema": "taskplane.run/v99", "run_id": "managed-run",
+                "telemetry": malformed,
+            }
+        if case == "v3-state-load-error" or case == "v3-state":
+            return {"schema": "taskplane.run/v3", "run_id": "managed-run"}
+        if case == "v4-manifest":
+            return {**manifest, "telemetry": malformed}
+        return manifest
+
+    def load_state(_workspace):
+        if case == "v3-state-load-error":
+            raise ValueError("state unavailable")
+        if case == "v3-state":
+            return {**state, "telemetry": malformed}
+        return state
+
+    source = select_dashboard_source(
+        "/managed-workspace", locator_loader=load_locator,
+        manifest_loader=load_manifest, legacy_loader=load_state,
+        manifest_validator=lambda candidate: candidate,
+        error_formatter=lambda exc: f"{exc.__class__.__name__}: {exc}",
+    )
+
+    assert source["mode"] == mode
+    assert source["status"] == "corrupt"
+    assert source["run_id"]
+    assert source["target"] == target
+    assert source["state"] is None
+    assert isinstance(source["source_fingerprint"], str)
+    assert len(source["source_fingerprint"]) == 64
+    assert source["evidence"]
+    assert all(isinstance(item, str) and item for item in source["evidence"])
+
+
+@pytest.mark.parametrize("schema", ["taskplane.run/v3", "taskplane.run/v4"])
+def test_managed_manifest_identity_mismatch_refuses_without_state_fallback(
+        schema):
+    source = select_dashboard_source(
+        "/managed-workspace",
+        locator_loader=lambda _workspace: {"run_id": "locator-run"},
+        manifest_loader=lambda _workspace, _locator: {
+            "schema": schema, "run_id": "foreign-run",
+        },
+        legacy_loader=lambda _workspace: pytest.fail(
+            "identity mismatch must be refused before reading v3 state"),
+        manifest_validator=lambda _manifest: pytest.fail(
+            "identity mismatch must be refused before v4 validation"),
+        error_formatter=str,
+    )
+
+    assert source["status"] == "corrupt"
+    assert source["state"] is None
+    assert source["run_id"] == "locator-run"
+
+
+def test_managed_v3_target_and_freshness_follow_the_selected_state():
+    manifest = {"schema": "taskplane.run/v3", "run_id": "managed-v3"}
+
+    def select(state):
+        return select_dashboard_source(
+            "/managed-workspace",
+            locator_loader=lambda _workspace: {"run_id": "managed-v3"},
+            manifest_loader=lambda _workspace, _locator: manifest,
+            legacy_loader=lambda _workspace: state,
+            manifest_validator=lambda _manifest: None,
+            error_formatter=str,
+        )
+
+    first = select({
+        "step": "execute", "tasks": [{"id": "P00"}], "current_task": 0,
+    })
+    second = select({
+        "step": "execute", "tasks": [{"id": "P01"}], "current_task": 0,
+    })
+
+    assert (first["target"], second["target"]) == ("P00", "P01")
+    assert first["source_fingerprint"] != second["source_fingerprint"]
+
+
+def test_selected_managed_source_drives_the_refreshed_snapshot():
+    selected = []
+
+    def load_source(workspace):
+        source = select_dashboard_source(
+            workspace,
+            locator_loader=lambda _workspace: {"run_id": "managed-v3"},
+            manifest_loader=lambda _workspace, _locator: {
+                "schema": "taskplane.run/v3", "run_id": "managed-v3",
+                "revision": 9,
+            },
+            legacy_loader=lambda _workspace: {
+                "step": "design_approval",
+                "tasks": [{"id": "DESIGN"}], "current_task": 0,
+            },
+            manifest_validator=lambda _manifest: None,
+            error_formatter=str,
+        )
+        selected.append(source)
+        return source
+
+    committed = {}
+
+    def commit_snapshot(_workspace, snapshot):
+        committed["current"] = snapshot.to_dict()
+        return {"current": committed["current"], "replayed": False}
+
+    publication = refresh_dashboard_snapshot(
+        "/managed-workspace", event_type="gate", committed_at=1,
+        settings_digest="settings",
+        source_loader=load_source,
+        graph_projector=lambda _workspace, **_kwargs: {},
+        metrics_projector=lambda value, **_kwargs: value,
+        publication_loader=lambda _workspace: None,
+        snapshot_committer=commit_snapshot,
+        event_committer=lambda _workspace, _event: None,
+        error_formatter=str,
+    )
+
+    assert len(selected) == 1
+    assert publication["source_mode"] == "v3"
+    assert publication["snapshot"]["target"] == selected[0]["target"] == "DESIGN"
+    assert publication["snapshot"]["values"]["source_fingerprint"] == \
+        selected[0]["source_fingerprint"]
 
 
 class _SurfaceDOM(HTMLParser):
