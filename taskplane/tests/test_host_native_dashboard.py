@@ -113,6 +113,38 @@ def test_managed_v3_malformed_selected_task_is_non_actionable():
     assert "selected task is not an object" in " ".join(source["evidence"])
 
 
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"),
+                                         float("-inf")])
+@pytest.mark.parametrize("container", ["manifest", "state"])
+def test_managed_v3_non_finite_json_values_are_non_actionable(
+        non_finite, container):
+    manifest = {
+        "schema": "taskplane.run/v3", "run_id": "managed-v3",
+        "revision": 7,
+    }
+    state = {
+        "step": "execute", "tasks": [{"id": "P00"}], "current_task": 0,
+    }
+    target = manifest if container == "manifest" else state
+    target["telemetry"] = {"tokens": non_finite}
+
+    source = select_dashboard_source(
+        "/managed-workspace",
+        locator_loader=lambda _workspace: {"run_id": "managed-v3"},
+        manifest_loader=lambda _workspace, _locator: manifest,
+        legacy_loader=lambda _workspace: state,
+        manifest_validator=lambda _manifest: None,
+        error_formatter=lambda exc: f"{exc.__class__.__name__}: {exc}",
+    )
+
+    assert source["mode"] == "v3"
+    assert source["status"] == "corrupt"
+    assert source["state"] is None
+    assert source["target"] == "run"
+    assert source["source_fingerprint"]
+    assert "not JSON compliant" in " ".join(source["evidence"])
+
+
 def test_managed_v4_routes_to_the_active_stage_without_legacy_fallback():
     manifest = {
         "schema": "taskplane.run/v4", "run_id": "managed-v4",

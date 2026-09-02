@@ -1220,10 +1220,10 @@ def _v3_dashboard_source(
         state: object, manifest: dict[str, Any], run_id: str, *,
         error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
-    fingerprint = _canonical_fingerprint({
-        "manifest": manifest, "state": state,
-    })
     try:
+        fingerprint = _canonical_fingerprint({
+            "manifest": manifest, "state": state,
+        })
         if manifest.get("schema") != "taskplane.run/v3" or \
                 manifest.get("run_id") != run_id:
             raise ValueError(
@@ -1244,17 +1244,21 @@ def _v3_dashboard_source(
             if not isinstance(task, Mapping):
                 raise ValueError("managed v3 selected task is not an object")
         target = str((task or {}).get("id") or state.get("step") or "run")
+        manifest_fingerprint = _canonical_fingerprint(manifest)
+        state_fingerprint = _canonical_fingerprint(state)
     except Exception as exc:
+        error = str(error_formatter(exc))
         return {
             "mode": "v3", "status": "corrupt", "run_id": run_id,
             "revision": str(manifest.get("revision") or "unknown"),
             "target": "run", "state": None,
-            "source_fingerprint": fingerprint,
-            "evidence": [error_formatter(exc)],
+            "source_fingerprint": _canonical_fingerprint({
+                "mode": "v3", "run_id": run_id, "status": "corrupt",
+                "error": error,
+            }),
+            "evidence": [error],
         }
 
-    manifest_fingerprint = _canonical_fingerprint(manifest)
-    state_fingerprint = _canonical_fingerprint(state)
     return {
         "mode": "v3", "status": "ready", "run_id": run_id,
         "revision": str(manifest.get("revision") or

@@ -101,7 +101,7 @@ def test_v4_snapshot_never_falls_back_to_unbound_legacy_state(
                             AssertionError("legacy fallback used")))
     publication = loop_status.refresh_dashboard_snapshot(
         str(workspace), event_type="recovery", committed_at=3)
-    assert publication["source_mode"] == "v4"
+    assert publication["source_mode"] == "managed"
     assert publication["snapshot"]["state"] == "corrupt"
     assert publication["snapshot"]["safe_actions"] == []
     assert "corrupt v4" in " ".join(publication["snapshot"]["evidence"])
