@@ -176,6 +176,40 @@ def test_managed_v4_routes_to_the_active_stage_without_legacy_fallback():
     }
 
 
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"),
+                                         float("-inf")])
+def test_managed_v4_non_finite_json_values_are_non_actionable(non_finite):
+    manifest = {
+        "schema": "taskplane.run/v4", "run_id": "managed-v4",
+        "revision": 8,
+        "active_stage_projection": {
+            "active_stage_ids": ["design-1"],
+            "foreground_stage_id": "design-1",
+        },
+        "stage_heads": {
+            "design-1": {"summary": {"stage_kind": "design"}},
+        },
+        "telemetry": {"tokens": non_finite},
+    }
+
+    source = select_dashboard_source(
+        "/managed-workspace",
+        locator_loader=lambda _workspace: {"run_id": "managed-v4"},
+        manifest_loader=lambda _workspace, _locator: manifest,
+        legacy_loader=lambda _workspace: pytest.fail(
+            "a managed v4 run must not read v3 loop state"),
+        manifest_validator=lambda candidate: candidate,
+        error_formatter=lambda exc: f"{exc.__class__.__name__}: {exc}",
+    )
+
+    assert source["mode"] == "v4"
+    assert source["status"] == "corrupt"
+    assert source["state"] is None
+    assert source["target"] == "active-stage"
+    assert source["source_fingerprint"]
+    assert "not JSON compliant" in " ".join(source["evidence"])
+
+
 @pytest.mark.parametrize("schema", ["taskplane.run/v3", "taskplane.run/v4"])
 def test_managed_manifest_identity_mismatch_refuses_without_state_fallback(
         schema):

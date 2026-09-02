@@ -1207,12 +1207,16 @@ def _v4_dashboard_source(
                 "run-manifest:" + _canonical_fingerprint(manifest)],
         }
     except Exception as exc:
+        error = str(error_formatter(exc))
         return {
             "mode": "v4", "status": "corrupt", "run_id": run_id,
             "revision": str(manifest.get("revision") or "unknown"),
             "target": "active-stage", "state": None,
-            "source_fingerprint": _canonical_fingerprint(manifest),
-            "evidence": [error_formatter(exc)],
+            "source_fingerprint": _canonical_fingerprint({
+                "mode": "v4", "run_id": run_id, "status": "corrupt",
+                "error": error,
+            }),
+            "evidence": [error],
         }
 
 
