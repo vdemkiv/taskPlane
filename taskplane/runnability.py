@@ -81,6 +81,12 @@ SPECS = (
 
 _BY_ID = {s["id"]: s for s in SPECS}
 
+_LANGUAGE_TOOLCHAINS = {
+    "go": "go",
+    "python": "python",
+    "typescript": "typescript",
+}
+
 
 def enabled(*, authority: dict | None = None) -> bool:
     """A receipted `TASKPLANE_RUNNABILITY=off` skips the probe entirely."""
@@ -195,6 +201,37 @@ def probe(root: str, *, timeout: int = DEFAULT_TIMEOUT,
     checks = [_probe_one(root, _BY_ID[i], timeout) for i in ids]
     return {"fingerprint": fingerprint(root), "checks": checks,
             "summary": summary(checks)}
+
+
+def probe_language_toolchains(root: str, languages, *,
+                              timeout: int = DEFAULT_TIMEOUT) -> list[dict]:
+    """Probe exactly the impacted registered implementation languages.
+
+    This is separate from the checkout-wide convenience probe: evaluator
+    evidence cannot let a missing manifest silently erase a changed language.
+    A caller receives one check per requested language or a typed error.
+    """
+    requested = [str(item) for item in languages or []]
+    if not requested:
+        raise ValueError("impacted language toolchain inventory is empty")
+    if len(requested) != len(set(requested)):
+        raise ValueError("duplicate impacted language toolchain mapping")
+    unsupported = [name for name in requested
+                   if name not in _LANGUAGE_TOOLCHAINS]
+    if unsupported:
+        raise ValueError(
+            "unsupported impacted language toolchain: "
+            + ", ".join(sorted(unsupported))
+        )
+    checkout_fingerprint = fingerprint(root)
+    rows = []
+    for language in sorted(requested):
+        spec = _BY_ID[_LANGUAGE_TOOLCHAINS[language]]
+        row = _probe_one(root, spec, timeout)
+        row["language"] = language
+        row["fingerprint"] = checkout_fingerprint
+        rows.append(row)
+    return rows
 
 
 def summary(checks: list) -> str:

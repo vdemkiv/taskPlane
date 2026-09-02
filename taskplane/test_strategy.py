@@ -23,6 +23,10 @@ VALIDATION_LAYERS = (
     "authoritative-ci",
 )
 FAILURE_CLASSES = ("product", "test", "infrastructure", "environment")
+EVIDENCE_FAILURE_CLASSES = FAILURE_CLASSES + ("mixed", "unknown")
+REJECTED_BEHAVIORAL_EVIDENCE = (
+    "ceremonial", "source", "ast", "prose-shape", "byte-only",
+)
 CORRECTION_FIELDS = ("class", "reason", "owner", "cluster")
 FINGERPRINT_INPUTS = (
     "source",
@@ -254,3 +258,138 @@ def validate_strategy(strategy: Mapping[str, Any]) -> dict[str, Any]:
     if strategy.get("contract_fingerprint_sha256") != expected_contract:
         raise StrategyContractError("test strategy has a stale contract fingerprint")
     return copy.deepcopy(dict(strategy))
+
+
+def current_value_obligations(impact_manifest: Mapping[str, Any]) -> dict:
+    """Validate the test-design work an Evaluate attempt must discharge.
+
+    These are behavioral obligations, not proof.  The child producer must
+    later return direct evidence for each row; copying this inventory is not
+    enough to pass evidence admission.
+    """
+    if not isinstance(impact_manifest, Mapping):
+        raise StrategyContractError("impact manifest must be an object")
+    tests = impact_manifest.get("tests")
+    if not isinstance(tests, list) or not tests:
+        raise StrategyContractError("impacted tests must not be empty")
+    selectors = []
+    for row in tests:
+        if not isinstance(row, Mapping):
+            raise StrategyContractError("impacted test must be an object")
+        selector = _require_exact_selector(
+            row.get("selector"), "impacted test selector"
+        )
+        contract = row.get("contract")
+        if not isinstance(contract, str) or not contract.strip():
+            raise StrategyContractError(
+                f"impacted test {selector} needs a current contract"
+            )
+        selectors.append(selector)
+    if len(selectors) != len(set(selectors)):
+        raise StrategyContractError("impacted test selectors contain duplicates")
+
+    edges = impact_manifest.get("producer_consumer_edges")
+    if not isinstance(edges, list) or not edges:
+        raise StrategyContractError(
+            "impacted producer-consumer edges must not be empty"
+        )
+    edge_keys = []
+    for row in edges:
+        if not isinstance(row, Mapping):
+            raise StrategyContractError("producer-consumer edge must be an object")
+        producer = row.get("producer")
+        consumer = row.get("consumer")
+        if not isinstance(producer, str) or not producer.strip() or \
+                not isinstance(consumer, str) or not consumer.strip():
+            raise StrategyContractError(
+                "producer-consumer edge needs producer and consumer"
+            )
+        selector = _require_exact_selector(
+            row.get("selector"), "producer-consumer selector"
+        )
+        _require_nonempty_strings(
+            row.get("freshness_inputs"),
+            f"producer-consumer edge {producer}->{consumer} freshness inputs",
+        )
+        severed = row.get("severed_edge")
+        if not isinstance(severed, Mapping):
+            raise StrategyContractError(
+                f"producer-consumer edge {producer}->{consumer} needs a severed edge"
+            )
+        if not isinstance(severed.get("mutation"), str) or not \
+                severed["mutation"].strip():
+            raise StrategyContractError("severed edge mutation must be non-empty")
+        _require_exact_selector(
+            severed.get("selector"), "severed edge selector"
+        )
+        edge_keys.append((producer, consumer, selector))
+    if len(edge_keys) != len(set(edge_keys)):
+        raise StrategyContractError("producer-consumer edges contain duplicates")
+
+    interfaces = impact_manifest.get("changed_interfaces", [])
+    if not isinstance(interfaces, list):
+        raise StrategyContractError("changed interfaces must be a list")
+    interface_keys = []
+    for row in interfaces:
+        if not isinstance(row, Mapping):
+            raise StrategyContractError("changed interface must be an object")
+        producer = row.get("producer")
+        kind = row.get("kind")
+        slice_id = row.get("slice")
+        if not isinstance(producer, str) or not producer.strip() or \
+                kind not in {"in-process", "serialized", "external"} or \
+                not isinstance(slice_id, str) or not slice_id.strip():
+            raise StrategyContractError("changed interface identity is incomplete")
+        fixture = row.get("fixture")
+        if kind in {"serialized", "external"}:
+            if not isinstance(fixture, Mapping) or \
+                    not isinstance(fixture.get("path"), str) or \
+                    not fixture["path"].strip():
+                raise StrategyContractError(
+                    f"changed {kind} interface needs a same-slice fixture"
+                )
+            if fixture.get("slice") != slice_id:
+                raise StrategyContractError(
+                    "changed interface fixture must stay in the same slice"
+                )
+        elif fixture is not None:
+            raise StrategyContractError(
+                "in-process interface must use a real consumer journey"
+            )
+        interface_keys.append((producer, kind, slice_id))
+    if len(interface_keys) != len(set(interface_keys)):
+        raise StrategyContractError("changed interfaces contain duplicates")
+
+    failures = impact_manifest.get("failures", [])
+    if not isinstance(failures, list):
+        raise StrategyContractError("failures must be a list")
+    failure_ids = []
+    for row in failures:
+        if not isinstance(row, Mapping) or not isinstance(row.get("id"), str) \
+                or not row["id"].strip():
+            raise StrategyContractError("failure observation needs an id")
+        classification = row.get("classification")
+        if classification is not None and \
+                classification not in EVIDENCE_FAILURE_CLASSES:
+            raise StrategyContractError("failure classification is invalid")
+        if row.get("classified_before_repair") is not True:
+            raise StrategyContractError(
+                "failure must be classified before repair"
+            )
+        failure_ids.append(row["id"])
+    if len(failure_ids) != len(set(failure_ids)):
+        raise StrategyContractError("failure observations contain duplicates")
+
+    rejected = impact_manifest.get("rejected_evidence_kinds")
+    if rejected != list(REJECTED_BEHAVIORAL_EVIDENCE):
+        raise StrategyContractError(
+            "rejected behavioral evidence must be exactly ceremonial, source, "
+            "ast, prose-shape, and byte-only"
+        )
+    return {
+        "tests": copy.deepcopy(tests),
+        "producer_consumer_edges": copy.deepcopy(edges),
+        "changed_interfaces": copy.deepcopy(interfaces),
+        "failures": copy.deepcopy(failures),
+        "rejected_evidence_kinds": list(REJECTED_BEHAVIORAL_EVIDENCE),
+    }

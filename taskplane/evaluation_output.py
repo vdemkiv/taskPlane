@@ -129,6 +129,11 @@ def evaluator_output_schema() -> dict:
             "evaluation": evaluation,
             "criteria": {"type": "array", "items": criterion},
             "graph": graph,
+            # Compatibility: older sealed evaluator records predate the
+            # child-evidence contract. New control-plane callers set
+            # ``require_child_evidence`` at admission and this object is then
+            # mandatory and validated semantically below.
+            "child_evidence": {"type": "object"},
             "failures": {
                 "type": "array",
                 "items": failure_routing.failure_record_schema(),
@@ -139,7 +144,8 @@ def evaluator_output_schema() -> dict:
 
 
 def validate_evaluator_value(
-        value: dict, *, expected_lenses: list[str] | None = None) -> dict:
+        value: dict, *, expected_lenses: list[str] | None = None,
+        require_child_evidence: bool = False) -> dict:
     """Validate evaluator output for admission to a governed decision.
 
     Historical failure rows are intentionally rejected here.  They remain
@@ -167,6 +173,22 @@ def validate_evaluator_value(
                 "reason_code=none; omission or outage fallback is forbidden",
             )
     _validate(value, evaluator_output_schema())
+    child_evidence = value.get("child_evidence")
+    if require_child_evidence and not isinstance(child_evidence, dict):
+        raise OutputValidationError(
+            "child_evidence_required",
+            "evaluator pass admission requires two substantive child results",
+        )
+    if child_evidence is not None:
+        if __package__:
+            from . import evaluate_child_evidence
+        else:  # pragma: no cover - direct CLI module loading
+            import evaluate_child_evidence
+        try:
+            evaluate_child_evidence.validate_consumption(child_evidence)
+        except evaluate_child_evidence.EvidenceContractError as exc:
+            raise OutputValidationError(
+                "child_evidence_admission", str(exc)) from None
     failures = value["failures"]
     if value["verdict"] == "pass":
         if failures:
@@ -181,6 +203,19 @@ def validate_evaluator_value(
         raise OutputValidationError(
             "failure_admission", str(exc)) from None
     return value
+
+
+def attach_child_evidence(value: dict, evidence_run: dict) -> dict:
+    """Attach the exact two-result consumption block to evaluator output."""
+    if __package__:
+        from . import evaluate_child_evidence
+    else:  # pragma: no cover - direct CLI module loading
+        import evaluate_child_evidence
+    attached = deepcopy(value)
+    attached["child_evidence"] = evaluate_child_evidence.consume_evidence(
+        evidence_run
+    )
+    return attached
 
 
 def _validate_legacy_failure(value: dict) -> dict:
