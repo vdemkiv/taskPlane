@@ -701,7 +701,10 @@ def root_session_capability(
         "observed_at": snapshot.observed_at,
         "host_snapshot_fingerprint": snapshot.fingerprint,
         "settings_digest": digest,
-        "session_role": "root",
+        # Capability proves the host can support the lifecycle.  The current
+        # session role is established only from native lineage when the host
+        # seals an observation; this receipt must not pre-assert it.
+        "session_role": None,
         "fresh_start": bool(supported),
         "cumulative_meter": bool(supported),
         "one_observation_one_turn": bool(supported),

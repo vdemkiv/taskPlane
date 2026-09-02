@@ -251,7 +251,8 @@ def _ledger() -> dict:
 
 
 def _root_meter(total: int, *, authority: bytes,
-                terminal_reason: str | None = None) -> dict:
+                terminal_reason: str | None = None,
+                prior: dict | None = None, sequence: int = 1) -> dict:
     usage = _usage(total, cached=min(total, 4), output=0)
     snapshot = {
         "schema": native_session_meter.SNAPSHOT_SCHEMA,
@@ -262,7 +263,7 @@ def _root_meter(total: int, *, authority: bytes,
         "agent_path": None,
         "started_at": "2026-09-02T00:00:00Z",
         "resumed": False,
-        "ordinal": 1,
+        "ordinal": sequence,
         "observed_at": "2026-09-02T00:00:01Z",
         "usage": usage,
         "source": {
@@ -274,11 +275,12 @@ def _root_meter(total: int, *, authority: bytes,
     }
     snapshot["fingerprint"] = native_session_meter.fingerprint(snapshot)
     sealed = native_session_meter.seal_root_observation(
-        snapshot, sequence=1, session_role="root",
+        snapshot, sequence=sequence, session_role="root",
         status_receipt_fingerprint="2" * 64,
         terminal_reason=terminal_reason, authority=authority)
     return native_session_meter.fold_root_observations(
-        [sealed], authority=authority)
+        [sealed], authority=authority,
+        prior=prior["watermark"] if prior is not None else None)
 
 
 def _configure_root(ledger: dict):
@@ -290,32 +292,66 @@ def _configure_root(ledger: dict):
     return snapshot
 
 
-def test_real_codex_and_claude_usage_is_positive_delta_from_authenticated_baseline_and_is_consumed() -> None:
+def test_real_codex_and_claude_usage_is_positive_delta_from_authenticated_baseline_and_is_consumed(
+        tmp_path) -> None:
     ledger = _ledger()
-    for provider, baseline, current in (
-            ("codex", _usage(100, cached=20, output=10),
-             _usage(145, cached=30, output=15)),
-            ("claude", _usage(200, cached=40, output=20),
-             _usage(260, cached=50, output=30))):
+    codex_path = tmp_path / "codex.jsonl"
+    _write_codex_transcript(
+        codex_path, label="root", input_tokens=90,
+        cached_tokens=20, output_tokens=10)
+    codex_baseline, _ = dispatch_telemetry.project_transcript_usage(
+        str(codex_path), provider="codex")
+    _write_codex_transcript(
+        codex_path, label="root", input_tokens=130,
+        cached_tokens=30, output_tokens=15)
+    codex_current, _ = dispatch_telemetry.project_transcript_usage(
+        str(codex_path), provider="codex")
+
+    claude_path = tmp_path / "claude.jsonl"
+    claude_rows = [{"id": "baseline", "usage": {
+        "input_tokens": 100, "cache_read_input_tokens": 20,
+        "cache_creation_input_tokens": 0, "output_tokens": 10}}]
+    claude_path.write_text(
+        json.dumps(claude_rows[0]) + "\n", encoding="utf-8")
+    claude_baseline, checkpoint = \
+        dispatch_telemetry.project_transcript_usage(
+            str(claude_path), provider="claude")
+    claude_rows.append({"id": "delta", "usage": {
+        "input_tokens": 40, "cache_read_input_tokens": 10,
+        "cache_creation_input_tokens": 0, "output_tokens": 10}})
+    claude_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in claude_rows),
+        encoding="utf-8")
+    claude_current, _ = dispatch_telemetry.project_transcript_usage(
+        str(claude_path), provider="claude", checkpoint=checkpoint)
+
+    observed_total = 0
+    for provider, baseline_projection, current_projection in (
+            ("codex", codex_baseline, codex_current),
+            ("claude", claude_baseline, claude_current)):
+        assert baseline_projection["status"] == "available"
+        assert current_projection["status"] == "available"
+        source = (baseline_projection.get("source_identity_fingerprint") or
+                  baseline_projection["path_fingerprint"])
         dispatch_id = f"attempt-{provider}"
         dispatch_telemetry.bind_dispatch(ledger, _dispatch(dispatch_id))
         dispatch_telemetry.capture_usage_baseline(
             ledger, dispatch_id=dispatch_id, provider=provider,
-            usage=baseline, source_fingerprint=("4" if provider == "codex"
-                                                else "5") * 64)
+            usage=baseline_projection["usage"], source_fingerprint=source)
         observed = dispatch_telemetry.observe_terminal_usage_delta(
             ledger, dispatch_id=dispatch_id, provider=provider,
-            usage=current, source_fingerprint=("4" if provider == "codex"
-                                               else "5") * 64)
-        assert observed["usage"]["total_tokens"] == current[
-            "total_tokens"] - baseline["total_tokens"]
+            usage=current_projection["usage"], source_fingerprint=source)
+        expected = (current_projection["usage"]["total_tokens"] -
+                    baseline_projection["usage"]["total_tokens"])
+        assert observed["usage"]["total_tokens"] == expected > 0
+        observed_total += expected
         finalized = dispatch_telemetry.finalize_usage(
             ledger, dispatch_id=dispatch_id, ended_at=20,
             clock=_Clock())
         assert finalized["receipt"]["total_tokens"] > 0
 
     budget = dispatch_telemetry.budget_projection(ledger, _Clock())
-    assert budget["usage"]["total_tokens"] == 105
+    assert budget["usage"]["total_tokens"] == observed_total == 105
     assert budget["usage_capability"]["status"] == "available"
 
 
@@ -342,14 +378,14 @@ def test_required_missing_or_terminal_unavailable_usage_blocks_release_and_new_d
 
 def test_root_budget_refuses_new_dispatch_while_active_workers_terminalize_once_without_redispatch() -> None:
     ledger = _ledger()
+    dispatch_telemetry.bind_dispatch(
+        ledger, _dispatch("active-worker"), usage=_usage(5),
+        source_fingerprint="b" * 64)
     settings_snapshot = _configure_root(ledger)
     authority = b"host-observation-authority"
     dispatch_telemetry.record_root_meter(
         ledger, _root_meter(40_000_000, authority=authority),
         observation_authority=authority)
-    dispatch_telemetry.bind_dispatch(
-        ledger, _dispatch("active-worker"), usage=_usage(5),
-        source_fingerprint="b" * 64)
 
     screen = dispatch_telemetry.screen_dispatch(
         ledger, _Clock(), current_stage="execute",
@@ -410,6 +446,143 @@ def test_root_usage_missing_or_at_ceiling_cannot_silently_resume_dispatch() -> N
     assert ceiling["dispatch_allowed"] is False
     assert ceiling["root_admission"]["reason_code"] == \
         "root_budget_reached"
+
+
+def test_root_meter_ledger_rejects_projection_tamper_and_cross_call_rollback() -> None:
+    authority = b"host-observation-authority"
+    ledger = _ledger()
+    _configure_root(ledger)
+    meter = _root_meter(40_000_000, authority=authority)
+    dispatch_telemetry.record_root_meter(
+        ledger, meter, observation_authority=authority)
+
+    stored = ledger["root_admission"]["meter"]
+    stored["usage"] = _usage(1, cached=1)
+    stored["first_observed_input_tokens"] = 1
+    stored["peak_context_tokens"] = 1
+    stored["context_rent_tokens"] = 0.0
+    material = dict(stored)
+    material.pop("fingerprint")
+    stored["fingerprint"] = native_session_meter.fingerprint(material)
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="authenticated watermark",
+    ):
+        dispatch_telemetry.validate_ledger(ledger)
+
+    fresh = _ledger()
+    _configure_root(fresh)
+    dispatch_telemetry.record_root_meter(
+        fresh, _root_meter(40_000_000, authority=authority),
+        observation_authority=authority)
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="observation authority changed",
+    ):
+        dispatch_telemetry.record_root_meter(
+            fresh,
+            _root_meter(
+                3, authority=b"replacement-observation-authority"),
+            observation_authority=b"replacement-observation-authority")
+
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="conflicting evidence",
+    ):
+        dispatch_telemetry.record_root_meter(
+            fresh, _root_meter(40_000_001, authority=authority),
+            observation_authority=authority)
+
+    rollback = _ledger()
+    _configure_root(rollback)
+    first = _root_meter(10, authority=authority)
+    high = _root_meter(
+        40_000_000, authority=authority, prior=first, sequence=2)
+    low = _root_meter(11, authority=authority, prior=first, sequence=2)
+    rolled = _root_meter(
+        12, authority=authority, prior=low, sequence=3)
+    dispatch_telemetry.record_root_meter(
+        rollback, high, observation_authority=authority)
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="cumulative watermark moved backwards",
+    ):
+        dispatch_telemetry.record_root_meter(
+            rollback, rolled, observation_authority=authority)
+
+
+def test_root_screen_and_worker_binding_are_one_idempotent_admission_operation() -> None:
+    authority = b"host-observation-authority"
+    ledger = _ledger()
+    # Pre-existing measured usage makes the general worker-budget projection
+    # available before root admission is configured.
+    dispatch_telemetry.bind_dispatch(
+        ledger, _dispatch("active-worker"), usage=_usage(1),
+        source_fingerprint="3" * 64)
+    _configure_root(ledger)
+    first = _root_meter(10, authority=authority)
+    below = _root_meter(
+        39_999_999, authority=authority, prior=first, sequence=2)
+    dispatch_telemetry.record_root_meter(
+        ledger, below, observation_authority=authority)
+
+    stale = dispatch_telemetry.screen_dispatch(
+        ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="4" * 64,
+        preserved_context_fingerprint="5" * 64)
+    assert stale["dispatch_allowed"] is True
+
+    ceiling = _root_meter(
+        40_000_000, authority=authority, prior=below, sequence=3)
+    dispatch_telemetry.record_root_meter(
+        ledger, ceiling, observation_authority=authority)
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="atomic screen_dispatch admission",
+    ):
+        dispatch_telemetry.bind_dispatch(
+            ledger, _dispatch("stale-worker"), usage=_usage(1),
+            source_fingerprint="6" * 64)
+
+    refused = dispatch_telemetry.screen_dispatch(
+        ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="4" * 64,
+        preserved_context_fingerprint="5" * 64,
+        admission_operation_id="new-worker",
+        dispatch=_dispatch("new-worker"), usage=_usage(1),
+        source_fingerprint="6" * 64)
+    assert refused["dispatch_allowed"] is False
+    assert all(row["dispatch_id"] != "new-worker"
+               for row in ledger["bindings"])
+
+    open_ledger = _ledger()
+    dispatch_telemetry.bind_dispatch(
+        open_ledger, _dispatch("prior-worker"), usage=_usage(1),
+        source_fingerprint="7" * 64)
+    _configure_root(open_ledger)
+    dispatch_telemetry.record_root_meter(
+        open_ledger, below, observation_authority=authority)
+    before = open_ledger["revision"]
+    admitted = dispatch_telemetry.screen_dispatch(
+        open_ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="8" * 64,
+        preserved_context_fingerprint="9" * 64,
+        admission_operation_id="atomic-worker",
+        dispatch=_dispatch("atomic-worker"), usage=_usage(1),
+        source_fingerprint="a" * 64)
+    revision = open_ledger["revision"]
+    replay = dispatch_telemetry.screen_dispatch(
+        open_ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="8" * 64,
+        preserved_context_fingerprint="9" * 64,
+        admission_operation_id="atomic-worker",
+        dispatch=_dispatch("atomic-worker"), usage=_usage(1),
+        source_fingerprint="a" * 64)
+    assert admitted["operation_status"] == "admitted"
+    assert replay["operation_status"] == "duplicate"
+    assert open_ledger["revision"] == revision == before + 1
+    assert len([row for row in open_ledger["bindings"]
+                if row["dispatch_id"] == "atomic-worker"]) == 1
 
 
 @pytest.mark.parametrize(

@@ -1056,11 +1056,12 @@ def _usage(value: Mapping[str, Any]) -> dict[str, int]:
     return normalized
 
 
-def bind_dispatch(
+def _bind_dispatch(
         ledger: MutableMapping[str, Any],
         dispatch: Mapping[str, Any], *,
         usage: Mapping[str, Any] | None = None,
-        source_fingerprint: str | None = None) -> dict[str, Any]:
+        source_fingerprint: str | None = None,
+        allow_root_admission: bool) -> dict[str, Any]:
     """Bind one observed native dispatch to its deterministic intent id.
 
     A host may supply its initial cumulative observation atomically with the
@@ -1108,9 +1109,26 @@ def bind_dispatch(
                for field in identity_fields):
             raise DispatchTelemetryError("dispatch binding id collision")
         return dict(existing)
+    if ledger.get("root_admission") is not None and not \
+            allow_root_admission:
+        raise DispatchTelemetryError(
+            "configured root admission requires atomic screen_dispatch "
+            "admission")
     bindings.append(material)
     ledger["revision"] = int(ledger["revision"]) + 1
     return dict(material)
+
+
+def bind_dispatch(
+        ledger: MutableMapping[str, Any],
+        dispatch: Mapping[str, Any], *,
+        usage: Mapping[str, Any] | None = None,
+        source_fingerprint: str | None = None) -> dict[str, Any]:
+    """Bind a dispatch when no root admission transaction is configured."""
+    return _bind_dispatch(
+        ledger, dispatch, usage=usage,
+        source_fingerprint=source_fingerprint,
+        allow_root_admission=False)
 
 
 def capture_usage_baseline(
@@ -1481,12 +1499,10 @@ def _validate_root_admission(value: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(meter, Mapping) or meter.get("schema") != \
                 native_session_meter.ROOT_METER_SCHEMA:
             raise DispatchTelemetryError("root meter schema is invalid")
-        material = dict(meter)
-        digest = material.pop("fingerprint", None)
-        if not isinstance(digest, str) or re.fullmatch(
-                r"[0-9a-f]{64}", digest) is None or \
-                native_session_meter.fingerprint(material) != digest:
-            raise DispatchTelemetryError("root meter fingerprint is invalid")
+        try:
+            meter = native_session_meter.validate_root_meter_projection(meter)
+        except native_session_meter.NativeSessionMeterError as exc:
+            raise DispatchTelemetryError(str(exc)) from exc
         _sha256_fingerprint(authority, "root observation authority fingerprint")
         if meter.get("status") == "available":
             if meter.get("session_role") != "root" or not isinstance(
@@ -1565,28 +1581,54 @@ def record_root_meter(
             meter, authority=observation_authority)
     except native_session_meter.NativeSessionMeterError as exc:
         raise DispatchTelemetryError(str(exc)) from exc
-    candidate = dict(admission)
-    candidate["meter"] = checked_meter
     if not isinstance(observation_authority, bytes):
         raise DispatchTelemetryError("root observation authority is invalid")
-    candidate["observation_authority_fingerprint"] = hashlib.sha256(
+    authority_fingerprint = hashlib.sha256(
         observation_authority).hexdigest()
-    _validate_root_admission(candidate)
     prior = admission.get("meter")
+    prior_authority = admission.get("observation_authority_fingerprint")
+    if prior_authority is not None and prior_authority != \
+            authority_fingerprint:
+        raise DispatchTelemetryError(
+            "root observation authority changed")
     if isinstance(prior, Mapping) and prior.get("status") == "available" and \
-            candidate["meter"].get("status") == "available":
+            checked_meter.get("status") == "available":
         prior_watermark = prior.get("watermark") or {}
-        next_watermark = candidate["meter"].get("watermark") or {}
-        if prior_watermark.get("source_identity_fingerprint") != \
-                next_watermark.get("source_identity_fingerprint") or int(
-                    next_watermark.get("last_sequence") or 0) < int(
-                    prior_watermark.get("last_sequence") or 0):
+        next_watermark = checked_meter.get("watermark") or {}
+        prior_sequence = int(prior_watermark.get("last_sequence") or 0)
+        next_sequence = int(next_watermark.get("last_sequence") or 0)
+        if next_sequence == prior_sequence and next_watermark.get(
+                "fingerprint") != prior_watermark.get("fingerprint"):
             raise DispatchTelemetryError(
-                "root meter source or watermark moved backwards")
-    if prior == candidate["meter"] and admission.get(
-            "observation_authority_fingerprint") == candidate[
-            "observation_authority_fingerprint"]:
+                "root meter sequence has conflicting evidence")
+        if next_sequence < prior_sequence:
+            raise DispatchTelemetryError(
+                "root meter watermark moved backwards")
+        identity_fields = (
+            "session_pseudonym", "source_identity_fingerprint",
+            "status_receipt_fingerprint", "resumed",
+            "first_observed_input_tokens",
+        )
+        if any(prior_watermark.get(field) != next_watermark.get(field)
+               for field in identity_fields):
+            raise DispatchTelemetryError(
+                "root meter source or observation authority was replaced")
+        if next_sequence > prior_sequence and (
+                int(next_watermark.get("turns") or 0) < int(
+                    prior_watermark.get("turns") or 0) or int(
+                    next_watermark.get("peak_context_tokens") or 0) < int(
+                    prior_watermark.get("peak_context_tokens") or 0) or any(
+                    int(next_watermark["usage"][field]) < int(
+                        prior_watermark["usage"][field])
+                    for field in _USAGE_FIELDS)):
+            raise DispatchTelemetryError(
+                "root meter cumulative watermark moved backwards")
+    if prior == checked_meter and prior_authority == authority_fingerprint:
         return dict(admission)
+    candidate = dict(admission)
+    candidate["meter"] = checked_meter
+    candidate["observation_authority_fingerprint"] = authority_fingerprint
+    _validate_root_admission(candidate)
     admission.update(candidate)
     ledger["revision"] = int(ledger["revision"]) + 1
     return dict(admission)
@@ -1985,7 +2027,7 @@ def _scope_review_checkpoint(
     return checkpoint
 
 
-def screen_dispatch(
+def _screen_dispatch_projection(
         ledger: Mapping[str, Any], clock: Clock, *, current_stage: str,
         outstanding_set_fingerprint: str,
         preserved_context_fingerprint: str,
@@ -2119,6 +2161,93 @@ def screen_dispatch(
         )
     result["fingerprint"] = content_fingerprint(result)
     return result
+
+
+def screen_dispatch(
+        ledger: Mapping[str, Any], clock: Clock, *, current_stage: str,
+        outstanding_set_fingerprint: str,
+        preserved_context_fingerprint: str,
+        overrides: Mapping[str, int | float] | None = None,
+        admission_operation_id: str | None = None,
+        dispatch: Mapping[str, Any] | None = None,
+        usage: Mapping[str, Any] | None = None,
+        source_fingerprint: str | None = None) -> dict[str, Any]:
+    """Screen and, when requested, bind one dispatch as one operation.
+
+    A projection-only call remains useful for status.  Once root admission is
+    configured that projection cannot be consumed by ``bind_dispatch``;
+    callers must supply the dispatch here, eliminating the stale screen/bind
+    interval.  The dispatch id is the durable operation id, so exact retries
+    return the already-bound attempt without another revision.
+    """
+    if dispatch is None:
+        if admission_operation_id is not None or usage is not None or \
+                source_fingerprint is not None:
+            raise DispatchTelemetryError(
+                "atomic admission arguments require a dispatch")
+        return _screen_dispatch_projection(
+            ledger, clock, current_stage=current_stage,
+            outstanding_set_fingerprint=outstanding_set_fingerprint,
+            preserved_context_fingerprint=preserved_context_fingerprint,
+            overrides=overrides)
+    if not isinstance(ledger, MutableMapping):
+        raise DispatchTelemetryError(
+            "atomic screen_dispatch admission requires a mutable ledger")
+    operation_id = str(admission_operation_id or "").strip()
+    if not operation_id or operation_id != str(
+            dispatch.get("dispatch_id") or ""):
+        raise DispatchTelemetryError(
+            "admission operation id must equal the dispatch id")
+
+    validate_ledger(ledger)
+    existing = next((row for row in ledger.get("bindings", [])
+                     if row.get("dispatch_id") == operation_id), None)
+    if existing is not None:
+        expected_usage = _usage(usage) if usage is not None else None
+        expected_source = (_sha256_fingerprint(
+            source_fingerprint, "usage source fingerprint")
+            if usage is not None else None)
+        if any(existing.get(field) != dispatch.get(field)
+               for field in _DISPATCH_FIELDS) or \
+                existing.get("usage") != expected_usage or \
+                existing.get("usage_source_fingerprint") != expected_source:
+            raise DispatchTelemetryError(
+                "admission operation id has conflicting evidence")
+        projected = _screen_dispatch_projection(
+            ledger, clock, current_stage=current_stage,
+            outstanding_set_fingerprint=outstanding_set_fingerprint,
+            preserved_context_fingerprint=preserved_context_fingerprint,
+            overrides=overrides)
+        projected.pop("fingerprint", None)
+        projected.update({
+            "admission_operation_id": operation_id,
+            "operation_status": "duplicate",
+            "binding": dict(existing),
+        })
+        projected["fingerprint"] = content_fingerprint(projected)
+        return projected
+
+    projected = _screen_dispatch_projection(
+        ledger, clock, current_stage=current_stage,
+        outstanding_set_fingerprint=outstanding_set_fingerprint,
+        preserved_context_fingerprint=preserved_context_fingerprint,
+        overrides=overrides)
+    binding = None
+    operation_status = "refused"
+    if projected["dispatch_allowed"]:
+        binding = _bind_dispatch(
+            ledger, dispatch, usage=usage,
+            source_fingerprint=source_fingerprint,
+            allow_root_admission=True)
+        operation_status = "admitted"
+    projected.pop("fingerprint", None)
+    projected.update({
+        "admission_operation_id": operation_id,
+        "operation_status": operation_status,
+        "binding": binding,
+    })
+    projected["fingerprint"] = content_fingerprint(projected)
+    return projected
 
 
 def fix_evaluate_cycle_decision(

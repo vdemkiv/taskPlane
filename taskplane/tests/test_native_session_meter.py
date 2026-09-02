@@ -173,6 +173,7 @@ def test_root_meter_counts_complete_turn_events_and_derives_first_peak_rent_with
     capability = host_capabilities.root_session_capability(
         capability_snapshot, settings_digest="a" * 64)
     assert capability["status"] == "supported"
+    assert capability["session_role"] is None
     observations = []
     for sequence, (total, cached, output) in enumerate(
             ((12, 4, 2), (30, 12, 4), (51, 24, 6)), start=1):
@@ -258,3 +259,20 @@ def test_root_meter_refuses_nonmonotonic_ambiguous_turn_or_unreconciled_counter_
     assert native_session_meter.fold_root_observations(
         [first, ambiguous_a], authority=authority, max_observations=1
     )["reason_code"] == "observation_overflow"
+
+
+def test_root_observation_role_is_derived_from_native_lineage_not_caller_label(
+        tmp_path: Path) -> None:
+    worker = tmp_path / "worker.jsonl"
+    _write_segment(
+        worker, session_id="worker", parent="root-session", total=10)
+
+    with pytest.raises(
+        native_session_meter.NativeSessionMeterError,
+        match="native session lineage is not root",
+    ):
+        native_session_meter.seal_root_observation(
+            native_session_meter.read_snapshot(str(worker)),
+            sequence=1, session_role="root",
+            status_receipt_fingerprint="c" * 64,
+            authority=b"host-observation-authority")

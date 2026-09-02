@@ -283,6 +283,26 @@ def validate_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
+def derive_session_role(snapshot: Mapping[str, Any]) -> str:
+    """Derive role from the host-recorded native lineage, never a label.
+
+    A child relation or native subagent source is sufficient to prove that a
+    session is not the root.  Root is accepted only when all recorded lineage
+    fields agree that the session has no parent.
+    """
+    checked = validate_snapshot(snapshot)
+    parent = checked.get("parent_session_id")
+    agent_path = checked.get("agent_path")
+    source = str(checked.get("thread_source") or "").strip().lower()
+    child_source = source == "subagent" or source.startswith("subagent_")
+    if parent is not None or agent_path is not None or child_source:
+        return "worker"
+    if source in {"", "unknown"}:
+        raise NativeSessionMeterError(
+            "native session lineage cannot prove a root role")
+    return "root"
+
+
 def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Sum the latest cumulative counter from every physical segment once."""
     latest_by_source: dict[str, dict[str, Any]] = {}
@@ -370,9 +390,13 @@ def seal_root_observation(
     checksum that an untrusted caller can recompute.
     """
     checked = validate_snapshot(snapshot)
-    if session_role != "root":
+    derived_role = derive_session_role(checked)
+    if derived_role != "root":
         raise NativeSessionMeterError(
-            "root meter observation must have session_role root")
+            "native session lineage is not root")
+    if session_role != derived_role:
+        raise NativeSessionMeterError(
+            "root meter observation role disagrees with native lineage")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or \
             sequence < 1:
         raise NativeSessionMeterError(
@@ -445,11 +469,16 @@ def _validate_root_observation(
     except NativeSessionMeterError as exc:
         raise _RootObservationError(
             "counter_unreconciled", str(exc)) from exc
+    try:
+        if derive_session_role(snapshot) != "root":
+            raise _RootObservationError(
+                "role_mismatch", "native session lineage is not root")
+    except NativeSessionMeterError as exc:
+        raise _RootObservationError("role_mismatch", str(exc)) from exc
     return {**dict(value), "snapshot": snapshot}
 
 
-def _validate_watermark(
-        value: Mapping[str, Any], authority: bytes) -> dict[str, Any]:
+def _validate_watermark_shape(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping) or value.get("schema") != \
             ROOT_WATERMARK_SCHEMA or set(value) != _ROOT_WATERMARK_FIELDS:
         raise _RootObservationError(
@@ -460,12 +489,21 @@ def _validate_watermark(
     if not isinstance(digest, str) or _FINGERPRINT.fullmatch(digest) is None \
             or digest != _fingerprint(material) or \
             not isinstance(authenticator, str) or \
-            _FINGERPRINT.fullmatch(authenticator) is None or \
-            not hmac.compare_digest(
-                authenticator,
-                _authenticator(ROOT_WATERMARK_SCHEMA, digest, authority)):
+            _FINGERPRINT.fullmatch(authenticator) is None:
         raise _RootObservationError(
-            "watermark_invalid", "root meter watermark is not authentic")
+            "watermark_invalid", "root meter watermark shape is invalid")
+    if material.get("session_role") != "root" or any(
+            not isinstance(material.get(field), str) or
+            _FINGERPRINT.fullmatch(str(material[field])) is None
+            for field in (
+                "session_pseudonym", "source_identity_fingerprint",
+                "status_receipt_fingerprint",
+                "last_observation_fingerprint")):
+        raise _RootObservationError(
+            "watermark_invalid", "root meter watermark identity is invalid")
+    for field in ("last_sequence", "turns", "first_observed_input_tokens",
+                  "peak_context_tokens"):
+        _nonnegative(material.get(field), field)
     usage = material.get("usage")
     if not isinstance(usage, Mapping):
         raise _RootObservationError(
@@ -487,6 +525,19 @@ def _validate_watermark(
         raise _RootObservationError(
             "watermark_invalid", "root meter watermark exceeds 16 KiB")
     return dict(value)
+
+
+def _validate_watermark(
+        value: Mapping[str, Any], authority: bytes) -> dict[str, Any]:
+    checked = _validate_watermark_shape(value)
+    if not hmac.compare_digest(
+            str(checked["authenticator"]),
+            _authenticator(
+                ROOT_WATERMARK_SCHEMA, str(checked["fingerprint"]),
+                authority)):
+        raise _RootObservationError(
+            "watermark_invalid", "root meter watermark is not authentic")
+    return checked
 
 
 def _unavailable(reason_code: str, reason: str) -> dict[str, Any]:
@@ -523,10 +574,8 @@ def _meter_from_watermark(watermark: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def validate_root_meter(
-        value: Mapping[str, Any], *, authority: bytes) -> dict[str, Any]:
-    """Validate a meter at its consumer boundary, including its HMAC state."""
-    _observation_authority(authority)
+def validate_root_meter_projection(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate public meter fields against the retained watermark."""
     if not isinstance(value, Mapping) or value.get("schema") != \
             ROOT_METER_SCHEMA:
         raise NativeSessionMeterError("root meter schema is invalid")
@@ -548,11 +597,27 @@ def validate_root_meter(
         raise NativeSessionMeterError("root meter status is invalid")
     if set(value) != _AVAILABLE_ROOT_METER_FIELDS:
         raise NativeSessionMeterError("available root meter schema is not closed")
-    watermark = _validate_watermark(value.get("watermark"), authority)
+    try:
+        watermark = _validate_watermark_shape(value.get("watermark"))
+    except _RootObservationError as exc:
+        raise NativeSessionMeterError(str(exc)) from exc
     if _meter_from_watermark(watermark) != dict(value):
         raise NativeSessionMeterError(
             "root meter disagrees with its authenticated watermark")
     return dict(value)
+
+
+def validate_root_meter(
+        value: Mapping[str, Any], *, authority: bytes) -> dict[str, Any]:
+    """Validate a meter at its consumer boundary, including its HMAC state."""
+    _observation_authority(authority)
+    checked = validate_root_meter_projection(value)
+    if checked.get("status") == "available":
+        try:
+            _validate_watermark(checked["watermark"], authority)
+        except _RootObservationError as exc:
+            raise NativeSessionMeterError(str(exc)) from exc
+    return checked
 
 
 def fold_root_observations(
