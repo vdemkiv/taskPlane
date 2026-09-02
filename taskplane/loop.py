@@ -6009,21 +6009,31 @@ def record_native_session_snapshot(
                     raise dispatch_telemetry.DispatchTelemetryError(
                         "native session snapshot is bound to another dispatch")
                 return copy.deepcopy(dict(record))
-        prior = [
-            record for record in ledger["records"]
-            if isinstance(record, Mapping) and
-            record.get("session_id") == checked["session_id"]
-        ]
-        previous_usage = ({key: 0 for key in checked["usage"]}
-                          if not prior else dict(prior[-1]["snapshot"][
-                              "usage"]))
+        prior = []
+        for record in ledger["records"]:
+            if not isinstance(record, Mapping):
+                continue
+            prior_snapshot = record.get("snapshot")
+            if isinstance(prior_snapshot, Mapping) and \
+                    prior_snapshot.get("source_identity_fingerprint") == \
+                    checked["source_identity_fingerprint"]:
+                prior.append(record)
+        previous_usage = {key: 0 for key in checked["usage"]}
+        if prior:
+            prior_snapshot = prior[-1].get("snapshot")
+            prior_usage = (prior_snapshot.get("usage")
+                           if isinstance(prior_snapshot, Mapping) else None)
+            if not isinstance(prior_usage, Mapping):
+                raise dispatch_telemetry.DispatchTelemetryError(
+                    "native session ledger record is invalid")
+            previous_usage = dict(prior_usage)
         attributed = {
             key: int(checked["usage"][key]) - int(previous_usage[key])
             for key in checked["usage"]
         }
         if any(value < 0 for value in attributed.values()):
             raise dispatch_telemetry.DispatchTelemetryError(
-                "resumed native session counter moved backwards")
+                "native physical-segment counter moved backwards")
         record = {
             "dispatch_id": str(dispatch_id),
             "task_id": str(task_id),

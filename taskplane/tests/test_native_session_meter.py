@@ -99,7 +99,7 @@ def test_reads_current_metadata_and_latest_native_counter_without_content(
     assert "private conversation" not in json.dumps(snapshot)
 
 
-def test_resume_uses_latest_cumulative_counter_and_fork_counts_once(
+def test_resume_sums_reset_physical_segment_and_fork_counters_once(
     tmp_path: Path,
 ) -> None:
     first = tmp_path / "root-1.jsonl"
@@ -107,7 +107,7 @@ def test_resume_uses_latest_cumulative_counter_and_fork_counts_once(
     child = tmp_path / "child.jsonl"
     _write_segment(first, session_id="root", total=90, ordinal=7)
     _write_segment(
-        resumed, session_id="root", total=110, resumed=True, ordinal=11,
+        resumed, session_id="root", total=25, resumed=True, ordinal=11,
     )
     _write_segment(
         child, session_id="child", parent="root", total=40, ordinal=5,
@@ -121,12 +121,14 @@ def test_resume_uses_latest_cumulative_counter_and_fork_counts_once(
 
     assert wave["physical_segments"] == 3
     assert wave["logical_sessions"] == 2
-    assert wave["usage"]["total_tokens"] == 150
+    assert wave["usage"]["total_tokens"] == 155
     assert {row["session_id"]: row["segments"] for row in wave["sessions"]} \
         == {"child": 1, "root": 2}
+    assert {row["session_id"]: row["total_tokens"]
+            for row in wave["sessions"]} == {"child": 40, "root": 115}
 
 
-def test_missing_counter_and_backwards_resume_refuse_instead_of_zero(
+def test_missing_counter_and_backwards_same_segment_refuse_instead_of_zero(
     tmp_path: Path,
 ) -> None:
     missing = tmp_path / "missing.jsonl"
@@ -137,15 +139,13 @@ def test_missing_counter_and_backwards_resume_refuse_instead_of_zero(
     ):
         native_session_meter.read_snapshot(str(missing))
 
-    newer = tmp_path / "newer.jsonl"
-    older = tmp_path / "older.jsonl"
-    _write_segment(older, session_id="root", total=100, ordinal=6)
-    _write_segment(newer, session_id="root", total=99, ordinal=9)
+    source = tmp_path / "same-segment.jsonl"
+    _write_segment(source, session_id="root", total=100, ordinal=6)
+    older = native_session_meter.read_snapshot(str(source))
+    _write_segment(source, session_id="root", total=99, ordinal=9)
+    newer = native_session_meter.read_snapshot(str(source))
     with pytest.raises(
         native_session_meter.NativeSessionMeterError,
-        match="moved backwards",
+        match="physical-segment counter moved backwards",
     ):
-        native_session_meter.aggregate([
-            native_session_meter.read_snapshot(str(older)),
-            native_session_meter.read_snapshot(str(newer)),
-        ])
+        native_session_meter.aggregate([older, newer])

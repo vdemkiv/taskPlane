@@ -325,7 +325,7 @@ def test_native_counter_reaches_nonzero_retro_and_dashboard_consumers(
     assert "actual 18 tokens" in dashboard_html
 
 
-def test_resumed_native_session_is_delta_attributed_without_double_counting(
+def test_resumed_native_session_reset_is_attributed_as_a_new_segment(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
     loop.save(workspace, _state())
@@ -354,13 +354,15 @@ def test_resumed_native_session_is_delta_attributed_without_double_counting(
     records = [row for row in state["native_session_telemetry"]["records"]
                if row["session_id"] == shared_session]
     assert [row["attributed_usage"]["total_tokens"] for row in records] == [
-        12, 8]
+        12, 20]
+    assert len({row["snapshot"]["source_identity_fingerprint"]
+                for row in records}) == 2
     assert state["native_session_telemetry"]["aggregate"]["usage"][
-        "total_tokens"] == 22  # 2 root + latest 20 worker cumulative
+        "total_tokens"] == 34  # 2 root + 12 first + 20 resumed segment
     receipts = [row for row in state["dispatch_telemetry"]["dispatches"]
                 if row["thread_type"] == "worker"]
-    assert [row["total_tokens"] for row in receipts] == [12, 8]
-    assert sum(row["total_tokens"] for row in receipts) == 20
+    assert [row["total_tokens"] for row in receipts] == [12, 20]
+    assert sum(row["total_tokens"] for row in receipts) == 32
 
 
 def test_missing_native_counter_blocks_terminal_release_without_zero_fallback(

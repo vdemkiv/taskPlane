@@ -251,18 +251,21 @@ def validate_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Sum logical sessions once; resumed physical segments remain cumulative."""
-    latest: dict[str, dict[str, Any]] = {}
-    segment_sources: dict[str, set[str]] = {}
+    """Sum the latest cumulative counter from every physical segment once."""
+    latest_by_source: dict[str, dict[str, Any]] = {}
+    session_sources: dict[str, set[str]] = {}
     for raw in snapshots:
         row = validate_snapshot(raw)
         session_id = str(row["session_id"])
-        segment_sources.setdefault(session_id, set()).add(str(
-            row["source_identity_fingerprint"]))
-        prior = latest.get(session_id)
+        source_id = str(row["source_identity_fingerprint"])
+        session_sources.setdefault(session_id, set()).add(source_id)
+        prior = latest_by_source.get(source_id)
         if prior is None:
-            latest[session_id] = row
+            latest_by_source[source_id] = row
             continue
+        if prior["session_id"] != session_id:
+            raise NativeSessionMeterError(
+                "native session source identity changed owners")
         prior_usage = prior["usage"]
         usage = row["usage"]
         prior_key = (str(prior.get("observed_at") or ""), int(prior["ordinal"]))
@@ -270,33 +273,38 @@ def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if row_key >= prior_key:
             if any(int(usage[key]) < int(prior_usage[key]) for key in usage):
                 raise NativeSessionMeterError(
-                    "resumed native session counter moved backwards"
+                    "native physical-segment counter moved backwards"
                 )
-            latest[session_id] = row
-    ordered = [latest[key] for key in sorted(latest)]
+            latest_by_source[source_id] = row
+    ordered_segments = [latest_by_source[key]
+                        for key in sorted(latest_by_source)]
+    sessions: dict[str, list[dict[str, Any]]] = {}
+    for row in ordered_segments:
+        sessions.setdefault(str(row["session_id"]), []).append(row)
     usage_keys = (
         "input_tokens", "cached_input_tokens", "uncached_input_tokens",
         "output_tokens", "reasoning_tokens", "total_tokens",
     )
     result = {
         "schema": AGGREGATE_SCHEMA,
-        "logical_sessions": len(ordered),
-        "physical_segments": sum(len(value)
-                                 for value in segment_sources.values()),
+        "logical_sessions": len(sessions),
+        "physical_segments": len(ordered_segments),
         "usage": {
-            key: sum(int(row["usage"][key]) for row in ordered)
+            key: sum(int(row["usage"][key]) for row in ordered_segments)
             for key in usage_keys
         },
         "sessions": [
             {
-                "session_id": row["session_id"],
-                "parent_session_id": row.get("parent_session_id"),
-                "root_session_id": row.get("root_session_id"),
-                "segments": len(segment_sources[str(row["session_id"])]),
-                "counter_fingerprint": row["fingerprint"],
-                "total_tokens": row["usage"]["total_tokens"],
+                "session_id": session_id,
+                "parent_session_id": rows[-1].get("parent_session_id"),
+                "root_session_id": rows[-1].get("root_session_id"),
+                "segments": len(rows),
+                "counter_fingerprints": sorted(
+                    row["fingerprint"] for row in rows),
+                "total_tokens": sum(
+                    int(row["usage"]["total_tokens"]) for row in rows),
             }
-            for row in ordered
+            for session_id, rows in sorted(sessions.items())
         ],
     }
     result["fingerprint"] = _fingerprint(result)
