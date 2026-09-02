@@ -4,7 +4,7 @@
   "authority": {
     "canonical_source": "taskplane/operational-settings.json",
     "typed_loader": "taskplane/settings.py:load_settings",
-    "legacy_adapter": "taskplane/settings_legacy.py:migrate_legacy_settings",
+    "legacy_adapter": "taskplane/settings.py:_migrate_v1_settings",
     "digest_field": "settings_digest",
     "rule": "A configurable operational default exists only in canonical_source. Consumers load the typed value or verify a digest-bound projection; observations, derived values, protocol constants, and non-settings never own defaults."
   },
@@ -35,6 +35,10 @@
     "workflow.worker_inheritance.model",
     "workflow.worker_inheritance.reasoning",
     "workflow.worker_inheritance.context",
+    "workflow.root_session.resume",
+    "workflow.root_session.seed",
+    "workflow.root_session.seed_budget_tokens",
+    "workflow.root_session.root_budget_tokens",
     "cleanup.worktrees",
     "cleanup.artifacts_days",
     "runtime.audit_every",
@@ -192,6 +196,20 @@
   ],
   "consumers": [
     {
+      "id": "root-session-part-a-seed",
+      "surfaces": ["taskplane/root_seed.py", "taskplane/tp.py"],
+      "initialization": "single-effective-settings-snapshot-before-root-start",
+      "proof_markers": ["consumer_projection(\"root-seed.prepare\")", "_effective_settings_snapshot()"],
+      "binding": "settings_fingerprint",
+      "accepted_keys": [
+        "workflow.root_session.resume",
+        "workflow.root_session.seed",
+        "workflow.root_session.seed_budget_tokens",
+        "workflow.root_session.root_budget_tokens"
+      ],
+      "rejected_keys": ["workflow.root_session.rotate_at_context_tokens"]
+    },
+    {
       "id": "cli-and-loop",
       "surfaces": ["taskplane/tp.py", "taskplane/loop.py", "taskplane/loop_status.py"],
       "initialization": "direct-loader-before-transition",
@@ -255,10 +273,10 @@
       "binding": "settings_digest"
     },
     {
-      "id": "legacy-and-cache",
-      "surfaces": ["taskplane/settings_legacy.py", "taskplane/taskplane_lite.py", "taskplane/tests/test_settings_migration.py"],
+      "id": "one-release-v1-and-cache",
+      "surfaces": ["taskplane/settings.py", "taskplane/taskplane_lite.py", "taskplane/tests/test_settings.py"],
       "initialization": "zero-default-adapter-and-effective-settings-derivation",
-      "proof_markers": ["migrate_legacy_settings", "_canonical_operational_settings"],
+      "proof_markers": ["_migrate_v1_settings", "_canonical_operational_settings"],
       "binding": "settings_digest"
     },
     {

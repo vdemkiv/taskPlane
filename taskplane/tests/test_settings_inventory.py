@@ -203,7 +203,7 @@ def test_every_operational_setting_has_one_canonical_owner():
     assert authority == {
         "canonical_source": "taskplane/operational-settings.json",
         "typed_loader": "taskplane/settings.py:load_settings",
-        "legacy_adapter": "taskplane/settings_legacy.py:migrate_legacy_settings",
+        "legacy_adapter": "taskplane/settings.py:_migrate_v1_settings",
         "digest_field": "settings_digest",
         "rule": authority["rule"],
     }
