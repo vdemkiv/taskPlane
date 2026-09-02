@@ -43,7 +43,7 @@ def _inputs():
 
 
 def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start_and_wave(
-        tmp_path, capsys):
+        tmp_path, monkeypatch, capsys):
     context = _context()
     inputs = _inputs()
     first = root_seed.build_root_seed(context, inputs)
@@ -72,6 +72,12 @@ def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start
         encoding="utf-8"))
     assert stored == first
     assert receipt["seed_fingerprint"] == first["seed_fingerprint"]
+    assert set(receipt["consumer_bindings"]) == {
+        "host_root_start", "wave_seal"}
+    assert receipt["consumer_bindings"]["host_root_start"] == \
+        root_seed.seed_binding(first)
+    assert receipt["consumer_bindings"]["wave_seal"] == \
+        root_seed.seed_binding(first)
     assert len(json.dumps(receipt, sort_keys=True).encode("utf-8")) < 4096
 
     binding = root_seed.seed_binding(first)
@@ -103,8 +109,71 @@ def test_root_seed_is_exact_deterministic_reference_only_and_bound_to_host_start
     ]) == 0
     cli_receipt = json.loads(capsys.readouterr().out)
     assert cli_receipt["seed_fingerprint"] == first["seed_fingerprint"]
+    assert set(cli_receipt["consumer_bindings"]) == {
+        "host_root_start", "wave_seal"}
     assert json.loads((cli_workspace / "waves/W1/root-seed.json").read_text(
         encoding="utf-8")) == first
+
+    original_prepare = root_seed.prepare_root_seed
+
+    def stale_prepare(*args, **kwargs):
+        stale = original_prepare(*args, **kwargs)
+        stale["consumer_bindings"]["wave_seal"]["wave_id"] = "W2"
+        return stale
+
+    monkeypatch.setattr(root_seed, "prepare_root_seed", stale_prepare)
+    stale_workspace = tmp_path / "stale-workspace"
+    stale_workspace.mkdir()
+    assert tp.main([
+        "root-seed", "--request", str(request_path),
+        "--output", "waves/W1/root-seed.json",
+        "--workspace", str(stale_workspace),
+    ]) == 1
+    refusal = json.loads(capsys.readouterr().out)
+    assert refusal["status"] == "refused"
+    assert "wave seal binding" in refusal["error"]
+    monkeypatch.setattr(root_seed, "prepare_root_seed", original_prepare)
+
+    oversized_request = tmp_path / "oversized-root-seed-request.json"
+    oversized_request.write_text(" " * (root_seed.MAX_SEED_BYTES + 1),
+                                  encoding="utf-8")
+    assert tp.main([
+        "root-seed", "--request", str(oversized_request),
+        "--output", "waves/W1/oversized.json",
+        "--workspace", str(cli_workspace),
+    ]) == 1
+    refusal = json.loads(capsys.readouterr().out)
+    assert refusal["status"] == "refused"
+    assert "exceeds the 65536-byte bound" in refusal["error"]
+    assert not (cli_workspace / "waves/W1/oversized.json").exists()
+
+
+def test_root_seed_consumer_boundary_rejects_rehashed_malformed_seed():
+    valid = root_seed.build_root_seed(_context(), _inputs())
+
+    malformed_seeds = []
+    for mutation in (
+        lambda seed: seed.update(schema="attacker.seed/v99"),
+        lambda seed: seed.update(version=2),
+        lambda seed: seed.update(candidate_sha="not-a-git-object"),
+        lambda seed: seed.update(settings_fingerprint="invalid"),
+        lambda seed: seed["approved_design"].update(
+            prompt="retained secret"),
+        lambda seed: seed["pickups"][0].update(write_scopes=[]),
+        lambda seed: seed["budgets"].update(max_tokens=1),
+        lambda seed: seed["outstanding_human_gates"][0].update(
+            transcript="retained secret"),
+    ):
+        malformed = copy.deepcopy(valid)
+        mutation(malformed)
+        material = {key: value for key, value in malformed.items()
+                    if key != "seed_fingerprint"}
+        malformed["seed_fingerprint"] = root_seed._digest(material)
+        malformed_seeds.append(malformed)
+
+    for malformed in malformed_seeds:
+        with pytest.raises(root_seed.RootSeedError):
+            root_seed.seed_binding(malformed)
 
 
 @pytest.mark.parametrize("field", [
@@ -123,6 +192,12 @@ def test_root_seed_rejects_unknown_transcript_prompt_worker_output_log_and_nativ
         "C:\\Users\\operator\\design.json",
         "../outside/plan.json",
         "\\\\server\\share\\plan.json",
+        "design/bad?.json",
+        "design/bad*.json",
+        "design/trailing./contract.json",
+        "design/NUL.json",
+        "design/com1/contract.json",
+        "design/control\u0001.json",
     ]
     for native_path in native_paths:
         bad = _context()
@@ -133,3 +208,12 @@ def test_root_seed_rejects_unknown_transcript_prompt_worker_output_log_and_nativ
     with pytest.raises(root_seed.RootSeedError, match="portable relative"):
         root_seed.prepare_root_seed(
             tmp_path, "/tmp/root-seed.json", _context(), _inputs())
+
+    for prepared_at in (
+        "Z", "2026-09-02", "2026-09-02T04:00:00",
+        "2026-09-02T04:00:00+00:00", "2026-02-30T04:00:00Z",
+    ):
+        bad = _context()
+        bad["prepared_at"] = prepared_at
+        with pytest.raises(root_seed.RootSeedError, match="canonical UTC"):
+            root_seed.build_root_seed(bad, _inputs())

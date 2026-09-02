@@ -3676,12 +3676,18 @@ def cmd_root_seed(a) -> int:
                 "root seed request must contain exactly context and inputs")
         if not isinstance(request["context"], dict):
             raise root_seed.RootSeedError("root seed context must be an object")
+        settings_snapshot = _effective_settings_snapshot()
         context = {
             **request["context"],
-            "settings": _effective_settings_snapshot(),
+            "settings": settings_snapshot,
         }
         receipt = root_seed.prepare_root_seed(
             _workspace(a.workspace), a.output, context, request["inputs"])
+        persisted_seed = root_seed.load_root_seed(
+            _workspace(a.workspace), a.output)
+        root_seed.verify_prepare_receipt(
+            persisted_seed, receipt, settings=settings_snapshot,
+            expected_seed_ref=a.output)
     except (OSError, UnicodeError, json.JSONDecodeError,
             root_seed.RootSeedError) as exc:
         print(json.dumps({

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -106,8 +107,22 @@ def test_root_session_settings_are_required_exact_and_shipped_values_load(
     assert migrated.receipt["migration"]["from"] == \
         "taskplane.operational-settings/v1"
     assert migrated.receipt["migration"]["to"] == settings.schema
-    assert migrated.receipt["migration"]["legacy_digest"]
+    expected_legacy_digest = hashlib.sha256(json.dumps(
+        legacy, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    assert migrated.receipt["migration"]["legacy_digest"] == \
+        expected_legacy_digest
+    assert migrated.receipt["migration"]["inserted"] == [
+        "workflow.root_session.resume",
+        "workflow.root_session.seed",
+        "workflow.root_session.seed_budget_tokens",
+        "workflow.root_session.root_budget_tokens",
+    ]
     assert migrated.receipt["migration"]["legacy_digest"] != migrated.digest
+    expected_effective_digest = hashlib.sha256(json.dumps(
+        migrated.to_dict(), sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True, allow_nan=False).encode("utf-8")).hexdigest()
+    assert migrated.digest == expected_effective_digest
 
 
 def test_invalid_or_unknown_settings_fail_closed(tmp_path):

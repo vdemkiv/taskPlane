@@ -170,8 +170,3 @@ def _assert_root_session_wiring(tmp_path, monkeypatch):
 def test_root_session_settings_severed_edge_refuses_missing_extra_invalid_or_unconsumed_fields(
         tmp_path, monkeypatch):
     _assert_root_session_wiring(tmp_path, monkeypatch)
-
-
-def test_every_accepted_setting_has_one_production_consumer_or_is_rejected_and_transition_reuses_one_snapshot(
-        tmp_path, monkeypatch):
-    _assert_root_session_wiring(tmp_path, monkeypatch)

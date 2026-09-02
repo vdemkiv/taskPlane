@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import tempfile
-from typing import Any
 
 from taskplane.settings import OperationalSettings, SettingsError
 
@@ -36,26 +36,47 @@ _REFERENCE_FIELDS = frozenset({"path", "fingerprint"})
 _PICKUP_FIELDS = frozenset({
     "id", "write_scopes", "disjointness_receipt_fingerprint"})
 _GATE_FIELDS = frozenset({"id", "owner"})
+_BUDGET_FIELDS = frozenset({
+    "max_actions", "target_tokens", "max_tokens",
+    "seed_budget_tokens", "root_budget_tokens",
+})
 _BINDING_FIELDS = frozenset({
     "candidate_sha", "run_id", "wave_id", "settings_fingerprint",
     "seed_fingerprint",
 })
+_CONSUMER_BINDING_FIELDS = frozenset({"host_root_start", "wave_seal"})
+_PREPARE_RECEIPT_FIELDS = frozenset({
+    "schema", "status", "seed_ref", "seed_fingerprint", "binding",
+    "consumer_bindings", "prepared_at", "operation_id",
+})
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+_UTC_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
+_WINDOWS_FORBIDDEN = frozenset('<>:"\\|?*')
+_WINDOWS_RESERVED = frozenset({
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+})
 
 
 class RootSeedError(ValueError):
     """The root seed is unsafe, ambiguous, or not contract-bound."""
 
 
-def _mapping(value: object, label: str) -> dict[str, Any]:
+def _mapping(value: object, label: str) -> dict[str, object]:
     if not isinstance(value, Mapping):
         raise RootSeedError(f"{label} must be an object")
-    return {str(key): item for key, item in value.items()}
+    if any(not isinstance(key, str) for key in value):
+        raise RootSeedError(f"{label} keys must be strings")
+    return dict(value)
 
 
-def _exact(value: object, fields: frozenset[str], label: str) -> dict[str, Any]:
+def _exact(
+    value: object, fields: frozenset[str], label: str,
+) -> dict[str, object]:
     row = _mapping(value, label)
     if set(row) != set(fields):
         missing = sorted(set(fields) - set(row))
@@ -95,15 +116,23 @@ def _fingerprint(value: object, label: str) -> str:
 
 
 def _relative_path(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value or "\\" in value or \
-            "\x00" in value:
+    if not isinstance(value, str) or not value or len(
+            value.encode("utf-8")) > 1024 or "\\" in value:
         raise RootSeedError(f"{label} must be a portable relative path")
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    parts = value.split("/")
+    if value.startswith("/") or any(part in {"", ".", ".."}
+                                    for part in parts):
         raise RootSeedError(f"{label} must be a portable relative path")
-    if re.match(r"^[A-Za-z]:", value):
-        raise RootSeedError(f"{label} must be a portable relative path")
-    return path.as_posix()
+    for part in parts:
+        invalid_character = any(
+            ord(character) < 32 or character in _WINDOWS_FORBIDDEN
+            for character in part)
+        reserved = part.split(".", 1)[0].upper() in _WINDOWS_RESERVED
+        if invalid_character or reserved or part.endswith((" ", ".")) or \
+                len(part.encode("utf-8")) > 255:
+            raise RootSeedError(
+                f"{label} must be a portable relative path")
+    return value
 
 
 def _reference(value: object, label: str) -> dict[str, str]:
@@ -121,7 +150,21 @@ def _positive_int(value: object, label: str) -> int:
     return value
 
 
-def _pickups(value: object) -> list[dict[str, Any]]:
+def _utc_timestamp(value: object, label: str) -> str:
+    if not isinstance(value, str) or len(value) > 64 or \
+            _UTC_TIMESTAMP.fullmatch(value) is None:
+        raise RootSeedError(f"{label} must be a canonical UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise RootSeedError(
+            f"{label} must be a canonical UTC timestamp") from exc
+    if parsed.tzinfo != timezone.utc:
+        raise RootSeedError(f"{label} must be a canonical UTC timestamp")
+    return value
+
+
+def _pickups(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list) or not value:
         raise RootSeedError("seed inputs.pickups must be a non-empty list")
     normalized = []
@@ -171,7 +214,107 @@ def _predecessor(value: object) -> dict[str, str]:
     return {"status": "present", **reference}
 
 
-def build_root_seed(context: object, inputs: object) -> dict[str, Any]:
+def _validated_predecessor(value: object) -> dict[str, str]:
+    row = _mapping(value, "predecessor_terminal_projection")
+    if row == {"status": "none"}:
+        return {"status": "none"}
+    present = _exact(
+        row, frozenset({"status", "path", "fingerprint"}),
+        "predecessor_terminal_projection")
+    if present["status"] != "present":
+        raise RootSeedError(
+            "predecessor_terminal_projection.status must be present or none")
+    reference = _reference({
+        "path": present["path"],
+        "fingerprint": present["fingerprint"],
+    }, "predecessor_terminal_projection")
+    return {"status": "present", **reference}
+
+
+def _validated_budgets(
+    value: object, settings: OperationalSettings | None = None,
+) -> dict[str, int]:
+    row = _exact(value, _BUDGET_FIELDS, "root seed budgets")
+    budgets = {
+        key: _positive_int(row[key], f"root seed budgets.{key}")
+        for key in _BUDGET_FIELDS
+    }
+    if budgets["target_tokens"] >= budgets["max_tokens"]:
+        raise RootSeedError(
+            "root seed budgets.target_tokens must be below max_tokens")
+    if budgets["seed_budget_tokens"] >= budgets["root_budget_tokens"]:
+        raise RootSeedError(
+            "root seed budgets.seed_budget_tokens must be below "
+            "root_budget_tokens")
+    if settings is not None:
+        policy = settings.workflow.root_session.consumer_projection(
+            "root-seed.prepare")
+        expected = {
+            key: _positive_int(settings.limits.budgets[key], f"settings {key}")
+            for key in ("max_actions", "target_tokens", "max_tokens")
+        }
+        expected.update({
+            "seed_budget_tokens": policy["seed_budget_tokens"],
+            "root_budget_tokens": policy["root_budget_tokens"],
+        })
+        if budgets != expected:
+            raise RootSeedError(
+                "root seed budgets do not match the effective settings")
+    return budgets
+
+
+def validate_root_seed(
+    seed: object, *, settings: OperationalSettings | None = None,
+) -> dict[str, object]:
+    """Validate the sole closed seed contract at every producer/consumer."""
+    row = _exact(seed, ROOT_SEED_FIELDS, "root seed")
+    if row["schema"] != ROOT_SEED_SCHEMA:
+        raise RootSeedError("root seed schema is unsupported")
+    if isinstance(row["version"], bool) or row["version"] != 1:
+        raise RootSeedError("root seed version must be 1")
+    candidate_sha = row["candidate_sha"]
+    if not isinstance(candidate_sha, str) or _GIT_SHA.fullmatch(
+            candidate_sha) is None:
+        raise RootSeedError("candidate_sha must be a full git object id")
+    normalized = {
+        "schema": ROOT_SEED_SCHEMA,
+        "version": 1,
+        "candidate_sha": candidate_sha,
+        "run_id": _safe_id(row["run_id"], "run_id"),
+        "wave_id": _safe_id(row["wave_id"], "wave_id"),
+        "settings_fingerprint": _fingerprint(
+            row["settings_fingerprint"], "effective settings fingerprint"),
+        "delivery_mode": _safe_id(row["delivery_mode"], "delivery_mode"),
+        "approved_design": _reference(
+            row["approved_design"], "approved design"),
+        "sealed_plan": _reference(row["sealed_plan"], "sealed plan"),
+        "pickups": _pickups(row["pickups"]),
+        "budgets": _validated_budgets(row["budgets"], settings),
+        "outstanding_human_gates": _gates(
+            row["outstanding_human_gates"]),
+        "predecessor_terminal_projection": _validated_predecessor(
+            row["predecessor_terminal_projection"]),
+        "prepared_at": _utc_timestamp(row["prepared_at"], "prepared_at"),
+        "operation_id": _safe_id(row["operation_id"], "operation_id"),
+    }
+    if settings is not None and normalized["settings_fingerprint"] != \
+            settings.digest:
+        raise RootSeedError(
+            "root seed settings fingerprint does not match effective settings")
+    material = {key: value for key, value in row.items()
+                if key != "seed_fingerprint"}
+    if material != normalized:
+        raise RootSeedError("root seed content is not canonical")
+    claimed = _fingerprint(row["seed_fingerprint"], "seed_fingerprint")
+    if claimed != _digest(normalized):
+        raise RootSeedError("root seed fingerprint does not match its content")
+    validated = {**normalized, "seed_fingerprint": claimed}
+    if len(_canonical(validated)) > MAX_SEED_BYTES:
+        raise RootSeedError("root seed exceeds the 65536-byte bound")
+    return validated
+
+
+def build_root_seed(context: object, inputs: object) -> dict[str, object]:
     """Build one exact deterministic seed without filesystem side effects."""
     ctx = _exact(context, _CONTEXT_FIELDS, "root seed context")
     supplied = _exact(inputs, _INPUT_FIELDS, "unknown seed input")
@@ -203,10 +346,7 @@ def build_root_seed(context: object, inputs: object) -> dict[str, Any]:
     if not isinstance(candidate_sha, str) or _GIT_SHA.fullmatch(
             candidate_sha) is None:
         raise RootSeedError("candidate_sha must be a full git object id")
-    prepared_at = ctx["prepared_at"]
-    if not isinstance(prepared_at, str) or not prepared_at.endswith("Z") or \
-            len(prepared_at) > 64:
-        raise RootSeedError("prepared_at must be a bounded UTC timestamp")
+    prepared_at = _utc_timestamp(ctx["prepared_at"], "prepared_at")
 
     material = {
         "schema": ROOT_SEED_SCHEMA,
@@ -233,19 +373,11 @@ def build_root_seed(context: object, inputs: object) -> dict[str, Any]:
         "operation_id": _safe_id(ctx["operation_id"], "operation_id"),
     }
     seed = {**material, "seed_fingerprint": _digest(material)}
-    encoded = _canonical(seed)
-    if len(encoded) > MAX_SEED_BYTES:
-        raise RootSeedError("root seed exceeds the 65536-byte bound")
-    return seed
+    return validate_root_seed(seed, settings=settings)
 
 
 def seed_binding(seed: object) -> dict[str, str]:
-    row = _exact(seed, ROOT_SEED_FIELDS, "root seed")
-    claimed = row["seed_fingerprint"]
-    material = {key: value for key, value in row.items()
-                if key != "seed_fingerprint"}
-    if not isinstance(claimed, str) or claimed != _digest(material):
-        raise RootSeedError("root seed fingerprint does not match its content")
+    row = validate_root_seed(seed)
     return {key: str(row[key]) for key in sorted(_BINDING_FIELDS)}
 
 
@@ -256,12 +388,72 @@ def verify_seed_binding(seed: object, binding: object, *, surface: str) -> None:
         raise RootSeedError(f"{surface} binding does not match root seed")
 
 
+def verify_prepare_receipt(
+    seed: object,
+    receipt: object,
+    *,
+    settings: OperationalSettings | None = None,
+    expected_seed_ref: str | None = None,
+) -> None:
+    """Consume a prepared binding for both required downstream surfaces."""
+    validated_seed = validate_root_seed(seed, settings=settings)
+    row = _exact(
+        receipt, _PREPARE_RECEIPT_FIELDS, "root seed prepare receipt")
+    if row["schema"] != PREPARE_RECEIPT_SCHEMA or row["status"] != "prepared":
+        raise RootSeedError("root seed prepare receipt is not prepared")
+    receipt_seed_ref = _relative_path(
+        row["seed_ref"], "root seed prepare receipt.seed_ref")
+    if expected_seed_ref is not None and receipt_seed_ref != _relative_path(
+            expected_seed_ref, "expected seed_ref"):
+        raise RootSeedError("root seed prepare receipt seed_ref is stale")
+    if row["seed_fingerprint"] != validated_seed["seed_fingerprint"] or \
+            row["prepared_at"] != validated_seed["prepared_at"] or \
+            row["operation_id"] != validated_seed["operation_id"]:
+        raise RootSeedError("root seed prepare receipt is stale")
+    verify_seed_binding(
+        validated_seed, row["binding"], surface="prepare receipt")
+    consumers = _exact(
+        row["consumer_bindings"], _CONSUMER_BINDING_FIELDS,
+        "root seed prepare receipt consumer_bindings")
+    verify_seed_binding(
+        validated_seed, consumers["host_root_start"],
+        surface="host root start")
+    verify_seed_binding(
+        validated_seed, consumers["wave_seal"], surface="wave seal")
+    if len(_canonical(row)) > MAX_RECEIPT_BYTES:
+        raise RootSeedError("root seed prepare receipt exceeds 4096 bytes")
+
+
+def load_root_seed(
+    repository_root: str | Path, seed_ref: str,
+) -> dict[str, object]:
+    """Read one bounded persisted seed through the same strict validator."""
+    portable_ref = _relative_path(seed_ref, "seed_ref")
+    root = Path(repository_root).resolve()
+    target = (root / portable_ref).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise RootSeedError("seed_ref must be a portable relative path") from exc
+    try:
+        body = target.read_bytes()
+    except OSError as exc:
+        raise RootSeedError("persisted root seed is unreadable") from exc
+    if len(body) > MAX_SEED_BYTES + 1:
+        raise RootSeedError("root seed exceeds the 65536-byte bound")
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RootSeedError("persisted root seed is unreadable") from exc
+    return validate_root_seed(parsed)
+
+
 def prepare_root_seed(
     repository_root: str | Path,
     seed_ref: str,
     context: object,
     inputs: object,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Persist one owned seed atomically and return a bounded receipt."""
     portable_ref = _relative_path(seed_ref, "seed_ref")
     root = Path(repository_root).resolve()
@@ -294,23 +486,28 @@ def prepare_root_seed(
                 os.unlink(temporary_name)
             except FileNotFoundError:
                 pass
-    receipt = {
+    binding = seed_binding(seed)
+    receipt: dict[str, object] = {
         "schema": PREPARE_RECEIPT_SCHEMA,
         "status": "prepared",
         "seed_ref": portable_ref,
         "seed_fingerprint": seed["seed_fingerprint"],
-        "binding": seed_binding(seed),
+        "binding": binding,
+        "consumer_bindings": {
+            "host_root_start": dict(binding),
+            "wave_seal": dict(binding),
+        },
         "prepared_at": seed["prepared_at"],
         "operation_id": seed["operation_id"],
     }
-    if len(_canonical(receipt)) > MAX_RECEIPT_BYTES:
-        raise RootSeedError("root seed prepare receipt exceeds 4096 bytes")
+    verify_prepare_receipt(
+        seed, receipt, expected_seed_ref=portable_ref)
     return receipt
 
 
 __all__ = [
     "MAX_RECEIPT_BYTES", "MAX_SEED_BYTES", "PREPARE_RECEIPT_SCHEMA",
     "ROOT_SEED_FIELDS", "ROOT_SEED_SCHEMA", "RootSeedError",
-    "build_root_seed", "prepare_root_seed", "seed_binding",
-    "verify_seed_binding",
+    "build_root_seed", "load_root_seed", "prepare_root_seed", "seed_binding",
+    "validate_root_seed", "verify_prepare_receipt", "verify_seed_binding",
 ]
