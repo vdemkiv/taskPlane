@@ -12,6 +12,8 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
+import sys
 from typing import Any, Mapping
 
 
@@ -106,6 +108,22 @@ def _require_nonempty_strings(value: Any, context: str) -> list[str]:
     if len(value) != len(set(value)):
         raise StrategyContractError(f"{context} contains duplicates")
     return value
+
+
+def _collect_exact_selectors(workspace: str | Path, selectors: list[str]) -> None:
+    """Require pytest itself to collect every declared exact selector."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", *selectors],
+            cwd=str(workspace), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", timeout=30,
+            check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StrategyContractError(
+            "impacted test selector collection is unavailable") from exc
+    if result.returncode != 0:
+        raise StrategyContractError(
+            "impacted test selector does not exist or cannot be collected")
 
 
 def validate_strategy(strategy: Mapping[str, Any]) -> dict[str, Any]:
@@ -298,6 +316,8 @@ def current_value_obligations(
         selectors.append(selector)
     if len(selectors) != len(set(selectors)):
         raise StrategyContractError("impacted test selectors contain duplicates")
+    if workspace is not None:
+        _collect_exact_selectors(workspace, selectors)
 
     edges = impact_manifest.get("producer_consumer_edges")
     if not isinstance(edges, list) or not edges:
@@ -337,7 +357,7 @@ def current_value_obligations(
     if len(edge_keys) != len(set(edge_keys)):
         raise StrategyContractError("producer-consumer edges contain duplicates")
 
-    interfaces = impact_manifest.get("changed_interfaces", [])
+    interfaces = copy.deepcopy(impact_manifest.get("changed_interfaces", []))
     if not isinstance(interfaces, list):
         raise StrategyContractError("changed interfaces must be a list")
     interface_keys = []
@@ -374,6 +394,12 @@ def current_value_obligations(
                         not target.is_file() or target.is_symlink():
                     raise StrategyContractError(
                         "changed interface fixture must be an existing safe file")
+                try:
+                    fixture["content_sha256"] = hashlib.sha256(
+                        target.read_bytes()).hexdigest()
+                except OSError as exc:
+                    raise StrategyContractError(
+                        "changed interface fixture content is unavailable") from exc
         elif fixture is not None:
             raise StrategyContractError(
                 "in-process interface must use a real consumer journey"
@@ -391,8 +417,7 @@ def current_value_obligations(
                 or not row["id"].strip():
             raise StrategyContractError("failure observation needs an id")
         classification = row.get("classification")
-        if classification is not None and \
-                classification not in EVIDENCE_FAILURE_CLASSES:
+        if classification not in EVIDENCE_FAILURE_CLASSES:
             raise StrategyContractError("failure classification is invalid")
         if row.get("classified_before_repair") is not True:
             raise StrategyContractError(
@@ -411,7 +436,7 @@ def current_value_obligations(
     return {
         "tests": copy.deepcopy(tests),
         "producer_consumer_edges": copy.deepcopy(edges),
-        "changed_interfaces": copy.deepcopy(interfaces),
+        "changed_interfaces": interfaces,
         "failures": copy.deepcopy(failures),
         "rejected_evidence_kinds": list(REJECTED_BEHAVIORAL_EVIDENCE),
     }

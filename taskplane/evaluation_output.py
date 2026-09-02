@@ -142,7 +142,8 @@ def evaluator_output_schema() -> dict:
 
 
 def validate_evaluator_value(
-        value: dict, *, expected_lenses: list[str] | None = None) -> dict:
+        value: dict, *, expected_lenses: list[str] | None = None,
+        expected_evidence_binding: dict | None = None) -> dict:
     """Validate evaluator output for admission to a governed decision.
 
     Historical failure rows are intentionally rejected here.  They remain
@@ -190,7 +191,8 @@ def validate_evaluator_value(
         try:
             evaluate_child_evidence.validate_consumption(
                 child_evidence, expected_task=value["task"],
-                expected_requirement=value["requirement"])
+                expected_requirement=value["requirement"],
+                expected_binding=expected_evidence_binding)
         except evaluate_child_evidence.EvidenceContractError as exc:
             raise OutputValidationError(
                 "child_evidence_admission", str(exc)) from None
@@ -205,7 +207,8 @@ def validate_evaluator_value(
 
 
 def attach_child_evidence(
-        value: dict, *, run_id: str, evaluator_attempt_id: str) -> dict:
+        value: dict, *, run_id: str, evaluator_attempt_id: str,
+        expected_binding: dict | None = None) -> dict:
     """Attach consumption derived from the canonical durable run ledger."""
     if __package__:
         from . import evaluate_child_evidence
@@ -214,6 +217,10 @@ def attach_child_evidence(
     attached = deepcopy(value)
     attached["child_evidence"] = evaluate_child_evidence.consume_evidence(
         run_id=run_id, evaluator_attempt_id=evaluator_attempt_id)
+    evaluate_child_evidence.validate_consumption(
+        attached["child_evidence"], expected_task=value.get("task"),
+        expected_requirement=value.get("requirement"),
+        expected_binding=expected_binding)
     return attached
 
 

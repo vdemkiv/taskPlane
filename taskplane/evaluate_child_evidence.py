@@ -9,8 +9,10 @@ import re
 from typing import Any, Mapping, Sequence
 
 if __package__:
-    from . import lens, run_artifacts, run_store, runnability, test_strategy
+    from . import (governed_commands, lens, run_artifacts, run_store,
+                   runnability, test_strategy)
 else:  # pragma: no cover
+    import governed_commands
     import lens
     import run_artifacts
     import run_store
@@ -101,7 +103,8 @@ def _manifest_digest(value: Mapping[str, Any]) -> str:
     return _digest(dict(value))
 
 
-def _ledger(root: str | Path | None = None, run_id: str | None = None) -> tuple[Path, dict]:
+def _ledger(root: str | Path | None = None, run_id: str | None = None) \
+        -> tuple[Path, dict, Path]:
     try:
         if run_id is not None:
             owner = run_store.RunStore().load(run_id)
@@ -115,7 +118,10 @@ def _ledger(root: str | Path | None = None, run_id: str | None = None) -> tuple[
         if Path(owner["paths"]["artifacts"]).absolute() != selected:
             raise EvidenceContractError("durable evidence ledger is foreign")
         run_artifacts.verify_manifest(selected, expected_binding=manifest["binding"])
-        return selected, manifest
+        checkout = Path(owner["repository"]["checkout"]).absolute()
+        if not checkout.is_dir() or checkout.is_symlink():
+            raise EvidenceContractError("durable evidence checkout is unavailable")
+        return selected, manifest, checkout
     except (KeyError, OSError, run_artifacts.RunArtifactError,
             run_store.RunStoreError) as exc:
         raise EvidenceContractError(
@@ -140,11 +146,52 @@ def _reuse_key(kind: str, binding: Mapping[str, Any], obligations: Mapping[str, 
     })
 
 
+def _assert_current_assignment(value: Mapping[str, Any],
+                               manifest: Mapping[str, Any]) -> dict:
+    """Rebind a durable assignment to the manifest that is consuming it."""
+    row = _validate_assignment(value)
+    ledger = manifest["binding"]
+    candidate = ledger["candidate"]
+    binding = row["binding"]
+    if row["ledger_binding_fingerprint"] != ledger["fingerprint"] or \
+            binding["candidate_sha"] != candidate.get("revision") or \
+            binding["source_tree"] != candidate.get("source_tree") or \
+            binding["settings_digest"] != ledger["settings_digest"]:
+        raise EvidenceContractError("durable child assignment is foreign")
+    for field in ("design_fingerprint", "plan_fingerprint", "settings_digest",
+                  "impact_manifest_fingerprint"):
+        if not _DIGEST.fullmatch(_text(binding[field], f"binding {field}")):
+            raise EvidenceContractError(f"binding {field} is not a SHA-256 digest")
+    return row
+
+
+def _fixture_digests(assignment: Mapping[str, Any], workspace: Path) -> None:
+    if assignment["producer_kind"] != TEST_DESIGN_PRODUCER:
+        return
+    for row in assignment["test_obligations"]["changed_interfaces"]:
+        if row["kind"] not in {"serialized", "external"}:
+            continue
+        fixture = row["fixture"]
+        relative = Path(fixture["path"])
+        target = workspace / relative
+        try:
+            if relative.is_absolute() or ".." in relative.parts or \
+                    not target.is_file() or target.is_symlink():
+                raise OSError("unsafe or missing fixture")
+            observed = hashlib.sha256(target.read_bytes()).hexdigest()
+        except OSError:
+            raise EvidenceContractError(
+                "changed interface fixture is missing after assignment") from None
+        if observed != fixture.get("content_sha256"):
+            raise EvidenceContractError(
+                "changed interface fixture changed after assignment")
+
+
 def prepare_assignments(workspace: str | Path, binding: Mapping[str, Any],
                         impact_manifest: Mapping[str, Any], *,
                         artifact_root: str | Path) -> list[dict]:
     """Bind two non-lens producers to the current candidate and durable run."""
-    _, manifest = _ledger(root=artifact_root)
+    _, manifest, _ = _ledger(root=artifact_root)
     impact_digest = _manifest_digest(impact_manifest)
     bound = copy.deepcopy(dict(binding))
     if bound.get("impact_manifest_fingerprint") not in (None, impact_digest):
@@ -239,119 +286,169 @@ def _validate_assignment(value: object) -> dict:
     return row
 
 
-def _runtime(value: object, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or value.get("evidence_kind") != "runtime":
-        raise EvidenceContractError(f"{label} requires runtime evidence")
-    return value
+def _runtime(value: object, label: str, *, workspace: Path, run_id: str,
+             assignment: Mapping[str, Any], argv: list[str],
+             consumed: set[str]) -> Mapping[str, Any]:
+    """Resolve one existing governed-command receipt; never trust result flags."""
+    if not isinstance(value, Mapping) or set(value) != {"authorization", "handle"}:
+        raise EvidenceContractError(f"{label} requires governed execution provenance")
+    try:
+        receipt = governed_commands.semantic_checkpoint_execution_evidence(
+            str(workspace), _text(value.get("authorization"), "authorization"),
+            _text(value.get("handle"), "execution handle"))
+    except governed_commands.GovernedCommandError as exc:
+        raise EvidenceContractError(
+            f"{label} governed execution provenance is unavailable: {exc}") from None
+    binding = assignment["binding"]
+    identity = receipt.get("identity")
+    fingerprint = receipt.get("receipt_digest")
+    if not isinstance(identity, Mapping) or identity.get("run_id") != run_id or \
+            identity.get("task_id") != binding["task_id"] or \
+            receipt.get("source_sha") != binding["candidate_sha"] or \
+            receipt.get("target_sha") != binding["candidate_sha"] or \
+            receipt.get("plan_fingerprint") != binding["plan_fingerprint"] or \
+            receipt.get("runtime_argv") != argv or \
+            receipt.get("state") != "succeeded" or receipt.get("exit_code") != 0 or \
+            not isinstance(fingerprint, str) or not _DIGEST.fullmatch(fingerprint):
+        raise EvidenceContractError(f"{label} governed execution receipt is foreign")
+    if fingerprint in consumed:
+        raise EvidenceContractError(
+            f"{label} reuses execution proof for another obligation")
+    consumed.add(fingerprint)
+    return receipt
 
 
-def _language_substance(assignment: Mapping[str, Any], result: Mapping[str, Any]) -> int:
+def _language_substance(assignment: Mapping[str, Any], result: Mapping[str, Any], *,
+                        workspace: Path, run_id: str,
+                        consumed: set[str]) -> int:
     expected = {row["language"]: row for row in assignment["language_obligations"]}
     rows = result.get("language_coverage")
     if not isinstance(rows, list) or len(rows) != len(expected):
         raise EvidenceContractError("language evidence is incomplete")
     facts = 0
+    covered = set()
     for row in rows:
         obligation = expected.get(row.get("language")) if isinstance(row, Mapping) else None
+        language = row.get("language") if isinstance(row, Mapping) else None
         if obligation is None or row.get("reference_id") != obligation["reference"]["path"] or \
                 row.get("reference_sha256") != obligation["reference"]["content_sha256"] or \
                 row.get("toolchain_fingerprint") != obligation["toolchain_fingerprint"] or \
                 row.get("inspected_files") != obligation["implementation_files"]:
             raise EvidenceContractError("language evidence is foreign or stale")
+        if language in covered:
+            raise EvidenceContractError("language obligation is covered more than once")
+        covered.add(language)
         commands = row.get("command_receipts")
         if not isinstance(commands, list) or len(commands) != len(
                 obligation["required_commands"]):
             raise EvidenceContractError("language command evidence is incomplete")
         for actual, required in zip(commands, obligation["required_commands"]):
-            actual = _runtime(actual, "language command")
-            count = actual.get("passing_facts")
-            if actual.get("check_id") != required["id"] or \
-                    actual.get("argv") != required["argv"] or \
-                    actual.get("tool_version") != required["tool_version"] or \
-                    actual.get("exit_code") != 0 or isinstance(count, bool) or \
-                    not isinstance(count, int) or count < 1:
-                raise EvidenceContractError("language command evidence did not pass")
-            facts += count
+            _runtime(actual, "language command", workspace=workspace,
+                     run_id=run_id, assignment=assignment,
+                     argv=required["argv"], consumed=consumed)
+            facts += 1
         if not isinstance(row.get("findings"), list):
             raise EvidenceContractError("language findings are invalid")
+    if covered != set(expected):
+        raise EvidenceContractError("language evidence omitted an obligation")
     return facts
 
 
-def _test_substance(assignment: Mapping[str, Any], result: Mapping[str, Any]) -> int:
+def _test_substance(assignment: Mapping[str, Any], result: Mapping[str, Any], *,
+                    workspace: Path, run_id: str,
+                    consumed: set[str]) -> int:
     obligations = assignment["test_obligations"]
     tests = {row["selector"]: row for row in obligations["tests"]}
     current = result.get("current_value")
     if not isinstance(current, list) or len(current) != len(tests):
         raise EvidenceContractError("current-value evidence is incomplete")
     facts = 0
+    covered_tests = set()
     for row in current:
         expected = tests.get(row.get("selector")) if isinstance(row, Mapping) else None
-        run = _runtime(row.get("execution"), "current-value evidence")
-        count = run.get("passing_facts")
+        argv = ["python3", "-m", "pytest", "-q", row.get("selector")]
+        _runtime(row.get("execution"), "current-value evidence",
+                 workspace=workspace, run_id=run_id, assignment=assignment,
+                 argv=argv, consumed=consumed)
         if expected is None or row.get("contract") != expected["contract"] or \
                 row.get("classification") not in {
-                    "protects-current-contract", "obsolete-replace", "obsolete-remove"} or \
-                run.get("argv") != ["python3", "-m", "pytest", "-q", row["selector"]] or \
-                run.get("exit_code") != 0 or isinstance(count, bool) or \
-                not isinstance(count, int) or count < 1:
+                    "protects-current-contract", "obsolete-replace", "obsolete-remove"}:
             raise EvidenceContractError("current-value exact selector did not pass")
-        facts += count
+        if row["selector"] in covered_tests:
+            raise EvidenceContractError("test obligation is covered more than once")
+        covered_tests.add(row["selector"])
+        facts += 1
+    if covered_tests != set(tests):
+        raise EvidenceContractError("current-value evidence omitted an obligation")
     edges = {(row["producer"], row["consumer"], row["selector"]): row
              for row in obligations["producer_consumer_edges"]}
     actual_edges = result.get("producer_consumers")
     if not isinstance(actual_edges, list) or len(actual_edges) != len(edges):
         raise EvidenceContractError("producer-consumer evidence is incomplete")
+    covered_edges = set()
     for row in actual_edges:
         key = (row.get("producer"), row.get("consumer"), row.get("selector"))
         expected = edges.get(key)
-        fresh = _runtime(row.get("freshness"), "freshness")
-        severed = _runtime(row.get("severed_edge"), "severed edge")
-        before, after = fresh.get("before_fingerprint"), fresh.get("after_fingerprint")
-        if expected is None or fresh.get("inputs") != expected["freshness_inputs"] or \
-                not isinstance(before, str) or not _DIGEST.fullmatch(before) or \
-                not isinstance(after, str) or not _DIGEST.fullmatch(after) or before == after or \
-                fresh.get("stale_rejected") is not True or fresh.get("exit_code") != 0 or \
-                severed.get("mutation") != expected["severed_edge"]["mutation"] or \
-                severed.get("selector") != expected["severed_edge"]["selector"] or \
-                severed.get("failure_observed") is not True or \
-                severed.get("restored_pass") is not True or severed.get("exit_code") != 0:
-            raise EvidenceContractError("freshness or severed-edge evidence is not observable")
+        if expected is None:
+            raise EvidenceContractError("producer-consumer evidence is foreign")
+        _runtime(row.get("execution"), "producer-consumer evidence",
+                 workspace=workspace, run_id=run_id, assignment=assignment,
+                 argv=["python3", "-m", "pytest", "-q", expected["selector"]],
+                 consumed=consumed)
+        if key in covered_edges:
+            raise EvidenceContractError("producer-consumer obligation is covered more than once")
+        covered_edges.add(key)
         facts += 2
+    if covered_edges != set(edges):
+        raise EvidenceContractError("producer-consumer evidence omitted an obligation")
     expected_fixtures = {(row["producer"], row["fixture"]["path"], row["slice"])
                          for row in obligations["changed_interfaces"]
                          if row["kind"] in {"serialized", "external"}}
     fixtures = result.get("same_slice_fixtures")
     actual_fixtures = {(row.get("producer"), row.get("path"), row.get("slice"))
                        for row in fixtures or [] if isinstance(row, Mapping)}
-    if not isinstance(fixtures, list) or actual_fixtures != expected_fixtures or any(
-            _runtime(row, "fixture").get("verified_exists") is not True for row in fixtures):
+    if not isinstance(fixtures, list) or len(fixtures) != len(expected_fixtures) or \
+            actual_fixtures != expected_fixtures:
         raise EvidenceContractError("same-slice fixture evidence is incomplete")
     failures = result.get("failure_classifications")
     expected_failures = {row["id"]: row for row in obligations["failures"]}
     if not isinstance(failures, list) or len(failures) != len(expected_failures):
         raise EvidenceContractError("failure classifications are incomplete")
+    covered_failures = set()
     for row in failures:
         expected = expected_failures.get(row.get("id")) if isinstance(row, Mapping) else None
-        if expected is None or row.get("classification") != expected["classification"] or \
-                row.get("classified_before_repair") is not True:
+        if expected is None or row.get("classification") != expected["classification"]:
             raise EvidenceContractError("failure classification is stale")
         _text(row.get("reason"), "failure reason", 12)
         _text(row.get("owner"), "failure owner", 3)
         _text(row.get("cluster"), "failure cluster", 3)
+        if row["id"] in covered_failures:
+            raise EvidenceContractError("failure is classified more than once")
+        covered_failures.add(row["id"])
+    if covered_failures != set(expected_failures):
+        raise EvidenceContractError("failure classification omitted an obligation")
     return facts + len(fixtures) + len(failures)
 
 
-def validate_result(assignment: Mapping[str, Any], result: Mapping[str, Any]) -> dict:
+def validate_result(assignment: Mapping[str, Any], result: Mapping[str, Any], *,
+                    workspace: str | Path, run_id: str) -> dict:
     """Validate one result and return its canonical durable index metadata."""
     checked = _validate_assignment(assignment)
     _reject_authority(result)
+    selected_workspace = Path(workspace).absolute()
+    selected_run = _text(run_id, "run id")
+    consumed: set[str] = set()
     kind = checked["producer_kind"]
     if result.get("schema") != RESULT_SCHEMAS[kind] or \
             result.get("producer_kind") != kind or \
             result.get("reuse_key_digest") != checked["reuse_key_digest"]:
         raise EvidenceContractError("child result binding is stale")
-    count = (_language_substance(checked, result) if kind == LANGUAGE_PRODUCER
-             else _test_substance(checked, result))
+    count = (_language_substance(
+        checked, result, workspace=selected_workspace, run_id=selected_run,
+        consumed=consumed) if kind == LANGUAGE_PRODUCER else
+        _test_substance(
+            checked, result, workspace=selected_workspace, run_id=selected_run,
+            consumed=consumed))
     if count < 1:
         raise EvidenceContractError("child result is non-substantive")
     return {
@@ -373,8 +470,10 @@ def _entry(manifest: Mapping[str, Any], reference: object) -> dict:
     return rows[0]
 
 
-def _producer(root: Path, manifest: Mapping[str, Any], assignment: Mapping[str, Any]) -> dict:
-    checked = _validate_assignment(assignment)
+def _producer(root: Path, manifest: Mapping[str, Any], workspace: Path,
+              assignment: Mapping[str, Any]) -> dict:
+    checked = _assert_current_assignment(assignment, manifest)
+    _fixture_digests(checked, workspace)
     attempt_id = checked["binding"]["evaluator_attempt_id"] + "-" + checked["producer_kind"]
     rows = [row for row in manifest["classes"]["agent-activity"]["entries"]
             if row["metadata"].get("agent_attempt_id") == attempt_id]
@@ -408,7 +507,9 @@ def _producer(root: Path, manifest: Mapping[str, Any], assignment: Mapping[str, 
     except (OSError, ValueError) as exc:
         raise EvidenceContractError(f"durable result is unreadable: {exc}") from None
     execution = events[3]["details"].get("execution")
-    metadata = validate_result(checked, result)
+    metadata = validate_result(
+        checked, result, workspace=workspace,
+        run_id=manifest["binding"]["run_id"])
     if execution == "reused":
         reusable = find_reusable_result(root, checked)
         if reusable != result_entry:
@@ -443,7 +544,7 @@ def _producer(root: Path, manifest: Mapping[str, Any], assignment: Mapping[str, 
 
 def find_reusable_result(root: str | Path, assignment: Mapping[str, Any]) -> dict | None:
     """Resolve one complete identical result from the authoritative ledger."""
-    selected, manifest = _ledger(root=root)
+    selected, manifest, workspace = _ledger(root=root)
     checked = _validate_assignment(assignment)
     candidates = {}
     for row in manifest["classes"]["agent-activity"]["entries"]:
@@ -454,8 +555,15 @@ def find_reusable_result(root: str | Path, assignment: Mapping[str, Any]) -> dic
                 checked["reuse_key_digest"] or prior.get("assignment_digest") == \
                 checked["assignment_digest"]:
             continue
+        prior_attempt = prior["binding"]["evaluator_attempt_id"] + "-" + \
+            prior["producer_kind"]
+        prior_rows = [item for item in manifest["classes"]["agent-activity"]["entries"]
+                      if item["metadata"].get("agent_attempt_id") == prior_attempt]
+        if len(prior_rows) != 5 or prior_rows[3]["metadata"]["details"].get(
+                "execution") != "executed":
+            continue
         try:
-            summary = _producer(selected, manifest, prior)
+            summary = _producer(selected, manifest, workspace, prior)
         except EvidenceContractError:
             continue
         entry = next(row for row in manifest["classes"]["validation"]["entries"]
@@ -468,7 +576,7 @@ def find_reusable_result(root: str | Path, assignment: Mapping[str, Any]) -> dic
 
 def consume_evidence(*, run_id: str, evaluator_attempt_id: str) -> dict:
     """Derive consumption from durable records, never caller-authored digests."""
-    root, manifest = _ledger(run_id=_text(run_id, "run id"))
+    root, manifest, workspace = _ledger(run_id=_text(run_id, "run id"))
     attempt = _text(evaluator_attempt_id, "evaluator attempt id")
     assignments = []
     for row in manifest["classes"]["agent-activity"]["entries"]:
@@ -480,21 +588,23 @@ def consume_evidence(*, run_id: str, evaluator_attempt_id: str) -> dict:
     by_kind = {row["producer_kind"]: row for row in assignments}
     if len(assignments) != 2 or set(by_kind) != set(PRODUCER_KINDS):
         raise EvidenceContractError("Evaluate requires exactly two durable children")
-    tasks = {row["binding"]["task_id"] for row in assignments}
-    requirements = {row["binding"]["requirement_id"] for row in assignments}
-    if len(tasks) != 1 or len(requirements) != 1:
+    bindings = [row["binding"] for row in assignments]
+    if any(binding != bindings[0] for binding in bindings[1:]):
         raise EvidenceContractError("durable child binding is ambiguous")
+    binding = bindings[0]
     return {
         "schema": CONSUMPTION_SCHEMA, "run_id": run_id,
-        "evaluator_attempt_id": attempt, "task_id": next(iter(tasks)),
-        "requirement_id": next(iter(requirements)), "catalog_lens_count": 0,
-        "producers": [_producer(root, manifest, by_kind[kind])
+        "evaluator_attempt_id": attempt, "task_id": binding["task_id"],
+        "requirement_id": binding["requirement_id"],
+        "binding": copy.deepcopy(binding), "catalog_lens_count": 0,
+        "producers": [_producer(root, manifest, workspace, by_kind[kind])
                       for kind in PRODUCER_KINDS],
     }
 
 
 def validate_consumption(value: Mapping[str, Any], *, expected_task: str | None = None,
-                         expected_requirement: str | None = None) -> dict:
+                         expected_requirement: str | None = None,
+                         expected_binding: Mapping[str, Any] | None = None) -> dict:
     if not isinstance(value, Mapping):
         raise EvidenceContractError("evidence consumption is invalid")
     derived = consume_evidence(
@@ -506,6 +616,9 @@ def validate_consumption(value: Mapping[str, Any], *, expected_task: str | None 
         raise EvidenceContractError("child evidence belongs to another task")
     if expected_requirement is not None and derived["requirement_id"] != expected_requirement:
         raise EvidenceContractError("child evidence belongs to another requirement")
+    if expected_binding is None or dict(expected_binding) != derived["binding"]:
+        raise EvidenceContractError(
+            "child evidence is not bound to the current evaluator candidate")
     if any(row["substantive_count"] < 1 or row["consumed"] is not True
            for row in derived["producers"]):
         raise EvidenceContractError("child results were not substantively consumed")
