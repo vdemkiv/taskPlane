@@ -1233,6 +1233,17 @@ def _v3_dashboard_source(
         if state.get("run_id") not in (None, run_id):
             raise ValueError(
                 "managed v3 loop state contradicts the run manifest identity")
+        raw_tasks = state.get("tasks")
+        tasks = [] if raw_tasks is None else raw_tasks
+        if not isinstance(tasks, list):
+            raise ValueError("managed v3 tasks are not a list")
+        task = None
+        index = state.get("current_task")
+        if isinstance(index, int) and 0 <= index < len(tasks):
+            task = tasks[index]
+            if not isinstance(task, Mapping):
+                raise ValueError("managed v3 selected task is not an object")
+        target = str((task or {}).get("id") or state.get("step") or "run")
     except Exception as exc:
         return {
             "mode": "v3", "status": "corrupt", "run_id": run_id,
@@ -1242,18 +1253,13 @@ def _v3_dashboard_source(
             "evidence": [error_formatter(exc)],
         }
 
-    task = None
-    tasks = state.get("tasks") or []
-    index = state.get("current_task")
-    if isinstance(index, int) and 0 <= index < len(tasks):
-        task = tasks[index]
     manifest_fingerprint = _canonical_fingerprint(manifest)
     state_fingerprint = _canonical_fingerprint(state)
     return {
         "mode": "v3", "status": "ready", "run_id": run_id,
         "revision": str(manifest.get("revision") or
                         state.get("baseline") or fingerprint),
-        "target": str((task or {}).get("id") or state.get("step") or "run"),
+        "target": target,
         "state": state, "source_fingerprint": fingerprint,
         "evidence": ["run-manifest:" + manifest_fingerprint,
                      "loop-state:" + state_fingerprint],
