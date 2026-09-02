@@ -390,7 +390,8 @@ def test_root_budget_refuses_new_dispatch_while_active_workers_terminalize_once_
     screen = dispatch_telemetry.screen_dispatch(
         ledger, _Clock(), current_stage="execute",
         outstanding_set_fingerprint="c" * 64,
-        preserved_context_fingerprint="d" * 64)
+        preserved_context_fingerprint="d" * 64,
+        observation_authority=authority)
     assert screen["dispatch_allowed"] is False
     assert screen["root_usage"]["total_tokens"] == 40_000_000
     assert screen["worker_usage"]["total_tokens"] == 5
@@ -430,7 +431,8 @@ def test_root_usage_missing_or_at_ceiling_cannot_silently_resume_dispatch() -> N
     replay = dispatch_telemetry.screen_dispatch(
         ledger, _Clock(), current_stage="execute",
         outstanding_set_fingerprint="e" * 64,
-        preserved_context_fingerprint="f" * 64)
+        preserved_context_fingerprint="f" * 64,
+        observation_authority=authority)
     assert replay["dispatch_allowed"] is False
     assert replay["root_admission"]["sticky"] is True
 
@@ -442,7 +444,8 @@ def test_root_usage_missing_or_at_ceiling_cannot_silently_resume_dispatch() -> N
     ceiling = dispatch_telemetry.screen_dispatch(
         fresh, _Clock(), current_stage="execute",
         outstanding_set_fingerprint="1" * 64,
-        preserved_context_fingerprint="2" * 64)
+        preserved_context_fingerprint="2" * 64,
+        observation_authority=authority)
     assert ceiling["dispatch_allowed"] is False
     assert ceiling["root_admission"]["reason_code"] == \
         "root_budget_reached"
@@ -511,6 +514,51 @@ def test_root_meter_ledger_rejects_projection_tamper_and_cross_call_rollback() -
             rollback, rolled, observation_authority=authority)
 
 
+def test_persisted_root_meter_stale_authenticator_cannot_reopen_admission() -> None:
+    authority = b"host-observation-authority"
+    ledger = _ledger()
+    dispatch_telemetry.bind_dispatch(
+        ledger, _dispatch("active-worker"), usage=_usage(1),
+        source_fingerprint="3" * 64)
+    _configure_root(ledger)
+    dispatch_telemetry.record_root_meter(
+        ledger, _root_meter(40_000_000, authority=authority),
+        observation_authority=authority)
+
+    persisted = json.loads(json.dumps(ledger))
+    meter = persisted["root_admission"]["meter"]
+    watermark = meter["watermark"]
+    reduced_usage = _usage(1, cached=1)
+    for projection in (watermark, meter):
+        projection["usage"] = reduced_usage
+        projection["first_observed_input_tokens"] = 1
+        projection["peak_context_tokens"] = 1
+        projection["context_rent_tokens"] = 0.0
+    watermark_material = dict(watermark)
+    watermark_material.pop("fingerprint")
+    watermark_material.pop("authenticator")
+    watermark["fingerprint"] = native_session_meter.fingerprint(
+        watermark_material)
+    meter_material = dict(meter)
+    meter_material.pop("fingerprint")
+    meter["fingerprint"] = native_session_meter.fingerprint(meter_material)
+
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="watermark is not authentic",
+    ):
+        dispatch_telemetry.screen_dispatch(
+            persisted, _Clock(), current_stage="execute",
+            outstanding_set_fingerprint="4" * 64,
+            preserved_context_fingerprint="5" * 64,
+            observation_authority=authority,
+            admission_operation_id="reopened-worker",
+            dispatch=_dispatch("reopened-worker"), usage=_usage(1),
+            source_fingerprint="6" * 64)
+    assert all(row["dispatch_id"] != "reopened-worker"
+               for row in persisted["bindings"])
+
+
 def test_root_screen_and_worker_binding_are_one_idempotent_admission_operation() -> None:
     authority = b"host-observation-authority"
     ledger = _ledger()
@@ -529,7 +577,8 @@ def test_root_screen_and_worker_binding_are_one_idempotent_admission_operation()
     stale = dispatch_telemetry.screen_dispatch(
         ledger, _Clock(), current_stage="execute",
         outstanding_set_fingerprint="4" * 64,
-        preserved_context_fingerprint="5" * 64)
+        preserved_context_fingerprint="5" * 64,
+        observation_authority=authority)
     assert stale["dispatch_allowed"] is True
 
     ceiling = _root_meter(
@@ -548,6 +597,7 @@ def test_root_screen_and_worker_binding_are_one_idempotent_admission_operation()
         ledger, _Clock(), current_stage="execute",
         outstanding_set_fingerprint="4" * 64,
         preserved_context_fingerprint="5" * 64,
+        observation_authority=authority,
         admission_operation_id="new-worker",
         dispatch=_dispatch("new-worker"), usage=_usage(1),
         source_fingerprint="6" * 64)
@@ -567,6 +617,7 @@ def test_root_screen_and_worker_binding_are_one_idempotent_admission_operation()
         open_ledger, _Clock(), current_stage="execute",
         outstanding_set_fingerprint="8" * 64,
         preserved_context_fingerprint="9" * 64,
+        observation_authority=authority,
         admission_operation_id="atomic-worker",
         dispatch=_dispatch("atomic-worker"), usage=_usage(1),
         source_fingerprint="a" * 64)
@@ -575,6 +626,7 @@ def test_root_screen_and_worker_binding_are_one_idempotent_admission_operation()
         open_ledger, _Clock(), current_stage="execute",
         outstanding_set_fingerprint="8" * 64,
         preserved_context_fingerprint="9" * 64,
+        observation_authority=authority,
         admission_operation_id="atomic-worker",
         dispatch=_dispatch("atomic-worker"), usage=_usage(1),
         source_fingerprint="a" * 64)

@@ -1473,7 +1473,10 @@ def _root_policy(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_root_admission(value: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_root_admission(
+        value: Mapping[str, Any], *,
+        observation_authority: bytes | None = None,
+        require_authenticated_meter: bool = False) -> dict[str, Any]:
     if not isinstance(value, Mapping) or set(value) != \
             _ROOT_ADMISSION_FIELDS or value.get("schema") != \
             ROOT_ADMISSION_SCHEMA:
@@ -1503,7 +1506,21 @@ def _validate_root_admission(value: Mapping[str, Any]) -> dict[str, Any]:
             meter = native_session_meter.validate_root_meter_projection(meter)
         except native_session_meter.NativeSessionMeterError as exc:
             raise DispatchTelemetryError(str(exc)) from exc
-        _sha256_fingerprint(authority, "root observation authority fingerprint")
+        authority_fingerprint = _sha256_fingerprint(
+            authority, "root observation authority fingerprint")
+        if observation_authority is not None:
+            if hashlib.sha256(observation_authority).hexdigest() != \
+                    authority_fingerprint:
+                raise DispatchTelemetryError(
+                    "root observation authority changed")
+            try:
+                meter = native_session_meter.validate_root_meter(
+                    meter, authority=observation_authority)
+            except native_session_meter.NativeSessionMeterError as exc:
+                raise DispatchTelemetryError(str(exc)) from exc
+        elif require_authenticated_meter:
+            raise DispatchTelemetryError(
+                "root observation authority is required for admission")
         if meter.get("status") == "available":
             if meter.get("session_role") != "root" or not isinstance(
                     meter.get("watermark"), Mapping):
@@ -1628,18 +1645,23 @@ def record_root_meter(
     candidate = dict(admission)
     candidate["meter"] = checked_meter
     candidate["observation_authority_fingerprint"] = authority_fingerprint
-    _validate_root_admission(candidate)
+    _validate_root_admission(
+        candidate, observation_authority=observation_authority,
+        require_authenticated_meter=True)
     admission.update(candidate)
     ledger["revision"] = int(ledger["revision"]) + 1
     return dict(admission)
 
 
 def _root_admission_projection(
-        ledger: Mapping[str, Any]) -> dict[str, Any] | None:
+        ledger: Mapping[str, Any], *,
+        observation_authority: bytes | None = None) -> dict[str, Any] | None:
     admission = ledger.get("root_admission")
     if admission is None:
         return None
-    checked = _validate_root_admission(admission)
+    checked = _validate_root_admission(
+        admission, observation_authority=observation_authority,
+        require_authenticated_meter=True)
     meter = checked.get("meter")
     reason_code = None
     total = None
@@ -2031,6 +2053,7 @@ def _screen_dispatch_projection(
         ledger: Mapping[str, Any], clock: Clock, *, current_stage: str,
         outstanding_set_fingerprint: str,
         preserved_context_fingerprint: str,
+        observation_authority: bytes | None = None,
         overrides: Mapping[str, int | float] | None = None) -> dict[str, Any]:
     """Return the one fail-closed decision consumed before a native start."""
     identity = validate_ledger(ledger)
@@ -2042,7 +2065,8 @@ def _screen_dispatch_projection(
     if any(not str(value or "").strip() for value in required.values()):
         raise DispatchTelemetryError(
             "dispatch budget screen requires stage, outstanding set, and context")
-    root_admission = _root_admission_projection(ledger)
+    root_admission = _root_admission_projection(
+        ledger, observation_authority=observation_authority)
     try:
         budget = budget_projection(ledger, clock, overrides=overrides)
         observed = dict(budget["usage"])
@@ -2125,7 +2149,8 @@ def _screen_dispatch_projection(
                         "meter_fingerprint"],
                 })
                 ledger["revision"] = int(ledger["revision"]) + 1
-                root_admission = _root_admission_projection(ledger)
+                root_admission = _root_admission_projection(
+                    ledger, observation_authority=observation_authority)
 
     root_usage, worker_usage = _partitioned_usage(ledger)
     reconciled_wave_usage = None if root_usage is None else {
@@ -2167,6 +2192,7 @@ def screen_dispatch(
         ledger: Mapping[str, Any], clock: Clock, *, current_stage: str,
         outstanding_set_fingerprint: str,
         preserved_context_fingerprint: str,
+        observation_authority: bytes | None = None,
         overrides: Mapping[str, int | float] | None = None,
         admission_operation_id: str | None = None,
         dispatch: Mapping[str, Any] | None = None,
@@ -2189,6 +2215,7 @@ def screen_dispatch(
             ledger, clock, current_stage=current_stage,
             outstanding_set_fingerprint=outstanding_set_fingerprint,
             preserved_context_fingerprint=preserved_context_fingerprint,
+            observation_authority=observation_authority,
             overrides=overrides)
     if not isinstance(ledger, MutableMapping):
         raise DispatchTelemetryError(
@@ -2217,6 +2244,7 @@ def screen_dispatch(
             ledger, clock, current_stage=current_stage,
             outstanding_set_fingerprint=outstanding_set_fingerprint,
             preserved_context_fingerprint=preserved_context_fingerprint,
+            observation_authority=observation_authority,
             overrides=overrides)
         projected.pop("fingerprint", None)
         projected.update({
@@ -2231,6 +2259,7 @@ def screen_dispatch(
         ledger, clock, current_stage=current_stage,
         outstanding_set_fingerprint=outstanding_set_fingerprint,
         preserved_context_fingerprint=preserved_context_fingerprint,
+        observation_authority=observation_authority,
         overrides=overrides)
     binding = None
     operation_status = "refused"
