@@ -25,6 +25,8 @@ CONFIDENCES = frozenset(("high", "medium", "low"))
 MAX_REASON_BYTES = 512
 RUNTIME_RECEIPT_SCHEMA = "taskplane.host-hook-receipt/v1"
 RUNTIME_RECEIPT_MAX_AGE_SECONDS = 300.0
+ROOT_SESSION_CAPABILITY_SCHEMA = \
+    "taskplane.host-root-session-capability/v1"
 
 
 def _bounded(value: object, limit: int = MAX_REASON_BYTES) -> str:
@@ -143,6 +145,9 @@ _ENV_OBSERVATIONS = {
     "TASKPLANE_NATIVE_HOSTING": "hosting",
     "TASKPLANE_NATIVE_BROWSER": "browser",
     "TASKPLANE_NATIVE_SIDE_PANEL": "side_panel",
+    "TASKPLANE_ROOT_FRESH_START": "root_fresh_start",
+    "TASKPLANE_ROOT_CUMULATIVE_METER": "root_cumulative_meter",
+    "TASKPLANE_ROOT_TURN_MAPPING": "root_turn_mapping",
 }
 
 _STATUS_ALIASES = {
@@ -572,6 +577,7 @@ def probe_snapshot(
         "workflow_availability", "native_structured_output",
         "model_selection", "supported_model_aliases", "effort_selection",
         "supported_effort_values", "stable_event_identity",
+        "root_fresh_start", "root_cumulative_meter", "root_turn_mapping",
         *HOST_NATIVE_SURFACES,
     )
     for name in names:
@@ -652,6 +658,60 @@ def probe_snapshot(
         session_fingerprint=session_fp, observed_at=observed_at,
         capabilities=MappingProxyType(dict(rows)),
         effective_path=effective_path, fingerprint=fingerprint)
+
+
+def root_session_capability(
+        snapshot: HostCapabilitySnapshot, *, settings_digest: str) \
+        -> dict[str, Any]:
+    """Project the authenticated host facts required by a root meter.
+
+    Configuration alone is insufficient: a ready effective hook path, a
+    bound host-session identity, a timestamp, and explicit fresh-start,
+    cumulative-counter, and one-observation/one-turn receipts are required.
+    """
+    digest = str(settings_digest or "").strip()
+    if len(digest) != 64 or any(character not in "0123456789abcdef"
+                                for character in digest):
+        raise ValueError("root-session capability settings digest is invalid")
+    required = {
+        name: snapshot.capabilities.get(name)
+        for name in (
+            "root_fresh_start", "root_cumulative_meter",
+            "root_turn_mapping",
+        )
+    }
+    supported = (
+        snapshot.effective_path in {"native_effective", "bridge_effective"}
+        and bool(snapshot.session_fingerprint)
+        and bool(snapshot.observed_at)
+        and all(isinstance(row, Observation) and row.status == "supported"
+                and row.confidence == "high" for row in required.values())
+    )
+    missing = sorted(
+        name for name, row in required.items()
+        if not isinstance(row, Observation) or row.status != "supported" or
+        row.confidence != "high"
+    )
+    material = {
+        "schema": ROOT_SESSION_CAPABILITY_SCHEMA,
+        "status": "supported" if supported else "unavailable",
+        "host": snapshot.host,
+        "host_version": snapshot.host_version,
+        "session_fingerprint": snapshot.session_fingerprint,
+        "observed_at": snapshot.observed_at,
+        "host_snapshot_fingerprint": snapshot.fingerprint,
+        "settings_digest": digest,
+        "session_role": "root",
+        "fresh_start": bool(supported),
+        "cumulative_meter": bool(supported),
+        "one_observation_one_turn": bool(supported),
+        "reason_code": None if supported else "root_capability_unavailable",
+        "missing": missing,
+    }
+    material["fingerprint"] = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    return material
 
 
 def _combined_status(rows: list[Observation]) -> str:
