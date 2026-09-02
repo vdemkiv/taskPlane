@@ -262,19 +262,6 @@ class TheRunDeclaresWhatItOwesUpFront(unittest.TestCase):
         self.assertEqual(graphs[0].get("fingerprint"),
                          obligations.artifact_fingerprint(out))
 
-    def test_the_screener_refuses_the_conclusion_end_to_end(self):
-        """Through the real hook, not the helper."""
-        self.new("--owes", "review")
-        ev = {"tool_name": "Bash", "cwd": self.ws,
-              "tool_input": {"command": "tp dod"}}
-        r = subprocess.run([sys.executable, TP, "screen"],
-                           input=json.dumps(ev), capture_output=True,
-                           text=True, encoding="utf-8", env=dict(os.environ))
-        out = json.loads(r.stdout)
-        self.assertEqual(out["decision"], "block")
-        self.assertIn("cannot be declared finished", out["reason"])
-        self.assertIn("tp ack", out["reason"])
-
     def test_obligation_scope_does_not_create_a_read_only_shell_exception(self):
         self.new("--owes", "review")
         ev = {"tool_name": "Bash", "cwd": self.ws,

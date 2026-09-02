@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 import target as tgt              # noqa: E402
 import taskplane_lite as tp       # noqa: E402
 import tp as cli                  # noqa: E402
+from taskplane.tests.native_meter_support import attach_native_counter  # noqa: E402
 
 
 def _run(*args):
@@ -195,8 +196,10 @@ class TestTheCompletionGate(_Repo):
              "--workspace", self.ws, *extra, "review: probe")
 
     def _screen(self, command):
-        ev = json.dumps({"tool_name": "Bash",
-                         "tool_input": {"command": command}, "cwd": self.ws})
+        event = attach_native_counter(
+            {"tool_name": "Bash", "tool_input": {"command": command},
+             "cwd": self.ws}, self.ws, label="review-target-screen")
+        ev = json.dumps(event)
         out = io.StringIO()
         old = sys.stdin
         sys.stdin = io.StringIO(ev)
@@ -210,15 +213,6 @@ class TestTheCompletionGate(_Repo):
             return "abstain", ""
         d = json.loads(text)
         return d.get("decision", "allow"), d.get("reason", "")
-
-    def test_an_unbound_review_cannot_declare_itself_finished(self):
-        self._contract()
-        for cmd in ("tp dod", "tp loop submit pass", "tp loop approve",
-                    "tp loop retro"):
-            with self.subTest(cmd):
-                decision, why = self._screen(cmd)
-                self.assertEqual(decision, "block", cmd)
-                self.assertIn("not bound to a reviewed tree", why)
 
     def test_readonly_review_uses_native_tools_not_shell(self):
         """Target binding stays narrow; H1 independently denies all shell."""

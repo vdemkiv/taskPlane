@@ -26,13 +26,16 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import taskplane_lite as tpl  # noqa: E402
+from taskplane.tests.native_meter_support import attach_native_counter  # noqa: E402
 
 TP = os.path.join(os.path.dirname(__file__), "..", "tp.py")
 
 
 def _screen(ws, tool_name, tool_input, env=None):
     """Run the real hook entrypoint the way Cowork does: stdin event JSON."""
-    event = {"cwd": ws, "tool_name": tool_name, "tool_input": tool_input}
+    event = attach_native_counter(
+        {"cwd": ws, "tool_name": tool_name, "tool_input": tool_input}, ws,
+        label="recovery-screen")
     e = dict(os.environ)
     e.update(env or {})
     r = subprocess.run([sys.executable, TP, "screen"],
@@ -95,11 +98,10 @@ class TestTheWallHolds(unittest.TestCase):
             "decision"])
 
     def test_within_budget_agent_can_release_normally(self):
-        """The finally-block path: `tp clear` is an ordinary allowed command
-        while budget remains, so agents CAN release on success/error."""
+        """A within-budget Codex action continues with no approval payload."""
         ws, _ = _governed_ws(max_actions=10)
         d = _screen(ws, "Bash", {"command": f"python3 {TP} clear"})
-        self.assertEqual(d["decision"], "approve")
+        self.assertIsNone(d["decision"])
 
 
 class TestBudgetGrantHumanGate(unittest.TestCase):
@@ -116,8 +118,8 @@ class TestBudgetGrantHumanGate(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("ceiling now 23", r.stdout)
         self.assertEqual(tpl.load_active(ws)["budget"]["max_actions"], 23)
-        self.assertEqual(_screen(ws, "Bash", {"command": "echo hi"})
-                         ["decision"], "approve")
+        self.assertIsNone(_screen(ws, "Bash", {"command": "echo hi"})
+                          ["decision"])
 
     def test_agents_own_grant_attempt_is_still_screened(self):
         """A governed agent invoking --grant goes through the hook like any

@@ -25,6 +25,7 @@ import run_store  # noqa: E402
 import storage  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import tp as cli  # noqa: E402
+from taskplane.tests.native_meter_support import attach_native_counter  # noqa: E402
 
 
 class TestSelectiveReviewKernel(unittest.TestCase):
@@ -808,6 +809,9 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                     "tool_name": "Write",
                     "tool_input": {"file_path": slot["result_path"],
                                    "content": content}}
+                event = attach_native_counter(
+                    event, checkout, total_tokens=11,
+                    label=f"managed-review-{index}")
                 review.register_slot_producer(
                     checkout, event=event, contract=contract,
                     task_slot=producer["task_slot"])
