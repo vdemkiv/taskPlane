@@ -1216,6 +1216,50 @@ def _v4_dashboard_source(
         }
 
 
+def _v3_dashboard_source(
+        state: object, manifest: dict[str, Any], run_id: str, *,
+        error_formatter: Callable[[Exception], str],
+) -> dict[str, Any]:
+    fingerprint = _canonical_fingerprint({
+        "manifest": manifest, "state": state,
+    })
+    try:
+        if manifest.get("schema") != "taskplane.run/v3" or \
+                manifest.get("run_id") != run_id:
+            raise ValueError(
+                "run manifest identity/schema is not taskplane.run/v3")
+        if not isinstance(state, dict):
+            raise ValueError("managed v3 loop state is unavailable")
+        if state.get("run_id") not in (None, run_id):
+            raise ValueError(
+                "managed v3 loop state contradicts the run manifest identity")
+    except Exception as exc:
+        return {
+            "mode": "v3", "status": "corrupt", "run_id": run_id,
+            "revision": str(manifest.get("revision") or "unknown"),
+            "target": "run", "state": None,
+            "source_fingerprint": fingerprint,
+            "evidence": [error_formatter(exc)],
+        }
+
+    task = None
+    tasks = state.get("tasks") or []
+    index = state.get("current_task")
+    if isinstance(index, int) and 0 <= index < len(tasks):
+        task = tasks[index]
+    manifest_fingerprint = _canonical_fingerprint(manifest)
+    state_fingerprint = _canonical_fingerprint(state)
+    return {
+        "mode": "v3", "status": "ready", "run_id": run_id,
+        "revision": str(manifest.get("revision") or
+                        state.get("baseline") or fingerprint),
+        "target": str((task or {}).get("id") or state.get("step") or "run"),
+        "state": state, "source_fingerprint": fingerprint,
+        "evidence": ["run-manifest:" + manifest_fingerprint,
+                     "loop-state:" + state_fingerprint],
+    }
+
+
 def select_dashboard_source(
         ws: str, *, locator_loader: Callable[..., Any],
         legacy_loader: Callable[..., Any],
@@ -1223,52 +1267,83 @@ def select_dashboard_source(
         manifest_validator: Callable[..., Any],
         error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
-    """Select legacy or v4 once, then perform exactly one state read."""
+    """Select a locator-authenticated v3 or v4 adapter exactly once."""
     try:
         locator = locator_loader(ws)
     except Exception as exc:
         return {
-            "mode": "v4", "status": "corrupt", "run_id": "unknown-v4",
-            "revision": "unknown", "target": "active-stage", "state": None,
+            "mode": "managed", "status": "corrupt",
+            "run_id": "unknown-managed", "revision": "unknown",
+            "target": "run", "state": None,
             "source_fingerprint": _canonical_fingerprint(
                 {"locator_error": error_formatter(exc)}),
             "evidence": [error_formatter(exc)],
         }
-    if isinstance(locator, dict):
-        run_id = str(locator.get("run_id") or "unknown-v4")
-        try:
-            manifest = manifest_loader(ws, locator)
-        except Exception as exc:
-            return {
-                "mode": "v4", "status": "corrupt", "run_id": run_id,
-                "revision": "unknown", "target": "active-stage",
-                "state": None,
-                "source_fingerprint": _canonical_fingerprint(
-                    {"run_id": run_id, "error": error_formatter(exc)}),
-                "evidence": [error_formatter(exc)],
-            }
+    if locator is None:
+        return {"mode": "none", "status": "no_active", "state": None,
+                "evidence": []}
+    if not isinstance(locator, dict) or not isinstance(
+            locator.get("run_id"), str) or not locator["run_id"]:
+        error = ValueError("workspace locator has no valid run identity")
+        return {
+            "mode": "managed", "status": "corrupt",
+            "run_id": "unknown-managed", "revision": "unknown",
+            "target": "run", "state": None,
+            "source_fingerprint": _canonical_fingerprint(
+                {"locator_error": error_formatter(error)}),
+            "evidence": [error_formatter(error)],
+        }
+
+    run_id = locator["run_id"]
+    try:
+        manifest = manifest_loader(ws, locator)
+    except Exception as exc:
+        return {
+            "mode": "managed", "status": "corrupt", "run_id": run_id,
+            "revision": "unknown", "target": "run", "state": None,
+            "source_fingerprint": _canonical_fingerprint(
+                {"run_id": run_id, "error": error_formatter(exc)}),
+            "evidence": [error_formatter(exc)],
+        }
+    if not isinstance(manifest, dict):
+        error = ValueError("run manifest is not an object")
+        return {
+            "mode": "managed", "status": "corrupt", "run_id": run_id,
+            "revision": "unknown", "target": "run", "state": None,
+            "source_fingerprint": _canonical_fingerprint(manifest),
+            "evidence": [error_formatter(error)],
+        }
+    schema = manifest.get("schema")
+    if schema == "taskplane.run/v4":
         return _v4_dashboard_source(
             manifest, run_id, manifest_validator=manifest_validator,
             error_formatter=error_formatter)
-    state = legacy_loader(ws)
-    if state is None:
-        return {"mode": "none", "status": "no_active", "state": None,
-                "evidence": []}
-    fingerprint = _canonical_fingerprint(state)
-    task = None
-    tasks = state.get("tasks") or []
-    index = state.get("current_task")
-    if isinstance(index, int) and 0 <= index < len(tasks):
-        task = tasks[index]
-    run_id = str(state.get("run_id") or "legacy-" + _canonical_fingerprint({
-        "goal": state.get("goal"), "baseline": state.get("baseline"),
-    })[:24])
+    if schema == "taskplane.run/v3":
+        if manifest.get("run_id") != run_id:
+            return _v3_dashboard_source(
+                None, manifest, run_id, error_formatter=error_formatter)
+        try:
+            state = legacy_loader(ws)
+        except Exception as exc:
+            return {
+                "mode": "v3", "status": "corrupt", "run_id": run_id,
+                "revision": str(manifest.get("revision") or "unknown"),
+                "target": "run", "state": None,
+                "source_fingerprint": _canonical_fingerprint({
+                    "manifest": manifest,
+                    "state_error": error_formatter(exc),
+                }),
+                "evidence": [error_formatter(exc)],
+            }
+        return _v3_dashboard_source(
+            state, manifest, run_id, error_formatter=error_formatter)
+    error = ValueError("run manifest schema is not taskplane.run/v3 or v4")
     return {
-        "mode": "legacy", "status": "ready", "run_id": run_id,
-        "revision": str(state.get("baseline") or fingerprint),
-        "target": str((task or {}).get("id") or state.get("step") or "run"),
-        "state": state, "source_fingerprint": fingerprint,
-        "evidence": ["loop-state:" + fingerprint],
+        "mode": "managed", "status": "corrupt", "run_id": run_id,
+        "revision": str(manifest.get("revision") or "unknown"),
+        "target": "run", "state": None,
+        "source_fingerprint": _canonical_fingerprint(manifest),
+        "evidence": [error_formatter(error)],
     }
 
 

@@ -13,7 +13,7 @@ from taskplane.dashboard import (
     native_dashboard_projection,
     render_native_dashboard_surface,
 )
-from taskplane.host_native import HostSurfaceSnapshot
+from taskplane.host_native import HostSurfaceSnapshot, select_dashboard_source
 
 
 def _snapshot(items=()):
@@ -36,6 +36,55 @@ def _items(n):
 
 def _semantic(projection):
     return {k: v for k, v in projection.items() if k != "presentation"}
+
+
+def test_managed_v3_locator_uses_v3_adapter_without_v4_reclassification():
+    calls = []
+    locator = {
+        "schema": "taskplane.workspace/v1",
+        "run_id": "managed-v3",
+    }
+    manifest = {
+        "schema": "taskplane.run/v3",
+        "run_id": "managed-v3",
+        "revision": 7,
+    }
+    state = {
+        "goal": "preserve the managed v3 adapter",
+        "step": "execute",
+        "baseline": "candidate-v3",
+        "tasks": [{"id": "P00", "status": "running"}],
+        "current_task": 0,
+    }
+
+    def load_locator(workspace):
+        calls.append(("locator", workspace))
+        return locator
+
+    def load_manifest(workspace, selected_locator):
+        calls.append(("manifest", workspace, selected_locator))
+        return manifest
+
+    def load_v3_state(workspace):
+        calls.append(("v3", workspace))
+        return state
+
+    source = select_dashboard_source(
+        "/managed-workspace", locator_loader=load_locator,
+        legacy_loader=load_v3_state, manifest_loader=load_manifest,
+        manifest_validator=lambda _manifest: pytest.fail(
+            "the v4 validator must not classify a v3 manifest"),
+        error_formatter=lambda exc: f"{exc.__class__.__name__}: {exc}")
+
+    assert calls == [
+        ("locator", "/managed-workspace"),
+        ("manifest", "/managed-workspace", locator),
+        ("v3", "/managed-workspace"),
+    ]
+    assert source["mode"] == "v3"
+    assert source["status"] == "ready"
+    assert source["run_id"] == "managed-v3"
+    assert source["state"] == state
 
 
 class _SurfaceDOM(HTMLParser):
