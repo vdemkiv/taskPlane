@@ -293,9 +293,10 @@ def _runtime(value: object, label: str, *, workspace: Path, run_id: str,
     if not isinstance(value, Mapping) or set(value) != {"authorization", "handle"}:
         raise EvidenceContractError(f"{label} requires governed execution provenance")
     try:
-        receipt = governed_commands.semantic_checkpoint_execution_evidence(
+        receipt = governed_commands.governed_command_execution_evidence(
             str(workspace), _text(value.get("authorization"), "authorization"),
-            _text(value.get("handle"), "execution handle"))
+            _text(value.get("handle"), "execution handle"),
+            assignment_binding=assignment["binding"], argv=argv)
     except governed_commands.GovernedCommandError as exc:
         raise EvidenceContractError(
             f"{label} governed execution provenance is unavailable: {exc}") from None

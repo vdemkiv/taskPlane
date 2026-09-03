@@ -86,9 +86,12 @@ def _execution_ref(assignment: dict, argv: list[str], label: str) -> dict:
                 payload, sort_keys=True, separators=(",", ":"))}
 
 
-def _semantic_receipt(_workspace: str, authorization: str, handle: str) -> dict:
+def _governed_receipt(_workspace: str, authorization: str, handle: str, *,
+                      assignment_binding: dict, argv: list[str]) -> dict:
     assert authorization == "test-authority" and handle.startswith("test:")
     payload = json.loads(handle.removeprefix("test:"))
+    assert assignment_binding["task_id"] == payload["task_id"]
+    assert argv == payload["argv"]
     return {
         "identity": {"run_id": payload["run_id"],
                      "task_id": payload["task_id"]},
@@ -119,8 +122,8 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *,
         settings_digest=SETTINGS, source_fingerprint="b" * 64))
     monkeypatch.setattr(runnability, "probe_language_quality_toolchains", _probe)
     monkeypatch.setattr(
-        evidence.governed_commands, "semantic_checkpoint_execution_evidence",
-        _semantic_receipt)
+        evidence.governed_commands, "governed_command_execution_evidence",
+        _governed_receipt)
     return root, run_id
 
 
