@@ -787,7 +787,8 @@ def test_public_next_action_observes_two_children_and_gate_consumes_them(
 
 @pytest.mark.parametrize("scenario", (
     "missing-binding", "first-failure", "conflicting-replay",
-    "foreign-ledger",
+    "foreign-ledger", "root-settings", "route-binding",
+    "current-manifest",
 ))
 def test_evidence_child_stop_requires_successful_current_terminal_authority(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -837,6 +838,12 @@ def test_evidence_child_stop_requires_successful_current_terminal_authority(
     }
     loop.record_native_dispatch_observation(
         str(tmp_path), expected=expected, native_task_name=task_name)
+    with loop.mutate(str(tmp_path)) as locked:
+        dispatch_telemetry.configure_root_admission(
+            locked["dispatch_telemetry"], root_session_settings={
+                "resume": "forbidden", "seed": "digest-only",
+                "seed_budget_tokens": 100, "root_budget_tokens": 1000,
+            }, settings_digest=_binding()["settings_digest"])
     transcript = tmp_path / (task_name + ".jsonl")
     _write_codex_transcript(
         transcript, label=task_name, input_tokens=10,
@@ -863,6 +870,35 @@ def test_evidence_child_stop_requires_successful_current_terminal_authority(
             foreign, {key: copy.deepcopy(local[key]) for key in fields})
         with loop.mutate(str(tmp_path)) as locked:
             locked["dispatch_telemetry"] = foreign
+    elif scenario == "root-settings":
+        with loop.mutate(str(tmp_path)) as locked:
+            locked["dispatch_telemetry"].pop("root_admission")
+            locked["dispatch_telemetry"]["revision"] += 1
+            dispatch_telemetry.validate_ledger(locked["dispatch_telemetry"])
+    elif scenario == "route-binding":
+        with loop.mutate(str(tmp_path)) as locked:
+            locked["evaluate_child_evidence"]["binding"][
+                "source_tree"] = "8" * 40
+    elif scenario == "current-manifest":
+        assignment = copy.deepcopy(assignment)
+        assignment["binding"]["source_tree"] = "8" * 40
+        obligations = {
+            "implementation_files": assignment["implementation_files"],
+            "language_obligations": assignment["language_obligations"],
+        }
+        assignment["reuse_key_digest"] = evidence._reuse_key(
+            assignment["producer_kind"], assignment["binding"],
+            obligations, assignment["ledger_binding_fingerprint"])
+        assignment["assignment_digest"] = evidence._assignment_digest(
+            assignment)
+        result = _results([assignment, assignments[1]])[
+            assignment["producer_kind"]]
+        with loop.mutate(str(tmp_path)) as locked:
+            route = locked["evaluate_child_evidence"]
+            route["binding"] = copy.deepcopy(assignment["binding"])
+            route["assignments"][0] = copy.deepcopy(assignment)
+            route["child_dispatches"][0]["assignment"] = copy.deepcopy(
+                assignment)
     event = {
         "cwd": str(tmp_path), "agent_id": task_name,
         "agent_type": task_name, "task_name": task_name,
@@ -875,8 +911,16 @@ def test_evidence_child_stop_requires_successful_current_terminal_authority(
             tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
         assert tp_cli.cmd_subagent_stop(None) == 0
         assert capsys.readouterr().out.strip() == "{}"
-    before = list(run_artifacts.load_manifest(root)["classes"][
-        "agent-activity"]["entries"])
+
+    def artifact_bytes() -> dict[str, bytes]:
+        return {
+            str(path.relative_to(root)): path.read_bytes()
+            for artifact_class in ("agent-activity", "validation")
+            for path in sorted((root / artifact_class).iterdir())
+            if path.is_file()
+        }
+
+    before = artifact_bytes()
     if scenario in {"first-failure", "conflicting-replay"}:
         event.update({"turn_id": "turn-failure", "status": "failure"})
     monkeypatch.setattr(tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
@@ -889,11 +933,12 @@ def test_evidence_child_stop_requires_successful_current_terminal_authority(
         "first-failure": "successful exact terminal outcome",
         "conflicting-replay": "successful exact terminal outcome",
         "foreign-ledger": "current evidence authority",
+        "root-settings": "current evidence authority",
+        "route-binding": "current route binding",
+        "current-manifest": "durable child assignment is foreign",
     }[scenario]
     assert expected_reason in output["reason"]
-    after = run_artifacts.load_manifest(root)["classes"][
-        "agent-activity"]["entries"]
-    assert after == before
+    assert artifact_bytes() == before
     sealed = loop.load(str(tmp_path))["dispatch_telemetry"]
     if scenario == "first-failure":
         assert sealed["dispatches"][0]["events"] == [{

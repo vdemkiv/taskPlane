@@ -134,6 +134,7 @@ def complete_evaluate_evidence_child(
     kind = assignment["producer_kind"]
     attempt_id = assignment["binding"]["evaluator_attempt_id"] + "-" + kind
     manifest = run_artifacts.load_manifest(artifact_root)
+    evaluate_child_evidence._assert_current_assignment(assignment, manifest)
     existing = [row for row in manifest["classes"]["agent-activity"]["entries"]
                 if row["metadata"].get("agent_attempt_id") == attempt_id]
     if len(existing) != 2 or [row["metadata"]["event_type"]

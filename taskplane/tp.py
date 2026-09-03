@@ -1901,6 +1901,12 @@ def cmd_subagent_stop(a) -> int:
             assignment = evidence_child.get("assignment") or {}
             binding = (assignment.get("binding")
                        if isinstance(assignment, dict) else {}) or {}
+            route_binding = route.get("binding") or {}
+            if (not isinstance(route_binding, dict) or
+                    route_binding != binding):
+                raise ValueError(
+                    "Evaluate evidence child assignment does not match its "
+                    "current route binding")
             intent = evidence_child.get("dispatch_intent") or {}
             task_id = str(binding.get("task_id") or "").strip()
             dispatch_id = str(intent.get("intent_id") or "").strip()
@@ -1936,6 +1942,8 @@ def cmd_subagent_stop(a) -> int:
                     "complete its exact native dispatch binding")
             terminal_state = _loop_runtime.load(ws) or {}
             telemetry_ledger = terminal_state.get("dispatch_telemetry")
+            root_admission = (telemetry_ledger.get("root_admission")
+                              if isinstance(telemetry_ledger, dict) else None)
             ledger_receipt = (next((row for row in telemetry_ledger.get(
                 "dispatches") or [] if isinstance(row, dict) and
                 row.get("fingerprint") == telemetry_receipt.get(
@@ -1954,6 +1962,9 @@ def cmd_subagent_stop(a) -> int:
                     str(telemetry_ledger.get("plan_fingerprint") or "") !=
                     str(binding.get("plan_fingerprint") or "") or
                     str(terminal_state.get("settings_digest") or "") !=
+                    str(binding.get("settings_digest") or "") or
+                    not isinstance(root_admission, dict) or
+                    str(root_admission.get("settings_digest") or "") !=
                     str(binding.get("settings_digest") or "")):
                 raise ValueError(
                     "Evaluate evidence child terminal telemetry is not "
