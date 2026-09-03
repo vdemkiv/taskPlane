@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from taskplane import host_capabilities, host_native, loop, native_session_meter
+from taskplane import (
+    host_capabilities, host_native, loop, native_session_meter, root_seed,
+)
 from taskplane.settings import load_settings
 from taskplane import tp as tp_cli
 
@@ -201,10 +205,19 @@ def test_bootstrap_seed_precedes_implementation_root_and_is_not_claimed_as_runti
 
     refused = loop.wave(str(tmp_path), root_observation_authority=AUTHORITY)
     assert refused["wave"] == []
-    assert "prepared and opened fresh root evidence" in refused["error"]
+    assert "legacy migration" in refused["error"]
+    migration = loop.load(str(tmp_path))["legacy_root_migration"]
+    assert migration["status"] == "nonconforming"
+    assert migration["canary_eligible"] is False
+    assert "root_hygiene" not in loop.load(str(tmp_path))
+    again = loop.wave(str(tmp_path), root_observation_authority=AUTHORITY)
+    assert migration == loop.load(str(tmp_path))["legacy_root_migration"]
+    assert migration["fingerprint"] in again["error"]
 
 
-def test_public_command_passes_existing_private_authority_and_refuses_corruption(
+@pytest.mark.parametrize("case", ["fresh", "resumed", "unsupported"])
+def test_host_hook_opens_prepared_root_before_public_cli_dispatch_and_refuses_resumed_or_unsupported(
+        case: str,
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str]) -> None:
     import loop as cli_loop
@@ -222,6 +235,123 @@ def test_public_command_passes_existing_private_authority_and_refuses_corruption
     monkeypatch.setattr(
         tp_cli, "_enforcement_check",
         lambda *_args, **_kwargs: (None, None))
+    monkeypatch.setattr(cli_loop, "record_enforcement", lambda *_args: None)
+    monkeypatch.setattr(cli_loop, "_validated_delivery_mode", lambda _state: None)
+    monkeypatch.setattr(
+        cli_loop, "build_dispatch_lens_routing",
+        lambda *_args, **_kwargs: ({"lenses": [], "context": {}}, None))
+    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
+    for variable in (
+            "TASKPLANE_NATIVE_HOOKS_LOADED",
+            "TASKPLANE_MANAGED_HOOK_POLICY",
+            "TASKPLANE_STABLE_HOOK_EVENT_ID",
+            "TASKPLANE_ROOT_CUMULATIVE_METER",
+            "TASKPLANE_ROOT_TURN_MAPPING"):
+        monkeypatch.setenv(variable, "supported")
+    monkeypatch.setenv(
+        "TASKPLANE_ROOT_FRESH_START",
+        "unsupported" if case == "unsupported" else "supported")
+    transcript = tmp_path / f"root-{case}.jsonl"
+    _write_root(
+        transcript, total=40_000, sequence=1, resumed=case == "resumed")
+    event = {
+        "cwd": str(tmp_path), "turn_id": "turn-root",
+        "transcript_path": str(transcript), "tool_name": "Read",
+        "tool_input": {"path": str(tmp_path / "input.txt")},
+    }
+    monkeypatch.setattr(tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    assert tp_cli.cmd_screen(None) == 0
+    assert capsys.readouterr().out == ""
+
+    args = SimpleNamespace(
+        workspace=str(tmp_path), loop_action="wave", req=None,
+        advisory=False, by=None)
+    assert tp_cli.cmd_loop(args) == (0 if case == "fresh" else 1)
+    payload = json.loads(capsys.readouterr().out)
+    if case == "fresh":
+        assert [row["task"]["id"] for row in payload["wave"]] == ["P13"], payload
+        assert payload["root_admission"]["dispatch_allowed"] is True
+        assert loop.load(str(tmp_path))["root_hygiene"]["meter"][
+            "first_observed_input_tokens"] > 0
+    else:
+        assert payload["wave"] == []
+        assert "prepared and opened fresh root evidence" in payload["error"]
+
+
+def test_plan_approval_prepares_root_before_commit_and_retry_reuses_exact_authority(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    os.makedirs(tmp_path / "plan")
+    task = {
+        "id": "P13", "wave": "W1", "scope": ["taskplane/loop.py"],
+        "tests": "true", "criteria": ["root is prepared"],
+        "status": "pending",
+    }
+    (tmp_path / "plan" / "tasks.json").write_text(
+        json.dumps({"tasks": [task]}), encoding="utf-8")
+    state = {
+        "run_id": "run-plan-root", "baseline": "a" * 40,
+        "design_fingerprint": "b" * 64, "step": "plan_approval",
+        "tasks": [task], "current_task": 0, "goal": "approve safely",
+        "parallel": True, "max_fix_cycles": 1, "checkpoints": ["plan"],
+    }
+    loop.save(str(tmp_path), state)
+    monkeypatch.setattr(loop, "_design_current_errors", lambda *_args: [])
+    monkeypatch.setattr(loop.tp, "git_head", lambda *_args: "a" * 40)
+    monkeypatch.setattr(loop, "_refinement_report", lambda *_args: [])
+    monkeypatch.setattr(loop.tp, "plan_task_id_refusal", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop, "_consolidated_enabled", lambda: False)
+    monkeypatch.setattr(loop.build_c, "program_enabled", lambda *_args: False)
+    monkeypatch.setattr(loop.kb, "record_decision", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop, "status", lambda *_args: {"step": "execute"})
+    monkeypatch.setattr(
+        loop, "_stage_loop_gate_completion", lambda *_a, **_k: {})
+    attempts = {"count": 0}
+
+    def transition(*_args: object, **_kwargs: object) -> dict:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("simulated transition failure")
+        return {"status": "committed"}
+
+    monkeypatch.setattr(loop, "_stage_loop_transition", transition)
+    first = loop.approve(str(tmp_path), by="human:vdemkiv")
+    assert first["step"] == "plan_approval"
+    assert loop.load(str(tmp_path))["step"] == "plan_approval"
+    assert "root_hygiene" not in loop.load(str(tmp_path))
+    seed_path = tmp_path / "waves" / "W1" / "root-seed.json"
+    assert seed_path.exists(), first
+    first_seed = root_seed.load_root_seed(str(tmp_path), "waves/W1/root-seed.json")
+
+    second = loop.approve(str(tmp_path), by="human:vdemkiv")
+    assert second["step"] == "execute"
+    current = loop.load(str(tmp_path))
+    assert current["step"] == "execute"
+    assert current["root_hygiene"]["status"] == "prepared"
+    retried_seed = root_seed.load_root_seed(
+        str(tmp_path), "waves/W1/root-seed.json")
+    assert retried_seed["seed_fingerprint"] == first_seed["seed_fingerprint"]
+    assert retried_seed["operation_id"] == first_seed["operation_id"]
+    assert retried_seed["prepared_at"] == first_seed["prepared_at"]
+    assert current["root_hygiene"]["seed_fingerprint"] == \
+        first_seed["seed_fingerprint"]
+
+
+def test_public_command_passes_existing_private_authority_and_refuses_corruption(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    import loop as cli_loop
+
+    _, prepared, _ = _prepared(tmp_path)
+    state = loop.load(str(tmp_path))
+    state["parallel"] = True
+    state["tasks"][0].update({
+        "scope": ["taskplane/loop.py"], "deps": [], "tests": "true",
+        "contracts": [],
+    })
+    loop.save(str(tmp_path), state)
+    monkeypatch.setattr(tp_cli, "_workspace", lambda _value: str(tmp_path))
+    monkeypatch.setattr(
+        tp_cli, "_enforcement_check", lambda *_args, **_kwargs: (None, None))
     monkeypatch.setattr(cli_loop, "record_enforcement", lambda *_args: None)
     monkeypatch.setattr(cli_loop, "_validated_delivery_mode", lambda _state: None)
     monkeypatch.setattr(
@@ -248,10 +378,7 @@ def test_public_command_passes_existing_private_authority_and_refuses_corruption
         workspace=str(tmp_path), loop_action="wave", req=None,
         advisory=False, by=None)
     assert tp_cli.cmd_loop(args) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert [row["task"]["id"] for row in payload["wave"]] == ["P13"], payload
-    assert payload["root_admission"]["dispatch_allowed"] is True
-
+    capsys.readouterr()
     authority_path = tmp_path / ".taskplane" / "transcript-usage" / \
         "authority-v1.json"
     authority_path.write_text("{}\n", encoding="utf-8")

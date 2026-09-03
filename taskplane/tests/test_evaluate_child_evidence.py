@@ -448,6 +448,59 @@ def test_nonexistent_edge_or_severed_selector_refuses_assignment(
             _assign(root, impact=impact)
 
 
+def test_public_evaluate_preparation_consumes_explicit_edges_and_refuses_severed_coverage(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, _ = _run(tmp_path, monkeypatch)
+    workspace = tmp_path / "loop"
+    workspace.mkdir()
+    state = {
+        "run_id": "run-evaluator-evidence", "baseline": "1" * 40,
+        "step": "evaluate", "design_fingerprint": "3" * 64,
+        "plan_fingerprint": "4" * 64, "requirement_id": "R-TEST",
+        "tasks": [], "goal": "explicit evidence edges",
+    }
+    loop.save(str(workspace), state)
+    producers = ["taskplane/loop.py", "taskplane/runtime_eval.py"]
+    selectors = [
+        "taskplane/tests/test_evaluate_child_evidence.py::"
+        "test_every_evaluator_starts_exactly_two_bound_evidence_producers_and_records_complete_lifecycle",
+        "taskplane/tests/test_evaluate_child_evidence.py::"
+        "test_public_evaluate_preparation_consumes_explicit_edges_and_refuses_severed_coverage",
+    ]
+    edges = [{
+        "producer": producer,
+        "consumer": "taskplane/tests/test_evaluate_child_evidence.py",
+        "selector": selector,
+        "freshness_inputs": [
+            "candidate_sha", "source_tree", "impact_manifest_fingerprint"],
+        "severed_edge": {
+            "mutation": "remove the approved public edge",
+            "selector": selector,
+        },
+    } for producer, selector in zip(producers, selectors)]
+    task = {
+        "id": "P13", "req": "R-TEST", "criteria": ["AC12"],
+        "tests": "python3 -m pytest -q " + " ".join(selectors),
+        "evaluation_evidence_edges": edges,
+    }
+    monkeypatch.setattr(loop, "_run_artifact_root", lambda *_args: str(root))
+    monkeypatch.setattr(loop, "_diff_files", lambda *_args: producers)
+
+    severed = {**task, "evaluation_evidence_edges": edges[:-1]}
+    with pytest.raises(ValueError, match="cover every changed producer"):
+        loop._prepare_public_evaluate_evidence(
+            str(workspace), str(ROOT), state, severed,
+            evaluator_attempt_id="evaluate-attempt-1")
+
+    route = loop._prepare_public_evaluate_evidence(
+        str(workspace), str(ROOT), state, task,
+        evaluator_attempt_id="evaluate-attempt-1")
+    obligations = next(
+        assignment["test_obligations"] for assignment in route["assignments"]
+        if assignment["producer_kind"] == evidence.TEST_DESIGN_PRODUCER)
+    assert obligations["producer_consumer_edges"] == edges
+
+
 def test_one_receipt_cannot_cover_freshness_and_severed_edge(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, run_id = _run(tmp_path, monkeypatch)

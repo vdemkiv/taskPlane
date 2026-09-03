@@ -5824,21 +5824,15 @@ def _ensure_dispatch_telemetry(ws: str) -> dict:
         return dict(ledger)
 
 
-def prepare_delivery_root(
-        ws: str, *, seed_ref: str, wave_id: str, prepared_at: str,
-        operation_id: str, design: Mapping[str, object],
-        plan: Mapping[str, object], pickups: list[Mapping[str, object]],
+def _build_delivery_root_preparation(
+        ws: str, state: Mapping[str, object], *, seed_ref: str,
+        wave_id: str, prepared_at: str, operation_id: str,
+        design: Mapping[str, object], plan: Mapping[str, object],
+        pickups: list[Mapping[str, object]],
         outstanding_human_gates: list[Mapping[str, object]],
-        predecessor_terminal_projection: Mapping[str, object]) -> dict:
-    """Prepare the public loop's sole reference-only root seed.
-
-    The effective settings snapshot and candidate/run identity are derived
-    from the active loop.  Callers provide only the already-approved portable
-    Design/Plan references and wave inventory.
-    """
-    state = load(ws)
-    if state is None:
-        raise ValueError("root preparation requires an active loop")
+        predecessor_terminal_projection: Mapping[str, object]) -> tuple[
+            dict, dict, object]:
+    """Build an idempotent seed without advancing the loop state."""
     settings = operational_settings.load_settings(environment=os.environ)
     if state.get("settings_digest") not in {None, settings.digest}:
         raise ValueError("root preparation settings changed during the run")
@@ -5846,6 +5840,16 @@ def prepare_delivery_root(
     candidate_sha = str(state.get("baseline") or "").strip()
     if not run_id or re.fullmatch(r"[0-9a-f]{40,64}", candidate_sha) is None:
         raise ValueError("root preparation run identity is incomplete")
+    # A failed Plan CAS may leave the exact immutable seed on disk.  Reuse its
+    # timestamp for the stable operation so retry proves identity instead of
+    # conflicting only because wall time advanced.
+    try:
+        prior_seed = root_seed.load_root_seed(ws, seed_ref)
+    except root_seed.RootSeedError:
+        prior_seed = None
+    if isinstance(prior_seed, Mapping) and \
+            prior_seed.get("operation_id") == str(operation_id):
+        prepared_at = str(prior_seed.get("prepared_at") or prepared_at)
     context = {
         "run_id": run_id, "wave_id": str(wave_id),
         "candidate_sha": candidate_sha, "settings": settings,
@@ -5876,9 +5880,29 @@ def prepare_delivery_root(
         "seed_fingerprint": receipt["seed_fingerprint"],
         "prepare_receipt": receipt,
     }
+    return receipt, prepared, settings
+
+
+def prepare_delivery_root(
+        ws: str, *, seed_ref: str, wave_id: str, prepared_at: str,
+        operation_id: str, design: Mapping[str, object],
+        plan: Mapping[str, object], pickups: list[Mapping[str, object]],
+        outstanding_human_gates: list[Mapping[str, object]],
+        predecessor_terminal_projection: Mapping[str, object]) -> dict:
+    """Prepare the public loop's sole reference-only root seed."""
+    state = load(ws)
+    if state is None:
+        raise ValueError("root preparation requires an active loop")
+    receipt, prepared, settings = _build_delivery_root_preparation(
+        ws, state, seed_ref=seed_ref, wave_id=wave_id,
+        prepared_at=prepared_at, operation_id=operation_id,
+        design=design, plan=plan, pickups=pickups,
+        outstanding_human_gates=outstanding_human_gates,
+        predecessor_terminal_projection=predecessor_terminal_projection)
     with mutate(ws) as locked:
-        if locked is None or locked.get("run_id") != run_id or \
-                locked.get("baseline") != candidate_sha:
+        binding = receipt["binding"]
+        if locked is None or locked.get("run_id") != binding["run_id"] or \
+                locked.get("baseline") != binding["candidate_sha"]:
             raise ValueError("root preparation run changed before commit")
         prior = locked.get("root_hygiene")
         if prior is not None and prior != prepared:
@@ -5886,6 +5910,40 @@ def prepare_delivery_root(
         locked["settings_digest"] = settings.digest
         locked["root_hygiene"] = prepared
     return receipt
+
+
+def _prepare_approved_plan_root(ws: str, state: Mapping[str, object]) -> dict:
+    """Prepare only the first approved delivery wave before its state CAS."""
+    tasks = [dict(task) for task in state.get("tasks") or []
+             if isinstance(task, Mapping)]
+    if not tasks:
+        raise ValueError("approved Plan has no delivery tasks")
+    wave_id = str(tasks[0].get("wave") or "execute")
+    wave_tasks = [task for task in tasks
+                  if str(task.get("wave") or "execute") == wave_id]
+    plan_path = os.path.join(ws, "plan", "tasks.json")
+    with open(plan_path, "rb") as stream:
+        plan_fingerprint = hashlib.sha256(stream.read()).hexdigest()
+    design_fingerprint = str(
+        state.get("design_fingerprint") or _design_evidence_fingerprint(ws))
+    _, prepared, settings = _build_delivery_root_preparation(
+        ws, state, seed_ref=f"waves/{wave_id}/root-seed.json",
+        wave_id=wave_id, prepared_at=time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        operation_id="prepare-" + str(state["run_id"]) + "-" + wave_id,
+        design={"path": "design/contract.json",
+                "fingerprint": design_fingerprint},
+        plan={"path": "plan/tasks.json", "fingerprint": plan_fingerprint},
+        pickups=[{
+            "id": str(task["id"]),
+            "write_scopes": list(task.get("scope") or []),
+            "disjointness_receipt_fingerprint": hashlib.sha256(json.dumps(
+                {"task": task["id"], "scope": task.get("scope") or []},
+                sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        } for task in wave_tasks],
+        outstanding_human_gates=[],
+        predecessor_terminal_projection={"status": "none"})
+    return {"prepared": prepared, "settings_digest": settings.digest}
 
 
 def open_delivery_wave(
@@ -6073,6 +6131,50 @@ def consume_evaluate_evidence_before_pass(
         expected_binding=dict(expected_binding))
 
 
+_LEGACY_ROOT_MIGRATION_SCHEMA = \
+    "taskplane.legacy-root-bootstrap-migration/v1"
+
+
+def _record_legacy_root_migration(
+        ws: str, state: Mapping[str, object]) -> dict:
+    """Record bounded absence evidence; it never grants root admission."""
+    prior = state.get("legacy_root_migration")
+    if prior is not None:
+        if not isinstance(prior, Mapping):
+            raise ValueError("legacy root migration is malformed")
+        material = {key: value for key, value in prior.items()
+                    if key != "fingerprint"}
+        expected = hashlib.sha256(json.dumps(
+            material, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True).encode()).hexdigest()
+        if prior.get("schema") != _LEGACY_ROOT_MIGRATION_SCHEMA or \
+                prior.get("status") != "nonconforming" or \
+                prior.get("canary_eligible") is not False or \
+                prior.get("fingerprint") != expected:
+            raise ValueError("legacy root migration is malformed")
+        return dict(prior)
+    material = {
+        "schema": _LEGACY_ROOT_MIGRATION_SCHEMA,
+        "run_id": str(state.get("run_id") or ""),
+        "candidate_sha": str(state.get("baseline") or ""),
+        "status": "nonconforming", "canary_eligible": False,
+        "reason": "persisted delivery state has no authenticated root evidence",
+    }
+    if not material["run_id"] or not material["candidate_sha"]:
+        raise ValueError("legacy root migration identity is incomplete")
+    record = {**material, "fingerprint": hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True).encode()).hexdigest()}
+    with mutate(ws) as locked:
+        if locked is None or locked.get("root_hygiene") is not None:
+            raise ValueError("legacy root migration raced with root preparation")
+        existing = locked.get("legacy_root_migration")
+        if existing is not None and existing != record:
+            raise ValueError("legacy root migration conflicts with existing evidence")
+        locked["legacy_root_migration"] = record
+    return record
+
+
 def _screen_public_native_route(
         ws: str, state: Mapping[str, object], *, stage: str,
         tasks: list[Mapping[str, object]],
@@ -6080,15 +6182,20 @@ def _screen_public_native_route(
     """Enforce root preparation/open/meter admission before intent emission."""
     if stage not in {"execute", "fix", "evaluate"}:
         return None
+    root = state.get("root_hygiene")
+    if not isinstance(root, Mapping):
+        migration = _record_legacy_root_migration(ws, state)
+        raise ValueError(
+            "native dispatch requires a fresh root; legacy migration "
+            f"{migration['fingerprint']} is non-canary and grants no admission")
+    if root.get("status") != "open":
+        raise ValueError(
+            "native dispatch requires prepared and opened fresh root evidence")
     # Root-session settings govern every native delivery dispatch; ``tasks``
     # contributes only the exact outstanding-set binding, never eligibility.
     if not isinstance(observation_authority, bytes) or not observation_authority:
         raise ValueError(
             "native dispatch requires authenticated root observation authority")
-    root = state.get("root_hygiene")
-    if not isinstance(root, Mapping) or root.get("status") != "open":
-        raise ValueError(
-            "native dispatch requires prepared and opened fresh root evidence")
     expected_authority = hashlib.sha256(observation_authority).hexdigest()
     if root.get("observation_authority_fingerprint") != expected_authority:
         raise ValueError("native dispatch root observation authority is foreign")
@@ -6148,6 +6255,36 @@ def _prepare_public_evaluate_evidence(
     if not implementation_files or not test_files or not selectors:
         raise ValueError(
             "Evaluate impact requires changed implementation files and exact selectors")
+    declared_edges = task.get("evaluation_evidence_edges")
+    if not isinstance(declared_edges, list) or not declared_edges:
+        raise ValueError(
+            "Evaluate impact requires explicit approved producer-consumer edges")
+    edge_fields = {"producer", "consumer", "selector", "freshness_inputs",
+                   "severed_edge"}
+    producer_consumer_edges = []
+    for index, raw_edge in enumerate(declared_edges):
+        if not isinstance(raw_edge, Mapping) or set(raw_edge) != edge_fields:
+            raise ValueError(
+                f"Evaluate evidence edge {index} is not an exact approved mapping")
+        edge = copy.deepcopy(dict(raw_edge))
+        producer = str(edge.get("producer") or "")
+        selector = str(edge.get("selector") or "")
+        consumer = str(edge.get("consumer") or "")
+        severed = edge.get("severed_edge")
+        if producer not in implementation_files or selector not in selectors or \
+                consumer != selector.split("::", 1)[0] or not isinstance(
+                    severed, Mapping) or str(
+                        severed.get("selector") or "") not in selectors:
+            raise ValueError(
+                f"Evaluate evidence edge {index} is stale or foreign")
+        producer_consumer_edges.append(edge)
+    covered = {str(row["producer"]) for row in producer_consumer_edges}
+    edge_ids = {(str(row["producer"]), str(row["consumer"]),
+                 str(row["selector"])) for row in producer_consumer_edges}
+    if len(edge_ids) != len(producer_consumer_edges) or covered != set(
+            implementation_files):
+        raise ValueError(
+            "Evaluate evidence edges must uniquely cover every changed producer")
     contract_id = str((task.get("criteria") or ["current-contract"])[0])
     impact_manifest = {
         "schema": "taskplane.evaluate-impact-manifest/v1",
@@ -6155,17 +6292,7 @@ def _prepare_public_evaluate_evidence(
         "test_files": test_files,
         "tests": [{"selector": selector, "contract": contract_id}
                   for selector in selectors],
-        "producer_consumer_edges": [{
-            "producer": producer,
-            "consumer": selectors[index % len(selectors)].split("::", 1)[0],
-            "selector": selectors[index % len(selectors)],
-            "freshness_inputs": ["candidate_sha", "source_tree",
-                                 "impact_manifest_fingerprint"],
-            "severed_edge": {
-                "mutation": "disconnect the public producer-consumer edge",
-                "selector": selectors[index % len(selectors)],
-            },
-        } for index, producer in enumerate(implementation_files)],
+        "producer_consumer_edges": producer_consumer_edges,
         "changed_interfaces": [], "failures": [],
         "rejected_evidence_kinds": [
             "ceremonial", "source", "ast", "prose-shape", "byte-only"],
@@ -13325,6 +13452,7 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
     attestation_warning = None
     gate_notices: list = []
     define_projection = None
+    root_preparation = None
     if not str(by or "").strip() and step in ("plan_approval", "signoff"):
         # L5 (v2.2.1): symmetric attestation. Design approval hard-requires
         # --by; these two gates stay compatible but an anonymous pass is
@@ -13440,6 +13568,18 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
         resume_at = _first_unsettled_task_index(state)
         state["step"] = "execute" if resume_at is not None else "em"
         state["current_task"] = resume_at if resume_at is not None else 0
+        if state["step"] == "execute":
+            try:
+                root_preparation = _prepare_approved_plan_root(ws, state)
+            except Exception as exc:
+                return {
+                    "error": "root seed preparation failed before Plan "
+                             "approval commit: "
+                             f"{exc.__class__.__name__}: {exc}",
+                    "step": "plan_approval",
+                }
+            state["root_hygiene"] = root_preparation["prepared"]
+            state["settings_digest"] = root_preparation["settings_digest"]
         tp.trace(ws, "loop_approve", gate="plan", by=by)
         # High-signal decision → the knowledge base.
         scope = sorted({g for t in (state.get("tasks") or [])
@@ -13526,41 +13666,6 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
                     f"{exc.__class__.__name__}: {exc}", "step": step}
         locked.clear()
         locked.update(state)
-    if step == "plan_approval" and state["step"] == "execute":
-        tasks = list(state.get("tasks") or [])
-        wave_id = str((tasks[0].get("wave") if tasks else None) or "execute")
-        plan_path = os.path.join(ws, "plan", "tasks.json")
-        try:
-            with open(plan_path, "rb") as stream:
-                plan_fingerprint = hashlib.sha256(stream.read()).hexdigest()
-            design_fingerprint = str(
-                state.get("design_fingerprint") or
-                _design_evidence_fingerprint(ws))
-            prepare_delivery_root(
-                ws, seed_ref=f"waves/{wave_id}/root-seed.json",
-                wave_id=wave_id,
-                prepared_at=time.strftime(
-                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                operation_id="prepare-" + str(state["run_id"]) + "-" + wave_id,
-                design={"path": "design/contract.json",
-                        "fingerprint": design_fingerprint},
-                plan={"path": "plan/tasks.json",
-                      "fingerprint": plan_fingerprint},
-                pickups=[{
-                    "id": str(task["id"]),
-                    "write_scopes": list(task.get("scope") or []),
-                    "disjointness_receipt_fingerprint": hashlib.sha256(
-                        json.dumps({"task": task["id"],
-                                    "scope": task.get("scope") or []},
-                                   sort_keys=True,
-                                   separators=(",", ":")).encode()).hexdigest(),
-                } for task in tasks],
-                outstanding_human_gates=[],
-                predecessor_terminal_projection={"status": "none"})
-            state = load(ws) or state
-        except Exception as exc:
-            return {"error": "root seed preparation failed after Plan approval: "
-                    f"{exc.__class__.__name__}: {exc}", "step": "execute"}
     out = {"step": state["step"], "status": status(ws)}
     if stage_transition is not None:
         out["stage_transition"] = stage_transition

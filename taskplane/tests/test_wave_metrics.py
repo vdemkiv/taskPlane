@@ -12,6 +12,8 @@ from taskplane import wave_metrics
 from taskplane import dispatch_telemetry
 from taskplane import retro
 from taskplane import dashboard
+from taskplane import audit_projection
+from taskplane import release_evidence
 from taskplane.delivery_ports import FakeClock, content_fingerprint
 
 
@@ -55,7 +57,7 @@ def test_root_hygiene_required_fields_reject_null_and_preserve_zero_and_applicab
             missing, candidate_sha="a" * 40, worker_tokens=0)
 
 
-def test_root_worker_and_wave_totals_remain_separate_and_reconcile_in_seal_retro_and_dashboard():
+def test_root_worker_and_wave_totals_remain_separate_and_reconcile_in_all_consumers():
     root, workers = _root(worker_tokens=300_000)
     seal = wave_metrics.finalize_root_hygiene_canary(
         root, candidate_sha="a" * 40, worker_tokens=workers)
@@ -66,9 +68,12 @@ def test_root_worker_and_wave_totals_remain_separate_and_reconcile_in_seal_retro
     retro_view = retro.sealed_root_hygiene_projection(
         {"root_hygiene_receipt": seal})
     dashboard_view = dashboard.root_hygiene_projection(seal)
-    assert retro_view["totals"] == dashboard_view["totals"] == seal["totals"]
-    assert retro_view["receipt_fingerprint"] == \
-        dashboard_view["receipt_fingerprint"] == seal["fingerprint"]
+    release_view = release_evidence.root_hygiene_projection(seal)
+    audit_view = audit_projection.root_hygiene_projection(seal)
+    views = [retro_view, dashboard_view, release_view, audit_view]
+    assert all(view["totals"] == seal["totals"] for view in views)
+    assert all(view["receipt_fingerprint"] == seal["fingerprint"]
+               for view in views)
 
 
 def test_wave_receipt_covers_baselines_targets_and_guardrails():
