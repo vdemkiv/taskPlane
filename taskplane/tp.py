@@ -1598,7 +1598,8 @@ def cmd_screen_dispatch(a) -> int:
                         str(projection.get("reason") or
                             "native counter is null or zero"))
                 _loop_runtime.record_native_orchestrator_snapshot(
-                    ws, snapshot=native_snapshot)
+                    ws, snapshot=native_snapshot,
+                    observation_authority=_transcript_projection_authority(ws))
             except Exception as meter_error:
                 reason = (
                     "taskplane native dispatch preflight failed closed: "
@@ -1877,6 +1878,119 @@ def cmd_subagent_stop(a) -> int:
         lifecycle_contract = None
         tp.trace(ws, "worker_contract_stop_lookup_failed",
                  agent_id=event.get("agent_id"), error=type(exc).__name__)
+    try:
+        import loop as _loop_runtime
+        state = _loop_runtime.load(ws) or {}
+        route = state.get("evaluate_child_evidence")
+        native_task_name = str(event.get("agent_type") or "")
+        evidence_child = (next((row for row in route.get(
+            "child_dispatches") or []
+            if isinstance(row, dict) and
+            row.get("task_name") == native_task_name), None)
+            if isinstance(route, dict) else None)
+        if isinstance(evidence_child, dict):
+            raw_result = event.get("last_assistant_message")
+            if not isinstance(raw_result, str) or not raw_result.strip():
+                raise ValueError(
+                    "Evaluate evidence child returned no JSON result")
+            try:
+                json.loads(raw_result)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "Evaluate evidence child result is not exact JSON") from exc
+            assignment = evidence_child.get("assignment") or {}
+            binding = (assignment.get("binding")
+                       if isinstance(assignment, dict) else {}) or {}
+            route_binding = route.get("binding") or {}
+            if (not isinstance(route_binding, dict) or
+                    route_binding != binding):
+                raise ValueError(
+                    "Evaluate evidence child assignment does not match its "
+                    "current route binding")
+            intent = evidence_child.get("dispatch_intent") or {}
+            task_id = str(binding.get("task_id") or "").strip()
+            dispatch_id = str(intent.get("intent_id") or "").strip()
+            if not task_id or not dispatch_id:
+                raise ValueError(
+                    "Evaluate evidence child dispatch binding is incomplete")
+            raw_outcome = (event.get("outcome") or event.get("status")
+                           or event.get("stop_reason") or event.get("reason")
+                           or "success")
+            normalized_outcome = tp.normalize_worker_terminal_outcome(
+                raw_outcome)
+            telemetry = _seal_terminal_dispatch_telemetry(
+                ws, {
+                    "budget": {"token_usage_required": True},
+                    "worker_lifecycle": {
+                        "task": task_id,
+                        "expected_task_name": native_task_name,
+                        "dispatch_intent_id": dispatch_id,
+                    },
+                }, event, outcome=normalized_outcome)
+            telemetry_receipt = (telemetry.get("receipt")
+                                 if isinstance(telemetry, dict) else None)
+            if (not isinstance(telemetry, dict) or
+                    telemetry.get("status") not in {"admitted", "duplicate"} or
+                    not isinstance(telemetry_receipt, dict) or
+                    str(telemetry_receipt.get("task_id") or "") != task_id or
+                    str(telemetry_receipt.get("dispatch_id") or "") !=
+                    dispatch_id or
+                    str(telemetry_receipt.get("thread_id") or "") !=
+                    native_task_name):
+                raise ValueError(
+                    "Evaluate evidence child terminal telemetry did not "
+                    "complete its exact native dispatch binding")
+            terminal_state = _loop_runtime.load(ws) or {}
+            telemetry_ledger = terminal_state.get("dispatch_telemetry")
+            root_admission = (telemetry_ledger.get("root_admission")
+                              if isinstance(telemetry_ledger, dict) else None)
+            ledger_receipt = (next((row for row in telemetry_ledger.get(
+                "dispatches") or [] if isinstance(row, dict) and
+                row.get("fingerprint") == telemetry_receipt.get(
+                    "fingerprint")), None)
+                if isinstance(telemetry_ledger, dict) else None)
+            if (not isinstance(telemetry_ledger, dict) or
+                    ledger_receipt != telemetry_receipt or
+                    str(telemetry_ledger.get("run_id") or "") !=
+                    str(route.get("run_id") or "") or
+                    str(telemetry_ledger.get("run_id") or "") !=
+                    str(terminal_state.get("run_id") or "") or
+                    str(telemetry_ledger.get("source_sha") or "") !=
+                    str(terminal_state.get("baseline") or "") or
+                    str(telemetry_ledger.get("design_fingerprint") or "") !=
+                    str(binding.get("design_fingerprint") or "") or
+                    str(telemetry_ledger.get("plan_fingerprint") or "") !=
+                    str(binding.get("plan_fingerprint") or "") or
+                    str(terminal_state.get("settings_digest") or "") !=
+                    str(binding.get("settings_digest") or "") or
+                    not isinstance(root_admission, dict) or
+                    str(root_admission.get("settings_digest") or "") !=
+                    str(binding.get("settings_digest") or "")):
+                raise ValueError(
+                    "Evaluate evidence child terminal telemetry is not "
+                    "bound to its current evidence authority")
+            if (normalized_outcome != "success" or
+                    telemetry_receipt.get("events") != [{
+                        "kind": "complete", "sequence": 1}]):
+                raise ValueError(
+                    "Evaluate evidence child artifact requires a successful "
+                    "exact terminal outcome")
+        child_result = _loop_runtime.complete_observed_evaluate_evidence_child(
+            ws, event)
+    except Exception as exc:
+        reason = (
+            "taskplane blocked Evaluate evidence-child completion because "
+            "its exact substantive JSON result could not be sealed "
+            f"({type(exc).__name__}: {exc}).")
+        print(json.dumps({"decision": "block", "reason": reason,
+                          "hookSpecificOutput": {
+                              "hookEventName": "SubagentStop",
+                              "permissionDecision": "deny",
+                              "permissionDecisionReason": reason}}))
+        return 2
+    if child_result is not None:
+        print("{}")
+        return 0
     producer_error = None
     try:
         import loop as _loop_runtime
@@ -2382,15 +2496,19 @@ def _contract_dispatch_intent_id(contract: dict) -> str:
     return str(lifecycle.get("dispatch_intent_id") or "").strip()
 
 
-def _dispatch_usage_observation_required(ws: str, task_id: str) -> bool:
-    """Whether the active loop has one unfinalized usage consumer."""
+def _dispatch_usage_observation_required(
+        ws: str, task_id: str, dispatch_id: str | None = None) -> bool:
+    """Whether the active loop has one exact terminal usage consumer."""
     try:
         import loop as loop_runtime
         state = loop_runtime.load(ws) or {}
         ledger = state.get("dispatch_telemetry") or {}
         return any(
             str(row.get("task_id") or "") == str(task_id) and
-            not row.get("finalized_receipt_fingerprint")
+            (not dispatch_id or
+             str(row.get("dispatch_id") or "") == str(dispatch_id)) and
+            (bool(dispatch_id) or
+             not row.get("finalized_receipt_fingerprint"))
             for row in ledger.get("bindings") or []
             if isinstance(row, dict)
         )
@@ -2514,7 +2632,8 @@ def _seal_terminal_dispatch_telemetry(
     lifecycle = contract.get("worker_lifecycle") or {}
     native_task_name = str(lifecycle.get("expected_task_name") or "").strip()
     dispatch_id = _contract_dispatch_intent_id(contract)
-    if not task_id or not _dispatch_usage_observation_required(ws, task_id):
+    if not task_id or not _dispatch_usage_observation_required(
+            ws, task_id, dispatch_id or None):
         return {"status": "not-bound"}
     import spend as _spend
     transcript = _spend.event_transcript(event)
@@ -2691,7 +2810,8 @@ def _governed_root(cwd: str) -> str:
 
 def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
     """Capture the root native counter on its real main-session hook path."""
-    if "turn_id" not in event:
+    if "turn_id" not in event or event.get("agent_id") or \
+            event.get("agent_type"):
         return
     try:
         import loop as _loop_runtime
@@ -2708,8 +2828,54 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                 snapshot, dict) or total <= 0:
             raise ValueError(str(
                 projection.get("reason") or "native counter is null or zero"))
+        state = _loop_runtime.load(ws) or {}
+        root = state.get("root_hygiene")
+        if isinstance(root, dict) and root.get("status") in {"prepared", "open"}:
+            import host_native as _host_native
+            import native_session_meter as _native_meter
+            import root_seed as _root_seed
+
+            authority = _transcript_projection_authority(ws)
+            if root.get("status") == "prepared":
+                settings = tp._canonical_operational_settings()
+                seed = _root_seed.load_root_seed(
+                    ws, str(root.get("seed_ref") or ""))
+                capability = host_caps.root_session_capability(
+                    _host_capability_snapshot(ws),
+                    settings_digest=settings.digest)
+                start = _host_native.start_root_session(
+                    capability, seed, run_id=str(seed["run_id"]),
+                    wave_id=str(seed["wave_id"]),
+                    candidate_sha=str(seed["candidate_sha"]),
+                    settings_digest=settings.digest,
+                    session_pseudonym=hashlib.sha256(
+                        authority + str(snapshot.get("session_id") or "").encode()
+                    ).hexdigest(),
+                    started_at=_time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                    issuer_sequence=1, authority=authority)
+                observation = _native_meter.seal_root_observation(
+                    snapshot, sequence=1, session_role="root",
+                    status_receipt_fingerprint=start["fingerprint"],
+                    authority=authority)
+                _loop_runtime.open_delivery_wave(
+                    ws, host_start_receipt=start,
+                    first_observation=observation,
+                    observation_authority=authority)
+            else:
+                prior = (root.get("meter") or {}).get("watermark") or {}
+                observation = _native_meter.seal_root_observation(
+                    snapshot, sequence=int(prior.get("last_sequence") or 0) + 1,
+                    session_role="root",
+                    status_receipt_fingerprint=str(
+                        root.get("host_start_fingerprint") or ""),
+                    authority=authority)
+                _loop_runtime.record_delivery_root_observation(
+                    ws, observation=observation,
+                    observation_authority=authority)
         _loop_runtime.record_native_orchestrator_snapshot(
-            ws, snapshot=snapshot)
+            ws, snapshot=snapshot,
+            observation_authority=_transcript_projection_authority(ws))
     except Exception as exc:
         # An ungoverned main action still defers to the host. Dispatch and
         # terminal boundaries perform the fail-closed checks; this path keeps
@@ -2732,6 +2898,7 @@ def _screen(a) -> int:
     if not isinstance(event, dict):
         event = {}
     ws = _governed_root(event.get("cwd"))
+    _observe_active_loop_orchestrator(ws, event)
     tool_name = event.get("tool_name", event.get("tool", ""))
     tool_input = event.get("tool_input", {})
     if not isinstance(tool_input, dict):
@@ -2793,7 +2960,6 @@ def _screen(a) -> int:
     contract = (_review_authority["contract"] if _review_authority
                 else tp.load_active_for_event(ws, event))
     if contract is None:
-        _observe_active_loop_orchestrator(ws, event)
         # Distinguish "no contract at all" (ungoverned → ABSTAIN) from
         # "contract file present but unreadable/corrupt" (tamper or breakage
         # → fail CLOSED). A governed workspace whose control plane is
@@ -3447,7 +3613,10 @@ def cmd_loop(a) -> int:
         import depgraph
         try:
             with depgraph.strict_quality():
-                out = loopmod.next_action(ws, rid=getattr(a, "req", None))
+                out = loopmod.next_action(
+                    ws, rid=getattr(a, "req", None),
+                    root_observation_authority=
+                        _transcript_projection_authority(ws))
         except depgraph.GraphQualityDegraded as exc:
             out = {"error": str(exc), "step": "graph-quality"}
     elif action == "submit":
@@ -3492,7 +3661,9 @@ def cmd_loop(a) -> int:
             except Exception:
                 pass                 # audit must never break the gate
     elif action == "wave":
-        out = loopmod.wave(ws)
+        out = loopmod.wave(
+            ws, root_observation_authority=
+                _transcript_projection_authority(ws))
     elif action == "claim":
         out = loopmod.claim(ws, a.task_id, a.agent_workspace)
     elif action == "approve":

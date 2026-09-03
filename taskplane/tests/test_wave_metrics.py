@@ -10,7 +10,12 @@ import pytest
 
 from taskplane import wave_metrics
 from taskplane import dispatch_telemetry
+from taskplane import loop
 from taskplane import retro
+from taskplane import dashboard
+from taskplane import audit_projection
+from taskplane import release_evidence
+from taskplane import terminal_truth
 from taskplane.delivery_ports import FakeClock, content_fingerprint
 
 
@@ -19,6 +24,197 @@ FIXTURE = Path(__file__).parent / "fixtures" / "wave-metrics" / "closed-run.json
 
 def _evidence() -> dict:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def _root(*, worker_tokens: int = 0) -> tuple[dict, int]:
+    return ({
+        "status": "open", "conformance": "pass", "canary_eligible": True,
+        "override": None, "host": {"adapter": "codex", "runtime": "native"},
+        "session_pseudonym": "1" * 64, "seed_fingerprint": "2" * 64,
+        "host_start_fingerprint": "3" * 64,
+        "meter": {
+            "turns": 2, "first_observed_input_tokens": 40_000,
+            "peak_context_tokens": 45_000, "context_rent_tokens": 25_000,
+            "resumed": False,
+            "usage": {"total_tokens": 100_000,
+                      "cached_input_tokens": 50_000},
+        },
+    }, worker_tokens)
+
+
+def test_root_hygiene_required_fields_reject_null_and_preserve_zero_and_applicability_null():
+    root, workers = _root(worker_tokens=0)
+    seal = wave_metrics.finalize_root_hygiene_canary(
+        root, candidate_sha="a" * 40, worker_tokens=workers)
+    assert seal["totals"] == {
+        "root_tokens": 100_000, "worker_tokens": 0,
+        "wave_tokens": 100_000}
+    assert seal["comparison"] == {
+        "applicable": False, "root_share": None, "wave_tokens": None,
+        "reason": "worker-usage-unavailable"}
+    missing = copy.deepcopy(root)
+    missing["meter"]["first_observed_input_tokens"] = None
+    with pytest.raises(wave_metrics.WaveMetricsError, match="required"):
+        wave_metrics.finalize_root_hygiene_canary(
+            missing, candidate_sha="a" * 40, worker_tokens=0)
+
+
+def test_root_worker_and_wave_totals_remain_separate_and_reconcile_in_all_consumers():
+    root, workers = _root(worker_tokens=300_000)
+    seal = wave_metrics.finalize_root_hygiene_canary(
+        root, candidate_sha="a" * 40, worker_tokens=workers)
+    assert seal["totals"] == {
+        "root_tokens": 100_000, "worker_tokens": 300_000,
+        "wave_tokens": 400_000}
+    assert seal["comparison"]["root_share"] == .25
+    snapshot = {
+        "run_id": "run-root-hygiene", "stage": "retro", "revision": "1",
+        "values": {"loop": {"goal": "root hygiene", "step": "retro"},
+                   "root_hygiene_receipt": seal},
+    }
+    rendered = dashboard.render_canonical_dashboard_snapshot(snapshot)
+    identity = {
+        "full_source_sha": "a" * 40,
+        "terminal_status": "feature-complete-not-externally-mutated",
+        "requirement_id": "R-ROOT-HYGIENE",
+        "design_fingerprint": "1" * 64,
+        "plan_fingerprint": "2" * 64,
+        "graph_fingerprint": "3" * 64,
+        "native_usage_fingerprint": "4" * 64,
+        "candidate_wiring_fingerprint": "5" * 64,
+        "full_suite_fingerprint": "6" * 64,
+        "predecessor_fingerprint": "7" * 64,
+    }
+    release_surface = release_evidence.terminal_release_evidence_surface(
+        identity, {"root_hygiene_receipt": seal})
+    audit_record = audit_projection.audit_record(
+        "root-terminal", {"root_hygiene_receipt": seal}, observed_at=1.0)
+    retro_view = retro.sealed_root_hygiene_projection(
+        {"root_hygiene_receipt": seal})
+    views = [retro_view, release_surface["payload"]["root_hygiene"],
+             audit_record["root_hygiene"]]
+    assert all(view["totals"] == seal["totals"] for view in views)
+    assert all(view["receipt_fingerprint"] == seal["fingerprint"]
+               for view in views)
+    for value in (seal["fingerprint"], "100000", "300000", "400000"):
+        assert value in rendered
+
+
+def test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal():
+    root, workers = _root(worker_tokens=300_000)
+    seal = wave_metrics.finalize_root_hygiene_canary(
+        root, candidate_sha="a" * 40, worker_tokens=workers)
+    severed = copy.deepcopy(seal)
+    severed["totals"]["wave_tokens"] = 0
+    snapshot = {
+        "run_id": "run-root-hygiene", "stage": "retro", "revision": "1",
+        "values": {"loop": {"goal": "root hygiene", "step": "retro"},
+                   "root_hygiene_receipt": severed},
+    }
+    identity = {
+        "full_source_sha": "a" * 40,
+        "terminal_status": "feature-complete-not-externally-mutated",
+        "requirement_id": "R-ROOT-HYGIENE",
+        "design_fingerprint": "1" * 64,
+        "plan_fingerprint": "2" * 64,
+        "graph_fingerprint": "3" * 64,
+        "native_usage_fingerprint": "4" * 64,
+        "candidate_wiring_fingerprint": "5" * 64,
+        "full_suite_fingerprint": "6" * 64,
+        "predecessor_fingerprint": "7" * 64,
+    }
+    with pytest.raises(ValueError):
+        dashboard.render_canonical_dashboard_snapshot(snapshot)
+    with pytest.raises(ValueError):
+        release_evidence.terminal_release_evidence_surface(
+            identity, {"root_hygiene_receipt": severed})
+    with pytest.raises(ValueError):
+        audit_projection.audit_record(
+            "root-terminal", {"root_hygiene_receipt": severed})
+    with pytest.raises(ValueError):
+        retro.sealed_root_hygiene_projection(
+            {"root_hygiene_receipt": severed})
+
+
+def test_authority_trace_composes_the_canonical_root_seal_into_audit(
+        tmp_path, monkeypatch):
+    root, workers = _root(worker_tokens=300_000)
+    seal = wave_metrics.finalize_root_hygiene_canary(
+        root, candidate_sha="a" * 40, worker_tokens=workers)
+    trace_root = tmp_path / "workspace" / ".taskplane"
+    trace_root.mkdir(parents=True)
+    monkeypatch.setattr(loop, "_load_raw",
+                        lambda _workspace: {"root_hygiene_receipt": seal})
+    monkeypatch.setattr(loop.tp, "tp_dir", lambda _workspace: str(trace_root))
+
+    loop._append_authority_trace(
+        "/workspace", "root-terminal", {"status": "complete"})
+
+    record = json.loads(
+        (trace_root / "trace.jsonl").read_text(encoding="utf-8"))
+    assert record["root_hygiene"]["receipt_fingerprint"] == \
+        seal["fingerprint"]
+    assert record["root_hygiene"]["totals"] == seal["totals"]
+
+
+def test_retro_composes_the_canonical_root_seal_into_terminal_release(
+        monkeypatch):
+    root, workers = _root(worker_tokens=300_000)
+    seal = wave_metrics.finalize_root_hygiene_canary(
+        root, candidate_sha="a" * 40, worker_tokens=workers)
+    identity = {
+        "full_source_sha": "a" * 40,
+        "terminal_status": terminal_truth.TERMINAL_STATUS,
+        "requirement_id": "R-ROOT-HYGIENE",
+        "design_fingerprint": "1" * 64,
+        "plan_fingerprint": "2" * 64,
+        "graph_fingerprint": "3" * 64,
+        "native_usage_fingerprint": "4" * 64,
+        "candidate_wiring_fingerprint": "5" * 64,
+        "full_suite_fingerprint": "6" * 64,
+        "predecessor_fingerprint": "7" * 64,
+    }
+    surfaces = {
+        surface_id: terminal_truth.prepare_terminal_surface(
+            surface_id, identity,
+            {"surface": surface_id,
+             **({"redacted": True}
+                if surface_id == "exports_terminal_evidence" else {})})
+        for surface_id in terminal_truth.SURFACE_IDS
+    }
+    terminal_delivery = {
+        "authority_root": "/authority", "exports_root": "/exports",
+        "run_id": "run-root-hygiene", "operation_id": "terminal-root",
+        "identity": identity, "surfaces": surfaces,
+        "candidate_wiring_receipt": {"fingerprint": "5" * 64},
+        "observed_head_sha": "a" * 40, "checkout_clean": True,
+    }
+    final = {
+        "step": "done", "terminal_delivery": terminal_delivery,
+        "root_hygiene_receipt": seal,
+    }
+    captured = {}
+    monkeypatch.setattr(
+        loop.retro_engine, "run", lambda *_args, **_kwargs: {"goal": "done"})
+    monkeypatch.setattr(loop, "load", lambda _workspace: final)
+    monkeypatch.setattr(
+        loop, "_stage_loop_transition",
+        lambda *_args, **_kwargs: {"status": "done"})
+
+    def finalize(**kwargs):
+        captured.update(kwargs)
+        return {"status": "complete"}
+
+    monkeypatch.setattr(
+        terminal_truth, "finalize_terminal_delivery", finalize)
+
+    completed = loop.retro("/repo")
+
+    release_payload = captured["surfaces"]["release_evidence"]["payload"]
+    assert release_payload["root_hygiene"]["receipt_fingerprint"] == \
+        seal["fingerprint"]
+    assert release_payload["root_hygiene"]["totals"] == seal["totals"]
+    assert completed["terminal_authority"] == {"status": "complete"}
 
 
 def test_wave_receipt_covers_baselines_targets_and_guardrails():

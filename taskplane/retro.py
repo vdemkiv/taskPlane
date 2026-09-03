@@ -104,6 +104,15 @@ def sealed_wave_metrics_projection(state: dict) -> dict:
     return projection
 
 
+def sealed_root_hygiene_projection(state: dict) -> dict:
+    """Consume the same canonical root seal used by every terminal view."""
+    receipt = state.get("root_hygiene_receipt")
+    if not isinstance(receipt, dict):
+        raise wave_metrics.WaveMetricsError(
+            "canonical root hygiene receipt is unavailable")
+    return wave_metrics.root_hygiene_projection(receipt, consumer="retro")
+
+
 def publish_terminal_artifacts(
         artifact_root: str, *, wave_receipt: dict | None, report: dict,
         lifecycle_outcome: str, publication_attempt: int = 1) -> dict:
@@ -729,6 +738,14 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "execution_metric_source": execution_metric_source,
             "evaluator_summary": evaluator_summary(tasks),
         }
+        if state.get("root_hygiene_receipt") is not None:
+            try:
+                report["root_hygiene"] = sealed_root_hygiene_projection(state)
+            except wave_metrics.WaveMetricsError as exc:
+                return {"error": "retro root hygiene evidence is unavailable — "
+                        "loop remains open",
+                        "detail": f"{exc.__class__.__name__}: {exc}",
+                        "step": "retro", "retro_id": retro_id}
         if metrics_projection is not None:
             report["wave_metrics"] = metrics_projection
         if stage_native:

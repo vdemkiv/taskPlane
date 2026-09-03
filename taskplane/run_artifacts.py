@@ -69,6 +69,9 @@ _MAX_ACTIVITY_BYTES = 256 * 1024
 _MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_ENTRIES = 20_000
+_MAX_ROOT_HYGIENE_ENTRIES = 8
+_MAX_ROOT_HYGIENE_BYTES = 256 * 1024
+_MAX_ROOT_HYGIENE_ENTRY_BYTES = 16 * 1024
 
 JsonObject: TypeAlias = dict[str, Any]
 
@@ -1122,6 +1125,30 @@ def _publish(root: Path, artifact_class: str, payload: bytes, *,
         with _manifest_lock(root_fd):
             manifest = _load_manifest_at(root_fd)
             entries = manifest["classes"][artifact_class]["entries"]
+            if artifact_class == "telemetry" and \
+                    metadata.get("kind") == "root-hygiene":
+                rows = [row for row in entries
+                        if (row.get("metadata") or {}).get("kind") ==
+                        "root-hygiene"]
+                matching = [row for row in rows
+                            if (row.get("metadata") or {}).get(
+                                "receipt_fingerprint") == metadata.get(
+                                    "receipt_fingerprint")]
+                if len(matching) == 1:
+                    if matching[0].get("sha256") != _bytes_digest(payload):
+                        raise RunArtifactError(
+                            "root hygiene fingerprint is ambiguous")
+                    return copy.deepcopy(matching[0])
+                if len(matching) > 1:
+                    raise RunArtifactError(
+                        "root hygiene retention is ambiguous")
+                if len(rows) >= _MAX_ROOT_HYGIENE_ENTRIES:
+                    raise RunArtifactError(
+                        "root hygiene retention exceeds its row bound")
+                if sum(int(row.get("bytes") or 0) for row in rows) + \
+                        len(payload) > _MAX_ROOT_HYGIENE_BYTES:
+                    raise RunArtifactError(
+                        "root hygiene retention exceeds its group byte bound")
             if len(entries) >= _MAX_ENTRIES:
                 raise RunArtifactError("run artifact class exceeds entry bound")
             sequence = len(entries) + 1
@@ -1171,6 +1198,25 @@ def publish_artifact(root: str | os.PathLike[str], artifact_class: str,
         Path(root).absolute(), artifact_class, value,
         media_type=media_type or inferred_media_type,
         metadata=dict(metadata or {}), schema=ARTIFACT_SCHEMA)
+
+
+def publish_root_hygiene(
+        root: str | os.PathLike[str], receipt: Mapping[str, object]) -> JsonObject:
+    """Retain one canonical root seal under its explicit bounded policy."""
+    from taskplane import wave_metrics
+
+    checked = wave_metrics.validate_root_hygiene(receipt)
+    value, _ = _payload_bytes(checked)
+    if len(value) > _MAX_ROOT_HYGIENE_ENTRY_BYTES:
+        raise RunArtifactError("root hygiene receipt exceeds its byte bound")
+    binding = load_manifest(root)["binding"]
+    if checked["candidate"]["source_sha"] != \
+            binding["candidate"].get("revision"):
+        raise RunArtifactError("root hygiene receipt belongs to another candidate")
+    return publish_artifact(
+        root, "telemetry", checked,
+        metadata={"kind": "root-hygiene",
+                  "receipt_fingerprint": checked["fingerprint"]})
 
 
 def _activity_metadata(event: Mapping[str, object]) -> JsonObject:
@@ -1404,6 +1450,7 @@ __all__ = [
     "load_manifest",
     "manifest_locator_reference",
     "publish_artifact",
+    "publish_root_hygiene",
     "validate_binding",
     "validate_durable_reference",
     "validate_manifest_locator_reference",

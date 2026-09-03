@@ -347,6 +347,156 @@ def test_separate_dashboard_graph_telemetry_and_agent_activity_artifacts_survive
     assert cleanup_entry["binding"] == _binding(f"run-{outcome}")
 
 
+def test_root_hygiene_retention_is_bounded_private_and_independent_of_cleanup(
+        tmp_path: Path) -> None:
+    case = tmp_path / "root-retention"
+    case.mkdir()
+    run_id = "run-root-retention"
+    artifact_root, manifest = _publish_run(case, run_id, "success")
+    root_input = {
+        "status": "open", "conformance": "pass", "canary_eligible": True,
+        "override": None, "host": {"adapter": "codex", "runtime": "native"},
+        "session_pseudonym": "1" * 64, "seed_fingerprint": "2" * 64,
+        "host_start_fingerprint": "3" * 64,
+        "meter": {
+            "turns": 2, "first_observed_input_tokens": 40_000,
+            "peak_context_tokens": 45_000, "context_rent_tokens": 25_000,
+            "resumed": False,
+            "usage": {"total_tokens": 100_000,
+                      "cached_input_tokens": 50_000},
+        },
+    }
+    root_receipt = wave_metrics.finalize_root_hygiene_canary(
+        root_input, candidate_sha="a" * 40, worker_tokens=300_000)
+    retained = run_artifacts.publish_root_hygiene(
+        artifact_root, root_receipt)
+    assert run_artifacts.publish_root_hygiene(
+        artifact_root, root_receipt) == retained
+    before_activity = run_artifacts.load_manifest(artifact_root)["classes"][
+        "agent-activity"]["entries"]
+    assert not Path(retained["locator"]).is_absolute()
+    assert retained["bytes"] < 16 * 1024
+    assert "session_id" not in json.dumps(root_receipt)
+    for worker_tokens in range(300_001, 300_008):
+        run_artifacts.publish_root_hygiene(
+            artifact_root, wave_metrics.finalize_root_hygiene_canary(
+                root_input, candidate_sha="a" * 40,
+                worker_tokens=worker_tokens))
+    owned_cleanup.bind_durable_artifacts(manifest, artifact_root)
+
+    cleanup = owned_cleanup.seal_and_cleanup(
+        manifest, outcome="success",
+        evidence=_terminal_evidence(
+            case, manifest, "success",
+            terminal=case / "owned" / "terminal-evidence.json"))
+    after = run_artifacts.load_manifest(artifact_root)
+    assert cleanup["artifact_verification"]["after"]["readable"] is True
+    assert retained in after["classes"]["telemetry"]["entries"]
+    assert after["classes"]["agent-activity"]["entries"] == before_activity
+
+
+def test_root_hygiene_retention_refuses_ninth_owned_row(
+        tmp_path: Path) -> None:
+    case = tmp_path / "root-retention-bound"
+    case.mkdir()
+    artifact_root, _ = _publish_run(case, "run-root-retention-bound", "success")
+    root_input = {
+        "status": "open", "conformance": "pass", "canary_eligible": True,
+        "override": None, "host": {"adapter": "codex", "runtime": "native"},
+        "session_pseudonym": "1" * 64, "seed_fingerprint": "2" * 64,
+        "host_start_fingerprint": "3" * 64,
+        "meter": {
+            "turns": 2, "first_observed_input_tokens": 40_000,
+            "peak_context_tokens": 45_000, "context_rent_tokens": 25_000,
+            "resumed": False,
+            "usage": {"total_tokens": 100_000,
+                      "cached_input_tokens": 50_000},
+        },
+    }
+    for worker_tokens in range(300_000, 300_008):
+        run_artifacts.publish_root_hygiene(
+            artifact_root, wave_metrics.finalize_root_hygiene_canary(
+                root_input, candidate_sha="a" * 40,
+                worker_tokens=worker_tokens))
+    with pytest.raises(run_artifacts.RunArtifactError, match="row bound"):
+        run_artifacts.publish_root_hygiene(
+            artifact_root, wave_metrics.finalize_root_hygiene_canary(
+                root_input, candidate_sha="a" * 40,
+                worker_tokens=400_000))
+
+
+def test_root_hygiene_retention_refuses_every_independent_boundary(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def artifact_root(label: str) -> Path:
+        root = tmp_path / label
+        run_artifacts.create_manifest(root, binding=_binding(label))
+        return root
+
+    def receipt(candidate_sha: str = "a" * 40) -> dict:
+        root_input = {
+            "status": "open", "conformance": "pass",
+            "canary_eligible": True, "override": None,
+            "host": {"adapter": "codex", "runtime": "native"},
+            "session_pseudonym": "1" * 64,
+            "seed_fingerprint": "2" * 64,
+            "host_start_fingerprint": "3" * 64,
+            "meter": {
+                "turns": 1, "first_observed_input_tokens": 10,
+                "peak_context_tokens": 10, "context_rent_tokens": 0,
+                "resumed": False,
+                "usage": {"total_tokens": 0, "cached_input_tokens": 0},
+            },
+        }
+        return wave_metrics.finalize_root_hygiene_canary(
+            root_input, candidate_sha=candidate_sha, worker_tokens=0)
+
+    monkeypatch.setattr(run_artifacts, "_MAX_ROOT_HYGIENE_ENTRY_BYTES", 1)
+    with pytest.raises(run_artifacts.RunArtifactError, match="byte bound"):
+        run_artifacts.publish_root_hygiene(
+            artifact_root("row-bound"), receipt())
+    monkeypatch.setattr(
+        run_artifacts, "_MAX_ROOT_HYGIENE_ENTRY_BYTES", 16 * 1024)
+
+    with pytest.raises(
+            run_artifacts.RunArtifactError, match="another candidate"):
+        run_artifacts.publish_root_hygiene(
+            artifact_root("candidate-binding"), receipt("e" * 40))
+
+    monkeypatch.setattr(run_artifacts, "_MAX_ROOT_HYGIENE_BYTES", 1)
+    with pytest.raises(run_artifacts.RunArtifactError, match="group byte bound"):
+        run_artifacts.publish_root_hygiene(
+            artifact_root("group-bound"), receipt())
+    monkeypatch.setattr(
+        run_artifacts, "_MAX_ROOT_HYGIENE_BYTES", 256 * 1024)
+
+    ambiguous_root = artifact_root("ambiguous")
+    root_receipt = receipt()
+    metadata = {
+        "kind": "root-hygiene",
+        "receipt_fingerprint": root_receipt["fingerprint"],
+    }
+    run_artifacts.publish_artifact(
+        ambiguous_root, "telemetry", {"first": True}, metadata=metadata)
+    with pytest.raises(run_artifacts.RunArtifactError, match="ambiguous"):
+        run_artifacts.publish_artifact(
+            ambiguous_root, "telemetry", {"second": True},
+            metadata=metadata)
+
+    with pytest.raises(run_artifacts.RunArtifactError, match="locator"):
+        run_artifacts.validate_manifest_locator_reference({
+            "schema": run_artifacts.MANIFEST_REFERENCE_SCHEMA,
+            "locator": "../manifest.json",
+        })
+
+    tampered_root = artifact_root("tampered")
+    retained = run_artifacts.publish_root_hygiene(
+        tampered_root, receipt())
+    (tampered_root / retained["locator"]).write_text(
+        "{}", encoding="utf-8")
+    with pytest.raises(run_artifacts.RunArtifactError, match="digest is stale"):
+        run_artifacts.verify_manifest(tampered_root)
+
+
 def test_activity_log_is_bound_append_only_and_complete_for_every_worker_outcome(
     tmp_path: Path,
 ) -> None:

@@ -24,6 +24,7 @@ import kb as _kb            # from its public read models (display_pipeline,
 import depgraph as _dg      # STEP_ROLE, kb.counts, depgraph.summary) instead
 import plan_topology as _pt # Plan DAG/waves stay owned by one topology model.
 import host_native
+import wave_metrics
                             # of re-encoding schemas that then drift.
 import text_runtime as _text
 
@@ -5202,6 +5203,20 @@ def render_canonical_dashboard_snapshot(snapshot: Mapping[str, Any]) -> str:
         '<p class="tp-kicker">governed actions</p>' + actions + '</section>'
         if actions else "")
     metrics = render_wave_metrics_projection(values.get("wave_metrics"))
+    root_receipt = values.get("root_hygiene_receipt")
+    root_metrics = ""
+    if isinstance(root_receipt, Mapping):
+        root = root_hygiene_projection(root_receipt)
+        totals = root["totals"]
+        root_metrics = (
+            '<section class="tp-sec" id="tp-canonical-root-hygiene">'
+            '<p class="tp-kicker">root-session hygiene</p>'
+            '<dl class="tp-binding"><dt>receipt</dt><dd>'
+            + _esc(root["receipt_fingerprint"]) + '</dd>'
+            '<dt>root tokens</dt><dd>' + _esc(totals["root_tokens"]) + '</dd>'
+            '<dt>worker tokens</dt><dd>' + _esc(totals["worker_tokens"]) + '</dd>'
+            '<dt>wave tokens</dt><dd>' + _esc(totals["wave_tokens"]) + '</dd>'
+            '</dl></section>')
     stage_status = (" · finalizing — retro + graph true-up"
                     if stage == "retro" else "")
     return (
@@ -5214,7 +5229,7 @@ def render_canonical_dashboard_snapshot(snapshot: Mapping[str, Any]) -> str:
         + '<p class="tp-lede">stage <code>' + _esc(stage)
         + '</code> · sequence ' + _esc(snapshot.get("sequence", ""))
         + stage_status + '</p>'
-        + binding
+        + binding + root_metrics
         + '<section class="tp-sec" id="tp-canonical-phase-graphs">'
           '<p class="tp-kicker">stage dependency graph</p>' + graphs
         + '</section>' + execution + metrics + action_panel + '</main>')
@@ -5275,6 +5290,11 @@ def _dashboard_value_markup(value, *, omit=(), locale: str | None = None):
 
 
 render_wave_metrics_projection = host_native.render_wave_metrics_projection
+
+
+def root_hygiene_projection(receipt: Mapping[str, object]) -> dict:
+    """Render only the bounded canonical root-hygiene projection."""
+    return wave_metrics.root_hygiene_projection(receipt, consumer="dashboard")
 
 
 def _dashboard_collection_markup(collection, *, locale: str | None = None):

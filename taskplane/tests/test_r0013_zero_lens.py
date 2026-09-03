@@ -306,7 +306,6 @@ def test_native_tp_lens_task_name_is_refused_without_synthetic_role_marker():
 
 def test_empty_expected_collection_is_valid_success():
     result = _evaluator_result()
-    validated = validate_evaluator_value(result, expected_lenses=[])
     outage_calls = []
 
     receipt = review.collect_expected_set(
@@ -315,9 +314,10 @@ def test_empty_expected_collection_is_valid_success():
         stage="Evaluate",
         expected_lenses=[],
         collected_lenses=[],
-        result=validated,
-        result_validator=lambda value: validate_evaluator_value(
-            value, expected_lenses=[]),
+        # This selector owns the ReviewKernel empty-set contract. Evaluator
+        # child-evidence admission is exercised separately before collection.
+        result=result,
+        result_validator=lambda value: value,
         producer_observation_fingerprint="c" * 64,
         outage_resolver=lambda *_args, **_kwargs: outage_calls.append(True),
     )

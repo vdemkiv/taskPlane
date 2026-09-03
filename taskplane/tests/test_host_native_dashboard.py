@@ -11,6 +11,7 @@ from taskplane.dashboard import (
     HOST_DASHBOARD_COMPONENTS,
     carousel_pages,
     native_dashboard_projection,
+    render_canonical_dashboard_snapshot,
     render_native_dashboard_surface,
 )
 from taskplane.host_native import (
@@ -18,6 +19,7 @@ from taskplane.host_native import (
     refresh_dashboard_snapshot,
     select_dashboard_source,
 )
+from taskplane import wave_metrics
 
 
 def _snapshot(items=()):
@@ -372,6 +374,56 @@ def test_selected_managed_source_drives_the_refreshed_snapshot():
     assert publication["snapshot"]["target"] == selected[0]["target"] == "DESIGN"
     assert publication["snapshot"]["values"]["source_fingerprint"] == \
         selected[0]["source_fingerprint"]
+
+
+def test_refreshed_dashboard_carries_the_canonical_root_hygiene_seal():
+    root = {
+        "status": "open", "conformance": "pass", "canary_eligible": True,
+        "override": None, "host": {"adapter": "codex", "runtime": "native"},
+        "session_pseudonym": "1" * 64, "seed_fingerprint": "2" * 64,
+        "host_start_fingerprint": "3" * 64,
+        "meter": {
+            "turns": 2, "first_observed_input_tokens": 40_000,
+            "peak_context_tokens": 45_000, "context_rent_tokens": 25_000,
+            "resumed": False,
+            "usage": {"total_tokens": 100_000,
+                      "cached_input_tokens": 50_000},
+        },
+    }
+    seal = wave_metrics.finalize_root_hygiene_canary(
+        root, candidate_sha="a" * 40, worker_tokens=300_000)
+    state = {
+        "step": "retro", "run_id": "root-hygiene-dashboard",
+        "requirement_id": "R-ROOT-HYGIENE", "baseline": "a" * 40,
+        "root_hygiene_receipt": seal, "tasks": [],
+    }
+    committed = {}
+
+    def commit_snapshot(_workspace, snapshot):
+        committed["current"] = snapshot.to_dict()
+        return {"current": committed["current"], "replayed": False}
+
+    publication = refresh_dashboard_snapshot(
+        "/managed-workspace", event_type="terminal", committed_at=1,
+        settings_digest="settings",
+        source_loader=lambda _workspace: {
+            "status": "ready", "mode": "v3",
+            "run_id": "root-hygiene-dashboard", "target": "retro",
+            "revision": "a" * 40, "state": state,
+            "evidence": ["terminal-root-seal"],
+        },
+        graph_projector=lambda _workspace, **_kwargs: {},
+        metrics_projector=lambda value, **_kwargs: value,
+        publication_loader=lambda _workspace: None,
+        snapshot_committer=commit_snapshot,
+        event_committer=lambda _workspace, _event: None,
+        error_formatter=str,
+    )
+
+    assert publication["snapshot"]["values"]["root_hygiene_receipt"] == seal
+    rendered = render_canonical_dashboard_snapshot(publication["snapshot"])
+    assert seal["fingerprint"] in rendered
+    assert all(str(total) in rendered for total in seal["totals"].values())
 
 
 class _SurfaceDOM(HTMLParser):

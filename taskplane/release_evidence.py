@@ -48,6 +48,12 @@ PROTECTED_MAIN_RELEASE_GATE_SCHEMA = "taskplane.protected-main-release-gate/v1"
 
 CURRENT_VERSION = "2.18.9"
 PREVIOUS_VERSION = "2.17.20"
+
+
+def root_hygiene_projection(receipt: Mapping[str, object]) -> dict:
+    """Consume the canonical root receipt without acquiring its authority."""
+    from taskplane import wave_metrics
+    return wave_metrics.root_hygiene_projection(receipt, consumer="release")
 COMPATIBILITY_PREVIOUS_VERSION = "2.18.0"
 SUPERSEDED_CANDIDATE_VERSION = "2.18.8"
 PREVIOUS_RELEASE_TAG = "v2.17.20"
@@ -207,8 +213,12 @@ def terminal_release_evidence_surface(
 ) -> dict[str, Any]:
     """Prepare release evidence as one non-authoritative terminal surface."""
     from taskplane import terminal_truth
+    payload = dict(evidence)
+    root_receipt = payload.pop("root_hygiene_receipt", None)
+    if isinstance(root_receipt, Mapping):
+        payload["root_hygiene"] = root_hygiene_projection(root_receipt)
     return terminal_truth.prepare_terminal_surface(
-        "release_evidence", identity, dict(evidence)
+        "release_evidence", identity, payload
     )
 
 
