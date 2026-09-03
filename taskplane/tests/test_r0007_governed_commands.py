@@ -14,6 +14,7 @@ import tp
 import taskplane_lite as contract_engine
 from taskplane import checkpoint
 from taskplane import command_adapters
+from taskplane import evaluate_child_evidence as evaluator_evidence
 from taskplane.command_adapters import CommandAdapter, HostLaunch
 from taskplane.command_runtime import CommandRuntime
 
@@ -188,6 +189,71 @@ def test_supported_cli_and_loop_run_one_real_durable_command(tmp_path, capsys):
     })
     assert reconnected["event"]["state"] == "succeeded"
     assert reconnected["snapshot"]["metrics"]["launch_count"] == 1
+
+
+def test_generic_command_seals_exact_evaluator_assignment_for_p12(tmp_path):
+    workspace = tmp_path / "evaluator-command-repo"
+    workspace.mkdir()
+    (workspace / "README.md").write_text(
+        "evaluator command\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.email", "e@e"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "t"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "evaluator command"],
+                   cwd=workspace, check=True)
+    _activate_command_contract(workspace)
+    candidate_sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+    source_tree = subprocess.check_output(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=workspace,
+        text=True).strip()
+    run_id = "run-evaluator-command"
+    authorization = "evaluator:language-code-quality"
+    argv = ["/usr/bin/printf", "governed-evidence\n"]
+    binding = {
+        "task_id": "P12-evaluator-evidence", "requirement_id": "R-TEST",
+        "candidate_sha": candidate_sha, "source_tree": source_tree,
+        "design_fingerprint": "3" * 64, "plan_fingerprint": "4" * 64,
+        "settings_digest": "5" * 64,
+        "evaluator_attempt_id": "evaluate-attempt-1",
+        "impact_manifest_fingerprint": "6" * 64,
+    }
+    launched = governed_commands.execute(str(workspace), "launch", {
+        "authorization": authorization, "argv": argv, "run_id": run_id,
+        "task_id": binding["task_id"], "assignment_binding": binding,
+    })
+    completed = governed_commands.execute(str(workspace), "wait", {
+        "authorization": authorization, "handle": launched["handle"],
+        "consumer": "evaluator:P12", "timeout": 10,
+    })
+    assert completed["event"]["state"] == "succeeded"
+
+    receipt = evaluator_evidence._runtime(
+        {"authorization": authorization, "handle": launched["handle"]},
+        "quality:lint", workspace=workspace, run_id=run_id,
+        assignment={"binding": binding}, argv=argv, consumed=set())
+    assert receipt["assignment_binding"] == binding
+    assert receipt["runtime_argv"] == argv
+    assert receipt["state"] == "succeeded"
+
+    with pytest.raises(evaluator_evidence.EvidenceContractError,
+                       match="provenance"):
+        evaluator_evidence._runtime(
+            {"authorization": authorization, "handle": launched["handle"]},
+            "quality:lint", workspace=workspace, run_id=run_id,
+            assignment={"binding": {**binding, "evaluator_attempt_id":
+                                     "evaluate-attempt-2"}},
+            argv=argv, consumed=set())
+    with pytest.raises(evaluator_evidence.EvidenceContractError,
+                       match="provenance"):
+        evaluator_evidence._runtime(
+            {"authorization": authorization, "handle": launched["handle"]},
+            "quality:lint", workspace=workspace, run_id=run_id,
+            assignment={"binding": binding}, argv=["/usr/bin/true"],
+            consumed=set())
 
 
 def test_cancel_survives_cli_reconstruction_and_is_delivered(tmp_path, capsys):

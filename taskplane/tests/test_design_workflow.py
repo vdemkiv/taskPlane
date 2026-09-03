@@ -13,8 +13,6 @@ import lens  # noqa: E402
 import loop  # noqa: E402
 import requirements as reqs  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
-
-
 class DesignWorkflowTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

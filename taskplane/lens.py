@@ -88,6 +88,27 @@ _LANGUAGE_REFERENCES = {
     },
 }
 
+_IMPLEMENTATION_EXTENSIONS = {
+    ".go": "go",
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".c": "c",
+    ".h": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".cs": "csharp",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".rb": "ruby",
+    ".php": "php",
+    ".swift": "swift",
+}
+
 
 def detected_languages(files) -> list[str]:
     """Languages declared by file extensions or root/build manifests."""
@@ -101,6 +122,58 @@ def detected_languages(files) -> list[str]:
         if present:
             found.append(language)
     return found
+
+
+def implementation_languages(files) -> list[str]:
+    """Return every recognizable impacted implementation language.
+
+    Unlike :func:`detected_languages`, this inventory includes recognizable
+    languages for which Taskplane has no registered quality reference.  That
+    distinction lets Evaluate fail closed instead of silently dropping a
+    Rust, Java, or JavaScript slice from language-quality evidence.
+    """
+    found = set()
+    for raw in files or []:
+        path = str(raw).replace("\\", "/").lower()
+        extension = os.path.splitext(path)[1]
+        language = _IMPLEMENTATION_EXTENSIONS.get(extension)
+        if language:
+            found.add(language)
+    return sorted(found)
+
+
+def language_quality_registry(files) -> list[dict]:
+    """Resolve one content-bound code-quality reference per language.
+
+    The result is an evaluator evidence registry, not a lens route.  Missing,
+    duplicate, or unsupported mappings are contract failures.
+    """
+    languages = implementation_languages(files)
+    if not languages:
+        raise ValueError("impacted implementation language inventory is empty")
+    unsupported = [name for name in languages
+                   if name not in _LANGUAGE_REFERENCES]
+    if unsupported:
+        raise ValueError(
+            "unsupported impacted implementation language: "
+            + ", ".join(unsupported)
+        )
+    rows = language_references(files, lens_ids=["code-quality"])
+    by_language: dict[str, list[dict]] = {}
+    for row in rows:
+        by_language.setdefault(row["language"], []).append(row)
+    missing = [name for name in languages if not by_language.get(name)]
+    duplicate = [name for name in languages
+                 if len(by_language.get(name, [])) > 1]
+    if missing:
+        raise ValueError(
+            "missing language quality reference: " + ", ".join(missing)
+        )
+    if duplicate:
+        raise ValueError(
+            "duplicate language quality reference: " + ", ".join(duplicate)
+        )
+    return [copy.deepcopy(by_language[name][0]) for name in languages]
 
 
 def _reference_record(language: str, lens_id: str, spec: dict) -> dict:

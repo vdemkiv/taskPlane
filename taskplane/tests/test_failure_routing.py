@@ -200,8 +200,9 @@ def test_inventory_rejects_duplicate_ids_and_mixed_candidate_identity():
 
 
 def test_real_evaluator_validator_requires_failures_only_on_fail():
-    assert evaluation_output.validate_evaluator_value(
-        _evaluation("pass", []))["verdict"] == "pass"
+    with pytest.raises(evaluation_output.OutputValidationError) as caught:
+        evaluation_output.validate_evaluator_value(_evaluation("pass", []))
+    assert caught.value.code == "child_evidence_required"
 
     with pytest.raises(evaluation_output.OutputValidationError) as caught:
         evaluation_output.validate_evaluator_value(
