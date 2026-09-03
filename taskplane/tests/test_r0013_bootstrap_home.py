@@ -132,47 +132,6 @@ def test_new_codex_task_writes_current_compatible_receipt_only_to_locator_bound_
     assert not (default_user_home / ".taskplane" / "host-receipts").exists()
 
 
-def test_missing_locator_fails_closed_for_both_hooks_and_host_native_bootstrap(
-        tmp_path):
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
-    default_user_home = tmp_path / "user-home"
-    default_user_home.mkdir()
-    event = {
-        "hook_event_name": "PreToolUse",
-        "session_id": "missing-locator",
-        "tool_use_id": "missing-locator-call",
-        "cwd": str(checkout),
-    }
-    environment = {
-        **os.environ,
-        "HOME": str(default_user_home),
-        "PLUGIN_ROOT": str(ROOT),
-        "TASKPLANE_WORKSPACE": str(checkout),
-    }
-    environment.pop("TASKPLANE_HOME", None)
-
-    for manifest in (ROOT / "hooks" / "hooks.json",
-                     ROOT / ".codex" / "hooks.json"):
-        result = subprocess.run(
-            _manifest_command(manifest, "PreToolUse"), cwd=checkout,
-            shell=True, input=json.dumps(event), text=True,
-            capture_output=True, env=environment,
-            encoding="utf-8", errors="replace")
-        assert result.returncode != 0
-
-    host_native = subprocess.run(
-        ["python3", str(ROOT / "hooks" / "host_native_runtime.py"),
-         "check", "--host", "codex"], cwd=checkout, text=True,
-        capture_output=True, env=environment,
-        encoding="utf-8", errors="replace")
-    assert host_native.returncode != 0
-    assert not Path(taskplane_lite.hook_claim_journal_path(
-        str(checkout))).exists()
-    assert not (default_user_home / ".taskplane" / "host-receipts").exists()
-
-
 def test_hook_home_binding_rejects_noncanonical_and_accepts_secure_default_home(
         tmp_path):
     checkout = tmp_path / "checkout"

@@ -15,6 +15,7 @@ import pytest
 
 from taskplane import loop, taskplane_lite
 from taskplane.settings import load_settings
+from tests.root_session_fixture import open_delivery_root
 
 
 def _content_inventory(root: Path) -> dict[str, str]:
@@ -614,7 +615,8 @@ def test_wave_emits_native_intent_without_stage_runtime_dispatch(
     monkeypatch.setattr(loop, "_stage_loop_dispatch", forbidden)
     monkeypatch.setattr(loop, "_stage_loop_wave_dispatches", forbidden)
 
-    result = loop.wave(ws)
+    authority = open_delivery_root(ws)
+    result = loop.wave(ws, root_observation_authority=authority)
 
     assert len(result["wave"]) == 1
     assert result["wave"][0]["dispatch_intent"]["intent_id"]
@@ -643,7 +645,8 @@ def test_parallel_wave_emits_one_native_set_without_execution_roots(
         lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("Taskplane child-stage scheduler was invoked")))
 
-    result = loop.wave(ws)
+    authority = open_delivery_root(ws)
+    result = loop.wave(ws, root_observation_authority=authority)
 
     assert [entry["task"]["id"] for entry in result["wave"]] == [
         "t01", "t02"]
@@ -679,7 +682,8 @@ def test_parallel_wave_honors_configured_build_concurrency(
     monkeypatch.setattr(
         loop.operational_settings, "load_settings", lambda **_kwargs: capped)
 
-    result = loop.wave(ws)
+    authority = open_delivery_root(ws)
+    result = loop.wave(ws, root_observation_authority=authority)
 
     assert [entry["task"]["id"] for entry in result["wave"]] == ["t01"]
     assert result["held"] == [{
@@ -1644,8 +1648,9 @@ def test_native_wave_ignores_historical_stage_replay_state(
         lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("historical StageLifecycle replay was invoked")))
 
-    first = loop.wave(ws)
-    second = loop.wave(ws)
+    authority = open_delivery_root(ws)
+    first = loop.wave(ws, root_observation_authority=authority)
+    second = loop.wave(ws, root_observation_authority=authority)
 
     for emitted in (first, second):
         assert "error" not in emitted, emitted

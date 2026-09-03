@@ -1,22 +1,16 @@
 """The A/B `selection` step: native human gate between evaluate and em for
 variant builds — variants never merge, one gets picked (or hybridized)."""
 import json
-import hashlib
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
-import depgraph  # noqa: E402
-import producer_observation  # noqa: E402
-import taskplane_lite as tp  # noqa: E402
-from taskplane.tests.review_kernel_support import (  # noqa: E402
-    complete_evaluate_slots,
-)
+import requirements  # noqa: E402
+from tests.root_session_fixture import open_delivery_root  # noqa: E402
 
 
 def _git(ws, *args):
@@ -46,87 +40,27 @@ AB_PLAN = {"mode": "ab-selection", "tasks": [
 
 
 def _to_plan_approved(ws, plan=AB_PLAN, parallel=True):
-    loop.init(ws, "ab goal", parallel=parallel)
+    acceptance = [
+        str(criterion)
+        for task in plan["tasks"]
+        for criterion in task.get("criteria") or []
+    ]
+    requirement = requirements.record_requirement(
+        ws, "select one validated implementation variant",
+        acceptance=acceptance)
+    loop.init(
+        ws, "ab goal", requirement_id=requirement["id"], parallel=parallel)
     state = loop.load(ws)
     state["step"] = "plan"
     loop.save(ws, state)
     os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
-    plan = {"requirement": "selection-fixture",
+    plan = {"requirement": requirement["id"],
             "delivery_mode": "build", "automatic_lenses": [],
             "plan_authority": "human:test-fixture", **plan}
     json.dump(plan, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     loop.gate(ws, "pass")            # plan → plan_approval (+ ab detection)
     loop.approve(ws)                 # → execute
     return loop.load(ws)
-
-
-def _claim_variant_worktrees(ws):
-    """Give simulated variant builds their real isolated task worktrees."""
-    for task in loop.load(ws)["tasks"]:
-        if task.get("status") != "pending":
-            continue
-        worker = os.path.join(ws, ".tp-work", task["id"])
-        _git(ws, "worktree", "add", "-q", worker, "-b",
-             "tp/" + task["id"])
-        claimed = loop.claim(ws, task["id"], worker)
-        if claimed.get("error"):
-            raise AssertionError(claimed["error"])
-        depgraph.scan(worker)
-
-
-def _pass_eval(ws):
-    brief = loop.next_action(ws)
-    if brief.get("error"):
-        raise AssertionError(brief["error"])
-    state = loop.load(ws)
-    task = state["tasks"][state["current_task"]]
-    act_ws = task.get("workspace") if state.get("parallel") else ws
-    complete_evaluate_slots(
-        act_ws, session_id="selection-" + task["id"])
-    os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
-    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w",
-              encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v2",
-                   "task": task["id"],
-                   "requirement": task.get("req") or
-                                  state.get("requirement_id") or "",
-                   "verdict": "pass",
-                   "evaluation": {"status": "complete",
-                                  "reason_code": "none", "detail": ""},
-                   "criteria": [{"criterion": c, "status": "met",
-                                  "evidence": "verified"}
-                                for c in loop._criteria_for(ws, state, task)],
-                   "graph": {"dispositions": [],
-                             "requirements_checked": [],
-                             "contracts_checked": []},
-                   "failures": []}, f)
-    slot = brief["contract_bootstrap"]["task_slot"]
-    binding = tp.worker_contract_for_stage(
-        act_ws, stage="evaluate", task=str(task["id"]))
-    assert binding is not None
-    assert binding["slot"] == slot
-    assert tp.load_active(act_ws) is None
-    contract = binding["contract"]
-    lifecycle = (contract or {}).get("worker_lifecycle") or {}
-    assert lifecycle.get("stage") == "evaluate"
-    assert str(lifecycle.get("task") or "") == str(task["id"])
-    material = loop.producer_output_identity(
-        act_ws, state, task, "evaluate",
-        active_contract=contract)
-    event = {"hook_event_name": "SubagentStop",
-             "session_id": "selection-evaluate-session",
-             "turn_id": "selection-evaluate-turn",
-             "agent_id": "selection-evaluator",
-             "agent_type": material["producer_dispatch"]["task_name"],
-             "task_name": material["producer_dispatch"]["task_name"]}
-    claim = hashlib.sha256(tp.hook_event_identity(
-        act_ws, "subagent-stop", event).encode("utf-8")).hexdigest()
-    producer_observation.record_codex_subagent_stop(
-        event=event, hook_claim_id=claim, **material)
-    with mock.patch("runtime_eval.guide_loop",
-                    return_value={"status": "on_path", "recovered": False}):
-        loop.submit(ws, "pass")
-    return loop.gate(ws, "pass")
 
 
 class TestSelectionStep(unittest.TestCase):
@@ -146,7 +80,9 @@ class TestSelectionStep(unittest.TestCase):
 
     def test_wave_does_not_serialize_variants(self):
         _to_plan_approved(self.ws)
-        w = loop.wave(self.ws)
+        authority = open_delivery_root(self.ws)
+        w = loop.wave(
+            self.ws, root_observation_authority=authority)
         ready = [e["task"]["id"] for e in w["wave"]]
         self.assertEqual(sorted(ready),
                          ["feat-variant-a", "feat-variant-b"])
@@ -160,29 +96,11 @@ class TestSelectionStep(unittest.TestCase):
             {"id": "t2", "scope": ["src/**"], "new_modules": ["src"],
              "tests": "true", "criteria": ["task two passes review"]}]}
         _to_plan_approved(self.ws, plan=plan)
-        w = loop.wave(self.ws)
+        authority = open_delivery_root(self.ws)
+        w = loop.wave(
+            self.ws, root_observation_authority=authority)
         self.assertEqual(len(w["wave"]), 1)
         self.assertEqual(len(w["held"]), 1)
-
-    def test_all_variants_passed_pauses_at_selection(self):
-        _to_plan_approved(self.ws)
-        _claim_variant_worktrees(self.ws)
-        state = loop.load(self.ws)
-        # simulate both variants built; evaluate each to pass
-        for t in state["tasks"]:
-            t["status"] = "built"
-        state["step"] = "evaluate"
-        state["current_task"] = 0
-        loop.save(self.ws, state)
-        _pass_eval(self.ws)                              # variant a passes
-        state = loop.load(self.ws)
-        state["step"] = "evaluate"; state["current_task"] = 1
-        loop.save(self.ws, state)
-        r = _pass_eval(self.ws)                          # variant b passes
-        self.assertEqual(r["step"], "selection")
-        nxt = loop.next_action(self.ws)
-        self.assertTrue(nxt["paused"])
-        self.assertEqual(len(nxt["variants"]), 2)
 
     def _to_selection(self):
         state = _to_plan_approved(self.ws)

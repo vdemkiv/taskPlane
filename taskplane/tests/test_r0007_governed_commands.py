@@ -206,10 +206,11 @@ def test_generic_command_seals_exact_evaluator_assignment_for_p12(tmp_path):
                    cwd=workspace, check=True)
     _activate_command_contract(workspace)
     candidate_sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True,
+        encoding="utf-8", errors="replace").strip()
     source_tree = subprocess.check_output(
         ["git", "rev-parse", "HEAD^{tree}"], cwd=workspace,
-        text=True).strip()
+        text=True, encoding="utf-8", errors="replace").strip()
     run_id = "run-evaluator-command"
     authorization = "evaluator:language-code-quality"
     argv = ["/usr/bin/printf", "governed-evidence\n"]

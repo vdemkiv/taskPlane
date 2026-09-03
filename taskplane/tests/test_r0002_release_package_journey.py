@@ -454,7 +454,8 @@ case = Path(sys.argv[2]).resolve()
 sys.path.insert(0, str(root))
 sys.path.insert(0, str(root / "taskplane"))
 
-from taskplane import build_quality, failure_routing, run_artifacts, settings
+from taskplane import (build_quality, failure_routing, release_evidence,
+                       run_artifacts, settings)
 from taskplane import design_host_transport
 
 configured = settings.load_settings(environment={})
@@ -573,7 +574,7 @@ role = design_host_transport.portable_role_reference("tp-lens")
 assert role["path"] == "agents/tp-lens.md"
 
 print(json.dumps({
-    "version": "2.18.9",
+    "version": release_evidence.CURRENT_VERSION,
     "settings_digest": configured.digest,
     "routing": routing["next"],
     "validation_layers": progression["completed"],

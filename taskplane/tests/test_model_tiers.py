@@ -14,6 +14,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import taskplane_lite as tp  # noqa: E402
+from tests.root_session_fixture import open_delivery_root  # noqa: E402
 import lens as lens_router  # noqa: E402
 import loop  # noqa: E402
 
@@ -157,7 +158,9 @@ class TestLoopPayloadCarriesModel(unittest.TestCase):
         loop.gate(ws, "pass")              # pm -> plan
         loop.gate(ws, "pass")              # plan -> plan_approval
         loop.approve(ws)                   # -> execute
-        out = loop.next_action(ws)
+        authority = open_delivery_root(ws)
+        out = loop.next_action(
+            ws, root_observation_authority=authority)
         self.assertEqual(out["step"], "execute")
         self.assertEqual(out["model_tier"], "cheap")
         self.assertEqual(out["model"], tp.model_for_tier("cheap"))

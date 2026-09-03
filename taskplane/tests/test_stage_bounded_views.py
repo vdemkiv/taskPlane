@@ -517,7 +517,8 @@ def test_retro_v4_aggregates_summaries_without_predecessor_trace_roots(
             },
         }, candidate_sha=subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=workspace,
-            text=True).strip(), worker_tokens=300_000)
+            text=True, encoding="utf-8", errors="replace").strip(),
+        worker_tokens=300_000)
     loop.save(str(workspace), state)
     real_open = builtins.open
 

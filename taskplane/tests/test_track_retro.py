@@ -80,16 +80,24 @@ class TestRetro(unittest.TestCase):
                        cwd=ws, check=True)
         return ws
 
+    def _save_stage(self, ws, *, goal, step, tasks):
+        initialized = loop.init(ws, goal)
+        self.assertNotIn("error", initialized)
+        state = loop.load(ws)
+        state.update({
+            "goal": goal, "step": step, "max_fix_cycles": 2,
+            "checkpoints": [], "current_task": 0, "tasks": tasks,
+        })
+        loop.save(ws, state)
+
     def test_retro_mines_trace_and_records_lesson(self):
         import kb
         import taskplane_lite as tpl
         ws = self._repo()
-        state = {"goal": "retro goal", "step": "retro",
-                 "max_fix_cycles": 2, "checkpoints": [],
-                 "current_task": 0,
-                 "tasks": [{"id": "t1", "scope": ["src/**"], "status":
-                            "passed", "fix_cycles": 2}]}
-        loop.save(ws, state)
+        self._save_stage(
+            ws, goal="retro goal", step="retro",
+            tasks=[{"id": "t1", "scope": ["src/**"],
+                    "status": "passed", "fix_cycles": 2}])
         tpl.trace(ws, "hook_deny", tool="Write", reason="out of scope")
         tpl.trace(ws, "refinement_gate", task="t1", requirement="R-0001",
                   score=0.9, blocking=False, mode="full")
@@ -135,7 +143,8 @@ class TestRetro(unittest.TestCase):
         self.assertEqual(dashboard["values"]["outcome"], "success")
         self.assertEqual(dashboard["values"]["loop"]["step"], "done")
         self.assertEqual(dashboard["safe_actions"], [])
-        self.assertIn(f"loop-state:{dashboard['revision']}",
+        self.assertIn(
+            f"loop-state:{dashboard['values']['source_fingerprint']}",
                       dashboard["evidence"])
         self.assertEqual(dashboard["values"]["provenance"]["revision"],
                          dashboard["revision"])
@@ -153,11 +162,10 @@ class TestRetro(unittest.TestCase):
     def test_retro_refuses_to_run_before_its_stage(self):
         import kb
         ws = self._repo()
-        loop.save(ws, {"goal": "too early", "step": "execute",
-                       "max_fix_cycles": 2, "checkpoints": [],
-                       "current_task": 0,
-                       "tasks": [{"id": "t1", "scope": ["src/**"],
-                                  "status": "running", "fix_cycles": 0}]})
+        self._save_stage(
+            ws, goal="too early", step="execute",
+            tasks=[{"id": "t1", "scope": ["src/**"],
+                    "status": "running", "fix_cycles": 0}])
         out = loop.retro(ws)
         self.assertIn("error", out)
         self.assertIn("only runs after sign-off", out["error"])
@@ -165,9 +173,8 @@ class TestRetro(unittest.TestCase):
 
     def test_retro_report_carries_canonical_finding_summary(self):
         ws = self._repo()
-        loop.save(ws, {"goal": "finding summary", "step": "retro",
-                       "max_fix_cycles": 2, "checkpoints": [],
-                       "current_task": 0, "tasks": []})
+        self._save_stage(
+            ws, goal="finding summary", step="retro", tasks=[])
         os.makedirs(os.path.join(ws, ".em-review"))
         with open(os.path.join(ws, ".em-review", "findings.json"), "w",
                   encoding="utf-8") as f:
@@ -183,9 +190,8 @@ class TestRetro(unittest.TestCase):
     def test_graph_true_up_failure_keeps_the_loop_open(self):
         import depgraph
         ws = self._repo()
-        loop.save(ws, {"goal": "graph failure", "step": "retro",
-                       "max_fix_cycles": 2, "checkpoints": [],
-                       "current_task": 0, "tasks": []})
+        self._save_stage(
+            ws, goal="graph failure", step="retro", tasks=[])
         original = depgraph.scan
         depgraph.scan = lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError("scanner unavailable"))
@@ -201,9 +207,8 @@ class TestRetro(unittest.TestCase):
         import kb
         import retro as retro_engine
         ws = self._repo()
-        loop.save(ws, {"goal": "trace retry", "step": "retro",
-                       "max_fix_cycles": 2, "checkpoints": [],
-                       "current_task": 0, "tasks": []})
+        self._save_stage(
+            ws, goal="trace retry", step="retro", tasks=[])
         original = retro_engine.tp.trace
         retro_engine.tp.trace = lambda *args, **kwargs: None
         try:

@@ -8,6 +8,7 @@ import subprocess
 import pytest
 
 from taskplane import loop, native_authority
+from tests.root_session_fixture import open_delivery_root
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -275,7 +276,9 @@ def test_loop_wave_never_calls_stage_split_resume_or_execution_root_claim(
     monkeypatch.setattr(
         loop.tp, "stage_runtime_dispatch", forbidden("stage-runtime-dispatch"))
 
-    result = loop.wave(workspace)
+    authority = open_delivery_root(workspace)
+    result = loop.wave(
+        workspace, root_observation_authority=authority)
 
     assert "error" not in result, result
     assert [row["task"]["id"] for row in result["wave"]] == ["t01"]

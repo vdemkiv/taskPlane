@@ -24,6 +24,7 @@ from taskplane import (
 )
 from taskplane.host_capabilities import Observation, negotiate_host_surfaces
 from taskplane.host_native import HostSurfaceEvent, HostSurfaceSnapshot
+from tests.root_session_fixture import open_delivery_root
 from taskplane.tests.test_stage_dispatch import _receipt, _stage_and_handoff
 
 
@@ -304,7 +305,7 @@ def _real_loop_stage(
 
 def _parallel_loop_wave(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-        ) -> tuple[Path, run_store.RunStore, dict[str, object]]:
+        ) -> tuple[Path, run_store.RunStore, dict[str, object], bytes]:
     workspace, store, initial = _real_pristine_run(tmp_path)
     monkeypatch.setenv(taskplane_lite.STAGE_NATIVE_ENV, "new-run")
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
@@ -356,12 +357,13 @@ def _parallel_loop_wave(
     state = loop.load(str(workspace))
     state["submission_required"] = False
     loop.save(str(workspace), state)
+    authority = open_delivery_root(str(workspace))
     manifest = store.load(str(initial["run_id"]))
     parent_id = manifest["active_stage_projection"]["foreground_stage_id"]
     parent = store.read_stage_object(
         str(initial["run_id"]), manifest["stage_heads"][parent_id]["object"])
     assert parent["stage_kind"] == "build"
-    return workspace, store, parent
+    return workspace, store, parent, authority
 
 
 def _write_reanchorable_pass(workspace: str | Path, task: dict) -> None:
@@ -608,10 +610,12 @@ def test_real_loop_journey_emits_one_bounded_dispatch_on_every_host(
 
 def test_parallel_wave_preserves_native_intent_and_wait_identity_on_hosts(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
+    workspace, store, parent, authority = _parallel_loop_wave(
+        tmp_path, monkeypatch)
     manifest_before = copy.deepcopy(store.load(str(parent["run_id"])))
 
-    emitted = loop.wave(str(workspace))
+    emitted = loop.wave(
+        str(workspace), root_observation_authority=authority)
 
     assert "error" not in emitted, emitted
     assert [entry["task"]["id"] for entry in emitted["wave"]] == [
@@ -644,7 +648,8 @@ def test_parallel_wave_preserves_native_intent_and_wait_identity_on_hosts(
 
 def test_parallel_wave_ignores_historical_split_persistence_adapter(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
+    workspace, store, parent, authority = _parallel_loop_wave(
+        tmp_path, monkeypatch)
     manifest_before = copy.deepcopy(store.load(str(parent["run_id"])))
 
     def forbidden(*_args, **_kwargs):
@@ -653,8 +658,10 @@ def test_parallel_wave_ignores_historical_split_persistence_adapter(
     monkeypatch.setattr(
         loop, "_persist_stage_loop_wave_bindings", forbidden)
     monkeypatch.setattr(loop, "_stage_loop_wave_dispatches", forbidden)
-    first = loop.wave(str(workspace))
-    second = loop.wave(str(workspace))
+    first = loop.wave(
+        str(workspace), root_observation_authority=authority)
+    second = loop.wave(
+        str(workspace), root_observation_authority=authority)
 
     for emitted in (first, second):
         assert "error" not in emitted, emitted
@@ -710,7 +717,8 @@ def test_pristine_new_run_wave_refuses_legacy_or_implicit_root_dispatch(
 
 def test_native_wave_never_resumes_historical_stage_children(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
+    workspace, store, parent, authority = _parallel_loop_wave(
+        tmp_path, monkeypatch)
     manifest_before = copy.deepcopy(store.load(str(parent["run_id"])))
 
     def forbidden(*_args, **_kwargs):
@@ -718,7 +726,8 @@ def test_native_wave_never_resumes_historical_stage_children(
 
     monkeypatch.setattr(loop, "_stage_loop_dispatch", forbidden)
     monkeypatch.setattr(loop, "_stage_loop_wave_dispatches", forbidden)
-    emitted = loop.wave(str(workspace))
+    emitted = loop.wave(
+        str(workspace), root_observation_authority=authority)
 
     assert "error" not in emitted, emitted
     assert [entry["task"]["id"] for entry in emitted["wave"]] == [
@@ -733,9 +742,11 @@ def test_native_wave_never_resumes_historical_stage_children(
 
 def test_interim_parallel_evaluate_advances_without_stage_tree_mutation(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workspace, store, parent = _parallel_loop_wave(tmp_path, monkeypatch)
+    workspace, store, parent, authority = _parallel_loop_wave(
+        tmp_path, monkeypatch)
     manifest_before = copy.deepcopy(store.load(str(parent["run_id"])))
-    emitted = loop.wave(str(workspace))
+    emitted = loop.wave(
+        str(workspace), root_observation_authority=authority)
     assert "error" not in emitted, emitted
     assert not (loop.load(str(workspace)) or {}).get("_stage_bindings")
     monkeypatch.setattr(loop, "_task_dod_errors", lambda *_a, **_k: [])

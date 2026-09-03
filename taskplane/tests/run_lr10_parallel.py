@@ -35,7 +35,7 @@ SHARDS = {
     ),
     "evidence": (
         "taskplane/tests/test_evaluation_output_contract.py",
-        "taskplane/tests/test_evidence_bundle.py",
+        "taskplane/tests/test_evaluate_child_evidence.py",
         "taskplane/tests/test_runtime_eval_guidance.py",
         "taskplane/tests/test_focused_lens_routing.py",
     ),
@@ -52,7 +52,7 @@ LR10_SELECTORS = (
     "taskplane/tests/test_expanded_lens_route_authority.py",
     "taskplane/tests/test_review_routing.py",
     "taskplane/tests/test_evaluation_output_contract.py",
-    "taskplane/tests/test_evidence_bundle.py",
+    "taskplane/tests/test_evaluate_child_evidence.py",
     "taskplane/tests/test_runtime_eval_guidance.py",
     "taskplane/tests/test_focused_lens_routing.py",
     "taskplane/tests/test_loop.py",

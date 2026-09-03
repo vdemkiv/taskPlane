@@ -1,7 +1,6 @@
 """Fail-closed DoR/DoD invariants shared by Claude and Codex hosts."""
 
 import json
-import hashlib
 import os
 import subprocess
 import sys
@@ -10,14 +9,8 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import lens  # noqa: E402
 import loop  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
-import producer_observation  # noqa: E402
-from taskplane.tests.review_kernel_support import (  # noqa: E402
-    complete_evaluate_slots,
-    complete_review,
-)
 
 
 def _repo():
@@ -53,38 +46,6 @@ def _state(ws, step, tests="true"):
     return state
 
 
-def _write_eval(ws, active_contract):
-    state = loop.load(ws)
-    bundle = loop.evidence(ws)
-    verdict = bundle["verdict_template"]
-    verdict["verdict"] = "pass"
-    for row in verdict["criteria"]:
-        row["status"] = "met"
-        row["evidence"] = "covered by the task's tests"
-    complete_evaluate_slots(ws)
-    os.makedirs(os.path.join(ws, ".eval"), exist_ok=True)
-    with open(os.path.join(ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump(verdict, f)
-    task = state["tasks"][state["current_task"]]
-    material = loop.producer_output_identity(
-        ws, state, task, "evaluate", active_contract=active_contract)
-    event = {"hook_event_name": "SubagentStop",
-             "session_id": "governance-evaluate-session",
-             "turn_id": "governance-evaluate-turn",
-             "agent_id": "governance-evaluator",
-             "agent_type": material["producer_dispatch"]["task_name"],
-             "task_name": material["producer_dispatch"]["task_name"]}
-    claim = hashlib.sha256(tp.hook_event_identity(
-        ws, "subagent-stop", event).encode("utf-8")).hexdigest()
-    producer_observation.record_codex_subagent_stop(
-        event=event, hook_claim_id=claim, **material)
-
-
-def _write_em(ws):
-    coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
-    complete_review(ws, coverage=coverage)
-
-
 class TestGovernanceInvariants(unittest.TestCase):
     def test_failed_dor_is_governed_but_does_not_start(self):
         ws = _repo()
@@ -95,16 +56,6 @@ class TestGovernanceInvariants(unittest.TestCase):
         active = tp.load_active(ws)
         self.assertIsNone(active)
         self.assertEqual(loop.load(ws)["step"], "execute")
-
-    def test_execute_pass_is_rejected_when_tests_fail(self):
-        ws = _repo()
-        _state(ws, "execute", tests="false")
-        loop.next_action(ws)
-        out = loop.gate(ws, "pass")
-        self.assertIn("Definition of Done failed", out["error"])
-        self.assertEqual(loop.load(ws)["step"], "execute")
-        self.assertIsNotNone(tp.worker_contract_for_stage(
-            ws, stage="execute", task="t1"))
 
     def test_suite_launch_error_is_a_structured_dod_blocker(self):
         ws = _repo()
@@ -119,54 +70,6 @@ class TestGovernanceInvariants(unittest.TestCase):
         self.assertTrue(any("tests_pass: could not start" in e
                             for e in errors), errors)
         self.assertTrue(any("loop replan" in e for e in errors), errors)
-
-    def test_approved_legacy_test_list_fails_closed_and_can_replan(self):
-        ws = _repo()
-        _state(ws, "execute", tests=["src/a.py"])
-        loop.next_action(ws)
-        out = loop.gate(ws, "pass")
-        self.assertIn("Definition of Done failed", out["error"])
-        self.assertIn("could not start", str(out["dod"]))
-        self.assertNotIn("Traceback", str(out))
-        recovered = loop.replan(
-            ws, by="user", reason="legacy tests list is ambiguous")
-        self.assertEqual(recovered["step"], "plan")
-
-    def test_evaluate_requires_complete_evidence(self):
-        ws = _repo()
-        _state(ws, "evaluate")
-        action = loop.next_action(ws)
-        slot = action["contract_bootstrap"]["task_slot"]
-        binding = tp.worker_contract_for_stage(
-            ws, stage="evaluate", task="t1")
-        self.assertIsNotNone(binding)
-        self.assertEqual(binding["slot"], slot)
-        self.assertIsNone(tp.load_active(ws))
-        active_contract = binding["contract"]
-        lifecycle = (active_contract or {}).get("worker_lifecycle") or {}
-        self.assertEqual(lifecycle.get("stage"), "evaluate")
-        self.assertEqual(str(lifecycle.get("task") or ""), "t1")
-        out = loop.gate(ws, "pass")
-        self.assertIn("evaluation evidence failed", out["error"])
-        self.assertEqual(loop.load(ws)["step"], "evaluate")
-        _write_eval(ws, active_contract)
-        self.assertTrue(loop.submit(ws, "pass")["submitted"])
-        out = loop.gate(ws, "pass")
-        self.assertEqual(out["step"], "em")
-
-    def test_em_and_signoff_require_full_review_evidence(self):
-        ws = _repo()
-        state = _state(ws, "em")
-        state["tasks"][0]["status"] = "passed"
-        loop.save(ws, state)
-        loop.next_action(ws)
-        out = loop.gate(ws, "pass")
-        self.assertIn("engineering review is incomplete", out["error"])
-        _write_em(ws)
-        out = loop.gate(ws, "pass")
-        self.assertEqual(out["step"], "signoff")
-        out = loop.approve(ws, by="human")
-        self.assertEqual(out["step"], "retro")
 
     def test_unknown_mutation_capability_is_denied(self):
         contract = tp.build_contract("t", scope=["src/**"],

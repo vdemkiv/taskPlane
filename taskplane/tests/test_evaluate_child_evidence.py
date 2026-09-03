@@ -560,7 +560,8 @@ def test_public_next_action_observes_two_children_and_gate_consumes_them(
          "user.email=test@example.invalid", "commit", "-qm", "base"],
         cwd=workspace, check=True)
     baseline = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True,
+        encoding="utf-8", errors="replace").strip()
     selectors = ["tests/test_public.py::test_producer_a",
                  "tests/test_public.py::test_producer_b"]
     severed_selectors = [
@@ -608,10 +609,11 @@ def test_public_next_action_observes_two_children_and_gate_consumes_them(
          "user.email=test@example.invalid", "commit", "-qm", "candidate"],
         cwd=workspace, check=True)
     head = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True,
+        encoding="utf-8", errors="replace").strip()
     tree = subprocess.check_output(
         ["git", "rev-parse", "HEAD^{tree}"], cwd=workspace,
-        text=True).strip()
+        text=True, encoding="utf-8", errors="replace").strip()
 
     settings = load_settings()
     run_id = "run-evaluator-evidence"

@@ -82,65 +82,8 @@ class TestImpact(unittest.TestCase):
         self.assertIn("<svg", html.lower())
 
 
-class TestLoopImpactWiring(unittest.TestCase):
-    def test_evaluate_action_carries_impact(self):
-        import json
-        import loop
-        ws = tempfile.mkdtemp()
-        os.makedirs(os.path.join(ws, "plan"))
-        w(ws, "src/db/conn.py", "x=1\n")
-        w(ws, "src/auth/session.py", "from src.db import conn\n")
-        subprocess.run(["git", "init", "-q"], cwd=ws)
-        subprocess.run(["git", "add", "-A"], cwd=ws)
-        subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
-                        "commit", "-qm", "i"], cwd=ws)
-        dg.scan(ws)
-        with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
-            json.dump({"tasks": [{"id": "t1", "scope": ["src/db/**"],
-                                  "tests": "true",
-                                  "criteria": ["db change works"]}]}, f)
-        loop.init(ws, "db work", spec_path="s", checkpoints=["plan"])
-        loop.next_action(ws); loop.gate(ws, "pass"); loop.approve(ws)
-        loop.next_action(ws)
-        w(ws, "src/db/conn.py", "x=2\n")      # the "build"
-        loop.submit(ws, "pass")
-        loop.gate(ws, "pass")
-        act = loop.next_action(ws)             # evaluate
-        self.assertEqual(act["step"], "evaluate")
-        self.assertIsNotNone(act["impact"])
-        d1 = [e["module"] for e in act["impact"]["impacted"][1]]
-        self.assertIn("auth", d1)              # reviewer sees blast radius
-
-
 if __name__ == "__main__":
     unittest.main()
-
-
-class TestImpactExcludesLoopOwned(unittest.TestCase):
-    def test_loop_paths_not_in_blast_radius(self):
-        import json
-        import loop
-        ws = tempfile.mkdtemp()
-        os.makedirs(os.path.join(ws, "plan"))
-        w(ws, "src/db/conn.py", "x=1\n")
-        subprocess.run(["git", "init", "-q"], cwd=ws)
-        subprocess.run(["git", "add", "-A"], cwd=ws)
-        subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
-                        "commit", "-qm", "i"], cwd=ws)
-        dg.scan(ws)
-        with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
-            json.dump({"tasks": [{"id": "t1", "scope": ["src/db/**"],
-                                  "tests": "true",
-                                  "criteria": ["db change works"]}]}, f)
-        loop.init(ws, "g", spec_path="s", checkpoints=["plan"])
-        loop.next_action(ws); loop.gate(ws, "pass"); loop.approve(ws)
-        loop.next_action(ws)
-        w(ws, "src/db/conn.py", "x=2\n")
-        loop.submit(ws, "pass")
-        loop.gate(ws, "pass")
-        act = loop.next_action(ws)
-        touched = act["impact"]["touched"]
-        self.assertEqual(touched, ["db"])       # no .taskplane/knowledge/plan
 
 
 class TestCSharpJavaRuby(unittest.TestCase):

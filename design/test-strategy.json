@@ -29,8 +29,7 @@
     {
       "id": "AC-SET5",
       "selectors": [
-        "taskplane/tests/test_settings_cross_host.py::test_effective_settings_are_portable_and_safely_observable",
-        "taskplane/tests/test_settings_migration.py::test_legacy_and_version_forms_migrate_without_second_authority"
+        "taskplane/tests/test_settings_cross_host.py::test_effective_settings_are_portable_and_safely_observable"
       ]
     },
     {

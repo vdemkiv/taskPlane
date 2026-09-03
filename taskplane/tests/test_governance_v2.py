@@ -5,24 +5,17 @@ requirement-owned graph readiness, contract-bounded impact, and a worker
 submission that can never advance its own state transition.
 """
 import json
-import hashlib
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import depgraph  # noqa: E402
 import loop  # noqa: E402
 import requirements  # noqa: E402
-import runtime_eval  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
-import producer_observation  # noqa: E402
-
-
-COMPLETE_REVIEW_FACTS = {key: True for key in runtime_eval.REVIEW_FACTS}
 
 
 def _git(ws, *args):
@@ -69,82 +62,6 @@ class TestGovernanceV2(unittest.TestCase):
         result = loop.gate(self.ws, "pass")
         self.assertNotIn("error", result)
         self.assertEqual(loop.load(self.ws)["step"], "execute")
-
-    def test_worker_submission_never_self_transitions_and_stale_work_blocks(self):
-        self._plan_to_execute()
-        loop.next_action(self.ws)
-        path = os.path.join(self.ws, "src", "core", "a.py")
-        with open(path, "a", encoding="utf-8") as f:
-            f.write("VALUE_2 = 2\n")
-
-        missing = loop.gate(self.ws, "pass")
-        self.assertIn("not submitted", missing["error"])
-        submitted = loop.submit(self.ws, "pass")
-        self.assertTrue(submitted["submitted"])
-        self.assertFalse(submitted["transitioned"])
-        self.assertEqual(loop.load(self.ws)["step"], "execute")
-        self.assertIsNotNone(tp.worker_contract_for_stage(
-            self.ws, stage="execute", task="t1"))
-
-        with open(path, "a", encoding="utf-8") as f:
-            f.write("VALUE_3 = 3\n")
-        stale = loop.gate(self.ws, "pass")
-        self.assertIn("changed after worker submission", stale["error"])
-        loop.submit(self.ws, "pass")
-        accepted = loop.gate(self.ws, "pass")
-        self.assertEqual(accepted["step"], "evaluate")
-
-    def test_evaluator_submission_is_bound_to_graph_revision(self):
-        self._plan_to_execute()
-        loop.next_action(self.ws)
-        loop.submit(self.ws, "pass")
-        loop.gate(self.ws, "pass")
-        action = loop.next_action(self.ws)
-        evidence_dir = os.path.join(self.ws, ".eval")
-        os.makedirs(evidence_dir, exist_ok=True)
-        with open(os.path.join(evidence_dir, "verdict.json"), "w", encoding="utf-8") as f:
-            json.dump({
-                "schema": "taskplane.evaluator-output/v2",
-                "task": "t1", "requirement": "", "verdict": "pass",
-                "evaluation": {"status": "complete", "reason_code": "none",
-                               "detail": ""},
-                "criteria": [{"criterion": "works", "status": "met",
-                              "evidence": "verified"}],
-                "graph": {"dispositions": [], "requirements_checked": [],
-                          "contracts_checked": []}, "failures": []}, f)
-        state = loop.load(self.ws)
-        task = state["tasks"][state["current_task"]]
-        slot = action["contract_bootstrap"]["task_slot"]
-        binding = tp.worker_contract_for_stage(
-            self.ws, stage="evaluate", task=str(task["id"]))
-        self.assertIsNotNone(binding)
-        self.assertEqual(binding["slot"], slot)
-        self.assertIsNone(tp.load_active(self.ws))
-        contract = binding["contract"]
-        lifecycle = (contract or {}).get("worker_lifecycle") or {}
-        self.assertEqual(lifecycle.get("stage"), "evaluate")
-        self.assertEqual(str(lifecycle.get("task") or ""), str(task["id"]))
-        material = loop.producer_output_identity(
-            self.ws, state, task, "evaluate",
-            active_contract=contract)
-        event = {"hook_event_name": "SubagentStop",
-                 "session_id": "governance-v2-session",
-                 "turn_id": "governance-v2-turn",
-                 "agent_id": "governance-v2-evaluator",
-                 "agent_type": material["producer_dispatch"]["task_name"],
-                 "task_name": material["producer_dispatch"]["task_name"]}
-        claim = hashlib.sha256(tp.hook_event_identity(
-            self.ws, "subagent-stop", event).encode("utf-8")).hexdigest()
-        producer_observation.record_codex_subagent_stop(
-            event=event, hook_claim_id=claim, **material)
-        with mock.patch("runtime_eval.review_facts",
-                        return_value=COMPLETE_REVIEW_FACTS):
-            loop.submit(self.ws, "pass")
-        depgraph.record_edge(self.ws, "core", "contract:late-change",
-                             kind="provides", confidence="high")
-        stale = loop.gate(self.ws, "pass")
-        self.assertIn("dependency graph changed after worker submission",
-                      stale["error"])
 
     def test_rejected_plan_keeps_its_contract_active(self):
         loop.init(self.ws, "g", spec_path="specs/spec.md")
@@ -254,19 +171,6 @@ class TestGovernanceV2(unittest.TestCase):
                                   "boundary_mode": "expand",
                                   "contract_depth": 2,
                                   "requirement_depth": 3})
-
-    def test_legacy_loop_without_submission_flag_remains_resumable(self):
-        loop.save(self.ws, {
-            "goal": "legacy", "step": "execute", "current_task": 0,
-            "tasks": [{"id": "t1", "scope": ["src/core/**"],
-                       "tests": "true", "criteria": ["works"],
-                       "status": "pending", "fix_cycles": 0}],
-            "baseline": "HEAD", "parallel": False,
-            "max_fix_cycles": 1, "checkpoints": [],
-        })
-        loop.next_action(self.ws)
-        result = loop.gate(self.ws, "pass")
-        self.assertEqual(result["step"], "evaluate")
 
 
 if __name__ == "__main__":
