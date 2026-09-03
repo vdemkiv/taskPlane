@@ -170,8 +170,14 @@ def test_root_meter_counts_complete_turn_events_and_derives_first_peak_rent_with
             )
         },
         session_id="root-session", now="2026-09-02T00:00:00Z")
+    capability_source = tmp_path / "root-capability.jsonl"
+    _write_segment(
+        capability_source, session_id="root-session", total=1,
+        cached=0, output=1, ordinal=1)
     capability = host_capabilities.root_session_capability(
-        capability_snapshot, settings_digest="a" * 64)
+        capability_snapshot, settings_digest="a" * 64,
+        native_snapshot=native_session_meter.read_snapshot(
+            str(capability_source)), turn_id="turn-capability")
     assert capability["status"] == "supported"
     assert capability["session_role"] is None
     observations = []

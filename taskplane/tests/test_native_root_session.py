@@ -19,9 +19,10 @@ AUTHORITY = b"private-host-root-authority"
 
 
 def _write_root(path: Path, *, total: int, sequence: int,
-                resumed: bool = False) -> dict:
+                resumed: bool = False,
+                session_id: str = "root-session") -> dict:
     metadata = {
-        "session_id": "root-session", "id": "root-session",
+        "session_id": session_id, "id": session_id,
         "timestamp": "2026-09-02T04:00:00Z",
         "thread_source": "agent_created_thread",
     }
@@ -34,8 +35,9 @@ def _write_root(path: Path, *, total: int, sequence: int,
         {"type": "session_meta", "payload": metadata},
         {"ordinal": sequence, "type": "event_msg", "payload": {
             "type": "token_count", "info": {"total_token_usage": {
-                "input_tokens": total - 1, "cached_input_tokens": 0,
-                "cache_write_input_tokens": 0, "output_tokens": 1,
+                "input_tokens": max(0, total - 1), "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 1 if total else 0,
                 "reasoning_output_tokens": 0, "total_tokens": total,
             }},
         }},
@@ -60,8 +62,11 @@ def _capability(tmp_path: Path, digest: str) -> dict:
         native_installed=True, bridge_configured=False,
         observations=observations, session_id="root-session",
         now="2026-09-02T04:00:00Z")
+    native = _write_root(
+        tmp_path / "root-capability.jsonl", total=1, sequence=1)
     return host_capabilities.root_session_capability(
-        snapshot, settings_digest=digest)
+        snapshot, settings_digest=digest, native_snapshot=native,
+        turn_id="turn-capability")
 
 
 def _prepared(tmp_path: Path) -> tuple[dict, dict, dict]:
@@ -223,9 +228,7 @@ def test_bootstrap_seed_precedes_implementation_root_and_is_not_claimed_as_runti
     assert migration["fingerprint"] in again["error"]
 
 
-@pytest.mark.parametrize("case", ["fresh", "resumed", "unsupported"])
-def test_host_hook_opens_prepared_root_before_public_cli_dispatch_and_refuses_resumed_or_unsupported(
-        case: str,
+def test_host_hook_opens_prepared_root_from_nonzero_native_counter_without_capability_env(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str]) -> None:
     import loop as cli_loop
@@ -252,18 +255,13 @@ def test_host_hook_opens_prepared_root_before_public_cli_dispatch_and_refuses_re
     for variable in (
             "TASKPLANE_NATIVE_HOOKS_LOADED",
             "TASKPLANE_MANAGED_HOOK_POLICY",
-            "TASKPLANE_STABLE_HOOK_EVENT_ID",
-            "TASKPLANE_ROOT_CUMULATIVE_METER",
-            "TASKPLANE_ROOT_TURN_MAPPING"):
+            "TASKPLANE_STABLE_HOOK_EVENT_ID"):
         monkeypatch.setenv(variable, "supported")
-    monkeypatch.setenv(
-        "TASKPLANE_ROOT_FRESH_START",
-        "unsupported" if case == "unsupported" else "supported")
-    transcript = tmp_path / f"root-{case}.jsonl"
-    _write_root(
-        transcript, total=40_000, sequence=1, resumed=case == "resumed")
+    transcript = tmp_path / "root-fresh.jsonl"
+    _write_root(transcript, total=40_000, sequence=1)
     event = {
-        "cwd": str(tmp_path), "turn_id": "turn-root",
+        "cwd": str(tmp_path), "session_id": "root-session",
+        "turn_id": "turn-root",
         "transcript_path": str(transcript), "tool_name": "Read",
         "tool_input": {"path": str(tmp_path / "input.txt")},
     }
@@ -274,48 +272,69 @@ def test_host_hook_opens_prepared_root_before_public_cli_dispatch_and_refuses_re
     args = SimpleNamespace(
         workspace=str(tmp_path), loop_action="wave", req=None,
         advisory=False, by=None)
-    assert tp_cli.cmd_loop(args) == (0 if case == "fresh" else 1)
+    assert tp_cli.cmd_loop(args) == 0
     payload = json.loads(capsys.readouterr().out)
-    if case == "fresh":
-        assert [row["task"]["id"] for row in payload["wave"]] == ["P13"], payload
-        assert payload["root_admission"]["dispatch_allowed"] is True
-        assert loop.load(str(tmp_path))["root_hygiene"]["meter"][
-            "first_observed_input_tokens"] > 0
-        emitted = payload["wave"][0]
-        expectation = tp_cli.tp.peek_expectation(
-            str(tmp_path), emitted["task_name"], strict=True)
-        assert expectation is not None
-        assert expectation["intent_id"] == payload["root_admission"][
-            "binding"]["dispatch_id"]
-        dispatch_event = {
-            "cwd": str(tmp_path), "transcript_path": str(transcript),
-            "tool_input": {
-                "task_name": emitted["task_name"],
-                "model": emitted["model"],
-                "reasoning_effort": emitted["reasoning_effort"],
-                "fork_turns": load_settings().workflow.worker_inheritance[
-                    "context"],
-                "message": emitted["role_marker"],
-            },
-        }
-        monkeypatch.setattr(
-            tp_cli.sys, "stdin", io.StringIO(json.dumps(dispatch_event)))
-        assert tp_cli.cmd_screen_dispatch(None) == 0
-        hook_rows = [json.loads(line) for line in
-                     capsys.readouterr().out.splitlines() if line.strip()]
-        assert not any((row.get("hookSpecificOutput") or {}).get(
-            "permissionDecision") == "deny" for row in hook_rows), hook_rows
-        observed = next(
-            row for row in loop.load(str(tmp_path))["dispatch_telemetry"]
-            ["bindings"] if row["dispatch_id"] == expectation["intent_id"])
-        admitted = payload["root_admission"]["binding"]
-        for field in ("dispatch_id", "thread_id", "thread_type", "task_id",
-                      "dependencies", "shared_owner"):
-            assert observed[field] == admitted[field]
-        assert observed["events"][-1]["payload"] == {"phase": "native-start"}
+    assert [row["task"]["id"] for row in payload["wave"]] == ["P13"], payload
+    assert payload["root_admission"]["dispatch_allowed"] is True
+    assert loop.load(str(tmp_path))["root_hygiene"]["meter"][
+        "first_observed_input_tokens"] > 0
+
+
+def test_repeated_pretooluse_events_for_one_native_counter_count_once(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    _prepared(tmp_path)
+    monkeypatch.setattr(tp_cli, "_workspace", lambda _value: str(tmp_path))
+    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
+    monkeypatch.setenv("TASKPLANE_NATIVE_HOOKS_LOADED", "supported")
+    monkeypatch.setenv("TASKPLANE_MANAGED_HOOK_POLICY", "supported")
+    transcript = tmp_path / "root-replay.jsonl"
+    _write_root(transcript, total=40_000, sequence=1)
+    event = {"cwd": str(tmp_path), "session_id": "root-session",
+             "turn_id": "turn-root", "transcript_path": str(transcript),
+             "tool_name": "Read", "tool_input": {}}
+    for _ in range(2):
+        monkeypatch.setattr(tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
+        assert tp_cli.cmd_screen(None) == 0
+        capsys.readouterr()
+    meter = loop.load(str(tmp_path))["root_hygiene"]["meter"]
+    assert meter["turns"] == 1
+    assert meter["usage"]["total_tokens"] == 40_000
+
+
+@pytest.mark.parametrize("case", [
+    "missing", "zero", "malformed", "foreign", "resumed",
+])
+def test_missing_zero_malformed_foreign_or_resumed_native_evidence_refuses_before_dispatch(
+        case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    _prepared(tmp_path)
+    monkeypatch.setattr(tp_cli, "_workspace", lambda _value: str(tmp_path))
+    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
+    monkeypatch.setenv("TASKPLANE_NATIVE_HOOKS_LOADED", "supported")
+    monkeypatch.setenv("TASKPLANE_MANAGED_HOOK_POLICY", "supported")
+    transcript = tmp_path / f"root-{case}.jsonl"
+    if case == "missing":
+        transcript.write_text(json.dumps({"type": "session_meta", "payload": {
+            "session_id": "root-session", "id": "root-session",
+            "timestamp": "2026-09-02T04:00:00Z",
+            "thread_source": "agent_created_thread"}}) + "\n")
+    elif case == "malformed":
+        transcript.write_text("not-json\n", encoding="utf-8")
     else:
-        assert payload["wave"] == []
-        assert "prepared and opened fresh root evidence" in payload["error"]
+        _write_root(transcript, total=0 if case == "zero" else 40_000,
+                    sequence=1, resumed=case == "resumed",
+                    session_id="foreign-session" if case == "foreign"
+                    else "root-session")
+    event = {"cwd": str(tmp_path), "session_id": "root-session",
+             "turn_id": "turn-root", "transcript_path": str(transcript),
+             "tool_name": "Read", "tool_input": {}}
+    monkeypatch.setattr(tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    assert tp_cli.cmd_screen(None) == 0
+    capsys.readouterr()
+    root = loop.load(str(tmp_path))["root_hygiene"]
+    assert root["status"] == "prepared"
+    assert "meter" not in root
 
 
 def test_plan_approval_prepares_root_before_commit_and_retry_reuses_exact_authority(

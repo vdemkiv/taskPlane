@@ -2842,7 +2842,8 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                     ws, str(root.get("seed_ref") or ""))
                 capability = host_caps.root_session_capability(
                     _host_capability_snapshot(ws),
-                    settings_digest=settings.digest)
+                    settings_digest=settings.digest,
+                    native_snapshot=snapshot, turn_id=event.get("turn_id"))
                 start = _host_native.start_root_session(
                     capability, seed, run_id=str(seed["run_id"]),
                     wave_id=str(seed["wave_id"]),
@@ -2864,15 +2865,21 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                     observation_authority=authority)
             else:
                 prior = (root.get("meter") or {}).get("watermark") or {}
-                observation = _native_meter.seal_root_observation(
-                    snapshot, sequence=int(prior.get("last_sequence") or 0) + 1,
-                    session_role="root",
-                    status_receipt_fingerprint=str(
-                        root.get("host_start_fingerprint") or ""),
-                    authority=authority)
-                _loop_runtime.record_delivery_root_observation(
-                    ws, observation=observation,
-                    observation_authority=authority)
+                if not (
+                    snapshot.get("source_identity_fingerprint") ==
+                        prior.get("source_identity_fingerprint")
+                    and snapshot.get("usage") == prior.get("usage")
+                ):
+                    observation = _native_meter.seal_root_observation(
+                        snapshot,
+                        sequence=int(prior.get("last_sequence") or 0) + 1,
+                        session_role="root",
+                        status_receipt_fingerprint=str(
+                            root.get("host_start_fingerprint") or ""),
+                        authority=authority)
+                    _loop_runtime.record_delivery_root_observation(
+                        ws, observation=observation,
+                        observation_authority=authority)
         _loop_runtime.record_native_orchestrator_snapshot(
             ws, snapshot=snapshot,
             observation_authority=_transcript_projection_authority(ws))
@@ -8096,8 +8103,44 @@ def _render_engine_error(exc: BaseException, envelope: dict, *,
     return int(envelope["exit_code"])
 
 
+_LIFECYCLE_HOOK_COMMANDS = frozenset({
+    "context", "host-native-check", "screen", "screen-dispatch",
+    "screen-render", "screen-skill", "session-verify", "subagent-start",
+    "subagent-stop",
+})
+
+
+def _unbound_global_hook(argv=None) -> bool:
+    """True when a global plugin hook targets an ungoverned workspace."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] not in _LIFECYCLE_HOOK_COMMANDS:
+        return False
+    if os.environ.get("TASKPLANE_HOOK_PATH") not in ("native", "bridge"):
+        return False
+    workspace = os.getcwd()
+    if os.path.isfile(os.path.join(
+            workspace, ".taskplane", "codex-hook.py")):
+        return False
+    try:
+        common = tp._run([
+            "git", "rev-parse", "--path-format=absolute", "--git-common-dir",
+        ], cwd=workspace)
+    except FileNotFoundError:
+        return True
+    if common.returncode:
+        return True
+    launcher = os.path.realpath(os.path.join(
+        common.stdout.strip(), "..", ".taskplane", "codex-hook.py"))
+    return not os.path.isfile(launcher)
+
+
 def main(argv=None) -> int:
     _utf8_streams()
+    # Plugin hooks are registered globally by the host.  They must be inert
+    # until the workspace has been explicitly onboarded with its local
+    # launcher; otherwise SessionStart contaminates unrelated Codex chats.
+    if _unbound_global_hook(argv):
+        return 0
     # Interpret and authenticate the complete operational policy before CLI
     # construction or any workflow action can create repository state.
     try:

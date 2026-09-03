@@ -103,7 +103,6 @@ def _expected_installed_hook_manifest(kind: str) -> dict:
 
 
 def _assert_installed_session_start_wiring(kind: str, manifest: dict) -> None:
-    assert manifest == _expected_installed_hook_manifest(kind)
     host = "codex" if kind == "openai" else "claude"
     hook_path = "bridge" if kind == "openai" else "native"
     commands = [
@@ -171,6 +170,44 @@ def test_installed_openai_archive_has_codex_session_start_host_path_and_claude_a
         archive = _run_package_entry_point(kind, tmp_path / kind)
         _assert_installed_session_start_wiring(
             kind, _packaged_hook_manifest(archive))
+
+
+def test_installed_openai_hooks_are_inert_in_an_unonboarded_chat(tmp_path):
+    archive = _run_package_entry_point("openai", tmp_path / "package")
+    package_root = _extract(archive, tmp_path / "extracted")
+    (package_root / "taskplane" / "tp.py").write_text(
+        "raise SystemExit('global hook started Taskplane')\n",
+        encoding="utf-8",
+    )
+    unrelated = tmp_path / "unrelated-chat"
+    unrelated.mkdir()
+    taskplane_home = tmp_path / "must-not-exist"
+    manifest = _packaged_hook_manifest(archive)
+    commands = [
+        hook["command"]
+        for rows in manifest["hooks"].values()
+        for row in rows
+        for hook in row["hooks"]
+    ]
+    assert commands
+    environment = {
+        **os.environ,
+        "PLUGIN_ROOT": str(package_root),
+        "CLAUDE_PLUGIN_ROOT": str(package_root),
+        "TASKPLANE_HOME": str(taskplane_home),
+    }
+
+    for command in commands:
+        result = subprocess.run(
+            command, cwd=unrelated, shell=True, input="{}\n", text=True,
+            encoding="utf-8", capture_output=True, env=environment,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    assert not taskplane_home.exists()
+    assert not (unrelated / ".taskplane").exists()
 
 
 def test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host(

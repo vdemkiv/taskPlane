@@ -998,6 +998,30 @@ def validate_hook_manifest(value: object) -> dict:
     return value
 
 
+def _workspace_only_hooks(value: dict) -> dict:
+    """Make installed hooks inert until a workspace launcher exists."""
+    projected = json.loads(json.dumps(value))
+    posix_fallback = (
+        '; elif [ -n "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}" ]; then')
+    windows_fallback = " else if defined PLUGIN_ROOT "
+    for rows in projected["hooks"].values():
+        for row in rows:
+            for hook in row.get("hooks") or []:
+                command = str(hook.get("command") or "")
+                command_windows = str(hook.get("commandWindows") or "")
+                require(posix_fallback in command,
+                        "installed hook lacks the bounded plugin fallback")
+                require(windows_fallback in command_windows,
+                        "installed Windows hook lacks the bounded plugin fallback")
+                hook["command"] = (
+                    command.split(posix_fallback, 1)[0] +
+                    "; else exit 0; fi")
+                hook["commandWindows"] = (
+                    command_windows.split(windows_fallback, 1)[0] +
+                    " else (exit /b 0)")
+    return projected
+
+
 def load_hook_manifest() -> dict:
     """Derive the installed OpenAI hook manifest from host authorities."""
     manifests: dict[str, dict] = {}
@@ -1015,7 +1039,7 @@ def load_hook_manifest() -> dict:
             "hook manifests must declare SessionStart")
     installed = json.loads(json.dumps(manifests["claude"]))
     installed["hooks"]["SessionStart"] = codex_hooks["SessionStart"]
-    return validate_hook_manifest(installed)
+    return validate_hook_manifest(_workspace_only_hooks(installed))
 
 
 def valid_https_url(value: object) -> bool:

@@ -145,9 +145,6 @@ _ENV_OBSERVATIONS = {
     "TASKPLANE_NATIVE_HOSTING": "hosting",
     "TASKPLANE_NATIVE_BROWSER": "browser",
     "TASKPLANE_NATIVE_SIDE_PANEL": "side_panel",
-    "TASKPLANE_ROOT_FRESH_START": "root_fresh_start",
-    "TASKPLANE_ROOT_CUMULATIVE_METER": "root_cumulative_meter",
-    "TASKPLANE_ROOT_TURN_MAPPING": "root_turn_mapping",
 }
 
 _STATUS_ALIASES = {
@@ -661,7 +658,9 @@ def probe_snapshot(
 
 
 def root_session_capability(
-        snapshot: HostCapabilitySnapshot, *, settings_digest: str) \
+        snapshot: HostCapabilitySnapshot, *, settings_digest: str,
+        native_snapshot: Mapping[str, Any] | None = None,
+        turn_id: object = None) \
         -> dict[str, Any]:
     """Project the authenticated host facts required by a root meter.
 
@@ -673,24 +672,43 @@ def root_session_capability(
     if len(digest) != 64 or any(character not in "0123456789abcdef"
                                 for character in digest):
         raise ValueError("root-session capability settings digest is invalid")
-    required = {
-        name: snapshot.capabilities.get(name)
-        for name in (
-            "root_fresh_start", "root_cumulative_meter",
-            "root_turn_mapping",
-        )
-    }
+    missing: list[str] = []
+    checked_native = None
+    try:
+        if __package__:
+            from . import native_session_meter
+        else:  # pragma: no cover - direct installed module loading
+            import native_session_meter
+        checked_native = native_session_meter.validate_snapshot(
+            native_snapshot)
+        if native_session_meter.derive_session_role(checked_native) != "root":
+            missing.append("root_fresh_start")
+    except (TypeError, ValueError):
+        missing.extend(("root_fresh_start", "root_cumulative_meter"))
+    if isinstance(checked_native, Mapping):
+        native_session = str(checked_native.get("session_id") or "")
+        expected_session = hashlib.sha256(native_session.encode(
+            "utf-8")).hexdigest() if native_session else None
+        if checked_native.get("resumed") is not False or \
+                snapshot.session_fingerprint != expected_session:
+            missing.append("root_fresh_start")
+        usage = checked_native.get("usage")
+        if not isinstance(usage, Mapping) or isinstance(
+                usage.get("total_tokens"), bool) or not isinstance(
+                    usage.get("total_tokens"), int) or int(
+                        usage["total_tokens"]) <= 0:
+            missing.append("root_cumulative_meter")
+    if not isinstance(turn_id, str) or not turn_id.strip() or \
+            len(turn_id.encode("utf-8")) > 160:
+        missing.append("root_turn_mapping")
+    missing = sorted(set(missing))
     supported = (
+        snapshot.host == "codex"
+        and
         snapshot.effective_path in {"native_effective", "bridge_effective"}
         and bool(snapshot.session_fingerprint)
         and bool(snapshot.observed_at)
-        and all(isinstance(row, Observation) and row.status == "supported"
-                and row.confidence == "high" for row in required.values())
-    )
-    missing = sorted(
-        name for name, row in required.items()
-        if not isinstance(row, Observation) or row.status != "supported" or
-        row.confidence != "high"
+        and not missing
     )
     material = {
         "schema": ROOT_SESSION_CAPABILITY_SCHEMA,
