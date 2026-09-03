@@ -1,0 +1,113 @@
+{
+  "schema": "taskplane.root-hygiene-canary-execution/v1",
+  "task_id": "P14-part-a-canary",
+  "generated_at": "2026-09-03T09:11:27Z",
+  "authority": {
+    "tasks_sha256": "774d2813a254554f9f8467807740ba8fe83b3ca153763d29119347ad5ab04111",
+    "approved_replan_sha256": "3e0c1605c4662cd2259d8c469103974e21e5afc343b38c19769f81b98514d517",
+    "design_fingerprint": "1950f719c7c822e9c7f03dbeae0f7bcd519b4fb64906ba3990ceeddda9eba58e"
+  },
+  "distribution": {
+    "private": true,
+    "release_authority": false,
+    "promotion_eligible": false,
+    "upload_eligible": false,
+    "purpose": "private pre-fan-out Part A canary only"
+  },
+  "candidate": {
+    "version": "2.18.10",
+    "base_sha": "783cc971113f1b0d49fc912323aeafdc78865c04",
+    "candidate_sha": null,
+    "source_tree": null,
+    "valid": false,
+    "reason": "Both unchanged package validators rejected taskplane.operational-settings/v2 because they accept only taskplane.operational-settings/v1. No valid exact package candidate exists."
+  },
+  "packages": [
+    {
+      "kind": "openai",
+      "path": "packages/taskplane-2.18.10-openai.zip",
+      "sha256": "263140c9ec76bab1d5daec0dd53cf83d124312690a0e2c82c266b78f0557f649",
+      "bytes": 2341210,
+      "validator_exit_code": 1,
+      "validation": "failed",
+      "error": "ZIP canonical authority has an invalid schema: taskplane/operational-settings.json",
+      "checksum_emitted": false,
+      "provenance_emitted": false
+    },
+    {
+      "kind": "claude",
+      "path": "packages/taskplane-2.18.10-claude.zip",
+      "sha256": "c0153dbb863d11193f80dc5bd0d4b56e00dd911a2e6f3c4fb4e662e7d0e0b98f",
+      "bytes": 2354633,
+      "validator_exit_code": 1,
+      "validation": "failed",
+      "error": "archive canonical authority has an invalid schema: taskplane/operational-settings.json",
+      "checksum_emitted": false,
+      "provenance_emitted": false
+    }
+  ],
+  "host": {
+    "adapter": "codex",
+    "runtime": "native",
+    "worker_session_fingerprint": "279d82fe6b1e5b1715c553942f85a5141c27e9ee68e244dfd09c6408676c4ad4",
+    "root_thread_fingerprint": "a0b9bdd769514cc4e975d854a09904dd7c9fe5473c0055b8664a26cbf42db620",
+    "identity_available": true,
+    "identity_consumed": false,
+    "reason": "Package validation failed before exact-candidate installation and host observation."
+  },
+  "selector": {
+    "id": "taskplane.wave_metrics.finalize_root_hygiene_canary/v1",
+    "contract": "selector-contract:root-session-hygiene.live-canary/v1",
+    "required_executions": 1,
+    "executed": 0,
+    "applicable": false,
+    "reason": "candidate-package-validation-failed"
+  },
+  "actuals": {
+    "turns": null,
+    "first_observed_input_tokens": null,
+    "peak_context_tokens": null,
+    "total_tokens": null,
+    "cached_input_tokens": null,
+    "rent_tokens_per_turn": null,
+    "root_tokens": null,
+    "worker_tokens": null,
+    "wave_tokens": null,
+    "root_share": null
+  },
+  "targets": {
+    "fresh": "not_evaluated",
+    "no_override": "not_evaluated",
+    "first_input_at_most_40000": "not_evaluated",
+    "rent_per_turn_at_most_50000": "not_evaluated",
+    "root_total_at_most_40000000": "not_evaluated",
+    "comparable_root_share_at_most_0_15": "not_applicable",
+    "comparable_wave_total_at_most_80126326": "not_applicable"
+  },
+  "truth": {
+    "pass": false,
+    "nonconforming": true,
+    "target_missed": false,
+    "status": "blocked-before-canary",
+    "classification": "package-script-defect"
+  },
+  "pipeline": {
+    "package": "failed",
+    "extract_and_install_exact_candidate": "not_started",
+    "root_prepare": "not_started",
+    "host_start": "not_started",
+    "metric_observation": "not_started",
+    "dispatch_admission": "not_started",
+    "seal": "not_started"
+  },
+  "failure_policy": {
+    "plan_blocker": true,
+    "scope_widened": false,
+    "package_scripts_modified": false,
+    "settings_modified": false,
+    "thresholds_modified": false,
+    "mechanism_modified": false,
+    "fabricated_zero_or_pass": false,
+    "opens_p20_or_p22": false
+  }
+}
