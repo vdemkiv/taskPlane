@@ -2708,6 +2708,13 @@ class TestParallelExecution(unittest.TestCase):
 
     def test_parallel_gates_flow_to_evaluate_then_next_wave(self):
         ws = self._ws()
+        state = loop.load(ws)
+        for task in state["tasks"][:2]:
+            # This journey owns Evaluate -> next-wave scheduling.  Merge and
+            # cleanup are independent contracts with their own lifecycle
+            # tests; do not let their host effects decide this assertion.
+            task["merge_on_pass"] = False
+        loop.save(ws, state)
         for tid in ("t1", "t2"):
             agent_ws = os.path.join(ws, ".tp-work", tid)
             subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
@@ -2734,7 +2741,8 @@ class TestParallelExecution(unittest.TestCase):
         self.assertNotIn("error", first, first)
         act2 = loop.next_action(ws)                   # evaluate t2
         self.assertEqual(act2["task"]["id"], "t2")
-        pass_eval(ws)                                  # t2 passed
+        second = pass_eval(ws)                        # t2 passed
+        self.assertNotIn("error", second, second)
         # t1 passed unlocks t4, but t3/t4 overlap on src/c → serialized:
         # t3 (first in plan order) dispatches, t4 holds for the next wave.
         w = loop.wave(ws)
