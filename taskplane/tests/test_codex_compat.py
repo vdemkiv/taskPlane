@@ -114,6 +114,77 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
                           called["engine"])
             self.assertEqual(called["argv"], ["session-verify"])
 
+    def test_generated_runner_executes_unique_cachebusted_release(self):
+        with tempfile.TemporaryDirectory(prefix="tp-plugin-family-") as family, \
+                tempfile.TemporaryDirectory(prefix="tp-runner-") as ws:
+            marker = os.path.join(ws, "called.json")
+            versions = ("2.18.9", "2.18.10+codex.20260903225012",
+                        "9.99.99+other.untrusted")
+            for version in versions:
+                root = os.path.join(family, version)
+                os.makedirs(os.path.join(root, ".codex-plugin"))
+                os.makedirs(os.path.join(root, "taskplane"))
+                with open(os.path.join(root, ".codex-plugin", "plugin.json"),
+                          "w", encoding="utf-8") as handle:
+                    json.dump({"name": "taskplane", "version": version}, handle)
+                with open(os.path.join(root, "taskplane", "tp.py"), "w",
+                          encoding="utf-8") as handle:
+                    handle.write(
+                        "import json, os, sys\n"
+                        "with open(os.environ['TP_MARKER'], 'w', "
+                        "encoding='utf-8') as f:\n"
+                        "    json.dump({'engine': __file__, "
+                        "'argv': sys.argv[1:]}, f)\n")
+            runner = os.path.join(ws, "codex-hook.py")
+            with open(runner, "w", encoding="utf-8") as handle:
+                handle.write(cli._codex_runner_body(family))
+
+            result = subprocess.run(
+                [sys.executable, runner, "onboard", "--json"],
+                env={**os.environ, "TP_MARKER": marker}, text=True,
+                capture_output=True, encoding="utf-8", errors="replace")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with open(marker, encoding="utf-8") as handle:
+                called = json.load(handle)
+            self.assertIn(os.path.join(
+                "2.18.10+codex.20260903225012", "taskplane", "tp.py"),
+                called["engine"])
+            self.assertEqual(called["argv"], ["onboard", "--json"])
+            self.assertEqual(
+                cli._resolve_taskplane_engine(family), called["engine"])
+
+    def test_generated_runner_refuses_ambiguous_cachebusted_release(self):
+        with tempfile.TemporaryDirectory(prefix="tp-plugin-family-") as family, \
+                tempfile.TemporaryDirectory(prefix="tp-runner-") as ws:
+            marker = os.path.join(ws, "called")
+            for version in ("2.18.10+codex.20260903225012",
+                            "2.18.10+codex.20260904000000"):
+                root = os.path.join(family, version)
+                os.makedirs(os.path.join(root, ".codex-plugin"))
+                os.makedirs(os.path.join(root, "taskplane"))
+                with open(os.path.join(root, ".codex-plugin", "plugin.json"),
+                          "w", encoding="utf-8") as handle:
+                    json.dump({"name": "taskplane", "version": version}, handle)
+                with open(os.path.join(root, "taskplane", "tp.py"), "w",
+                          encoding="utf-8") as handle:
+                    handle.write(
+                        "import os\n"
+                        "open(os.environ['TP_MARKER'], 'w').close()\n")
+            runner = os.path.join(ws, "codex-hook.py")
+            with open(runner, "w", encoding="utf-8") as handle:
+                handle.write(cli._codex_runner_body(family))
+
+            result = subprocess.run(
+                [sys.executable, runner, "session-verify"],
+                env={**os.environ, "TP_MARKER": marker}, text=True,
+                capture_output=True, encoding="utf-8", errors="replace")
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ambiguous newest installed engines", result.stderr)
+            self.assertFalse(os.path.exists(marker))
+            self.assertIsNone(cli._resolve_taskplane_engine(family))
+
     def test_resolver_rejects_manifest_and_symlink_escape(self):
         with tempfile.TemporaryDirectory(prefix="tp-plugin-family-") as family, \
                 tempfile.TemporaryDirectory(prefix="tp-outside-") as outside:

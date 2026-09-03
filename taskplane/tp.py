@@ -336,7 +336,9 @@ _CODEX_HOOK_CONFIG = os.path.join(".codex", "hooks.json")
 _CODEX_HOOK_RUNNER = os.path.join(".taskplane", "codex-hook.py")
 _CODEX_HOOK_MARKER = ".taskplane/codex-hook.py"
 _PLUGIN_MANIFEST = os.path.join(".codex-plugin", "plugin.json")
-_PLUGIN_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+_PLUGIN_SEMVER_RE = re.compile(
+    r"^(\d+)\.(\d+)\.(\d+)(?:\+codex\."
+    r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
 
 
 def _codex_hooks_report(ws: str) -> dict:
@@ -573,8 +575,9 @@ def _codex_runner_family(runner_body: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _valid_plugin_root(root: str, family: str) -> tuple[tuple[int, int, int],
-                                                        str] | None:
+def _valid_plugin_root(
+        root: str, family: str
+) -> tuple[tuple[int, int, int], str, str] | None:
     """Validate one contained taskplane installation candidate."""
     family_real = os.path.realpath(family)
     root_real = os.path.realpath(root)
@@ -603,7 +606,7 @@ def _valid_plugin_root(root: str, family: str) -> tuple[tuple[int, int, int],
     if (root_real != family_real
             and os.path.basename(root_real) != str(version)):
         return None
-    return tuple(int(part) for part in match.groups()), engine
+    return tuple(int(part) for part in match.groups()[:3]), str(version), engine
 
 
 def _resolve_taskplane_engine(family: str | None) -> str | None:
@@ -619,7 +622,13 @@ def _resolve_taskplane_engine(family: str | None) -> str | None:
         return None
     candidates = [row for root in roots
                   if (row := _valid_plugin_root(root, family_real))]
-    return max(candidates, default=(None, None), key=lambda row: row[0])[1]
+    if not candidates:
+        return None
+    newest_version = max(row[0] for row in candidates)
+    newest = [row for row in candidates if row[0] == newest_version]
+    if len(newest) != 1:
+        return None
+    return newest[0][2]
 
 
 def _plugin_family_for_engine(engine: str) -> str:
@@ -627,7 +636,7 @@ def _plugin_family_for_engine(engine: str) -> str:
     plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(engine)))
     candidate = _valid_plugin_root(plugin_root, plugin_root)
     if candidate:
-        version = ".".join(str(part) for part in candidate[0])
+        version = candidate[1]
         if os.path.basename(plugin_root) == version:
             return os.path.dirname(plugin_root)
     return plugin_root
@@ -639,7 +648,9 @@ def _codex_runner_body(family: str) -> str:
 import json, os, re, runpy, sys
 PLUGIN_FAMILY = {os.path.abspath(family)!r}
 family = os.path.realpath(os.path.expanduser(PLUGIN_FAMILY))
-version_re = re.compile(r"^(\\d+)\\.(\\d+)\\.(\\d+)$")
+version_re = re.compile(
+    r"^(\\d+)\\.(\\d+)\\.(\\d+)(?:\\+codex\\."
+    r"[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$")
 candidates = []
 try:
     roots = [family] + [os.path.join(family, name) for name in os.listdir(family)]
@@ -664,10 +675,15 @@ for root in roots:
         continue
     if real_root != family and os.path.basename(real_root) != str(version):
         continue
-    candidates.append((tuple(int(part) for part in match.groups()), engine))
+    candidates.append((tuple(int(part) for part in match.groups()[:3]),
+                       str(version), engine))
 if not candidates:
     raise SystemExit("taskplane Codex hook bridge found no valid installed engine")
-ENGINE = max(candidates, key=lambda row: row[0])[1]
+newest_version = max(row[0] for row in candidates)
+newest = [row for row in candidates if row[0] == newest_version]
+if len(newest) != 1:
+    raise SystemExit("taskplane Codex hook bridge found ambiguous newest installed engines")
+ENGINE = newest[0][2]
 sys.argv = [ENGINE, *sys.argv[1:]]
 runpy.run_path(ENGINE, run_name="__main__")
 '''
