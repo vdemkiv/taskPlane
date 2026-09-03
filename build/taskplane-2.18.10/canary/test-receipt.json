@@ -1,19 +1,19 @@
 {
   "schema": "taskplane.p14-selector-receipt/v1",
   "task_id": "P14-part-a-canary",
-  "attempt": 5,
-  "observed_at": "2026-09-03T13:02:15Z",
+  "attempt": 6,
+  "observed_at": "2026-09-03T13:40:34Z",
   "authority": {
-    "tasks_sha256": "62e23a6bdd69b61c0becdaac4b9b828faf715b85b3eb898e2cf3913358012128",
-    "plan_sha256": "279cbf701a26b7c9b55b70bfe43ae0d7a42ac6d6c1e8cebb225548922c734466",
+    "tasks_sha256": "b12bc8b704db317e10aa2fadb58686c9729616bdf5568a2a3134cea8207b5130",
+    "plan_sha256": "cbfef1ef0010acf9b1fd021bb397e79693bfb5e3796d71d6f1e8dbb22bbecfab",
     "design_fingerprint": "1950f719c7c822e9c7f03dbeae0f7bcd519b4fb64906ba3990ceeddda9eba58e"
   },
-  "classification": "direct-cli-import-identity-product-defect",
+  "classification": "root-seed-write-scope-glob-product-defect",
   "red": {
     "selector": "taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_direct_launcher_plan_approval_prepares_canonical_typed_root_seed_and_non_null_receipt",
     "exit_code": 1,
-    "result": "1 failed in 3.42s",
-    "observed_error": "RootSeedError: root seed context.settings must be typed"
+    "result": "1 failed in 3.48s",
+    "observed_error": "RootSeedError: seed pickup write scope must be a portable relative path"
   },
   "command": "python3 -m pytest -q taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring taskplane/tests/test_r0002_release_package_journey.py::test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_direct_launcher_plan_approval_prepares_canonical_typed_root_seed_and_non_null_receipt taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal",
   "selectors": [
@@ -25,25 +25,36 @@
     "taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal"
   ],
   "exit_code": 0,
-  "result": "6 passed in 12.56s",
+  "result": "6 passed in 22.36s",
   "status": "passed",
   "source_sha256": {
     "scripts/package_openai.py": "d0dd2a23bedb8006bedc823ef4e64fe2d1b73d9c65f6f6c49f146b099b871de1",
     "scripts/package_claude.py": "88f0c6937a8eb5a22c23cb9af9bb22219b6afaa18dc54184ce1b33468ee7ede6",
     "taskplane/loop.py": "5fecdaae04ed1c2b0109815018042937d54e58de5416fd165f64ea45cfe2ff6b",
-    "taskplane/tests/test_r0002_release_package_journey.py": "83472ae17e20ce85ed4a411de57a263f2b040922475b025fba6c3f54c56421a0",
+    "taskplane/root_seed.py": "d7119bd8ac4bf07d7e28ef88075ed46fbdd9ce25483dd0299119be9f4f3ca9c9",
+    "taskplane/tests/test_r0002_release_package_journey.py": "56547ad1df15f36f9a831391d9efec20f46dbc83de7012a7c0903b524718c65a",
     "taskplane/tests/test_wave_metrics.py": "b770a436d41ed7942f024389194f5a5bb6d5117b268e32a1542aac791bd3310e",
     ".codex/hooks.json": "0da84228ef2b4dc1f78224c0e518e5761625237f9895c010a6ec45152091d12e",
     "hooks/hooks.json": "68e4af13d29438c786b076553aa60f150bfd8b5e6dda7176b4e443f50b453740"
   },
   "packages": {
-    "openai_sha256": "30520083b84c2b85278a34804b7638e509b76e90ada7a7a4d4ef12c8dda89a21",
-    "openai_checksum_sha256": "07cb6c2bc9ebf40e6dbacaa908eb61171a73bea2798fcb9cd905510c5f6dd6a7",
-    "openai_provenance_sha256": "e9c002258c0715fc68e29e87e51cdee240a82fe8ed7facfe403009134a8d8825",
+    "openai_sha256": "3229660d756cfee931c61409bffafdd46a179e0e12dd32d6d4b0a59a5cfe682c",
+    "openai_checksum_sha256": "ddc7482dc4ae2328cb38fb153659bf1a3a0922bdbeb2f2700925fe130f84bc8b",
+    "openai_provenance_sha256": "f5a67d6c414f084827844ce102b6dc63ac72f7338433fdce00215c3d524e7b38",
     "claude_sha256": "c0153dbb863d11193f80dc5bd0d4b56e00dd911a2e6f3c4fb4e662e7d0e0b98f",
     "claude_unchanged": true
   },
   "plan_approval_root_seed_selector_executed": true,
+  "scope_validation": {
+    "preserved": "build/taskplane-2.18.10/canary/**",
+    "refused": [
+      "absolute",
+      "traversal",
+      "native-separator",
+      "control",
+      "ambiguous"
+    ]
+  },
   "invalid_canary_attempts": [
     2,
     3,

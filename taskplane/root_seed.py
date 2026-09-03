@@ -135,6 +135,41 @@ def _relative_path(value: object, label: str) -> str:
     return value
 
 
+def _scope_pattern(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value or len(
+            value.encode("utf-8")) > 1024 or "\\" in value:
+        raise RootSeedError(f"{label} must be a portable relative glob")
+    parts = value.split("/")
+    if value.startswith("/") or any(part in {"", ".", ".."}
+                                    for part in parts):
+        raise RootSeedError(f"{label} must be a portable relative glob")
+    for part in parts:
+        invalid_character = any(
+            ord(character) < 32 or character in (_WINDOWS_FORBIDDEN - {"*", "?"})
+            for character in part)
+        reserved = part.split(".", 1)[0].upper() in _WINDOWS_RESERVED
+        if invalid_character or reserved or part.endswith((" ", ".")) or \
+                len(part.encode("utf-8")) > 255 or \
+                ("**" in part and part != "**"):
+            raise RootSeedError(f"{label} must be a portable relative glob")
+        index = 0
+        while index < len(part):
+            if part[index] == "]":
+                raise RootSeedError(
+                    f"{label} must be a portable relative glob")
+            if part[index] != "[":
+                index += 1
+                continue
+            end = part.find("]", index + 1)
+            content = part[index + 1:end] if end >= 0 else ""
+            if end < 0 or not content or content in {"!", "^"} or \
+                    "[" in content:
+                raise RootSeedError(
+                    f"{label} must be a portable relative glob")
+            index = end + 1
+    return value
+
+
 def _reference(value: object, label: str) -> dict[str, str]:
     row = _exact(value, _REFERENCE_FIELDS, label)
     return {
@@ -174,7 +209,7 @@ def _pickups(value: object) -> list[dict[str, object]]:
         if not isinstance(scopes, list) or not scopes:
             raise RootSeedError("seed pickup write_scopes must be non-empty")
         normalized_scopes = sorted({
-            _relative_path(scope, "seed pickup write scope")
+            _scope_pattern(scope, "seed pickup write scope")
             for scope in scopes
         })
         if len(normalized_scopes) != len(scopes):
