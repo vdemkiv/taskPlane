@@ -14,6 +14,12 @@ import time as _time
 
 _AUDIT_TEXT_MAX_CHARS = 2048
 _AUDIT_COLLECTION_MAX_ITEMS = 64
+
+
+def root_hygiene_projection(receipt: Mapping[str, object]) -> dict:
+    """Return the bounded audit view of the canonical root seal."""
+    from taskplane import wave_metrics
+    return wave_metrics.root_hygiene_projection(receipt, consumer="audit")
 _AUDIT_IDENTITY_FIELDS = frozenset({
     "actor", "agent", "agent_id", "agent_type", "approved_by", "by",
     "email", "host", "host_id", "host_session_id", "host_turn_id",

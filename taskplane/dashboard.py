@@ -24,6 +24,7 @@ import kb as _kb            # from its public read models (display_pipeline,
 import depgraph as _dg      # STEP_ROLE, kb.counts, depgraph.summary) instead
 import plan_topology as _pt # Plan DAG/waves stay owned by one topology model.
 import host_native
+import wave_metrics
                             # of re-encoding schemas that then drift.
 import text_runtime as _text
 
@@ -5275,6 +5276,11 @@ def _dashboard_value_markup(value, *, omit=(), locale: str | None = None):
 
 
 render_wave_metrics_projection = host_native.render_wave_metrics_projection
+
+
+def root_hygiene_projection(receipt: Mapping[str, object]) -> dict:
+    """Render only the bounded canonical root-hygiene projection."""
+    return wave_metrics.root_hygiene_projection(receipt, consumer="dashboard")
 
 
 def _dashboard_collection_markup(collection, *, locale: str | None = None):

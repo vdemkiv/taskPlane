@@ -48,6 +48,12 @@ PROTECTED_MAIN_RELEASE_GATE_SCHEMA = "taskplane.protected-main-release-gate/v1"
 
 CURRENT_VERSION = "2.18.9"
 PREVIOUS_VERSION = "2.17.20"
+
+
+def root_hygiene_projection(receipt: Mapping[str, object]) -> dict:
+    """Consume the canonical root receipt without acquiring its authority."""
+    from taskplane import wave_metrics
+    return wave_metrics.root_hygiene_projection(receipt, consumer="release")
 COMPATIBILITY_PREVIOUS_VERSION = "2.18.0"
 SUPERSEDED_CANDIDATE_VERSION = "2.18.8"
 PREVIOUS_RELEASE_TAG = "v2.17.20"

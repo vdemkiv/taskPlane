@@ -347,6 +347,47 @@ def test_separate_dashboard_graph_telemetry_and_agent_activity_artifacts_survive
     assert cleanup_entry["binding"] == _binding(f"run-{outcome}")
 
 
+def test_root_hygiene_retention_is_bounded_private_and_independent_of_cleanup(
+        tmp_path: Path) -> None:
+    case = tmp_path / "root-retention"
+    case.mkdir()
+    run_id = "run-root-retention"
+    artifact_root, manifest = _publish_run(case, run_id, "success")
+    root_receipt = wave_metrics.finalize_root_hygiene_canary({
+        "status": "open", "conformance": "pass", "canary_eligible": True,
+        "override": None, "host": {"adapter": "codex", "runtime": "native"},
+        "session_pseudonym": "1" * 64, "seed_fingerprint": "2" * 64,
+        "host_start_fingerprint": "3" * 64,
+        "meter": {
+            "turns": 2, "first_observed_input_tokens": 40_000,
+            "peak_context_tokens": 45_000, "context_rent_tokens": 25_000,
+            "resumed": False,
+            "usage": {"total_tokens": 100_000,
+                      "cached_input_tokens": 50_000},
+        },
+    }, candidate_sha="a" * 40, worker_tokens=300_000)
+    retained = run_artifacts.publish_artifact(
+        artifact_root, "telemetry", root_receipt,
+        metadata={"kind": "root-hygiene",
+                  "receipt_fingerprint": root_receipt["fingerprint"]})
+    before_activity = run_artifacts.load_manifest(artifact_root)["classes"][
+        "agent-activity"]["entries"]
+    assert not Path(retained["locator"]).is_absolute()
+    assert retained["bytes"] < 16 * 1024
+    assert "session_id" not in json.dumps(root_receipt)
+    owned_cleanup.bind_durable_artifacts(manifest, artifact_root)
+
+    cleanup = owned_cleanup.seal_and_cleanup(
+        manifest, outcome="success",
+        evidence=_terminal_evidence(
+            case, manifest, "success",
+            terminal=case / "owned" / "terminal-evidence.json"))
+    after = run_artifacts.load_manifest(artifact_root)
+    assert cleanup["artifact_verification"]["after"]["readable"] is True
+    assert retained in after["classes"]["telemetry"]["entries"]
+    assert after["classes"]["agent-activity"]["entries"] == before_activity
+
+
 def test_activity_log_is_bound_append_only_and_complete_for_every_worker_outcome(
     tmp_path: Path,
 ) -> None:

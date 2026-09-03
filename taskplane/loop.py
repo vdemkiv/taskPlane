@@ -83,6 +83,7 @@ if __package__:
     from . import plan_topology
     from . import run_artifacts
     from . import run_store as run_store_engine
+    from . import root_seed
     from . import test_strategy
     from . import producer_observation as producer_observation_policy
     from . import terminal_truth
@@ -102,6 +103,7 @@ else:  # pragma: no cover - direct CLI module loading
     import plan_topology
     import run_artifacts
     import run_store as run_store_engine
+    import root_seed
     import test_strategy
     import producer_observation as producer_observation_policy
     import terminal_truth
@@ -1008,6 +1010,8 @@ def _ensure_run_artifacts(
         "id": f"{requirement_id or 'unattached'}@{tp.git_head(ws)}",
         "fingerprint": candidate_fingerprint,
         "revision": str(tp.git_head(ws) or ""),
+        "source_tree": str(tp._run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=ws).stdout.strip()),
         "requirement": requirement_id,
         "requirement_fingerprint": requirement_fingerprint,
         "goal_fingerprint": hashlib.sha256(
@@ -5820,6 +5824,388 @@ def _ensure_dispatch_telemetry(ws: str) -> dict:
         return dict(ledger)
 
 
+def prepare_delivery_root(
+        ws: str, *, seed_ref: str, wave_id: str, prepared_at: str,
+        operation_id: str, design: Mapping[str, object],
+        plan: Mapping[str, object], pickups: list[Mapping[str, object]],
+        outstanding_human_gates: list[Mapping[str, object]],
+        predecessor_terminal_projection: Mapping[str, object]) -> dict:
+    """Prepare the public loop's sole reference-only root seed.
+
+    The effective settings snapshot and candidate/run identity are derived
+    from the active loop.  Callers provide only the already-approved portable
+    Design/Plan references and wave inventory.
+    """
+    state = load(ws)
+    if state is None:
+        raise ValueError("root preparation requires an active loop")
+    settings = operational_settings.load_settings(environment=os.environ)
+    if state.get("settings_digest") not in {None, settings.digest}:
+        raise ValueError("root preparation settings changed during the run")
+    run_id = str(state.get("run_id") or "").strip()
+    candidate_sha = str(state.get("baseline") or "").strip()
+    if not run_id or re.fullmatch(r"[0-9a-f]{40,64}", candidate_sha) is None:
+        raise ValueError("root preparation run identity is incomplete")
+    context = {
+        "run_id": run_id, "wave_id": str(wave_id),
+        "candidate_sha": candidate_sha, "settings": settings,
+        "delivery_mode": "iteration", "design": dict(design),
+        "plan": dict(plan), "prepared_at": str(prepared_at),
+        "operation_id": str(operation_id),
+    }
+    inputs = {
+        "pickups": [dict(row) for row in pickups],
+        "wave_budgets": {
+            key: settings.limits.budgets[key]
+            for key in ("max_actions", "target_tokens", "max_tokens")
+        },
+        "outstanding_human_gates": [
+            dict(row) for row in outstanding_human_gates],
+        "predecessor_terminal_projection": dict(
+            predecessor_terminal_projection),
+    }
+    receipt = root_seed.prepare_root_seed(
+        ws, seed_ref, context, inputs)
+    seed = root_seed.load_root_seed(ws, receipt["seed_ref"])
+    root_seed.verify_prepare_receipt(
+        seed, receipt, settings=settings,
+        expected_seed_ref=receipt["seed_ref"])
+    prepared = {
+        "status": "prepared", "wave_id": str(wave_id),
+        "seed_ref": receipt["seed_ref"],
+        "seed_fingerprint": receipt["seed_fingerprint"],
+        "prepare_receipt": receipt,
+    }
+    with mutate(ws) as locked:
+        if locked is None or locked.get("run_id") != run_id or \
+                locked.get("baseline") != candidate_sha:
+            raise ValueError("root preparation run changed before commit")
+        prior = locked.get("root_hygiene")
+        if prior is not None and prior != prepared:
+            raise ValueError("root preparation conflicts with existing wave")
+        locked["settings_digest"] = settings.digest
+        locked["root_hygiene"] = prepared
+    return receipt
+
+
+def open_delivery_wave(
+        ws: str, *, host_start_receipt: Mapping[str, object],
+        first_observation: Mapping[str, object],
+        observation_authority: bytes,
+        override: Mapping[str, object] | None = None) -> dict:
+    """Consume prepared seed plus authenticated host start/observation."""
+    if __package__:
+        from . import host_native
+    else:  # pragma: no cover
+        import host_native
+    state = load(ws)
+    if state is None:
+        raise ValueError("wave open requires an active loop")
+    root = state.get("root_hygiene")
+    if not isinstance(root, Mapping) or root.get("status") != "prepared":
+        raise ValueError("wave open requires a prepared root seed")
+    settings = operational_settings.load_settings(environment=os.environ)
+    if state.get("settings_digest") != settings.digest:
+        raise ValueError("wave open settings do not match the prepared seed")
+    seed = root_seed.load_root_seed(ws, str(root.get("seed_ref") or ""))
+    root_seed.verify_prepare_receipt(
+        seed, root.get("prepare_receipt"), settings=settings,
+        expected_seed_ref=str(root.get("seed_ref") or ""))
+    start = host_native.validate_root_session_start(
+        host_start_receipt, authority=observation_authority, seed=seed)
+    meter = native_session_meter.fold_root_observations(
+        [first_observation], authority=observation_authority)
+    watermark = meter.get("watermark") if isinstance(meter, Mapping) else None
+    if not isinstance(watermark, Mapping) or watermark.get(
+            "status_receipt_fingerprint") != start["fingerprint"]:
+        raise ValueError(
+            "first root observation is not bound to the host start receipt")
+    first = meter.get("first_observed_input_tokens")
+    reasons = []
+    if meter.get("status") != "available":
+        reasons.append(str(meter.get("reason_code") or
+                           "root_usage_unavailable"))
+    if meter.get("resumed") is not False:
+        reasons.append("root session is resumed")
+    seed_budget = settings.workflow.root_session.consumer_projection(
+        "root-seed.prepare")["seed_budget_tokens"]
+    if isinstance(first, bool) or not isinstance(first, int) or first <= 0:
+        reasons.append("first observed input is missing or zero")
+    elif first > seed_budget:
+        reasons.append("first observed input exceeds seed budget")
+    attributed_override = None
+    if reasons:
+        if override is None:
+            raise ValueError("; ".join(reasons))
+        if not isinstance(override, Mapping) or set(override) != {"by", "reason"} \
+                or not str(override.get("by") or "").strip() or \
+                not str(override.get("reason") or "").strip():
+            raise ValueError("root-session override must be attributable")
+        attributed_override = {
+            "by": str(override["by"]), "reason": str(override["reason"]),
+            "failed_checks": reasons,
+        }
+    with mutate(ws) as locked:
+        if locked is None or locked.get("root_hygiene") != root:
+            raise ValueError("root preparation changed before wave open")
+        ledger = locked.get("dispatch_telemetry")
+        if ledger is None:
+            ledger = dispatch_telemetry.new_ledger(
+                **_dispatch_telemetry_identity(ws, locked),
+                started_at=SystemClock().wall_time())
+            locked["dispatch_telemetry"] = ledger
+        # The settings owner exposes one immutable Part A snapshot.  P10's
+        # named prepare consumer has already validated it; admission receives
+        # those exact four values rather than loading another source/default.
+        policy = settings.workflow.root_session.to_dict()
+        dispatch_telemetry.configure_root_admission(
+            ledger, root_session_settings=policy,
+            settings_digest=settings.digest)
+        dispatch_telemetry.record_root_meter(
+            ledger, meter, observation_authority=observation_authority)
+        opened = {
+            **dict(root), "status": "open",
+            "host_start_fingerprint": start["fingerprint"],
+            "host": {"adapter": start["host"],
+                     "runtime": start.get("host_version")},
+            "session_pseudonym": start["session_pseudonym"],
+            "meter": meter,
+            "observation_authority_fingerprint": hashlib.sha256(
+                observation_authority).hexdigest(),
+            "conformance": "overridden" if reasons else "pass",
+            "canary_eligible": not reasons,
+            "override": attributed_override,
+        }
+        locked["root_hygiene"] = opened
+    return opened
+
+
+def admit_native_dispatch(
+        ws: str, *, observation_authority: bytes,
+        dispatch: Mapping[str, object], current_stage: str,
+        outstanding_set_fingerprint: str,
+        preserved_context_fingerprint: str,
+        observations: list[Mapping[str, object]] | None = None) -> dict:
+    """Advance the authenticated meter and atomically admit one dispatch."""
+    with mutate(ws) as locked:
+        if locked is None:
+            raise ValueError("dispatch admission requires an active loop")
+        root = locked.get("root_hygiene")
+        if not isinstance(root, Mapping) or root.get("status") != "open":
+            raise ValueError("dispatch admission requires an open fresh root")
+        ledger = locked.get("dispatch_telemetry")
+        if not isinstance(ledger, Mapping):
+            raise ValueError("dispatch admission ledger is unavailable")
+        if observations:
+            admission = ledger.get("root_admission") or {}
+            prior_meter = admission.get("meter") or {}
+            meter = native_session_meter.fold_root_observations(
+                observations, authority=observation_authority,
+                prior=prior_meter.get("watermark"))
+            dispatch_telemetry.record_root_meter(
+                ledger, meter, observation_authority=observation_authority)
+            locked["root_hygiene"] = {**dict(root), "meter": meter}
+        decision = dispatch_telemetry.screen_dispatch(
+            ledger, SystemClock(), current_stage=current_stage,
+            outstanding_set_fingerprint=outstanding_set_fingerprint,
+            preserved_context_fingerprint=preserved_context_fingerprint,
+            observation_authority=observation_authority,
+            admission_operation_id=str(dispatch.get("dispatch_id") or ""),
+            dispatch=dispatch)
+        if not decision.get("dispatch_allowed"):
+            locked["root_hygiene"] = {
+                **dict(locked["root_hygiene"]),
+                "status": "admissions_closed",
+                "admission_refusal": decision.get("fingerprint"),
+            }
+        return decision
+
+
+def record_delivery_root_observation(
+        ws: str, *, observation: Mapping[str, object],
+        observation_authority: bytes) -> dict:
+    """Advance the one open root watermark from a real host-hook turn."""
+    with mutate(ws) as locked:
+        if locked is None or not isinstance(locked.get("root_hygiene"), Mapping):
+            raise ValueError("root observation requires an active delivery root")
+        root = locked["root_hygiene"]
+        if root.get("status") != "open":
+            raise ValueError("root observation requires an open delivery root")
+        meter = native_session_meter.fold_root_observations(
+            [observation], authority=observation_authority,
+            prior=(root.get("meter") or {}).get("watermark"))
+        dispatch_telemetry.record_root_meter(
+            locked["dispatch_telemetry"], meter,
+            observation_authority=observation_authority)
+        locked["root_hygiene"] = {**dict(root), "meter": meter}
+        return meter
+
+
+def start_evaluate_evidence_children(
+        *, workspace: str, artifact_root: str, binding: Mapping[str, object],
+        impact_manifest: Mapping[str, object]) -> list[dict]:
+    """Public composition root for the two required Evaluate producers."""
+    return runtime_eval.start_evaluate_evidence_children(
+        workspace, artifact_root=artifact_root, binding=dict(binding),
+        impact_manifest=dict(impact_manifest))
+
+
+def complete_evaluate_evidence_child(
+        *, workspace: str, artifact_root: str, run_id: str,
+        assignment: Mapping[str, object], result: Mapping[str, object],
+        work_units: int) -> dict:
+    """Public composition root for one child producer terminal result."""
+    return runtime_eval.complete_evaluate_evidence_child(
+        workspace, artifact_root=artifact_root, run_id=run_id,
+        assignment=dict(assignment), result=dict(result),
+        work_units=work_units)
+
+
+def consume_evaluate_evidence_before_pass(
+        value: Mapping[str, object], *, artifact_root: str, run_id: str,
+        evaluator_attempt_id: str,
+        expected_binding: Mapping[str, object]) -> dict:
+    """Consume the canonical two-child ledger directly before PASS."""
+    del artifact_root  # run_id resolves the same canonical RunStore owner.
+    return runtime_eval.consume_evaluate_evidence_before_pass(
+        dict(value), run_id=run_id,
+        evaluator_attempt_id=evaluator_attempt_id,
+        expected_binding=dict(expected_binding))
+
+
+def _screen_public_native_route(
+        ws: str, state: Mapping[str, object], *, stage: str,
+        tasks: list[Mapping[str, object]],
+        observation_authority: bytes | None) -> dict | None:
+    """Enforce root preparation/open/meter admission before intent emission."""
+    if stage not in {"execute", "fix", "evaluate"}:
+        return None
+    # Root-session settings govern every native delivery dispatch; ``tasks``
+    # contributes only the exact outstanding-set binding, never eligibility.
+    if not isinstance(observation_authority, bytes) or not observation_authority:
+        raise ValueError(
+            "native dispatch requires authenticated root observation authority")
+    root = state.get("root_hygiene")
+    if not isinstance(root, Mapping) or root.get("status") != "open":
+        raise ValueError(
+            "native dispatch requires prepared and opened fresh root evidence")
+    expected_authority = hashlib.sha256(observation_authority).hexdigest()
+    if root.get("observation_authority_fingerprint") != expected_authority:
+        raise ValueError("native dispatch root observation authority is foreign")
+    task_ids = sorted(str(task.get("id") or "") for task in tasks)
+    outstanding = hashlib.sha256(json.dumps(
+        {"stage": stage, "tasks": task_ids}, sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest()
+    preserved = hashlib.sha256(json.dumps(
+        {"run_id": state.get("run_id"), "baseline": state.get("baseline"),
+         "settings_digest": state.get("settings_digest")}, sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest()
+    with mutate(ws) as locked:
+        if locked is None or locked.get("root_hygiene") != root:
+            raise ValueError("native dispatch root evidence changed before admission")
+        ledger = locked.get("dispatch_telemetry")
+        if not isinstance(ledger, Mapping):
+            raise ValueError("native dispatch root admission ledger is unavailable")
+        decision = dispatch_telemetry.screen_dispatch(
+            ledger, SystemClock(), current_stage=stage,
+            outstanding_set_fingerprint=outstanding,
+            preserved_context_fingerprint=preserved,
+            observation_authority=observation_authority)
+        if not decision.get("dispatch_allowed"):
+            locked["root_hygiene"] = {
+                **dict(root), "status": "admissions_closed",
+                "admission_refusal": decision.get("fingerprint")}
+            raise ValueError("native dispatch refused by root meter admission")
+        return decision
+
+
+def _prepare_public_evaluate_evidence(
+        ws: str, act_ws: str, state: Mapping[str, object],
+        task: Mapping[str, object], *, evaluator_attempt_id: str) -> dict:
+    """Derive current impact and start the exact two evaluator children."""
+    artifact_root = _run_artifact_root(ws, state)
+    manifest = run_artifacts.load_manifest(artifact_root)
+    owner = manifest["binding"]
+    candidate = owner["candidate"]
+    source_tree = str(candidate.get("source_tree") or "").strip()
+    candidate_sha = str(candidate.get("revision") or "").strip()
+    if not candidate_sha or not source_tree:
+        raise ValueError(
+            "Evaluate evidence owner lacks candidate revision/source tree")
+    changed = [path for path in _diff_files(
+        act_ws, state.get("baseline") or "HEAD")
+        if not path.startswith(lens_router.LOOP_OWNED)]
+    implementation_files = sorted(
+        path for path in changed
+        if not path.startswith("taskplane/tests/") and path.endswith(".py"))
+    tokens = shlex.split(str(task.get("tests") or ""))
+    selectors = sorted({token for token in tokens
+                        if re.fullmatch(
+                            r"[^\s:]+\.py::[A-Za-z_][A-Za-z0-9_]*"
+                            r"(?:::[A-Za-z_][A-Za-z0-9_]*)*", token)})
+    test_files = sorted({selector.split("::", 1)[0]
+                         for selector in selectors})
+    if not implementation_files or not test_files or not selectors:
+        raise ValueError(
+            "Evaluate impact requires changed implementation files and exact selectors")
+    contract_id = str((task.get("criteria") or ["current-contract"])[0])
+    impact_manifest = {
+        "schema": "taskplane.evaluate-impact-manifest/v1",
+        "implementation_files": implementation_files,
+        "test_files": test_files,
+        "tests": [{"selector": selector, "contract": contract_id}
+                  for selector in selectors],
+        "producer_consumer_edges": [{
+            "producer": producer,
+            "consumer": selectors[index % len(selectors)].split("::", 1)[0],
+            "selector": selectors[index % len(selectors)],
+            "freshness_inputs": ["candidate_sha", "source_tree",
+                                 "impact_manifest_fingerprint"],
+            "severed_edge": {
+                "mutation": "disconnect the public producer-consumer edge",
+                "selector": selectors[index % len(selectors)],
+            },
+        } for index, producer in enumerate(implementation_files)],
+        "changed_interfaces": [], "failures": [],
+        "rejected_evidence_kinds": [
+            "ceremonial", "source", "ast", "prose-shape", "byte-only"],
+    }
+    design_fp = str(state.get("design_fingerprint") or
+                    candidate.get("fingerprint") or "")
+    plan_fp = str(state.get("plan_fingerprint") or hashlib.sha256(
+        json.dumps(state.get("tasks") or [], sort_keys=True,
+                   separators=(",", ":"), ensure_ascii=True).encode()).hexdigest())
+    binding = {
+        "task_id": str(task.get("id") or ""),
+        "requirement_id": str(task.get("req") or
+                              state.get("requirement_id") or ""),
+        "candidate_sha": candidate_sha, "source_tree": source_tree,
+        "design_fingerprint": design_fp, "plan_fingerprint": plan_fp,
+        "settings_digest": str(owner.get("settings_digest") or ""),
+        "evaluator_attempt_id": str(evaluator_attempt_id),
+    }
+    assignments = start_evaluate_evidence_children(
+        workspace=act_ws, artifact_root=artifact_root, binding=binding,
+        impact_manifest=impact_manifest)
+    exact_binding = assignments[0]["binding"]
+    if any(row["binding"] != exact_binding for row in assignments):
+        raise ValueError("Evaluate child bindings are ambiguous")
+    record = {
+        "schema": "taskplane.evaluate-evidence-route/v1",
+        "run_id": str(owner["run_id"]),
+        "evaluator_attempt_id": str(evaluator_attempt_id),
+        "binding": exact_binding, "assignments": assignments,
+    }
+    with mutate(ws) as locked:
+        if locked is None or locked.get("step") != "evaluate":
+            raise ValueError("Evaluate advanced before child start committed")
+        prior = locked.get("evaluate_child_evidence")
+        if prior is not None and prior != record:
+            raise ValueError("Evaluate child route conflicts with active attempt")
+        locked["evaluate_child_evidence"] = record
+    return record
+
+
 def _dispatch_binding_for_attempt(
         ledger: Mapping[str, object], task_id: str,
         native_task_name: str | None = None,
@@ -6526,7 +6912,7 @@ def _stage_loop_wave_dispatches(
     return dispatches
 
 
-def wave(ws: str) -> dict:
+def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
     """The next parallel wave: every task whose dependencies have PASSED
     and whose scope is disjoint from the rest of the wave. Each entry ships
     its own contract + primed lenses + requirement — one governed agent per
@@ -6627,6 +7013,14 @@ def wave(ws: str) -> dict:
         event_wait_invocation(
             wave_wait_policy, [str(task["id"]) for task in ready])
         if ready else None)
+    try:
+        root_admission = _screen_public_native_route(
+            ws, state, stage="execute", tasks=ready,
+            observation_authority=root_observation_authority)
+    except (ValueError, dispatch_telemetry.DispatchTelemetryError) as exc:
+        return {"error": "native root admission refused before wave: " +
+                str(exc), "step": "execute", "parallel": True,
+                "wave": [], "held": held}
     # Validate the sealed zero-lens authorization for the entire ready set
     # before persisting even one native intent.  A severed member therefore
     # refuses the whole emitted set without leaving partial dispatch state.
@@ -6733,6 +7127,7 @@ def wave(ws: str) -> dict:
         "step": "execute", "parallel": True,
         "wave": entries, "held": held,
         "wait_invocation": wave_wait_invocation,
+        **({"root_admission": root_admission} if root_admission else {}),
         **({"enforcement": enforcement} if enforcement else {}),
         "runtime_evals": runtime_eval.guidance("execute"),
         "instruction": (
@@ -6887,7 +7282,8 @@ def next_action(
         expanded_route_provider_client:
         terminal_truth.ExpandedRouteProviderClient | None = None,
         expanded_route_provider_receipt:
-        terminal_truth.ExpandedRouteProviderReceipt | None = None) -> dict:
+        terminal_truth.ExpandedRouteProviderReceipt | None = None,
+        root_observation_authority: bytes | None = None) -> dict:
     """Advance to the current step's work: activate its contract and return
     what the driver should run. Human steps pause without activating."""
     if refusal := _stage_loop_mutation_refusal(
@@ -7030,10 +7426,12 @@ def next_action(
                 expanded_route_provider_client=
                     expanded_route_provider_client,
                 expanded_route_provider_receipt=
-                    expanded_route_provider_receipt)
+                    expanded_route_provider_receipt,
+                root_observation_authority=root_observation_authority)
         step = state["step"]
         if step == "execute":
-            return wave(ws)
+            return wave(
+                ws, root_observation_authority=root_observation_authority)
 
     # Defence in depth: a per-task step must have a current task. If the loop
     # ever reaches execute/fix/evaluate with none (e.g. a plan that produced
@@ -7542,6 +7940,23 @@ def next_action(
             if fresh is not None:
                 fresh.setdefault("review_kernel_runs", {})[
                     _review_kernel_binding_key(step, task)] = binding
+    evaluate_children = None
+    if step == "evaluate":
+        try:
+            attempt_id = str((review_kernel or {}).get("run_id") or "").strip()
+            if not attempt_id:
+                raise ValueError("Evaluate evidence lacks evaluator attempt identity")
+            evaluate_children = _prepare_public_evaluate_evidence(
+                ws, act_ws, state, task or {},
+                evaluator_attempt_id=attempt_id)
+            contract["evaluate_child_evidence"] = _copy_json(
+                evaluate_children)
+        except Exception as exc:
+            return {
+                "error": "Evaluate child evidence preparation failed closed: "
+                         f"{exc.__class__.__name__}: {exc}",
+                "step": step, "status": status(ws),
+            }
     model_tier, model = dispatch["model_tier"], dispatch["model"]
     reasoning_effort, task_name = (dispatch["reasoning_effort"],
                                    dispatch["task_name"])
@@ -7649,6 +8064,8 @@ def next_action(
                 "language_references"),
         } if routing and step != "evaluate" and not zero_lens_delivery else {}),
         "review_kernel": review_kernel,
+        **({"evaluate_child_evidence": evaluate_children}
+           if evaluate_children is not None else {}),
         "runtime_evals": runtime_eval.guidance(step),
         "audit": audit_info,
         "impact": imp and {**imp, "context": depgraph.render_context(imp)},
@@ -7699,6 +8116,13 @@ def next_action(
         if stage_dispatch is not None:
             result["stage_runtime_dispatch"] = stage_dispatch
     dispatch_member = str((task or {}).get("id") or step)
+    try:
+        root_admission = _screen_public_native_route(
+            ws, state, stage=step, tasks=[task or {"id": dispatch_member}],
+            observation_authority=root_observation_authority)
+    except (ValueError, dispatch_telemetry.DispatchTelemetryError) as exc:
+        return {"error": "native root admission refused before dispatch: " +
+                str(exc), "step": step, "status": status(ws)}
     dispatch_intent = _native_dispatch_intent(
         ws, state, step=step, task_id=dispatch_member,
         dispatch=dispatch, wait_policy=dispatch_wait_policy)
@@ -7719,6 +8143,8 @@ def next_action(
         dispatch_route=dispatch.get("dispatch_route"),
         intent_id=intent_id, intent_run_id=intent_run_id)
     result["dispatch_intent"] = dispatch_intent
+    if root_admission is not None:
+        result["root_admission"] = root_admission
     if step in {"execute", "evaluate", "fix"}:
         result["wait_invocation"] = event_wait_invocation(
             dispatch_wait_policy, [dispatch_member])
@@ -8898,10 +9324,23 @@ def _collect_zero_lens_evaluate_before_guidance(
     observation = producer_observation_policy.consume_matching_observation(
         **material)
     if step == "evaluate":
-        result = evaluation_output.validate_evaluator_value(
-            json.loads(material["output_bytes"].decode("utf-8")))
+        raw_result = json.loads(material["output_bytes"].decode("utf-8"))
+        evidence_route = state.get("evaluate_child_evidence")
+        if not isinstance(evidence_route, Mapping):
+            raise ValueError("Evaluate child evidence route is missing")
+        result = consume_evaluate_evidence_before_pass(
+            raw_result, artifact_root=_run_artifact_root(ws, state),
+            run_id=str(evidence_route.get("run_id") or ""),
+            evaluator_attempt_id=str(
+                evidence_route.get("evaluator_attempt_id") or ""),
+            expected_binding=evidence_route.get("binding") or {})
+        if result != raw_result:
+            raise ValueError(
+                "evaluator output did not directly consume canonical child evidence")
         collection_stage = "Evaluate"
-        validator = evaluation_output.validate_evaluator_value
+        validator = lambda value: evaluation_output.validate_evaluator_value(
+            value, expected_lenses=[], expected_evidence_binding=
+            dict(evidence_route.get("binding") or {}))
     else:
         findings_path = runtime_storage.review_public_path(
             act_ws, "findings.json")
@@ -8953,6 +9392,23 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     verdict, errors = _read_json(path)
     if errors:
         return errors
+    evidence_route = state.get("evaluate_child_evidence")
+    if not isinstance(evidence_route, Mapping):
+        errors.append("Evaluate child evidence route is missing")
+    else:
+        try:
+            consumed = consume_evaluate_evidence_before_pass(
+                verdict, artifact_root=_run_artifact_root(ws, state),
+                run_id=str(evidence_route.get("run_id") or ""),
+                evaluator_attempt_id=str(
+                    evidence_route.get("evaluator_attempt_id") or ""),
+                expected_binding=evidence_route.get("binding") or {})
+            if consumed != verdict:
+                errors.append(
+                    "evaluator output did not directly consume canonical child evidence")
+        except Exception as exc:
+            errors.append("Evaluate child evidence admission failed: "
+                          f"{exc.__class__.__name__}: {exc}")
     errors.extend(_design_current_errors(ws, state))
     import review as _review
     binding = review_kernel_binding(state, "evaluate", task)
@@ -8987,7 +9443,9 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
             if kernel.get("zero_lens_evaluation") is True or \
                     kernel.get("delivery_mode_receipt") is not None:
                 evaluator_result = evaluation_output.validate_evaluator_value(
-                    verdict)
+                    verdict, expected_lenses=[],
+                    expected_evidence_binding=dict(
+                        (evidence_route or {}).get("binding") or {}))
                 submission = state.get("_submission") or {}
                 observation = \
                     producer_observation_policy.validate_producer_observation(
@@ -11492,6 +11950,36 @@ def _signoff_gate_dod(ws: str, state: dict) -> dict:
 
 def _seal_terminal_metrics_before_retro(ws: str, state: dict) -> dict:
     """Set measured or explicit attributable-unavailable terminal truth."""
+    root_state = state.get("root_hygiene")
+    if isinstance(root_state, Mapping) and root_state.get("status") in {
+            "open", "admissions_closed"}:
+        ledger_for_root = state.get("dispatch_telemetry") or {}
+        worker_tokens = sum(
+            int((row.get("usage") or {}).get("total_tokens") or 0)
+            for row in ledger_for_root.get("bindings") or []
+            if isinstance(row, Mapping) and row.get("thread_type") != "main"
+            and isinstance(row.get("usage"), Mapping))
+        root_receipt = wave_metrics.finalize_root_hygiene_canary(
+            root_state, candidate_sha=str(state.get("baseline") or ""),
+            worker_tokens=worker_tokens)
+        existing_root = state.get("root_hygiene_receipt")
+        if existing_root is not None and existing_root != root_receipt:
+            raise wave_metrics.WaveMetricsError(
+                "canonical root hygiene receipt changed during terminal seal")
+        state["root_hygiene_receipt"] = root_receipt
+        artifact_root = _run_artifact_root(ws, state)
+        manifest = run_artifacts.load_manifest(artifact_root)
+        retained = next((row for row in manifest["classes"]["telemetry"]["entries"]
+                         if (row.get("metadata") or {}).get("kind") ==
+                         "root-hygiene" and (row.get("metadata") or {}).get(
+                             "receipt_fingerprint") == root_receipt["fingerprint"]),
+                        None)
+        if retained is None:
+            retained = run_artifacts.publish_artifact(
+                artifact_root, "telemetry", root_receipt,
+                metadata={"kind": "root-hygiene",
+                          "receipt_fingerprint": root_receipt["fingerprint"]})
+        state.setdefault("run_artifact_refs", {})["root_hygiene"] = retained
     existing = state.get("wave_metrics_receipt")
     if isinstance(existing, Mapping):
         state["wave_metrics_receipt"] = wave_metrics.validate_wave_receipt(
@@ -13038,6 +13526,41 @@ def approve(ws: str, force: bool = False, by: str = None) -> dict:
                     f"{exc.__class__.__name__}: {exc}", "step": step}
         locked.clear()
         locked.update(state)
+    if step == "plan_approval" and state["step"] == "execute":
+        tasks = list(state.get("tasks") or [])
+        wave_id = str((tasks[0].get("wave") if tasks else None) or "execute")
+        plan_path = os.path.join(ws, "plan", "tasks.json")
+        try:
+            with open(plan_path, "rb") as stream:
+                plan_fingerprint = hashlib.sha256(stream.read()).hexdigest()
+            design_fingerprint = str(
+                state.get("design_fingerprint") or
+                _design_evidence_fingerprint(ws))
+            prepare_delivery_root(
+                ws, seed_ref=f"waves/{wave_id}/root-seed.json",
+                wave_id=wave_id,
+                prepared_at=time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                operation_id="prepare-" + str(state["run_id"]) + "-" + wave_id,
+                design={"path": "design/contract.json",
+                        "fingerprint": design_fingerprint},
+                plan={"path": "plan/tasks.json",
+                      "fingerprint": plan_fingerprint},
+                pickups=[{
+                    "id": str(task["id"]),
+                    "write_scopes": list(task.get("scope") or []),
+                    "disjointness_receipt_fingerprint": hashlib.sha256(
+                        json.dumps({"task": task["id"],
+                                    "scope": task.get("scope") or []},
+                                   sort_keys=True,
+                                   separators=(",", ":")).encode()).hexdigest(),
+                } for task in tasks],
+                outstanding_human_gates=[],
+                predecessor_terminal_projection={"status": "none"})
+            state = load(ws) or state
+        except Exception as exc:
+            return {"error": "root seed preparation failed after Plan approval: "
+                    f"{exc.__class__.__name__}: {exc}", "step": "execute"}
     out = {"step": state["step"], "status": status(ws)}
     if stage_transition is not None:
         out["stage_transition"] = stage_transition

@@ -2708,6 +2708,51 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                 snapshot, dict) or total <= 0:
             raise ValueError(str(
                 projection.get("reason") or "native counter is null or zero"))
+        state = _loop_runtime.load(ws) or {}
+        root = state.get("root_hygiene")
+        if isinstance(root, dict) and root.get("status") in {"prepared", "open"}:
+            import host_native as _host_native
+            import native_session_meter as _native_meter
+            import root_seed as _root_seed
+
+            authority = _transcript_projection_authority(ws)
+            if root.get("status") == "prepared":
+                settings = tp._canonical_operational_settings()
+                seed = _root_seed.load_root_seed(
+                    ws, str(root.get("seed_ref") or ""))
+                capability = host_caps.root_session_capability(
+                    _host_capability_snapshot(ws),
+                    settings_digest=settings.digest)
+                start = _host_native.start_root_session(
+                    capability, seed, run_id=str(seed["run_id"]),
+                    wave_id=str(seed["wave_id"]),
+                    candidate_sha=str(seed["candidate_sha"]),
+                    settings_digest=settings.digest,
+                    session_pseudonym=hashlib.sha256(
+                        authority + str(snapshot.get("session_id") or "").encode()
+                    ).hexdigest(),
+                    started_at=_time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                    issuer_sequence=1, authority=authority)
+                observation = _native_meter.seal_root_observation(
+                    snapshot, sequence=1, session_role="root",
+                    status_receipt_fingerprint=start["fingerprint"],
+                    authority=authority)
+                _loop_runtime.open_delivery_wave(
+                    ws, host_start_receipt=start,
+                    first_observation=observation,
+                    observation_authority=authority)
+            else:
+                prior = (root.get("meter") or {}).get("watermark") or {}
+                observation = _native_meter.seal_root_observation(
+                    snapshot, sequence=int(prior.get("last_sequence") or 0) + 1,
+                    session_role="root",
+                    status_receipt_fingerprint=str(
+                        root.get("host_start_fingerprint") or ""),
+                    authority=authority)
+                _loop_runtime.record_delivery_root_observation(
+                    ws, observation=observation,
+                    observation_authority=authority)
         _loop_runtime.record_native_orchestrator_snapshot(
             ws, snapshot=snapshot)
     except Exception as exc:
@@ -3447,7 +3492,10 @@ def cmd_loop(a) -> int:
         import depgraph
         try:
             with depgraph.strict_quality():
-                out = loopmod.next_action(ws, rid=getattr(a, "req", None))
+                out = loopmod.next_action(
+                    ws, rid=getattr(a, "req", None),
+                    root_observation_authority=
+                        _transcript_projection_authority(ws))
         except depgraph.GraphQualityDegraded as exc:
             out = {"error": str(exc), "step": "graph-quality"}
     elif action == "submit":
@@ -3492,7 +3540,9 @@ def cmd_loop(a) -> int:
             except Exception:
                 pass                 # audit must never break the gate
     elif action == "wave":
-        out = loopmod.wave(ws)
+        out = loopmod.wave(
+            ws, root_observation_authority=
+                _transcript_projection_authority(ws))
     elif action == "claim":
         out = loopmod.claim(ws, a.task_id, a.agent_workspace)
     elif action == "approve":

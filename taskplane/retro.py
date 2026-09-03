@@ -104,6 +104,15 @@ def sealed_wave_metrics_projection(state: dict) -> dict:
     return projection
 
 
+def sealed_root_hygiene_projection(state: dict) -> dict:
+    """Consume the same canonical root seal used by every terminal view."""
+    receipt = state.get("root_hygiene_receipt")
+    if not isinstance(receipt, dict):
+        raise wave_metrics.WaveMetricsError(
+            "canonical root hygiene receipt is unavailable")
+    return wave_metrics.root_hygiene_projection(receipt, consumer="retro")
+
+
 def publish_terminal_artifacts(
         artifact_root: str, *, wave_receipt: dict | None, report: dict,
         lifecycle_outcome: str, publication_attempt: int = 1) -> dict:

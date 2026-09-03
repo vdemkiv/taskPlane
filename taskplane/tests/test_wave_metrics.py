@@ -11,6 +11,7 @@ import pytest
 from taskplane import wave_metrics
 from taskplane import dispatch_telemetry
 from taskplane import retro
+from taskplane import dashboard
 from taskplane.delivery_ports import FakeClock, content_fingerprint
 
 
@@ -19,6 +20,55 @@ FIXTURE = Path(__file__).parent / "fixtures" / "wave-metrics" / "closed-run.json
 
 def _evidence() -> dict:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def _root(*, worker_tokens: int = 0) -> tuple[dict, int]:
+    return ({
+        "status": "open", "conformance": "pass", "canary_eligible": True,
+        "override": None, "host": {"adapter": "codex", "runtime": "native"},
+        "session_pseudonym": "1" * 64, "seed_fingerprint": "2" * 64,
+        "host_start_fingerprint": "3" * 64,
+        "meter": {
+            "turns": 2, "first_observed_input_tokens": 40_000,
+            "peak_context_tokens": 45_000, "context_rent_tokens": 25_000,
+            "resumed": False,
+            "usage": {"total_tokens": 100_000,
+                      "cached_input_tokens": 50_000},
+        },
+    }, worker_tokens)
+
+
+def test_root_hygiene_required_fields_reject_null_and_preserve_zero_and_applicability_null():
+    root, workers = _root(worker_tokens=0)
+    seal = wave_metrics.finalize_root_hygiene_canary(
+        root, candidate_sha="a" * 40, worker_tokens=workers)
+    assert seal["totals"] == {
+        "root_tokens": 100_000, "worker_tokens": 0,
+        "wave_tokens": 100_000}
+    assert seal["comparison"] == {
+        "applicable": False, "root_share": None, "wave_tokens": None,
+        "reason": "worker-usage-unavailable"}
+    missing = copy.deepcopy(root)
+    missing["meter"]["first_observed_input_tokens"] = None
+    with pytest.raises(wave_metrics.WaveMetricsError, match="required"):
+        wave_metrics.finalize_root_hygiene_canary(
+            missing, candidate_sha="a" * 40, worker_tokens=0)
+
+
+def test_root_worker_and_wave_totals_remain_separate_and_reconcile_in_seal_retro_and_dashboard():
+    root, workers = _root(worker_tokens=300_000)
+    seal = wave_metrics.finalize_root_hygiene_canary(
+        root, candidate_sha="a" * 40, worker_tokens=workers)
+    assert seal["totals"] == {
+        "root_tokens": 100_000, "worker_tokens": 300_000,
+        "wave_tokens": 400_000}
+    assert seal["comparison"]["root_share"] == .25
+    retro_view = retro.sealed_root_hygiene_projection(
+        {"root_hygiene_receipt": seal})
+    dashboard_view = dashboard.root_hygiene_projection(seal)
+    assert retro_view["totals"] == dashboard_view["totals"] == seal["totals"]
+    assert retro_view["receipt_fingerprint"] == \
+        dashboard_view["receipt_fingerprint"] == seal["fingerprint"]
 
 
 def test_wave_receipt_covers_baselines_targets_and_guardrails():

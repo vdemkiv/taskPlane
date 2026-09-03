@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 
 from taskplane import evaluate_child_evidence as evidence
-from taskplane import evaluation_output, run_artifacts, run_store, runnability, storage
+from taskplane import (
+    evaluation_output, loop, run_artifacts, run_store, runnability, storage,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SETTINGS = "5" * 64
@@ -27,7 +29,7 @@ def _binding(attempt: str = "evaluate-attempt-1") -> dict:
 def _impact() -> dict:
     selector = (
         "taskplane/tests/test_evaluate_child_evidence.py::"
-        "test_public_evaluator_pass_requires_two_durable_consumed_results"
+        "test_evaluator_consumes_both_substantive_results_while_children_cannot_verdict_gate_or_repair"
     )
     return {
         "schema": evidence.IMPACT_MANIFEST_SCHEMA,
@@ -242,7 +244,32 @@ def _pass() -> dict:
     }
 
 
-def test_public_evaluator_pass_requires_two_durable_consumed_results(
+def test_every_evaluator_starts_exactly_two_bound_evidence_producers_and_records_complete_lifecycle(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, run_id = _run(tmp_path, monkeypatch)
+    assignments = loop.start_evaluate_evidence_children(
+        workspace=str(ROOT), artifact_root=str(root), binding=_binding(),
+        impact_manifest=_impact())
+    assert [row["producer_kind"] for row in assignments] == [
+        evidence.LANGUAGE_PRODUCER, evidence.TEST_DESIGN_PRODUCER]
+    results = _results(assignments)
+    for assignment in assignments:
+        loop.complete_evaluate_evidence_child(
+            workspace=str(ROOT), artifact_root=str(root), run_id=run_id,
+            assignment=assignment,
+            result=results[assignment["producer_kind"]], work_units=2)
+
+    consumed = loop.consume_evaluate_evidence_before_pass(
+        _pass(), artifact_root=str(root), run_id=run_id,
+        evaluator_attempt_id="evaluate-attempt-1",
+        expected_binding=assignments[0]["binding"])
+    assert consumed["verdict"] == "pass"
+    assert {row["producer_kind"] for row in
+            consumed["child_evidence"]["producers"]} == {
+        evidence.LANGUAGE_PRODUCER, evidence.TEST_DESIGN_PRODUCER}
+
+
+def test_evaluator_consumes_both_substantive_results_while_children_cannot_verdict_gate_or_repair(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, run_id = _run(tmp_path, monkeypatch)
     first = _assign(root)
@@ -276,7 +303,7 @@ def test_public_evaluator_pass_requires_two_durable_consumed_results(
     "corrupt-result", "unavailable-tool", "claim-only", "missing-fixture",
     "nested-authority", "changed-reuse-key", "one-character-claim",
 ])
-def test_evaluator_evidence_refusal_matrix(
+def test_language_quality_covers_every_impacted_language_and_fails_closed_on_missing_unsupported_or_ambiguous_mapping(
         case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, run_id = _run(tmp_path, monkeypatch)
     assignments = _assign(root)
@@ -375,7 +402,7 @@ def test_current_binding_and_governed_execution_receipts_are_mandatory(
             attached, expected_lenses=[], expected_evidence_binding=foreign)
 
 
-def test_selectors_and_obligations_require_exact_unique_observed_coverage(
+def test_test_design_classifies_current_value_and_proves_wiring_freshness_same_slice_and_failure_classes(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, _ = _run(tmp_path, monkeypatch)
     missing = _impact()
@@ -433,7 +460,7 @@ def test_one_receipt_cannot_cover_freshness_and_severed_edge(
             assignments[1], result, workspace=ROOT, run_id=run_id)
 
 
-def test_fixture_content_freshness_and_repeated_reuse_are_finite(
+def test_exact_unchanged_evidence_reuse_avoids_reexecution_and_changed_binding_forces_fresh_checks(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()

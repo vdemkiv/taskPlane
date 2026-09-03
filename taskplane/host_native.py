@@ -45,6 +45,7 @@ else:
 
 SNAPSHOT_SCHEMA = "taskplane.host-surface-snapshot/v1"
 EVENT_SCHEMA = "taskplane.host-surface-event/v1"
+ROOT_SESSION_START_SCHEMA = "taskplane.host-root-session-start/v1"
 REVISION_ID_KEYS = (
     "target_fingerprint", "context_fingerprint", "findings_fingerprint",
     "canonical_revision",
@@ -53,6 +54,156 @@ REVISION_ID_KEYS = (
 
 class ContradictorySnapshotError(ValueError):
     """Two snapshots claim different canonical truth at one sequence."""
+
+
+class RootSessionReceiptError(ValueError):
+    """A host root-session receipt is missing, foreign, or unauthentic."""
+
+
+def _root_receipt_authority(value: bytes) -> bytes:
+    if not isinstance(value, bytes) or len(value) < 16:
+        raise RootSessionReceiptError(
+            "root-session authority must contain at least 16 bytes")
+    return value
+
+
+def _root_receipt_fingerprint(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def _root_receipt_authenticator(fingerprint: str, authority: bytes) -> str:
+    return hmac.new(
+        _root_receipt_authority(authority),
+        (ROOT_SESSION_START_SCHEMA + "\0" + fingerprint).encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def start_root_session(
+        capability: Mapping[str, Any], seed: Mapping[str, Any], *,
+        run_id: str, wave_id: str, candidate_sha: str,
+        settings_digest: str, session_pseudonym: str, started_at: str,
+        issuer_sequence: int, authority: bytes) -> dict[str, Any]:
+    """Seal the host-created fresh root against the prepared seed.
+
+    This is the private host boundary.  Taskplane core may verify the result,
+    but cannot mint one without the host-held authority.
+    """
+    try:
+        if __package__:
+            from . import root_seed
+        else:  # pragma: no cover - direct installed module loading
+            import root_seed
+        checked_seed = root_seed.validate_root_seed(seed)
+    except Exception as exc:
+        raise RootSessionReceiptError(str(exc)) from exc
+    if not isinstance(capability, Mapping) or capability.get("schema") != \
+            "taskplane.host-root-session-capability/v1" or \
+            capability.get("status") != "supported" or \
+            capability.get("fresh_start") is not True or \
+            capability.get("cumulative_meter") is not True or \
+            capability.get("one_observation_one_turn") is not True:
+        raise RootSessionReceiptError(
+            "host root-session capability is unsupported")
+    binding = {
+        "run_id": str(run_id), "wave_id": str(wave_id),
+        "candidate_sha": str(candidate_sha),
+        "settings_fingerprint": str(settings_digest),
+        "seed_fingerprint": str(checked_seed["seed_fingerprint"]),
+    }
+    expected = {
+        "run_id": checked_seed["run_id"],
+        "wave_id": checked_seed["wave_id"],
+        "candidate_sha": checked_seed["candidate_sha"],
+        "settings_fingerprint": checked_seed["settings_fingerprint"],
+        "seed_fingerprint": checked_seed["seed_fingerprint"],
+    }
+    if binding != expected or capability.get("settings_digest") != \
+            settings_digest:
+        raise RootSessionReceiptError(
+            "host root-session start binding does not match the prepared seed")
+    if not isinstance(issuer_sequence, int) or isinstance(
+            issuer_sequence, bool) or issuer_sequence < 1:
+        raise RootSessionReceiptError(
+            "host root-session issuer sequence must be positive")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(session_pseudonym or "")):
+        raise RootSessionReceiptError(
+            "host root-session pseudonym must be purpose scoped")
+    try:
+        parsed = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise RootSessionReceiptError(
+            "host root-session start time is invalid") from exc
+    if parsed.tzinfo is None:
+        raise RootSessionReceiptError(
+            "host root-session start time must include a timezone")
+    material = {
+        "schema": ROOT_SESSION_START_SCHEMA,
+        "status": "fresh",
+        "host": str(capability.get("host") or "unknown")[:32],
+        "host_version": capability.get("host_version"),
+        "capability_fingerprint": capability.get("fingerprint"),
+        **binding,
+        "session_role": "root",
+        "session_pseudonym": session_pseudonym,
+        "resumed": False,
+        "issuer_sequence": issuer_sequence,
+        "started_at": started_at,
+        "operation_id": checked_seed["operation_id"],
+    }
+    fingerprint = _root_receipt_fingerprint(material)
+    return {
+        **material, "fingerprint": fingerprint,
+        "authenticator": _root_receipt_authenticator(
+            fingerprint, authority),
+    }
+
+
+def validate_root_session_start(
+        value: Mapping[str, Any], *, authority: bytes,
+        seed: Mapping[str, Any]) -> dict[str, Any]:
+    """Verify one exact host-created fresh-root receipt."""
+    required = {
+        "schema", "status", "host", "host_version",
+        "capability_fingerprint", "run_id", "wave_id", "candidate_sha",
+        "settings_fingerprint", "seed_fingerprint", "session_role",
+        "session_pseudonym", "resumed", "issuer_sequence", "started_at",
+        "operation_id", "fingerprint", "authenticator",
+    }
+    if not isinstance(value, Mapping) or set(value) != required or \
+            value.get("schema") != ROOT_SESSION_START_SCHEMA:
+        raise RootSessionReceiptError(
+            "host root-session start receipt is invalid")
+    material = {key: copy.deepcopy(item) for key, item in value.items()
+                if key not in {"fingerprint", "authenticator"}}
+    fingerprint = _root_receipt_fingerprint(material)
+    if value.get("fingerprint") != fingerprint or not hmac.compare_digest(
+            str(value.get("authenticator") or ""),
+            _root_receipt_authenticator(fingerprint, authority)):
+        raise RootSessionReceiptError(
+            "host root-session start receipt is unauthentic")
+    rebuilt = start_root_session(
+        {"schema": "taskplane.host-root-session-capability/v1",
+         "status": "supported", "host": value["host"],
+         "host_version": value["host_version"],
+         "settings_digest": value["settings_fingerprint"],
+         "fresh_start": True, "cumulative_meter": True,
+         "one_observation_one_turn": True,
+         "fingerprint": value["capability_fingerprint"]},
+        seed, run_id=str(value["run_id"]), wave_id=str(value["wave_id"]),
+        candidate_sha=str(value["candidate_sha"]),
+        settings_digest=str(value["settings_fingerprint"]),
+        session_pseudonym=str(value["session_pseudonym"]),
+        started_at=str(value["started_at"]),
+        issuer_sequence=int(value["issuer_sequence"]), authority=authority)
+    if rebuilt != dict(value) or value.get("status") != "fresh" or \
+            value.get("session_role") != "root" or \
+            value.get("resumed") is not False:
+        raise RootSessionReceiptError(
+            "host root-session start receipt is stale or resumed")
+    return dict(value)
 
 
 def process_start_identity(pid: int) -> str:
