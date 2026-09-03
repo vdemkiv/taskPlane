@@ -1,3 +1,4 @@
+import hashlib
 import json
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -21,7 +22,7 @@ def _write(tmp_path: Path, value: dict) -> Path:
 def test_valid_canonical_settings_load_typed():
     settings = load_settings(DEFAULT_SETTINGS_PATH)
 
-    assert settings.schema == "taskplane.operational-settings/v1"
+    assert settings.schema == "taskplane.operational-settings/v2"
     assert settings.stages["build"].reasoning == "high"
     assert settings.lenses.counts["build"] == 0
     assert settings.build.shards == 1
@@ -57,6 +58,71 @@ def test_valid_canonical_settings_load_typed():
         settings.build.shards = 2
     with pytest.raises(TypeError):
         settings.stages["build"] = settings.stages["plan"]
+
+
+def test_root_session_settings_are_required_exact_and_shipped_values_load(
+        tmp_path):
+    settings = load_settings(DEFAULT_SETTINGS_PATH)
+
+    assert settings.workflow.root_session.to_dict() == {
+        "resume": "forbidden",
+        "seed": "digest-only",
+        "seed_budget_tokens": 40_000,
+        "root_budget_tokens": 40_000_000,
+    }
+    assert settings.workflow.root_session.consumer_projection(
+        "root-seed.prepare") == {
+            "resume": "forbidden",
+            "seed": "digest-only",
+            "seed_budget_tokens": 40_000,
+            "root_budget_tokens": 40_000_000,
+        }
+
+    canonical = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    invalid_values = [None, True, False, 0, -1, 1.5, "40000"]
+    for field in ("seed_budget_tokens", "root_budget_tokens"):
+        for value in invalid_values:
+            malformed = json.loads(json.dumps(canonical))
+            malformed["workflow"]["root_session"][field] = value
+            with pytest.raises(SettingsError):
+                load_settings(_write(tmp_path, malformed))
+
+    for field, value in (("resume", "allowed"), ("seed", "embedded")):
+        malformed = json.loads(json.dumps(canonical))
+        malformed["workflow"]["root_session"][field] = value
+        with pytest.raises(SettingsError, match=field):
+            load_settings(_write(tmp_path, malformed))
+
+    inverted = json.loads(json.dumps(canonical))
+    inverted["workflow"]["root_session"]["seed_budget_tokens"] = \
+        inverted["workflow"]["root_session"]["root_budget_tokens"]
+    with pytest.raises(SettingsError, match="must be below"):
+        load_settings(_write(tmp_path, inverted))
+
+    legacy = json.loads(json.dumps(canonical))
+    legacy["schema"] = "taskplane.operational-settings/v1"
+    legacy["workflow"].pop("root_session")
+    migrated = load_settings(_write(tmp_path, legacy))
+    assert migrated.workflow.root_session == settings.workflow.root_session
+    assert migrated.receipt["migration"]["from"] == \
+        "taskplane.operational-settings/v1"
+    assert migrated.receipt["migration"]["to"] == settings.schema
+    expected_legacy_digest = hashlib.sha256(json.dumps(
+        legacy, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    assert migrated.receipt["migration"]["legacy_digest"] == \
+        expected_legacy_digest
+    assert migrated.receipt["migration"]["inserted"] == [
+        "workflow.root_session.resume",
+        "workflow.root_session.seed",
+        "workflow.root_session.seed_budget_tokens",
+        "workflow.root_session.root_budget_tokens",
+    ]
+    assert migrated.receipt["migration"]["legacy_digest"] != migrated.digest
+    expected_effective_digest = hashlib.sha256(json.dumps(
+        migrated.to_dict(), sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True, allow_nan=False).encode("utf-8")).hexdigest()
+    assert migrated.digest == expected_effective_digest
 
 
 def test_invalid_or_unknown_settings_fail_closed(tmp_path):

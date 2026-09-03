@@ -215,7 +215,7 @@ only after the current contract they protect is adjudicated.
    one release without owning defaults; numeric and cache-busted package versions
    resolve consistently; receipts are tamper-evident and secret-free. Verify with
    `taskplane/tests/test_settings_cross_host.py::test_effective_settings_are_portable_and_safely_observable`
-   and `taskplane/tests/test_settings_migration.py::test_legacy_and_version_forms_migrate_without_second_authority`.
+   and `taskplane/tests/test_settings.py::test_precedence_migration_and_safe_override_contract`.
 6. **AC-TST1 — Test-strategy contract.** Every acceptance criterion maps to
    exact selectors; every changed producer lists consumers plus freshness and
    severed-edge checks; interface/fixture changes share one slice; and failures

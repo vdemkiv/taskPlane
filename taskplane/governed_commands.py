@@ -84,7 +84,7 @@ _ACTION_FIELDS = {
     }),
     "launch": frozenset({
         "authorization", "argv", "cwd", "deadline", "host", "run_id",
-        "task_id", "attempt", "wave_id",
+        "task_id", "attempt", "wave_id", "assignment_binding",
     }),
     # Deliberately semantic: no caller-authored argv, cwd, environment,
     # executable, receipt, or sandbox path crosses this boundary.
@@ -183,6 +183,10 @@ def _closed_request(action: str, request: object) -> dict:
             not isinstance(value["attempt"], int) or
             int(value["attempt"]) < 1):
         raise GovernedCommandError("governed command attempt is invalid")
+    if action == "launch" and "assignment_binding" in value and \
+            not isinstance(value["assignment_binding"], Mapping):
+        raise GovernedCommandError(
+            "governed command assignment binding must be an object")
     return value
 
 
@@ -934,6 +938,104 @@ def semantic_checkpoint_execution_evidence(
     return dict(receipt)
 
 
+def governed_command_execution_evidence(
+        workspace: str, authorization: str, handle: str, *,
+        assignment_binding: Mapping, argv: list[str]) -> dict:
+    """Derive one exact successful generic execution from sealed evidence."""
+    workspace = str(Path(workspace).resolve())
+    if not isinstance(assignment_binding, Mapping) or \
+            not isinstance(argv, list):
+        raise GovernedCommandError(
+            "governed command execution expectation is invalid")
+    expected_binding = dict(assignment_binding)
+    expected_argv = list(argv)
+    if (not expected_binding or
+            not isinstance(expected_binding.get("task_id"), str) or
+            not isinstance(expected_binding.get("candidate_sha"), str) or
+            not isinstance(expected_binding.get("source_tree"), str) or
+            not expected_argv or any(
+                not isinstance(item, str) or not item for item in expected_argv)):
+        raise GovernedCommandError(
+            "governed command execution expectation is invalid")
+    try:
+        bundle = _sealed_runtime_evidence(_runtime_root(workspace), handle)
+        evidence = bundle["evidence"]
+        if not {"terminal-state", "command-control", "handoff"}.issubset(
+                evidence):
+            raise GovernedCommandError(
+                "sealed governed command evidence is incomplete")
+        snapshot = _sealed_json(
+            evidence["terminal-state"], label="command terminal-state")
+        control = _validated_control(_sealed_json(
+            evidence["command-control"], label="command control"))
+        handoff = _sealed_json(evidence["handoff"], label="command handoff")
+        identity = dict(handoff.get("identity") or {})
+        authority = dict(handoff.get("authority") or {})
+        current_candidate = _git_output(workspace, "rev-parse", "HEAD")
+        current_tree = _git_output(workspace, "rev-parse", "HEAD^{tree}")
+        _governed_launch_authority(
+            workspace, str(handoff.get("cwd") or ""), expected_argv,
+            identity, assignment_binding=expected_binding,
+            expected=authority)
+    except (OSError, ValueError, KeyError, TypeError,
+            GovernedCommandError) as exc:
+        raise GovernedCommandError(
+            "governed command execution evidence is unavailable") from exc
+    command_fingerprint = _canonical_digest(expected_argv)
+    authorization_fingerprint = hashlib.sha256(
+        authorization.encode("utf-8")).hexdigest()
+    lifecycle = snapshot.get("lifecycle")
+    owner = bundle["manifest"].get("owner") or {}
+    cleanup_receipt = bundle["receipt"]
+    if (handoff.get("schema") != "taskplane.governed-command-handoff/v1" or
+            handoff.get("kind") is not None or
+            handoff.get("workspace") != workspace or
+            handoff.get("authorization") != authorization or
+            handoff.get("handle") != handle or
+            handoff.get("argv") != expected_argv or
+            handoff.get("assignment_binding") != expected_binding or
+            authority.get("assignment_binding_fingerprint") !=
+            _canonical_digest(expected_binding) or
+            identity.get("task_id") != expected_binding["task_id"] or
+            identity.get("run_id") != owner.get("run_id") or
+            identity.get("task_id") != owner.get("task_id") or
+            identity.get("attempt") != owner.get("attempt") or
+            snapshot.get("schema") != "taskplane.command-state/v1" or
+            snapshot.get("handle") != handle or
+            snapshot.get("identity") != identity or
+            snapshot.get("authorization_fingerprint") !=
+            authorization_fingerprint or
+            snapshot.get("binding_digest") != control.get("binding_digest") or
+            snapshot.get("command_fingerprint") != hashlib.sha256(
+                command_fingerprint.encode("utf-8")).hexdigest() or
+            not isinstance(lifecycle, list) or not lifecycle or
+            not isinstance(lifecycle[-1], Mapping) or
+            lifecycle[-1].get("handle") != handle or
+            lifecycle[-1].get("state") != snapshot.get("state") or
+            snapshot.get("state") != "succeeded" or
+            snapshot.get("exit_code") != 0 or
+            cleanup_receipt.get("cleanup_status") != "clean" or
+            cleanup_receipt.get("leak_count") != 0 or
+            expected_binding.get("candidate_sha") != current_candidate or
+            expected_binding.get("source_tree") != current_tree):
+        raise GovernedCommandError(
+            "governed command execution evidence is invalid")
+    material = {
+        "handle": handle, "identity": identity,
+        "authorization_fingerprint": authorization_fingerprint,
+        "assignment_binding": expected_binding,
+        "assignment_binding_fingerprint": _canonical_digest(expected_binding),
+        "source_sha": current_candidate, "target_sha": current_candidate,
+        "source_tree": current_tree,
+        "plan_fingerprint": expected_binding.get("plan_fingerprint"),
+        "runtime_argv": expected_argv,
+        "command_fingerprint": command_fingerprint,
+        "state": snapshot["state"], "exit_code": snapshot["exit_code"],
+        "cleanup_receipt_digest": cleanup_receipt.get("receipt_digest"),
+    }
+    return {**material, "receipt_digest": _canonical_digest(material)}
+
+
 # The runtime is the sole producer for this evidence.  Register a late-bound
 # callable so monkeypatching/replacement at the composition root remains
 # observable while checkpoint receipt minting keeps no reverse import edge.
@@ -1007,7 +1109,8 @@ def _raw_command_policy_denial(
 
 def _governed_launch_authority(
         workspace: str, cwd: str, argv: list[str], identity: Mapping,
-        *, expected: Mapping | None = None) -> dict:
+        *, assignment_binding: Mapping | None = None,
+        expected: Mapping | None = None) -> dict:
     """Screen direct argv against one exact active contract at each boundary."""
     contract = contract_engine.load_active(workspace)
     if not isinstance(contract, dict):
@@ -1042,6 +1145,9 @@ def _governed_launch_authority(
         "identity": dict(identity),
         "contract_fingerprint": _canonical_digest(contract),
         "command_fingerprint": _canonical_digest(argv),
+        **({"assignment_binding_fingerprint":
+            _canonical_digest(dict(assignment_binding))}
+           if assignment_binding is not None else {}),
     }
     proof["fingerprint"] = _canonical_digest(proof)
     if expected is not None and dict(expected) != proof:
@@ -1882,7 +1988,8 @@ def execute(workspace: str, action: str, request: object) -> dict:
                     "task_id": value["task_id"],
                     "attempt": value["attempt"]}
         authority = _governed_launch_authority(
-            workspace, cwd, list(argv), identity)
+            workspace, cwd, list(argv), identity,
+            assignment_binding=value.get("assignment_binding"))
         token = secrets.token_hex(16)
         handoff = root / "handoffs" / f"{token}.json"
         cleanup_context = None
@@ -1931,6 +2038,9 @@ def execute(workspace: str, action: str, request: object) -> dict:
                 "root": str(root), "handle": handle, "argv": list(argv),
                 "cwd": cwd, "deadline": value.get("deadline"),
                 "identity": identity, "authority": authority,
+                **({"assignment_binding":
+                    dict(value["assignment_binding"])}
+                   if "assignment_binding" in value else {}),
             })
             return _snapshot_result("launch", adapter, handle)
         except BaseException as exc:
@@ -2456,6 +2566,10 @@ def _worker(path: str) -> int:
         _governed_launch_authority(
             str(handoff["workspace"]), str(handoff["cwd"]),
             list(handoff["argv"]), dict(handoff["identity"]),
+            assignment_binding=(
+                dict(handoff["assignment_binding"])
+                if isinstance(handoff.get("assignment_binding"), Mapping)
+                else None),
             expected=dict(handoff["authority"]))
         process = subprocess.Popen(
             list(handoff["argv"]), cwd=str(handoff["cwd"]),

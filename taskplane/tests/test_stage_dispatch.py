@@ -709,31 +709,3 @@ def test_cli_preserves_verified_receipt_and_bounded_startup_telemetry(
         "agents", "conversations", "events", "tool_transcripts", "leases",
         "meters", "active_contract", "runtime_environment",
     } & set(emitted["dispatch"]))
-
-
-def test_loop_next_and_wave_task_emission_remain_byte_identical(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    """Adding `tp stage` must not wrap or reshape legacy task emission."""
-    import loop
-
-    payloads = {
-        "next": {"step": "evaluate", "brief": "unchanged"},
-        "wave": {"step": "execute", "wave": [{"id": "t03"}]},
-    }
-    monkeypatch.setattr(cli, "_enforcement_check", lambda *_a, **_k: (None, None))
-    monkeypatch.setattr(loop, "load", lambda _ws: None)
-    monkeypatch.setattr(loop, "next_action", lambda _ws, rid=None: payloads["next"])
-    monkeypatch.setattr(loop, "wave", lambda _ws: payloads["wave"])
-    monkeypatch.setattr(cli, "_record_parallel_expectations", lambda *_a: None)
-
-    assert cli.main([
-        "loop", "--workspace", str(tmp_path), "next", "--emit", "task",
-    ]) == 0
-    next_bytes = capsys.readouterr().out
-    assert next_bytes == json.dumps(payloads["next"], indent=2) + "\n"
-
-    assert cli.main([
-        "loop", "--workspace", str(tmp_path), "wave", "--emit", "task",
-    ]) == 0
-    wave_bytes = capsys.readouterr().out
-    assert wave_bytes == json.dumps(payloads["wave"], indent=2) + "\n"

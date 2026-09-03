@@ -49,6 +49,7 @@ import contextlib
 import hashlib
 import io
 import json
+import math
 import re
 import runpy
 import shlex
@@ -133,6 +134,28 @@ PUBLIC_ENGINE_ERROR_REGISTRY = {
     },
 }
 KNOWN_ENGINE_ERRORS = frozenset(PUBLIC_ENGINE_ERROR_REGISTRY)
+
+
+_EFFECTIVE_SETTINGS = None
+
+
+def _set_effective_settings_snapshot(settings):
+    """Install the immutable snapshot consumed by one public transition."""
+    from taskplane.settings import OperationalSettings
+    if not isinstance(settings, OperationalSettings):
+        raise TypeError("effective settings snapshot must be typed")
+    global _EFFECTIVE_SETTINGS
+    _EFFECTIVE_SETTINGS = settings
+    return settings
+
+
+def _effective_settings_snapshot():
+    """Return the active snapshot, loading it once for direct API callers."""
+    global _EFFECTIVE_SETTINGS
+    if _EFFECTIVE_SETTINGS is None:
+        from taskplane.settings import load_settings
+        _EFFECTIVE_SETTINGS = load_settings(environment=os.environ)
+    return _EFFECTIVE_SETTINGS
 
 
 # Shared help text for the universal --workspace plumbing flag. It is
@@ -1575,7 +1598,8 @@ def cmd_screen_dispatch(a) -> int:
                         str(projection.get("reason") or
                             "native counter is null or zero"))
                 _loop_runtime.record_native_orchestrator_snapshot(
-                    ws, snapshot=native_snapshot)
+                    ws, snapshot=native_snapshot,
+                    observation_authority=_transcript_projection_authority(ws))
             except Exception as meter_error:
                 reason = (
                     "taskplane native dispatch preflight failed closed: "
@@ -1854,6 +1878,119 @@ def cmd_subagent_stop(a) -> int:
         lifecycle_contract = None
         tp.trace(ws, "worker_contract_stop_lookup_failed",
                  agent_id=event.get("agent_id"), error=type(exc).__name__)
+    try:
+        import loop as _loop_runtime
+        state = _loop_runtime.load(ws) or {}
+        route = state.get("evaluate_child_evidence")
+        native_task_name = str(event.get("agent_type") or "")
+        evidence_child = (next((row for row in route.get(
+            "child_dispatches") or []
+            if isinstance(row, dict) and
+            row.get("task_name") == native_task_name), None)
+            if isinstance(route, dict) else None)
+        if isinstance(evidence_child, dict):
+            raw_result = event.get("last_assistant_message")
+            if not isinstance(raw_result, str) or not raw_result.strip():
+                raise ValueError(
+                    "Evaluate evidence child returned no JSON result")
+            try:
+                json.loads(raw_result)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "Evaluate evidence child result is not exact JSON") from exc
+            assignment = evidence_child.get("assignment") or {}
+            binding = (assignment.get("binding")
+                       if isinstance(assignment, dict) else {}) or {}
+            route_binding = route.get("binding") or {}
+            if (not isinstance(route_binding, dict) or
+                    route_binding != binding):
+                raise ValueError(
+                    "Evaluate evidence child assignment does not match its "
+                    "current route binding")
+            intent = evidence_child.get("dispatch_intent") or {}
+            task_id = str(binding.get("task_id") or "").strip()
+            dispatch_id = str(intent.get("intent_id") or "").strip()
+            if not task_id or not dispatch_id:
+                raise ValueError(
+                    "Evaluate evidence child dispatch binding is incomplete")
+            raw_outcome = (event.get("outcome") or event.get("status")
+                           or event.get("stop_reason") or event.get("reason")
+                           or "success")
+            normalized_outcome = tp.normalize_worker_terminal_outcome(
+                raw_outcome)
+            telemetry = _seal_terminal_dispatch_telemetry(
+                ws, {
+                    "budget": {"token_usage_required": True},
+                    "worker_lifecycle": {
+                        "task": task_id,
+                        "expected_task_name": native_task_name,
+                        "dispatch_intent_id": dispatch_id,
+                    },
+                }, event, outcome=normalized_outcome)
+            telemetry_receipt = (telemetry.get("receipt")
+                                 if isinstance(telemetry, dict) else None)
+            if (not isinstance(telemetry, dict) or
+                    telemetry.get("status") not in {"admitted", "duplicate"} or
+                    not isinstance(telemetry_receipt, dict) or
+                    str(telemetry_receipt.get("task_id") or "") != task_id or
+                    str(telemetry_receipt.get("dispatch_id") or "") !=
+                    dispatch_id or
+                    str(telemetry_receipt.get("thread_id") or "") !=
+                    native_task_name):
+                raise ValueError(
+                    "Evaluate evidence child terminal telemetry did not "
+                    "complete its exact native dispatch binding")
+            terminal_state = _loop_runtime.load(ws) or {}
+            telemetry_ledger = terminal_state.get("dispatch_telemetry")
+            root_admission = (telemetry_ledger.get("root_admission")
+                              if isinstance(telemetry_ledger, dict) else None)
+            ledger_receipt = (next((row for row in telemetry_ledger.get(
+                "dispatches") or [] if isinstance(row, dict) and
+                row.get("fingerprint") == telemetry_receipt.get(
+                    "fingerprint")), None)
+                if isinstance(telemetry_ledger, dict) else None)
+            if (not isinstance(telemetry_ledger, dict) or
+                    ledger_receipt != telemetry_receipt or
+                    str(telemetry_ledger.get("run_id") or "") !=
+                    str(route.get("run_id") or "") or
+                    str(telemetry_ledger.get("run_id") or "") !=
+                    str(terminal_state.get("run_id") or "") or
+                    str(telemetry_ledger.get("source_sha") or "") !=
+                    str(terminal_state.get("baseline") or "") or
+                    str(telemetry_ledger.get("design_fingerprint") or "") !=
+                    str(binding.get("design_fingerprint") or "") or
+                    str(telemetry_ledger.get("plan_fingerprint") or "") !=
+                    str(binding.get("plan_fingerprint") or "") or
+                    str(terminal_state.get("settings_digest") or "") !=
+                    str(binding.get("settings_digest") or "") or
+                    not isinstance(root_admission, dict) or
+                    str(root_admission.get("settings_digest") or "") !=
+                    str(binding.get("settings_digest") or "")):
+                raise ValueError(
+                    "Evaluate evidence child terminal telemetry is not "
+                    "bound to its current evidence authority")
+            if (normalized_outcome != "success" or
+                    telemetry_receipt.get("events") != [{
+                        "kind": "complete", "sequence": 1}]):
+                raise ValueError(
+                    "Evaluate evidence child artifact requires a successful "
+                    "exact terminal outcome")
+        child_result = _loop_runtime.complete_observed_evaluate_evidence_child(
+            ws, event)
+    except Exception as exc:
+        reason = (
+            "taskplane blocked Evaluate evidence-child completion because "
+            "its exact substantive JSON result could not be sealed "
+            f"({type(exc).__name__}: {exc}).")
+        print(json.dumps({"decision": "block", "reason": reason,
+                          "hookSpecificOutput": {
+                              "hookEventName": "SubagentStop",
+                              "permissionDecision": "deny",
+                              "permissionDecisionReason": reason}}))
+        return 2
+    if child_result is not None:
+        print("{}")
+        return 0
     producer_error = None
     try:
         import loop as _loop_runtime
@@ -2359,15 +2496,19 @@ def _contract_dispatch_intent_id(contract: dict) -> str:
     return str(lifecycle.get("dispatch_intent_id") or "").strip()
 
 
-def _dispatch_usage_observation_required(ws: str, task_id: str) -> bool:
-    """Whether the active loop has one unfinalized usage consumer."""
+def _dispatch_usage_observation_required(
+        ws: str, task_id: str, dispatch_id: str | None = None) -> bool:
+    """Whether the active loop has one exact terminal usage consumer."""
     try:
         import loop as loop_runtime
         state = loop_runtime.load(ws) or {}
         ledger = state.get("dispatch_telemetry") or {}
         return any(
             str(row.get("task_id") or "") == str(task_id) and
-            not row.get("finalized_receipt_fingerprint")
+            (not dispatch_id or
+             str(row.get("dispatch_id") or "") == str(dispatch_id)) and
+            (bool(dispatch_id) or
+             not row.get("finalized_receipt_fingerprint"))
             for row in ledger.get("bindings") or []
             if isinstance(row, dict)
         )
@@ -2491,7 +2632,8 @@ def _seal_terminal_dispatch_telemetry(
     lifecycle = contract.get("worker_lifecycle") or {}
     native_task_name = str(lifecycle.get("expected_task_name") or "").strip()
     dispatch_id = _contract_dispatch_intent_id(contract)
-    if not task_id or not _dispatch_usage_observation_required(ws, task_id):
+    if not task_id or not _dispatch_usage_observation_required(
+            ws, task_id, dispatch_id or None):
         return {"status": "not-bound"}
     import spend as _spend
     transcript = _spend.event_transcript(event)
@@ -2668,7 +2810,8 @@ def _governed_root(cwd: str) -> str:
 
 def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
     """Capture the root native counter on its real main-session hook path."""
-    if "turn_id" not in event:
+    if "turn_id" not in event or event.get("agent_id") or \
+            event.get("agent_type"):
         return
     try:
         import loop as _loop_runtime
@@ -2685,8 +2828,61 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                 snapshot, dict) or total <= 0:
             raise ValueError(str(
                 projection.get("reason") or "native counter is null or zero"))
+        state = _loop_runtime.load(ws) or {}
+        root = state.get("root_hygiene")
+        if isinstance(root, dict) and root.get("status") in {"prepared", "open"}:
+            import host_native as _host_native
+            import native_session_meter as _native_meter
+            import root_seed as _root_seed
+
+            authority = _transcript_projection_authority(ws)
+            if root.get("status") == "prepared":
+                settings = tp._canonical_operational_settings()
+                seed = _root_seed.load_root_seed(
+                    ws, str(root.get("seed_ref") or ""))
+                capability = host_caps.root_session_capability(
+                    _host_capability_snapshot(ws),
+                    settings_digest=settings.digest,
+                    native_snapshot=snapshot, turn_id=event.get("turn_id"))
+                start = _host_native.start_root_session(
+                    capability, seed, run_id=str(seed["run_id"]),
+                    wave_id=str(seed["wave_id"]),
+                    candidate_sha=str(seed["candidate_sha"]),
+                    settings_digest=settings.digest,
+                    session_pseudonym=hashlib.sha256(
+                        authority + str(snapshot.get("session_id") or "").encode()
+                    ).hexdigest(),
+                    started_at=_time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                    issuer_sequence=1, authority=authority)
+                observation = _native_meter.seal_root_observation(
+                    snapshot, sequence=1, session_role="root",
+                    status_receipt_fingerprint=start["fingerprint"],
+                    authority=authority)
+                _loop_runtime.open_delivery_wave(
+                    ws, host_start_receipt=start,
+                    first_observation=observation,
+                    observation_authority=authority)
+            else:
+                prior = (root.get("meter") or {}).get("watermark") or {}
+                if not (
+                    snapshot.get("source_identity_fingerprint") ==
+                        prior.get("source_identity_fingerprint")
+                    and snapshot.get("usage") == prior.get("usage")
+                ):
+                    observation = _native_meter.seal_root_observation(
+                        snapshot,
+                        sequence=int(prior.get("last_sequence") or 0) + 1,
+                        session_role="root",
+                        status_receipt_fingerprint=str(
+                            root.get("host_start_fingerprint") or ""),
+                        authority=authority)
+                    _loop_runtime.record_delivery_root_observation(
+                        ws, observation=observation,
+                        observation_authority=authority)
         _loop_runtime.record_native_orchestrator_snapshot(
-            ws, snapshot=snapshot)
+            ws, snapshot=snapshot,
+            observation_authority=_transcript_projection_authority(ws))
     except Exception as exc:
         # An ungoverned main action still defers to the host. Dispatch and
         # terminal boundaries perform the fail-closed checks; this path keeps
@@ -2709,6 +2905,7 @@ def _screen(a) -> int:
     if not isinstance(event, dict):
         event = {}
     ws = _governed_root(event.get("cwd"))
+    _observe_active_loop_orchestrator(ws, event)
     tool_name = event.get("tool_name", event.get("tool", ""))
     tool_input = event.get("tool_input", {})
     if not isinstance(tool_input, dict):
@@ -2770,7 +2967,6 @@ def _screen(a) -> int:
     contract = (_review_authority["contract"] if _review_authority
                 else tp.load_active_for_event(ws, event))
     if contract is None:
-        _observe_active_loop_orchestrator(ws, event)
         # Distinguish "no contract at all" (ungoverned → ABSTAIN) from
         # "contract file present but unreadable/corrupt" (tamper or breakage
         # → fail CLOSED). A governed workspace whose control plane is
@@ -3424,7 +3620,10 @@ def cmd_loop(a) -> int:
         import depgraph
         try:
             with depgraph.strict_quality():
-                out = loopmod.next_action(ws, rid=getattr(a, "req", None))
+                out = loopmod.next_action(
+                    ws, rid=getattr(a, "req", None),
+                    root_observation_authority=
+                        _transcript_projection_authority(ws))
         except depgraph.GraphQualityDegraded as exc:
             out = {"error": str(exc), "step": "graph-quality"}
     elif action == "submit":
@@ -3469,7 +3668,9 @@ def cmd_loop(a) -> int:
             except Exception:
                 pass                 # audit must never break the gate
     elif action == "wave":
-        out = loopmod.wave(ws)
+        out = loopmod.wave(
+            ws, root_observation_authority=
+                _transcript_projection_authority(ws))
     elif action == "claim":
         out = loopmod.claim(ws, a.task_id, a.agent_workspace)
     elif action == "approve":
@@ -3589,17 +3790,29 @@ def cmd_loop(a) -> int:
 
 
 def _governed_command_request(a) -> dict:
+    from taskplane.settings import SettingsError
+
+    def duration(value, *, setting: str, label: str) -> float:
+        if value is None:
+            value = _effective_settings_snapshot().limits.timeouts[setting]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+                not math.isfinite(float(value)) or float(value) <= 0:
+            raise SettingsError(f"{label} must be finite positive seconds")
+        return float(value)
+
     action = a.command_action
     request = {"authorization": a.authorization}
     if action == "launch":
         argv = list(a.argv)
         if argv[:1] == ["--"]:
             argv = argv[1:]
+        deadline_seconds = duration(
+            getattr(a, "deadline_seconds", None), setting="task_seconds",
+            label="governed command deadline")
         request.update({
             "argv": argv,
             "cwd": getattr(a, "cwd", None),
-            "deadline": (None if getattr(a, "deadline_seconds", None) is None
-                         else _time.time() + float(a.deadline_seconds)),
+            "deadline": _time.time() + deadline_seconds,
             "host": a.host,
             "run_id": a.run_id,
             "task_id": a.task_id,
@@ -3608,7 +3821,12 @@ def _governed_command_request(a) -> dict:
     else:
         request["handle"] = a.handle
         if action == "wait":
-            request.update({"consumer": a.consumer, "timeout": a.timeout})
+            request.update({
+                "consumer": a.consumer,
+                "timeout": duration(
+                    a.timeout, setting="wait_seconds",
+                    label="governed command wait"),
+            })
     return request
 
 
@@ -3619,6 +3837,45 @@ def cmd_command(a) -> int:
         _governed_command_request(a))
     print(json.dumps(out, indent=2))
     return 1 if isinstance(out, dict) and out.get("error") else 0
+
+
+def cmd_root_seed(a) -> int:
+    """Prepare the bounded reference-only seed before a host root starts."""
+    from taskplane import root_seed
+    try:
+        with open(a.request, encoding="utf-8") as handle:
+            body = handle.read(root_seed.MAX_SEED_BYTES + 1)
+        if len(body.encode("utf-8")) > root_seed.MAX_SEED_BYTES:
+            raise root_seed.RootSeedError(
+                "root seed request exceeds the 65536-byte bound")
+        request = json.loads(body)
+        if not isinstance(request, dict) or set(request) != {"context", "inputs"}:
+            raise root_seed.RootSeedError(
+                "root seed request must contain exactly context and inputs")
+        if not isinstance(request["context"], dict):
+            raise root_seed.RootSeedError("root seed context must be an object")
+        settings_snapshot = _effective_settings_snapshot()
+        context = {
+            **request["context"],
+            "settings": settings_snapshot,
+        }
+        receipt = root_seed.prepare_root_seed(
+            _workspace(a.workspace), a.output, context, request["inputs"])
+        persisted_seed = root_seed.load_root_seed(
+            _workspace(a.workspace), a.output)
+        root_seed.verify_prepare_receipt(
+            persisted_seed, receipt, settings=settings_snapshot,
+            expected_seed_ref=a.output)
+    except (OSError, UnicodeError, json.JSONDecodeError,
+            root_seed.RootSeedError) as exc:
+        print(json.dumps({
+            "schema": root_seed.PREPARE_RECEIPT_SCHEMA,
+            "status": "refused",
+            "error": str(exc),
+        }, sort_keys=True, separators=(",", ":")))
+        return 1
+    print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+    return 0
 
 
 def cmd_production_gate(a) -> int:
@@ -3958,8 +4215,7 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
         return None
     step = payload.get("step")
     instruction = payload.get("instruction") or ""
-    from taskplane.settings import load_settings
-    settings_digest = load_settings(environment=os.environ).digest
+    settings_digest = _effective_settings_snapshot().digest
     if step == "execute" and payload.get("parallel") and "wave" in payload:
         entries = payload.get("wave") or []
         if not entries:
@@ -4206,8 +4462,7 @@ def _review_workflow_args(briefs: dict) -> dict:
     digest = briefs.get("settings_digest")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("review dispatch lacks canonical settings digest")
-    from taskplane.settings import load_settings
-    settings = load_settings(environment=os.environ)
+    settings = _effective_settings_snapshot()
     if settings.digest != digest:
         raise ValueError("review dispatch settings changed during composition")
     raw = list(briefs.get("deep") or [])
@@ -6688,8 +6943,7 @@ def _inline_max() -> int:
     retyped. 24k is roughly where a fragment stops being a message and
     starts being a document; TASKPLANE_INLINE_MAX overrides it, and 0
     disables reference mode entirely."""
-    from taskplane.settings import load_settings
-    return load_settings(environment=os.environ).runtime.inline_max_bytes
+    return _effective_settings_snapshot().runtime.inline_max_bytes
 
 
 def cmd_findings(a) -> int:
@@ -7849,13 +8103,50 @@ def _render_engine_error(exc: BaseException, envelope: dict, *,
     return int(envelope["exit_code"])
 
 
+_LIFECYCLE_HOOK_COMMANDS = frozenset({
+    "context", "host-native-check", "screen", "screen-dispatch",
+    "screen-render", "screen-skill", "session-verify", "subagent-start",
+    "subagent-stop",
+})
+
+
+def _unbound_global_hook(argv=None) -> bool:
+    """True when a global plugin hook targets an ungoverned workspace."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] not in _LIFECYCLE_HOOK_COMMANDS:
+        return False
+    if os.environ.get("TASKPLANE_HOOK_PATH") not in ("native", "bridge"):
+        return False
+    workspace = os.getcwd()
+    if os.path.isfile(os.path.join(
+            workspace, ".taskplane", "codex-hook.py")):
+        return False
+    try:
+        common = tp._run([
+            "git", "rev-parse", "--path-format=absolute", "--git-common-dir",
+        ], cwd=workspace)
+    except FileNotFoundError:
+        return True
+    if common.returncode:
+        return True
+    launcher = os.path.realpath(os.path.join(
+        common.stdout.strip(), "..", ".taskplane", "codex-hook.py"))
+    return not os.path.isfile(launcher)
+
+
 def main(argv=None) -> int:
     _utf8_streams()
+    # Plugin hooks are registered globally by the host.  They must be inert
+    # until the workspace has been explicitly onboarded with its local
+    # launcher; otherwise SessionStart contaminates unrelated Codex chats.
+    if _unbound_global_hook(argv):
+        return 0
     # Interpret and authenticate the complete operational policy before CLI
     # construction or any workflow action can create repository state.
     try:
         from taskplane import settings as operational_settings
-        operational_settings.load_settings(environment=os.environ)
+        _set_effective_settings_snapshot(
+            operational_settings.load_settings(environment=os.environ))
     except Exception as exc:
         print(f"taskplane: operational settings are invalid: {exc}",
               file=sys.stderr)
@@ -8755,7 +9046,10 @@ def main(argv=None) -> int:
         "validation sandbox and record its evidence")
     rvv.add_argument("--run-id", required=True, help="active review run")
     rvv.add_argument("--cwd", default=".", help="sandbox-relative working directory")
-    rvv.add_argument("--timeout", type=int, default=600,
+    rvv.add_argument(
+        "--timeout", type=int,
+        default=_effective_settings_snapshot().limits.timeouts[
+            "subprocess_seconds"],
                      help="command timeout in seconds (maximum 1800)")
     rvv.add_argument("command", nargs=argparse.REMAINDER,
                      help="command argv after --; no shell interpretation")
@@ -8840,6 +9134,15 @@ def main(argv=None) -> int:
         "without moving or deleting anything")
     rpm.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rpm.set_defaults(fn=cmd_repository)
+
+    rs = sub.add_parser(
+        "root-seed", help="prepare the reference-only seed before root start")
+    rs.add_argument("--request", required=True,
+                    help="bounded JSON containing context and inputs")
+    rs.add_argument("--output", required=True,
+                    help="workspace-relative root-seed.json destination")
+    rs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    rs.set_defaults(fn=cmd_root_seed)
 
     pg = sub.add_parser(
         "production-gate", help="validate retained Design authority against "

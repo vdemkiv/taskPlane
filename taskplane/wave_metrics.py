@@ -35,6 +35,9 @@ PROJECTION_SCHEMA = "taskplane.wave-metrics-projection/v1"
 TOKEN_USAGE_PROJECTION_SCHEMA = "taskplane.token-usage-summary/v1"
 TERMINAL_EVIDENCE_SCHEMA = "taskplane.terminal-wave-metrics-evidence/v1"
 TERMINAL_RECEIPT_SCHEMA = "taskplane.terminal-wave-metrics-receipt/v1"
+ROOT_HYGIENE_SCHEMA = "taskplane.root-session-hygiene-seal/v1"
+ROOT_HYGIENE_PROJECTION_SCHEMA = \
+    "taskplane.root-session-hygiene-projection/v1"
 
 SOURCE_NAMES = (
     "settings", "ci", "dashboard_publication", "cleanup", "portfolio",
@@ -154,6 +157,127 @@ _PRIVATE_TEXT = re.compile(
 
 class WaveMetricsError(ValueError):
     """Wave metrics are incomplete, cumulative, unsafe, or contradictory."""
+
+
+def finalize_root_hygiene_canary(
+        root: Mapping[str, Any], *, candidate_sha: str,
+        worker_tokens: int) -> dict[str, Any]:
+    """Seal one canonical root/worker/wave receipt without merged totals."""
+    if not isinstance(root, Mapping) or root.get("status") not in {
+            "open", "admissions_closed"}:
+        raise WaveMetricsError("root hygiene requires terminal root evidence")
+    meter_value = root.get("meter")
+    meter: Mapping[str, Any] = meter_value if isinstance(
+        meter_value, Mapping) else {}
+    usage_value = meter.get("usage")
+    usage: Mapping[str, Any] = usage_value if isinstance(
+        usage_value, Mapping) else {}
+    observed = {
+        "turns": meter.get("turns"),
+        "first_observed_input_tokens": meter.get("first_observed_input_tokens"),
+        "peak_context_tokens": meter.get("peak_context_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "cached_input_tokens": usage.get("cached_input_tokens"),
+        "rent_tokens_per_turn": meter.get("context_rent_tokens"),
+    }
+    required: dict[str, int | float] = {}
+    for name, value in observed.items():
+        if value is None or isinstance(value, bool) or not isinstance(
+                value, (int, float)) or value < 0:
+            raise WaveMetricsError(f"root hygiene metric {name} is required")
+        required[name] = value
+    if required["turns"] < 1 or required["first_observed_input_tokens"] < 1:
+        raise WaveMetricsError("root hygiene observed root metrics must be positive")
+    if isinstance(worker_tokens, bool) or not isinstance(worker_tokens, int) or \
+            worker_tokens < 0:
+        raise WaveMetricsError("root hygiene worker total is invalid")
+    root_tokens = int(required["total_tokens"])
+    wave_tokens = root_tokens + worker_tokens
+    applicable = worker_tokens > 0
+    root_share = root_tokens / wave_tokens if applicable and wave_tokens else None
+    comparison = {
+        "applicable": applicable,
+        "root_share": root_share,
+        "wave_tokens": wave_tokens if applicable else None,
+        "reason": None if applicable else "worker-usage-unavailable",
+    }
+    targets = {
+        "first_input": {"outcome": "pass" if required[
+            "first_observed_input_tokens"] <= 40_000 else "miss"},
+        "rent": {"outcome": "pass" if required[
+            "rent_tokens_per_turn"] <= 50_000 else "miss"},
+        "root_total": {"outcome": "pass" if root_tokens <= 40_000_000
+                       else "miss"},
+    }
+    conformance = str(root.get("conformance") or "")
+    override = root.get("override")
+    if conformance not in {"pass", "nonconforming", "overridden"}:
+        raise WaveMetricsError("root hygiene conformance is required")
+    material = {
+        "schema": ROOT_HYGIENE_SCHEMA,
+        "candidate": {"source_sha": str(candidate_sha)},
+        "host": copy.deepcopy(dict(root.get("host") or {})),
+        "root": {"resumed": meter.get("resumed")},
+        "root_hygiene_conformance": conformance,
+        "override": ({"consumed": True, **dict(override)}
+                     if isinstance(override, Mapping) else {"consumed": False}),
+        "canary_eligible": root.get("canary_eligible") is True and
+                           conformance == "pass" and override is None,
+        "metrics": required,
+        "totals": {"root_tokens": root_tokens,
+                   "worker_tokens": worker_tokens,
+                   "wave_tokens": wave_tokens},
+        "targets": targets, "comparison": comparison,
+        "session_pseudonym": str(root.get("session_pseudonym") or ""),
+        "seed_fingerprint": str(root.get("seed_fingerprint") or ""),
+        "host_start_fingerprint": str(
+            root.get("host_start_fingerprint") or ""),
+    }
+    for field in ("session_pseudonym", "seed_fingerprint",
+                  "host_start_fingerprint"):
+        _digest(material[field], f"root hygiene {field}")
+    material["fingerprint"] = content_fingerprint(material)
+    return material
+
+
+def validate_root_hygiene(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Recompute a root seal and reject null, merged, or fabricated fields."""
+    row = _mapping(value, "root hygiene seal")
+    supplied = row.pop("fingerprint", None)
+    if row.get("schema") != ROOT_HYGIENE_SCHEMA or \
+            supplied != content_fingerprint(row):
+        raise WaveMetricsError("root hygiene fingerprint is invalid")
+    totals = _mapping(row.get("totals"), "root hygiene totals")
+    root_tokens = _number(totals.get("root_tokens"), "root hygiene root tokens")
+    worker_tokens = _number(
+        totals.get("worker_tokens"), "root hygiene worker tokens")
+    wave_tokens = _number(totals.get("wave_tokens"), "root hygiene wave tokens")
+    if wave_tokens != root_tokens + worker_tokens:
+        raise WaveMetricsError("root, worker, and wave totals do not reconcile")
+    comparison = _mapping(row.get("comparison"), "root hygiene comparison")
+    if comparison.get("applicable") is False and (
+            comparison.get("root_share") is not None or
+            comparison.get("wave_tokens") is not None or
+            not comparison.get("reason")):
+        raise WaveMetricsError("inapplicable comparison must remain null")
+    return {**row, "fingerprint": supplied}
+
+
+def root_hygiene_projection(
+        value: Mapping[str, Any], *, consumer: str) -> dict[str, Any]:
+    sealed = validate_root_hygiene(value)
+    if consumer not in {"dashboard", "retro", "release", "audit"}:
+        raise WaveMetricsError("unknown root hygiene consumer")
+    return {
+        "schema": ROOT_HYGIENE_PROJECTION_SCHEMA, "consumer": consumer,
+        "receipt_fingerprint": sealed["fingerprint"],
+        "conformance": sealed["root_hygiene_conformance"],
+        "canary_eligible": sealed["canary_eligible"],
+        "metrics": copy.deepcopy(sealed["metrics"]),
+        "totals": copy.deepcopy(sealed["totals"]),
+        "targets": copy.deepcopy(sealed["targets"]),
+        "comparison": copy.deepcopy(sealed["comparison"]),
+    }
 
 
 def _mapping(value: object, label: str) -> dict[str, Any]:

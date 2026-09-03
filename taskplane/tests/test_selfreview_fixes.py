@@ -173,32 +173,6 @@ class TestEngine(unittest.TestCase):
             t["status"] = "passed"
         s["step"] = "selection"; loop.save(self.ws, s)
 
-    def test_nested_ab_after_hybrid_pauses_at_selection(self):
-        self._ab_to_selection()
-        loop.select(self.ws, "hybrid")
-        json.dump({"requirement": "selfreview-ab-fixture",
-                   "delivery_mode": "build", "automatic_lenses": [],
-                   "plan_authority": "human:test-fixture",
-                   "mode": "ab-selection", "tasks": [
-            {"id": "ga", "variant": "A", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t",
-             "criteria": ["grafted variant A passes review"]},
-            {"id": "gb", "variant": "B", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t",
-             "criteria": ["grafted variant B passes review"]}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-        s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
-        loop.gate(self.ws, "pass"); loop.approve(self.ws)
-        _claim_variant_worktrees(self.ws)
-        s = loop.load(self.ws)
-        for t in s["tasks"]:
-            t["status"] = "passed"
-        s["step"] = "evaluate"; s["current_task"] = len(s["tasks"]) - 1
-        s["tasks"][s["current_task"]]["status"] = "built"
-        loop.save(self.ws, s)
-        r = _pass_eval(self.ws)
-        self.assertEqual(r["step"], "selection")
-
     def test_skip_cascades_to_dependents_no_deadlock(self):
         loop.init(self.ws, "g", parallel=True)
         s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)

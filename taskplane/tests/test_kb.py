@@ -70,6 +70,7 @@ class TestKBLoopIntegration(unittest.TestCase):
         import json
         import subprocess
         import loop
+        from tests.root_session_fixture import open_delivery_root
 
         ws = tempfile.mkdtemp()
         os.makedirs(os.path.join(ws, "plan"))
@@ -89,7 +90,9 @@ class TestKBLoopIntegration(unittest.TestCase):
         loop.approve(ws)                                 # records a decision
         self.assertTrue(kb.list_decisions(ws))           # KB has an entry
 
-        act = loop.next_action(ws)                       # execute step
+        authority = open_delivery_root(ws)
+        act = loop.next_action(                          # execute step
+            ws, root_observation_authority=authority)
         self.assertIn("knowledge", act)
         recalled = act["knowledge"]["decisions"]
         self.assertTrue(any(d["title"].startswith("Plan approved")

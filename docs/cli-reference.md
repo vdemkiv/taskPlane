@@ -118,6 +118,7 @@ not repeated in the tables.
 | `tp.py review signoff` | record the human decision for a collected standalone review |
 | `tp.py review start` | establish the facts and activate the read-only contract |
 | `tp.py review validate` | run one argv-only dynamic check inside the registered validation sandbox and record its evidence |
+| `tp.py root-seed` | prepare the reference-only seed before root start |
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
 | `tp.py screen-dispatch` | PreToolUse hook for the Agent tool: verify tier-routed model was passed (inert unless TASKPLANE_ENFORCE_DISPATCH=warn\|strict) |
 | `tp.py screen-render` | PreToolUse hook for the inline-render tool: record that a render RAN, and with which bytes. Observes only — never denies |
@@ -1279,6 +1280,16 @@ Positional arguments:
 | `--cwd` | CWD | sandbox-relative working directory |
 | `--run-id` | RUN_ID (required) | active review run |
 | `--timeout` | TIMEOUT | command timeout in seconds (maximum 1800) |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py root-seed`
+
+prepare the reference-only seed before root start
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--output` | OUTPUT (required) | workspace-relative root-seed.json destination |
+| `--request` | REQUEST (required) | bounded JSON containing context and inputs |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py screen`

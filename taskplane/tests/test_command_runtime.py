@@ -1,5 +1,7 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+import argparse
+import math
 import threading
 
 import pytest
@@ -10,12 +12,43 @@ from taskplane.command_runtime import (
     InvalidTransition,
     InterruptedWait,
 )
+from taskplane import tp
+from taskplane.settings import SettingsError, load_settings
 
 
 @pytest.fixture
 def runtime(tmp_path):
     return CommandRuntime(str(tmp_path / "commands"), workspace="repo-a",
                           authorization="actor-a", clock=lambda: 1000.0)
+
+
+def test_governed_deadline_and_wait_reject_nan_inf_zero_negative_and_default_from_settings(
+        monkeypatch):
+    settings = load_settings()
+    tp._set_effective_settings_snapshot(settings)
+    monkeypatch.setattr(tp._time, "time", lambda: 1000.0)
+
+    launch = argparse.Namespace(
+        command_action="launch", authorization="actor", argv=["echo", "ok"],
+        cwd=None, deadline_seconds=None, host="codex", run_id="run-1",
+        task_id="P10", wave_id="W1")
+    request = tp._governed_command_request(launch)
+    assert request["deadline"] == 1000.0 + \
+        settings.limits.timeouts["task_seconds"]
+
+    wait = argparse.Namespace(
+        command_action="wait", authorization="actor", handle="opaque",
+        consumer="model", timeout=None)
+    request = tp._governed_command_request(wait)
+    assert request["timeout"] == settings.limits.timeouts["wait_seconds"]
+
+    for value in (math.nan, math.inf, -math.inf, 0, -1):
+        launch.deadline_seconds = value
+        with pytest.raises(SettingsError, match="finite positive"):
+            tp._governed_command_request(launch)
+        wait.timeout = value
+        with pytest.raises(SettingsError, match="finite positive"):
+            tp._governed_command_request(wait)
 
 
 def test_silent_command_delivers_only_one_meaningful_terminal_event(runtime):

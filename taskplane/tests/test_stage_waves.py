@@ -3,7 +3,6 @@ import base64
 import contextlib
 import importlib.util
 import io
-import hashlib
 import json
 import os
 import re
@@ -187,16 +186,13 @@ def _stderr_reason(err):
 
 @pytest.fixture(scope="module")
 def rails():
-    """ONE frozen journey (stage_fixture.py), every rail captured per
-    stage: bare Task-path stdout, explicit --emit task, the Codex-env
-    capture (CODEX_HOME + TASKPLANE_WORKFLOWS=1 — Codex must still win),
-    and the --emit workflow capture (opted in). Module-scoped: the journey
-    is real git+loop work; each stage's engine payload is produced once,
-    then replayed through the real CLI emitter on the other rails. This
-    keeps the parity boundary honest: rendering a payload must not mint
-    three extra ReviewKernel runs, dispatch intents, or signed leases merely
-    so the test can compare transport choices. The captures are immutable
-    strings.
+    """Capture every transport rail from one payload per delivery stage.
+
+    Execute uses the real two-task wave. Evaluate and Fix use minimal current
+    engine payloads because this module owns transport compilation, not graph
+    quality, evaluator evidence, or failure routing; those have dedicated
+    end-to-end suites. Replaying one payload keeps transport assertions from
+    minting extra dispatches or timing data merely to compare routing.
 
     Env is managed by hand (not monkeypatch) because the fixture outlives
     any single test's autouse TASKPLANE_HOME patch."""
@@ -211,14 +207,20 @@ def rails():
         ws = stage_fixture.build_repo(tempfile.mkdtemp(prefix="tp-stage-ws-"))
         caps = {}
 
-        def grab(stage):
+        def grab(stage, supplied=None):
             expected_trace = []
             available = cli.workflow_available(ws)
-            bare = stage_fixture.capture_stage(ws, stage)
-            expected_trace.append(("task", available["reason"]))
-            frozen = json.loads(bare)
             producer_name = "wave" if stage == "execute" else "next_action"
             producer = getattr(loop, producer_name)
+            if supplied is not None:
+                setattr(loop, producer_name,
+                        lambda *_args, **_kwargs: json.loads(json.dumps(supplied)))
+            try:
+                bare = stage_fixture.capture_stage(ws, stage)
+            finally:
+                setattr(loop, producer_name, producer)
+            expected_trace.append(("task", available["reason"]))
+            frozen = json.loads(bare)
 
             def replay(*_args, **_kwargs):
                 return json.loads(json.dumps(frozen))
@@ -249,11 +251,23 @@ def rails():
 
         stage_fixture.start_loop(ws)
         grab("execute")
-        stage_fixture.build_task(ws, "t1", "alpha")
-        stage_fixture.build_task(ws, "t2", "beta")
-        grab("evaluate")
-        stage_fixture.to_fix_step(ws)
-        grab("fix")
+        settings_digest = cli._effective_settings_snapshot().digest
+        task = {"id": "t1", "workspace": os.path.join(ws, ".tp-work", "t1")}
+        delivery = {
+            "mode": "inline",
+            "artifacts": {
+                name: {"status": "available", "path": f"dashboard.{name}"}
+                for name in ("json", "markdown")},
+        }
+        for stage in ("evaluate", "fix"):
+            grab(stage, {
+                "step": stage, "task": task,
+                "settings_digest": settings_digest,
+                "instruction": "Run the assigned work, then `loop submit "
+                               "pass|fail`. The orchestrator alone runs the "
+                               "matching `loop gate`.",
+                "dashboard": {"delivery": delivery},
+            })
         yield {"ws": ws, "caps": caps,
                # resolved WHILE the journey's TASKPLANE_HOME is in effect
                "store": stage_fixture.store_root(ws)}
@@ -622,553 +636,6 @@ def test_double_submit_same_outcome_is_a_noop(tmp_path, monkeypatch):
     assert loop.load(ws)["step"] == "execute"
 
 
-# ---------------------------- every gate reachable WITHOUT workflows
-
-
-def _walk_repo(tmp: str) -> str:
-    import subprocess
-    ws = os.path.join(tmp, "walk")
-    os.makedirs(os.path.join(ws, "src", "core"))
-    with open(os.path.join(ws, "src", "core", "a.py"), "w", encoding="utf-8") as f:
-        f.write("VALUE = 1\n")
-    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "init"]):
-        subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
-                        *args], cwd=ws, check=True, capture_output=True)
-    return ws
-
-
-def _walk_design_contract(ws, req, monkeypatch):
-    """A minimal COMPLETE Design Contract (the test_design_workflow.py
-    recipe) so the design gate + human approval are reachable."""
-    import depgraph
-    import design_contract as dc
-    fp = (depgraph.load(ws).get("meta") or {}).get("content_fingerprint")
-    contract = {
-        "schema": "taskplane.design/v1",
-        "requirement": req["id"],
-        "title": "Governed walk design",
-        "summary": "Walk every gate on the dispatch rail.",
-        "current_state": {"summary": "Serial loop over one module.",
-                          "sources": ["src/core/a.py"]},
-        "alternatives": [
-            {"id": "a", "name": "State", "description": "In-loop design.",
-             "tradeoffs": {"gains": ["one rail"], "costs": ["state grows"],
-                           "revisit_when": "lifecycle splits"}},
-            {"id": "b", "name": "Sidecar", "description": "Outside design.",
-             "tradeoffs": {"gains": ["small loop"], "costs": ["drift"],
-                           "revisit_when": "compat dominates"}}],
-        "selected_approach": "a",
-        "decision": "Optional design phase with explicit approval.",
-        "modules": {"existing": ["taskplane"], "new": ["skills/tp-design"]},
-        "contracts": [{"relation": "provides",
-                       "id": "contract:design-artifact",
-                       "description": "Approved design evidence"}],
-        "graph": {
-            "baseline_fingerprint": fp,
-            "proposed_modules": ["taskplane", "skills/tp-design"],
-            "proposed_edges": [
-                {"from": "skills/tp-design", "to": "taskplane",
-                 "kind": "runtime", "reason": "skill drives the loop"},
-                {"from": "taskplane", "to": "contract:design-artifact",
-                 "kind": "provides", "reason": "engine emits evidence"}],
-            "depth_policy": {"local_depth": 3,
-                             "boundary_mode": "contract-only",
-                             "contract_depth": 1, "requirement_depth": 1},
-            "dor": [{"check": "baseline graph is current", "evidence": fp}],
-            "dod": [{"check": "realized graph matches proposal",
-                     "evidence": "final engineering review"}]},
-        "acceptance_map": [
-            {"criterion": c, "design_element": "design approval gate",
-             "validation": "state-machine regression test",
-             "tests": [
-                 "taskplane/tests/test_stage_waves.py::"
-                 "test_every_gate_reachable_without_workflows",
-             ]}
-            for c in req["acceptance"]],
-        "risks": [{"risk": "state regression", "mitigation": "opt-in",
-                   "owner": "engineering"}],
-        "failure_modes": [{"mode": "evidence changes after approval",
-                           "detection": "fingerprint mismatch",
-                           "recovery": "re-approve"}],
-        "observability": {"signals": ["design gate trace"],
-                          "alerts": ["stale design rejection"]},
-        "rollout": {"strategy": "opt-in flag", "rollback": "init without"},
-        "visualization": {"required": False, "kind": "none", "path": None,
-                          "reason": "doc + graph edge suffice"},
-        "lens_evidence": [],
-        "open_questions": [],
-    }
-    state = loop.load(ws)
-    plan = state["design_team_plan"]
-    authority = plan["host_authority"]
-    artifact_root = loop._run_artifact_root(ws, state)
-    artifact_binding = state["run_artifact_binding"]
-    root_transcript = os.path.join(
-        ws, ".taskplane", "test-transcripts", "orchestrator.jsonl")
-    os.makedirs(os.path.dirname(root_transcript), exist_ok=True)
-    with open(root_transcript, "w", encoding="utf-8") as stream:
-        stream.write(json.dumps({
-            "timestamp": "2026-09-01T00:00:00Z",
-            "type": "session_meta",
-            "payload": {"session_id": "stage-walk-root",
-                        "id": "stage-walk-root",
-                        "timestamp": "2026-09-01T00:00:00Z",
-                        "thread_source": "root"},
-        }) + "\n")
-        stream.write(json.dumps({
-            "timestamp": "2026-09-01T00:00:01Z", "ordinal": 1,
-            "type": "event_msg", "payload": {"type": "token_count",
-            "info": {"total_token_usage": {
-                "input_tokens": 10, "cached_input_tokens": 4,
-                "output_tokens": 2, "reasoning_output_tokens": 0,
-                "total_tokens": 12}}},
-        }) + "\n")
-    for index, worker in enumerate(plan["workers"], start=1):
-        expectation = tp_lite.peek_expectation(
-            ws, worker["task_name"], strict=True)
-        assert expectation is not None
-        hook_event = {
-            "cwd": ws,
-            "transcript_path": root_transcript,
-            "tool_input": {
-                "task_name": worker["task_name"],
-                "model": worker["model"],
-                "reasoning_effort": worker["reasoning_effort"],
-                "fork_turns": "none",
-                "message": worker["role_marker"],
-            },
-        }
-        hook_output = io.StringIO()
-        with monkeypatch.context() as hook:
-            hook.setenv("TASKPLANE_ENFORCE_DISPATCH", "strict")
-            hook.setattr(cli.sys, "stdin", io.StringIO(json.dumps(hook_event)))
-            with contextlib.redirect_stdout(hook_output):
-                assert cli.cmd_screen_dispatch(None) == 0
-        emitted = [json.loads(line) for line in hook_output.getvalue().splitlines()
-                   if line.strip()]
-        assert not any(
-            (row.get("hookSpecificOutput") or {}).get(
-                "permissionDecision") == "deny"
-            for row in emitted
-        ), emitted
-        telemetry = loop.load(ws)["dispatch_telemetry"]
-        observed = next(
-            row for row in telemetry["bindings"]
-            if row["dispatch_id"] == expectation["intent_id"])
-        assert observed["thread_type"] == "lens"
-        assert observed["task_id"] == worker["lens"]
-        worker_contract = tp_lite.build_contract(
-            f"DESIGN LENS: {worker['lens']}", read_only=True,
-            write_allow=[worker["output"]], tools=["Read", "Write"])
-        worker_contract["task_id"] = worker["task_slot"]
-        worker_contract = tp_lite.prepare_worker_contract(
-            ws, worker_contract, stage="design-lens", task=worker["lens"],
-            task_name=worker["task_name"], role_marker=worker["role_marker"])
-        worker_contract = tp_lite.attach_design_lens_host_authority(
-            worker_contract, authority["workers"][worker["lens"]],
-            artifact_root=artifact_root, artifact_binding=artifact_binding)
-        tp_lite.activate(
-            ws, worker_contract, snapshot=tp_lite.git_head(ws),
-            task_slot_override=worker["task_slot"])
-        event = {
-            "hook_event_name": "SubagentStart", "cwd": ws,
-            "session_id": f"stage-walk-design-session-{index}",
-            "agent_id": f"stage-walk-design-agent-{index}",
-            "agent_type": worker["task_name"],
-            "task_name": worker["task_name"],
-            "turn_id": f"stage-walk-design-turn-{index}",
-        }
-        start_output = io.StringIO()
-        with monkeypatch.context() as hook:
-            hook.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
-            with contextlib.redirect_stdout(start_output):
-                assert cli.cmd_subagent_start(None) == 0
-        assert "permissionDecision\": \"deny" not in start_output.getvalue()
-        result = {
-            "schema": "taskplane.design-lens-result/v1",
-            "lens": worker["lens"],
-            "worker_identity": worker["task_name"],
-            "team_plan_fingerprint": plan["fingerprint"],
-            "candidate_fingerprint": plan["candidate_fingerprint"],
-            "outcome": "pass", "findings": [],
-        }
-        result["fingerprint"] = hashlib.sha256(json.dumps(
-            result, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
-        result_path = os.path.join(ws, worker["output"])
-        os.makedirs(os.path.dirname(result_path), exist_ok=True)
-        with open(result_path, "w", encoding="utf-8") as stream:
-            json.dump(result, stream)
-        transcript = os.path.join(
-            ws, ".taskplane", "test-transcripts", f"design-{index}.jsonl")
-        os.makedirs(os.path.dirname(transcript), exist_ok=True)
-        with open(transcript, "w", encoding="utf-8") as stream:
-            stream.write(json.dumps({
-                "timestamp": "2026-09-01T00:00:00Z",
-                "type": "session_meta",
-                "payload": {
-                    "session_id": f"stage-walk-design-session-{index}",
-                    "id": f"stage-walk-design-session-{index}",
-                    "timestamp": "2026-09-01T00:00:00Z",
-                    "thread_source": "subagent",
-                },
-            }) + "\n")
-            stream.write(json.dumps({
-                "timestamp": "2026-09-01T00:00:01Z",
-                "ordinal": 1,
-                "type": "event_msg",
-                "payload": {"type": "token_count", "info": {
-                    "total_token_usage": {
-                        "input_tokens": 10,
-                        "cached_input_tokens": 4,
-                        "output_tokens": 2,
-                        "reasoning_output_tokens": 0,
-                        "total_tokens": 12,
-                    }}},
-            }) + "\n")
-        stop_event = {
-            **event, "hook_event_name": "SubagentStop",
-            "outcome": "success", "agent_transcript_path": transcript,
-        }
-        stop_output = io.StringIO()
-        with monkeypatch.context() as hook:
-            hook.setattr(cli.sys, "stdin", io.StringIO(json.dumps(stop_event)))
-            with contextlib.redirect_stdout(stop_output):
-                assert cli.cmd_subagent_stop(None) == 0
-        assert "permissionDecision\": \"deny" not in stop_output.getvalue()
-        terminal = next(
-            row for row in loop.load(ws)["dispatch_telemetry"]["dispatches"]
-            if row["dispatch_id"] == expectation["intent_id"])
-        assert terminal["thread_type"] == "lens"
-        assert terminal["events"][-1]["kind"] == "complete"
-        assert terminal["total_tokens"] == 12
-        contract["lens_evidence"].append({
-            "lens": worker["lens"], "verdict": "pass", "blockers": 0,
-            "evidence": "the assigned Design concern was checked",
-            "produced_by": worker["task_name"], "independent": True,
-        })
-    os.makedirs(os.path.join(ws, "design"), exist_ok=True)
-    with open(os.path.join(ws, "design", "design.md"), "w", encoding="utf-8") as f:
-        f.write("# Governed walk\n\nOptional design phase.\n")
-    content_fingerprint = dc.design_content_fingerprint(ws, contract)
-    for evidence in contract["lens_evidence"]:
-        evidence["content_fingerprint"] = content_fingerprint
-    with open(os.path.join(ws, "design", "contract.json"), "w", encoding="utf-8") as f:
-        json.dump(contract, f, indent=2)
-    return contract
-
-
-def _author_kernel_results(ws):
-    import review
-    import review_evidence
-    kernel = review._load_state(ws)
-    store = review_evidence.ArtifactStore(ws)
-    for index, slot in enumerate(kernel["slots"]):
-        lease = store.read(slot["lease"])
-        brief = store.read(slot["brief"])
-        row = {**lease, "schema": "taskplane.lens-slot-output/v2",
-               "authored_by": "lens-slot", "findings": [],
-               "lens_results": [{"lens": lens_id, "verdict": "pass",
-                                  "blockers": 0,
-                                  "checked_evidence": [{
-                                      "file": "taskplane/review.py",
-                                      "line": 1,
-                                      "claim": "review kernel contract checked",
-                                  }]}
-                                for lens_id in lease["lens_ids"]]}
-        if brief.get("language_references"):
-            row["references_applied"] = list(brief["language_references"])
-        producer = brief["producer_contract"]
-        content = json.dumps(row, sort_keys=True, separators=(",", ":"))
-        # One observed child may own only one immutable lease. Evaluate and
-        # final engineering review create distinct runs in this same test
-        # workspace, so bind the synthetic hook identity to the run as the
-        # real dispatcher does.
-        event = {"session_id": f"stage-lens-session-{kernel['run_id']}",
-                 "agent_id":
-                     f"stage-lens-child-{kernel['run_id'][:8]}-{index}",
-                 "tool_name": "Write",
-                 "tool_input": {"file_path": slot["result_path"],
-                                "content": content}}
-        contract = {"task": producer["task"], "task_id": "stage-lens",
-                    "read_only": True,
-                    "write_allow": producer["write_allow"]}
-        review.register_slot_producer(
-            ws, event=event, contract=contract,
-            task_slot=producer["task_slot"])
-        review.record_slot_write_observation(
-            ws, event=event, contract=contract,
-            task_slot=producer["task_slot"])
-        path = os.path.join(ws, slot["result_path"])
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-
-def _walk_pass_eval(ws):
-    import depgraph
-    import review
-    state = loop.load(ws)
-    task = state["tasks"][state["current_task"]]
-    act_ws = task.get("workspace") or ws
-    # The evaluator must disposition the exact ReviewKernel route that was
-    # dispatched. Re-deriving from the live diff can legitimately see an
-    # empty tree after execute evidence is committed while the kernel still
-    # carries its bounded automatic sweep.
-    kernel = review._load_state(act_ws)
-    routed_lenses = sorted({
-        lens_id
-        for slot in (kernel.get("slots") or [])
-        for lens_id in (slot.get("lens_ids") or [])
-    })
-    criteria = loop._criteria_for(ws, state, task)
-    os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
-    graph_dod = loop._task_graph_dod(ws, state, task)
-    impact = graph_dod.get("impact") or {}
-    direct = sorted({e.get("module")
-                     for e in (impact.get("impacted") or {}).get(1, [])
-                     if e.get("module")
-                     and not str(e.get("module")).startswith("req:")})
-    contracts = [c.get("id") if isinstance(c, dict) else c
-                 for c in (task.get("contracts") or [])]
-    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v2",
-                   "task": task["id"],
-                   "requirement": task.get("req") or
-                                  state.get("requirement_id") or "",
-                   "verdict": "pass",
-                   "evaluation": {"status": "complete",
-                                  "reason_code": "none", "detail": ""},
-                   "criteria": [{"criterion": c, "status": "met",
-                                 "evidence": "verified by test"}
-                                for c in criteria],
-                   "graph": {"dispositions": [
-                       {"node": n, "status": "tested",
-                        "evidence": "covered by declared task tests"}
-                       for n in direct],
-                       "requirements_checked": [],
-                       "contracts_checked": contracts},
-                   "failures": []}, f)
-    _author_kernel_results(act_ws)
-    submitted = loop.submit(ws, "pass")
-    assert submitted.get("submitted"), submitted
-    gated = loop.gate(ws, "pass")
-    assert gated.get("step") == "em", gated
-    return gated
-
-
-def _walk_collect_observed_evaluate(ws, act_ws, state, task, *,
-                                    step="evaluate"):
-    """Model the external host adapter for this compatibility-only walk."""
-    from producer_observation import (
-        consume_matching_observation,
-        record_codex_subagent_stop,
-    )
-    worker = tp_lite.worker_contract_for_stage(
-        act_ws, stage=step, task=str(task["id"]))
-    active_contract = worker.get("contract") if worker else None
-    material = loop.producer_output_identity(
-        act_ws, state, task, step,
-        active_contract=active_contract or {})
-    if step == "em":
-        return consume_matching_observation(**material)
-    import evaluation_output
-    binding = loop.review_kernel_binding(state, "evaluate", task)
-    kernel_ws = str(binding.get("workspace") or act_ws)
-    run_id = binding["run_id"]
-    event = {"hook_event_name": "SubagentStop",
-             "session_id": "stage-wave-compat-session",
-             "turn_id": f"evaluate-{run_id}",
-             "agent_id": f"evaluate-{run_id}",
-             "agent_type": material["producer_dispatch"]["task_name"],
-             "task_name": material["producer_dispatch"]["task_name"]}
-    claim = hashlib.sha256(tp_lite.hook_event_identity(
-        act_ws, "subagent-stop", event).encode("utf-8")).hexdigest()
-    record_codex_subagent_stop(
-        event=event, hook_claim_id=claim, **material)
-    observation = consume_matching_observation(**material)
-    loop.collect_review_bridge(
-        kernel_ws, publish=False, run_id=run_id,
-        evaluator_result=evaluation_output.validate_evaluator_value(
-            json.loads(material["output_bytes"])),
-        producer_observation_fingerprint=observation["fingerprint"],
-    )
-    return observation
-
-
-def _walk_pass_em(ws, state):
-    import depgraph
-    import lens
-    import review
-    import review_evidence
-    # realize the designed edges so the as-built graph carries the designed
-    # modules (the reviewer's evidence must match reality)
-    depgraph.record_edge(ws, "skills/tp-design", "taskplane", kind="runtime")
-    depgraph.record_edge(ws, "taskplane", "contract:design-artifact",
-                         kind="provides")
-    # Author one result per immutable lease, then let the production collect
-    # path validate provenance and create the single canonical revision.
-    kernel = review._load_state(ws)
-    store = review_evidence.ArtifactStore(ws)
-    _author_kernel_results(ws)
-    if kernel.get("status") == "complete" and kernel.get("slots") == []:
-        collected = kernel
-    else:
-        collected = review.collect_review(ws, publish=False)
-    assert collected["status"] == "complete"
-    changed = [f for f in loop._diff_files(
-        ws, state.get("baseline") or "HEAD")
-        if not f.startswith(lens.LOOP_OWNED)]
-    impact = depgraph.impact(ws, changed)
-    findings_path = os.path.join(ws, ".em-review", "findings.json")
-    with open(findings_path, encoding="utf-8") as f:
-        findings = json.load(f)
-    meta = {**findings["meta"], "impact": impact, "tests": ["true"],
-            "gate": {"verdict": "recommend-pass"},
-            "design": {
-                "fingerprint": state["design_fingerprint"],
-                "verdict": "conformant",
-                "modules_checked": ["taskplane", "skills/tp-design"],
-                "edges_checked": [
-                    "skills/tp-design->taskplane:runtime",
-                    "taskplane->contract:design-artifact:provides"],
-                "contracts_checked": ["contract:design-artifact"],
-                "edge_evidence": [
-                    {"edge": "taskplane->contract:design-artifact:provides",
-                     "evidence": "design approval emits the artifact; "
-                                 "regression test passes",
-                     "declared_by": "reviewer — hand-recorded edge"}],
-                "drift": []}}
-    with open(findings_path, "w", encoding="utf-8") as f:
-        json.dump({"meta": meta, "findings": findings["findings"]}, f)
-    from producer_observation import record_codex_subagent_stop
-    current = loop.load(ws)
-    task = loop._current_task(current)
-    worker = tp_lite.worker_contract_for_stage(
-        ws, stage="em", task=str(task["id"]))
-    material = loop.producer_output_identity(
-        ws, current, task, "em",
-        active_contract=(worker or {}).get("contract") or {})
-    event = {"hook_event_name": "SubagentStop",
-             "session_id": "stage-wave-compat-session",
-             "turn_id": "em-turn", "agent_id": "em-agent",
-             "agent_type": material["producer_dispatch"]["task_name"],
-             "task_name": material["producer_dispatch"]["task_name"]}
-    claim = hashlib.sha256(tp_lite.hook_event_identity(
-        ws, "subagent-stop", event).encode("utf-8")).hexdigest()
-    record_codex_subagent_stop(
-        event=event, hook_claim_id=claim, **material)
-    submitted = loop.submit(ws, "pass")
-    assert submitted.get("submitted"), submitted
-    return loop.gate(ws, "pass")
-
-
-def test_every_gate_reachable_without_workflows(tmp_path, monkeypatch):
-    """R-0004 adversarial walk: with the org kill-switch DOWN
-    (TASKPLANE_WORKFLOWS=0) the FULL journey — init→pm→design→plan→
-    execute→evaluate→em→signoff→retro — reaches every gate via the dispatch
-    rail alone, and no CLI dispatch surface ever prints a workflow key.
-    Zero workflow coupling on the mandatory path."""
-    import depgraph
-    import requirements as reqs
-    _clean_env(monkeypatch)
-    monkeypatch.setenv("TASKPLANE_WORKFLOWS", "0")
-    # A real host supplies this receipt out-of-band.  This transport test
-    # installs an equally strict recorded-host adapter; the production
-    # no-receipt selector remains fail-closed and is exercised separately.
-    monkeypatch.setattr(
-        loop, "_collect_zero_lens_evaluate_before_guidance",
-        _walk_collect_observed_evaluate)
-    assert cli.workflow_available(".")["available"] is False
-    ws = _walk_repo(str(tmp_path))
-    req = reqs.record_requirement(
-        ws, "governed walk", functional=["walk every gate"],
-        nfr={"reliability": "every governed gate remains reachable",
-             "security": "workflow disablement never weakens a gate",
-             "architecture": "dispatch remains independent of workflows"},
-        acceptance=["every gate is reachable via dispatch",
-                    "no step depends on a workflow runtime"],
-        contracts=[{"relation": "provides",
-                    "id": "contract:design-artifact"}],
-        context_files=["src/core/**"])
-    depgraph.scan(ws)
-
-    def nxt(expect_step):
-        rc, out = stage_fixture.cli("loop", "--workspace", ws, "next")
-        assert rc == 0, out
-        payload = json.loads(out)
-        action = payload.get("current_action", payload)
-        assert action.get("step") == expect_step, payload
-        for key in ("dispatch_path", "workflow"):
-            assert key not in payload, (expect_step, key)
-            assert key not in action, (expect_step, key)
-        return action
-
-    loop.init(ws, "governed walk", requirement_id=req["id"], design=True)
-    nxt("pm")
-    assert loop.gate(ws, "pass").get("step") != "pm"          # pm gate
-    assert loop.load(ws)["step"] == "design"
-    nxt("design")
-    _walk_design_contract(ws, req, monkeypatch)
-    assert loop.gate(ws, "pass")["step"] == "design_approval"  # design gate
-    assert nxt("design_approval")["paused"]                    # human gate
-    assert loop.approve(ws, by="human — walk")["step"] == "plan"
-    nxt("plan")
-    state = loop.load(ws)
-    tasks = [{"id": "t1", "scope": ["src/core/**"], "tests": "true",
-              "req": req["id"], "criteria": list(req["acceptance"]),
-              "contracts": ["contract:design-artifact"],
-              "new_modules": ["skills/tp-design", "taskplane"],
-              "design_edges": [
-                  "skills/tp-design->taskplane:runtime",
-                  "taskplane->contract:design-artifact:provides"],
-              "impact_policy": {"local_depth": 3,
-                                "boundary_mode": "contract-only",
-                                "contract_depth": 1,
-                                "requirement_depth": 1}}]
-    os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
-    with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
-        json.dump({"requirement": req["id"], "delivery_mode": "build",
-                   "automatic_lenses": [],
-                   "plan_authority": "human:walk", "tasks": tasks},
-                  f, indent=2)
-    with open(os.path.join(ws, "plan", "plan.md"), "w", encoding="utf-8") as f:
-        f.write("# Plan\n\nOne task realizes the approved design.\n")
-    assert loop.gate(ws, "pass")["step"] == "plan_approval"    # plan gate
-    assert nxt("plan_approval")["paused"]                      # human gate
-    assert loop.approve(ws, by="human — walk")["step"] == "execute"
-    # commit the earlier steps' authored artifacts (design/plan) so the
-    # execute contract's scope diff starts clean — the engine's own
-    # documented recovery for artifacts authored by earlier loop steps
-    stage_fixture._git(ws, "add", "-A")
-    stage_fixture._git(ws, "commit", "-qm", "design + plan artifacts")
-    nxt("execute")                                     # stage dispatch
-    assert loop.submit(ws, "pass")["submitted"]
-    assert loop.gate(ws, "pass")["step"] == "evaluate"         # execute gate
-    evaluate_action = nxt("evaluate")                  # stage dispatch
-    evaluate_state = loop.load(ws)
-    evaluate_binding = loop.review_kernel_binding(
-        evaluate_state, "evaluate", loop._current_task(evaluate_state))
-    assert evaluate_binding["run_id"] == \
-        evaluate_action["review_kernel"]["run_id"]
-    assert _walk_pass_eval(ws)["step"] == "em"                 # evaluate gate
-    nxt("em")
-    assert _walk_pass_em(ws, loop.load(ws))["step"] == "signoff"  # em gate
-    assert nxt("signoff")["paused"]                            # human gate
-    assert loop.approve(ws, by="human — walk")["step"] == "retro"
-    retro = loop.retro(ws)
-    assert retro.get("graph_true_up", {}).get("content_fingerprint"), retro
-    assert loop.load(ws)["step"] == "done"
-    # every stage_dispatch_path choice on this walk was the task rail,
-    # forced by the kill-switch
-    evs = _trace_events(ws, "stage_dispatch_path")
-    assert evs, "the stage dispatches must be traced"
-    disabled_reason = cli.workflow_available(ws)["reason"]
-    for e in evs:
-        _assert_audit_value(e, "path", "task")
-        _assert_audit_value(e, "reason", disabled_reason)
-
-
 # =====================================================================
 # A6 (R-0007) — malformed wave entries degrade to the Task path
 # E5 (R-0011) — un-slottable ids refuse emission at compose time
@@ -1206,7 +673,7 @@ class TestMalformedWaveEntryFailOpen:
         return stage_fixture.build_repo(str(tmp_path))
 
     def _run_with_payload(self, ws, payload, monkeypatch, *extra):
-        monkeypatch.setattr(loop, "wave", lambda _ws: payload)
+        monkeypatch.setattr(loop, "wave", lambda _ws, **_kwargs: payload)
         return _loop_cli(ws, "wave", *extra)
 
     def test_missing_task_id_degrades_to_task_path_stdout(self, ws,
@@ -1261,7 +728,7 @@ class TestMalformedWaveEntryFailOpen:
         payload = {"step": "evaluate", "instruction": "x",
                    "task": {"workspace": "w1"}}
         monkeypatch.setattr(loop, "next_action",
-                            lambda _ws, rid=None: payload)
+                            lambda _ws, rid=None, **_kwargs: payload)
         _clean_env(monkeypatch)
         rc, out, _ = _loop_cli(ws, "next")
         assert rc == 0
@@ -1307,7 +774,8 @@ class TestSlotCharsetRefusalAtEmission:
             self, ws, monkeypatch):
         monkeypatch.setenv("TASKPLANE_WORKFLOWS", "1")   # workflow-capable
         monkeypatch.setattr(loop, "wave",
-                            lambda _ws: self._wave_with_id("t1;rm"))
+                            lambda _ws, **_kwargs:
+                            self._wave_with_id("t1;rm"))
         rc, out, err = _loop_cli(ws, "wave")             # default auto
         assert rc != 0
         assert out == ""                       # nothing composed, no payload
@@ -1325,7 +793,8 @@ class TestSlotCharsetRefusalAtEmission:
                                                               monkeypatch):
         monkeypatch.setenv("TASKPLANE_WORKFLOWS", "1")
         monkeypatch.setattr(loop, "wave",
-                            lambda _ws: self._wave_with_id("$(evil)"))
+                            lambda _ws, **_kwargs:
+                            self._wave_with_id("$(evil)"))
         rc, out, err = _loop_cli(ws, "wave", "--emit", "workflow")
         assert rc != 0
         assert out == ""
@@ -1339,7 +808,7 @@ class TestSlotCharsetRefusalAtEmission:
         payload = {"step": "fix", "instruction": "x",
                    "task": {"id": "t 1", "workspace": "w"}}
         monkeypatch.setattr(loop, "next_action",
-                            lambda _ws, rid=None: payload)
+                            lambda _ws, rid=None, **_kwargs: payload)
         rc, out, err = _loop_cli(ws, "next")
         assert rc != 0 and out == ""
         assert "t 1" in err
@@ -1383,7 +852,8 @@ class TestSlotCharsetNeverDeniesTheTaskPath:
 
     def _run_next(self, ws, monkeypatch, tid, *argv):
         monkeypatch.setattr(loop, "next_action",
-                            lambda _ws, rid=None: self._payload(tid))
+                            lambda _ws, rid=None, **_kwargs:
+                            self._payload(tid))
         return _loop_cli(ws, "next", *argv)
 
     def test_task_path_emits_normally_for_a_bad_id_on_a_codex_host(

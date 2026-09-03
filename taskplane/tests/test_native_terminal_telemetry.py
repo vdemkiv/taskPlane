@@ -10,6 +10,8 @@ import os
 import pytest
 
 from taskplane import dispatch_telemetry
+from taskplane import native_session_meter
+from taskplane import settings as operational_settings
 from taskplane import host_native
 from taskplane import loop
 from taskplane import retro
@@ -203,6 +205,436 @@ def _bound_attempt(workspace: str, expected: dict) -> dict:
     return next(
         row for row in loop.load(workspace)["dispatch_telemetry"]["bindings"]
         if row["dispatch_id"] == expected["intent_id"])
+
+
+class _Clock:
+    def __init__(self, now: float = 20.0) -> None:
+        self.now = now
+
+    def wall_time(self) -> float:
+        return self.now
+
+
+def _usage(total: int, *, cached: int = 0, output: int = 0) -> dict:
+    input_tokens = total - output
+    return {
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached,
+        "uncached_input_tokens": input_tokens - cached,
+        "output_tokens": output,
+        "reasoning_tokens": 0,
+        "total_tokens": total,
+    }
+
+
+def _dispatch(dispatch_id: str, *, thread_type: str = "worker") -> dict:
+    return {
+        "dispatch_id": dispatch_id,
+        "thread_id": f"thread-{dispatch_id}",
+        "thread_type": thread_type,
+        "task_id": dispatch_id,
+        "dependencies": [],
+        "shared_owner": None,
+        "started_at": 10,
+        "ended_at": 10,
+        "wait_duration_seconds": 0,
+        "correction_count": 0,
+        "events": [],
+    }
+
+
+def _ledger() -> dict:
+    return dispatch_telemetry.new_ledger(
+        run_id=RUN_ID, source_sha=SOURCE_SHA,
+        design_fingerprint=DESIGN_FINGERPRINT,
+        plan_fingerprint=PLAN_FINGERPRINT, started_at=10)
+
+
+def _root_meter(total: int, *, authority: bytes,
+                terminal_reason: str | None = None,
+                prior: dict | None = None, sequence: int = 1) -> dict:
+    usage = _usage(total, cached=min(total, 4), output=0)
+    snapshot = {
+        "schema": native_session_meter.SNAPSHOT_SCHEMA,
+        "session_id": "root-session",
+        "root_session_id": "root-session",
+        "parent_session_id": None,
+        "thread_source": "agent_created_thread",
+        "agent_path": None,
+        "started_at": "2026-09-02T00:00:00Z",
+        "resumed": False,
+        "ordinal": sequence,
+        "observed_at": "2026-09-02T00:00:01Z",
+        "usage": usage,
+        "source": {
+            "path_fingerprint": "e" * 64, "device": 1, "inode": 2,
+            "size": 3, "metadata_record_sha256": "f" * 64,
+            "counter_record_sha256": "0" * 64,
+        },
+        "source_identity_fingerprint": "1" * 64,
+    }
+    snapshot["fingerprint"] = native_session_meter.fingerprint(snapshot)
+    sealed = native_session_meter.seal_root_observation(
+        snapshot, sequence=sequence, session_role="root",
+        status_receipt_fingerprint="2" * 64,
+        terminal_reason=terminal_reason, authority=authority)
+    return native_session_meter.fold_root_observations(
+        [sealed], authority=authority,
+        prior=prior["watermark"] if prior is not None else None)
+
+
+def _configure_root(ledger: dict):
+    snapshot = operational_settings.load_settings()
+    dispatch_telemetry.configure_root_admission(
+        ledger,
+        root_session_settings=snapshot.workflow.root_session.to_dict(),
+        settings_digest=snapshot.digest)
+    return snapshot
+
+
+def test_real_codex_and_claude_usage_is_positive_delta_from_authenticated_baseline_and_is_consumed(
+        tmp_path) -> None:
+    ledger = _ledger()
+    codex_path = tmp_path / "codex.jsonl"
+    _write_codex_transcript(
+        codex_path, label="root", input_tokens=90,
+        cached_tokens=20, output_tokens=10)
+    codex_baseline, _ = dispatch_telemetry.project_transcript_usage(
+        str(codex_path), provider="codex")
+    _write_codex_transcript(
+        codex_path, label="root", input_tokens=130,
+        cached_tokens=30, output_tokens=15)
+    codex_current, _ = dispatch_telemetry.project_transcript_usage(
+        str(codex_path), provider="codex")
+
+    claude_path = tmp_path / "claude.jsonl"
+    claude_rows = [{"id": "baseline", "usage": {
+        "input_tokens": 100, "cache_read_input_tokens": 20,
+        "cache_creation_input_tokens": 0, "output_tokens": 10}}]
+    claude_path.write_text(
+        json.dumps(claude_rows[0]) + "\n", encoding="utf-8")
+    claude_baseline, checkpoint = \
+        dispatch_telemetry.project_transcript_usage(
+            str(claude_path), provider="claude")
+    claude_rows.append({"id": "delta", "usage": {
+        "input_tokens": 40, "cache_read_input_tokens": 10,
+        "cache_creation_input_tokens": 0, "output_tokens": 10}})
+    claude_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in claude_rows),
+        encoding="utf-8")
+    claude_current, _ = dispatch_telemetry.project_transcript_usage(
+        str(claude_path), provider="claude", checkpoint=checkpoint)
+
+    observed_total = 0
+    for provider, baseline_projection, current_projection in (
+            ("codex", codex_baseline, codex_current),
+            ("claude", claude_baseline, claude_current)):
+        assert baseline_projection["status"] == "available"
+        assert current_projection["status"] == "available"
+        source = (baseline_projection.get("source_identity_fingerprint") or
+                  baseline_projection["path_fingerprint"])
+        dispatch_id = f"attempt-{provider}"
+        dispatch_telemetry.bind_dispatch(ledger, _dispatch(dispatch_id))
+        dispatch_telemetry.capture_usage_baseline(
+            ledger, dispatch_id=dispatch_id, provider=provider,
+            usage=baseline_projection["usage"], source_fingerprint=source)
+        observed = dispatch_telemetry.observe_terminal_usage_delta(
+            ledger, dispatch_id=dispatch_id, provider=provider,
+            usage=current_projection["usage"], source_fingerprint=source)
+        expected = (current_projection["usage"]["total_tokens"] -
+                    baseline_projection["usage"]["total_tokens"])
+        assert observed["usage"]["total_tokens"] == expected > 0
+        observed_total += expected
+        finalized = dispatch_telemetry.finalize_usage(
+            ledger, dispatch_id=dispatch_id, ended_at=20,
+            clock=_Clock())
+        assert finalized["receipt"]["total_tokens"] > 0
+
+    budget = dispatch_telemetry.budget_projection(ledger, _Clock())
+    assert budget["usage"]["total_tokens"] == observed_total == 105
+    assert budget["usage_capability"]["status"] == "available"
+
+
+def test_required_missing_or_terminal_unavailable_usage_blocks_release_and_new_dispatch() -> None:
+    ledger = _ledger()
+    dispatch_telemetry.bind_dispatch(ledger, _dispatch("attempt-missing"))
+    dispatch_telemetry.capture_usage_baseline(
+        ledger, dispatch_id="attempt-missing", provider="codex",
+        usage=_usage(100), source_fingerprint="6" * 64)
+    dispatch_telemetry.terminalize_unavailable(
+        ledger, dispatch_id="attempt-missing", ended_at=20,
+        outcome="failed", reason="terminal native counter unavailable")
+
+    screen = dispatch_telemetry.screen_dispatch(
+        ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="7" * 64,
+        preserved_context_fingerprint="8" * 64)
+    assert screen["dispatch_allowed"] is False
+    assert screen["usage_capability"]["status"] == "unavailable"
+    with pytest.raises(dispatch_telemetry.DispatchTelemetryError):
+        dispatch_telemetry.closed_wave_metrics_source(
+            ledger, _Clock(), candidate_fingerprint="9" * 64)
+
+
+def test_root_budget_refuses_new_dispatch_while_active_workers_terminalize_once_without_redispatch() -> None:
+    ledger = _ledger()
+    dispatch_telemetry.bind_dispatch(
+        ledger, _dispatch("active-worker"), usage=_usage(5),
+        source_fingerprint="b" * 64)
+    settings_snapshot = _configure_root(ledger)
+    authority = b"host-observation-authority"
+    dispatch_telemetry.record_root_meter(
+        ledger, _root_meter(40_000_000, authority=authority),
+        observation_authority=authority)
+
+    screen = dispatch_telemetry.screen_dispatch(
+        ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="c" * 64,
+        preserved_context_fingerprint="d" * 64,
+        observation_authority=authority)
+    assert screen["dispatch_allowed"] is False
+    assert screen["root_usage"]["total_tokens"] == 40_000_000
+    assert screen["worker_usage"]["total_tokens"] == 5
+    assert screen["wave_usage"]["total_tokens"] == 40_000_005
+    assert screen["root_admission"]["settings_consumed"] == \
+        settings_snapshot.workflow.root_session.to_dict()
+
+    first = dispatch_telemetry.finalize_usage(
+        ledger, dispatch_id="active-worker", ended_at=20,
+        clock=_Clock())
+    replay = dispatch_telemetry.finalize_usage(
+        ledger, dispatch_id="active-worker", ended_at=20,
+        clock=_Clock())
+    assert first["status"] == "admitted"
+    assert replay["status"] == "duplicate"
+    assert len(ledger["dispatches"]) == 1
+    assert ledger["dispatches"][0]["events"] == []
+    assert len(ledger["bindings"]) == 1
+
+
+def test_root_usage_missing_or_at_ceiling_cannot_silently_resume_dispatch() -> None:
+    ledger = _ledger()
+    _configure_root(ledger)
+
+    missing = dispatch_telemetry.screen_dispatch(
+        ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="e" * 64,
+        preserved_context_fingerprint="f" * 64)
+    assert missing["dispatch_allowed"] is False
+    assert missing["root_admission"]["reason_code"] == \
+        "root_usage_unavailable"
+
+    authority = b"host-observation-authority"
+    dispatch_telemetry.record_root_meter(
+        ledger, _root_meter(10, authority=authority),
+        observation_authority=authority)
+    replay = dispatch_telemetry.screen_dispatch(
+        ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="e" * 64,
+        preserved_context_fingerprint="f" * 64,
+        observation_authority=authority)
+    assert replay["dispatch_allowed"] is False
+    assert replay["root_admission"]["sticky"] is True
+
+    fresh = _ledger()
+    _configure_root(fresh)
+    dispatch_telemetry.record_root_meter(
+        fresh, _root_meter(40_000_000, authority=authority),
+        observation_authority=authority)
+    ceiling = dispatch_telemetry.screen_dispatch(
+        fresh, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="1" * 64,
+        preserved_context_fingerprint="2" * 64,
+        observation_authority=authority)
+    assert ceiling["dispatch_allowed"] is False
+    assert ceiling["root_admission"]["reason_code"] == \
+        "root_budget_reached"
+
+
+def test_root_meter_ledger_rejects_projection_tamper_and_cross_call_rollback() -> None:
+    authority = b"host-observation-authority"
+    ledger = _ledger()
+    _configure_root(ledger)
+    meter = _root_meter(40_000_000, authority=authority)
+    dispatch_telemetry.record_root_meter(
+        ledger, meter, observation_authority=authority)
+
+    stored = ledger["root_admission"]["meter"]
+    stored["usage"] = _usage(1, cached=1)
+    stored["first_observed_input_tokens"] = 1
+    stored["peak_context_tokens"] = 1
+    stored["context_rent_tokens"] = 0.0
+    material = dict(stored)
+    material.pop("fingerprint")
+    stored["fingerprint"] = native_session_meter.fingerprint(material)
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="authenticated watermark",
+    ):
+        dispatch_telemetry.validate_ledger(ledger)
+
+    fresh = _ledger()
+    _configure_root(fresh)
+    dispatch_telemetry.record_root_meter(
+        fresh, _root_meter(40_000_000, authority=authority),
+        observation_authority=authority)
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="observation authority changed",
+    ):
+        dispatch_telemetry.record_root_meter(
+            fresh,
+            _root_meter(
+                3, authority=b"replacement-observation-authority"),
+            observation_authority=b"replacement-observation-authority")
+
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="conflicting evidence",
+    ):
+        dispatch_telemetry.record_root_meter(
+            fresh, _root_meter(40_000_001, authority=authority),
+            observation_authority=authority)
+
+    rollback = _ledger()
+    _configure_root(rollback)
+    first = _root_meter(10, authority=authority)
+    high = _root_meter(
+        40_000_000, authority=authority, prior=first, sequence=2)
+    low = _root_meter(11, authority=authority, prior=first, sequence=2)
+    rolled = _root_meter(
+        12, authority=authority, prior=low, sequence=3)
+    dispatch_telemetry.record_root_meter(
+        rollback, high, observation_authority=authority)
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="cumulative watermark moved backwards",
+    ):
+        dispatch_telemetry.record_root_meter(
+            rollback, rolled, observation_authority=authority)
+
+
+def test_persisted_root_meter_stale_authenticator_cannot_reopen_admission() -> None:
+    authority = b"host-observation-authority"
+    ledger = _ledger()
+    dispatch_telemetry.bind_dispatch(
+        ledger, _dispatch("active-worker"), usage=_usage(1),
+        source_fingerprint="3" * 64)
+    _configure_root(ledger)
+    dispatch_telemetry.record_root_meter(
+        ledger, _root_meter(40_000_000, authority=authority),
+        observation_authority=authority)
+
+    persisted = json.loads(json.dumps(ledger))
+    meter = persisted["root_admission"]["meter"]
+    watermark = meter["watermark"]
+    reduced_usage = _usage(1, cached=1)
+    for projection in (watermark, meter):
+        projection["usage"] = reduced_usage
+        projection["first_observed_input_tokens"] = 1
+        projection["peak_context_tokens"] = 1
+        projection["context_rent_tokens"] = 0.0
+    watermark_material = dict(watermark)
+    watermark_material.pop("fingerprint")
+    watermark_material.pop("authenticator")
+    watermark["fingerprint"] = native_session_meter.fingerprint(
+        watermark_material)
+    meter_material = dict(meter)
+    meter_material.pop("fingerprint")
+    meter["fingerprint"] = native_session_meter.fingerprint(meter_material)
+
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="watermark is not authentic",
+    ):
+        dispatch_telemetry.screen_dispatch(
+            persisted, _Clock(), current_stage="execute",
+            outstanding_set_fingerprint="4" * 64,
+            preserved_context_fingerprint="5" * 64,
+            observation_authority=authority,
+            admission_operation_id="reopened-worker",
+            dispatch=_dispatch("reopened-worker"), usage=_usage(1),
+            source_fingerprint="6" * 64)
+    assert all(row["dispatch_id"] != "reopened-worker"
+               for row in persisted["bindings"])
+
+
+def test_root_screen_and_worker_binding_are_one_idempotent_admission_operation() -> None:
+    authority = b"host-observation-authority"
+    ledger = _ledger()
+    # Pre-existing measured usage makes the general worker-budget projection
+    # available before root admission is configured.
+    dispatch_telemetry.bind_dispatch(
+        ledger, _dispatch("active-worker"), usage=_usage(1),
+        source_fingerprint="3" * 64)
+    _configure_root(ledger)
+    first = _root_meter(10, authority=authority)
+    below = _root_meter(
+        39_999_999, authority=authority, prior=first, sequence=2)
+    dispatch_telemetry.record_root_meter(
+        ledger, below, observation_authority=authority)
+
+    stale = dispatch_telemetry.screen_dispatch(
+        ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="4" * 64,
+        preserved_context_fingerprint="5" * 64,
+        observation_authority=authority)
+    assert stale["dispatch_allowed"] is True
+
+    ceiling = _root_meter(
+        40_000_000, authority=authority, prior=below, sequence=3)
+    dispatch_telemetry.record_root_meter(
+        ledger, ceiling, observation_authority=authority)
+    with pytest.raises(
+        dispatch_telemetry.DispatchTelemetryError,
+        match="atomic screen_dispatch admission",
+    ):
+        dispatch_telemetry.bind_dispatch(
+            ledger, _dispatch("stale-worker"), usage=_usage(1),
+            source_fingerprint="6" * 64)
+
+    refused = dispatch_telemetry.screen_dispatch(
+        ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="4" * 64,
+        preserved_context_fingerprint="5" * 64,
+        observation_authority=authority,
+        admission_operation_id="new-worker",
+        dispatch=_dispatch("new-worker"), usage=_usage(1),
+        source_fingerprint="6" * 64)
+    assert refused["dispatch_allowed"] is False
+    assert all(row["dispatch_id"] != "new-worker"
+               for row in ledger["bindings"])
+
+    open_ledger = _ledger()
+    dispatch_telemetry.bind_dispatch(
+        open_ledger, _dispatch("prior-worker"), usage=_usage(1),
+        source_fingerprint="7" * 64)
+    _configure_root(open_ledger)
+    dispatch_telemetry.record_root_meter(
+        open_ledger, below, observation_authority=authority)
+    before = open_ledger["revision"]
+    admitted = dispatch_telemetry.screen_dispatch(
+        open_ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="8" * 64,
+        preserved_context_fingerprint="9" * 64,
+        observation_authority=authority,
+        admission_operation_id="atomic-worker",
+        dispatch=_dispatch("atomic-worker"), usage=_usage(1),
+        source_fingerprint="a" * 64)
+    revision = open_ledger["revision"]
+    replay = dispatch_telemetry.screen_dispatch(
+        open_ledger, _Clock(), current_stage="execute",
+        outstanding_set_fingerprint="8" * 64,
+        preserved_context_fingerprint="9" * 64,
+        observation_authority=authority,
+        admission_operation_id="atomic-worker",
+        dispatch=_dispatch("atomic-worker"), usage=_usage(1),
+        source_fingerprint="a" * 64)
+    assert admitted["operation_status"] == "admitted"
+    assert replay["operation_status"] == "duplicate"
+    assert open_ledger["revision"] == revision == before + 1
+    assert len([row for row in open_ledger["bindings"]
+                if row["dispatch_id"] == "atomic-worker"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -464,6 +896,32 @@ def test_null_or_zero_native_meter_refuses_before_worker_dispatch_binding(
     assert "native_session_telemetry" not in state
     assert tp.peek_expectation(
         workspace, expected["task_name"], strict=True)["matched"] is False
+
+
+def test_post_start_null_usage_refuses_while_observed_zero_remains_zero():
+    ledger = _ledger()
+    dispatch = _dispatch("post-start-zero")
+    dispatch["events"] = [dispatch_telemetry.dispatch_event(
+        dispatch_id=dispatch["dispatch_id"],
+        thread_id=dispatch["thread_id"],
+        thread_type=dispatch["thread_type"],
+        task_id=dispatch["task_id"], sequence=1, kind="progress", at=10,
+        payload={"phase": "native-start"})]
+    dispatch_telemetry.bind_dispatch(ledger, dispatch)
+
+    with pytest.raises(
+            dispatch_telemetry.DispatchTelemetryError,
+            match="active native usage is missing"):
+        dispatch_telemetry.wave_usage(ledger, _Clock())
+
+    dispatch_telemetry.observe_usage(
+        ledger, dispatch_id=dispatch["dispatch_id"], usage=_usage(0),
+        source_fingerprint="e" * 64)
+
+    assert dispatch_telemetry.wave_usage(ledger, _Clock()) == {
+        "elapsed_seconds": 10.0, "sessions": 1, "total_tokens": 0,
+        "uncached_input_tokens": 0,
+    }
 
 
 def test_canonical_context_flows_from_intent_into_observed_spawn_boundary(

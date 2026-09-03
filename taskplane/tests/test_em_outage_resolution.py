@@ -296,6 +296,18 @@ def _outage_state(identity: dict, snapshot: dict) -> dict:
     }
 
 
+def _save_outage_state(ws: str, identity: dict, snapshot: dict) -> None:
+    """Place outage evidence on a real initialized run control plane."""
+    state = loop.load(ws)
+    if state is None:
+        initialized = loop.init(ws, "resolve an engineering review outage")
+        assert "error" not in initialized, initialized
+        state = loop.load(ws)
+    assert state is not None
+    state.update(_outage_state(identity, snapshot))
+    loop.save(ws, state)
+
+
 def _patch_resolution(monkeypatch, identity, snapshot):
     evidence = {"schema": "taskplane.signoff-evidence/v1",
                 "integration_revision": identity["integration_revision"],
@@ -318,7 +330,7 @@ def test_aggregate_em_outage_exact_acceptance_is_atomic_and_one_use(
     ws = _git_ws(tmp_path)
     identity = _identity(tmp_path)
     snapshot = _snapshot(tmp_path)
-    loop.save(ws, _outage_state(identity, snapshot))
+    _save_outage_state(ws, identity, snapshot)
     _patch_resolution(monkeypatch, identity, snapshot)
     before = json.dumps(loop.load(ws), sort_keys=True)
 
@@ -367,7 +379,7 @@ def test_worker_context_actor_spoof_mutation_and_audit_failure_do_not_advance(
     snapshot = _snapshot(tmp_path)
     _patch_resolution(monkeypatch, identity, snapshot)
 
-    loop.save(ws, _outage_state(identity, snapshot))
+    _save_outage_state(ws, identity, snapshot)
     monkeypatch.setattr(loop, "_em_outage_control_plane_identity",
                         lambda *_: (_ for _ in ()).throw(
                             em_outage.EmOutageError("worker context")))
@@ -381,7 +393,7 @@ def test_worker_context_actor_spoof_mutation_and_audit_failure_do_not_advance(
     _patch_resolution(monkeypatch, identity, snapshot)
     tampered_snapshot = json.loads(json.dumps(snapshot))
     tampered_snapshot["findings"]["content_base64"] = "WA=="
-    loop.save(ws, _outage_state(identity, tampered_snapshot))
+    _save_outage_state(ws, identity, tampered_snapshot)
     mutated = loop.resolve(
         ws, "pass", by="human:vdemkiv",
         accept_producer_receipt_outage=True,
@@ -421,7 +433,7 @@ def test_stage_transition_failure_rolls_back_consumption_and_signoff(
     ws = _git_ws(tmp_path)
     identity = _identity(tmp_path)
     snapshot = _snapshot(tmp_path)
-    loop.save(ws, _outage_state(identity, snapshot))
+    _save_outage_state(ws, identity, snapshot)
     _patch_resolution(monkeypatch, identity, snapshot)
     audit_path = Path(loop.runtime_storage.review_public_path(
         ws, "em-outage-resolution.json"))
@@ -469,7 +481,7 @@ def test_public_resolve_restores_exact_prior_audit_bytes_on_transition_failure(
     ws = _git_ws(tmp_path)
     identity = _identity(tmp_path)
     snapshot = _snapshot(tmp_path)
-    loop.save(ws, _outage_state(identity, snapshot))
+    _save_outage_state(ws, identity, snapshot)
     _patch_resolution(monkeypatch, identity, snapshot)
     authority = {
         "schema": em_outage.CONTROL_PLANE_SCHEMA,

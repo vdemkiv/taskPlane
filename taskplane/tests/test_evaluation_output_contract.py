@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
 import evaluation_output as output  # noqa: E402
 import eval_drivers  # noqa: E402
+import failure_routing  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
 from host_capabilities import (  # noqa: E402
@@ -34,10 +35,28 @@ def _snapshot(tmp_path, status: str):
 
 
 def _value():
+    failure_evidence = {
+        "schema": "taskplane.failure-evidence/v1",
+        "command": "pytest -q taskplane/tests/test_contract.py::test_schema",
+        "returncode": 1,
+        "stderr": "schema contract failed",
+    }
+    failure = {
+        "schema": failure_routing.FAILURE_RECORD_SCHEMA_ID,
+        "id": "F-schema", "source": "pytest:test_schema",
+        "stage": "evaluate", "repro": failure_evidence["command"],
+        "evidence": failure_evidence,
+        "evidence_digest": failure_routing.evidence_digest(failure_evidence),
+        "class": "product", "reason": "schema output violates its contract",
+        "owner": "product-code", "cluster": "schema-output",
+        "route": "fix",
+        "candidate": {"id": "candidate-schema",
+                      "fingerprint": "a" * 64},
+    }
     return {
         "schema": output.EVALUATOR_OUTPUT_SCHEMA_ID,
-        "task": "t1", "requirement": "R-0006", "verdict": "pass",
-        "criteria": [{"criterion": "schema output", "status": "met",
+        "task": "t1", "requirement": "R-0006", "verdict": "fail",
+        "criteria": [{"criterion": "schema output", "status": "not-met",
                       "evidence": "test:1"}],
         "graph": {
             "dispositions": [{"node": "contract:evaluation-output",
@@ -46,7 +65,7 @@ def _value():
             "requirements_checked": ["req:R-0006"],
             "contracts_checked": ["contract:evaluation-output"],
         },
-        "failures": [],
+        "failures": [failure],
     }
 
 

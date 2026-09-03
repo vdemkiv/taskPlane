@@ -1,0 +1,18 @@
+{
+ "archive": "taskplane-2.18.10-openai.zip",
+ "branch": "codex/build-p14-canary",
+ "commit": "0a8b97b4b5fc93ca6735b4b18966d158b3b7b8ab",
+ "dirty": [],
+ "fingerprint": "8e76a0489392adf4757941669958077e92eb61413869b3afdf7a7b8d3bbca8d6",
+ "kind": "openai",
+ "note": "`verified_source` means the archive is exactly this commit. It does NOT assert that CI passed \u2014 a local build cannot know that. Check `commit` against the CI status for that SHA; the release leg asserts they match.",
+ "release_inputs": {
+  "lock_digest": "be5a012b1d58444c9310de5202be8e86865a58dc7d86d08411bf5ec247d8193a",
+  "settings_digest": "e4e9a573bf0006479b82444f9cc9edb46f4dba64c695ca860e86b07c90061385",
+  "workflow_digest": "cb14b44b2c22a0acae978c3bb8900e1d4802d0f1c6d12ee9cb8b7e737e939ef1"
+ },
+ "schema": "taskplane.package-provenance/v1",
+ "sha256": "6c2955e553f9f6defe92e8ad15fb2ea282b55b69401f866bd7856d28cdd2a424",
+ "tree": "8e1f2efa6745eee1597760b2821f27de647a86a1",
+ "verified_source": true
+}

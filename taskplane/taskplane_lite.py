@@ -3166,7 +3166,7 @@ def suite_cache_store(workspace: str, command, env: dict, *,
 # decision or a plan would fail every governed task.
 RUNTIME_OWNED = (".taskplane/", ".taskplane_output.json", "knowledge/",
                  "plan/", ".eval/", ".em-review/", ".security-review/",
-                 ".tp-work/", ".taskplane-kb/",
+                 ".tp-work/", ".taskplane-kb/", "waves/",
                  # v2.3.0: authored by the loop's own earlier steps / init —
                  # a pm step writes specs/, init writes .gitignore, context
                  # docs land in context|docs|requirements/. Counting them as

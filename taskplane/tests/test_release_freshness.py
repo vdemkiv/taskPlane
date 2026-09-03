@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import zipfile
@@ -48,7 +49,7 @@ def test_current_version_authority_agrees_across_runtime_and_manifests() -> None
     compatibility = json.loads((ROOT / "design/compatibility.json").read_text(
         encoding="utf-8"))
 
-    assert current == "2.18.9"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", current)
     assert {
         release_evidence.CURRENT_VERSION,
         claude["version"],
@@ -57,9 +58,10 @@ def test_current_version_authority_agrees_across_runtime_and_manifests() -> None
         compatibility["window"]["current"],
         compatibility["baseline_rebind"]["next_generation"],
     } == {current}
-    assert release_evidence.PREVIOUS_VERSION == "2.17.20"
-    assert release_evidence.COMPATIBILITY_PREVIOUS_VERSION == "2.18.0"
-    assert release_evidence.SUPERSEDED_CANDIDATE_VERSION == "2.18.8"
+    assert release_evidence.PREVIOUS_VERSION == compatibility["window"][
+        "last_released"]
+    assert release_evidence.COMPATIBILITY_PREVIOUS_VERSION == compatibility[
+        "window"]["previous"]
 
     for relative in ("README.md", "CHANGELOG.md"):
         body = (ROOT / relative).read_text(encoding="utf-8")

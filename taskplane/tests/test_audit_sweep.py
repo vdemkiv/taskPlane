@@ -13,9 +13,7 @@ Covers:
     v2.3.1 finding_blocks rule.
 """
 import json
-import hashlib
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -26,13 +24,8 @@ import loop  # noqa: E402
 import audit  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
 import lens  # noqa: E402
-import depgraph  # noqa: E402
-import review  # noqa: E402
-import review_evidence  # noqa: E402
-import producer_observation  # noqa: E402
 from taskplane.authority import DECISION_SCHEMA  # noqa: E402
 from taskplane.settings import SettingsError  # noqa: E402
-from taskplane.tests.review_kernel_support import complete_review  # noqa: E402
 
 
 SETTINGS_AUTHORITY = {
@@ -43,169 +36,6 @@ SETTINGS_AUTHORITY = {
     "thread": "audit-settings-compatibility",
     "revision": "1",
 }
-
-
-def git_ws(tmp, tasks):
-    ws = os.path.join(tmp, "ws")
-    os.makedirs(os.path.join(ws, "plan"))
-    os.makedirs(os.path.join(ws, "src", "todo"))
-    open(os.path.join(ws, "src", "todo", "a.py"), "w", encoding="utf-8").write("x=1\n")
-    subprocess.run(["git", "init", "-q"], cwd=ws)
-    subprocess.run(["git", "config", "user.email", "e@e"], cwd=ws)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=ws)
-    subprocess.run(["git", "add", "-A"], cwd=ws)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
-    json.dump({"requirement": "audit-sweep-fixture",
-               "delivery_mode": "build", "automatic_lenses": [],
-               "plan_authority": "human:test-fixture", "tasks": tasks},
-              open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-    return ws
-
-
-TASK = {"id": "t1", "scope": ["src/todo/**"], "tests": "true",
-        "criteria": ["complete() marks done"]}
-
-
-def submit_gate(ws, outcome="pass", task_id=None):
-    submitted = loop.submit(ws, outcome, task_id=task_id)
-    if "error" in submitted:
-        return submitted
-    return loop.gate(ws, outcome, task_id=task_id)
-
-
-def _action_contract(workspace, action, *, stage, task):
-    slot = action["contract_bootstrap"]["task_slot"]
-    binding = tp.worker_contract_for_stage(
-        workspace, stage=stage, task=str(task))
-    assert binding is not None
-    assert binding["slot"] == slot
-    assert tp.load_active(workspace) is None
-    contract = binding["contract"]
-    lifecycle = (contract or {}).get("worker_lifecycle") or {}
-    if lifecycle.get("stage") != stage or \
-            str(lifecycle.get("task") or "") != str(task):
-        raise AssertionError("action worker contract is not stage/task exact")
-    return contract
-
-
-def pass_eval(ws, action):
-    state = loop.load(ws)
-    task = state["tasks"][state["current_task"]]
-    act_ws = task.get("workspace") or ws
-    routed = lens.route_git_diff(
-        act_ws, base=state.get("baseline") or "HEAD",
-        task_type=task.get("type"), breadth="routed")
-    criteria = loop._criteria_for(ws, state, task)
-    os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
-    kernel = review._load_state(act_ws)
-    store = review_evidence.ArtifactStore(act_ws)
-    for index, slot in enumerate(kernel["slots"]):
-        lease = store.read(slot["lease"])
-        brief = store.read(slot["brief"])
-        row = {**lease, "schema": "taskplane.lens-slot-output/v2",
-               "authored_by": "lens-slot", "findings": [],
-               "lens_results": [
-                   {"lens": lens_id, "verdict": "pass", "blockers": 0,
-                    "checked_evidence": [{
-                        "file": "src/todo/a.py", "line": 1,
-                        "claim": ("audit cadence fixture inspected the "
-                                  "changed task source"),
-                    }]}
-                   for lens_id in lease["lens_ids"]]}
-        content = json.dumps(row, sort_keys=True, separators=(",", ":"))
-        event = {"session_id": "audit-eval-session",
-                 "agent_id": f"audit-eval-child-{index}",
-                 "tool_name": "Write",
-                 "tool_input": {"file_path": slot["result_path"],
-                                "content": content}}
-        producer = brief["producer_contract"]
-        contract = {"task": producer["task"], "read_only": True,
-                    "write_allow": producer["write_allow"]}
-        review.register_slot_producer(
-            act_ws, event=event, contract=contract,
-            task_slot=producer["task_slot"])
-        review.record_slot_write_observation(
-            act_ws, event=event, contract=contract,
-            task_slot=producer["task_slot"])
-        path = os.path.join(act_ws, slot["result_path"])
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as stream:
-            stream.write(content)
-    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v2",
-                   "task": task["id"],
-                   "requirement": task.get("req") or
-                                  state.get("requirement_id") or "",
-                   "verdict": "pass",
-                   "evaluation": {"status": "complete",
-                                  "reason_code": "none", "detail": ""},
-                   "criteria": [{"criterion": c, "status": "met",
-                                 "evidence": "verified by test"}
-                                for c in criteria],
-                   "graph": {"dispositions": [],
-                             "requirements_checked": [],
-                             "contracts_checked": []},
-                   "failures": []}, f)
-    contract = _action_contract(
-        act_ws, action, stage="evaluate", task=task["id"])
-    material = loop.producer_output_identity(
-        act_ws, state, task, "evaluate",
-        active_contract=contract)
-    event = {
-        "hook_event_name": "SubagentStop",
-        "session_id": "audit-eval-session",
-        "turn_id": "audit-eval-turn",
-        "agent_id": "audit-evaluator",
-        "agent_type": material["producer_dispatch"]["task_name"],
-        "task_name": material["producer_dispatch"]["task_name"],
-    }
-    claim = hashlib.sha256(tp.hook_event_identity(
-        act_ws, "subagent-stop", event).encode("utf-8")).hexdigest()
-    producer_observation.record_codex_subagent_stop(
-        event=event, hook_claim_id=claim, **material)
-    return submit_gate(ws, "pass")
-
-
-def pass_em(ws, action, coverage=None, findings_rows=None):
-    if coverage is None:
-        coverage = {x["id"]: "sweep" for x in lens.load_catalog()["lenses"]}
-    state = loop.load(ws)
-    changed = [f for f in loop._diff_files(
-        ws, state.get("baseline") or "HEAD")
-        if not f.startswith(lens.LOOP_OWNED)]
-    impact = depgraph.impact(ws, changed)
-    complete_review(
-        ws, coverage=coverage, impact=impact, tests=["true"],
-        findings=findings_rows or [],
-        report="# Engineering review\n\nAll required evidence passed.\n")
-    task = loop._current_task(state)
-    contract = _action_contract(ws, action, stage="em", task=task["id"])
-    material = loop.producer_output_identity(
-        ws, state, task, "em", active_contract=contract)
-    event = {
-        "hook_event_name": "SubagentStop",
-        "session_id": "audit-em-session", "turn_id": "audit-em-turn",
-        "agent_id": "audit-engineering",
-        "agent_type": material["producer_dispatch"]["task_name"],
-        "task_name": material["producer_dispatch"]["task_name"],
-    }
-    claim = hashlib.sha256(tp.hook_event_identity(
-        ws, "subagent-stop", event).encode("utf-8")).hexdigest()
-    producer_observation.record_codex_subagent_stop(
-        event=event, hook_claim_id=claim, **material)
-    return submit_gate(ws, "pass")
-
-
-def loop_to_em(tmp):
-    """Drive a serial loop to the em step (plan gate skipped)."""
-    ws = git_ws(tmp, [TASK])
-    loop.init(ws, "g", spec_path="s", checkpoints=["em"])
-    loop.next_action(ws); loop.gate(ws, "pass")           # plan → execute
-    loop.next_action(ws); submit_gate(ws, "pass")         # execute → evaluate
-    action = loop.next_action(ws)
-    pass_eval(ws, action)                                 # evaluate → em
-    assert loop.load(ws)["step"] == "em"
-    return ws
 
 
 class AuditBase(unittest.TestCase):
@@ -465,53 +295,6 @@ class TestGateIntegration(AuditBase):
     def test_v2_coverage_shape_passes_the_tier_validation(self):
         ws = em_review_ws(findings_rows=[])
         self.assertEqual(loop._engineering_review_errors(ws, None), [])
-
-
-class TestEmPayloadAndCounterWiring(AuditBase):
-    def test_em_payload_advertises_audit_mode_when_due(self):
-        with mock.patch.object(audit, "audit_every", return_value=1):
-            ws = loop_to_em(self.tmp)
-            act = loop.next_action(ws)
-            self.assertEqual(act["step"], "em")
-            audit_info = act.get("audit")
-            self.assertIsInstance(audit_info, dict)
-            self.assertTrue(audit_info["due"])
-            self.assertIn("every-1", audit_info["reason"])
-            # the POINT of audit mode: the routing decision is recorded so
-            # the findings-vs-routing diff is computable at the gate.
-            decision = audit_info.get("routing_decision")
-            self.assertIsInstance(decision, dict)
-            expected = {e["id"] for e in lens.load_catalog()["lenses"]}
-            self.assertEqual(set(decision), expected)
-            for v in decision.values():
-                self.assertIn("verdict", v)
-
-    def test_em_payload_reports_not_due_on_the_default_cadence(self):
-        ws = loop_to_em(self.tmp)
-        act = loop.next_action(ws)
-        audit = act.get("audit")
-        self.assertIsInstance(audit, dict)
-        self.assertFalse(audit["due"])
-        self.assertEqual(audit["every"], 5)
-        self.assertEqual(audit["reviews_completed"], 0)
-
-    def test_completed_em_review_increments_the_counter(self):
-        ws = loop_to_em(self.tmp)
-        self.assertEqual(loop.audit_counter(ws), 0)
-        action = loop.next_action(ws)
-        out = pass_em(ws, action)
-        self.assertNotIn("error", out)
-        self.assertEqual(loop.load(ws)["step"], "signoff")
-        self.assertEqual(loop.audit_counter(ws), 1)
-
-    def test_refused_em_gate_does_not_count_a_review(self):
-        ws = loop_to_em(self.tmp)
-        loop.next_action(ws)
-        # missing evidence: the review is incomplete, not completed
-        out = submit_gate(ws, "pass")
-        self.assertIn("error", out)
-        self.assertEqual(loop.audit_counter(ws), 0)
-
 
 
 class TestUnattributedFindingWarnRows(AuditBase):

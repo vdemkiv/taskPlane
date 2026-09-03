@@ -15,9 +15,11 @@ import subprocess
 import sys
 import zipfile
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "2.18.9"
+VERSION = "2.18.10"
 
 
 def _script_module(name: str):
@@ -42,6 +44,401 @@ def _extract(archive: Path, target: Path) -> Path:
     return root
 
 
+def _run_package_entry_point(kind: str, output_dir: Path) -> Path:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / f"package_{kind}.py"),
+         "--output-dir", str(output_dir), "--allow-dirty"],
+        cwd=ROOT, text=True, encoding="utf-8", capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    archive = output_dir / f"taskplane-{VERSION}-{kind}.zip"
+    assert archive.is_file()
+    return archive
+
+
+def _replace_packaged_settings(archive: Path, replacement: dict) -> None:
+    member = "taskplane/taskplane/operational-settings.json"
+    temporary = archive.with_suffix(".rewritten.zip")
+    with zipfile.ZipFile(archive) as source, zipfile.ZipFile(
+            temporary, "w") as target:
+        for info in source.infolist():
+            payload = source.read(info)
+            if info.filename == member:
+                payload = (json.dumps(replacement, sort_keys=True) + "\n").encode()
+            target.writestr(info, payload)
+    os.replace(temporary, archive)
+
+
+def _packaged_hook_manifest(archive: Path) -> dict:
+    with zipfile.ZipFile(archive) as package:
+        return json.loads(package.read("taskplane/hooks/hooks.json"))
+
+
+def _replace_packaged_hook_manifest(archive: Path, replacement: dict) -> None:
+    member = "taskplane/hooks/hooks.json"
+    temporary = archive.with_suffix(".rewritten.zip")
+    with zipfile.ZipFile(archive) as source, zipfile.ZipFile(
+            temporary, "w") as target:
+        for info in source.infolist():
+            payload = source.read(info)
+            if info.filename == member:
+                payload = (json.dumps(replacement, indent=2) + "\n").encode()
+            target.writestr(info, payload)
+    os.replace(temporary, archive)
+
+
+def _expected_installed_hook_manifest(kind: str) -> dict:
+    claude = json.loads((
+        ROOT / "hooks" / "hooks.json"
+    ).read_text(encoding="utf-8"))
+    if kind == "claude":
+        return claude
+    assert kind == "openai"
+    codex = json.loads((
+        ROOT / ".codex" / "hooks.json"
+    ).read_text(encoding="utf-8"))
+    expected = json.loads(json.dumps(claude))
+    expected["hooks"]["SessionStart"] = codex["hooks"]["SessionStart"]
+    return expected
+
+
+def _assert_installed_session_start_wiring(kind: str, manifest: dict) -> None:
+    host = "codex" if kind == "openai" else "claude"
+    hook_path = "bridge" if kind == "openai" else "native"
+    commands = [
+        hook[field]
+        for entry in manifest["hooks"]["SessionStart"]
+        for hook in entry["hooks"]
+        for field in ("command", "commandWindows")
+    ]
+    assert any("host-native-check" in command for command in commands)
+    for command in commands:
+        if "host-native-check" not in command:
+            continue
+        assert f"--host {host}" in command
+        assert f"TASKPLANE_HOOK_PATH={hook_path}" in command or (
+            f'TASKPLANE_HOOK_PATH={hook_path}"' in command)
+
+
+def test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings(
+        tmp_path):
+    canonical = json.loads((
+        ROOT / "taskplane" / "operational-settings.json"
+    ).read_text(encoding="utf-8"))
+    assert canonical["schema"] == "taskplane.operational-settings/v2"
+
+    for kind in ("openai", "claude"):
+        archive = _run_package_entry_point(kind, tmp_path / kind)
+        with zipfile.ZipFile(archive) as package:
+            packaged = json.loads(package.read(
+                "taskplane/taskplane/operational-settings.json"))
+        assert packaged == canonical
+
+
+def test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority(
+        tmp_path):
+    canonical = json.loads((
+        ROOT / "taskplane" / "operational-settings.json"
+    ).read_text(encoding="utf-8"))
+    foreign = {**canonical, "schema": "foreign.operational-settings/v2"}
+    malformed = dict(canonical)
+    malformed.pop("workflow")
+    invalid_binding = json.loads(json.dumps(canonical))
+    invalid_binding["workflow"]["root_session"]["seed_budget_tokens"] = 39_999
+
+    openai = _script_module("package_openai")
+    claude = _script_module("package_claude")
+    for kind, module in (("openai", openai), ("claude", claude)):
+        canonical_archive = _run_package_entry_point(
+            kind, tmp_path / f"canonical-{kind}")
+        for name, replacement in (
+                ("foreign", foreign), ("malformed", malformed),
+                ("invalid-binding", invalid_binding)):
+            archive = tmp_path / f"{name}-{canonical_archive.name}"
+            archive.write_bytes(canonical_archive.read_bytes())
+            _replace_packaged_settings(archive, replacement)
+            with pytest.raises(module.PackageError, match="canonical authority"):
+                if kind == "openai":
+                    module.validate_archive(archive, expected_version=VERSION)
+                else:
+                    module.validate_archive(archive, VERSION)
+
+
+def test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring(
+        tmp_path):
+    for kind in ("openai", "claude"):
+        archive = _run_package_entry_point(kind, tmp_path / kind)
+        _assert_installed_session_start_wiring(
+            kind, _packaged_hook_manifest(archive))
+
+
+def test_installed_openai_hooks_are_inert_in_an_unonboarded_chat(tmp_path):
+    archive = _run_package_entry_point("openai", tmp_path / "package")
+    package_root = _extract(archive, tmp_path / "extracted")
+    (package_root / "taskplane" / "tp.py").write_text(
+        "raise SystemExit('global hook started Taskplane')\n",
+        encoding="utf-8",
+    )
+    unrelated = tmp_path / "unrelated-chat"
+    unrelated.mkdir()
+    taskplane_home = tmp_path / "must-not-exist"
+    manifest = _packaged_hook_manifest(archive)
+    commands = [
+        hook["command"]
+        for rows in manifest["hooks"].values()
+        for row in rows
+        for hook in row["hooks"]
+    ]
+    assert commands
+    environment = {
+        **os.environ,
+        "PLUGIN_ROOT": str(package_root),
+        "CLAUDE_PLUGIN_ROOT": str(package_root),
+        "TASKPLANE_HOME": str(taskplane_home),
+    }
+
+    for command in commands:
+        result = subprocess.run(
+            command, cwd=unrelated, shell=True, input="{}\n", text=True,
+            encoding="utf-8", capture_output=True, env=environment,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    assert not taskplane_home.exists()
+    assert not (unrelated / ".taskplane").exists()
+
+
+def test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host(
+        tmp_path):
+    for kind in ("openai", "claude"):
+        canonical = _run_package_entry_point(
+            kind, tmp_path / f"canonical-{kind}")
+        _assert_installed_session_start_wiring(
+            kind, _packaged_hook_manifest(canonical))
+        expected_host = "codex" if kind == "openai" else "claude"
+        wrong_host = "claude" if kind == "openai" else "codex"
+        expected_path = "bridge" if kind == "openai" else "native"
+        wrong_path = "native" if kind == "openai" else "bridge"
+        for mutation, old, new in (
+                ("wrong-host", f"--host {expected_host}",
+                 f"--host {wrong_host}"),
+                ("wrong-hook-path", f"TASKPLANE_HOOK_PATH={expected_path}",
+                 f"TASKPLANE_HOOK_PATH={wrong_path}")):
+            archive = tmp_path / f"{mutation}-{canonical.name}"
+            archive.write_bytes(canonical.read_bytes())
+            manifest = _packaged_hook_manifest(archive)
+            for entry in manifest["hooks"]["SessionStart"]:
+                for hook in entry["hooks"]:
+                    for field in ("command", "commandWindows"):
+                        hook[field] = hook[field].replace(old, new)
+            _replace_packaged_hook_manifest(archive, manifest)
+            with pytest.raises(AssertionError):
+                _assert_installed_session_start_wiring(
+                    kind, _packaged_hook_manifest(archive))
+
+
+def test_installed_openai_direct_launcher_plan_approval_prepares_canonical_typed_root_seed_and_non_null_receipt(
+        tmp_path):
+    archive = _run_package_entry_point("openai", tmp_path / "package")
+    package_root = _extract(archive, tmp_path / "extracted")
+    setup = r'''
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+workspace = Path(sys.argv[2]).resolve()
+sys.path.insert(0, str(root))
+sys.path.insert(0, str(root / "taskplane"))
+import loop
+
+loop.save(str(workspace), json.load(sys.stdin))
+'''
+    transition = r'''
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+workspace = Path(sys.argv[2]).resolve()
+action = sys.argv[3]
+sys.path.insert(0, str(root))
+sys.path.insert(0, str(root / "taskplane"))
+import loop
+
+if action == "gate":
+    result = loop.gate.__wrapped__(
+        str(workspace), "pass")
+else:
+    result = loop.approve.__wrapped__(
+        str(workspace), by="human:package-journey")
+print(json.dumps(result, sort_keys=True))
+raise SystemExit(1 if result.get("error") else 0)
+'''
+
+    def approve_scope(name, scope):
+        case = tmp_path / name
+        workspace = case / "workspace"
+        workspace.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+        (workspace / "README.md").write_text(
+            "installed plan approval\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "README.md"], cwd=workspace, check=True)
+        subprocess.run([
+            "git", "-c", "user.name=Taskplane", "-c",
+            "user.email=taskplane@example.invalid", "commit", "-qm", "base",
+        ], cwd=workspace, check=True)
+        baseline = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=workspace, text=True,
+            encoding="utf-8").strip()
+        task = {
+            "id": "P14-part-a-canary", "wave": "W2A-R1",
+            "scope": [scope], "tests": "true",
+            "criteria": ["installed Plan approval prepares its root seed"],
+            "status": "pending", "deps": [],
+            "new_modules": ["build/taskplane-2.18.10"],
+        }
+        plan = {
+            "requirement": "R-0001", "delivery_mode": "build",
+            "automatic_lenses": [],
+            "plan_authority": "human:package-journey",
+            "tasks": [task],
+        }
+        (workspace / "plan").mkdir()
+        (workspace / "plan" / "tasks.json").write_text(
+            json.dumps(plan), encoding="utf-8")
+        state = {
+            "run_id": "run-" + name, "baseline": baseline,
+            "design_fingerprint": "b" * 64, "step": "plan",
+            "tasks": [task], "current_task": 0,
+            "goal": "exercise installed Plan approval root preparation",
+            "parallel": True, "max_fix_cycles": 1,
+            "checkpoints": ["plan"], "design_required": False,
+        }
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "TASKPLANE_HOME": str(case / "private-store"),
+            "TASKPLANE_STAGE_NATIVE": "disabled",
+            "TASKPLANE_CONSOLIDATED_FLOW": "0",
+        }
+        prepared = subprocess.run(
+            [sys.executable, "-I", "-c", setup, str(package_root),
+             str(workspace)],
+            cwd=case, text=True, encoding="utf-8", input=json.dumps(state),
+            capture_output=True, env=environment)
+        assert prepared.returncode == 0, prepared.stdout + prepared.stderr
+        plan_gate = subprocess.run(
+            [sys.executable, "-I", "-c", transition, str(package_root),
+             str(workspace), "gate"],
+            cwd=case, text=True, encoding="utf-8", capture_output=True,
+            env=environment)
+        approval = subprocess.run(
+            [sys.executable, "-I", "-c", transition, str(package_root),
+             str(workspace), "approve"],
+            cwd=case, text=True, encoding="utf-8", capture_output=True,
+            env=environment)
+        return case, workspace, environment, plan, plan_gate, approval
+
+    safe_scope = "build/taskplane-2.18.10/canary/**"
+    case, workspace, environment, plan, plan_gate, approval = approve_scope(
+        "installed-plan-approval", safe_scope)
+    assert plan_gate.returncode == 0, plan_gate.stdout + plan_gate.stderr
+    assert json.loads(plan_gate.stdout)["step"] == "plan_approval"
+    assert approval.returncode == 0, approval.stdout + approval.stderr
+    assert json.loads(approval.stdout)["step"] == "execute"
+
+    inspect = r'''
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+workspace = Path(sys.argv[2]).resolve()
+sys.path.insert(0, str(root))
+sys.path.insert(0, str(root / "taskplane"))
+import loop
+from taskplane import root_seed, settings
+
+state = loop.load(str(workspace))
+prepared = state["root_hygiene"]
+receipt = prepared["prepare_receipt"]
+seed = root_seed.load_root_seed(str(workspace), prepared["seed_ref"])
+configured = settings.load_settings(environment={})
+root_seed.verify_prepare_receipt(
+    seed, receipt, settings=configured,
+    expected_seed_ref=prepared["seed_ref"])
+routing, delivery_dispatch = loop.build_dispatch_lens_routing(
+    state, state["tasks"][0], workspace=str(workspace))
+print(json.dumps({
+    "step": state["step"], "settings_digest": state["settings_digest"],
+    "root_hygiene": prepared, "seed": seed,
+    "delivery_mode_receipt": state["delivery_mode_receipt"],
+    "routing": routing, "delivery_dispatch": delivery_dispatch,
+}, sort_keys=True))
+'''
+    inspected = subprocess.run(
+        [sys.executable, "-I", "-c", inspect, str(package_root),
+         str(workspace)],
+        cwd=case, text=True, encoding="utf-8", capture_output=True,
+        env=environment)
+    assert inspected.returncode == 0, inspected.stdout + inspected.stderr
+    observed = json.loads(inspected.stdout)
+    prepared_root = observed["root_hygiene"]
+    receipt = prepared_root["prepare_receipt"]
+    assert observed["step"] == "execute"
+    assert prepared_root["status"] == "prepared"
+    assert prepared_root["seed_ref"] == "waves/W2A-R1/root-seed.json"
+    assert receipt is not None
+    assert receipt["status"] == "prepared"
+    assert receipt["seed_fingerprint"] == prepared_root["seed_fingerprint"]
+    assert observed["seed"]["seed_fingerprint"] == \
+        prepared_root["seed_fingerprint"]
+    assert observed["seed"]["pickups"][0]["write_scopes"] == [safe_scope]
+    assert receipt["binding"]["settings_fingerprint"] == \
+        observed["settings_digest"]
+    delivery_receipt = observed["delivery_mode_receipt"]
+    expected_plan_fingerprint = hashlib.sha256(json.dumps(
+        plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    assert delivery_receipt["plan_fingerprint"] == expected_plan_fingerprint
+    assert observed["routing"]["lenses"] == []
+    assert observed["routing"]["context"]["delivery_mode_receipt"] == \
+        delivery_receipt["fingerprint"]
+    assert observed["delivery_dispatch"]["delivery_mode_receipt"] == \
+        delivery_receipt
+    assert observed["delivery_dispatch"]["automatic_lens_workers"] == []
+    assert observed["delivery_dispatch"]["automatic_lens_worker_count"] == 0
+
+    unsafe_scopes = {
+        "absolute": "/private/output/**",
+        "traversal": "build/../outside/**",
+        "native-separator": r"build\private\**",
+        "control": "build/unsafe\u001f/**",
+        "ambiguous": "build/[unterminated/**",
+    }
+    for name, unsafe_scope in unsafe_scopes.items():
+        _, unsafe_workspace, _, _, unsafe_gate, refused = approve_scope(
+            "unsafe-" + name, unsafe_scope)
+        seed_path = (
+            unsafe_workspace / "waves" / "W2A-R1" / "root-seed.json"
+        )
+        if unsafe_gate.returncode != 0:
+            refusal = json.loads(unsafe_gate.stdout)
+            assert refusal["error"].startswith("Definition of Ready failed")
+            assert refusal["step"] == "plan"
+            assert not seed_path.exists()
+            continue
+        assert json.loads(unsafe_gate.stdout)["step"] == "plan_approval"
+        assert refused.returncode == 1, refused.stdout + refused.stderr
+        refusal = json.loads(refused.stdout)
+        assert "seed pickup write scope" in refusal["error"]
+        assert refusal["step"] == "plan_approval"
+        assert not seed_path.exists()
+
+
 def _run_installed_semantics(package_root: Path, case: Path) -> dict:
     program = r'''
 import hashlib
@@ -57,7 +454,8 @@ case = Path(sys.argv[2]).resolve()
 sys.path.insert(0, str(root))
 sys.path.insert(0, str(root / "taskplane"))
 
-from taskplane import build_quality, failure_routing, run_artifacts, settings
+from taskplane import (build_quality, failure_routing, release_evidence,
+                       run_artifacts, settings)
 from taskplane import design_host_transport
 
 configured = settings.load_settings(environment={})
@@ -176,7 +574,7 @@ role = design_host_transport.portable_role_reference("tp-lens")
 assert role["path"] == "agents/tp-lens.md"
 
 print(json.dumps({
-    "version": "2.18.9",
+    "version": release_evidence.CURRENT_VERSION,
     "settings_digest": configured.digest,
     "routing": routing["next"],
     "validation_layers": progression["completed"],

@@ -25,6 +25,8 @@ CONFIDENCES = frozenset(("high", "medium", "low"))
 MAX_REASON_BYTES = 512
 RUNTIME_RECEIPT_SCHEMA = "taskplane.host-hook-receipt/v1"
 RUNTIME_RECEIPT_MAX_AGE_SECONDS = 300.0
+ROOT_SESSION_CAPABILITY_SCHEMA = \
+    "taskplane.host-root-session-capability/v1"
 
 
 def _bounded(value: object, limit: int = MAX_REASON_BYTES) -> str:
@@ -572,6 +574,7 @@ def probe_snapshot(
         "workflow_availability", "native_structured_output",
         "model_selection", "supported_model_aliases", "effort_selection",
         "supported_effort_values", "stable_event_identity",
+        "root_fresh_start", "root_cumulative_meter", "root_turn_mapping",
         *HOST_NATIVE_SURFACES,
     )
     for name in names:
@@ -652,6 +655,84 @@ def probe_snapshot(
         session_fingerprint=session_fp, observed_at=observed_at,
         capabilities=MappingProxyType(dict(rows)),
         effective_path=effective_path, fingerprint=fingerprint)
+
+
+def root_session_capability(
+        snapshot: HostCapabilitySnapshot, *, settings_digest: str,
+        native_snapshot: Mapping[str, Any] | None = None,
+        turn_id: object = None) \
+        -> dict[str, Any]:
+    """Project the authenticated host facts required by a root meter.
+
+    Configuration alone is insufficient: a ready effective hook path, a
+    bound host-session identity, a timestamp, and explicit fresh-start,
+    cumulative-counter, and one-observation/one-turn receipts are required.
+    """
+    digest = str(settings_digest or "").strip()
+    if len(digest) != 64 or any(character not in "0123456789abcdef"
+                                for character in digest):
+        raise ValueError("root-session capability settings digest is invalid")
+    missing: list[str] = []
+    checked_native = None
+    try:
+        if __package__:
+            from . import native_session_meter
+        else:  # pragma: no cover - direct installed module loading
+            import native_session_meter
+        checked_native = native_session_meter.validate_snapshot(
+            native_snapshot)
+        if native_session_meter.derive_session_role(checked_native) != "root":
+            missing.append("root_fresh_start")
+    except (TypeError, ValueError):
+        missing.extend(("root_fresh_start", "root_cumulative_meter"))
+    if isinstance(checked_native, Mapping):
+        native_session = str(checked_native.get("session_id") or "")
+        expected_session = hashlib.sha256(native_session.encode(
+            "utf-8")).hexdigest() if native_session else None
+        if checked_native.get("resumed") is not False or \
+                snapshot.session_fingerprint != expected_session:
+            missing.append("root_fresh_start")
+        usage = checked_native.get("usage")
+        if not isinstance(usage, Mapping) or isinstance(
+                usage.get("total_tokens"), bool) or not isinstance(
+                    usage.get("total_tokens"), int) or int(
+                        usage["total_tokens"]) <= 0:
+            missing.append("root_cumulative_meter")
+    if not isinstance(turn_id, str) or not turn_id.strip() or \
+            len(turn_id.encode("utf-8")) > 160:
+        missing.append("root_turn_mapping")
+    missing = sorted(set(missing))
+    supported = (
+        snapshot.host == "codex"
+        and
+        snapshot.effective_path in {"native_effective", "bridge_effective"}
+        and bool(snapshot.session_fingerprint)
+        and bool(snapshot.observed_at)
+        and not missing
+    )
+    material = {
+        "schema": ROOT_SESSION_CAPABILITY_SCHEMA,
+        "status": "supported" if supported else "unavailable",
+        "host": snapshot.host,
+        "host_version": snapshot.host_version,
+        "session_fingerprint": snapshot.session_fingerprint,
+        "observed_at": snapshot.observed_at,
+        "host_snapshot_fingerprint": snapshot.fingerprint,
+        "settings_digest": digest,
+        # Capability proves the host can support the lifecycle.  The current
+        # session role is established only from native lineage when the host
+        # seals an observation; this receipt must not pre-assert it.
+        "session_role": None,
+        "fresh_start": bool(supported),
+        "cumulative_meter": bool(supported),
+        "one_observation_one_turn": bool(supported),
+        "reason_code": None if supported else "root_capability_unavailable",
+        "missing": missing,
+    }
+    material["fingerprint"] = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    return material
 
 
 def _combined_status(rows: list[Observation]) -> str:

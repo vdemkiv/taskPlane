@@ -35,6 +35,17 @@ def _bridge(ws: str) -> None:
 
 
 class TestCapabilitySnapshot:
+    def test_environment_cannot_grant_root_session_capability(self):
+        observed = hc.observations_from_environment({
+            "TASKPLANE_ROOT_FRESH_START": "supported",
+            "TASKPLANE_ROOT_CUMULATIVE_METER": "supported",
+            "TASKPLANE_ROOT_TURN_MAPPING": "supported",
+        })
+
+        assert "root_fresh_start" not in observed
+        assert "root_cumulative_meter" not in observed
+        assert "root_turn_mapping" not in observed
+
     def test_duplicate_hook_paths_share_one_live_event_owner(self):
         ws = _repo()
         event = {"session_id": "session-1", "tool_use_id": "call-1",

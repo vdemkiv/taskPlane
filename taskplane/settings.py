@@ -15,16 +15,13 @@ from types import MappingProxyType
 from typing import Any
 
 from taskplane.authority import DECISION_SCHEMA
-from taskplane.settings_legacy import (
-    CURRENT_SCHEMA, LEGACY_SCHEMA, LegacySettingsError,
-    migrate_legacy_settings,
-)
-
-
 DEFAULT_SETTINGS_PATH = Path(__file__).with_name("operational-settings.json")
 DEFAULT_LENS_CATALOG_PATH = \
     Path(__file__).resolve().parent.parent / "lenses" / "catalog.json"
 RECEIPT_SCHEMA = "taskplane.operational-settings-receipt/v1"
+CURRENT_SCHEMA = "taskplane.operational-settings/v2"
+LEGACY_SCHEMA = "taskplane.operational-settings/v1"
+V1_SCHEMA = LEGACY_SCHEMA
 STAGES = (
     "product", "design", "plan", "build", "evaluate", "fix",
     "engineering",
@@ -36,12 +33,6 @@ PLAN_LENS_MAX = 4
 REASONING = frozenset(("inherit", "low", "medium", "high", "xhigh", "max", "ultra"))
 TEST_SELECTIONS = frozenset(("targeted", "affected", "all"))
 _SECRET_PARTS = ("secret", "password", "credential", "private_key", "access_token", "api_key")
-_LEGACY_FLAT_MARKERS = frozenset({
-    "stage_models", "stage_reasoning", "lens_routes", "lens_counts",
-    "build_shards", "build_concurrency", "test_backend", "test_selection",
-    "test_shards", "test_cache", "timeouts", "budgets",
-    "workflow_transport", "worker_inheritance",
-})
 _LEGACY_ENV_TIERS = {
     "CHEAP": ("evaluate", "fix"),
     "STANDARD": ("build",),
@@ -75,9 +66,12 @@ _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
     ("limits", "budgets"): frozenset((
         "max_actions", "lens_deep_max_actions", "lens_sweep_max_actions",
         "target_tokens", "max_tokens", "max_cost_usd")),
-    ("workflow",): frozenset(("transport", "worker_inheritance")),
+    ("workflow",): frozenset((
+        "transport", "worker_inheritance", "root_session")),
     ("workflow", "worker_inheritance"): frozenset((
         "model", "reasoning", "context")),
+    ("workflow", "root_session"): frozenset((
+        "resume", "seed", "seed_budget_tokens", "root_budget_tokens")),
     ("cleanup",): frozenset(("worktrees", "artifacts_days")),
     ("runtime",): frozenset((
         "audit_every", "inline_max_bytes", "orphan_ttl_seconds",
@@ -210,13 +204,38 @@ class LimitSettings:
 
 
 @dataclass(frozen=True)
+class RootSessionSettings:
+    resume: str
+    seed: str
+    seed_budget_tokens: int
+    root_budget_tokens: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "resume": self.resume,
+            "seed": self.seed,
+            "seed_budget_tokens": self.seed_budget_tokens,
+            "root_budget_tokens": self.root_budget_tokens,
+        }
+
+    def consumer_projection(self, consumer: str) -> dict[str, Any]:
+        """Project the complete policy only to its named Part A consumer."""
+        if consumer != "root-seed.prepare":
+            raise SettingsError(
+                f"unknown root_session consumer: {consumer}")
+        return self.to_dict()
+
+
+@dataclass(frozen=True)
 class WorkflowSettings:
     transport: str
     worker_inheritance: Mapping[str, bool | str]
+    root_session: RootSessionSettings
 
     def to_dict(self) -> dict[str, Any]:
         return {"transport": self.transport,
-                "worker_inheritance": dict(self.worker_inheritance)}
+                "worker_inheritance": dict(self.worker_inheritance),
+                "root_session": self.root_session.to_dict()}
 
 
 @dataclass(frozen=True)
@@ -546,6 +565,28 @@ def _validate_and_type(
     if inheritance_raw.get("context") != "none":
         raise SettingsError(
             "workflow worker context inheritance must be 'none'")
+    root_session_raw = _plain_mapping(
+        workflow_raw.get("root_session"), "workflow.root_session")
+    if root_session_raw.get("resume") != "forbidden":
+        raise SettingsError(
+            "workflow.root_session.resume must be 'forbidden'")
+    if root_session_raw.get("seed") != "digest-only":
+        raise SettingsError(
+            "workflow.root_session.seed must be 'digest-only'")
+    seed_budget_tokens = _positive_int(
+        root_session_raw.get("seed_budget_tokens"),
+        "workflow.root_session.seed_budget_tokens")
+    root_budget_tokens = _positive_int(
+        root_session_raw.get("root_budget_tokens"),
+        "workflow.root_session.root_budget_tokens")
+    if seed_budget_tokens >= root_budget_tokens:
+        raise SettingsError(
+            "workflow.root_session.seed_budget_tokens must be below "
+            "root_budget_tokens")
+    root_session = RootSessionSettings(
+        resume="forbidden", seed="digest-only",
+        seed_budget_tokens=seed_budget_tokens,
+        root_budget_tokens=root_budget_tokens)
 
     cleanup_raw = _plain_mapping(data.get("cleanup"), "cleanup")
     if cleanup_raw.get("worktrees") not in {"after-merge", "retain", "manual"}:
@@ -628,7 +669,11 @@ def _validate_and_type(
                   "cache": tests_raw["cache"],
                   "cache_max_age_seconds": cache_max_age_seconds},
         "limits": {"timeouts": timeouts, "budgets": budgets},
-        "workflow": {"transport": "native", "worker_inheritance": dict(inheritance_raw)},
+        "workflow": {
+            "transport": "native",
+            "worker_inheritance": dict(inheritance_raw),
+            "root_session": root_session.to_dict(),
+        },
         "cleanup": {"worktrees": cleanup_raw["worktrees"], "artifacts_days": artifacts_days},
         "runtime": {
             "audit_every": audit_every,
@@ -658,7 +703,8 @@ def _validate_and_type(
             backend, selection, test_shards,
             tests_raw["cache"], cache_max_age_seconds),
         limits=LimitSettings(_freeze(timeouts), _freeze(budgets)),
-        workflow=WorkflowSettings("native", _freeze(dict(inheritance_raw))),
+        workflow=WorkflowSettings(
+            "native", _freeze(dict(inheritance_raw)), root_session),
         cleanup=CleanupSettings(cleanup_raw["worktrees"], artifacts_days),
         runtime=RuntimeSettings(
             audit_every, inline_max_bytes, orphan_ttl_seconds, obligations,
@@ -679,6 +725,60 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SettingsError(f"cannot read valid settings JSON: {exc}") from exc
     return _plain_mapping(raw, "settings")
+
+
+def _migrate_v1_settings(
+    raw: Mapping[str, Any], defaults: Mapping[str, Any], *,
+    source_schema: str = V1_SCHEMA,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Insert only the Product-approved v2 Part A block.
+
+    The legacy digest is evidence and is never presented as the digest of the
+    effective v2 value.  This is the sole v1 compatibility path.
+    """
+    legacy = _plain_mapping(raw, "legacy v1 settings")
+    if legacy.get("schema") != V1_SCHEMA:
+        raise SettingsError("only operational settings v1 can migrate to v2")
+    workflow = _plain_mapping(legacy.get("workflow"), "legacy workflow")
+    if "root_session" in workflow:
+        raise SettingsError(
+            "legacy v1 settings cannot carry a root_session block")
+    root_defaults = _plain_mapping(
+        _plain_mapping(defaults.get("workflow"), "default workflow").get(
+            "root_session"), "default workflow.root_session")
+    migrated = _merge(legacy, {
+        "schema": CURRENT_SCHEMA,
+        "workflow": {"root_session": root_defaults},
+    })
+    return migrated, {
+        "from": source_schema,
+        "to": CURRENT_SCHEMA,
+        "legacy_digest": _digest(legacy),
+        "inserted": [
+            "workflow.root_session.resume",
+            "workflow.root_session.seed",
+            "workflow.root_session.seed_budget_tokens",
+            "workflow.root_session.root_budget_tokens",
+        ],
+    }
+
+
+def _require_v2_root_session(raw: Mapping[str, Any]) -> None:
+    workflow = _plain_mapping(raw.get("workflow"), "workflow")
+    root_session = _plain_mapping(
+        workflow.get("root_session"), "workflow.root_session")
+    expected = _SHAPE[("workflow", "root_session")]
+    if set(root_session) != set(expected):
+        missing = sorted(set(expected) - set(root_session))
+        extra = sorted(set(root_session) - set(expected))
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if extra:
+            detail.append("unknown " + ", ".join(extra))
+        raise SettingsError(
+            "workflow.root_session must contain exactly the operative Part A "
+            "keys: " + "; ".join(detail))
 
 
 def _read_lens_catalog() -> tuple[frozenset[str], str]:
@@ -718,15 +818,15 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     defaults = _read_json(DEFAULT_SETTINGS_PATH)
     raw = _read_json(Path(path))
     _reject_secrets(raw)
-    migration: dict[str, str] | None = None
-    if (raw.get("schema") == LEGACY_SCHEMA or raw.get("version") == 0
-            or any(key in raw for key in _LEGACY_FLAT_MARKERS)):
-        try:
-            raw, migration = migrate_legacy_settings(raw)
-        except LegacySettingsError as exc:
-            raise SettingsError(str(exc)) from exc
-    elif "version" in raw:
-        raise SettingsError("unknown settings version")
+    migration: dict[str, Any] | None = None
+    if raw.get("schema") == V1_SCHEMA:
+        raw, migration = _migrate_v1_settings(raw, defaults)
+    elif raw.get("schema") == CURRENT_SCHEMA:
+        _require_v2_root_session(raw)
+    else:
+        raise SettingsError(
+            "unsupported settings schema; only one-release v1 migration "
+            "and canonical v2 are accepted")
     _validate_keys(raw)
     effective = _merge(defaults, raw)
     precedence = ["defaults", "file"]
@@ -918,6 +1018,7 @@ __all__ = [
     "DashboardSettings", "DEFAULT_LENS_CATALOG_PATH", "DEFAULT_SETTINGS_PATH",
     "LensSettings", "LimitSettings", "ObservabilitySettings",
     "OperationalSettings", "OverrideSettings", "RuntimeSettings",
+    "RootSessionSettings",
     "REQUIRED_DASHBOARD_LIFECYCLE_EVENTS", "SettingsError",
     "StageLensPolicy", "StageSettings", "TestSettings", "WorkflowSettings",
     "STAGES", "ROUTED_LENS_STAGES", "ZERO_LENS_STAGES",

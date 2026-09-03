@@ -22,6 +22,13 @@ import glob_match
 import lens_route_policy
 import taskplane_lite as tp
 from path_roles import change_adds_no_test as _adds_no_test
+from language_references import (
+    LANGUAGE_REFERENCES as _LANGUAGE_REFERENCES,
+    detected_languages,
+    implementation_languages,
+    language_quality_registry,
+    language_references,
+)
 
 _CATALOG_CACHE: dict | None = None
 
@@ -35,117 +42,6 @@ _CATALOG_CACHE: dict | None = None
 # boundaries) is `backend`.
 _HARD_LENSES = {"security", "architecture", "scalability", "data-safety",
                 "backend", "dba", "sre", "privacy-compliance"}
-
-# Language depth is useful only when it reaches the worker.  Keep resolution
-# deterministic and data-shaped so Review, Build, Design, Claude and Codex all
-# receive the same repo-relative references without embedding their bodies in
-# every brief.
-_LANGUAGE_REFERENCES = {
-    "go": {
-        "extensions": (".go",), "manifests": ("go.mod", "go.sum"),
-        "references": {
-            "code-quality": {"path": "lenses/references/go-code-quality.md"},
-            "solution-design": {"path": "lenses/references/go-solution-design.md"},
-            "architecture": {"path": "lenses/references/go-engineering.md", "section": "Architecture"},
-            "backend": {"path": "lenses/references/go-engineering.md", "section": "Backend"},
-            "sre": {"path": "lenses/references/go-engineering.md", "section": "SRE"},
-            "security": {"path": "lenses/references/go-engineering.md", "section": "Security"},
-            "qa": {"path": "lenses/references/go-engineering.md", "section": "QA"},
-            "testability": {"path": "lenses/references/go-engineering.md", "section": "Testability"},
-            "scalability": {"path": "lenses/references/go-engineering.md", "section": "Scalability"},
-            "integrability": {"path": "lenses/references/go-engineering.md", "section": "Integrability"},
-            "data-safety": {"path": "lenses/references/go-engineering.md", "section": "Data safety"},
-        },
-    },
-    "python": {
-        "extensions": (".py",),
-        "manifests": ("pyproject.toml", "requirements.txt", "setup.py"),
-        "references": {
-            "code-quality": {"path": "lenses/references/python-code-quality.md"},
-            "solution-design": {"path": "lenses/references/python-solution-design.md"},
-            "scalability": {"path": "lenses/references/python-engineering.md", "section": "Scalability"},
-            "qa": {"path": "lenses/references/python-engineering.md", "section": "QA"},
-            "testability": {"path": "lenses/references/python-engineering.md", "section": "Testability"},
-            "devops": {"path": "lenses/references/python-engineering.md", "section": "Packaging and DevOps"},
-            "integrability": {"path": "lenses/references/python-engineering.md", "section": "Integrability"},
-            "security": {"path": "lenses/references/python-engineering.md", "section": "Security"},
-            "sre": {"path": "lenses/references/python-engineering.md", "section": "SRE"},
-        },
-    },
-    "typescript": {
-        "extensions": (".ts", ".tsx"),
-        "manifests": ("tsconfig.json",),
-        "references": {
-            "code-quality": {"path": "lenses/references/typescript-code-quality.md"},
-            "solution-design": {"path": "lenses/references/typescript-solution-design.md"},
-            "integrability": {"path": "lenses/references/typescript-engineering.md", "section": "Integrability"},
-            "devops": {"path": "lenses/references/typescript-engineering.md", "section": "DevOps"},
-            "scalability": {"path": "lenses/references/typescript-engineering.md", "section": "Scalability"},
-            "architecture": {"path": "lenses/references/typescript-engineering.md", "section": "Architecture"},
-            "frontend": {"path": "lenses/references/typescript-engineering.md", "section": "Frontend async"},
-            "security": {"path": "lenses/references/typescript-engineering.md", "section": "Security"},
-        },
-    },
-}
-
-
-def detected_languages(files) -> list[str]:
-    """Languages declared by file extensions or root/build manifests."""
-    paths = [str(p).replace("\\", "/") for p in files or []]
-    found = []
-    for language, spec in _LANGUAGE_REFERENCES.items():
-        present = any(
-            p.lower().endswith(tuple(spec["extensions"]))
-            or os.path.basename(p).lower() in spec["manifests"]
-            for p in paths)
-        if present:
-            found.append(language)
-    return found
-
-
-def _reference_record(language: str, lens_id: str, spec: dict) -> dict:
-    path = str(spec["path"]).replace("\\", "/")
-    plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    absolute = os.path.realpath(os.path.join(plugin_root, *path.split("/")))
-    if os.path.commonpath((os.path.realpath(plugin_root), absolute)) != \
-            os.path.realpath(plugin_root) or not os.path.isfile(absolute):
-        raise FileNotFoundError(f"language reference is missing or unsafe: {path}")
-    with open(absolute, "rb") as stream:
-        content = stream.read()
-    section = str(spec.get("section") or "")
-    if section:
-        heading = "## " + section
-        if heading not in content.decode("utf-8", errors="replace").splitlines():
-            raise ValueError(
-                f"language reference section is missing: {path}#{section}")
-    digest = hashlib.sha256(content).hexdigest()
-    row = {"language": language, "lens": lens_id, "path": path,
-           "content_sha256": digest}
-    if section:
-        row["section"] = section
-    return row
-
-
-def language_references(files, task_type: str | None = None,
-                        lens_ids=None) -> list[dict]:
-    """Resolve scoped, content-bound references from repo-relative paths.
-
-    The public default remains the code-quality reference for compatibility.
-    Callers pass their active lens ids and receive the complete
-    lens-owned set without widening which lenses execute.
-    """
-    wanted = ({"solution-design"} if task_type == "solution-design" else
-              ({str(x) for x in lens_ids} if lens_ids is not None else
-               {"code-quality"}))
-    refs = []
-    for language in detected_languages(files):
-        for lens_id, ref_spec in _LANGUAGE_REFERENCES[language][
-                "references"].items():
-            if lens_id in wanted:
-                refs.append(_reference_record(language, lens_id, ref_spec))
-    return sorted(refs, key=lambda row: (
-        row["language"], row["lens"], row["path"], row.get("section", "")))
-
 
 def workspace_language_markers(workspace: str | None,
                                scope_globs=None) -> list[str]:
@@ -1264,7 +1160,7 @@ def prime_scope(scope_globs, task_type: str | None = None,
 # artifacts). Lens review routes on the WORK, not the loop's own bookkeeping —
 # otherwise every run drags in product/PM lenses and inflates change size.
 LOOP_OWNED = (".taskplane", ".eval/", ".em-review/", "plan/", "specs/",
-              "design/", "knowledge/")
+              "design/", "knowledge/", "waves/")
 
 
 def route_git_diff(workspace: str, base: str = "HEAD",

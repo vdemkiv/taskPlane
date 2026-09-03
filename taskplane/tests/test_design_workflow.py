@@ -13,8 +13,6 @@ import lens  # noqa: E402
 import loop  # noqa: E402
 import requirements as reqs  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
-
-
 class DesignWorkflowTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -409,6 +407,25 @@ class DesignWorkflowTest(unittest.TestCase):
         self.assertNotIn("design/", tp.RUNTIME_OWNED)
         # v2.3.0: specs/ became runtime-owned (the pm step authors it), but
         # design evidence stays governed — the guardrail this test pins.
+
+def test_evaluate_evidence_children_do_not_count_as_catalog_lenses(
+        tmp_path, monkeypatch):
+    from taskplane import loop as public_loop, run_artifacts
+    from taskplane.tests.test_evaluate_child_evidence import (
+        ROOT, _binding, _impact, _run,
+    )
+
+    root, _ = _run(tmp_path, monkeypatch)
+    assignments = public_loop.start_evaluate_evidence_children(
+        workspace=str(ROOT), artifact_root=str(root), binding=_binding(),
+        impact_manifest=_impact())
+    entries = run_artifacts.load_manifest(root)["classes"][
+        "agent-activity"]["entries"]
+    assert len(assignments) == 2
+    assert {row["metadata"]["lens"] for row in entries} == {
+        "non-lens-language-code-quality", "non-lens-test-design"}
+    assert all(assignment["capabilities"]["verdict"] is False
+               for assignment in assignments)
 
 
 if __name__ == "__main__":

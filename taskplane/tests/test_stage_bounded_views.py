@@ -32,6 +32,7 @@ import retro  # noqa: E402
 import run_store  # noqa: E402
 import stage_entities  # noqa: E402
 import storage  # noqa: E402
+import wave_metrics  # noqa: E402
 
 
 RUN_ID = "run-bounded-views"
@@ -498,6 +499,27 @@ def test_retro_v4_aggregates_summaries_without_predecessor_trace_roots(
         '{"event":"hook_deny","reason":"must never be read"}\n',
         encoding="utf-8",
     )
+    state = loop.load(str(workspace))
+    state["root_hygiene_receipt"] = wave_metrics.finalize_root_hygiene_canary(
+        {
+            "status": "open", "conformance": "pass",
+            "canary_eligible": True, "override": None,
+            "host": {"adapter": "codex", "runtime": "native"},
+            "session_pseudonym": "1" * 64,
+            "seed_fingerprint": "2" * 64,
+            "host_start_fingerprint": "3" * 64,
+            "meter": {
+                "turns": 2, "first_observed_input_tokens": 40_000,
+                "peak_context_tokens": 45_000,
+                "context_rent_tokens": 25_000, "resumed": False,
+                "usage": {"total_tokens": 100_000,
+                          "cached_input_tokens": 50_000},
+            },
+        }, candidate_sha=subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=workspace,
+            text=True, encoding="utf-8", errors="replace").strip(),
+        worker_tokens=300_000)
+    loop.save(str(workspace), state)
     real_open = builtins.open
 
     def guarded_open(file, *args, **kwargs):
@@ -526,6 +548,12 @@ def test_retro_v4_aggregates_summaries_without_predecessor_trace_roots(
         "closed"
     assert report["stage_metrics"]["terminal"] >= 1
     assert report["stage_metrics"]["outcomes"]["closed"] >= 1
+    assert report["root_hygiene"]["totals"] == {
+        "root_tokens": 100_000, "worker_tokens": 300_000,
+        "wave_tokens": 400_000,
+    }
+    assert report["root_hygiene"]["receipt_fingerprint"] == \
+        state["root_hygiene_receipt"]["fingerprint"]
     assert report["trace_scope"] == {
         "source": "active-run-trace", "from_ts": None, "events": 0,
     }

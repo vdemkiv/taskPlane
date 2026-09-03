@@ -998,13 +998,48 @@ def validate_hook_manifest(value: object) -> dict:
     return value
 
 
+def _workspace_only_hooks(value: dict) -> dict:
+    """Make installed hooks inert until a workspace launcher exists."""
+    projected = json.loads(json.dumps(value))
+    posix_fallback = (
+        '; elif [ -n "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}" ]; then')
+    windows_fallback = " else if defined PLUGIN_ROOT "
+    for rows in projected["hooks"].values():
+        for row in rows:
+            for hook in row.get("hooks") or []:
+                command = str(hook.get("command") or "")
+                command_windows = str(hook.get("commandWindows") or "")
+                require(posix_fallback in command,
+                        "installed hook lacks the bounded plugin fallback")
+                require(windows_fallback in command_windows,
+                        "installed Windows hook lacks the bounded plugin fallback")
+                hook["command"] = (
+                    command.split(posix_fallback, 1)[0] +
+                    "; else exit 0; fi")
+                hook["commandWindows"] = (
+                    command_windows.split(windows_fallback, 1)[0] +
+                    " else (exit /b 0)")
+    return projected
+
+
 def load_hook_manifest() -> dict:
-    path = ROOT / "hooks" / "hooks.json"
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PackageError(f"cannot read hook manifest: {exc}") from exc
-    return validate_hook_manifest(value)
+    """Derive the installed OpenAI hook manifest from host authorities."""
+    manifests: dict[str, dict] = {}
+    for host, path in (
+            ("claude", ROOT / "hooks" / "hooks.json"),
+            ("codex", ROOT / ".codex" / "hooks.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PackageError(f"cannot read {host} hook manifest: {exc}") from exc
+        manifests[host] = validate_hook_manifest(value)
+    claude_hooks = manifests["claude"]["hooks"]
+    codex_hooks = manifests["codex"]["hooks"]
+    require("SessionStart" in claude_hooks and "SessionStart" in codex_hooks,
+            "hook manifests must declare SessionStart")
+    installed = json.loads(json.dumps(manifests["claude"]))
+    installed["hooks"]["SessionStart"] = codex_hooks["SessionStart"]
+    return validate_hook_manifest(_workspace_only_hooks(installed))
 
 
 def valid_https_url(value: object) -> bool:
@@ -1290,7 +1325,12 @@ def write_zip(files: list[Path], output: Path) -> None:
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.create_system = 3
                 info.external_attr = (stat.S_IFREG | 0o644) << 16
-                archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+                payload = path.read_bytes()
+                if relative == "hooks/hooks.json":
+                    payload = (json.dumps(
+                        load_hook_manifest(), indent=2,
+                    ) + "\n").encode("utf-8")
+                archive.writestr(info, payload, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
         os.replace(temporary, output)
     finally:
         if temporary.exists():
@@ -1381,13 +1421,24 @@ def validate_archive(
                     f"ZIP canonical authority is unreadable: {required}") from exc
             require(isinstance(authority, Mapping),
                     f"ZIP canonical authority is not an object: {required}")
+            is_operational_settings = required.endswith(
+                "operational-settings.json")
             expected_schema = (
-                "taskplane.operational-settings/v1"
-                if required.endswith("operational-settings.json")
+                "taskplane.operational-settings/v2"
+                if is_operational_settings
                 else "taskplane.operational-settings-inventory/v1"
             )
             require(authority.get("schema") == expected_schema,
                     f"ZIP canonical authority has an invalid schema: {required}")
+            if is_operational_settings:
+                expected_authority = load_json_object(
+                    expected_surface_root / required,
+                    "canonical operational settings authority",
+                )
+                require(
+                    authority == expected_authority,
+                    f"ZIP canonical authority does not match source: {required}",
+                )
         for required in release_surface_files:
             member = f"{ARCHIVE_ROOT}/{required}"
             require(member in names,
@@ -1421,6 +1472,10 @@ def validate_archive(
         except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise PackageError("ZIP contains an unreadable hooks/hooks.json") from exc
         validate_hook_manifest(hook_manifest)
+        require(
+            hook_manifest == load_hook_manifest(),
+            "ZIP installed SessionStart wiring does not match Codex authority",
+        )
         require(
             f"{ARCHIVE_ROOT}/docs/assets/taskplane-cowork-flow.gif" in names,
             "ZIP is missing the README flow-guide GIF",

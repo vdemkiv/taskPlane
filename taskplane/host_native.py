@@ -42,9 +42,15 @@ else:
         import host_capabilities as _host_capabilities
     SurfaceSelection = _host_capabilities.SurfaceSelection
 
+if TYPE_CHECKING or __package__:
+    from . import root_seed as root_seed_runtime
+else:  # pragma: no cover - direct installed module loading
+    import root_seed as root_seed_runtime
+
 
 SNAPSHOT_SCHEMA = "taskplane.host-surface-snapshot/v1"
 EVENT_SCHEMA = "taskplane.host-surface-event/v1"
+ROOT_SESSION_START_SCHEMA = "taskplane.host-root-session-start/v1"
 REVISION_ID_KEYS = (
     "target_fingerprint", "context_fingerprint", "findings_fingerprint",
     "canonical_revision",
@@ -53,6 +59,152 @@ REVISION_ID_KEYS = (
 
 class ContradictorySnapshotError(ValueError):
     """Two snapshots claim different canonical truth at one sequence."""
+
+
+class RootSessionReceiptError(ValueError):
+    """A host root-session receipt is missing, foreign, or unauthentic."""
+
+
+def _root_receipt_authority(value: bytes) -> bytes:
+    if not isinstance(value, bytes) or len(value) < 16:
+        raise RootSessionReceiptError(
+            "root-session authority must contain at least 16 bytes")
+    return value
+
+
+def _root_receipt_fingerprint(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def _root_receipt_authenticator(fingerprint: str, authority: bytes) -> str:
+    return hmac.new(
+        _root_receipt_authority(authority),
+        (ROOT_SESSION_START_SCHEMA + "\0" + fingerprint).encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def start_root_session(
+        capability: Mapping[str, Any], seed: Mapping[str, Any], *,
+        run_id: str, wave_id: str, candidate_sha: str,
+        settings_digest: str, session_pseudonym: str, started_at: str,
+        issuer_sequence: int, authority: bytes) -> dict[str, Any]:
+    """Seal the host-created fresh root against the prepared seed.
+
+    This is the private host boundary.  Taskplane core may verify the result,
+    but cannot mint one without the host-held authority.
+    """
+    try:
+        checked_seed = root_seed_runtime.validate_root_seed(seed)
+    except Exception as exc:
+        raise RootSessionReceiptError(str(exc)) from exc
+    if not isinstance(capability, Mapping) or capability.get("schema") != \
+            "taskplane.host-root-session-capability/v1" or \
+            capability.get("status") != "supported" or \
+            capability.get("fresh_start") is not True or \
+            capability.get("cumulative_meter") is not True or \
+            capability.get("one_observation_one_turn") is not True:
+        raise RootSessionReceiptError(
+            "host root-session capability is unsupported")
+    binding = {
+        "run_id": str(run_id), "wave_id": str(wave_id),
+        "candidate_sha": str(candidate_sha),
+        "settings_fingerprint": str(settings_digest),
+        "seed_fingerprint": str(checked_seed["seed_fingerprint"]),
+    }
+    expected = {
+        "run_id": checked_seed["run_id"],
+        "wave_id": checked_seed["wave_id"],
+        "candidate_sha": checked_seed["candidate_sha"],
+        "settings_fingerprint": checked_seed["settings_fingerprint"],
+        "seed_fingerprint": checked_seed["seed_fingerprint"],
+    }
+    if binding != expected or capability.get("settings_digest") != \
+            settings_digest:
+        raise RootSessionReceiptError(
+            "host root-session start binding does not match the prepared seed")
+    if not isinstance(issuer_sequence, int) or isinstance(
+            issuer_sequence, bool) or issuer_sequence < 1:
+        raise RootSessionReceiptError(
+            "host root-session issuer sequence must be positive")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(session_pseudonym or "")):
+        raise RootSessionReceiptError(
+            "host root-session pseudonym must be purpose scoped")
+    try:
+        parsed = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise RootSessionReceiptError(
+            "host root-session start time is invalid") from exc
+    if parsed.tzinfo is None:
+        raise RootSessionReceiptError(
+            "host root-session start time must include a timezone")
+    material = {
+        "schema": ROOT_SESSION_START_SCHEMA,
+        "status": "fresh",
+        "host": str(capability.get("host") or "unknown")[:32],
+        "host_version": capability.get("host_version"),
+        "capability_fingerprint": capability.get("fingerprint"),
+        **binding,
+        "session_role": "root",
+        "session_pseudonym": session_pseudonym,
+        "resumed": False,
+        "issuer_sequence": issuer_sequence,
+        "started_at": started_at,
+        "operation_id": checked_seed["operation_id"],
+    }
+    fingerprint = _root_receipt_fingerprint(material)
+    return {
+        **material, "fingerprint": fingerprint,
+        "authenticator": _root_receipt_authenticator(
+            fingerprint, authority),
+    }
+
+
+def validate_root_session_start(
+        value: Mapping[str, Any], *, authority: bytes,
+        seed: Mapping[str, Any]) -> dict[str, Any]:
+    """Verify one exact host-created fresh-root receipt."""
+    required = {
+        "schema", "status", "host", "host_version",
+        "capability_fingerprint", "run_id", "wave_id", "candidate_sha",
+        "settings_fingerprint", "seed_fingerprint", "session_role",
+        "session_pseudonym", "resumed", "issuer_sequence", "started_at",
+        "operation_id", "fingerprint", "authenticator",
+    }
+    if not isinstance(value, Mapping) or set(value) != required or \
+            value.get("schema") != ROOT_SESSION_START_SCHEMA:
+        raise RootSessionReceiptError(
+            "host root-session start receipt is invalid")
+    material = {key: copy.deepcopy(item) for key, item in value.items()
+                if key not in {"fingerprint", "authenticator"}}
+    fingerprint = _root_receipt_fingerprint(material)
+    if value.get("fingerprint") != fingerprint or not hmac.compare_digest(
+            str(value.get("authenticator") or ""),
+            _root_receipt_authenticator(fingerprint, authority)):
+        raise RootSessionReceiptError(
+            "host root-session start receipt is unauthentic")
+    rebuilt = start_root_session(
+        {"schema": "taskplane.host-root-session-capability/v1",
+         "status": "supported", "host": value["host"],
+         "host_version": value["host_version"],
+         "settings_digest": value["settings_fingerprint"],
+         "fresh_start": True, "cumulative_meter": True,
+         "one_observation_one_turn": True,
+         "fingerprint": value["capability_fingerprint"]},
+        seed, run_id=str(value["run_id"]), wave_id=str(value["wave_id"]),
+        candidate_sha=str(value["candidate_sha"]),
+        settings_digest=str(value["settings_fingerprint"]),
+        session_pseudonym=str(value["session_pseudonym"]),
+        started_at=str(value["started_at"]),
+        issuer_sequence=int(value["issuer_sequence"]), authority=authority)
+    if rebuilt != dict(value) or value.get("status") != "fresh" or \
+            value.get("session_role") != "root" or \
+            value.get("resumed") is not False:
+        raise RootSessionReceiptError(
+            "host root-session start receipt is stale or resumed")
+    return dict(value)
 
 
 def process_start_identity(pid: int) -> str:
@@ -1151,6 +1303,50 @@ def _canonical_fingerprint(value: object) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
+def _corrupt_dashboard_source(
+        *, mode: str, run_id: str, revision: object, target: str,
+        error: Exception, error_formatter: Callable[[Exception], str],
+) -> dict[str, Any]:
+    """Return one bounded corrupt source without reprocessing rejected input."""
+    def safe_text(value: object, fallback: str) -> str:
+        try:
+            text = value if isinstance(value, str) else str(value)
+        except Exception:
+            return fallback
+        text = text.encode(
+            "utf-8", errors="backslashreplace").decode("utf-8")
+        return text or fallback
+
+    try:
+        formatted = error_formatter(error)
+    except Exception as formatter_error:
+        formatted = (
+            f"{error.__class__.__name__}: dashboard source error; "
+            f"formatter failed: {formatter_error.__class__.__name__}")
+    if not isinstance(formatted, str):
+        try:
+            formatted = json.dumps(
+                formatted, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=True, allow_nan=False)
+        except (TypeError, ValueError):
+            formatted = (
+                f"{error.__class__.__name__}: error evidence is not "
+                "JSON serializable")
+    error_text = safe_text(
+        formatted, f"{error.__class__.__name__}: dashboard source error")
+    source = {
+        "mode": safe_text(mode, "managed"), "status": "corrupt",
+        "run_id": safe_text(run_id, "unknown-managed"),
+        "revision": safe_text(revision or "unknown", "unknown"),
+        "target": safe_text(target, "run"), "state": None,
+    }
+    return {**source,
+        "source_fingerprint": _canonical_fingerprint({
+            **source, "error": error_text}),
+        "evidence": [error_text],
+    }
+
+
 def _generated_at(value: float | str | None) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -1207,13 +1403,56 @@ def _v4_dashboard_source(
                 "run-manifest:" + _canonical_fingerprint(manifest)],
         }
     except Exception as exc:
-        return {
-            "mode": "v4", "status": "corrupt", "run_id": run_id,
-            "revision": str(manifest.get("revision") or "unknown"),
-            "target": "active-stage", "state": None,
-            "source_fingerprint": _canonical_fingerprint(manifest),
-            "evidence": [error_formatter(exc)],
-        }
+        return _corrupt_dashboard_source(
+            mode="v4", run_id=run_id, revision=manifest.get("revision"),
+            target="active-stage", error=exc,
+            error_formatter=error_formatter)
+
+
+def _v3_dashboard_source(
+        state: object, manifest: dict[str, Any], run_id: str, *,
+        error_formatter: Callable[[Exception], str],
+) -> dict[str, Any]:
+    try:
+        fingerprint = _canonical_fingerprint({
+            "manifest": manifest, "state": state,
+        })
+        if manifest.get("schema") != "taskplane.run/v3" or \
+                manifest.get("run_id") != run_id:
+            raise ValueError(
+                "run manifest identity/schema is not taskplane.run/v3")
+        if not isinstance(state, dict):
+            raise ValueError("managed v3 loop state is unavailable")
+        if state.get("run_id") not in (None, run_id):
+            raise ValueError(
+                "managed v3 loop state contradicts the run manifest identity")
+        raw_tasks = state.get("tasks")
+        tasks = [] if raw_tasks is None else raw_tasks
+        if not isinstance(tasks, list):
+            raise ValueError("managed v3 tasks are not a list")
+        task = None
+        index = state.get("current_task")
+        if isinstance(index, int) and 0 <= index < len(tasks):
+            task = tasks[index]
+            if not isinstance(task, Mapping):
+                raise ValueError("managed v3 selected task is not an object")
+        target = str((task or {}).get("id") or state.get("step") or "run")
+        manifest_fingerprint = _canonical_fingerprint(manifest)
+        state_fingerprint = _canonical_fingerprint(state)
+    except Exception as exc:
+        return _corrupt_dashboard_source(
+            mode="v3", run_id=run_id, revision=manifest.get("revision"),
+            target="run", error=exc, error_formatter=error_formatter)
+
+    return {
+        "mode": "v3", "status": "ready", "run_id": run_id,
+        "revision": str(manifest.get("revision") or
+                        state.get("baseline") or fingerprint),
+        "target": target,
+        "state": state, "source_fingerprint": fingerprint,
+        "evidence": ["run-manifest:" + manifest_fingerprint,
+                     "loop-state:" + state_fingerprint],
+    }
 
 
 def select_dashboard_source(
@@ -1223,53 +1462,85 @@ def select_dashboard_source(
         manifest_validator: Callable[..., Any],
         error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
-    """Select legacy or v4 once, then perform exactly one state read."""
+    """Select a locator-authenticated v3 or v4 adapter exactly once."""
     try:
         locator = locator_loader(ws)
     except Exception as exc:
-        return {
-            "mode": "v4", "status": "corrupt", "run_id": "unknown-v4",
-            "revision": "unknown", "target": "active-stage", "state": None,
-            "source_fingerprint": _canonical_fingerprint(
-                {"locator_error": error_formatter(exc)}),
-            "evidence": [error_formatter(exc)],
-        }
-    if isinstance(locator, dict):
-        run_id = str(locator.get("run_id") or "unknown-v4")
+        return _corrupt_dashboard_source(
+            mode="managed", run_id="unknown-managed", revision="unknown",
+            target="run", error=exc, error_formatter=error_formatter)
+    if locator is None:
         try:
-            manifest = manifest_loader(ws, locator)
+            state = legacy_loader(ws)
         except Exception as exc:
-            return {
-                "mode": "v4", "status": "corrupt", "run_id": run_id,
-                "revision": "unknown", "target": "active-stage",
-                "state": None,
-                "source_fingerprint": _canonical_fingerprint(
-                    {"run_id": run_id, "error": error_formatter(exc)}),
-                "evidence": [error_formatter(exc)],
-            }
+            return _corrupt_dashboard_source(
+                mode="legacy", run_id="unknown-legacy", revision="unknown",
+                target="loop", error=exc, error_formatter=error_formatter)
+        if state is None:
+            return {"mode": "none", "status": "no_active", "state": None,
+                    "evidence": []}
+        if not isinstance(state, dict) or not isinstance(
+                state.get("run_id"), str) or not state["run_id"]:
+            error = ValueError("legacy loop state has no valid run identity")
+            return _corrupt_dashboard_source(
+                mode="legacy", run_id="unknown-legacy", revision="unknown",
+                target="loop", error=error, error_formatter=error_formatter)
+        try:
+            state_fingerprint = _canonical_fingerprint(state)
+        except Exception as exc:
+            return _corrupt_dashboard_source(
+                mode="legacy", run_id=str(state["run_id"]),
+                revision="unknown", target="loop", error=exc,
+                error_formatter=error_formatter)
+        return {
+            "mode": "legacy", "status": "ready",
+            "run_id": str(state["run_id"]),
+            "revision": str(state.get("baseline") or state_fingerprint),
+            "target": "loop", "state": state,
+            "source_fingerprint": state_fingerprint,
+            "evidence": ["loop-state:" + state_fingerprint],
+        }
+    if not isinstance(locator, dict) or not isinstance(
+            locator.get("run_id"), str) or not locator["run_id"]:
+        error = ValueError("workspace locator has no valid run identity")
+        return _corrupt_dashboard_source(
+            mode="managed", run_id="unknown-managed", revision="unknown",
+            target="run", error=error, error_formatter=error_formatter)
+
+    run_id = locator["run_id"]
+    try:
+        manifest = manifest_loader(ws, locator)
+    except Exception as exc:
+        return _corrupt_dashboard_source(
+            mode="managed", run_id=run_id, revision="unknown", target="run",
+            error=exc, error_formatter=error_formatter)
+    if not isinstance(manifest, dict):
+        error = ValueError("run manifest is not an object")
+        return _corrupt_dashboard_source(
+            mode="managed", run_id=run_id, revision="unknown", target="run",
+            error=error, error_formatter=error_formatter)
+    schema = manifest.get("schema")
+    if schema == "taskplane.run/v4":
         return _v4_dashboard_source(
             manifest, run_id, manifest_validator=manifest_validator,
             error_formatter=error_formatter)
-    state = legacy_loader(ws)
-    if state is None:
-        return {"mode": "none", "status": "no_active", "state": None,
-                "evidence": []}
-    fingerprint = _canonical_fingerprint(state)
-    task = None
-    tasks = state.get("tasks") or []
-    index = state.get("current_task")
-    if isinstance(index, int) and 0 <= index < len(tasks):
-        task = tasks[index]
-    run_id = str(state.get("run_id") or "legacy-" + _canonical_fingerprint({
-        "goal": state.get("goal"), "baseline": state.get("baseline"),
-    })[:24])
-    return {
-        "mode": "legacy", "status": "ready", "run_id": run_id,
-        "revision": str(state.get("baseline") or fingerprint),
-        "target": str((task or {}).get("id") or state.get("step") or "run"),
-        "state": state, "source_fingerprint": fingerprint,
-        "evidence": ["loop-state:" + fingerprint],
-    }
+    if schema == "taskplane.run/v3":
+        if manifest.get("run_id") != run_id:
+            return _v3_dashboard_source(
+                None, manifest, run_id, error_formatter=error_formatter)
+        try:
+            state = legacy_loader(ws)
+        except Exception as exc:
+            return _corrupt_dashboard_source(
+                mode="v3", run_id=run_id,
+                revision=manifest.get("revision"), target="run", error=exc,
+                error_formatter=error_formatter)
+        return _v3_dashboard_source(
+            state, manifest, run_id, error_formatter=error_formatter)
+    error = ValueError("run manifest schema is not taskplane.run/v3 or v4")
+    return _corrupt_dashboard_source(
+        mode="managed", run_id=run_id, revision=manifest.get("revision"),
+        target="run", error=error, error_formatter=error_formatter)
 
 
 def _bounded_loop_values(
@@ -1478,6 +1749,8 @@ def refresh_dashboard_snapshot(
     }
     graph_receipt = (_canonical_fingerprint(graph_components)
                      if graph_components else None)
+    root_hygiene_receipt = state.get("root_hygiene_receipt") \
+        if state is not None else None
     provenance = {
         "schema": "taskplane.dashboard-provenance/v1",
         "run_id": str(source["run_id"]),
@@ -1503,6 +1776,9 @@ def refresh_dashboard_snapshot(
         **phase_values,
         "provenance": provenance,
         **metrics_values,
+        **({"root_hygiene_receipt": copy.deepcopy(root_hygiene_receipt)}
+           if isinstance(root_hygiene_receipt, Mapping)
+           else {}),
     }
     safe_actions: tuple[str, ...] = ()
     metrics_signoff_ready = \

@@ -19,19 +19,29 @@ import lens  # noqa: E402
 import depgraph  # noqa: E402
 import evaluator_health  # noqa: E402
 import evaluation_output  # noqa: E402
+import evaluate_child_evidence  # noqa: E402
 import review  # noqa: E402
 import review_evidence  # noqa: E402
+import runnability  # noqa: E402
 import storage as runtime_storage  # noqa: E402
 import checkpoint  # noqa: E402
 import build_c  # noqa: E402
 from tests import run_lr10_parallel as lr10_runner  # noqa: E402
+from tests.root_session_fixture import open_delivery_root  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _isolate_loop_test_runtime(monkeypatch):
     """Give each loop journey a stable host identity and isolated store."""
+    from taskplane import evaluate_child_evidence as packaged_evidence
+
+    # A checkout review bundle is a production optimization, not test state.
+    # Earlier modules exercise module replacement and private checkout loading;
+    # never let their process-level cache choose this test's runtime.
+    monkeypatch.setattr(loop, "_REVIEW_RUNTIME_BUNDLE", None)
     monkeypatch.delenv("TASKPLANE_NO_SUITE_CACHE", raising=False)
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "test-loop-session")
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
     original_load_locator = runtime_storage.load_workspace_locator
     original_write_locator = runtime_storage.write_workspace_locator
     locator_cache = {}
@@ -59,6 +69,75 @@ def _isolate_loop_test_runtime(monkeypatch):
         runtime_storage, "load_workspace_locator", load_locator_once)
     monkeypatch.setattr(
         runtime_storage, "write_workspace_locator", write_locator_and_invalidate)
+    original_next_action = loop.next_action
+    original_wave = loop.wave
+
+    def with_open_root(fn, ws, *args, **kwargs):
+        state = loop.load(ws) or {}
+        root = state.get("root_hygiene")
+        if state.get("step") == "execute" or (
+                isinstance(root, dict)
+                and root.get("status") in {"prepared", "open"}):
+            kwargs.setdefault(
+                "root_observation_authority", open_delivery_root(ws))
+        return fn(ws, *args, **kwargs)
+
+    def next_with_open_root(ws, *args, **kwargs):
+        return with_open_root(original_next_action, ws, *args, **kwargs)
+
+    def wave_with_open_root(ws, *args, **kwargs):
+        return with_open_root(original_wave, ws, *args, **kwargs)
+
+    next_with_open_root.__wrapped__ = getattr(
+        original_next_action, "__wrapped__", original_next_action)
+    wave_with_open_root.__wrapped__ = getattr(
+        original_wave, "__wrapped__", original_wave)
+    monkeypatch.setattr(loop, "next_action", next_with_open_root)
+    monkeypatch.setattr(loop, "wave", wave_with_open_root)
+
+    def quality_probe(_root, languages, **_kwargs):
+        commands = (
+            ("lint", "ruff", ["python3", "-m", "ruff", "check"]),
+            ("format", "ruff", ["python3", "-m", "ruff", "format", "--check"]),
+            ("strict-typing", "mypy", ["python3", "-m", "mypy", "--strict"]),
+            ("security-static", "bandit",
+             ["python3", "-m", "bandit", "-r", "src"]),
+        )
+        return [{
+            "language": language, "fingerprint": "9" * 64,
+            "checks": [{"id": check_id, "tool": tool, "argv": argv,
+                        "tool_version": "test-version",
+                        "verdict": runnability.RUNS}
+                       for check_id, tool, argv in commands],
+        } for language in languages]
+
+    def governed_receipt(_workspace, authorization, handle, *,
+                         assignment_binding, argv):
+        assert authorization == "test-authority"
+        payload = json.loads(handle.removeprefix("test:"))
+        assert payload["argv"] == argv
+        assert payload["task_id"] == assignment_binding["task_id"]
+        return {
+            "identity": {"run_id": payload["run_id"],
+                         "task_id": payload["task_id"]},
+            "source_sha": assignment_binding["candidate_sha"],
+            "target_sha": assignment_binding["candidate_sha"],
+            "plan_fingerprint": assignment_binding["plan_fingerprint"],
+            "runtime_argv": argv, "state": "succeeded", "exit_code": 0,
+            "receipt_digest": hashlib.sha256(handle.encode()).hexdigest(),
+        }
+
+    monkeypatch.setattr(
+        runnability, "probe_language_quality_toolchains", quality_probe)
+    monkeypatch.setattr(
+        packaged_evidence.runnability,
+        "probe_language_quality_toolchains", quality_probe)
+    monkeypatch.setattr(
+        evaluate_child_evidence.governed_commands,
+        "governed_command_execution_evidence", governed_receipt)
+    monkeypatch.setattr(
+        packaged_evidence.governed_commands,
+        "governed_command_execution_evidence", governed_receipt)
 
 
 def _install_test_launcher(workspace):
@@ -70,22 +149,56 @@ def _install_test_launcher(workspace):
 
 
 def git_ws(tmp, tasks):
+    import requirements as reqs
+
     ws = os.path.join(tmp, "ws")
     os.makedirs(os.path.join(ws, "plan"))
     os.makedirs(os.path.join(ws, "src", "todo"))
+    os.makedirs(os.path.join(ws, "tests"))
     open(os.path.join(ws, "src", "todo", "a.py"), "w", encoding="utf-8").write("x=1\n")
+    open(os.path.join(ws, "tests", "test_current_contract.py"), "w",
+         encoding="utf-8").write(
+             "from src.todo.a import complete\n\n"
+             "def test_complete_marks_done():\n"
+             "    assert complete() is True\n")
     subprocess.run(["git", "init", "-q"], cwd=ws)
     subprocess.run(["git", "config", "user.email", "e@e"], cwd=ws)
     subprocess.run(["git", "config", "user.name", "t"], cwd=ws)
     subprocess.run(["git", "add", "-A"], cwd=ws)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=ws)
     _install_test_launcher(ws)
-    json.dump({"tasks": tasks}, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
+    planned = json.loads(json.dumps(tasks))
+    marked = [row for row in planned if row.get("req") == "R-TEST"]
+    if marked:
+        requirement = reqs.record_requirement(
+            ws, "current complete contract", functional=["complete marks done"],
+            acceptance=["complete() marks done"],
+            context_files=["src/todo/**", "tests/test_current_contract.py"])
+        for row in marked:
+            row["req"] = requirement["id"]
+    json.dump({"tasks": planned}, open(
+        os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
     return ws
 
 
-TASK = {"id": "t1", "scope": ["src/todo/**"], "tests": "true",
-        "criteria": ["complete() marks done"]}
+TASK_SELECTOR = "tests/test_current_contract.py::test_complete_marks_done"
+TASK = {
+    "id": "t1", "req": "R-TEST",
+    "scope": ["src/todo/**", "tests/test_current_contract.py"],
+    "tests": f"python3 -m pytest -q {TASK_SELECTOR}",
+    "criteria": ["complete() marks done"],
+    "evaluation_evidence_edges": [{
+        "producer": "src/todo/a.py",
+        "consumer": "tests/test_current_contract.py",
+        "selector": TASK_SELECTOR,
+        "freshness_inputs": ["candidate_sha", "source_tree"],
+        "severed_edge": {
+            "mutation": "remove complete from src.todo.a",
+            "selector": TASK_SELECTOR,
+        },
+    }],
+    "changed_interfaces": [], "classified_failures": [],
+}
 
 
 class TestProgramOrder(unittest.TestCase):
@@ -631,18 +744,38 @@ def submit_gate(ws, outcome="pass", task_id=None):
     submit = getattr(loop.submit, "__wrapped__", loop.submit)
     gate = getattr(loop.gate, "__wrapped__", loop.gate)
     state = loop.load(ws) or {}
+    task = loop._current_task(state)
+    if outcome == "pass" and state.get("step") == "execute" and \
+            not state.get("parallel") and \
+            isinstance((task or {}).get("evaluation_evidence_edges"), list):
+        producer = task["evaluation_evidence_edges"][0]["producer"]
+        target = os.path.join(ws, producer)
+        with open(target, encoding="utf-8") as stream:
+            source = stream.read()
+        if "def complete(" not in source:
+            with open(target, "a", encoding="utf-8") as stream:
+                stream.write("\ndef complete():\n    return True\n")
     if outcome == "pass" and state.get("step") == "evaluate":
         collect_zero_test_kernel(ws)
         with unittest.mock.patch.object(
                 loop, "_collect_zero_lens_evaluate_before_guidance",
                 return_value={"fingerprint": "a" * 64}), \
                 unittest.mock.patch.object(
-                    loop, "_producer_observation_errors", return_value=[]):
+                    loop, "_producer_observation_errors", return_value=[]), \
+                unittest.mock.patch.object(
+                    loop.runtime_eval, "guide_loop",
+                    return_value={"status": "on_path", "recovered": False}):
             submitted = submit(ws, outcome, task_id=task_id)
             if "error" in submitted:
                 return submitted
             return gate(ws, outcome, task_id=task_id)
-    submitted = submit(ws, outcome, task_id=task_id)
+    if outcome == "pass" and state.get("step") == "em":
+        with unittest.mock.patch.object(
+                loop.runtime_eval, "guide_loop",
+                return_value={"status": "on_path", "recovered": False}):
+            submitted = submit(ws, outcome, task_id=task_id)
+    else:
+        submitted = submit(ws, outcome, task_id=task_id)
     if "error" in submitted:
         return submitted
     return gate(ws, outcome, task_id=task_id)
@@ -651,7 +784,8 @@ def submit_gate(ws, outcome="pass", task_id=None):
 def write_verdict(ws):
     state = loop.load(ws)
     task = state["tasks"][state["current_task"]]
-    act_ws = task.get("workspace") or ws
+    act_ws = (task.get("workspace") if state.get("parallel") and
+              state.get("step") == "evaluate" else None) or ws
     binding = loop.review_kernel_binding(state, "evaluate", task)
     kernel = (review._load_state(
         str(binding.get("workspace") or act_ws), binding["run_id"])
@@ -672,24 +806,117 @@ def write_verdict(ws):
                 if r != own]
     contracts = [c.get("id") if isinstance(c, dict) else c
                  for c in (task.get("contracts") or [])]
-    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w", encoding="utf-8") as f:
-        json.dump({"schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
-                   "task": task["id"],
-                   "requirement": task.get("req") or
-                                  state.get("requirement_id") or "",
-                   "verdict": "pass",
-                   "criteria": [{"criterion": c, "status": "met",
-                                  "evidence": "verified by test"}
-                                for c in criteria],
-                   "graph": {
-                       "dispositions": [
-                           {"node": node, "status": "tested",
-                            "evidence": "covered by declared task tests"}
-                           for node in direct],
-                       "requirements_checked": affected,
-                       "contracts_checked": contracts,
-                   },
-                   "failures": []}, f)
+    verdict = {
+        "schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        "task": task["id"],
+        "requirement": task.get("req") or state.get("requirement_id") or "",
+        "verdict": "pass",
+        "evaluation": {"status": "complete", "reason_code": "none",
+                       "detail": "durable evidence consumed"},
+        "criteria": [{"criterion": c, "status": "met",
+                      "evidence": "verified by test"} for c in criteria],
+        "graph": {
+            "dispositions": [
+                {"node": node, "status": "tested",
+                 "evidence": "covered by declared task tests"}
+                for node in direct],
+            "requirements_checked": affected,
+            "contracts_checked": contracts,
+        },
+        "failures": [],
+    }
+    route = state.get("evaluate_child_evidence")
+    if route:
+        assignments = route["assignments"]
+        results = _evaluate_evidence_results(assignments, route["run_id"])
+        for assignment in assignments:
+            kind = assignment["producer_kind"]
+            loop.observe_evaluate_evidence_child_start(
+                artifact_root=route["artifact_root"], assignment=assignment,
+                dispatch_id="intent-" + kind,
+                native_task_name="test-" + kind)
+            loop.complete_evaluate_evidence_child(
+                workspace=route["workspace"],
+                artifact_root=route["artifact_root"], run_id=route["run_id"],
+                assignment=assignment, result=results[kind], work_units=2)
+        verdict = evaluation_output.attach_child_evidence(
+            verdict, run_id=route["run_id"],
+            evaluator_attempt_id=route["evaluator_attempt_id"],
+            expected_binding=route["binding"])
+    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w",
+              encoding="utf-8") as f:
+        json.dump(verdict, f)
+
+
+def _evidence_execution(assignment, run_id, argv, label):
+    return {"authorization": "test-authority", "handle": "test:" + json.dumps(
+        {"argv": argv, "run_id": run_id,
+         "task_id": assignment["binding"]["task_id"], "label": label},
+        sort_keys=True, separators=(",", ":"))}
+
+
+def _evaluate_evidence_results(assignments, run_id):
+    language = next(row for row in assignments if row["producer_kind"] ==
+                    evaluate_child_evidence.LANGUAGE_PRODUCER)
+    design = next(row for row in assignments if row["producer_kind"] ==
+                  evaluate_child_evidence.TEST_DESIGN_PRODUCER)
+    quality = {
+        "schema": evaluate_child_evidence.LANGUAGE_RESULT_SCHEMA,
+        "producer_kind": evaluate_child_evidence.LANGUAGE_PRODUCER,
+        "reuse_key_digest": language["reuse_key_digest"],
+        "language_coverage": [{
+            "language": item["language"],
+            "reference_id": item["reference"]["path"],
+            "reference_sha256": item["reference"]["content_sha256"],
+            "toolchain_fingerprint": item["toolchain_fingerprint"],
+            "inspected_files": item["implementation_files"],
+            "command_receipts": [
+                _evidence_execution(
+                    language, run_id, command["argv"],
+                    "quality:" + command["id"])
+                for command in item["required_commands"]],
+            "findings": [],
+        } for item in language["language_obligations"]],
+    }
+    obligations = design["test_obligations"]
+    test_design = {
+        "schema": evaluate_child_evidence.TEST_DESIGN_RESULT_SCHEMA,
+        "producer_kind": evaluate_child_evidence.TEST_DESIGN_PRODUCER,
+        "reuse_key_digest": design["reuse_key_digest"],
+        "current_value": [{
+            **test, "classification": "protects-current-contract",
+            "execution": _evidence_execution(
+                design, run_id,
+                ["python3", "-m", "pytest", "-q", test["selector"]],
+                "current:" + test["selector"]),
+        } for test in obligations["tests"]],
+        "producer_consumers": [{
+            "producer": edge["producer"], "consumer": edge["consumer"],
+            "selector": edge["selector"],
+            "execution": _evidence_execution(
+                design, run_id,
+                ["python3", "-m", "pytest", "-q", edge["selector"]],
+                "edge:" + edge["producer"]),
+            "severed_edge_execution": _evidence_execution(
+                design, run_id,
+                ["python3", "-m", "pytest", "-q",
+                 edge["severed_edge"]["selector"]],
+                "severed:" + edge["producer"]),
+        } for edge in obligations["producer_consumer_edges"]],
+        "same_slice_fixtures": [{
+            "producer": row["producer"], "path": row["fixture"]["path"],
+            "slice": row["slice"],
+        } for row in obligations["changed_interfaces"]],
+        "failure_classifications": [{
+            "id": row["id"], "classification": row["classification"],
+            "reason": "classified before repair", "owner": "product-code",
+            "cluster": "test-fixture",
+        } for row in obligations["failures"]],
+    }
+    return {
+        evaluate_child_evidence.LANGUAGE_PRODUCER: quality,
+        evaluate_child_evidence.TEST_DESIGN_PRODUCER: test_design,
+    }
 
 
 def collect_zero_test_kernel(ws):
@@ -706,10 +933,13 @@ def collect_zero_test_kernel(ws):
     with open(runtime_storage.evaluation_path(kernel_ws),
               encoding="utf-8") as stream:
         verdict = json.load(stream)
+    route = state.get("evaluate_child_evidence") or {}
     empty = review.collect_expected_set(
         run_id=binding["run_id"], task_id=task["id"], stage="Evaluate",
         expected_lenses=[], collected_lenses=[], result=verdict,
-        result_validator=evaluation_output.validate_evaluator_value,
+        result_validator=lambda value: evaluation_output.validate_evaluator_value(
+            value, expected_lenses=[],
+            expected_evidence_binding=route.get("binding") or {}),
         producer_observation_fingerprint="a" * 64)
     review.collect_review(
         kernel_ws, publish=False, run_id=binding["run_id"],
@@ -720,6 +950,13 @@ def pass_eval(ws):
     write_kernel_results(ws)
     write_verdict(ws)
     return submit_gate(ws, "pass")
+
+
+def commit_integration(ws):
+    subprocess.run(["git", "add", "-A"], cwd=ws, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=e@e", "-c", "user.name=t", "commit",
+         "-qm", "integrate candidate"], cwd=ws, check=True)
 
 
 def write_kernel_results(ws):
@@ -742,6 +979,7 @@ def write_kernel_results(ws):
     store = review_evidence.ArtifactStore(review_ws)
     for slot in manifest["slots"]:
         lease = store.read(slot["lease"])
+        brief = store.read(slot["brief"])
         bootstrap = slot["contract_bootstrap"]
         payload = {
             **lease,
@@ -755,6 +993,8 @@ def write_kernel_results(ws):
                 for lens_id in lease["lens_ids"]
             ],
             "findings": [],
+            **({"references_applied": list(brief["language_references"])}
+               if brief.get("language_references") else {}),
         }
         content = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         event = {
@@ -1345,6 +1585,9 @@ class TestLoop(unittest.TestCase):
         missing or empty, the plan gate must refuse to advance — the exact
         hallucinated-completion failure the ungoverned control run showed."""
         ws = git_ws(self.tmp, [TASK])
+        with open(os.path.join(ws, "plan", "tasks.json"),
+                  encoding="utf-8") as stream:
+            real_plan = json.load(stream)
         os.remove(os.path.join(ws, "plan", "tasks.json"))   # phantom plan
         loop.init(ws, "g", spec_path="specs/spec.md")       # → plan
         loop.next_action(ws)
@@ -1353,7 +1596,7 @@ class TestLoop(unittest.TestCase):
         self.assertIn("plan/tasks.json", r["error"])
         self.assertEqual(loop.load(ws)["step"], "plan")     # did NOT advance
         # writing a real plan unblocks the same gate
-        json.dump({"tasks": [TASK]},
+        json.dump(real_plan,
                   open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
         loop.next_action(ws)
         r = loop.gate(ws, "pass")
@@ -1459,7 +1702,7 @@ class TestLoop(unittest.TestCase):
                 json.dump({
                     "schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
                     "task": "t1",
-                    "requirement": "",
+                    "requirement": TASK["req"],
                     "verdict": "pass",
                     "criteria": [{
                         "criterion": TASK["criteria"][0],
@@ -1722,6 +1965,7 @@ class TestLoop(unittest.TestCase):
         loop.next_action(ws); evaluated = pass_eval(ws)        # evaluate → em
         self.assertNotIn("error", evaluated, evaluated)
         self.assertEqual(loop.load(ws)["step"], "em")
+        commit_integration(ws)
         em_action = loop.next_action(ws)
         em_slot = em_action["contract_bootstrap"]["task_slot"]
         self.assertEqual(tp.list_task_slots(ws), [em_slot])
@@ -1801,6 +2045,7 @@ class TestLoop(unittest.TestCase):
         loop.next_action(ws); loop.gate(ws, "pass")
         loop.next_action(ws); submit_gate(ws, "pass")
         loop.next_action(ws); pass_eval(ws)
+        commit_integration(ws)
         loop.next_action(ws); pass_em(ws)
 
         sealed = loop.load(ws)["signoff_evidence"]
@@ -2037,15 +2282,33 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         ws = tempfile.mkdtemp()
         os.makedirs(os.path.join(ws, "plan"))
         os.makedirs(os.path.join(ws, "src", "auth"))
+        os.makedirs(os.path.join(ws, "tests"))
         with open(os.path.join(ws, "src", "auth", "a.py"), "w", encoding="utf-8") as f:
             f.write("x=1\n")
+        with open(os.path.join(ws, "tests", "test_auth.py"), "w",
+                  encoding="utf-8") as f:
+            f.write("from src.auth.b import authorize\n\n"
+                    "def test_authorize():\n"
+                    "    assert authorize() is True\n")
         for c in (["init", "-q"], ["add", "-A"]):
             subprocess.run(["git", *c], cwd=ws)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
-        task = {"id": "t1", "scope": [scope], "tests": "true",
+        selector = "tests/test_auth.py::test_authorize"
+        task = {"id": "t1", "scope": [scope, "tests/test_auth.py"],
+                "tests": f"python3 -m pytest -q {selector}",
                 "criteria": (["valid creds -> session"] if with_req else
-                             ["the scoped behavior is complete"])}
+                             ["the scoped behavior is complete"]),
+                "evaluation_evidence_edges": [{
+                    "producer": "src/auth/b.py",
+                    "consumer": "tests/test_auth.py", "selector": selector,
+                    "freshness_inputs": ["candidate_sha", "source_tree"],
+                    "severed_edge": {
+                        "mutation": "remove authorize",
+                        "selector": selector,
+                    },
+                }],
+                "changed_interfaces": [], "classified_failures": []}
         if high_cost:
             task["high_cost"] = True
         if with_req:
@@ -2207,26 +2470,66 @@ class TestParallelExecution(unittest.TestCase):
     OWN contract in its OWN worktree — the harness is per agent."""
 
     def _ws(self):
+        import requirements as reqs
+
         ws = tempfile.mkdtemp()
         os.makedirs(os.path.join(ws, "plan"))
+        os.makedirs(os.path.join(ws, "tests"))
         for d in ("src/a", "src/b", "src/c"):
             os.makedirs(os.path.join(ws, d))
             with open(os.path.join(ws, d, "m.py"), "w", encoding="utf-8") as f:
                 f.write("x=1\n")
+        for task_id, modules in {
+                "t1": ("a",), "t2": ("b",),
+                "t3": ("a", "c"), "t4": ("c",)}.items():
+            import_rows = "\n".join(
+                f"from src.{module}.m import x as {module}_x"
+                for module in modules)
+            checks = " and ".join(f"{module}_x >= 1" for module in modules)
+            with open(os.path.join(ws, "tests", f"test_{task_id}.py"), "w",
+                      encoding="utf-8") as f:
+                f.write(f"{import_rows}\n\ndef test_{task_id}():\n"
+                        f"    assert {checks}\n")
         subprocess.run(["git", "init", "-q"], cwd=ws)
         subprocess.run(["git", "add", "-A"], cwd=ws)
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=ws)
         _install_test_launcher(ws)
+        requirement = reqs.record_requirement(
+            ws, "parallel task completion",
+            functional=["complete each planned task"],
+            acceptance=[
+                "task t1 is complete", "task t2 is complete",
+                "task t3 is complete", "task t4 is complete"],
+            context_files=["src/**", "tests/**"])
+
+        def planned_task(task_id, modules, *, deps=None):
+            selector = f"tests/test_{task_id}.py::test_{task_id}"
+            return {
+                "id": task_id, "req": requirement["id"],
+                "scope": [*(f"src/{module}/**" for module in modules),
+                          f"tests/test_{task_id}.py"],
+                "tests": f"python3 -m pytest -q {selector}",
+                "criteria": [f"task {task_id} is complete"],
+                "deps": list(deps or []),
+                "evaluation_evidence_edges": [{
+                    "producer": f"src/{module}/m.py",
+                    "consumer": f"tests/test_{task_id}.py",
+                    "selector": selector,
+                    "freshness_inputs": ["candidate_sha", "source_tree"],
+                    "severed_edge": {
+                        "mutation": f"remove src/{module}/m.py",
+                        "selector": selector,
+                    },
+                } for module in modules],
+                "changed_interfaces": [], "classified_failures": [],
+            }
+
         tasks = [
-            {"id": "t1", "scope": ["src/a/**"], "tests": "true",
-             "criteria": ["task t1 is complete"]},
-            {"id": "t2", "scope": ["src/b/**"], "tests": "true",
-             "criteria": ["task t2 is complete"]},
-            {"id": "t3", "scope": ["src/a/**", "src/c/**"], "tests": "true",
-             "criteria": ["task t3 is complete"]},
-            {"id": "t4", "scope": ["src/c/**"], "tests": "true",
-             "criteria": ["task t4 is complete"], "deps": ["t1"]},
+            planned_task("t1", ("a",)),
+            planned_task("t2", ("b",)),
+            planned_task("t3", ("a", "c")),
+            planned_task("t4", ("c",), deps=("t1",)),
         ]
         with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": tasks}, f)
@@ -2234,6 +2537,7 @@ class TestParallelExecution(unittest.TestCase):
                   parallel=True)
         loop.next_action(ws); loop.gate(ws, "pass")   # plan → approval
         loop.approve(ws)                               # → execute
+        open_delivery_root(ws)
         return ws
 
     def test_wave_respects_deps_and_scope_disjointness(self):
@@ -2259,7 +2563,9 @@ class TestParallelExecution(unittest.TestCase):
         self.assertIsNone(tpl.load_active(agent_ws))
         slot = out["contract_bootstrap"]["task_slot"]
         c = tpl.load_json(tpl.active_contract_path(agent_ws, slot))
-        self.assertEqual(c["coding"]["scope_paths"], ["src/a/**"])
+        self.assertEqual(
+            c["coding"]["scope_paths"],
+            ["src/a/**", "tests/test_t1.py"])
         # Once the child hook selects that contract, it blocks writes outside
         # the task scope and admits the declared path.
         allow, _ = tpl.screen_tool(
@@ -2362,10 +2668,11 @@ class TestParallelExecution(unittest.TestCase):
         state["graph_governance"] = False
         env = {key: value for key, value in os.environ.items()
                if key != "TASKPLANE_TASK"}
+        tests = str(state["tasks"][0]["tests"])
         state["_suite_evidence"] = {"t1": {
             "schema": "taskplane.suite-evidence/v1",
-            "command": "true",
-            "key": tp._suite_cache_key(agent_ws, "true", env),
+            "command": tests,
+            "key": tp._suite_cache_key(agent_ws, tests, env),
             "returncode": 0,
             "tail": "",
             "duration_s": 0.01,
@@ -2401,11 +2708,27 @@ class TestParallelExecution(unittest.TestCase):
 
     def test_parallel_gates_flow_to_evaluate_then_next_wave(self):
         ws = self._ws()
+        state = loop.load(ws)
+        for task in state["tasks"][:2]:
+            # This journey owns Evaluate -> next-wave scheduling.  Merge and
+            # cleanup are independent contracts with their own lifecycle
+            # tests; do not let their host effects decide this assertion.
+            task["merge_on_pass"] = False
+        loop.save(ws, state)
         for tid in ("t1", "t2"):
             agent_ws = os.path.join(ws, ".tp-work", tid)
             subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
                             f"tp/{tid}"], cwd=ws)
             loop.claim(ws, tid, agent_ws)
+            module = os.path.join(
+                agent_ws, "src", {"t1": "a", "t2": "b"}[tid], "m.py")
+            with open(module, "w", encoding="utf-8") as stream:
+                stream.write("x=2\n")
+            subprocess.run(["git", "add", "-A"], cwd=agent_ws, check=True)
+            subprocess.run(
+                ["git", "-c", "user.email=e@e", "-c", "user.name=t",
+                 "commit", "-qm", f"complete {tid}"],
+                cwd=agent_ws, check=True)
             depgraph.scan(agent_ws)
         out = submit_gate(ws, "pass", task_id="t1")
         self.assertEqual(out["still_running"], ["t2"])
@@ -2414,13 +2737,16 @@ class TestParallelExecution(unittest.TestCase):
         act = loop.next_action(ws)
         self.assertEqual(act["step"], "evaluate")
         self.assertEqual(act["task"]["id"], "t1")
-        pass_eval(ws)                                  # t1 passed
+        first = pass_eval(ws)                          # t1 passed
+        self.assertNotIn("error", first, first)
         act2 = loop.next_action(ws)                   # evaluate t2
         self.assertEqual(act2["task"]["id"], "t2")
-        pass_eval(ws)                                  # t2 passed
+        second = pass_eval(ws)                        # t2 passed
+        self.assertNotIn("error", second, second)
         # t1 passed unlocks t4, but t3/t4 overlap on src/c → serialized:
         # t3 (first in plan order) dispatches, t4 holds for the next wave.
         w = loop.wave(ws)
+        self.assertNotIn("error", w, w)
         self.assertEqual({e["task"]["id"] for e in w["wave"]}, {"t3"})
         held = {h["task"]: h for h in w["held"]}
         self.assertIn("t4", held)
@@ -2434,16 +2760,26 @@ class TestParallelExecution(unittest.TestCase):
         subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
                         "tp/t1-final-evaluate"], cwd=ws, check=True)
         loop.claim(ws, "t1", agent_ws)
+        with open(os.path.join(agent_ws, "src", "a", "m.py"), "w",
+                  encoding="utf-8") as stream:
+            stream.write("x=2\n")
+        subprocess.run(["git", "add", "-A"], cwd=agent_ws, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=e@e", "-c", "user.name=t",
+             "commit", "-qm", "complete final task"],
+            cwd=agent_ws, check=True)
         depgraph.scan(agent_ws)
+        open_delivery_root(ws)
         st = loop.load(ws)
         for t in st["tasks"]:
             t["status"] = "passed"
         st["tasks"][0]["status"] = "built"     # last one still to evaluate
         loop.save(ws, st)
         act = loop.next_action(ws)
+        self.assertNotIn("error", act, act)
         self.assertEqual(act["step"], "evaluate")
         out = pass_eval(ws)
-        self.assertEqual(out["step"], "em")
+        self.assertEqual(out["step"], "em", out)
 
     def test_gate_requires_task_id_in_parallel_execute(self):
         ws = self._ws()
@@ -2468,6 +2804,7 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
             ["git", "-c", "user.email=e@e", "-c", "user.name=t",
              "commit", "-qm", "worker graph target"],
             cwd=worker, check=True)
+        open_delivery_root(ws)
         state = loop.load(ws)
         state["current_task"] = 0
         state["step"] = "evaluate"
@@ -2493,6 +2830,7 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
 
     def test_kernel_uses_only_exact_task_graph_and_leaves_primary_untouched(self):
         ws, worker = self._park_at_evaluate()
+        authority = open_delivery_root(ws)
         canonical_worker = os.path.realpath(worker)
         primary_graph = self._graph(tp.git_head(ws), "1" * 64,
                                     module="primary-only")
@@ -2511,8 +2849,10 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
         with unittest.mock.patch.object(
                 depgraph, "load", side_effect=load_graph), \
                 unittest.mock.patch.object(depgraph, "scan") as scan_graph:
-            action = getattr(loop.next_action, "__wrapped__", loop.next_action)(ws)
+            action = getattr(loop.next_action, "__wrapped__", loop.next_action)(
+                ws, root_observation_authority=authority)
 
+        self.assertNotIn("error", action, action)
         self.assertEqual(action["review_kernel"]["status"], "ready")
         self.assertEqual((action["impact"]["graph"] or {})[
             "content_fingerprint"], "2" * 64)
@@ -2523,6 +2863,7 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
 
     def test_validated_workspace_is_only_downstream_evidence_authority(self):
         ws, worker = self._park_at_evaluate()
+        authority = open_delivery_root(ws)
         canonical_worker = os.path.realpath(worker)
         task_graph = self._graph(tp.git_head(worker), "5" * 64)
         alias_root = tempfile.mkdtemp()
@@ -2563,7 +2904,8 @@ class TestParallelEvaluateWorktreeGraphBinding(unittest.TestCase):
                 unittest.mock.patch.object(
                     loop, "_review_kernel", side_effect=review_kernel):
             action = getattr(
-                loop.next_action, "__wrapped__", loop.next_action)(ws)
+                loop.next_action, "__wrapped__", loop.next_action)(
+                    ws, root_observation_authority=authority)
 
         self.assertEqual(action["review_kernel"]["status"], "ready")
         self.assertTrue(graph_reads)
@@ -2781,12 +3123,22 @@ class TestEngineSkewRefusal(unittest.TestCase):
         subprocess.run(["git", "worktree", "add", "-q", agent_ws, "-b",
                         "tp/t1"], cwd=ws)
         loop.claim(ws, "t1", agent_ws)
+        with open(os.path.join(agent_ws, "src", "todo", "a.py"), "a",
+                  encoding="utf-8") as stream:
+            stream.write("\ndef complete():\n    return True\n")
+        subprocess.run(["git", "add", "-A"], cwd=agent_ws, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=e@e", "-c", "user.name=t",
+             "commit", "-qm", "complete task"],
+            cwd=agent_ws, check=True)
         # t00 made the claimed worktree graph authoritative and removed the
         # stale-primary fallback. This fixture must establish the same
         # target-bound graph precondition as every real parallel evaluation.
         depgraph.scan(agent_ws)
-        submit_gate(ws, "pass", task_id="t1")       # built
-        loop.next_action(ws)                        # → evaluate
+        built = submit_gate(ws, "pass", task_id="t1")
+        self.assertNotIn("error", built, built)
+        action = loop.next_action(ws)                # → evaluate
+        self.assertNotIn("error", action, action)
         write_kernel_results(ws)
         write_verdict(ws)
         collect_zero_test_kernel(ws)

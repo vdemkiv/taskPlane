@@ -1,0 +1,166 @@
+{
+  "actuals": {
+    "cached_input_tokens": null,
+    "canonical_seal_emitted": false,
+    "first_observed_input_tokens": null,
+    "peak_context_tokens": null,
+    "rent_tokens_per_turn": null,
+    "root_native_cached_input_tokens": 1132877696,
+    "root_native_counter_ordinals": [
+      25160,
+      56080
+    ],
+    "root_native_input_tokens": 1149445912,
+    "root_native_output_tokens": 2081185,
+    "root_native_reasoning_tokens": 724697,
+    "root_native_total_tokens": 1151527097,
+    "root_native_uncached_input_tokens": 16568216,
+    "root_share": null,
+    "root_tokens": 1151527097,
+    "total_tokens": null,
+    "turns": null,
+    "wave_tokens": null,
+    "worker_native_cached_input_tokens": 7571584,
+    "worker_native_counter_ordinals": [
+      430
+    ],
+    "worker_native_input_tokens": 7772599,
+    "worker_native_output_tokens": 44775,
+    "worker_native_reasoning_tokens": 22313,
+    "worker_native_total_tokens": 7817374,
+    "worker_native_uncached_input_tokens": 201015,
+    "worker_tokens": 7817374
+  },
+  "attempt": 2,
+  "authority": {
+    "approved_replan_sha256": "459245d36f85f4e83ae66ad1eef78a1f4f719ce0b09dad275f95614f8fbd0868",
+    "design_fingerprint": "1950f719c7c822e9c7f03dbeae0f7bcd519b4fb64906ba3990ceeddda9eba58e",
+    "tasks_sha256": "be7069258baca1021094cb7e628387cc25a44f99417b9fd354723a259424596d"
+  },
+  "comparison": {
+    "applicable": false,
+    "reason": "canonical-root-seal-unavailable",
+    "root_share": null,
+    "unsealed_diagnostics": {
+      "root_share": 0.9932570739796973,
+      "wave_tokens": 1159344471
+    },
+    "wave_tokens": null
+  },
+  "candidate": {
+    "archive": "packages/taskplane-2.18.10-openai.zip",
+    "archive_sha256": "263140c9ec76bab1d5daec0dd53cf83d124312690a0e2c82c266b78f0557f649",
+    "candidate_sha": "cb1444e921c015be32a8af6498e8ad72328d2d70",
+    "checksum_verified": true,
+    "exact_extracted_candidate": true,
+    "impact_manifest_fingerprint": "d70f6da4193b33fbfcc9ecd658eae999677ea7d0fe471307b5b9796515242366",
+    "manifest_version": "2.18.10",
+    "module_sha256": {
+      "host_capabilities": "337496b2e1b071617877a6bf318c56ccf0bd4ea189b1d16d814f3c2b0d72b70e",
+      "host_native": "b933b2561d0b6602483fe4b0c8df91a16b4d0a3bf6dcf6126136a6b896e453e1",
+      "native_session_meter": "c1b53191037791d90771303a5847d3ad55ae52f6e868c8d30215ee51306566ac",
+      "root_seed": "a926dbbeffce3014e474a690f0c9aacc1cfa219ae1680103fa92955ebd6dc830",
+      "settings": "73eb0a3ff4b33f0d2c1ab48ea44c8cec3efe9886b6de7fabcf95dfc9f47a854f",
+      "wave_metrics": "94a2b3405c1f47320323ade3161545f6ed67d6323152b62093f90b8eeb9b1d48"
+    },
+    "provenance_fingerprint": "b1c13497184cb5e932c7d1625cbf538930dce8335a7794b497393a6003a55b76",
+    "provenance_verified_source": false,
+    "source_tree": "1efcd1accb002477b46d5ed13be1f01a743ca722",
+    "version": "2.18.10"
+  },
+  "distribution": {
+    "private": true,
+    "promotion_eligible": false,
+    "purpose": "private pre-fan-out Part A canary only",
+    "release_authority": false,
+    "upload_eligible": false
+  },
+  "failure_policy": {
+    "fabricated_zero_or_pass": false,
+    "opens_p20_or_p22": false,
+    "package_format_modified": false,
+    "return_product_design": true,
+    "scope_widened": false,
+    "settings_modified": false,
+    "thresholds_modified": false
+  },
+  "generated_at": "2026-09-03T09:39:00Z",
+  "host": {
+    "adapter": "codex",
+    "effective_path": "native_effective",
+    "host_snapshot_fingerprint": "683c9cd8a83193741d41ffcf3beb1232dc7e69b8f75ccdea49bfc8cbdd51bd89",
+    "native_hook_receipt_supported": true,
+    "root_capability": {
+      "fingerprint": "72cc118a5b2660a6b38da57b2993d627481f84f9bde932fb08beb77c2a961a51",
+      "missing": [
+        "root_cumulative_meter",
+        "root_fresh_start",
+        "root_turn_mapping"
+      ],
+      "reason_code": "root_capability_unavailable",
+      "status": "unavailable"
+    },
+    "root_physical_segments": 2,
+    "root_resumed": true,
+    "root_session_fingerprint": "279d82fe6b1e5b1715c553942f85a5141c27e9ee68e244dfd09c6408676c4ad4",
+    "root_session_role": "root",
+    "root_snapshot_fingerprint": "58031857dfbcb3a9e8caa481869072266f4d3deff6af3f85021f7a3b7e83b821",
+    "root_source_identity_fingerprints": [
+      "b8348e8d026322f5e600aee6d9ea7f8676cbf6959bbfe11012ccca620340953c",
+      "df4ac95377872761dea3f931d36a675c28c036a4d342ea11ea8e92adf324c0e6"
+    ],
+    "runtime": "native",
+    "worker_physical_segments": 1,
+    "worker_resumed": false,
+    "worker_session_fingerprint": "a0b9bdd769514cc4e975d854a09904dd7c9fe5473c0055b8664a26cbf42db620",
+    "worker_session_role": "worker",
+    "worker_snapshot_fingerprint": "f53e9be13d6bd01b3639cd4c99eec0c245d97de609d0641f69794ccf448d41a0",
+    "worker_source_identity_fingerprints": [
+      "d56343a99151d8a0436fa49a531fb2fd570785cbe378b1f90ded5f642cf93254"
+    ]
+  },
+  "pipeline": {
+    "dispatch_admission": "not_reached",
+    "extract_exact_candidate": "passed",
+    "host_capability": "unavailable",
+    "host_start": "refused-before-mint",
+    "metric_observation": "not_emitted-capability-unavailable-and-root-resumed",
+    "package_validate": "passed",
+    "root_hygiene_receipt": null,
+    "root_seed": {
+      "fingerprint": "f271f1ad1a748e86afac419c7fa9bd714ac9bf5913fbf1279fef2175c3147cfd",
+      "status": "prepared"
+    },
+    "seal": "not_emitted",
+    "setup_recoveries_before_bound_execution": [
+      "single-physical-segment assumption rejected a valid multi-segment native session before host evaluation",
+      "host-global CODEX_SESSION_ID was rejected as the worker binding before root admission or seal"
+    ]
+  },
+  "schema": "taskplane.root-hygiene-canary-execution/v1",
+  "selector": {
+    "applicable": false,
+    "contract": "selector-contract:root-session-hygiene.live-canary/v1",
+    "executed": 1,
+    "id": "taskplane.wave_metrics.finalize_root_hygiene_canary/v1",
+    "reason": "host-root-session-capability-unavailable;root-session-is-resumed",
+    "required_executions": 1
+  },
+  "targets": {
+    "comparable_root_share_at_most_0_15": "not_applicable",
+    "comparable_wave_total_at_most_80126326": "not_applicable",
+    "first_input_at_most_40000": "not_evaluated",
+    "fresh": "not_evaluated",
+    "no_override": "not_evaluated",
+    "rent_per_turn_at_most_50000": "not_evaluated",
+    "root_total_at_most_40000000": "miss"
+  },
+  "task_id": "P14-part-a-canary",
+  "truth": {
+    "classification": "real-host-root-evidence-inapplicable",
+    "nonconforming": true,
+    "pass": false,
+    "status": "nonconforming",
+    "target_missed": true
+  }
+}
