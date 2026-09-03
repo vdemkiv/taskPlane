@@ -9,11 +9,11 @@ import re
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 if TYPE_CHECKING or __package__:
-    from . import (governed_commands, lens, run_artifacts, run_store,
+    from . import (governed_commands, language_references, run_artifacts, run_store,
                    runnability, test_strategy)
 else:  # pragma: no cover
     import governed_commands
-    import lens
+    import language_references
     import run_artifacts
     import run_store
     import runnability
@@ -209,7 +209,7 @@ def prepare_assignments(workspace: str | Path, binding: Mapping[str, Any],
         raise EvidenceContractError("evidence candidate is foreign")
     implementation = list(impact_manifest["implementation_files"])
     try:
-        registry = lens.language_quality_registry(implementation)
+        registry = language_references.language_quality_registry(implementation)
         probes = runnability.probe_language_quality_toolchains(
             str(workspace), [row["language"] for row in registry])
         test_obligations = test_strategy.current_value_obligations(
@@ -240,7 +240,7 @@ def prepare_assignments(workspace: str | Path, binding: Mapping[str, Any],
             "toolchain_fingerprint": _text(probe.get("fingerprint"), "toolchain"),
             "implementation_files": sorted(
                 path for path in implementation if reference["language"] in
-                lens.implementation_languages([path])),
+                language_references.implementation_languages([path])),
             "required_commands": required,
         })
     obligations: dict[str, dict[str, Any]] = {
