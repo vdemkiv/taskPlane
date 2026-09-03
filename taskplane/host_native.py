@@ -42,6 +42,11 @@ else:
         import host_capabilities as _host_capabilities
     SurfaceSelection = _host_capabilities.SurfaceSelection
 
+if TYPE_CHECKING or __package__:
+    from . import root_seed as root_seed_runtime
+else:  # pragma: no cover - direct installed module loading
+    import root_seed as root_seed_runtime
+
 
 SNAPSHOT_SCHEMA = "taskplane.host-surface-snapshot/v1"
 EVENT_SCHEMA = "taskplane.host-surface-event/v1"
@@ -92,11 +97,7 @@ def start_root_session(
     but cannot mint one without the host-held authority.
     """
     try:
-        if __package__:
-            from . import root_seed
-        else:  # pragma: no cover - direct installed module loading
-            import root_seed
-        checked_seed = root_seed.validate_root_seed(seed)
+        checked_seed = root_seed_runtime.validate_root_seed(seed)
     except Exception as exc:
         raise RootSessionReceiptError(str(exc)) from exc
     if not isinstance(capability, Mapping) or capability.get("schema") != \
@@ -1720,6 +1721,8 @@ def refresh_dashboard_snapshot(
     }
     graph_receipt = (_canonical_fingerprint(graph_components)
                      if graph_components else None)
+    root_hygiene_receipt = state.get("root_hygiene_receipt") \
+        if state is not None else None
     provenance = {
         "schema": "taskplane.dashboard-provenance/v1",
         "run_id": str(source["run_id"]),
@@ -1745,9 +1748,8 @@ def refresh_dashboard_snapshot(
         **phase_values,
         "provenance": provenance,
         **metrics_values,
-        **({"root_hygiene_receipt": copy.deepcopy(
-            state["root_hygiene_receipt"])}
-           if isinstance((state or {}).get("root_hygiene_receipt"), Mapping)
+        **({"root_hygiene_receipt": copy.deepcopy(root_hygiene_receipt)}
+           if isinstance(root_hygiene_receipt, Mapping)
            else {}),
     }
     safe_actions: tuple[str, ...] = ()

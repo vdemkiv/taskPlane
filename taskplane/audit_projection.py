@@ -16,7 +16,7 @@ _AUDIT_TEXT_MAX_CHARS = 2048
 _AUDIT_COLLECTION_MAX_ITEMS = 64
 
 
-def root_hygiene_projection(receipt: Mapping[str, object]) -> dict:
+def root_hygiene_projection(receipt: Mapping[str, object]) -> dict[str, object]:
     """Return the bounded audit view of the canonical root seal."""
     from taskplane import wave_metrics
     return wave_metrics.root_hygiene_projection(receipt, consumer="audit")

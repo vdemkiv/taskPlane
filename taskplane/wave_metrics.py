@@ -166,25 +166,26 @@ def finalize_root_hygiene_canary(
     if not isinstance(root, Mapping) or root.get("status") not in {
             "open", "admissions_closed"}:
         raise WaveMetricsError("root hygiene requires terminal root evidence")
-    meter = root.get("meter")
-    usage = meter.get("usage") if isinstance(meter, Mapping) else None
-    required = {
-        "turns": meter.get("turns") if isinstance(meter, Mapping) else None,
-        "first_observed_input_tokens": meter.get(
-            "first_observed_input_tokens") if isinstance(meter, Mapping) else None,
-        "peak_context_tokens": meter.get(
-            "peak_context_tokens") if isinstance(meter, Mapping) else None,
-        "total_tokens": usage.get("total_tokens")
-        if isinstance(usage, Mapping) else None,
-        "cached_input_tokens": usage.get("cached_input_tokens")
-        if isinstance(usage, Mapping) else None,
-        "rent_tokens_per_turn": meter.get("context_rent_tokens")
-        if isinstance(meter, Mapping) else None,
+    meter_value = root.get("meter")
+    meter: Mapping[str, Any] = meter_value if isinstance(
+        meter_value, Mapping) else {}
+    usage_value = meter.get("usage")
+    usage: Mapping[str, Any] = usage_value if isinstance(
+        usage_value, Mapping) else {}
+    observed = {
+        "turns": meter.get("turns"),
+        "first_observed_input_tokens": meter.get("first_observed_input_tokens"),
+        "peak_context_tokens": meter.get("peak_context_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "cached_input_tokens": usage.get("cached_input_tokens"),
+        "rent_tokens_per_turn": meter.get("context_rent_tokens"),
     }
-    for name, value in required.items():
+    required: dict[str, int | float] = {}
+    for name, value in observed.items():
         if value is None or isinstance(value, bool) or not isinstance(
                 value, (int, float)) or value < 0:
             raise WaveMetricsError(f"root hygiene metric {name} is required")
+        required[name] = value
     if required["turns"] < 1 or required["first_observed_input_tokens"] < 1:
         raise WaveMetricsError("root hygiene observed root metrics must be positive")
     if isinstance(worker_tokens, bool) or not isinstance(worker_tokens, int) or \
@@ -247,8 +248,11 @@ def validate_root_hygiene(value: Mapping[str, Any]) -> dict[str, Any]:
             supplied != content_fingerprint(row):
         raise WaveMetricsError("root hygiene fingerprint is invalid")
     totals = _mapping(row.get("totals"), "root hygiene totals")
-    if totals.get("wave_tokens") != totals.get("root_tokens") + \
-            totals.get("worker_tokens"):
+    root_tokens = _number(totals.get("root_tokens"), "root hygiene root tokens")
+    worker_tokens = _number(
+        totals.get("worker_tokens"), "root hygiene worker tokens")
+    wave_tokens = _number(totals.get("wave_tokens"), "root hygiene wave tokens")
+    if wave_tokens != root_tokens + worker_tokens:
         raise WaveMetricsError("root, worker, and wave totals do not reconcile")
     comparison = _mapping(row.get("comparison"), "root hygiene comparison")
     if comparison.get("applicable") is False and (
@@ -259,7 +263,8 @@ def validate_root_hygiene(value: Mapping[str, Any]) -> dict[str, Any]:
     return {**row, "fingerprint": supplied}
 
 
-def root_hygiene_projection(value: Mapping[str, Any], *, consumer: str) -> dict:
+def root_hygiene_projection(
+        value: Mapping[str, Any], *, consumer: str) -> dict[str, Any]:
     sealed = validate_root_hygiene(value)
     if consumer not in {"dashboard", "retro", "release", "audit"}:
         raise WaveMetricsError("unknown root hygiene consumer")

@@ -464,8 +464,12 @@ def _validate_root_observation(
     if not isinstance(status, str) or _FINGERPRINT.fullmatch(status) is None:
         raise _RootObservationError(
             "authentication_failed", "root status receipt is invalid")
+    snapshot_value = value.get("snapshot")
+    if not isinstance(snapshot_value, Mapping):
+        raise _RootObservationError(
+            "counter_unreconciled", "root observation snapshot is invalid")
     try:
-        snapshot = validate_snapshot(value.get("snapshot"))
+        snapshot = validate_snapshot(snapshot_value)
     except NativeSessionMeterError as exc:
         raise _RootObservationError(
             "counter_unreconciled", str(exc)) from exc
@@ -597,8 +601,11 @@ def validate_root_meter_projection(value: Mapping[str, Any]) -> dict[str, Any]:
         raise NativeSessionMeterError("root meter status is invalid")
     if set(value) != _AVAILABLE_ROOT_METER_FIELDS:
         raise NativeSessionMeterError("available root meter schema is not closed")
+    watermark_value = value.get("watermark")
+    if not isinstance(watermark_value, Mapping):
+        raise NativeSessionMeterError("root meter watermark is invalid")
     try:
-        watermark = _validate_watermark_shape(value.get("watermark"))
+        watermark = _validate_watermark_shape(watermark_value)
     except _RootObservationError as exc:
         raise NativeSessionMeterError(str(exc)) from exc
     if _meter_from_watermark(watermark) != dict(value):

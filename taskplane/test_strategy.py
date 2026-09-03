@@ -281,7 +281,7 @@ def validate_strategy(strategy: Mapping[str, Any]) -> dict[str, Any]:
 
 def current_value_obligations(
         impact_manifest: Mapping[str, Any], *,
-        workspace: str | Path | None = None) -> dict:
+        workspace: str | Path | None = None) -> dict[str, Any]:
     """Validate the test-design work an Evaluate attempt must discharge.
 
     These are behavioral obligations, not proof.  The child producer must
@@ -362,9 +362,11 @@ def current_value_obligations(
     if not isinstance(interfaces, list):
         raise StrategyContractError("changed interfaces must be a list")
     interface_keys = []
-    for row in interfaces:
-        if not isinstance(row, Mapping):
+    for index, value in enumerate(interfaces):
+        if not isinstance(value, Mapping):
             raise StrategyContractError("changed interface must be an object")
+        row = dict(value)
+        interfaces[index] = row
         producer = row.get("producer")
         kind = row.get("kind")
         slice_id = row.get("slice")
@@ -396,8 +398,10 @@ def current_value_obligations(
                     raise StrategyContractError(
                         "changed interface fixture must be an existing safe file")
                 try:
-                    fixture["content_sha256"] = hashlib.sha256(
+                    fixture_row = dict(fixture)
+                    fixture_row["content_sha256"] = hashlib.sha256(
                         target.read_bytes()).hexdigest()
+                    row["fixture"] = fixture_row
                 except OSError as exc:
                     raise StrategyContractError(
                         "changed interface fixture content is unavailable") from exc

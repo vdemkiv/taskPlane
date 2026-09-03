@@ -202,7 +202,7 @@ def _utc_timestamp(value: object, label: str) -> str:
 def _pickups(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list) or not value:
         raise RootSeedError("seed inputs.pickups must be a non-empty list")
-    normalized = []
+    normalized: list[dict[str, object]] = []
     for index, item in enumerate(value):
         row = _exact(item, _PICKUP_FIELDS, f"seed pickup {index}")
         scopes = row["write_scopes"]
@@ -223,7 +223,7 @@ def _pickups(value: object) -> list[dict[str, object]]:
         })
     if len({row["id"] for row in normalized}) != len(normalized):
         raise RootSeedError("seed pickup ids contain duplicates")
-    return sorted(normalized, key=lambda row: row["id"])
+    return sorted(normalized, key=lambda row: str(row["id"]))
 
 
 def _gates(value: object) -> list[dict[str, str]]:

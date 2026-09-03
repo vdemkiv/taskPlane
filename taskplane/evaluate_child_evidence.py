@@ -6,9 +6,9 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-if __package__:
+if TYPE_CHECKING or __package__:
     from . import (governed_commands, lens, run_artifacts, run_store,
                    runnability, test_strategy)
 else:  # pragma: no cover
@@ -104,7 +104,7 @@ def _manifest_digest(value: Mapping[str, Any]) -> str:
 
 
 def _ledger(root: str | Path | None = None, run_id: str | None = None) \
-        -> tuple[Path, dict, Path]:
+        -> tuple[Path, dict[str, Any], Path]:
     try:
         if run_id is not None:
             owner = run_store.RunStore().load(run_id)
@@ -147,7 +147,7 @@ def _reuse_key(kind: str, binding: Mapping[str, Any], obligations: Mapping[str, 
 
 
 def _assert_current_assignment(value: Mapping[str, Any],
-                               manifest: Mapping[str, Any]) -> dict:
+                               manifest: Mapping[str, Any]) -> dict[str, Any]:
     """Rebind a durable assignment to the manifest that is consuming it."""
     row = _validate_assignment(value)
     ledger = manifest["binding"]
@@ -189,7 +189,7 @@ def _fixture_digests(assignment: Mapping[str, Any], workspace: Path) -> None:
 
 def prepare_assignments(workspace: str | Path, binding: Mapping[str, Any],
                         impact_manifest: Mapping[str, Any], *,
-                        artifact_root: str | Path) -> list[dict]:
+                        artifact_root: str | Path) -> list[dict[str, Any]]:
     """Bind two non-lens producers to the current candidate and durable run."""
     _, manifest, _ = _ledger(root=artifact_root)
     impact_digest = _manifest_digest(impact_manifest)
@@ -243,12 +243,12 @@ def prepare_assignments(workspace: str | Path, binding: Mapping[str, Any],
                 lens.implementation_languages([path])),
             "required_commands": required,
         })
-    obligations = {
+    obligations: dict[str, dict[str, Any]] = {
         LANGUAGE_PRODUCER: {"implementation_files": implementation,
                             "language_obligations": language_rows},
         TEST_DESIGN_PRODUCER: {"test_obligations": test_obligations},
     }
-    result = []
+    result: list[dict[str, Any]] = []
     ledger_fp = ledger_binding["fingerprint"]
     for kind in PRODUCER_KINDS:
         row = {
@@ -264,7 +264,7 @@ def prepare_assignments(workspace: str | Path, binding: Mapping[str, Any],
     return result
 
 
-def _validate_assignment(value: object) -> dict:
+def _validate_assignment(value: object) -> dict[str, Any]:
     if not isinstance(value, Mapping) or value.get("schema") != ASSIGNMENT_SCHEMA or \
             value.get("producer_kind") not in PRODUCER_KINDS or \
             value.get("capabilities") != {
@@ -436,7 +436,7 @@ def _test_substance(assignment: Mapping[str, Any], result: Mapping[str, Any], *,
 
 
 def validate_result(assignment: Mapping[str, Any], result: Mapping[str, Any], *,
-                    workspace: str | Path, run_id: str) -> dict:
+                    workspace: str | Path, run_id: str) -> dict[str, Any]:
     """Validate one result and return its canonical durable index metadata."""
     checked = _validate_assignment(assignment)
     _reject_authority(result)
@@ -465,18 +465,19 @@ def validate_result(assignment: Mapping[str, Any], result: Mapping[str, Any], *,
     }
 
 
-def _entry(manifest: Mapping[str, Any], reference: object) -> dict:
+def _entry(manifest: Mapping[str, Any], reference: object) -> dict[str, Any]:
     if not isinstance(reference, Mapping):
         raise EvidenceContractError("durable result reference is invalid")
     rows = [row for row in manifest["classes"]["validation"]["entries"]
             if row.get("fingerprint") == reference.get("fingerprint")]
-    if len(rows) != 1 or rows[0] != dict(reference):
+    if len(rows) != 1 or not isinstance(rows[0], Mapping) or \
+            rows[0] != dict(reference):
         raise EvidenceContractError("durable result reference is foreign")
-    return rows[0]
+    return copy.deepcopy(dict(rows[0]))
 
 
 def _producer(root: Path, manifest: Mapping[str, Any], workspace: Path,
-              assignment: Mapping[str, Any]) -> dict:
+              assignment: Mapping[str, Any]) -> dict[str, Any]:
     checked = _assert_current_assignment(assignment, manifest)
     _fixture_digests(checked, workspace)
     attempt_id = checked["binding"]["evaluator_attempt_id"] + "-" + checked["producer_kind"]
@@ -547,11 +548,13 @@ def _producer(root: Path, manifest: Mapping[str, Any], workspace: Path,
     }
 
 
-def find_reusable_result(root: str | Path, assignment: Mapping[str, Any]) -> dict | None:
+def find_reusable_result(
+        root: str | Path,
+        assignment: Mapping[str, Any]) -> dict[str, Any] | None:
     """Resolve one complete identical result from the authoritative ledger."""
     selected, manifest, workspace = _ledger(root=root)
     checked = _validate_assignment(assignment)
-    candidates = {}
+    candidates: dict[str, dict[str, Any]] = {}
     for row in manifest["classes"]["agent-activity"]["entries"]:
         details = row["metadata"].get("details")
         prior = details.get("assignment") if isinstance(details, Mapping) else None
@@ -579,7 +582,8 @@ def find_reusable_result(root: str | Path, assignment: Mapping[str, Any]) -> dic
     return copy.deepcopy(next(iter(candidates.values()))) if candidates else None
 
 
-def consume_evidence(*, run_id: str, evaluator_attempt_id: str) -> dict:
+def consume_evidence(*, run_id: str,
+                     evaluator_attempt_id: str) -> dict[str, Any]:
     """Derive consumption from durable records, never caller-authored digests."""
     root, manifest, workspace = _ledger(run_id=_text(run_id, "run id"))
     attempt = _text(evaluator_attempt_id, "evaluator attempt id")
@@ -609,7 +613,8 @@ def consume_evidence(*, run_id: str, evaluator_attempt_id: str) -> dict:
 
 def validate_consumption(value: Mapping[str, Any], *, expected_task: str | None = None,
                          expected_requirement: str | None = None,
-                         expected_binding: Mapping[str, Any] | None = None) -> dict:
+                         expected_binding: Mapping[str, Any] | None = None
+                         ) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise EvidenceContractError("evidence consumption is invalid")
     derived = consume_evidence(

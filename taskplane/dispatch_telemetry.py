@@ -1024,9 +1024,13 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
             raise DispatchTelemetryError(
                 "dispatch usage baseline identity is invalid")
         baseline_ids.add(dispatch_id)
+        baseline_usage = baseline.get("usage")
+        if not isinstance(baseline_usage, Mapping):
+            raise DispatchTelemetryError(
+                "dispatch usage baseline is invalid")
         expected = _usage_baseline_integrity_fingerprint(
             ledger, binding, provider=str(baseline.get("provider") or ""),
-            usage=baseline.get("usage"),
+            usage=baseline_usage,
             source_fingerprint=baseline.get("source_fingerprint"))
         if baseline.get("integrity_fingerprint") != expected:
             raise DispatchTelemetryError(
@@ -1199,7 +1203,11 @@ def observe_terminal_usage_delta(
         raise DispatchTelemetryError(
             "terminal usage authority disagrees with its baseline")
     current = _usage(usage)
-    start = _usage(baseline.get("usage"))
+    baseline_usage = baseline.get("usage")
+    if not isinstance(baseline_usage, Mapping):
+        raise DispatchTelemetryError(
+            "terminal usage baseline counters are invalid")
+    start = _usage(baseline_usage)
     if any(current[field] < start[field] for field in _USAGE_FIELDS):
         raise DispatchTelemetryError(
             "terminal cumulative usage moved backwards from baseline")
@@ -1492,7 +1500,10 @@ def _validate_root_admission(
         raise DispatchTelemetryError("root admission state is invalid")
     settings_digest = _sha256_fingerprint(
         value.get("settings_digest"), "root admission settings digest")
-    policy = _root_policy(value.get("policy"))
+    policy_value = value.get("policy")
+    if not isinstance(policy_value, Mapping):
+        raise DispatchTelemetryError("root admission policy is invalid")
+    policy = _root_policy(policy_value)
     configuration = content_fingerprint({
         "schema": ROOT_ADMISSION_SCHEMA,
         "settings_digest": settings_digest,
@@ -1535,7 +1546,10 @@ def _validate_root_admission(
                     meter.get("watermark"), Mapping):
                 raise DispatchTelemetryError(
                     "available root meter is incomplete")
-            _usage(meter.get("usage"))
+            meter_usage = meter.get("usage")
+            if not isinstance(meter_usage, Mapping):
+                raise DispatchTelemetryError("root meter usage is invalid")
+            _usage(meter_usage)
         elif meter.get("status") != "unavailable" or not str(
                 meter.get("reason_code") or "").strip():
             raise DispatchTelemetryError("root meter status is invalid")
@@ -1711,7 +1725,10 @@ def _partitioned_usage(ledger: Mapping[str, Any]) \
     if isinstance(admission, Mapping):
         meter = admission.get("meter")
         if isinstance(meter, Mapping) and meter.get("status") == "available":
-            root_usage = _usage(meter.get("usage"))
+            meter_usage = meter.get("usage")
+            if not isinstance(meter_usage, Mapping):
+                raise DispatchTelemetryError("root meter usage is invalid")
+            root_usage = _usage(meter_usage)
     finalized = {str(row.get("dispatch_id") or "")
                  for row in ledger.get("dispatches") or []}
     rows = [
