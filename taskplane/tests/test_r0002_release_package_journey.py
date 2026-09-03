@@ -219,6 +219,27 @@ import loop
 
 loop.save(str(workspace), json.load(sys.stdin))
 '''
+    transition = r'''
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+workspace = Path(sys.argv[2]).resolve()
+action = sys.argv[3]
+sys.path.insert(0, str(root))
+sys.path.insert(0, str(root / "taskplane"))
+import loop
+
+if action == "gate":
+    result = loop.gate.__wrapped__(
+        str(workspace), "pass")
+else:
+    result = loop.approve.__wrapped__(
+        str(workspace), by="human:package-journey")
+print(json.dumps(result, sort_keys=True))
+raise SystemExit(1 if result.get("error") else 0)
+'''
 
     def approve_scope(name, scope):
         case = tmp_path / name
@@ -237,17 +258,24 @@ loop.save(str(workspace), json.load(sys.stdin))
             ["git", "rev-parse", "HEAD"], cwd=workspace, text=True,
             encoding="utf-8").strip()
         task = {
-            "id": "P14-part-a-canary", "wave": "W2A",
+            "id": "P14-part-a-canary", "wave": "W2A-R1",
             "scope": [scope], "tests": "true",
             "criteria": ["installed Plan approval prepares its root seed"],
             "status": "pending", "deps": [],
+            "new_modules": ["build/taskplane-2.18.10"],
+        }
+        plan = {
+            "requirement": "R-0001", "delivery_mode": "build",
+            "automatic_lenses": [],
+            "plan_authority": "human:package-journey",
+            "tasks": [task],
         }
         (workspace / "plan").mkdir()
         (workspace / "plan" / "tasks.json").write_text(
-            json.dumps({"tasks": [task]}), encoding="utf-8")
+            json.dumps(plan), encoding="utf-8")
         state = {
             "run_id": "run-" + name, "baseline": baseline,
-            "design_fingerprint": "b" * 64, "step": "plan_approval",
+            "design_fingerprint": "b" * 64, "step": "plan",
             "tasks": [task], "current_task": 0,
             "goal": "exercise installed Plan approval root preparation",
             "parallel": True, "max_fix_cycles": 1,
@@ -265,17 +293,23 @@ loop.save(str(workspace), json.load(sys.stdin))
             cwd=case, text=True, encoding="utf-8", input=json.dumps(state),
             capture_output=True, env=environment)
         assert prepared.returncode == 0, prepared.stdout + prepared.stderr
-        approval = subprocess.run([
-            sys.executable, str(package_root / "taskplane/tp.py"),
-            "loop", "--workspace", str(workspace), "approve",
-            "--advisory", "--by", "human:package-journey",
-        ], cwd=case, text=True, encoding="utf-8", capture_output=True,
-           env=environment)
-        return case, workspace, environment, approval
+        plan_gate = subprocess.run(
+            [sys.executable, "-I", "-c", transition, str(package_root),
+             str(workspace), "gate"],
+            cwd=case, text=True, encoding="utf-8", capture_output=True,
+            env=environment)
+        approval = subprocess.run(
+            [sys.executable, "-I", "-c", transition, str(package_root),
+             str(workspace), "approve"],
+            cwd=case, text=True, encoding="utf-8", capture_output=True,
+            env=environment)
+        return case, workspace, environment, plan, plan_gate, approval
 
     safe_scope = "build/taskplane-2.18.10/canary/**"
-    case, workspace, environment, approval = approve_scope(
+    case, workspace, environment, plan, plan_gate, approval = approve_scope(
         "installed-plan-approval", safe_scope)
+    assert plan_gate.returncode == 0, plan_gate.stdout + plan_gate.stderr
+    assert json.loads(plan_gate.stdout)["step"] == "plan_approval"
     assert approval.returncode == 0, approval.stdout + approval.stderr
     assert json.loads(approval.stdout)["step"] == "execute"
 
@@ -299,9 +333,13 @@ configured = settings.load_settings(environment={})
 root_seed.verify_prepare_receipt(
     seed, receipt, settings=configured,
     expected_seed_ref=prepared["seed_ref"])
+routing, delivery_dispatch = loop.build_dispatch_lens_routing(
+    state, state["tasks"][0], workspace=str(workspace))
 print(json.dumps({
     "step": state["step"], "settings_digest": state["settings_digest"],
     "root_hygiene": prepared, "seed": seed,
+    "delivery_mode_receipt": state["delivery_mode_receipt"],
+    "routing": routing, "delivery_dispatch": delivery_dispatch,
 }, sort_keys=True))
 '''
     inspected = subprocess.run(
@@ -315,7 +353,7 @@ print(json.dumps({
     receipt = prepared_root["prepare_receipt"]
     assert observed["step"] == "execute"
     assert prepared_root["status"] == "prepared"
-    assert prepared_root["seed_ref"] == "waves/W2A/root-seed.json"
+    assert prepared_root["seed_ref"] == "waves/W2A-R1/root-seed.json"
     assert receipt is not None
     assert receipt["status"] == "prepared"
     assert receipt["seed_fingerprint"] == prepared_root["seed_fingerprint"]
@@ -324,6 +362,18 @@ print(json.dumps({
     assert observed["seed"]["pickups"][0]["write_scopes"] == [safe_scope]
     assert receipt["binding"]["settings_fingerprint"] == \
         observed["settings_digest"]
+    delivery_receipt = observed["delivery_mode_receipt"]
+    expected_plan_fingerprint = hashlib.sha256(json.dumps(
+        plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    assert delivery_receipt["plan_fingerprint"] == expected_plan_fingerprint
+    assert observed["routing"]["lenses"] == []
+    assert observed["routing"]["context"]["delivery_mode_receipt"] == \
+        delivery_receipt["fingerprint"]
+    assert observed["delivery_dispatch"]["delivery_mode_receipt"] == \
+        delivery_receipt
+    assert observed["delivery_dispatch"]["automatic_lens_workers"] == []
+    assert observed["delivery_dispatch"]["automatic_lens_worker_count"] == 0
 
     unsafe_scopes = {
         "absolute": "/private/output/**",
@@ -333,15 +383,23 @@ print(json.dumps({
         "ambiguous": "build/[unterminated/**",
     }
     for name, unsafe_scope in unsafe_scopes.items():
-        _, unsafe_workspace, _, refused = approve_scope(
+        _, unsafe_workspace, _, _, unsafe_gate, refused = approve_scope(
             "unsafe-" + name, unsafe_scope)
+        seed_path = (
+            unsafe_workspace / "waves" / "W2A-R1" / "root-seed.json"
+        )
+        if unsafe_gate.returncode != 0:
+            refusal = json.loads(unsafe_gate.stdout)
+            assert refusal["error"].startswith("Definition of Ready failed")
+            assert refusal["step"] == "plan"
+            assert not seed_path.exists()
+            continue
+        assert json.loads(unsafe_gate.stdout)["step"] == "plan_approval"
         assert refused.returncode == 1, refused.stdout + refused.stderr
         refusal = json.loads(refused.stdout)
         assert "seed pickup write scope" in refusal["error"]
         assert refusal["step"] == "plan_approval"
-        assert not (
-            unsafe_workspace / "waves" / "W2A" / "root-seed.json"
-        ).exists()
+        assert not seed_path.exists()
 
 
 def _run_installed_semantics(package_root: Path, case: Path) -> dict:

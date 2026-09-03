@@ -458,12 +458,26 @@ def _validated_delivery_mode(state: Mapping[str, object]) -> dict | None:
 def _plan_delivery_mode_from_file(
         ws: str, state: dict, *, apply: bool) -> dict | None:
     """Consume an explicitly declared Plan mode without changing legacy Plans."""
+    design_governed = bool(str(
+        state.get("design_fingerprint") or "").strip())
+    required_declaration = {
+        "delivery_mode", "automatic_lenses", "plan_authority"}
     path = os.path.join(ws, "plan", "tasks.json")
     try:
         with open(path, encoding="utf-8") as stream:
             plan = json.load(stream)
     except (OSError, ValueError):
+        if design_governed:
+            raise delivery_policy.DeliveryPolicyError(
+                "Design-governed Plan requires delivery_mode=build, "
+                "automatic_lenses=[], and plan_authority")
         return _validated_delivery_mode(state)
+    if design_governed and (
+            not isinstance(plan, dict) or
+            not required_declaration.issubset(plan)):
+        raise delivery_policy.DeliveryPolicyError(
+            "Design-governed Plan requires delivery_mode=build, "
+            "automatic_lenses=[], and plan_authority")
     if not isinstance(plan, dict) or "delivery_mode" not in plan:
         return _validated_delivery_mode(state)
     declaration = {
@@ -472,6 +486,12 @@ def _plan_delivery_mode_from_file(
         "automatic_lenses": plan.get("automatic_lenses"),
         "plan_authority": plan.get("plan_authority"),
     }
+    if design_governed and declaration["delivery_mode"] != "build":
+        raise delivery_policy.DeliveryPolicyError(
+            "Design-governed Plan requires delivery_mode=build")
+    if design_governed and declaration["automatic_lenses"] != []:
+        raise delivery_policy.DeliveryPolicyError(
+            "Design-governed Plan requires automatic_lenses=[]")
     plan_fingerprint = hashlib.sha256(json.dumps(
         plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         allow_nan=False).encode("utf-8")).hexdigest()

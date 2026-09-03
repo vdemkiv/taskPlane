@@ -1,22 +1,25 @@
 {
   "schema": "taskplane.p14-selector-receipt/v1",
   "task_id": "P14-part-a-canary",
-  "attempt": 6,
-  "observed_at": "2026-09-03T13:40:34Z",
+  "attempt": 7,
+  "observed_at": "2026-09-03T14:30:28Z",
   "authority": {
-    "tasks_sha256": "b12bc8b704db317e10aa2fadb58686c9729616bdf5568a2a3134cea8207b5130",
-    "plan_sha256": "cbfef1ef0010acf9b1fd021bb397e79693bfb5e3796d71d6f1e8dbb22bbecfab",
+    "tasks_sha256": "80fdbb9330ef7c328ca3eed43ea94254ac85cf8af5709d58dc2c0c98cae823ed",
+    "plan_sha256": "5df82a90c350a6fb821c6c60e03f9ce5bdd32e3e2890d9bacc6842b9ec9134c0",
     "design_fingerprint": "1950f719c7c822e9c7f03dbeae0f7bcd519b4fb64906ba3990ceeddda9eba58e"
   },
-  "classification": "root-seed-write-scope-glob-product-defect",
+  "classification": "design-governed-delivery-mode-declaration-receipt-wiring",
   "red": {
-    "selector": "taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_direct_launcher_plan_approval_prepares_canonical_typed_root_seed_and_non_null_receipt",
+    "selector": "taskplane/tests/test_r0001_delivery_mode.py::test_design_governed_plan_gate_refuses_missing_delivery_mode_before_approval_or_root_seed",
     "exit_code": 1,
-    "result": "1 failed in 3.48s",
-    "observed_error": "RootSeedError: seed pickup write scope must be a portable relative path"
+    "result": "1 failed in 3.58s",
+    "observed_error": "Design-governed Plan missing delivery_mode passed the mechanical Plan gate"
   },
-  "command": "python3 -m pytest -q taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring taskplane/tests/test_r0002_release_package_journey.py::test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_direct_launcher_plan_approval_prepares_canonical_typed_root_seed_and_non_null_receipt taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal",
+  "command": "python3 -m pytest -q taskplane/tests/test_r0001_delivery_mode.py::test_plan_gate_persists_receipt_to_subsequent_zero_lens_dispatch taskplane/tests/test_r0001_delivery_mode.py::test_sever_delivery_mode_receipt_to_dispatch_fails_closed taskplane/tests/test_r0001_delivery_mode.py::test_design_governed_plan_gate_refuses_missing_delivery_mode_before_approval_or_root_seed taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring taskplane/tests/test_r0002_release_package_journey.py::test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_direct_launcher_plan_approval_prepares_canonical_typed_root_seed_and_non_null_receipt taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal",
   "selectors": [
+    "taskplane/tests/test_r0001_delivery_mode.py::test_plan_gate_persists_receipt_to_subsequent_zero_lens_dispatch",
+    "taskplane/tests/test_r0001_delivery_mode.py::test_sever_delivery_mode_receipt_to_dispatch_fails_closed",
+    "taskplane/tests/test_r0001_delivery_mode.py::test_design_governed_plan_gate_refuses_missing_delivery_mode_before_approval_or_root_seed",
     "taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings",
     "taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority",
     "taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring",
@@ -25,24 +28,78 @@
     "taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal"
   ],
   "exit_code": 0,
-  "result": "6 passed in 22.36s",
+  "result": "9 passed in 52.81s",
   "status": "passed",
+  "classified_feedback": [
+    {
+      "result": "3 failed, 6 passed in 34.56s",
+      "classification": "test-only dashboard replay isolation and missing graph new-module declaration"
+    },
+    {
+      "result": "2 failed, 7 passed in 43.28s",
+      "classification": "test-only native root-admission and dashboard replay preconditions"
+    },
+    {
+      "result": "1 failed, 8 passed in 37.65s",
+      "classification": "test-only unwrapped gate signature error"
+    },
+    {
+      "result": "1 failed, 8 passed in 36.87s",
+      "classification": "test-only raw subprocess indentation error"
+    },
+    {
+      "result": "1 failed, 8 passed in 43.43s",
+      "classification": "unsafe input refused at earlier real graph DoR boundary"
+    }
+  ],
+  "integration": {
+    "design_governed_missing_declarations_refused_before_approval": true,
+    "legacy_non_design_plan_accepted": true,
+    "safe_scope_preserved": "build/taskplane-2.18.10/canary/**",
+    "installed_mechanical_plan_gate_executed": true,
+    "installed_plan_approval_root_seed_prepared": true,
+    "prepared_seed_ref": "waves/W2A-R1/root-seed.json",
+    "prepared_seed_receipt_non_null": true,
+    "delivery_mode_receipt_non_null": true,
+    "delivery_mode_receipt_bound_to_complete_plan_fingerprint": true,
+    "build_dispatch_consumed_same_receipt_fingerprint": true,
+    "automatic_lenses": [],
+    "automatic_lens_worker_count": 0,
+    "unsafe_scope_variants_refused": [
+      "absolute",
+      "traversal",
+      "native-separator",
+      "control",
+      "ambiguous"
+    ]
+  },
   "source_sha256": {
     "scripts/package_openai.py": "d0dd2a23bedb8006bedc823ef4e64fe2d1b73d9c65f6f6c49f146b099b871de1",
     "scripts/package_claude.py": "88f0c6937a8eb5a22c23cb9af9bb22219b6afaa18dc54184ce1b33468ee7ede6",
-    "taskplane/loop.py": "5fecdaae04ed1c2b0109815018042937d54e58de5416fd165f64ea45cfe2ff6b",
+    "taskplane/loop.py": "ab15e160e2d8495ad4c441250ce106b542f2ecf1a3b8d53531472c011712e08f",
     "taskplane/root_seed.py": "d7119bd8ac4bf07d7e28ef88075ed46fbdd9ce25483dd0299119be9f4f3ca9c9",
-    "taskplane/tests/test_r0002_release_package_journey.py": "56547ad1df15f36f9a831391d9efec20f46dbc83de7012a7c0903b524718c65a",
+    "taskplane/tests/test_r0001_delivery_mode.py": "afedff61ff2a0a41b2d67ca1a8adce2b0600810754c551435655ebe00b019692",
+    "taskplane/tests/test_r0002_release_package_journey.py": "8869f2690d2a561a966be9ca9df0f2a5e640ce5359ec52ffc6441876513ed380",
     "taskplane/tests/test_wave_metrics.py": "b770a436d41ed7942f024389194f5a5bb6d5117b268e32a1542aac791bd3310e",
     ".codex/hooks.json": "0da84228ef2b4dc1f78224c0e518e5761625237f9895c010a6ec45152091d12e",
     "hooks/hooks.json": "68e4af13d29438c786b076553aa60f150bfd8b5e6dda7176b4e443f50b453740"
   },
   "packages": {
-    "openai_sha256": "3229660d756cfee931c61409bffafdd46a179e0e12dd32d6d4b0a59a5cfe682c",
-    "openai_checksum_sha256": "ddc7482dc4ae2328cb38fb153659bf1a3a0922bdbeb2f2700925fe130f84bc8b",
-    "openai_provenance_sha256": "f5a67d6c414f084827844ce102b6dc63ac72f7338433fdce00215c3d524e7b38",
-    "claude_sha256": "c0153dbb863d11193f80dc5bd0d4b56e00dd911a2e6f3c4fb4e662e7d0e0b98f",
-    "claude_unchanged": true
+    "openai_sha256": "7fc0f5ed250d89c95f95c3f6f7e91df8b36ffe359789c09365f23961216c0774",
+    "openai_checksum_sha256": "e977ca145e971b9f8761dcf310c0611a6b742e24e1bce289fc5a2ae5bc7cce22",
+    "openai_provenance_sha256": "8954a48599933f52a0e2b586feb6454825d191dc7ca9ec0d33768fc3d1030327",
+    "openai_file_count": 241,
+    "claude_sha256": "5b74c440bafc9113e11fad9af981181d8faf29d2f3adf15d9ee5681cab36cc4f",
+    "claude_checksum_sha256": "77fe15c3d0e4dc41b5015c52de9946d83af0488563de28f5d19bdd35d0b0ff1d",
+    "claude_provenance_sha256": "fdf21eb52bc6ead65edee00428cab3999a180d12082139d74cfed36287e6a110",
+    "claude_file_count": 248,
+    "claude_packager_source_unchanged": true
+  },
+  "static_checks": {
+    "py_compile": "passed",
+    "git_diff_check": "passed",
+    "openai_archive_integrity": "passed",
+    "claude_archive_integrity": "passed"
   },
   "plan_approval_root_seed_selector_executed": true,
   "scope_validation": {
@@ -55,12 +112,13 @@
       "ambiguous"
     ]
   },
-  "invalid_canary_attempts": [
-    2,
-    3,
-    4
-  ],
+  "invalid_canary_attempts": [2, 3, 4],
   "acceptance_canary_executed": false,
+  "root_hygiene_canary": {
+    "sha256": "78a19b93100bfce3e07eb25d848b6788cddf038e3ad1522f819d2129d8ceeaa7",
+    "acceptance_canary_executed": false,
+    "invalid_canary_attempts": [2, 3, 4]
+  },
   "distribution": {
     "private": true,
     "promotion_eligible": false,

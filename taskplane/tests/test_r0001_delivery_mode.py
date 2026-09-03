@@ -242,6 +242,58 @@ def test_plan_gate_requires_and_stamps_delivery_mode():
         _build_receipt(delivery_mode=None)
 
 
+def test_design_governed_plan_gate_refuses_missing_delivery_mode_before_approval_or_root_seed(
+    tmp_path,
+):
+    invalid_declarations = {
+        "missing-delivery-mode": ("delivery_mode", None),
+        "wrong-delivery-mode": ("delivery_mode", "review"),
+        "missing-automatic-lenses": ("automatic_lenses", None),
+        "nonempty-automatic-lenses": ("automatic_lenses", ["security"]),
+        "missing-plan-authority": ("plan_authority", None),
+    }
+    for name, (field, replacement) in invalid_declarations.items():
+        workspace = _plan_workspace(tmp_path / name)
+        plan_path = workspace / "plan" / "tasks.json"
+        plan = json.loads(plan_path.read_text())
+        if replacement is None:
+            plan.pop(field)
+        else:
+            plan[field] = replacement
+        plan_path.write_text(json.dumps(plan))
+        state = loop.load(str(workspace))
+        state["design_fingerprint"] = "d" * 64
+        loop.save(str(workspace), state)
+
+        refused = loop.gate(str(workspace), "pass")
+
+        assert "Definition of Ready failed" in refused["error"]
+        assert any(
+            blocker.startswith("Plan delivery mode:")
+            for blocker in refused["dor"]["blockers"]
+        )
+        current = loop.load(str(workspace))
+        assert current["step"] == "plan"
+        assert "delivery_mode_receipt" not in current
+        assert "root_hygiene" not in current
+        assert not (
+            workspace / "waves" / "execute" / "root-seed.json"
+        ).exists()
+
+    legacy = _plan_workspace(tmp_path / "legacy-non-design")
+    legacy_plan_path = legacy / "plan" / "tasks.json"
+    legacy_plan = json.loads(legacy_plan_path.read_text())
+    for field in ("delivery_mode", "automatic_lenses", "plan_authority"):
+        legacy_plan.pop(field)
+    legacy_plan_path.write_text(json.dumps(legacy_plan))
+
+    accepted = loop.gate(str(legacy), "pass")
+
+    assert "error" not in accepted
+    assert loop.load(str(legacy))["step"] == "execute"
+    assert "delivery_mode_receipt" not in loop.load(str(legacy))
+
+
 def test_build_mode_dispatch_creates_zero_automatic_lens_workers():
     created = []
 
@@ -258,14 +310,14 @@ def test_plan_gate_persists_receipt_to_subsequent_zero_lens_dispatch(tmp_path):
     state = _gate_plan_to_execute(workspace)
     receipt = state["delivery_mode_receipt"]
 
-    action = loop.next_action(str(workspace))
+    routing, dispatch = loop.build_dispatch_lens_routing(
+        state, loop._current_task(state), workspace=str(workspace)
+    )
 
-    assert "error" not in action
-    assert action["step"] == "execute"
-    assert action["delivery_dispatch"]["delivery_mode_receipt"] == receipt
-    assert action["delivery_dispatch"]["automatic_lens_workers"] == ()
-    assert action["delivery_dispatch"]["automatic_lens_worker_count"] == 0
-    assert action["lenses"] == []
+    assert dispatch["delivery_mode_receipt"] == receipt
+    assert dispatch["automatic_lens_workers"] == ()
+    assert dispatch["automatic_lens_worker_count"] == 0
+    assert routing["lenses"] == []
 
 
 def test_sever_delivery_mode_receipt_to_dispatch_fails_closed(
@@ -290,7 +342,7 @@ def test_sever_delivery_mode_receipt_to_dispatch_fails_closed(
             state["delivery_mode_receipt"]["source_sha"] = "d" * 40
         loop.save(str(workspace), state)
 
-        action = loop.next_action(str(workspace))
+        action = loop.next_action.__wrapped__(str(workspace))
 
         assert "build delivery mode refused before dispatch" in action["error"]
 
