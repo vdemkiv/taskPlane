@@ -84,6 +84,14 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.18.9": {
+        "reason": "superseded local Marketplace candidate. It wired native "
+                  "telemetry, zero-context pickups, and the current dashboard, "
+                  "but preceded the fail-closed delivery authority, isolated "
+                  "global hooks, and installed-package proof completed in "
+                  "2.18.10; it was never promoted to released truth.",
+        "superseded_by": "2.18.10",
+    },
     "2.18.8": {
         "reason": "superseded local Marketplace candidate. It restored "
                   "the canonical terminal Plan graph, but native Codex "
