@@ -324,13 +324,27 @@ def validate_archive(path: Path, version: str) -> tuple:
                     f"archive canonical authority is unreadable: {required}") from exc
             require(isinstance(authority, dict),
                     f"archive canonical authority is not an object: {required}")
+            is_operational_settings = required.endswith(
+                "operational-settings.json")
             expected_schema = (
-                "taskplane.operational-settings/v1"
-                if required.endswith("operational-settings.json")
+                "taskplane.operational-settings/v2"
+                if is_operational_settings
                 else "taskplane.operational-settings-inventory/v1"
             )
             require(authority.get("schema") == expected_schema,
                     f"archive canonical authority has an invalid schema: {required}")
+            if is_operational_settings:
+                try:
+                    expected_authority = json.loads(
+                        (ROOT / required).read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise PackageError(
+                        "canonical operational settings authority is unreadable"
+                    ) from exc
+                require(
+                    authority == expected_authority,
+                    f"archive canonical authority does not match source: {required}",
+                )
         for required in RELEASE_SURFACE_FILES:
             member = f"{ARCHIVE_ROOT}/{required}"
             require(member in names,

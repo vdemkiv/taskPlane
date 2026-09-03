@@ -1381,13 +1381,24 @@ def validate_archive(
                     f"ZIP canonical authority is unreadable: {required}") from exc
             require(isinstance(authority, Mapping),
                     f"ZIP canonical authority is not an object: {required}")
+            is_operational_settings = required.endswith(
+                "operational-settings.json")
             expected_schema = (
-                "taskplane.operational-settings/v1"
-                if required.endswith("operational-settings.json")
+                "taskplane.operational-settings/v2"
+                if is_operational_settings
                 else "taskplane.operational-settings-inventory/v1"
             )
             require(authority.get("schema") == expected_schema,
                     f"ZIP canonical authority has an invalid schema: {required}")
+            if is_operational_settings:
+                expected_authority = load_json_object(
+                    expected_surface_root / required,
+                    "canonical operational settings authority",
+                )
+                require(
+                    authority == expected_authority,
+                    f"ZIP canonical authority does not match source: {required}",
+                )
         for required in release_surface_files:
             member = f"{ARCHIVE_ROOT}/{required}"
             require(member in names,

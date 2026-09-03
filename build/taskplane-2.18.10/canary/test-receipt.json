@@ -1,0 +1,31 @@
+{
+  "schema": "taskplane.p14-selector-receipt/v1",
+  "task_id": "P14-part-a-canary",
+  "attempt": 2,
+  "observed_at": "2026-09-03T09:40:01Z",
+  "authority": {
+    "tasks_sha256": "be7069258baca1021094cb7e628387cc25a44f99417b9fd354723a259424596d",
+    "approved_replan_sha256": "459245d36f85f4e83ae66ad1eef78a1f4f719ce0b09dad275f95614f8fbd0868",
+    "design_fingerprint": "1950f719c7c822e9c7f03dbeae0f7bcd519b4fb64906ba3990ceeddda9eba58e"
+  },
+  "command": "python3 -m pytest -q taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal",
+  "selectors": [
+    "taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings",
+    "taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority",
+    "taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal"
+  ],
+  "exit_code": 0,
+  "result": "3 passed in 4.08s",
+  "status": "passed",
+  "source_sha256": {
+    "scripts/package_openai.py": "34b1e8009f474b78c50d2f1e98f67c359d1377ea62064873231bb365a651c720",
+    "scripts/package_claude.py": "88f0c6937a8eb5a22c23cb9af9bb22219b6afaa18dc54184ce1b33468ee7ede6",
+    "taskplane/tests/test_r0002_release_package_journey.py": "be39beef48d8a2a17f4a405b13b1a1d745e549aba8ca1b9c4b555e3a6aa27c4e",
+    "taskplane/tests/test_wave_metrics.py": "b770a436d41ed7942f024389194f5a5bb6d5117b268e32a1542aac791bd3310e"
+  },
+  "packages": {
+    "openai_sha256": "263140c9ec76bab1d5daec0dd53cf83d124312690a0e2c82c266b78f0557f649",
+    "claude_sha256": "c0153dbb863d11193f80dc5bd0d4b56e00dd911a2e6f3c4fb4e662e7d0e0b98f"
+  },
+  "ci_or_broad_suites_run": false
+}

@@ -15,9 +15,11 @@ import subprocess
 import sys
 import zipfile
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "2.18.9"
+VERSION = "2.18.10"
 
 
 def _script_module(name: str):
@@ -40,6 +42,75 @@ def _extract(archive: Path, target: Path) -> Path:
     root = target / "taskplane"
     assert root.is_dir()
     return root
+
+
+def _run_package_entry_point(kind: str, output_dir: Path) -> Path:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / f"package_{kind}.py"),
+         "--output-dir", str(output_dir), "--allow-dirty"],
+        cwd=ROOT, text=True, encoding="utf-8", capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    archive = output_dir / f"taskplane-{VERSION}-{kind}.zip"
+    assert archive.is_file()
+    return archive
+
+
+def _replace_packaged_settings(archive: Path, replacement: dict) -> None:
+    member = "taskplane/taskplane/operational-settings.json"
+    temporary = archive.with_suffix(".rewritten.zip")
+    with zipfile.ZipFile(archive) as source, zipfile.ZipFile(
+            temporary, "w") as target:
+        for info in source.infolist():
+            payload = source.read(info)
+            if info.filename == member:
+                payload = (json.dumps(replacement, sort_keys=True) + "\n").encode()
+            target.writestr(info, payload)
+    os.replace(temporary, archive)
+
+
+def test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings(
+        tmp_path):
+    canonical = json.loads((
+        ROOT / "taskplane" / "operational-settings.json"
+    ).read_text(encoding="utf-8"))
+    assert canonical["schema"] == "taskplane.operational-settings/v2"
+
+    for kind in ("openai", "claude"):
+        archive = _run_package_entry_point(kind, tmp_path / kind)
+        with zipfile.ZipFile(archive) as package:
+            packaged = json.loads(package.read(
+                "taskplane/taskplane/operational-settings.json"))
+        assert packaged == canonical
+
+
+def test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority(
+        tmp_path):
+    canonical = json.loads((
+        ROOT / "taskplane" / "operational-settings.json"
+    ).read_text(encoding="utf-8"))
+    foreign = {**canonical, "schema": "foreign.operational-settings/v2"}
+    malformed = dict(canonical)
+    malformed.pop("workflow")
+    invalid_binding = json.loads(json.dumps(canonical))
+    invalid_binding["workflow"]["root_session"]["seed_budget_tokens"] = 39_999
+
+    openai = _script_module("package_openai")
+    claude = _script_module("package_claude")
+    for kind, module in (("openai", openai), ("claude", claude)):
+        canonical_archive = _run_package_entry_point(
+            kind, tmp_path / f"canonical-{kind}")
+        for name, replacement in (
+                ("foreign", foreign), ("malformed", malformed),
+                ("invalid-binding", invalid_binding)):
+            archive = tmp_path / f"{name}-{canonical_archive.name}"
+            archive.write_bytes(canonical_archive.read_bytes())
+            _replace_packaged_settings(archive, replacement)
+            with pytest.raises(module.PackageError, match="canonical authority"):
+                if kind == "openai":
+                    module.validate_archive(archive, expected_version=VERSION)
+                else:
+                    module.validate_archive(archive, VERSION)
 
 
 def _run_installed_semantics(package_root: Path, case: Path) -> dict:
