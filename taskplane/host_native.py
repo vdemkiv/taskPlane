@@ -1470,8 +1470,36 @@ def select_dashboard_source(
             mode="managed", run_id="unknown-managed", revision="unknown",
             target="run", error=exc, error_formatter=error_formatter)
     if locator is None:
-        return {"mode": "none", "status": "no_active", "state": None,
-                "evidence": []}
+        try:
+            state = legacy_loader(ws)
+        except Exception as exc:
+            return _corrupt_dashboard_source(
+                mode="legacy", run_id="unknown-legacy", revision="unknown",
+                target="loop", error=exc, error_formatter=error_formatter)
+        if state is None:
+            return {"mode": "none", "status": "no_active", "state": None,
+                    "evidence": []}
+        if not isinstance(state, dict) or not isinstance(
+                state.get("run_id"), str) or not state["run_id"]:
+            error = ValueError("legacy loop state has no valid run identity")
+            return _corrupt_dashboard_source(
+                mode="legacy", run_id="unknown-legacy", revision="unknown",
+                target="loop", error=error, error_formatter=error_formatter)
+        try:
+            state_fingerprint = _canonical_fingerprint(state)
+        except Exception as exc:
+            return _corrupt_dashboard_source(
+                mode="legacy", run_id=str(state["run_id"]),
+                revision="unknown", target="loop", error=exc,
+                error_formatter=error_formatter)
+        return {
+            "mode": "legacy", "status": "ready",
+            "run_id": str(state["run_id"]),
+            "revision": str(state.get("baseline") or state_fingerprint),
+            "target": "loop", "state": state,
+            "source_fingerprint": state_fingerprint,
+            "evidence": ["loop-state:" + state_fingerprint],
+        }
     if not isinstance(locator, dict) or not isinstance(
             locator.get("run_id"), str) or not locator["run_id"]:
         error = ValueError("workspace locator has no valid run identity")

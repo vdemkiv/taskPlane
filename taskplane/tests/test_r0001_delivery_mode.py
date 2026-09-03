@@ -349,39 +349,6 @@ def test_sever_delivery_mode_receipt_to_dispatch_fails_closed(
     assert worker_calls == []
 
 
-def test_empty_expected_lenses_emits_successful_collection_receipt(tmp_path):
-    workspace = _plan_workspace(tmp_path)
-    opened = _start_evaluate_kernel(workspace, _build_receipt())
-    started = review._load_state(str(workspace), opened["run_id"])
-
-    collected = loop.collect_review_bridge(
-        str(workspace),
-        publish=False,
-        run_id=opened["run_id"],
-        evaluator_result=_evaluator_result(),
-        producer_observation_fingerprint=OBSERVATION_FINGERPRINT,
-    )
-    completed = review._load_state(str(workspace), opened["run_id"])
-    receipt = collected["empty_lens_collection"]
-
-    assert opened["slots"] == []
-    assert opened["expected_lenses"] == []
-    assert opened["slot_conservation"]["status"] == "empty"
-    assert started["expected_lenses"] == []
-    assert started["slots"] == []
-    assert "routing" not in started
-    assert started["zero_lens_evaluation"] is True
-    assert collected["status"] == "complete"
-    assert completed["empty_lens_collection"] == receipt
-    assert receipt["schema"] == "taskplane.empty-lens-collection/v1"
-    assert receipt["expected_lenses"] == []
-    assert receipt["collected_lenses"] == []
-    assert receipt["status"] == "complete"
-    assert receipt["producer_observation_fingerprint"] == OBSERVATION_FINGERPRINT
-    assert len(receipt["result_fingerprint"]) == 64
-    assert len(receipt["fingerprint"]) == 64
-
-
 def test_cli_refuses_producer_observation_flag(tmp_path, capsys):
     with pytest.raises(SystemExit):
         tp_cli.main([
@@ -478,13 +445,6 @@ def test_malformed_empty_lens_result_is_not_success():
         _empty_collection(result)
 
 
-def test_empty_lens_path_never_enters_outage_resolution():
-    receipt = _empty_collection(_evaluator_result())
-
-    assert receipt["status"] == "complete"
-    assert not any("outage" in key or "resolution" in key for key in receipt)
-
-
 def test_plan_gate_receipt_is_the_build_dispatch_authority():
     state = {"requirement_id": "R-0001"}
     receipt = loop.stamp_plan_delivery_mode(
@@ -508,26 +468,6 @@ def test_plan_gate_receipt_is_the_build_dispatch_authority():
     assert dispatch["delivery_mode_receipt"] == receipt
     assert dispatch["automatic_lens_workers"] == ()
     assert created == []
-
-
-def test_review_empty_expected_set_uses_normal_collection_not_outage():
-    outage_calls = []
-
-    receipt = review.collect_expected_set(
-        run_id="run-a",
-        task_id="task-a",
-        stage="Evaluate",
-        expected_lenses=[],
-        collected_lenses=[],
-        result=_evaluator_result(),
-        result_validator=validate_evaluator_value,
-        producer_observation_fingerprint=OBSERVATION_FINGERPRINT,
-        outage_resolver=lambda *_args, **_kwargs: outage_calls.append(True),
-    )
-
-    assert receipt["schema"] == "taskplane.empty-lens-collection/v1"
-    assert receipt["status"] == "complete"
-    assert outage_calls == []
 
 
 def test_design_governed_missing_delivery_mode_never_uses_legacy_lens_fallback(

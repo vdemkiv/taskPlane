@@ -32,10 +32,28 @@ STAGES = ("execute", "evaluate", "fix")
 # journey constants — part of the frozen fixture (stable ids)
 GOAL = "stage wave fixture"
 TASKS = [
-    {"id": "t1", "scope": ["src/alpha/**"], "tests": "true",
-     "criteria": ["alpha updated"], "new_modules": ["alpha"]},
-    {"id": "t2", "scope": ["src/beta/**"], "tests": "true",
-     "criteria": ["beta updated"], "new_modules": ["beta"]},
+    {"id": "t1", "scope": ["src/alpha/**", "tests/test_alpha.py"],
+     "tests": "python3 -m pytest -q tests/test_alpha.py::test_current_contract",
+     "criteria": ["alpha updated"], "new_modules": ["alpha"],
+     "evaluation_evidence_edges": [{
+         "producer": "src/alpha/m.py", "consumer": "tests/test_alpha.py",
+         "selector": "tests/test_alpha.py::test_current_contract",
+         "freshness_inputs": ["candidate_sha", "source_tree"],
+         "severed_edge": {
+             "mutation": "remove the alpha implementation",
+             "selector": "tests/test_alpha.py::test_current_contract"}}],
+     "changed_interfaces": [], "classified_failures": []},
+    {"id": "t2", "scope": ["src/beta/**", "tests/test_beta.py"],
+     "tests": "python3 -m pytest -q tests/test_beta.py::test_current_contract",
+     "criteria": ["beta updated"], "new_modules": ["beta"],
+     "evaluation_evidence_edges": [{
+         "producer": "src/beta/m.py", "consumer": "tests/test_beta.py",
+         "selector": "tests/test_beta.py::test_current_contract",
+         "freshness_inputs": ["candidate_sha", "source_tree"],
+         "severed_edge": {
+             "mutation": "remove the beta implementation",
+             "selector": "tests/test_beta.py::test_current_contract"}}],
+     "changed_interfaces": [], "classified_failures": []},
 ]
 
 def _git(ws, *args):
@@ -52,6 +70,12 @@ def build_repo(tmp: str) -> str:
         os.makedirs(os.path.join(ws, d))
         with open(os.path.join(ws, d, "m.py"), "w") as f:
             f.write("x = 1\n")
+    os.makedirs(os.path.join(ws, "tests"))
+    for module in ("alpha", "beta"):
+        with open(os.path.join(ws, "tests", f"test_{module}.py"), "w") as f:
+            f.write(f"from src.{module}.m import x\n\n"
+                    "def test_current_contract():\n"
+                    "    assert x in {1, 2}\n")
     os.makedirs(os.path.join(ws, ".taskplane"))
     os.environ["TASKPLANE_SESSION_ID"] = "stage-fixture"
     with open(os.path.join(ws, "plan", "tasks.json"), "w") as f:
@@ -77,10 +101,12 @@ def cli(*argv) -> "tuple[int, str]":
 def start_loop(ws: str) -> None:
     """init → plan gate → human plan approval → EXECUTE (parallel)."""
     import loop
+    from tests.root_session_fixture import open_delivery_root
     loop.init(ws, GOAL, spec_path="s", checkpoints=["plan"], parallel=True)
     loop.next_action(ws)
     loop.gate(ws, "pass")
     loop.approve(ws)
+    open_delivery_root(ws)
 
 
 def build_task(ws: str, tid: str, module: str) -> None:

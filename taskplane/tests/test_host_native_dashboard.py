@@ -93,6 +93,27 @@ def test_managed_v3_locator_uses_v3_adapter_without_v4_reclassification():
     assert source["state"] == state
 
 
+def test_locatorless_live_loop_is_a_canonical_legacy_source_not_no_active():
+    state = {
+        "run_id": "legacy-loop", "baseline": "a" * 40,
+        "goal": "keep every loop dashboard current", "step": "design",
+        "tasks": [], "current_task": 0,
+    }
+    source = select_dashboard_source(
+        "/legacy-workspace", locator_loader=lambda _workspace: None,
+        legacy_loader=lambda _workspace: state,
+        manifest_loader=lambda *_args: pytest.fail(
+            "a locatorless loop must not read a managed manifest"),
+        manifest_validator=lambda _manifest: None,
+        error_formatter=lambda exc: f"{exc.__class__.__name__}: {exc}")
+
+    assert source["mode"] == "legacy"
+    assert source["status"] == "ready"
+    assert source["run_id"] == "legacy-loop"
+    assert source["state"] == state
+    assert source["source_fingerprint"]
+
+
 def test_managed_v3_malformed_selected_task_is_non_actionable():
     source = select_dashboard_source(
         "/managed-workspace",

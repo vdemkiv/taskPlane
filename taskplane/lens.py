@@ -1160,7 +1160,7 @@ def prime_scope(scope_globs, task_type: str | None = None,
 # artifacts). Lens review routes on the WORK, not the loop's own bookkeeping —
 # otherwise every run drags in product/PM lenses and inflates change size.
 LOOP_OWNED = (".taskplane", ".eval/", ".em-review/", "plan/", "specs/",
-              "design/", "knowledge/")
+              "design/", "knowledge/", "waves/")
 
 
 def route_git_diff(workspace: str, base: str = "HEAD",

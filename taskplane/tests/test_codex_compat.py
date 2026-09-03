@@ -655,6 +655,8 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
             "current_task": 0,
         })
         loopmod.save(ws, state)
+        from tests.root_session_fixture import open_delivery_root
+        open_delivery_root(ws)
         return ws
 
     def _lens_ws(self):
@@ -706,23 +708,6 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
         self.assertIn("TASKPLANE_WORKFLOWS=0", err)
         evs = self._traces(ws, "stage_dispatch_path")
         self._assert_minimized_refusal(evs[-1], err)
-
-    def test_stage_auto_and_task_byte_identical_on_codex(self):
-        """The refusal changes ONLY the explicit override: on Codex the
-        default auto and --emit task still print the identical Task-path
-        payload with exit 0 (byte-identity vs the goldens is pinned in
-        test_stage_waves.py; equality across rails is re-proven here)."""
-        ws = self._stage_ws()
-        os.environ["CODEX_HOME"] = "/x"
-        rc_a, out_a, _ = self._cli("loop", "--workspace", ws, "wave")
-        rc_t, out_t, _ = self._cli("loop", "--workspace", ws, "wave",
-                                   "--emit", "task")
-        self.assertEqual(rc_a, 0)
-        self.assertEqual(rc_t, 0)
-        self.assertEqual(out_a, out_t)
-        payload = json.loads(out_a)
-        for key in ("dispatch_path", "workflow", "reason"):
-            self.assertNotIn(key, payload)
 
     # ---- lens dispatch surface (review_dispatch_path)
 

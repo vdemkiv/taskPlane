@@ -6350,9 +6350,9 @@ def _prepare_public_evaluate_evidence(
     contract_id = str((task.get("criteria") or ["current-contract"])[0])
     changed_interfaces = task.get("changed_interfaces")
     classified_failures = task.get("classified_failures")
-    if not isinstance(changed_interfaces, list) or not changed_interfaces:
+    if not isinstance(changed_interfaces, list):
         raise ValueError("Evaluate impact requires sealed changed interfaces")
-    if not isinstance(classified_failures, list) or not classified_failures:
+    if not isinstance(classified_failures, list):
         raise ValueError("Evaluate impact requires classified Fix failures")
     impact_manifest = {
         "schema": "taskplane.evaluate-impact-manifest/v1",
@@ -9726,7 +9726,9 @@ def _acceptance_evidence_errors(ws: str, state: dict, task: dict,
     return errors
 
 
-def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
+def _evaluation_errors(
+        ws: str, state: dict, task: dict, *, artifact_ws: str | None = None
+        ) -> list:
     """Validate evaluator evidence instead of trusting `gate pass`."""
     path = runtime_storage.evaluation_path(ws)
     verdict, errors = _read_json(path)
@@ -9738,7 +9740,8 @@ def _evaluation_errors(ws: str, state: dict, task: dict) -> list:
     else:
         try:
             consumed = consume_evaluate_evidence_before_pass(
-                verdict, artifact_root=_run_artifact_root(ws, state),
+                verdict, artifact_root=_run_artifact_root(
+                    artifact_ws or ws, state),
                 run_id=str(evidence_route.get("run_id") or ""),
                 evaluator_attempt_id=str(
                     evidence_route.get("evaluator_attempt_id") or ""),
@@ -11633,7 +11636,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             return skew
         evidence_errors = _producer_observation_errors(
             act_ws, state, task, step, state.get("_submission"))
-        evidence_errors.extend(_evaluation_errors(act_ws, state, task))
+        evidence_errors.extend(_evaluation_errors(
+            act_ws, state, task, artifact_ws=ws))
         if evidence_errors:
             tp.trace(ws, "loop_gate_blocked", step=step,
                      reason="evaluation_evidence", errors=evidence_errors)
@@ -11901,6 +11905,10 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                         act_ws, current, submission or {}, "execute")
         elif step == "evaluate":
             t = _current_task(state)
+            # One Evaluate route is bound to one task/candidate/attempt.  It
+            # must never survive a terminal gate and be reused by the next
+            # task or retry.
+            state.pop("evaluate_child_evidence", None)
             build_failed = state.pop("_build_failed", False) or \
                 t.pop("_build_failed", False)
             if outcome == "fail" and isinstance(failure_decision, dict):
