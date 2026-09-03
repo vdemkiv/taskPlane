@@ -999,12 +999,23 @@ def validate_hook_manifest(value: object) -> dict:
 
 
 def load_hook_manifest() -> dict:
-    path = ROOT / "hooks" / "hooks.json"
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PackageError(f"cannot read hook manifest: {exc}") from exc
-    return validate_hook_manifest(value)
+    """Derive the installed OpenAI hook manifest from host authorities."""
+    manifests: dict[str, dict] = {}
+    for host, path in (
+            ("claude", ROOT / "hooks" / "hooks.json"),
+            ("codex", ROOT / ".codex" / "hooks.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PackageError(f"cannot read {host} hook manifest: {exc}") from exc
+        manifests[host] = validate_hook_manifest(value)
+    claude_hooks = manifests["claude"]["hooks"]
+    codex_hooks = manifests["codex"]["hooks"]
+    require("SessionStart" in claude_hooks and "SessionStart" in codex_hooks,
+            "hook manifests must declare SessionStart")
+    installed = json.loads(json.dumps(manifests["claude"]))
+    installed["hooks"]["SessionStart"] = codex_hooks["SessionStart"]
+    return validate_hook_manifest(installed)
 
 
 def valid_https_url(value: object) -> bool:
@@ -1290,7 +1301,12 @@ def write_zip(files: list[Path], output: Path) -> None:
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.create_system = 3
                 info.external_attr = (stat.S_IFREG | 0o644) << 16
-                archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+                payload = path.read_bytes()
+                if relative == "hooks/hooks.json":
+                    payload = (json.dumps(
+                        load_hook_manifest(), indent=2,
+                    ) + "\n").encode("utf-8")
+                archive.writestr(info, payload, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
         os.replace(temporary, output)
     finally:
         if temporary.exists():
@@ -1432,6 +1448,10 @@ def validate_archive(
         except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise PackageError("ZIP contains an unreadable hooks/hooks.json") from exc
         validate_hook_manifest(hook_manifest)
+        require(
+            hook_manifest == load_hook_manifest(),
+            "ZIP installed SessionStart wiring does not match Codex authority",
+        )
         require(
             f"{ARCHIVE_ROOT}/docs/assets/taskplane-cowork-flow.gif" in names,
             "ZIP is missing the README flow-guide GIF",

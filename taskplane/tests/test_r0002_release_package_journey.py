@@ -69,6 +69,58 @@ def _replace_packaged_settings(archive: Path, replacement: dict) -> None:
     os.replace(temporary, archive)
 
 
+def _packaged_hook_manifest(archive: Path) -> dict:
+    with zipfile.ZipFile(archive) as package:
+        return json.loads(package.read("taskplane/hooks/hooks.json"))
+
+
+def _replace_packaged_hook_manifest(archive: Path, replacement: dict) -> None:
+    member = "taskplane/hooks/hooks.json"
+    temporary = archive.with_suffix(".rewritten.zip")
+    with zipfile.ZipFile(archive) as source, zipfile.ZipFile(
+            temporary, "w") as target:
+        for info in source.infolist():
+            payload = source.read(info)
+            if info.filename == member:
+                payload = (json.dumps(replacement, indent=2) + "\n").encode()
+            target.writestr(info, payload)
+    os.replace(temporary, archive)
+
+
+def _expected_installed_hook_manifest(kind: str) -> dict:
+    claude = json.loads((
+        ROOT / "hooks" / "hooks.json"
+    ).read_text(encoding="utf-8"))
+    if kind == "claude":
+        return claude
+    assert kind == "openai"
+    codex = json.loads((
+        ROOT / ".codex" / "hooks.json"
+    ).read_text(encoding="utf-8"))
+    expected = json.loads(json.dumps(claude))
+    expected["hooks"]["SessionStart"] = codex["hooks"]["SessionStart"]
+    return expected
+
+
+def _assert_installed_session_start_wiring(kind: str, manifest: dict) -> None:
+    assert manifest == _expected_installed_hook_manifest(kind)
+    host = "codex" if kind == "openai" else "claude"
+    hook_path = "bridge" if kind == "openai" else "native"
+    commands = [
+        hook[field]
+        for entry in manifest["hooks"]["SessionStart"]
+        for hook in entry["hooks"]
+        for field in ("command", "commandWindows")
+    ]
+    assert any("host-native-check" in command for command in commands)
+    for command in commands:
+        if "host-native-check" not in command:
+            continue
+        assert f"--host {host}" in command
+        assert f"TASKPLANE_HOOK_PATH={hook_path}" in command or (
+            f'TASKPLANE_HOOK_PATH={hook_path}"' in command)
+
+
 def test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings(
         tmp_path):
     canonical = json.loads((
@@ -111,6 +163,43 @@ def test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operat
                     module.validate_archive(archive, expected_version=VERSION)
                 else:
                     module.validate_archive(archive, VERSION)
+
+
+def test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring(
+        tmp_path):
+    for kind in ("openai", "claude"):
+        archive = _run_package_entry_point(kind, tmp_path / kind)
+        _assert_installed_session_start_wiring(
+            kind, _packaged_hook_manifest(archive))
+
+
+def test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host(
+        tmp_path):
+    for kind in ("openai", "claude"):
+        canonical = _run_package_entry_point(
+            kind, tmp_path / f"canonical-{kind}")
+        _assert_installed_session_start_wiring(
+            kind, _packaged_hook_manifest(canonical))
+        expected_host = "codex" if kind == "openai" else "claude"
+        wrong_host = "claude" if kind == "openai" else "codex"
+        expected_path = "bridge" if kind == "openai" else "native"
+        wrong_path = "native" if kind == "openai" else "bridge"
+        for mutation, old, new in (
+                ("wrong-host", f"--host {expected_host}",
+                 f"--host {wrong_host}"),
+                ("wrong-hook-path", f"TASKPLANE_HOOK_PATH={expected_path}",
+                 f"TASKPLANE_HOOK_PATH={wrong_path}")):
+            archive = tmp_path / f"{mutation}-{canonical.name}"
+            archive.write_bytes(canonical.read_bytes())
+            manifest = _packaged_hook_manifest(archive)
+            for entry in manifest["hooks"]["SessionStart"]:
+                for hook in entry["hooks"]:
+                    for field in ("command", "commandWindows"):
+                        hook[field] = hook[field].replace(old, new)
+            _replace_packaged_hook_manifest(archive, manifest)
+            with pytest.raises(AssertionError):
+                _assert_installed_session_start_wiring(
+                    kind, _packaged_hook_manifest(archive))
 
 
 def _run_installed_semantics(package_root: Path, case: Path) -> dict:

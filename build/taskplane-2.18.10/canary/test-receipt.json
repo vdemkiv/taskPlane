@@ -1,31 +1,37 @@
 {
   "schema": "taskplane.p14-selector-receipt/v1",
   "task_id": "P14-part-a-canary",
-  "attempt": 2,
-  "observed_at": "2026-09-03T09:40:01Z",
+  "attempt": 3,
+  "observed_at": "2026-09-03T11:09:30Z",
   "authority": {
-    "tasks_sha256": "be7069258baca1021094cb7e628387cc25a44f99417b9fd354723a259424596d",
-    "approved_replan_sha256": "459245d36f85f4e83ae66ad1eef78a1f4f719ce0b09dad275f95614f8fbd0868",
+    "tasks_sha256": "85008602909c63fbffe6b220c4d078dc57bab6e806b54bc69d9495f6680df025",
+    "approved_replan_sha256": "14487a226e90504678697accc37aa87a9af8918b4ff74ea9e8a0ee7a1a306d51",
     "design_fingerprint": "1950f719c7c822e9c7f03dbeae0f7bcd519b4fb64906ba3990ceeddda9eba58e"
   },
-  "command": "python3 -m pytest -q taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal",
+  "command": "python3 -m pytest -q taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring taskplane/tests/test_r0002_release_package_journey.py::test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal",
   "selectors": [
     "taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings",
     "taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority",
+    "taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring",
+    "taskplane/tests/test_r0002_release_package_journey.py::test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host",
     "taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal"
   ],
   "exit_code": 0,
-  "result": "3 passed in 4.08s",
+  "result": "5 passed in 8.29s",
   "status": "passed",
   "source_sha256": {
-    "scripts/package_openai.py": "34b1e8009f474b78c50d2f1e98f67c359d1377ea62064873231bb365a651c720",
+    "scripts/package_openai.py": "d0dd2a23bedb8006bedc823ef4e64fe2d1b73d9c65f6f6c49f146b099b871de1",
     "scripts/package_claude.py": "88f0c6937a8eb5a22c23cb9af9bb22219b6afaa18dc54184ce1b33468ee7ede6",
-    "taskplane/tests/test_r0002_release_package_journey.py": "be39beef48d8a2a17f4a405b13b1a1d745e549aba8ca1b9c4b555e3a6aa27c4e",
-    "taskplane/tests/test_wave_metrics.py": "b770a436d41ed7942f024389194f5a5bb6d5117b268e32a1542aac791bd3310e"
+    "taskplane/tests/test_r0002_release_package_journey.py": "96c45451279aa60335ef47907e58c29ae31365f4dec5b28b027f5bec789261d3",
+    "taskplane/tests/test_wave_metrics.py": "b770a436d41ed7942f024389194f5a5bb6d5117b268e32a1542aac791bd3310e",
+    ".codex/hooks.json": "0da84228ef2b4dc1f78224c0e518e5761625237f9895c010a6ec45152091d12e",
+    "hooks/hooks.json": "68e4af13d29438c786b076553aa60f150bfd8b5e6dda7176b4e443f50b453740"
   },
   "packages": {
-    "openai_sha256": "263140c9ec76bab1d5daec0dd53cf83d124312690a0e2c82c266b78f0557f649",
+    "openai_sha256": "4c1491df6f9ce2704fe40f45aafffef9067c1fc7bae91991a855ed409fbc393e",
     "claude_sha256": "c0153dbb863d11193f80dc5bd0d4b56e00dd911a2e6f3c4fb4e662e7d0e0b98f"
   },
+  "invalid_canary_attempts": [2, 3, 4],
+  "acceptance_canary_executed": false,
   "ci_or_broad_suites_run": false
 }
