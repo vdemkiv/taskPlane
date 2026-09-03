@@ -202,6 +202,122 @@ def test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_
                     kind, _packaged_hook_manifest(archive))
 
 
+def test_installed_openai_direct_launcher_plan_approval_prepares_canonical_typed_root_seed_and_non_null_receipt(
+        tmp_path):
+    archive = _run_package_entry_point("openai", tmp_path / "package")
+    package_root = _extract(archive, tmp_path / "extracted")
+    case = tmp_path / "installed-plan-approval"
+    workspace = case / "workspace"
+    workspace.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    (workspace / "README.md").write_text(
+        "installed plan approval\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Taskplane", "-c",
+        "user.email=taskplane@example.invalid", "commit", "-qm", "base",
+    ], cwd=workspace, check=True)
+    baseline = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True,
+        encoding="utf-8").strip()
+    task = {
+        "id": "P14-part-a-canary", "wave": "W2A",
+        "scope": ["taskplane/loop.py"], "tests": "true",
+        "criteria": ["installed Plan approval prepares its root seed"],
+        "status": "pending", "deps": [],
+    }
+    (workspace / "plan").mkdir()
+    (workspace / "plan" / "tasks.json").write_text(
+        json.dumps({"tasks": [task]}), encoding="utf-8")
+    state = {
+        "run_id": "run-installed-plan-approval", "baseline": baseline,
+        "design_fingerprint": "b" * 64, "step": "plan_approval",
+        "tasks": [task], "current_task": 0,
+        "goal": "exercise installed Plan approval root preparation",
+        "parallel": True, "max_fix_cycles": 1,
+        "checkpoints": ["plan"], "design_required": False,
+    }
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "TASKPLANE_HOME": str(case / "private-store"),
+        "TASKPLANE_STAGE_NATIVE": "disabled",
+        "TASKPLANE_CONSOLIDATED_FLOW": "0",
+    }
+    setup = r'''
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+workspace = Path(sys.argv[2]).resolve()
+sys.path.insert(0, str(root))
+sys.path.insert(0, str(root / "taskplane"))
+import loop
+
+loop.save(str(workspace), json.load(sys.stdin))
+'''
+    prepared = subprocess.run(
+        [sys.executable, "-I", "-c", setup, str(package_root),
+         str(workspace)],
+        cwd=case, text=True, encoding="utf-8", input=json.dumps(state),
+        capture_output=True, env=environment)
+    assert prepared.returncode == 0, prepared.stdout + prepared.stderr
+
+    approval = subprocess.run([
+        sys.executable, str(package_root / "taskplane/tp.py"),
+        "loop", "--workspace", str(workspace), "approve",
+        "--advisory", "--by", "human:package-journey",
+    ], cwd=case, text=True, encoding="utf-8", capture_output=True,
+       env=environment)
+    assert approval.returncode == 0, approval.stdout + approval.stderr
+    assert json.loads(approval.stdout)["step"] == "execute"
+
+    inspect = r'''
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+workspace = Path(sys.argv[2]).resolve()
+sys.path.insert(0, str(root))
+sys.path.insert(0, str(root / "taskplane"))
+import loop
+from taskplane import root_seed, settings
+
+state = loop.load(str(workspace))
+prepared = state["root_hygiene"]
+receipt = prepared["prepare_receipt"]
+seed = root_seed.load_root_seed(str(workspace), prepared["seed_ref"])
+configured = settings.load_settings(environment={})
+root_seed.verify_prepare_receipt(
+    seed, receipt, settings=configured,
+    expected_seed_ref=prepared["seed_ref"])
+print(json.dumps({
+    "step": state["step"], "settings_digest": state["settings_digest"],
+    "root_hygiene": prepared, "seed": seed,
+}, sort_keys=True))
+'''
+    inspected = subprocess.run(
+        [sys.executable, "-I", "-c", inspect, str(package_root),
+         str(workspace)],
+        cwd=case, text=True, encoding="utf-8", capture_output=True,
+        env=environment)
+    assert inspected.returncode == 0, inspected.stdout + inspected.stderr
+    observed = json.loads(inspected.stdout)
+    prepared_root = observed["root_hygiene"]
+    receipt = prepared_root["prepare_receipt"]
+    assert observed["step"] == "execute"
+    assert prepared_root["status"] == "prepared"
+    assert prepared_root["seed_ref"] == "waves/W2A/root-seed.json"
+    assert receipt is not None
+    assert receipt["status"] == "prepared"
+    assert receipt["seed_fingerprint"] == prepared_root["seed_fingerprint"]
+    assert observed["seed"]["seed_fingerprint"] == \
+        prepared_root["seed_fingerprint"]
+    assert receipt["binding"]["settings_fingerprint"] == \
+        observed["settings_digest"]
+
+
 def _run_installed_semantics(package_root: Path, case: Path) -> dict:
     program = r'''
 import hashlib

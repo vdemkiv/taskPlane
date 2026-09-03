@@ -100,7 +100,7 @@ else:  # pragma: no cover - direct CLI module loading
     import lens_route_policy
     import native_session_meter
     import owned_cleanup
-    import settings as operational_settings
+    from taskplane import settings as operational_settings
     import plan_topology
     import release_evidence
     import run_artifacts

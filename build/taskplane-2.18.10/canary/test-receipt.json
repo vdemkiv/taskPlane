@@ -1,37 +1,60 @@
 {
   "schema": "taskplane.p14-selector-receipt/v1",
   "task_id": "P14-part-a-canary",
-  "attempt": 3,
-  "observed_at": "2026-09-03T11:09:30Z",
+  "attempt": 5,
+  "observed_at": "2026-09-03T13:02:15Z",
   "authority": {
-    "tasks_sha256": "85008602909c63fbffe6b220c4d078dc57bab6e806b54bc69d9495f6680df025",
-    "approved_replan_sha256": "14487a226e90504678697accc37aa87a9af8918b4ff74ea9e8a0ee7a1a306d51",
+    "tasks_sha256": "62e23a6bdd69b61c0becdaac4b9b828faf715b85b3eb898e2cf3913358012128",
+    "plan_sha256": "279cbf701a26b7c9b55b70bfe43ae0d7a42ac6d6c1e8cebb225548922c734466",
     "design_fingerprint": "1950f719c7c822e9c7f03dbeae0f7bcd519b4fb64906ba3990ceeddda9eba58e"
   },
-  "command": "python3 -m pytest -q taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring taskplane/tests/test_r0002_release_package_journey.py::test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal",
+  "classification": "direct-cli-import-identity-product-defect",
+  "red": {
+    "selector": "taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_direct_launcher_plan_approval_prepares_canonical_typed_root_seed_and_non_null_receipt",
+    "exit_code": 1,
+    "result": "1 failed in 3.42s",
+    "observed_error": "RootSeedError: root seed context.settings must be typed"
+  },
+  "command": "python3 -m pytest -q taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring taskplane/tests/test_r0002_release_package_journey.py::test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_direct_launcher_plan_approval_prepares_canonical_typed_root_seed_and_non_null_receipt taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal",
   "selectors": [
     "taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_accept_canonical_v2_operational_settings",
     "taskplane/tests/test_r0002_release_package_journey.py::test_openai_and_claude_package_entry_points_reject_foreign_or_invalid_operational_settings_authority",
     "taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_archive_has_codex_session_start_host_path_and_claude_archive_retains_claude_wiring",
     "taskplane/tests/test_r0002_release_package_journey.py::test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host",
+    "taskplane/tests/test_r0002_release_package_journey.py::test_installed_openai_direct_launcher_plan_approval_prepares_canonical_typed_root_seed_and_non_null_receipt",
     "taskplane/tests/test_wave_metrics.py::test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal"
   ],
   "exit_code": 0,
-  "result": "5 passed in 8.29s",
+  "result": "6 passed in 12.56s",
   "status": "passed",
   "source_sha256": {
     "scripts/package_openai.py": "d0dd2a23bedb8006bedc823ef4e64fe2d1b73d9c65f6f6c49f146b099b871de1",
     "scripts/package_claude.py": "88f0c6937a8eb5a22c23cb9af9bb22219b6afaa18dc54184ce1b33468ee7ede6",
-    "taskplane/tests/test_r0002_release_package_journey.py": "96c45451279aa60335ef47907e58c29ae31365f4dec5b28b027f5bec789261d3",
+    "taskplane/loop.py": "5fecdaae04ed1c2b0109815018042937d54e58de5416fd165f64ea45cfe2ff6b",
+    "taskplane/tests/test_r0002_release_package_journey.py": "83472ae17e20ce85ed4a411de57a263f2b040922475b025fba6c3f54c56421a0",
     "taskplane/tests/test_wave_metrics.py": "b770a436d41ed7942f024389194f5a5bb6d5117b268e32a1542aac791bd3310e",
     ".codex/hooks.json": "0da84228ef2b4dc1f78224c0e518e5761625237f9895c010a6ec45152091d12e",
     "hooks/hooks.json": "68e4af13d29438c786b076553aa60f150bfd8b5e6dda7176b4e443f50b453740"
   },
   "packages": {
-    "openai_sha256": "4c1491df6f9ce2704fe40f45aafffef9067c1fc7bae91991a855ed409fbc393e",
-    "claude_sha256": "c0153dbb863d11193f80dc5bd0d4b56e00dd911a2e6f3c4fb4e662e7d0e0b98f"
+    "openai_sha256": "30520083b84c2b85278a34804b7638e509b76e90ada7a7a4d4ef12c8dda89a21",
+    "openai_checksum_sha256": "07cb6c2bc9ebf40e6dbacaa908eb61171a73bea2798fcb9cd905510c5f6dd6a7",
+    "openai_provenance_sha256": "e9c002258c0715fc68e29e87e51cdee240a82fe8ed7facfe403009134a8d8825",
+    "claude_sha256": "c0153dbb863d11193f80dc5bd0d4b56e00dd911a2e6f3c4fb4e662e7d0e0b98f",
+    "claude_unchanged": true
   },
-  "invalid_canary_attempts": [2, 3, 4],
+  "plan_approval_root_seed_selector_executed": true,
+  "invalid_canary_attempts": [
+    2,
+    3,
+    4
+  ],
   "acceptance_canary_executed": false,
+  "distribution": {
+    "private": true,
+    "promotion_eligible": false,
+    "release_authority": false,
+    "upload_eligible": false
+  },
   "ci_or_broad_suites_run": false
 }
