@@ -1910,7 +1910,7 @@ def cmd_subagent_stop(a) -> int:
             raw_outcome = (event.get("outcome") or event.get("status")
                            or event.get("stop_reason") or event.get("reason")
                            or "success")
-            _seal_terminal_dispatch_telemetry(
+            telemetry = _seal_terminal_dispatch_telemetry(
                 ws, {
                     "budget": {"token_usage_required": True},
                     "worker_lifecycle": {
@@ -1920,6 +1920,19 @@ def cmd_subagent_stop(a) -> int:
                     },
                 }, event, outcome=tp.normalize_worker_terminal_outcome(
                     raw_outcome))
+            telemetry_receipt = (telemetry.get("receipt")
+                                 if isinstance(telemetry, dict) else None)
+            if (not isinstance(telemetry, dict) or
+                    telemetry.get("status") not in {"admitted", "duplicate"} or
+                    not isinstance(telemetry_receipt, dict) or
+                    str(telemetry_receipt.get("task_id") or "") != task_id or
+                    str(telemetry_receipt.get("dispatch_id") or "") !=
+                    dispatch_id or
+                    str(telemetry_receipt.get("thread_id") or "") !=
+                    native_task_name):
+                raise ValueError(
+                    "Evaluate evidence child terminal telemetry did not "
+                    "complete its exact native dispatch binding")
         child_result = _loop_runtime.complete_observed_evaluate_evidence_child(
             ws, event)
     except Exception as exc:
@@ -2443,7 +2456,7 @@ def _contract_dispatch_intent_id(contract: dict) -> str:
 
 def _dispatch_usage_observation_required(
         ws: str, task_id: str, dispatch_id: str | None = None) -> bool:
-    """Whether the active loop has one unfinalized usage consumer."""
+    """Whether the active loop has one exact terminal usage consumer."""
     try:
         import loop as loop_runtime
         state = loop_runtime.load(ws) or {}
@@ -2452,7 +2465,8 @@ def _dispatch_usage_observation_required(
             str(row.get("task_id") or "") == str(task_id) and
             (not dispatch_id or
              str(row.get("dispatch_id") or "") == str(dispatch_id)) and
-            not row.get("finalized_receipt_fingerprint")
+            (bool(dispatch_id) or
+             not row.get("finalized_receipt_fingerprint"))
             for row in ledger.get("bindings") or []
             if isinstance(row, dict)
         )

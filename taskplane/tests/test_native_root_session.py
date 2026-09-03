@@ -409,7 +409,7 @@ def test_mechanical_plan_gate_prepares_root_before_execute_commit(
                         lambda *_args, **_kwargs: {})
     monkeypatch.setattr(loop, "_stage_loop_transition",
                         lambda *_args, **_kwargs: {"status": "committed"})
-    monkeypatch.setattr(loop.tp, "git_head", lambda *_args: "a" * 40)
+    monkeypatch.setattr(loop.tp, "git_head", lambda *_args: "e" * 40)
     monkeypatch.setattr(loop, "status", lambda *_args: {"step": "execute"})
 
     result = loop.gate(str(tmp_path), "pass")
@@ -417,11 +417,13 @@ def test_mechanical_plan_gate_prepares_root_before_execute_commit(
     assert "error" not in result, result
     current = loop.load(str(tmp_path))
     assert current["step"] == "execute"
+    assert current["baseline"] == "e" * 40
     assert current["root_hygiene"]["status"] == "prepared"
     seed = root_seed.load_root_seed(
         str(tmp_path), "waves/W1/root-seed.json")
     assert current["root_hygiene"]["seed_fingerprint"] == \
         seed["seed_fingerprint"]
+    assert seed["candidate_sha"] == current["baseline"]
     assert current["settings_digest"]
 
 

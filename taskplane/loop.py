@@ -11844,6 +11844,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             state["current_task"] = resume_at if resume_at is not None else 0
             if state["step"] == "execute" and resume_at is None:
                 state["step"] = "em"
+            if state["step"] in ("execute", "em"):
+                state["baseline"] = tp.git_head(ws)
             if state["step"] == "execute":
                 try:
                     root_preparation = _prepare_approved_plan_root(ws, state)
@@ -11859,8 +11861,6 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                 state["root_hygiene"] = root_preparation["prepared"]
                 state["settings_digest"] = \
                     root_preparation["settings_digest"]
-            if state["step"] in ("execute", "em"):
-                state["baseline"] = tp.git_head(ws)
         elif step == "execute":
             # a build always goes to evaluate; a FAILED build is flagged so
             # evaluate FAILs and routes to fix/escalate — one place owns the fail

@@ -12,7 +12,8 @@ import pytest
 
 from taskplane import evaluate_child_evidence as evidence
 from taskplane import (
-    evaluation_output, host_native, loop, native_session_meter,
+    dispatch_telemetry, evaluation_output, host_native, loop,
+    native_session_meter,
     run_artifacts, run_store, runnability, storage,
 )
 from taskplane import tp as tp_cli
@@ -782,6 +783,78 @@ def test_public_next_action_observes_two_children_and_gate_consumes_them(
     assert "child evidence admission failed" not in json.dumps(passed).lower()
     if "error" not in passed:
         assert loop.load(str(workspace))["tasks"][0]["status"] == "passed"
+
+
+def test_evidence_child_stop_refuses_without_exact_terminal_dispatch_binding(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    root, run_id = _run(tmp_path, monkeypatch)
+    assignments = loop.start_evaluate_evidence_children(
+        workspace=str(ROOT), artifact_root=str(root), binding=_binding(),
+        impact_manifest=_impact())
+    assignment = assignments[0]
+    result = _results(assignments)[assignment["producer_kind"]]
+    task_name = "tp_evaluator_p13_evidence_missing_binding"
+    dispatch_id = "f" * 64
+    ledger = dispatch_telemetry.new_ledger(
+        run_id=run_id, source_sha="1" * 40,
+        design_fingerprint="3" * 64, plan_fingerprint="4" * 64,
+        started_at=0)
+    dispatch_telemetry.bind_dispatch(ledger, {
+        "dispatch_id": dispatch_id, "thread_id": task_name,
+        "thread_type": "evaluator", "task_id": _binding()["task_id"],
+        "dependencies": [], "shared_owner": None,
+        "started_at": 0, "ended_at": 0,
+        "wait_duration_seconds": 0, "correction_count": 0, "events": [],
+    })
+    route = {
+        "schema": "taskplane.evaluate-evidence-route/v1",
+        "run_id": run_id, "workspace": str(ROOT),
+        "artifact_root": str(root),
+        "evaluator_attempt_id": "evaluate-attempt-1",
+        "binding": assignment["binding"], "assignments": assignments,
+        "child_dispatches": [{
+            "task_name": task_name, "assignment": assignment,
+            "dispatch_intent": {"intent_id": dispatch_id},
+        }],
+    }
+    loop.save(str(tmp_path), {
+        "run_id": run_id, "step": "evaluate", "baseline": "1" * 40,
+        "design_fingerprint": "3" * 64, "plan_fingerprint": "4" * 64,
+        "settings_digest": _binding()["settings_digest"],
+        "tasks": [{"id": _binding()["task_id"], "deps": []}],
+        "current_task": 0, "evaluate_child_evidence": route,
+        "dispatch_telemetry": ledger,
+    })
+    expected = {
+        "kind": "step", "agent": loop.STEP_ROLE["evaluate"],
+        "ref": _binding()["task_id"], "intent_id": dispatch_id,
+        "intent_run_id": run_id,
+    }
+    loop.record_native_dispatch_observation(
+        str(tmp_path), expected=expected, native_task_name=task_name)
+    manifest = run_artifacts.load_manifest(root)
+    before = list(manifest["classes"]["agent-activity"]["entries"])
+
+    with loop.mutate(str(tmp_path)) as locked:
+        locked["dispatch_telemetry"]["bindings"] = []
+        locked["dispatch_telemetry"]["revision"] += 1
+        dispatch_telemetry.validate_ledger(locked["dispatch_telemetry"])
+    event = {
+        "cwd": str(tmp_path), "agent_id": task_name,
+        "agent_type": task_name, "task_name": task_name,
+        "turn_id": "turn-missing-binding", "provider": "codex",
+        "last_assistant_message": json.dumps(result),
+    }
+    monkeypatch.setattr(tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
+
+    assert tp_cli.cmd_subagent_stop(None) == 2
+    output = json.loads(capsys.readouterr().out)
+    assert output["decision"] == "block"
+    assert "exact native dispatch binding" in output["reason"]
+    after = run_artifacts.load_manifest(root)["classes"][
+        "agent-activity"]["entries"]
+    assert after == before
 
 
 def test_one_receipt_cannot_cover_freshness_and_severed_edge(
