@@ -213,8 +213,12 @@ def terminal_release_evidence_surface(
 ) -> dict[str, Any]:
     """Prepare release evidence as one non-authoritative terminal surface."""
     from taskplane import terminal_truth
+    payload = dict(evidence)
+    root_receipt = payload.pop("root_hygiene_receipt", None)
+    if isinstance(root_receipt, Mapping):
+        payload["root_hygiene"] = root_hygiene_projection(root_receipt)
     return terminal_truth.prepare_terminal_surface(
-        "release_evidence", identity, dict(evidence)
+        "release_evidence", identity, payload
     )
 
 

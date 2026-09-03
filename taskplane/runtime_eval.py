@@ -37,7 +37,7 @@ STAGE_STARTUP_PROJECTION_SCHEMA = "taskplane.stage-startup-projection/v1"
 def start_evaluate_evidence_children(
         workspace: str, *, artifact_root: str, binding: dict,
         impact_manifest: dict) -> list[dict]:
-    """Start the two non-lens evidence producers in the canonical run ledger."""
+    """Assign the two non-lens producers before host dispatch."""
     try:
         from taskplane import evaluate_child_evidence, run_artifacts
     except ImportError:  # pragma: no cover - direct CLI loading
@@ -54,9 +54,8 @@ def start_evaluate_evidence_children(
         existing = [row for row in entries
                     if row["metadata"].get("agent_attempt_id") == attempt_id]
         if existing:
-            if len(existing) == 2 and [row["metadata"]["event_type"]
-                                      for row in existing] == [
-                                          "assignment", "start"] and \
+            if [row["metadata"]["event_type"] for row in existing] in (
+                    ["assignment"], ["assignment", "start"]) and \
                     existing[0]["metadata"]["details"].get(
                         "assignment") == assignment:
                 continue
@@ -68,16 +67,54 @@ def start_evaluate_evidence_children(
             "assignment_digest": assignment["assignment_digest"],
             "reuse_key_digest": assignment["reuse_key_digest"],
         }
-        for event_type, receipt_kind, details in (
-                ("assignment", "assignment", {"assignment": assignment}),
-                ("start", "start", {})):
-            run_artifacts.append_activity(
-                artifact_root, event_type=event_type,
-                agent_attempt_id=attempt_id, worker_id=kind,
-                task_id=assignment["binding"]["task_id"],
-                lens="non-lens-" + kind,
-                details={**common, "receipt_kind": receipt_kind, **details})
+        run_artifacts.append_activity(
+            artifact_root, event_type="assignment",
+            agent_attempt_id=attempt_id, worker_id=kind,
+            task_id=assignment["binding"]["task_id"],
+            lens="non-lens-" + kind,
+            details={**common, "receipt_kind": "assignment",
+                     "assignment": assignment})
     return assignments
+
+
+def observe_evaluate_evidence_child_start(
+        *, artifact_root: str, assignment: dict, dispatch_id: str,
+        native_task_name: str) -> dict:
+    """Record start only after the host accepts the exact native child."""
+    try:
+        from taskplane import evaluate_child_evidence, run_artifacts
+    except ImportError:  # pragma: no cover - direct CLI loading
+        import evaluate_child_evidence
+        import run_artifacts
+    kind = assignment["producer_kind"]
+    attempt_id = assignment["binding"]["evaluator_attempt_id"] + "-" + kind
+    manifest = run_artifacts.load_manifest(artifact_root)
+    rows = [row for row in manifest["classes"]["agent-activity"]["entries"]
+            if row["metadata"].get("agent_attempt_id") == attempt_id]
+    if len(rows) == 2 and [row["metadata"]["event_type"]
+                           for row in rows] == ["assignment", "start"]:
+        details = rows[1]["metadata"].get("details") or {}
+        if details.get("dispatch_id") == dispatch_id and \
+                details.get("native_task_name") == native_task_name:
+            return rows[1]
+        raise evaluate_child_evidence.EvidenceContractError(
+            "Evaluate child start is bound to another dispatch")
+    if len(rows) != 1 or rows[0]["metadata"]["event_type"] != "assignment" or \
+            rows[0]["metadata"]["details"].get("assignment") != assignment:
+        raise evaluate_child_evidence.EvidenceContractError(
+            "Evaluate child assignment is partial or stale")
+    return run_artifacts.append_activity(
+        artifact_root, event_type="start", agent_attempt_id=attempt_id,
+        worker_id=kind, task_id=assignment["binding"]["task_id"],
+        lens="non-lens-" + kind,
+        details={
+            "schema": evaluate_child_evidence.LIFECYCLE_SCHEMA,
+            "producer_kind": kind,
+            "assignment_digest": assignment["assignment_digest"],
+            "reuse_key_digest": assignment["reuse_key_digest"],
+            "receipt_kind": "start", "dispatch_id": dispatch_id,
+            "native_task_name": native_task_name,
+        })
 
 
 def complete_evaluate_evidence_child(

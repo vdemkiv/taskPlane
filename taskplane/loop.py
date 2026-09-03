@@ -4222,8 +4222,9 @@ def _native_dispatch_intent(
         locator = runtime_storage.load_workspace_locator(ws)
     except Exception:
         locator = None
-    run_id = str(locator.get("run_id") or "") \
-        if isinstance(locator, Mapping) else ""
+    run_id = (str(locator.get("run_id") or "")
+              if isinstance(locator, Mapping)
+              else str(state.get("run_id") or ""))
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", run_id) is None:
         import hashlib
         material = json.dumps({
@@ -6108,6 +6109,15 @@ def start_evaluate_evidence_children(
         impact_manifest=dict(impact_manifest))
 
 
+def observe_evaluate_evidence_child_start(
+        *, artifact_root: str, assignment: Mapping[str, object],
+        dispatch_id: str, native_task_name: str) -> dict:
+    """Bind one evidence-child start to the observed native dispatch."""
+    return runtime_eval.observe_evaluate_evidence_child_start(
+        artifact_root=artifact_root, assignment=dict(assignment),
+        dispatch_id=dispatch_id, native_task_name=native_task_name)
+
+
 def complete_evaluate_evidence_child(
         *, workspace: str, artifact_root: str, run_id: str,
         assignment: Mapping[str, object], result: Mapping[str, object],
@@ -6178,7 +6188,8 @@ def _record_legacy_root_migration(
 def _screen_public_native_route(
         ws: str, state: Mapping[str, object], *, stage: str,
         tasks: list[Mapping[str, object]],
-        observation_authority: bytes | None) -> dict | None:
+        observation_authority: bytes | None,
+        dispatch: Mapping[str, object]) -> dict | None:
     """Enforce root preparation/open/meter admission before intent emission."""
     if stage not in {"execute", "fix", "evaluate"}:
         return None
@@ -6213,17 +6224,41 @@ def _screen_public_native_route(
         ledger = locked.get("dispatch_telemetry")
         if not isinstance(ledger, Mapping):
             raise ValueError("native dispatch root admission ledger is unavailable")
+        dispatch_id = str(dispatch.get("dispatch_id") or "").strip()
+        if not dispatch_id:
+            raise ValueError("native dispatch admission requires an exact intent id")
         decision = dispatch_telemetry.screen_dispatch(
             ledger, SystemClock(), current_stage=stage,
             outstanding_set_fingerprint=outstanding,
             preserved_context_fingerprint=preserved,
-            observation_authority=observation_authority)
+            observation_authority=observation_authority,
+            admission_operation_id=dispatch_id, dispatch=dispatch)
         if not decision.get("dispatch_allowed"):
             locked["root_hygiene"] = {
                 **dict(root), "status": "admissions_closed",
                 "admission_refusal": decision.get("fingerprint")}
             raise ValueError("native dispatch refused by root meter admission")
         return decision
+
+
+def _native_delivery_dispatch_binding(
+        state: Mapping[str, object], *, stage: str,
+        task: Mapping[str, object], intent_id: str,
+        native_task_name: str) -> dict:
+    """Build the exact binding later consumed by the host start observation."""
+    return {
+        "dispatch_id": str(intent_id),
+        "thread_id": str(native_task_name),
+        "thread_type": "evaluator" if stage == "evaluate" else "worker",
+        "task_id": str(task.get("id") or stage),
+        "dependencies": [str(value) for value in task.get("deps") or []],
+        "shared_owner": None,
+        "started_at": 0,
+        "ended_at": 0,
+        "wait_duration_seconds": 0,
+        "correction_count": int(task.get("fix_cycles") or 0),
+        "events": [],
+    }
 
 
 def _prepare_public_evaluate_evidence(
@@ -6286,6 +6321,12 @@ def _prepare_public_evaluate_evidence(
         raise ValueError(
             "Evaluate evidence edges must uniquely cover every changed producer")
     contract_id = str((task.get("criteria") or ["current-contract"])[0])
+    changed_interfaces = task.get("changed_interfaces")
+    classified_failures = task.get("classified_failures")
+    if not isinstance(changed_interfaces, list) or not changed_interfaces:
+        raise ValueError("Evaluate impact requires sealed changed interfaces")
+    if not isinstance(classified_failures, list) or not classified_failures:
+        raise ValueError("Evaluate impact requires classified Fix failures")
     impact_manifest = {
         "schema": "taskplane.evaluate-impact-manifest/v1",
         "implementation_files": implementation_files,
@@ -6293,7 +6334,8 @@ def _prepare_public_evaluate_evidence(
         "tests": [{"selector": selector, "contract": contract_id}
                   for selector in selectors],
         "producer_consumer_edges": producer_consumer_edges,
-        "changed_interfaces": [], "failures": [],
+        "changed_interfaces": copy.deepcopy(changed_interfaces),
+        "failures": copy.deepcopy(classified_failures),
         "rejected_evidence_kinds": [
             "ceremonial", "source", "ast", "prose-shape", "byte-only"],
     }
@@ -6320,6 +6362,7 @@ def _prepare_public_evaluate_evidence(
     record = {
         "schema": "taskplane.evaluate-evidence-route/v1",
         "run_id": str(owner["run_id"]),
+        "workspace": str(act_ws), "artifact_root": str(artifact_root),
         "evaluator_attempt_id": str(evaluator_attempt_id),
         "binding": exact_binding, "assignments": assignments,
     }
@@ -6331,6 +6374,88 @@ def _prepare_public_evaluate_evidence(
             raise ValueError("Evaluate child route conflicts with active attempt")
         locked["evaluate_child_evidence"] = record
     return record
+
+
+def _dispatch_public_evaluate_evidence_children(
+        ws: str, state: Mapping[str, object], task: Mapping[str, object],
+        route: Mapping[str, object], *, observation_authority: bytes | None,
+        model_tier: str) -> dict:
+    """Emit and admit the two real native non-lens child dispatches."""
+    rows = []
+    wait_policy = event_wait_policy("evaluate-evidence", 2)
+    for assignment in route.get("assignments") or []:
+        kind = str(assignment.get("producer_kind") or "")
+        dispatch = tp.dispatch_fields(
+            "step", STEP_ROLE["evaluate"], str(task.get("id") or "evaluate"),
+            model_tier)
+        dispatch["task_name"] = (
+            str(dispatch["task_name"]) + "_" + kind.replace("-", "_"))[:96]
+        intent = _native_dispatch_intent(
+            ws, state, step="evaluate",
+            task_id=str(task.get("id") or "evaluate"), dispatch=dispatch,
+            wait_policy=wait_policy, wave_id="evaluate-evidence")
+        intent_id = str(intent.get("intent_id") or "")
+        if not intent_id:
+            raise ValueError("Evaluate evidence child intent has no identity")
+        admission = _screen_public_native_route(
+            ws, state, stage="evaluate", tasks=[task],
+            observation_authority=observation_authority,
+            dispatch=_native_delivery_dispatch_binding(
+                state, stage="evaluate", task=task, intent_id=intent_id,
+                native_task_name=str(dispatch["task_name"])))
+        tp.record_expected_dispatch(
+            ws, "step", STEP_ROLE["evaluate"], dispatch["model_tier"],
+            dispatch["model"], ref=str(task.get("id") or "evaluate"),
+            task_name=dispatch["task_name"],
+            reasoning_effort=dispatch["reasoning_effort"],
+            role_marker_value=dispatch["role_marker"],
+            intent_id=intent_id,
+            intent_run_id=(intent.get("identity") or {}).get("run_id"))
+        rows.append({
+            **dispatch, "assignment": copy.deepcopy(assignment),
+            "dispatch_intent": intent, "root_admission": admission,
+            "prompt": "Read-only evidence producer. Execute the exact "
+                      "assignment obligations and return only the required "
+                      "JSON result. Do not verdict, gate, dispatch, mutate, "
+                      "classify delivery, or repair.",
+        })
+    if len(rows) != 2 or {row["assignment"]["producer_kind"] for row in rows} != {
+            "language-code-quality", "test-design"}:
+        raise ValueError("Evaluate requires exactly two evidence child dispatches")
+    updated = {**dict(route), "child_dispatches": rows,
+               "wait_invocation": event_wait_invocation(
+                   wait_policy, [row["task_name"] for row in rows])}
+    with mutate(ws) as locked:
+        if locked is None or locked.get("evaluate_child_evidence") != route:
+            raise ValueError("Evaluate evidence route changed before dispatch")
+        locked["evaluate_child_evidence"] = copy.deepcopy(updated)
+    return updated
+
+
+def complete_observed_evaluate_evidence_child(
+        ws: str, event: Mapping[str, object]) -> dict | None:
+    """Consume one native child terminal JSON into its durable lifecycle."""
+    state = load(ws) or {}
+    route = state.get("evaluate_child_evidence")
+    if not isinstance(route, Mapping):
+        return None
+    native_task_name = str(event.get("agent_type") or "")
+    child = next((row for row in route.get("child_dispatches") or []
+                  if row.get("task_name") == native_task_name), None)
+    if not isinstance(child, Mapping):
+        return None
+    raw = event.get("last_assistant_message")
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("Evaluate evidence child returned no JSON result")
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Evaluate evidence child result is not exact JSON") from exc
+    return complete_evaluate_evidence_child(
+        workspace=str(route["workspace"]),
+        artifact_root=str(route["artifact_root"]),
+        run_id=str(route["run_id"]), assignment=child["assignment"],
+        result=result, work_units=1)
 
 
 def _dispatch_binding_for_attempt(
@@ -6445,9 +6570,9 @@ def record_native_dispatch_observation(
             thread_type = "worker"
         existing = next((row for row in ledger.get("bindings") or []
                          if row.get("dispatch_id") == intent_id), None)
-        observed_at = ((existing or {}).get(
-            "started_at", SystemClock().wall_time()))
-        return dispatch_telemetry.bind_dispatch(ledger, {
+        observed_at = ((existing or {}).get("started_at") or
+                       SystemClock().wall_time())
+        binding = dispatch_telemetry.bind_dispatch(ledger, {
             "dispatch_id": intent_id,
             "thread_id": str(native_task_name or intent_id),
             "thread_type": thread_type,
@@ -6455,11 +6580,36 @@ def record_native_dispatch_observation(
             "dependencies": dependencies,
             "shared_owner": None,
             "started_at": observed_at,
-            "ended_at": ((existing or {}).get("ended_at", observed_at)),
+            "ended_at": ((existing or {}).get("ended_at") or observed_at),
             "wait_duration_seconds": 0,
             "correction_count": correction_count,
             "events": list((existing or {}).get("events") or []),
         })
+        stored = next(row for row in ledger.get("bindings") or []
+                      if row.get("dispatch_id") == intent_id)
+        if stored.get("started_at") == 0 and stored.get("ended_at") == 0 \
+                and not stored.get("events"):
+            stored["events"] = [dispatch_telemetry.dispatch_event(
+                dispatch_id=intent_id, thread_id=str(native_task_name),
+                thread_type=thread_type, task_id=task_id, sequence=1,
+                kind="progress", at=observed_at,
+                payload={"phase": "native-start"})]
+            ledger["revision"] = int(ledger["revision"]) + 1
+            dispatch_telemetry.validate_ledger(ledger)
+            binding = dict(stored)
+        evidence_route = locked.get("evaluate_child_evidence")
+        if isinstance(evidence_route, Mapping):
+            child = next((row for row in evidence_route.get(
+                "child_dispatches") or []
+                if row.get("task_name") == native_task_name and
+                (row.get("dispatch_intent") or {}).get(
+                    "intent_id") == intent_id), None)
+            if isinstance(child, Mapping):
+                observe_evaluate_evidence_child_start(
+                    artifact_root=str(evidence_route["artifact_root"]),
+                    assignment=child["assignment"], dispatch_id=intent_id,
+                    native_task_name=native_task_name)
+        return binding
 
 def record_observed_dispatch_usage(
         ws: str, *, task_id: str, normalized_usage: Mapping[str, object],
@@ -6575,7 +6725,8 @@ def record_native_session_snapshot(
 
 
 def record_native_orchestrator_snapshot(
-        ws: str, *, snapshot: Mapping[str, object]) -> dict:
+        ws: str, *, snapshot: Mapping[str, object],
+        observation_authority: bytes | None = None) -> dict:
     """Bind a native root/resume segment to the wave's measured main work."""
     checked = native_session_meter.validate_snapshot(snapshot)
     _ensure_dispatch_telemetry(ws)
@@ -6590,7 +6741,7 @@ def record_native_orchestrator_snapshot(
         existing = next((row for row in ledger.get("bindings") or []
                          if row.get("dispatch_id") == dispatch_id), None)
         if existing is None:
-            dispatch_telemetry.bind_dispatch(ledger, {
+            binding = {
                 "dispatch_id": dispatch_id,
                 "thread_id": str(checked["session_id"]),
                 "thread_type": "main",
@@ -6602,7 +6753,28 @@ def record_native_orchestrator_snapshot(
                 "wait_duration_seconds": 0,
                 "correction_count": 0,
                 "events": [],
-            })
+            }
+            if ledger.get("root_admission") is None:
+                dispatch_telemetry.bind_dispatch(ledger, binding)
+            else:
+                stage = str(locked.get("step") or "execute")
+                task_ids = sorted(str(task.get("id") or "") for task in
+                                  locked.get("tasks") or [])
+                outstanding = hashlib.sha256(json.dumps(
+                    {"stage": stage, "tasks": task_ids}, sort_keys=True,
+                    separators=(",", ":")).encode()).hexdigest()
+                preserved = hashlib.sha256(json.dumps(
+                    {"run_id": locked.get("run_id"),
+                     "baseline": locked.get("baseline"),
+                     "settings_digest": locked.get("settings_digest")},
+                    sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                dispatch_telemetry.screen_dispatch(
+                    ledger, clock, current_stage=stage,
+                    outstanding_set_fingerprint=outstanding,
+                    preserved_context_fingerprint=preserved,
+                    observation_authority=observation_authority,
+                    admission_operation_id=dispatch_id,
+                    dispatch=binding)
     record = record_native_session_snapshot(
         ws, task_id="orchestrator", dispatch_id=dispatch_id,
         snapshot=checked)
@@ -7140,14 +7312,6 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
         event_wait_invocation(
             wave_wait_policy, [str(task["id"]) for task in ready])
         if ready else None)
-    try:
-        root_admission = _screen_public_native_route(
-            ws, state, stage="execute", tasks=ready,
-            observation_authority=root_observation_authority)
-    except (ValueError, dispatch_telemetry.DispatchTelemetryError) as exc:
-        return {"error": "native root admission refused before wave: " +
-                str(exc), "step": "execute", "parallel": True,
-                "wave": [], "held": held}
     # Validate the sealed zero-lens authorization for the entire ready set
     # before persisting even one native intent.  A severed member therefore
     # refuses the whole emitted set without leaving partial dispatch state.
@@ -7167,6 +7331,7 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
 
     dispatches: dict[str, dict] = {}
     dispatch_intents: dict[str, dict] = {}
+    root_admissions: list[dict] = []
     for task in ready:
         task_id = str(task["id"])
         dispatch = tp.dispatch_fields(
@@ -7182,6 +7347,19 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
             return {"error": "native dispatch intent has no identity",
                     "step": "execute", "parallel": True}
         dispatch_intents[task_id] = intent
+        binding = _native_delivery_dispatch_binding(
+            state, stage="execute", task=task,
+            intent_id=str(intent["intent_id"]),
+            native_task_name=str(dispatch["task_name"]))
+        try:
+            root_admissions.append(_screen_public_native_route(
+                ws, state, stage="execute", tasks=ready,
+                observation_authority=root_observation_authority,
+                dispatch=binding))
+        except (ValueError, dispatch_telemetry.DispatchTelemetryError) as exc:
+            return {"error": "native root admission refused before wave: " +
+                    str(exc), "step": "execute", "parallel": True,
+                    "wave": [], "held": held}
 
     entries = []
     for t in ready:
@@ -7254,7 +7432,8 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
         "step": "execute", "parallel": True,
         "wave": entries, "held": held,
         "wait_invocation": wave_wait_invocation,
-        **({"root_admission": root_admission} if root_admission else {}),
+        **({"root_admission": root_admissions[0],
+            "root_admissions": root_admissions} if root_admissions else {}),
         **({"enforcement": enforcement} if enforcement else {}),
         "runtime_evals": runtime_eval.guidance("execute"),
         "instruction": (
@@ -8076,6 +8255,10 @@ def next_action(
             evaluate_children = _prepare_public_evaluate_evidence(
                 ws, act_ws, state, task or {},
                 evaluator_attempt_id=attempt_id)
+            evaluate_children = _dispatch_public_evaluate_evidence_children(
+                ws, state, task or {}, evaluate_children,
+                observation_authority=root_observation_authority,
+                model_tier=str(dispatch["model_tier"]))
             contract["evaluate_child_evidence"] = _copy_json(
                 evaluate_children)
         except Exception as exc:
@@ -8243,13 +8426,6 @@ def next_action(
         if stage_dispatch is not None:
             result["stage_runtime_dispatch"] = stage_dispatch
     dispatch_member = str((task or {}).get("id") or step)
-    try:
-        root_admission = _screen_public_native_route(
-            ws, state, stage=step, tasks=[task or {"id": dispatch_member}],
-            observation_authority=root_observation_authority)
-    except (ValueError, dispatch_telemetry.DispatchTelemetryError) as exc:
-        return {"error": "native root admission refused before dispatch: " +
-                str(exc), "step": step, "status": status(ws)}
     dispatch_intent = _native_dispatch_intent(
         ws, state, step=step, task_id=dispatch_member,
         dispatch=dispatch, wait_policy=dispatch_wait_policy)
@@ -8260,6 +8436,16 @@ def next_action(
     if not intent_id or not intent_run_id:
         return {"error": "native dispatch intent has no exact run identity",
                 "step": step, "status": status(ws)}
+    try:
+        root_admission = _screen_public_native_route(
+            ws, state, stage=step, tasks=[task or {"id": dispatch_member}],
+            observation_authority=root_observation_authority,
+            dispatch=_native_delivery_dispatch_binding(
+                state, stage=step, task=task or {"id": dispatch_member},
+                intent_id=intent_id, native_task_name=str(task_name)))
+    except (ValueError, dispatch_telemetry.DispatchTelemetryError) as exc:
+        return {"error": "native root admission refused before dispatch: " +
+                str(exc), "step": step, "status": status(ws)}
     contract["worker_lifecycle"]["dispatch_intent_id"] = intent_id
     contract["worker_lifecycle"]["dispatch_intent_run_id"] = intent_run_id
     tp.record_expected_dispatch(
@@ -12095,17 +12281,8 @@ def _seal_terminal_metrics_before_retro(ws: str, state: dict) -> dict:
                 "canonical root hygiene receipt changed during terminal seal")
         state["root_hygiene_receipt"] = root_receipt
         artifact_root = _run_artifact_root(ws, state)
-        manifest = run_artifacts.load_manifest(artifact_root)
-        retained = next((row for row in manifest["classes"]["telemetry"]["entries"]
-                         if (row.get("metadata") or {}).get("kind") ==
-                         "root-hygiene" and (row.get("metadata") or {}).get(
-                             "receipt_fingerprint") == root_receipt["fingerprint"]),
-                        None)
-        if retained is None:
-            retained = run_artifacts.publish_artifact(
-                artifact_root, "telemetry", root_receipt,
-                metadata={"kind": "root-hygiene",
-                          "receipt_fingerprint": root_receipt["fingerprint"]})
+        retained = run_artifacts.publish_root_hygiene(
+            artifact_root, root_receipt)
         state.setdefault("run_artifact_refs", {})["root_hygiene"] = retained
     existing = state.get("wave_metrics_receipt")
     if isinstance(existing, Mapping):

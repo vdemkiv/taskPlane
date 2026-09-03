@@ -1383,6 +1383,15 @@ def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float
                for event in binding.get("events") or []):
             continue
         usage = binding.get("usage")
+        preadmitted = (
+            binding.get("started_at") == 0 and binding.get("ended_at") == 0
+            and not binding.get("events"))
+        if usage is None and preadmitted:
+            # An atomically admitted dispatch set is assembled before the
+            # host starts any member.  It counts as a reserved session, but
+            # is not an active unmeasured worker until the host observation
+            # appends its native-start event.
+            continue
         if usage is None:
             raise DispatchTelemetryError(
                 "active native usage is missing before the next dispatch")

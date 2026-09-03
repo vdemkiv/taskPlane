@@ -91,7 +91,7 @@ def _prepared(tmp_path: Path) -> tuple[dict, dict, dict]:
 
 
 def test_wave_open_requires_prepared_seed_fresh_capable_host_and_first_observation_before_dispatch(
-        tmp_path: Path) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, prepared, _ = _prepared(tmp_path)
     severed = loop.load(str(tmp_path))
     severed["parallel"] = True
@@ -101,8 +101,12 @@ def test_wave_open_requires_prepared_seed_fresh_capable_host_and_first_observati
         "contracts": ["contract:host.root-session-start/v1"],
     })
     loop.save(str(tmp_path), severed)
+    monkeypatch.setattr(loop, "_validated_delivery_mode", lambda _state: None)
+    monkeypatch.setattr(
+        loop, "build_dispatch_lens_routing",
+        lambda *_args, **_kwargs: ({"lenses": [], "context": {}}, None))
     refused = loop.wave(str(tmp_path))
-    assert refused["wave"] == []
+    assert refused.get("wave") == [], refused
     assert "native root admission refused before wave" in refused["error"]
 
     settings = load_settings()
@@ -191,21 +195,25 @@ def test_codex_history_base_is_a_resume_marker_not_a_retained_or_sized_payload(
 
 
 def test_bootstrap_seed_precedes_implementation_root_and_is_not_claimed_as_runtime_enforcement(
-        tmp_path: Path) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, prepared, _ = _prepared(tmp_path)
     state = loop.load(str(tmp_path))
     state["parallel"] = True
     state["tasks"][0].update({
         "scope": ["taskplane/loop.py"], "deps": [],
-        "tests": "python3 -m pytest -q taskplane/tests/test_native_root_session.py",
+        "tests": "true",
     })
     state["bootstrap_root_evidence"] = dict(state.pop("root_hygiene"))
     assert state["bootstrap_root_evidence"]["prepare_receipt"] == prepared
     loop.save(str(tmp_path), state)
+    monkeypatch.setattr(loop, "_validated_delivery_mode", lambda _state: None)
+    monkeypatch.setattr(
+        loop, "build_dispatch_lens_routing",
+        lambda *_args, **_kwargs: ({"lenses": [], "context": {}}, None))
 
     refused = loop.wave(str(tmp_path), root_observation_authority=AUTHORITY)
-    assert refused["wave"] == []
-    assert "legacy migration" in refused["error"]
+    assert refused.get("wave") == [], refused
+    assert "legacy migration" in refused.get("error", ""), refused
     migration = loop.load(str(tmp_path))["legacy_root_migration"]
     assert migration["status"] == "nonconforming"
     assert migration["canary_eligible"] is False
@@ -273,6 +281,38 @@ def test_host_hook_opens_prepared_root_before_public_cli_dispatch_and_refuses_re
         assert payload["root_admission"]["dispatch_allowed"] is True
         assert loop.load(str(tmp_path))["root_hygiene"]["meter"][
             "first_observed_input_tokens"] > 0
+        emitted = payload["wave"][0]
+        expectation = tp_cli.tp.peek_expectation(
+            str(tmp_path), emitted["task_name"], strict=True)
+        assert expectation is not None
+        assert expectation["intent_id"] == payload["root_admission"][
+            "binding"]["dispatch_id"]
+        dispatch_event = {
+            "cwd": str(tmp_path), "transcript_path": str(transcript),
+            "tool_input": {
+                "task_name": emitted["task_name"],
+                "model": emitted["model"],
+                "reasoning_effort": emitted["reasoning_effort"],
+                "fork_turns": load_settings().workflow.worker_inheritance[
+                    "context"],
+                "message": emitted["role_marker"],
+            },
+        }
+        monkeypatch.setattr(
+            tp_cli.sys, "stdin", io.StringIO(json.dumps(dispatch_event)))
+        assert tp_cli.cmd_screen_dispatch(None) == 0
+        hook_rows = [json.loads(line) for line in
+                     capsys.readouterr().out.splitlines() if line.strip()]
+        assert not any((row.get("hookSpecificOutput") or {}).get(
+            "permissionDecision") == "deny" for row in hook_rows), hook_rows
+        observed = next(
+            row for row in loop.load(str(tmp_path))["dispatch_telemetry"]
+            ["bindings"] if row["dispatch_id"] == expectation["intent_id"])
+        admitted = payload["root_admission"]["binding"]
+        for field in ("dispatch_id", "thread_id", "thread_type", "task_id",
+                      "dependencies", "shared_owner"):
+            assert observed[field] == admitted[field]
+        assert observed["events"][-1]["payload"] == {"phase": "native-start"}
     else:
         assert payload["wave"] == []
         assert "prepared and opened fresh root evidence" in payload["error"]

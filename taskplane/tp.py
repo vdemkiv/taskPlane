@@ -1598,7 +1598,8 @@ def cmd_screen_dispatch(a) -> int:
                         str(projection.get("reason") or
                             "native counter is null or zero"))
                 _loop_runtime.record_native_orchestrator_snapshot(
-                    ws, snapshot=native_snapshot)
+                    ws, snapshot=native_snapshot,
+                    observation_authority=_transcript_projection_authority(ws))
             except Exception as meter_error:
                 reason = (
                     "taskplane native dispatch preflight failed closed: "
@@ -1877,6 +1878,24 @@ def cmd_subagent_stop(a) -> int:
         lifecycle_contract = None
         tp.trace(ws, "worker_contract_stop_lookup_failed",
                  agent_id=event.get("agent_id"), error=type(exc).__name__)
+    try:
+        import loop as _loop_runtime
+        child_result = _loop_runtime.complete_observed_evaluate_evidence_child(
+            ws, event)
+    except Exception as exc:
+        reason = (
+            "taskplane blocked Evaluate evidence-child completion because "
+            "its exact substantive JSON result could not be sealed "
+            f"({type(exc).__name__}: {exc}).")
+        print(json.dumps({"decision": "block", "reason": reason,
+                          "hookSpecificOutput": {
+                              "hookEventName": "SubagentStop",
+                              "permissionDecision": "deny",
+                              "permissionDecisionReason": reason}}))
+        return 2
+    if child_result is not None:
+        print("{}")
+        return 0
     producer_error = None
     try:
         import loop as _loop_runtime
@@ -2691,7 +2710,8 @@ def _governed_root(cwd: str) -> str:
 
 def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
     """Capture the root native counter on its real main-session hook path."""
-    if "turn_id" not in event:
+    if "turn_id" not in event or event.get("agent_id") or \
+            event.get("agent_type"):
         return
     try:
         import loop as _loop_runtime
@@ -2754,7 +2774,8 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                     ws, observation=observation,
                     observation_authority=authority)
         _loop_runtime.record_native_orchestrator_snapshot(
-            ws, snapshot=snapshot)
+            ws, snapshot=snapshot,
+            observation_authority=_transcript_projection_authority(ws))
     except Exception as exc:
         # An ungoverned main action still defers to the host. Dispatch and
         # terminal boundaries perform the fail-closed checks; this path keeps
@@ -2777,6 +2798,7 @@ def _screen(a) -> int:
     if not isinstance(event, dict):
         event = {}
     ws = _governed_root(event.get("cwd"))
+    _observe_active_loop_orchestrator(ws, event)
     tool_name = event.get("tool_name", event.get("tool", ""))
     tool_input = event.get("tool_input", {})
     if not isinstance(tool_input, dict):
@@ -2838,7 +2860,6 @@ def _screen(a) -> int:
     contract = (_review_authority["contract"] if _review_authority
                 else tp.load_active_for_event(ws, event))
     if contract is None:
-        _observe_active_loop_orchestrator(ws, event)
         # Distinguish "no contract at all" (ungoverned → ABSTAIN) from
         # "contract file present but unreadable/corrupt" (tamper or breakage
         # → fail CLOSED). A governed workspace whose control plane is

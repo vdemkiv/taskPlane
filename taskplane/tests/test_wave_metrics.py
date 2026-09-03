@@ -65,15 +65,73 @@ def test_root_worker_and_wave_totals_remain_separate_and_reconcile_in_all_consum
         "root_tokens": 100_000, "worker_tokens": 300_000,
         "wave_tokens": 400_000}
     assert seal["comparison"]["root_share"] == .25
+    snapshot = {
+        "run_id": "run-root-hygiene", "stage": "retro", "revision": "1",
+        "values": {"loop": {"goal": "root hygiene", "step": "retro"},
+                   "root_hygiene_receipt": seal},
+    }
+    rendered = dashboard.render_canonical_dashboard_snapshot(snapshot)
+    identity = {
+        "full_source_sha": "a" * 40,
+        "terminal_status": "feature-complete-not-externally-mutated",
+        "requirement_id": "R-ROOT-HYGIENE",
+        "design_fingerprint": "1" * 64,
+        "plan_fingerprint": "2" * 64,
+        "graph_fingerprint": "3" * 64,
+        "native_usage_fingerprint": "4" * 64,
+        "candidate_wiring_fingerprint": "5" * 64,
+        "full_suite_fingerprint": "6" * 64,
+        "predecessor_fingerprint": "7" * 64,
+    }
+    release_surface = release_evidence.terminal_release_evidence_surface(
+        identity, {"root_hygiene_receipt": seal})
+    audit_record = audit_projection.audit_record(
+        "root-terminal", {"root_hygiene_receipt": seal}, observed_at=1.0)
     retro_view = retro.sealed_root_hygiene_projection(
         {"root_hygiene_receipt": seal})
-    dashboard_view = dashboard.root_hygiene_projection(seal)
-    release_view = release_evidence.root_hygiene_projection(seal)
-    audit_view = audit_projection.root_hygiene_projection(seal)
-    views = [retro_view, dashboard_view, release_view, audit_view]
+    views = [retro_view, release_surface["payload"]["root_hygiene"],
+             audit_record["root_hygiene"]]
     assert all(view["totals"] == seal["totals"] for view in views)
     assert all(view["receipt_fingerprint"] == seal["fingerprint"]
                for view in views)
+    for value in (seal["fingerprint"], "100000", "300000", "400000"):
+        assert value in rendered
+
+
+def test_severed_root_hygiene_consumers_refuse_invalid_canonical_seal():
+    root, workers = _root(worker_tokens=300_000)
+    seal = wave_metrics.finalize_root_hygiene_canary(
+        root, candidate_sha="a" * 40, worker_tokens=workers)
+    severed = copy.deepcopy(seal)
+    severed["totals"]["wave_tokens"] = 0
+    snapshot = {
+        "run_id": "run-root-hygiene", "stage": "retro", "revision": "1",
+        "values": {"loop": {"goal": "root hygiene", "step": "retro"},
+                   "root_hygiene_receipt": severed},
+    }
+    identity = {
+        "full_source_sha": "a" * 40,
+        "terminal_status": "feature-complete-not-externally-mutated",
+        "requirement_id": "R-ROOT-HYGIENE",
+        "design_fingerprint": "1" * 64,
+        "plan_fingerprint": "2" * 64,
+        "graph_fingerprint": "3" * 64,
+        "native_usage_fingerprint": "4" * 64,
+        "candidate_wiring_fingerprint": "5" * 64,
+        "full_suite_fingerprint": "6" * 64,
+        "predecessor_fingerprint": "7" * 64,
+    }
+    with pytest.raises(ValueError):
+        dashboard.render_canonical_dashboard_snapshot(snapshot)
+    with pytest.raises(ValueError):
+        release_evidence.terminal_release_evidence_surface(
+            identity, {"root_hygiene_receipt": severed})
+    with pytest.raises(ValueError):
+        audit_projection.audit_record(
+            "root-terminal", {"root_hygiene_receipt": severed})
+    with pytest.raises(ValueError):
+        retro.sealed_root_hygiene_projection(
+            {"root_hygiene_receipt": severed})
 
 
 def test_wave_receipt_covers_baselines_targets_and_guardrails():

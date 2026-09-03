@@ -3,14 +3,22 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from taskplane import evaluate_child_evidence as evidence
 from taskplane import (
-    evaluation_output, loop, run_artifacts, run_store, runnability, storage,
+    evaluation_output, host_native, loop, native_session_meter,
+    run_artifacts, run_store, runnability, storage,
+)
+from taskplane import tp as tp_cli
+from taskplane.settings import load_settings
+from taskplane.tests.test_native_root_session import (
+    AUTHORITY, _capability, _write_root,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -156,8 +164,6 @@ def _results(assignments: list[dict]) -> dict[str, dict]:
         } for item in language["language_obligations"]],
     }
     obligations = design["test_obligations"]
-    test = obligations["tests"][0]
-    edge = obligations["producer_consumer_edges"][0]
     test_design = {
         "schema": evidence.TEST_DESIGN_RESULT_SCHEMA,
         "producer_kind": evidence.TEST_DESIGN_PRODUCER,
@@ -167,7 +173,7 @@ def _results(assignments: list[dict]) -> dict[str, dict]:
             "execution": _execution_ref(
                 design, ["python3", "-m", "pytest", "-q", test["selector"]],
                 "current:" + test["selector"]),
-        }],
+        } for test in obligations["tests"]],
         "producer_consumers": [{
             "producer": edge["producer"], "consumer": edge["consumer"],
             "selector": edge["selector"],
@@ -178,7 +184,7 @@ def _results(assignments: list[dict]) -> dict[str, dict]:
                 design, ["python3", "-m", "pytest", "-q",
                          edge["severed_edge"]["selector"]],
                 "severed:" + edge["producer"] + ":" + edge["consumer"]),
-        }],
+        } for edge in obligations["producer_consumer_edges"]],
         "same_slice_fixtures": [{
             "producer": row["producer"], "path": row["fixture"]["path"],
             "slice": row["slice"],
@@ -254,10 +260,15 @@ def test_every_evaluator_starts_exactly_two_bound_evidence_producers_and_records
         evidence.LANGUAGE_PRODUCER, evidence.TEST_DESIGN_PRODUCER]
     results = _results(assignments)
     for assignment in assignments:
+        kind = assignment["producer_kind"]
+        loop.observe_evaluate_evidence_child_start(
+            artifact_root=str(root), assignment=assignment,
+            dispatch_id="intent-" + kind,
+            native_task_name="tp_evidence_" + kind.replace("-", "_"))
         loop.complete_evaluate_evidence_child(
             workspace=str(ROOT), artifact_root=str(root), run_id=run_id,
             assignment=assignment,
-            result=results[assignment["producer_kind"]], work_units=2)
+            result=results[kind], work_units=2)
 
     consumed = loop.consume_evaluate_evidence_before_pass(
         _pass(), artifact_root=str(root), run_id=run_id,
@@ -482,6 +493,14 @@ def test_public_evaluate_preparation_consumes_explicit_edges_and_refuses_severed
         "id": "P13", "req": "R-TEST", "criteria": ["AC12"],
         "tests": "python3 -m pytest -q " + " ".join(selectors),
         "evaluation_evidence_edges": edges,
+        "changed_interfaces": [{
+            "producer": "taskplane/loop.py", "kind": "in-process",
+            "slice": "P13", "fixture": None,
+        }],
+        "classified_failures": [{
+            "id": "P13-F4", "classification": "mixed",
+            "classified_before_repair": True,
+        }],
     }
     monkeypatch.setattr(loop, "_run_artifact_root", lambda *_args: str(root))
     monkeypatch.setattr(loop, "_diff_files", lambda *_args: producers)
@@ -499,6 +518,234 @@ def test_public_evaluate_preparation_consumes_explicit_edges_and_refuses_severed
         assignment["test_obligations"] for assignment in route["assignments"]
         if assignment["producer_kind"] == evidence.TEST_DESIGN_PRODUCER)
     assert obligations["producer_consumer_edges"] == edges
+
+
+def test_public_next_action_observes_two_children_and_gate_consumes_them(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    workspace = tmp_path / "public-evaluate"
+    for directory in ("taskplane", "tests", "plan"):
+        (workspace / directory).mkdir(parents=True, exist_ok=True)
+    (workspace / "taskplane" / "producer_a.py").write_text(
+        "VALUE = 1\n", encoding="utf-8")
+    (workspace / "taskplane" / "producer_b.py").write_text(
+        "VALUE = 1\n", encoding="utf-8")
+    (workspace / "tests" / "test_public.py").write_text(
+        "import pytest\n\n"
+        "from taskplane import producer_a, producer_b\n\n"
+        "def consume(value):\n"
+        "    if value is None:\n"
+        "        raise ValueError('producer edge is severed')\n"
+        "    return value\n\n"
+        "def test_producer_a():\n    assert consume(producer_a.VALUE) == 2\n\n"
+        "def test_producer_b():\n    assert consume(producer_b.VALUE) == 2\n\n"
+        "def test_producer_a_severed():\n"
+        "    with pytest.raises(ValueError, match='severed'):\n"
+        "        consume(None)\n\n"
+        "def test_producer_b_severed():\n"
+        "    with pytest.raises(ValueError, match='severed'):\n"
+        "        consume(None)\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin",
+         "https://github.com/example/project.git"],
+        cwd=workspace, check=True)
+    subprocess.run(["git", "add", "."], cwd=workspace, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c",
+         "user.email=test@example.invalid", "commit", "-qm", "base"],
+        cwd=workspace, check=True)
+    baseline = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+    selectors = ["tests/test_public.py::test_producer_a",
+                 "tests/test_public.py::test_producer_b"]
+    severed_selectors = [
+        "tests/test_public.py::test_producer_a_severed",
+        "tests/test_public.py::test_producer_b_severed",
+    ]
+    producers = ["taskplane/producer_a.py", "taskplane/producer_b.py"]
+    edges = [{
+        "producer": producer, "consumer": "tests/test_public.py",
+        "selector": selector,
+        "freshness_inputs": [
+            "candidate_sha", "source_tree", "impact_manifest_fingerprint"],
+        "severed_edge": {
+            "mutation": "remove the public producer-to-consumer value",
+            "selector": severed_selector,
+        },
+    } for producer, selector, severed_selector in zip(
+        producers, selectors, severed_selectors)]
+    task = {
+        "id": "P13", "req": "R-TEST", "status": "built", "deps": [],
+        "scope": ["taskplane/**", "tests/**"],
+        "criteria": ["public evidence composes"],
+        "tests": "python3 -m pytest -q " + " ".join(
+            selectors + severed_selectors),
+        "evaluation_evidence_edges": edges,
+        "changed_interfaces": [{
+            "producer": producer, "kind": "serialized", "slice": "P13",
+            "fixture": {"path": "tests/test_public.py", "slice": "P13"},
+        } for producer in producers],
+        "classified_failures": [{
+            "id": "P13-F3", "classification": "product",
+            "classified_before_repair": True,
+        }],
+    }
+    plan_path = workspace / "plan" / "tasks.json"
+    plan_path.write_text(json.dumps({"tasks": [task]}) + "\n",
+                         encoding="utf-8")
+    (workspace / "taskplane" / "producer_a.py").write_text(
+        "VALUE = 2\n", encoding="utf-8")
+    (workspace / "taskplane" / "producer_b.py").write_text(
+        "VALUE = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=workspace, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c",
+         "user.email=test@example.invalid", "commit", "-qm", "candidate"],
+        cwd=workspace, check=True)
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+    tree = subprocess.check_output(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=workspace,
+        text=True).strip()
+
+    settings = load_settings()
+    run_id = "run-evaluator-evidence"
+    identity = storage.resolve_repository_identity(str(workspace))
+    owner = run_store.RunStore()
+    owner_state = owner.create(
+        identity, run_id=run_id, checkout=str(workspace),
+        host={"kind": "codex"}, target={"kind": "workspace"})
+    artifact_root = Path(owner_state["paths"]["artifacts"])
+    artifact_binding = run_artifacts.create_binding(
+        repository_id=identity.repo_id, run_id=run_id, stage_id="evaluate",
+        stage_instance_id="evaluate-attempt-1",
+        candidate={"id": "candidate", "fingerprint": hashlib.sha256(
+            head.encode()).hexdigest(), "revision": head,
+            "source_tree": tree},
+        settings_digest=settings.digest, source_fingerprint="b" * 64)
+    run_artifacts.create_manifest(artifact_root, binding=artifact_binding)
+    canonical_task = json.loads(plan_path.read_text(
+        encoding="utf-8"))["tasks"][0]
+    state = {
+        "run_id": run_id, "baseline": baseline, "step": "evaluate",
+        "goal": "public Evaluate composition", "requirement_id": "R-TEST",
+        "design_fingerprint": "3" * 64,
+        "plan_fingerprint": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+        "settings_digest": settings.digest, "tasks": [canonical_task],
+        "current_task": 0, "max_fix_cycles": 1, "checkpoints": [],
+        "run_artifact_binding": artifact_binding,
+    }
+    loop.save(str(workspace), state)
+    loop.prepare_delivery_root(
+        str(workspace), seed_ref="waves/W1/root-seed.json", wave_id="W1",
+        prepared_at="2026-09-02T04:00:00Z",
+        operation_id="prepare-run-evaluator-evidence-W1",
+        design={"path": "design/contract.json", "fingerprint": "3" * 64},
+        plan={"path": "plan/tasks.json",
+              "fingerprint": state["plan_fingerprint"]},
+        pickups=[{"id": "P13", "write_scopes": producers,
+                  "disjointness_receipt_fingerprint": "d" * 64}],
+        outstanding_human_gates=[],
+        predecessor_terminal_projection={"status": "none"})
+    seed = json.loads((workspace / "waves" / "W1" /
+                       "root-seed.json").read_text(encoding="utf-8"))
+    start = host_native.start_root_session(
+        _capability(workspace, settings.digest), seed, run_id=run_id,
+        wave_id="W1", candidate_sha=baseline,
+        settings_digest=settings.digest, session_pseudonym="f" * 64,
+        started_at="2026-09-02T04:00:01Z", issuer_sequence=1,
+        authority=AUTHORITY)
+    transcript = workspace / "root.jsonl"
+    observation = native_session_meter.seal_root_observation(
+        _write_root(transcript, total=40_000, sequence=1), sequence=1,
+        session_role="root", status_receipt_fingerprint=start["fingerprint"],
+        authority=AUTHORITY)
+    loop.open_delivery_wave(
+        str(workspace), host_start_receipt=start,
+        first_observation=observation, observation_authority=AUTHORITY)
+
+    monkeypatch.setattr(runnability, "probe_language_quality_toolchains", _probe)
+    monkeypatch.setattr(
+        evidence.governed_commands, "governed_command_execution_evidence",
+        _governed_receipt)
+    monkeypatch.setattr(loop, "_review_kernel", lambda *_a, **_k: ({
+        "status": "ready", "run_id": "evaluate-attempt-1", "slots": [],
+        "expected_lenses": [], "zero_lens_evaluation": True,
+    }, {"lenses": [], "context": {"status": "ready"}}))
+    action = loop.next_action(
+        str(workspace), root_observation_authority=AUTHORITY)
+    assert "error" not in action, json.dumps({
+        "action": action,
+        "ledger": loop.load(str(workspace)).get("dispatch_telemetry"),
+        "root": loop.load(str(workspace)).get("root_hygiene"),
+    }, sort_keys=True)
+    children = action["evaluate_child_evidence"]["child_dispatches"]
+    assert len(children) == 2
+    assert {row["assignment"]["producer_kind"] for row in children} == \
+        set(evidence.PRODUCER_KINDS)
+
+    for child in children:
+        expected = tp_cli.tp.peek_expectation(
+            str(workspace), child["task_name"], strict=True)
+        assert expected is not None
+        loop.record_native_dispatch_observation(
+            str(workspace), expected=expected,
+            native_task_name=child["task_name"])
+    assignments = [row["assignment"] for row in children]
+    results = _results(assignments)
+
+    def stop(child: dict) -> None:
+        event = {"cwd": str(workspace), "agent_id": child["task_name"],
+                 "agent_type": child["task_name"], "turn_id": "turn-1",
+                 "last_assistant_message": json.dumps(
+                     results[child["assignment"]["producer_kind"]])}
+        monkeypatch.setattr(tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
+        assert tp_cli.cmd_subagent_stop(None) == 0
+        assert capsys.readouterr().out.strip() == "{}"
+
+    stop(children[0])
+    verdict = {
+        "schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        "task": "P13", "requirement": "R-TEST", "verdict": "pass",
+        "evaluation": {"status": "complete", "reason_code": "none",
+                       "detail": "two child results consumed"},
+        "criteria": [{"criterion": "public evidence composes",
+                      "status": "met", "evidence": "public journey"}],
+        "graph": {"dispositions": [], "requirements_checked": ["R-TEST"],
+                  "contracts_checked": []}, "failures": [],
+    }
+    verdict_path = Path(storage.evaluation_path(str(workspace)))
+    verdict_path.parent.mkdir(parents=True, exist_ok=True)
+    verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+
+    monkeypatch.setattr(loop, "_producer_observation_errors",
+                        lambda *_a, **_k: [])
+    current = loop.load(str(workspace))
+    incomplete = loop._evaluation_errors(
+        str(workspace), current, current["tasks"][0])
+    assert any("child evidence admission failed" in error.lower()
+               for error in incomplete), incomplete
+    blocked = loop.gate(str(workspace), "pass")
+    assert "error" in blocked
+    assert loop.load(str(workspace))["step"] == "evaluate"
+
+    stop(children[1])
+    attached = evaluation_output.attach_child_evidence(
+        verdict, run_id=run_id, evaluator_attempt_id="evaluate-attempt-1",
+        expected_binding=assignments[0]["binding"])
+    verdict_path.write_text(json.dumps(attached), encoding="utf-8")
+    current = loop.load(str(workspace))
+    remaining = loop._evaluation_errors(
+        str(workspace), current, current["tasks"][0])
+    assert not any("child evidence admission failed" in error.lower()
+                   for error in remaining), remaining
+    monkeypatch.setattr(loop, "_persist_reanchor_authority",
+                        lambda *_a, **_k: ({"fingerprint": "e" * 64}, head))
+    passed = loop.gate(str(workspace), "pass")
+    assert "child evidence admission failed" not in json.dumps(passed).lower()
+    if "error" not in passed:
+        assert loop.load(str(workspace))["tasks"][0]["status"] == "passed"
 
 
 def test_one_receipt_cannot_cover_freshness_and_severed_edge(

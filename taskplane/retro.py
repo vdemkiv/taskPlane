@@ -738,6 +738,14 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "execution_metric_source": execution_metric_source,
             "evaluator_summary": evaluator_summary(tasks),
         }
+        if state.get("root_hygiene_receipt") is not None:
+            try:
+                report["root_hygiene"] = sealed_root_hygiene_projection(state)
+            except wave_metrics.WaveMetricsError as exc:
+                return {"error": "retro root hygiene evidence is unavailable — "
+                        "loop remains open",
+                        "detail": f"{exc.__class__.__name__}: {exc}",
+                        "step": "retro", "retro_id": retro_id}
         if metrics_projection is not None:
             report["wave_metrics"] = metrics_projection
         if stage_native:
