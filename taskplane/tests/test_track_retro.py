@@ -168,7 +168,10 @@ class TestRetro(unittest.TestCase):
                     "status": "running", "fix_cycles": 0}])
         out = loop.retro(ws)
         self.assertIn("error", out)
-        self.assertIn("only runs after sign-off", out["error"])
+        state = loop.load(ws)
+        self.assertEqual(state["step"], "execute")
+        self.assertNotIn("wave_metrics_receipt", state)
+        self.assertNotIn("wave_metrics_unavailable", state)
         self.assertEqual(kb.list_decisions(ws), [])
 
     def test_retro_report_carries_canonical_finding_summary(self):

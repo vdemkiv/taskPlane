@@ -35,6 +35,10 @@ def _isolate_loop_test_runtime(monkeypatch):
     """Give each loop journey a stable host identity and isolated store."""
     from taskplane import evaluate_child_evidence as packaged_evidence
 
+    # A checkout review bundle is a production optimization, not test state.
+    # Earlier modules exercise module replacement and private checkout loading;
+    # never let their process-level cache choose this test's runtime.
+    monkeypatch.setattr(loop, "_REVIEW_RUNTIME_BUNDLE", None)
     monkeypatch.delenv("TASKPLANE_NO_SUITE_CACHE", raising=False)
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "test-loop-session")
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
@@ -2734,6 +2738,7 @@ class TestParallelExecution(unittest.TestCase):
         # t1 passed unlocks t4, but t3/t4 overlap on src/c → serialized:
         # t3 (first in plan order) dispatches, t4 holds for the next wave.
         w = loop.wave(ws)
+        self.assertNotIn("error", w, w)
         self.assertEqual({e["task"]["id"] for e in w["wave"]}, {"t3"})
         held = {h["task"]: h for h in w["held"]}
         self.assertIn("t4", held)
