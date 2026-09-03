@@ -81,6 +81,7 @@ if __package__:
     from . import owned_cleanup
     from . import settings as operational_settings
     from . import plan_topology
+    from . import release_evidence
     from . import run_artifacts
     from . import run_store as run_store_engine
     from . import root_seed
@@ -101,6 +102,7 @@ else:  # pragma: no cover - direct CLI module loading
     import owned_cleanup
     import settings as operational_settings
     import plan_topology
+    import release_evidence
     import run_artifacts
     import run_store as run_store_engine
     import root_seed
@@ -3907,6 +3909,11 @@ def _open_directory_without_symlinks(path: str) -> int:
 
 def _append_authority_trace(ws: str, event: str, data: dict) -> None:
     """Append one authority trace without following directory/file links."""
+    audit_data = copy.deepcopy(data)
+    audit_state = _load_raw(ws) or {}
+    root_receipt = audit_state.get("root_hygiene_receipt")
+    if isinstance(root_receipt, Mapping):
+        audit_data["root_hygiene_receipt"] = copy.deepcopy(root_receipt)
     directory = os.path.abspath(tp.tp_dir(ws))
     dir_fd = _open_directory_without_symlinks(directory)
     nofollow = getattr(os, "O_NOFOLLOW", None)
@@ -3941,7 +3948,7 @@ def _append_authority_trace(ws: str, event: str, data: dict) -> None:
         # Authority outbox delivery uses the same closed privacy projection as
         # every ordinary audit append; the no-follow descriptor handling here
         # remains the stronger authority-specific filesystem boundary.
-        record = tp.audit_record(event, data, observed_at=time.time())
+        record = tp.audit_record(event, audit_data, observed_at=time.time())
         raw = (json.dumps(record, default=str) + "\n").encode("utf-8")
         written = os.write(trace_fd, raw)
         if written != len(raw):
@@ -11837,6 +11844,21 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             state["current_task"] = resume_at if resume_at is not None else 0
             if state["step"] == "execute" and resume_at is None:
                 state["step"] = "em"
+            if state["step"] == "execute":
+                try:
+                    root_preparation = _prepare_approved_plan_root(ws, state)
+                except Exception as exc:
+                    state.clear()
+                    state.update(stage_state_before)
+                    return {
+                        "error": "root seed preparation failed before Plan "
+                                 "gate commit: "
+                                 f"{exc.__class__.__name__}: {exc}",
+                        "step": "plan",
+                    }
+                state["root_hygiene"] = root_preparation["prepared"]
+                state["settings_digest"] = \
+                    root_preparation["settings_digest"]
             if state["step"] in ("execute", "em"):
                 state["baseline"] = tp.git_head(ws)
         elif step == "execute":
@@ -14430,8 +14452,27 @@ def retro(ws: str) -> dict:
         try:
             if not isinstance(terminal_delivery, Mapping):
                 raise TypeError("terminal delivery composition must be a mapping")
+            terminal_delivery = copy.deepcopy(dict(terminal_delivery))
+            root_receipt = final.get("root_hygiene_receipt")
+            if isinstance(root_receipt, Mapping):
+                surfaces = terminal_delivery.get("surfaces")
+                release_surface = ((surfaces or {}).get("release_evidence")
+                                   if isinstance(surfaces, Mapping) else None)
+                release_payload = ((release_surface or {}).get("payload")
+                                   if isinstance(release_surface, Mapping)
+                                   else None)
+                identity = terminal_delivery.get("identity")
+                if not isinstance(release_payload, Mapping) or \
+                        not isinstance(identity, Mapping):
+                    raise TypeError(
+                        "terminal release surface cannot consume root hygiene")
+                terminal_delivery["surfaces"] = copy.deepcopy(dict(surfaces))
+                terminal_delivery["surfaces"]["release_evidence"] = \
+                    release_evidence.terminal_release_evidence_surface(
+                        identity, {**dict(release_payload),
+                                   "root_hygiene_receipt": root_receipt})
             terminal_authority = terminal_truth.finalize_terminal_delivery(
-                **dict(terminal_delivery))
+                **terminal_delivery)
         except Exception as exc:
             # The stage transition is replay-safe and the legacy loop marker
             # remains at Retro until the durable terminal bundle reconciles.

@@ -1745,6 +1745,10 @@ def refresh_dashboard_snapshot(
         **phase_values,
         "provenance": provenance,
         **metrics_values,
+        **({"root_hygiene_receipt": copy.deepcopy(
+            state["root_hygiene_receipt"])}
+           if isinstance((state or {}).get("root_hygiene_receipt"), Mapping)
+           else {}),
     }
     safe_actions: tuple[str, ...] = ()
     metrics_signoff_ready = \

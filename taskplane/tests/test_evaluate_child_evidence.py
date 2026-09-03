@@ -20,6 +20,9 @@ from taskplane.settings import load_settings
 from taskplane.tests.test_native_root_session import (
     AUTHORITY, _capability, _write_root,
 )
+from taskplane.tests.test_native_terminal_telemetry import (
+    _write_codex_transcript,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SETTINGS = "5" * 64
@@ -696,13 +699,25 @@ def test_public_next_action_observes_two_children_and_gate_consumes_them(
     results = _results(assignments)
 
     def stop(child: dict) -> None:
+        transcript = workspace / (child["task_name"] + ".jsonl")
+        _write_codex_transcript(
+            transcript, label=child["task_name"], input_tokens=10,
+            cached_tokens=0, output_tokens=2)
         event = {"cwd": str(workspace), "agent_id": child["task_name"],
                  "agent_type": child["task_name"], "turn_id": "turn-1",
+                 "task_name": child["task_name"], "provider": "codex",
+                 "agent_transcript_path": str(transcript),
                  "last_assistant_message": json.dumps(
                      results[child["assignment"]["producer_kind"]])}
         monkeypatch.setattr(tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
         assert tp_cli.cmd_subagent_stop(None) == 0
         assert capsys.readouterr().out.strip() == "{}"
+        binding = next(
+            row for row in loop.load(str(workspace))["dispatch_telemetry"]
+            ["bindings"]
+            if row["dispatch_id"] == child["dispatch_intent"]["intent_id"])
+        assert binding["usage"]["total_tokens"] == 12
+        assert binding["finalized_receipt_fingerprint"]
 
     stop(children[0])
     verdict = {
@@ -740,6 +755,27 @@ def test_public_next_action_observes_two_children_and_gate_consumes_them(
         str(workspace), current, current["tasks"][0])
     assert not any("child evidence admission failed" in error.lower()
                    for error in remaining), remaining
+    outstanding = hashlib.sha256(json.dumps(
+        {"stage": "evaluate", "tasks": ["P13"]}, sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest()
+    preserved = hashlib.sha256(json.dumps(
+        {"run_id": current["run_id"], "baseline": current["baseline"],
+         "settings_digest": current["settings_digest"]}, sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest()
+    next_admission = loop.admit_native_dispatch(
+        str(workspace), observation_authority=AUTHORITY,
+        dispatch={
+            "dispatch_id": "f" * 64, "thread_id": "next-evaluator-child",
+            "thread_type": "evaluator", "task_id": "P13",
+            "dependencies": [], "shared_owner": None,
+            "started_at": 0, "ended_at": 0,
+            "wait_duration_seconds": 0, "correction_count": 0,
+            "events": [],
+        },
+        current_stage="evaluate",
+        outstanding_set_fingerprint=outstanding,
+        preserved_context_fingerprint=preserved)
+    assert next_admission["dispatch_allowed"] is True
     monkeypatch.setattr(loop, "_persist_reanchor_authority",
                         lambda *_a, **_k: ({"fingerprint": "e" * 64}, head))
     passed = loop.gate(str(workspace), "pass")

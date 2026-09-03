@@ -898,6 +898,32 @@ def test_null_or_zero_native_meter_refuses_before_worker_dispatch_binding(
         workspace, expected["task_name"], strict=True)["matched"] is False
 
 
+def test_post_start_null_usage_refuses_while_observed_zero_remains_zero():
+    ledger = _ledger()
+    dispatch = _dispatch("post-start-zero")
+    dispatch["events"] = [dispatch_telemetry.dispatch_event(
+        dispatch_id=dispatch["dispatch_id"],
+        thread_id=dispatch["thread_id"],
+        thread_type=dispatch["thread_type"],
+        task_id=dispatch["task_id"], sequence=1, kind="progress", at=10,
+        payload={"phase": "native-start"})]
+    dispatch_telemetry.bind_dispatch(ledger, dispatch)
+
+    with pytest.raises(
+            dispatch_telemetry.DispatchTelemetryError,
+            match="active native usage is missing"):
+        dispatch_telemetry.wave_usage(ledger, _Clock())
+
+    dispatch_telemetry.observe_usage(
+        ledger, dispatch_id=dispatch["dispatch_id"], usage=_usage(0),
+        source_fingerprint="e" * 64)
+
+    assert dispatch_telemetry.wave_usage(ledger, _Clock()) == {
+        "elapsed_seconds": 10.0, "sessions": 1, "total_tokens": 0,
+        "uncached_input_tokens": 0,
+    }
+
+
 def test_canonical_context_flows_from_intent_into_observed_spawn_boundary(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)

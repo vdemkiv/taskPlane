@@ -1880,6 +1880,46 @@ def cmd_subagent_stop(a) -> int:
                  agent_id=event.get("agent_id"), error=type(exc).__name__)
     try:
         import loop as _loop_runtime
+        state = _loop_runtime.load(ws) or {}
+        route = state.get("evaluate_child_evidence")
+        native_task_name = str(event.get("agent_type") or "")
+        evidence_child = (next((row for row in route.get(
+            "child_dispatches") or []
+            if isinstance(row, dict) and
+            row.get("task_name") == native_task_name), None)
+            if isinstance(route, dict) else None)
+        if isinstance(evidence_child, dict):
+            raw_result = event.get("last_assistant_message")
+            if not isinstance(raw_result, str) or not raw_result.strip():
+                raise ValueError(
+                    "Evaluate evidence child returned no JSON result")
+            try:
+                json.loads(raw_result)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "Evaluate evidence child result is not exact JSON") from exc
+            assignment = evidence_child.get("assignment") or {}
+            binding = (assignment.get("binding")
+                       if isinstance(assignment, dict) else {}) or {}
+            intent = evidence_child.get("dispatch_intent") or {}
+            task_id = str(binding.get("task_id") or "").strip()
+            dispatch_id = str(intent.get("intent_id") or "").strip()
+            if not task_id or not dispatch_id:
+                raise ValueError(
+                    "Evaluate evidence child dispatch binding is incomplete")
+            raw_outcome = (event.get("outcome") or event.get("status")
+                           or event.get("stop_reason") or event.get("reason")
+                           or "success")
+            _seal_terminal_dispatch_telemetry(
+                ws, {
+                    "budget": {"token_usage_required": True},
+                    "worker_lifecycle": {
+                        "task": task_id,
+                        "expected_task_name": native_task_name,
+                        "dispatch_intent_id": dispatch_id,
+                    },
+                }, event, outcome=tp.normalize_worker_terminal_outcome(
+                    raw_outcome))
         child_result = _loop_runtime.complete_observed_evaluate_evidence_child(
             ws, event)
     except Exception as exc:
@@ -2401,7 +2441,8 @@ def _contract_dispatch_intent_id(contract: dict) -> str:
     return str(lifecycle.get("dispatch_intent_id") or "").strip()
 
 
-def _dispatch_usage_observation_required(ws: str, task_id: str) -> bool:
+def _dispatch_usage_observation_required(
+        ws: str, task_id: str, dispatch_id: str | None = None) -> bool:
     """Whether the active loop has one unfinalized usage consumer."""
     try:
         import loop as loop_runtime
@@ -2409,6 +2450,8 @@ def _dispatch_usage_observation_required(ws: str, task_id: str) -> bool:
         ledger = state.get("dispatch_telemetry") or {}
         return any(
             str(row.get("task_id") or "") == str(task_id) and
+            (not dispatch_id or
+             str(row.get("dispatch_id") or "") == str(dispatch_id)) and
             not row.get("finalized_receipt_fingerprint")
             for row in ledger.get("bindings") or []
             if isinstance(row, dict)
@@ -2533,7 +2576,8 @@ def _seal_terminal_dispatch_telemetry(
     lifecycle = contract.get("worker_lifecycle") or {}
     native_task_name = str(lifecycle.get("expected_task_name") or "").strip()
     dispatch_id = _contract_dispatch_intent_id(contract)
-    if not task_id or not _dispatch_usage_observation_required(ws, task_id):
+    if not task_id or not _dispatch_usage_observation_required(
+            ws, task_id, dispatch_id or None):
         return {"status": "not-bound"}
     import spend as _spend
     transcript = _spend.event_transcript(event)

@@ -376,6 +376,55 @@ def test_plan_approval_prepares_root_before_commit_and_retry_reuses_exact_author
         first_seed["seed_fingerprint"]
 
 
+def test_mechanical_plan_gate_prepares_root_before_execute_commit(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    os.makedirs(tmp_path / "plan")
+    task = {
+        "id": "P13", "wave": "W1", "scope": ["taskplane/loop.py"],
+        "tests": "true", "criteria": ["root is prepared"],
+        "status": "pending", "deps": [],
+    }
+    (tmp_path / "plan" / "tasks.json").write_text(
+        json.dumps({"tasks": [task]}), encoding="utf-8")
+    loop.save(str(tmp_path), {
+        "run_id": "run-mechanical-plan-root", "baseline": "a" * 40,
+        "design_fingerprint": "b" * 64, "step": "plan",
+        "tasks": [task], "current_task": 0, "goal": "gate safely",
+        "parallel": True, "max_fix_cycles": 1, "checkpoints": [],
+    })
+    monkeypatch.setattr(loop, "_retained_production_authority_errors",
+                        lambda *_args: [])
+    monkeypatch.setattr(loop, "_plan_dor_errors",
+                        lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(loop, "_reanchor_replanned_tasks",
+                        lambda *_args: (None, []))
+    monkeypatch.setattr(loop.tp, "plan_task_id_refusal",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(loop, "_annotate_plan_graph", lambda *_args: None)
+    monkeypatch.setattr(loop, "_derive_consolidated_authority",
+                        lambda *_args: {
+                            "authorized": True, "fingerprint": "c" * 64,
+                        })
+    monkeypatch.setattr(loop, "_stage_loop_gate_completion",
+                        lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(loop, "_stage_loop_transition",
+                        lambda *_args, **_kwargs: {"status": "committed"})
+    monkeypatch.setattr(loop.tp, "git_head", lambda *_args: "a" * 40)
+    monkeypatch.setattr(loop, "status", lambda *_args: {"step": "execute"})
+
+    result = loop.gate(str(tmp_path), "pass")
+
+    assert "error" not in result, result
+    current = loop.load(str(tmp_path))
+    assert current["step"] == "execute"
+    assert current["root_hygiene"]["status"] == "prepared"
+    seed = root_seed.load_root_seed(
+        str(tmp_path), "waves/W1/root-seed.json")
+    assert current["root_hygiene"]["seed_fingerprint"] == \
+        seed["seed_fingerprint"]
+    assert current["settings_digest"]
+
+
 def test_public_command_passes_existing_private_authority_and_refuses_corruption(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str]) -> None:
