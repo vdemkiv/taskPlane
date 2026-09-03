@@ -785,16 +785,20 @@ def test_public_next_action_observes_two_children_and_gate_consumes_them(
         assert loop.load(str(workspace))["tasks"][0]["status"] == "passed"
 
 
-def test_evidence_child_stop_refuses_without_exact_terminal_dispatch_binding(
+@pytest.mark.parametrize("scenario", (
+    "missing-binding", "first-failure", "conflicting-replay",
+    "foreign-ledger",
+))
+def test_evidence_child_stop_requires_successful_current_terminal_authority(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str]) -> None:
+        capsys: pytest.CaptureFixture[str], scenario: str) -> None:
     root, run_id = _run(tmp_path, monkeypatch)
     assignments = loop.start_evaluate_evidence_children(
         workspace=str(ROOT), artifact_root=str(root), binding=_binding(),
         impact_manifest=_impact())
     assignment = assignments[0]
     result = _results(assignments)[assignment["producer_kind"]]
-    task_name = "tp_evaluator_p13_evidence_missing_binding"
+    task_name = "tp_evaluator_p13_evidence_" + scenario.replace("-", "_")
     dispatch_id = "f" * 64
     ledger = dispatch_telemetry.new_ledger(
         run_id=run_id, source_sha="1" * 40,
@@ -833,28 +837,72 @@ def test_evidence_child_stop_refuses_without_exact_terminal_dispatch_binding(
     }
     loop.record_native_dispatch_observation(
         str(tmp_path), expected=expected, native_task_name=task_name)
-    manifest = run_artifacts.load_manifest(root)
-    before = list(manifest["classes"]["agent-activity"]["entries"])
-
-    with loop.mutate(str(tmp_path)) as locked:
-        locked["dispatch_telemetry"]["bindings"] = []
-        locked["dispatch_telemetry"]["revision"] += 1
-        dispatch_telemetry.validate_ledger(locked["dispatch_telemetry"])
+    transcript = tmp_path / (task_name + ".jsonl")
+    _write_codex_transcript(
+        transcript, label=task_name, input_tokens=10,
+        cached_tokens=0, output_tokens=2)
+    if scenario == "missing-binding":
+        with loop.mutate(str(tmp_path)) as locked:
+            locked["dispatch_telemetry"]["bindings"] = []
+            locked["dispatch_telemetry"]["revision"] += 1
+            dispatch_telemetry.validate_ledger(locked["dispatch_telemetry"])
+    elif scenario == "foreign-ledger":
+        state = loop.load(str(tmp_path))
+        local = next(row for row in state["dispatch_telemetry"]["bindings"]
+                     if row["dispatch_id"] == dispatch_id)
+        foreign = dispatch_telemetry.new_ledger(
+            run_id="foreign-run", source_sha="9" * 40,
+            design_fingerprint="8" * 64, plan_fingerprint="7" * 64,
+            started_at=0)
+        fields = (
+            "dispatch_id", "thread_id", "thread_type", "task_id",
+            "dependencies", "shared_owner", "started_at", "ended_at",
+            "wait_duration_seconds", "correction_count", "events",
+        )
+        dispatch_telemetry.bind_dispatch(
+            foreign, {key: copy.deepcopy(local[key]) for key in fields})
+        with loop.mutate(str(tmp_path)) as locked:
+            locked["dispatch_telemetry"] = foreign
     event = {
         "cwd": str(tmp_path), "agent_id": task_name,
         "agent_type": task_name, "task_name": task_name,
-        "turn_id": "turn-missing-binding", "provider": "codex",
+        "turn_id": "turn-success", "provider": "codex",
+        "status": "success", "agent_transcript_path": str(transcript),
         "last_assistant_message": json.dumps(result),
     }
+    if scenario == "conflicting-replay":
+        monkeypatch.setattr(
+            tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
+        assert tp_cli.cmd_subagent_stop(None) == 0
+        assert capsys.readouterr().out.strip() == "{}"
+    before = list(run_artifacts.load_manifest(root)["classes"][
+        "agent-activity"]["entries"])
+    if scenario in {"first-failure", "conflicting-replay"}:
+        event.update({"turn_id": "turn-failure", "status": "failure"})
     monkeypatch.setattr(tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
 
     assert tp_cli.cmd_subagent_stop(None) == 2
     output = json.loads(capsys.readouterr().out)
     assert output["decision"] == "block"
-    assert "exact native dispatch binding" in output["reason"]
+    expected_reason = {
+        "missing-binding": "exact native dispatch binding",
+        "first-failure": "successful exact terminal outcome",
+        "conflicting-replay": "successful exact terminal outcome",
+        "foreign-ledger": "current evidence authority",
+    }[scenario]
+    assert expected_reason in output["reason"]
     after = run_artifacts.load_manifest(root)["classes"][
         "agent-activity"]["entries"]
     assert after == before
+    sealed = loop.load(str(tmp_path))["dispatch_telemetry"]
+    if scenario == "first-failure":
+        assert sealed["dispatches"][0]["events"] == [{
+            "kind": "failed", "sequence": 1}]
+    elif scenario == "conflicting-replay":
+        assert sealed["dispatches"][0]["events"] == [{
+            "kind": "complete", "sequence": 1}]
+    elif scenario == "foreign-ledger":
+        assert sealed["run_id"] == "foreign-run"
 
 
 def test_one_receipt_cannot_cover_freshness_and_severed_edge(

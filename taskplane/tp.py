@@ -1910,6 +1910,8 @@ def cmd_subagent_stop(a) -> int:
             raw_outcome = (event.get("outcome") or event.get("status")
                            or event.get("stop_reason") or event.get("reason")
                            or "success")
+            normalized_outcome = tp.normalize_worker_terminal_outcome(
+                raw_outcome)
             telemetry = _seal_terminal_dispatch_telemetry(
                 ws, {
                     "budget": {"token_usage_required": True},
@@ -1918,8 +1920,7 @@ def cmd_subagent_stop(a) -> int:
                         "expected_task_name": native_task_name,
                         "dispatch_intent_id": dispatch_id,
                     },
-                }, event, outcome=tp.normalize_worker_terminal_outcome(
-                    raw_outcome))
+                }, event, outcome=normalized_outcome)
             telemetry_receipt = (telemetry.get("receipt")
                                  if isinstance(telemetry, dict) else None)
             if (not isinstance(telemetry, dict) or
@@ -1933,6 +1934,36 @@ def cmd_subagent_stop(a) -> int:
                 raise ValueError(
                     "Evaluate evidence child terminal telemetry did not "
                     "complete its exact native dispatch binding")
+            terminal_state = _loop_runtime.load(ws) or {}
+            telemetry_ledger = terminal_state.get("dispatch_telemetry")
+            ledger_receipt = (next((row for row in telemetry_ledger.get(
+                "dispatches") or [] if isinstance(row, dict) and
+                row.get("fingerprint") == telemetry_receipt.get(
+                    "fingerprint")), None)
+                if isinstance(telemetry_ledger, dict) else None)
+            if (not isinstance(telemetry_ledger, dict) or
+                    ledger_receipt != telemetry_receipt or
+                    str(telemetry_ledger.get("run_id") or "") !=
+                    str(route.get("run_id") or "") or
+                    str(telemetry_ledger.get("run_id") or "") !=
+                    str(terminal_state.get("run_id") or "") or
+                    str(telemetry_ledger.get("source_sha") or "") !=
+                    str(terminal_state.get("baseline") or "") or
+                    str(telemetry_ledger.get("design_fingerprint") or "") !=
+                    str(binding.get("design_fingerprint") or "") or
+                    str(telemetry_ledger.get("plan_fingerprint") or "") !=
+                    str(binding.get("plan_fingerprint") or "") or
+                    str(terminal_state.get("settings_digest") or "") !=
+                    str(binding.get("settings_digest") or "")):
+                raise ValueError(
+                    "Evaluate evidence child terminal telemetry is not "
+                    "bound to its current evidence authority")
+            if (normalized_outcome != "success" or
+                    telemetry_receipt.get("events") != [{
+                        "kind": "complete", "sequence": 1}]):
+                raise ValueError(
+                    "Evaluate evidence child artifact requires a successful "
+                    "exact terminal outcome")
         child_result = _loop_runtime.complete_observed_evaluate_evidence_child(
             ws, event)
     except Exception as exc:
