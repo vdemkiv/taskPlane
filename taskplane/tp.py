@@ -8089,6 +8089,26 @@ def _phase_pickup_result(handoff: dict, startup: dict) -> dict:
     progress = handoff["progress"]
     remaining = progress["remaining"]
     task = startup.get("task")
+    if handoff["successor"]["phase"] == "build":
+        safe_startup = {key: startup[key] for key in (
+            "task", "producer_contract", "scoped_view", "result_schema",
+            "full_envelope_reference")}
+    else:
+        worker_fields = (
+            "schema", "worker_id", "lens", "task_name", "task_slot",
+            "output", "producer_contract", "scoped_view", "result_schema",
+            "full_envelope_reference", "fingerprint")
+        safe_startup = {
+            "phase": startup["phase"], "mode": startup["mode"],
+            "projection": startup["projection"],
+            "full_envelope_reference": startup["full_envelope_reference"],
+            "workers": [
+                {key: worker[key] for key in worker_fields}
+                for worker in startup["workers"]
+            ],
+        }
+    if len(tp.canonical_json_bytes(safe_startup)) > tp.MAX_STAGE_STARTUP_BYTES:
+        raise ValueError("public phase startup exceeds its byte bound")
     return _phase_fingerprinted({
         "schema": "taskplane.phase-pickup-result/v1",
         "status": "ready",
@@ -8111,6 +8131,7 @@ def _phase_pickup_result(handoff: dict, startup: dict) -> dict:
         "next_eligible_obligation": remaining[0] if remaining else None,
         "task_id": task.get("id") if isinstance(task, dict) else None,
         "startup_fingerprint": startup["fingerprint"],
+        "startup": safe_startup,
     })
 
 
@@ -8380,7 +8401,7 @@ def main(argv=None) -> int:
         "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     phase_export.set_defaults(fn=cmd_phase_export)
     phase_pickup = phase_sub.add_parser(
-        "pickup", help="prepare the declared next phase from a sealed handoff")
+        "pickup", help="return a safe startup for the declared next phase")
     phase_pickup.add_argument(
         "handoff", help="repository-relative sealed phase handoff")
     phase_pickup.add_argument(
@@ -8395,7 +8416,7 @@ def main(argv=None) -> int:
         "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     phase_submit.set_defaults(fn=cmd_phase_submit)
     phase_resume = phase_sub.add_parser(
-        "resume", help="prepare interrupted work in the same phase")
+        "resume", help="return a safe startup for interrupted same-phase work")
     phase_resume.add_argument(
         "handoff", help="repository-relative interrupted phase handoff")
     phase_resume.add_argument(

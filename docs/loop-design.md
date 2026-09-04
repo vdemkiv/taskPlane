@@ -134,10 +134,17 @@ completion. `phase pickup` admits done requirement-to-Design,
 Design-to-Plan, and Plan-to-Build transitions. `phase resume` admits only an
 interrupted Design, Plan, or Build handoff whose successor is the same phase.
 Both create fresh attempt-local authority after validation; they never reopen
-a predecessor attempt. `phase submit` accepts exactly `handoff`, `assignment`,
-and `authoring_result`, revalidates the committed scoped Build diff, and uses
-the existing BUILD-C checkpoint and repository-integration boundary before a
-green progress receipt exists.
+a predecessor attempt. Their public `startup` field projects the validated
+startup rather than discarding it. For Design and Plan it contains the phase
+projection and each worker's identity, output, producer contract, scoped view,
+closed result schema, and full-envelope reference. For Build it contains the
+exact task, producer contract, scoped view, closed result schema, and
+full-envelope reference. Attempt leases and contract bootstraps stay private.
+The projected startup retains the existing 128-KiB startup ceiling.
+`phase submit` accepts exactly `handoff`, `assignment`, and `authoring_result`,
+revalidates the committed scoped Build diff, and uses the existing BUILD-C
+checkpoint and repository-integration boundary before a green progress receipt
+exists.
 
 Initial, Design, and Plan authority comes only from attributable
 `human:<identity>` decisions bound to the exact gate subject and source.

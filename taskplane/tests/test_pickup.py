@@ -18,6 +18,8 @@ from typing import get_type_hints
 import pytest
 
 import checkpoint
+import phase_handoff
+import phase_pickup
 import pickup
 import storage
 import taskplane_lite as contract_engine
@@ -585,6 +587,102 @@ def test_public_tp_pickup_cli_delegates_workspace_contract_and_renders_result(
         str(tmp_path.resolve()), "design/shelf.json", None,
     )]
     assert json.loads(capsys.readouterr().out) == delegated
+
+
+def _phase_cli_handoff(*, phase: str, mode: str) -> dict[str, object]:
+    return {
+        "handoff_id": "a" * 64, "fingerprint": "b" * 64,
+        "repository": {"id": "example.test/team/repository"},
+        "source": {"commit": "c" * 40, "tree": "d" * 40},
+        "producer": {
+            "phase": "plan" if mode == "next-phase" else phase,
+            "outcome": "done" if mode == "next-phase" else "interrupted",
+        },
+        "successor": {"phase": phase, "mode": mode},
+        "progress": {"completed": [], "remaining": ["AC1"]},
+        "lineage": {"predecessor_handoff_fingerprint": None,
+                    "predecessor_receipt_head": None},
+    }
+
+
+def _phase_cli_values(value: object):
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            yield key
+            yield from _phase_cli_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _phase_cli_values(child)
+    elif isinstance(value, str):
+        yield value
+
+
+@pytest.mark.parametrize("command,phase,mode", [
+    ("pickup", "design", "next-phase"),
+    ("resume", "build", "same-phase-resume"),
+])
+def test_phase_cli_returns_safe_exact_work_startup(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str], command: str, phase: str,
+        mode: str) -> None:
+    handoff = _phase_cli_handoff(phase=phase, mode=mode)
+    common = {
+        "producer_contract": {"write_allow": [f"{phase}/result.py"]},
+        "scoped_view": {"contracts": ["contract:phase-public-result"]},
+        "result_schema": {"additional_properties": False},
+        "full_envelope_reference": {"locator":
+            "repo-phase-handoff://sha256/" + "b" * 64},
+    }
+    if phase == "build":
+        startup = {**common, "task": {
+            "id": "T-005", "scope": ["taskplane/tp.py"],
+            "contracts": ["contract:phase-public-result"],
+            "proofs": ["python3 -m pytest -q taskplane/tests/test_pickup.py"],
+        }, "lease": {"nonce": "not-public"},
+            "contract_bootstrap": {"private": True}, "fingerprint": "f" * 64}
+        monkeypatch.setattr(
+            phase_pickup, "prepare", lambda *_a, **_k: startup)
+    else:
+        worker = {
+            "schema": "taskplane.phase-worker-dispatch/v1",
+            "worker_id": phase, "lens": None, "task_name": f"tp_{phase}",
+            "task_slot": f"stateless-{phase}-{phase}",
+            "output": f"{phase}/result.json", **common,
+            "contract_bootstrap": {"private": "bootstrap"},
+            "lease": {"nonce": "not-public"}, "fingerprint": "f" * 64}
+        startup = {
+            "phase": phase, "mode": mode, "projection": {
+                "write_allow": [f"{phase}/**"]},
+            "full_envelope_reference": common["full_envelope_reference"],
+            "workers": [worker], "attempt_id": "not-public",
+            "fingerprint": "e" * 64}
+        monkeypatch.setattr(
+            contract_engine, "create_stateless_phase_startup",
+            lambda _handoff: startup)
+    monkeypatch.setattr(
+        phase_handoff, "load_phase_handoff", lambda *_a, **_k: handoff)
+
+    assert tp.main([
+        "phase", command, "exports/pickup/phases/a/handoff.json",
+        "--workspace", str(tmp_path),
+    ]) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["startup_fingerprint"] == startup["fingerprint"]
+    public = result["startup"]
+    exact = public["task"] if phase == "build" else public["workers"][0]
+    if phase == "build":
+        assert exact["scope"] and exact["contracts"]
+        assert exact["proofs"] == startup["task"]["proofs"]
+    else:
+        assert exact["producer_contract"]["write_allow"]
+        assert exact["scoped_view"]["contracts"]
+    values = set(_phase_cli_values(public))
+    assert not {"lease", "contract_bootstrap", "not-public"} & values
+    assert not any(isinstance(value, str) and os.path.isabs(value)
+                   for value in values)
+    assert len(contract_engine.canonical_json_bytes(public)) <= \
+        contract_engine.MAX_STAGE_STARTUP_BYTES
 
 
 def test_large_focused_proof_retains_bounded_evidence_and_reaches_terminal_pickup(

@@ -93,8 +93,8 @@ not repeated in the tables.
 | `tp.py onboard` | cold-start readiness — folder + git snapshot + init; renders the onboarding dashboard |
 | `tp.py phase` | export or continue sealed repository phase handoffs |
 | `tp.py phase export` | publish one sealed repository phase handoff |
-| `tp.py phase pickup` | prepare the declared next phase from a sealed handoff |
-| `tp.py phase resume` | prepare interrupted work in the same phase |
+| `tp.py phase pickup` | return a safe startup for the declared next phase |
+| `tp.py phase resume` | return a safe startup for interrupted same-phase work |
 | `tp.py phase submit` | validate scoped Build output through BUILD-C |
 | `tp.py pickup` | run one approved shelf Design Contract without a loop |
 | `tp.py preview` | launch a private governed working preview from a closed JSON request |
@@ -964,7 +964,7 @@ publish one sealed repository phase handoff
 
 ## `tp.py phase pickup`
 
-prepare the declared next phase from a sealed handoff
+return a safe startup for the declared next phase
 
 Positional arguments:
 
@@ -976,7 +976,7 @@ Positional arguments:
 
 ## `tp.py phase resume`
 
-prepare interrupted work in the same phase
+return a safe startup for interrupted same-phase work
 
 Positional arguments:
 
