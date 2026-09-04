@@ -499,6 +499,8 @@ def publish_repository_manifest(workspace: str, manifest: object) -> JsonObject:
 
 
 def load_repository_manifest(workspace: str, relative_path: str, *,
-                             require_clean: bool = True) -> JsonObject:
+                             require_clean: bool = True,
+                             allowed_task_id: str | None = None) -> JsonObject:
     return _phase_handoff_module().load_manifest(
-        workspace, relative_path, require_clean=require_clean)
+        workspace, relative_path, require_clean=require_clean,
+        allowed_task_id=allowed_task_id)

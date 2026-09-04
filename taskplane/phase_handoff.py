@@ -7,6 +7,7 @@ leases.  A handoff can therefore be validated from a clean checkout alone.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from fnmatch import fnmatchcase
 import hashlib
 import json
 import os
@@ -968,8 +969,6 @@ def validate_manifest(manifest: object) -> JsonObject:
     predecessor_authority: str | None = None
     for authority in authorities:
         if authority["repository_id"] != repository_id or \
-                authority["source_commit"] != source_commit or \
-                authority["source_tree"] != source_tree or \
                 authority["subject_fingerprint"] != subject_by_gate[
                     str(authority["gate"])] or \
                 authority["predecessor_authority_fingerprint"] != \
@@ -1087,7 +1086,8 @@ def publish_manifest(repository_root: str | os.PathLike[str],
 
 def validate_repository_manifest(
         repository_root: str | os.PathLike[str], manifest: object, *,
-        require_clean: bool = True) -> JsonObject:
+        require_clean: bool = True,
+        allowed_task_id: str | None = None) -> JsonObject:
     """Verify source, repository, tracked export lineage, and selected blobs."""
     root = _repository_root(repository_root)
     checked = validate_manifest(manifest)
@@ -1098,6 +1098,23 @@ def validate_repository_manifest(
     observed_tree = _git(root, "rev-parse", f"{source_commit}^{{tree}}")
     if observed_tree != source_tree:
         raise PhaseHandoffError("source-stale", "source tree differs from commit")
+    prior_authority_commit: str | None = None
+    for authority in checked["authority_receipts"]:
+        authority_commit = str(authority["source_commit"])
+        authority_tree = str(authority["source_tree"])
+        observed_authority_tree = _git(
+            root, "rev-parse", f"{authority_commit}^{{tree}}",
+            code="authority-stale")
+        if observed_authority_tree != authority_tree:
+            raise PhaseHandoffError(
+                "authority-stale", "authority source tree differs from commit")
+        if prior_authority_commit is not None:
+            _git(root, "merge-base", "--is-ancestor",
+                 prior_authority_commit, authority_commit,
+                 code="authority-stale")
+        _git(root, "merge-base", "--is-ancestor",
+             authority_commit, source_commit, code="authority-stale")
+        prior_authority_commit = authority_commit
     head = _git(root, "rev-parse", "HEAD")
     _git(root, "merge-base", "--is-ancestor", source_commit, head)
     if require_clean and _git(
@@ -1126,14 +1143,29 @@ def validate_repository_manifest(
     changed = set(filter(None, _git(
         root, "diff", "--name-only", source_commit, head, "--",
         code="source-stale").splitlines()))
-    if not changed or any(not path.startswith("exports/pickup/")
-                          for path in changed):
+    allowed_scope: list[str] = []
+    if allowed_task_id is not None:
+        tasks = [task for task in checked["tasks"]
+                 if task["id"] == allowed_task_id]
+        producer, successor = checked["producer"], checked["successor"]
+        build_authorized = (
+            producer == {"phase": "plan", "outcome": "done"} and
+            successor == {"phase": "build", "mode": "next-phase"}
+        ) or (
+            producer == {"phase": "build", "outcome": "interrupted"} and
+            successor == {"phase": "build", "mode": "same-phase-resume"}
+        )
+        if len(tasks) != 1 or not build_authorized:
+            raise PhaseHandoffError(
+                "scope-widened", "task scope is not authorized by this handoff")
+        allowed_scope = [str(path) for path in tasks[0]["scope"]]
+    if not changed or any(
+            not path.startswith("exports/pickup/") and not any(
+                fnmatchcase(path, pattern) for pattern in allowed_scope)
+            for path in changed):
         raise PhaseHandoffError(
             "source-stale", "source-to-export lineage contains unrelated changes")
     required = {manifest_relative} | {
-        str(reference["destination"])
-        for reference in checked["selected_artifacts"]
-    } | {
         progress_receipt_path(str(checked["handoff_id"]), receipt)
         for receipt in checked["progress_receipts"]
     }
@@ -1143,7 +1175,8 @@ def validate_repository_manifest(
 
 
 def load_manifest(repository_root: str | os.PathLike[str], relative_path: str,
-                  *, require_clean: bool = True) -> JsonObject:
+                  *, require_clean: bool = True,
+                  allowed_task_id: str | None = None) -> JsonObject:
     """Read bounded canonical JSON and then perform full repository validation."""
     root = _repository_root(repository_root)
     relative = _repository_relative(relative_path, "handoff path")
@@ -1161,7 +1194,8 @@ def load_manifest(repository_root: str | os.PathLike[str], relative_path: str,
     if canonical_bytes(value) != data:
         raise HandoffMalformedError("handoff bytes are not canonical")
     checked = validate_repository_manifest(
-        root, value, require_clean=require_clean)
+        root, value, require_clean=require_clean,
+        allowed_task_id=allowed_task_id)
     if relative != handoff_path(str(checked["handoff_id"])):
         raise HandoffIntegrityError("handoff path does not match identity")
     return checked

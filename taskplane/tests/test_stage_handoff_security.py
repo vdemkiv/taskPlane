@@ -3,11 +3,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import copy
+from pathlib import Path
+import subprocess
 
 import pytest
 
-from taskplane import review_evidence, stage_handoff
+from taskplane import phase_handoff, review_evidence, stage_handoff
 from taskplane.tests.test_stage_handoff import _manifest
+from taskplane.tests.test_stateless_phase_pickup import _published_checkout
 
 
 def test_tampered_artifact_digest_and_byte_count_are_rejected(tmp_path) -> None:
@@ -138,3 +141,109 @@ def test_manifest_fingerprint_tampering_is_rejected_before_use(tmp_path) -> None
     with pytest.raises(stage_handoff.HandoffIntegrityError,
                        match="fingerprint mismatch"):
         stage_handoff.validate_manifest(store, manifest)
+
+
+def _commit_change(root: Path, relative: str) -> None:
+    path = root / relative
+    path.write_text(path.read_text(encoding="utf-8") + "\n# scoped change\n",
+                    encoding="utf-8")
+    subprocess.run(["git", "add", relative], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", f"change {relative}"],
+                   cwd=root, check=True)
+
+
+@pytest.mark.parametrize(
+    ("changed", "accepted"),
+    [
+        ("taskplane/phase_handoff.py", True),
+        ("taskplane/repository.py", False),
+    ],
+)
+def test_build_submit_validation_allows_only_the_sealed_task_scope(
+        tmp_path, changed: str, accepted: bool) -> None:
+    root, handoff = _published_checkout(tmp_path, "build")
+    _commit_change(root, changed)
+    relative = phase_handoff.handoff_path(str(handoff["handoff_id"]))
+
+    if accepted:
+        with pytest.raises(phase_handoff.PhaseHandoffError,
+                           match="source-to-export lineage"):
+            phase_handoff.load_phase_handoff(root, relative)
+        assert phase_handoff.load_phase_handoff(
+            root, relative, allowed_task_id="T-001") == handoff
+    else:
+        with pytest.raises(phase_handoff.PhaseHandoffError,
+                           match="source-to-export lineage"):
+            phase_handoff.load_phase_handoff(
+                root, relative, allowed_task_id="T-001")
+
+
+def _build_complete_handoff(root: Path, plan: dict) -> tuple[dict, str]:
+    source_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    source_tree = subprocess.check_output(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip()
+    receipt = phase_handoff.create_progress_receipt(
+        producer="engine:taskplane.phase-pickup/v1", sequence=1,
+        phase="build", obligation_id="AC1", task_id="T-001",
+        status="green", predecessor_receipt_fingerprint=None,
+        checkpoint_receipt_digest="d" * 64,
+        integration_receipt_fingerprint="e" * 64)
+    carried = {
+        key: copy.deepcopy(plan[key]) for key in (
+            "repository", "requirement", "design", "plan", "obligations",
+            "tasks", "contracts", "acceptance", "selected_artifacts",
+            "authority_receipts", "exclusions")
+    }
+    handoff = phase_handoff.create_phase_handoff(
+        **carried, source={"commit": source_commit, "tree": source_tree},
+        producer={"phase": "build", "outcome": "done"},
+        successor={"phase": "terminal", "mode": "terminal-evidence"},
+        progress={"completed": ["AC1"], "remaining": []},
+        progress_receipts=[receipt],
+        lineage={
+            "predecessor_handoff_fingerprint": plan["fingerprint"],
+            "predecessor_receipt_head": receipt["fingerprint"],
+        })
+    return handoff, source_commit
+
+
+def _publish_completion(root: Path, handoff: dict) -> None:
+    phase_handoff.publish_phase_handoff(root, handoff)
+    subprocess.run(["git", "add", "-f", "exports/pickup"],
+                   cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "publish Build completion"],
+                   cwd=root, check=True)
+
+
+def test_build_complete_handoff_retains_truthful_ancestor_authority(
+        tmp_path) -> None:
+    root, plan = _published_checkout(tmp_path, "build")
+    _commit_change(root, "taskplane/phase_handoff.py")
+
+    completed, source_commit = _build_complete_handoff(root, plan)
+    _publish_completion(root, completed)
+
+    assert all(receipt["source_commit"] != source_commit
+               for receipt in completed["authority_receipts"])
+    for receipt in completed["authority_receipts"]:
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor",
+             receipt["source_commit"], source_commit],
+            cwd=root, check=True)
+    assert phase_handoff.validate_repository_manifest(root, completed) == completed
+
+
+def test_later_export_reuses_tracked_digest_verified_artifacts(tmp_path) -> None:
+    root, plan = _published_checkout(tmp_path, "build")
+    _commit_change(root, "taskplane/phase_handoff.py")
+    completed, source_commit = _build_complete_handoff(root, plan)
+    _publish_completion(root, completed)
+
+    changed = set(subprocess.check_output(
+        ["git", "diff", "--name-only", source_commit, "HEAD"],
+        cwd=root, text=True).splitlines())
+    assert not changed.intersection(
+        reference["destination"]
+        for reference in completed["selected_artifacts"])
+    assert phase_handoff.validate_repository_manifest(root, completed) == completed
