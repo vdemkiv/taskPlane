@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+import shlex
 import threading
 from types import CodeType
 
@@ -766,9 +767,11 @@ def run_pickup(checkout: str, micro_plan: Mapping[str, object], *,
     spec = {
         "schema": checkpoint.CHECKPOINT_SCHEMA,
         "checkpoint_id": checkpoint_id, "phase": "build",
-        "ac_ids": [criterion["id"]], "predecessor_checkpoint_ids": [],
+        "ac_ids": list(criterion.get("ids") or [criterion["id"]]),
+        "predecessor_checkpoint_ids": [],
         "worktree_revision": assignment["revision"],
         "declared_scope": list(assignment["scope"]),
+        "authorized_proof_paths": [proof["path"]],
         "focused_proof": {"path": proof["path"], "argv": list(proof["argv"])},
         "ratchet_baseline": {"cycle_count": 0},
     }
@@ -811,6 +814,145 @@ def run_pickup(checkout: str, micro_plan: Mapping[str, object], *,
             "merge_receipt": merge_receipt,
         },
     }
+
+
+def _phase_proof(value: object) -> tuple[str, list[str]]:
+    """Normalize one sealed pytest proof without invoking a shell."""
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise IntegrationAuthorizationError(
+            "proof-invalid: sealed proof command is invalid")
+    try:
+        argv = shlex.split(value)
+    except ValueError as exc:
+        raise IntegrationAuthorizationError(
+            "proof-invalid: sealed proof command is invalid") from exc
+    if len(argv) == 1:
+        argv = ["python3", "-m", "pytest", "-q", argv[0]]
+    executable = os.path.basename(argv[0]) if argv else ""
+    if executable.startswith("python") and argv[1:3] == ["-m", "pytest"]:
+        arguments = argv[3:]
+    elif executable in {"pytest", "py.test"}:
+        arguments = argv[1:]
+    else:
+        raise IntegrationAuthorizationError(
+            "proof-invalid: sealed proof must invoke pytest")
+    targets = [item for item in arguments if not item.startswith("-")]
+    if not targets:
+        raise IntegrationAuthorizationError(
+            "proof-invalid: sealed pytest command has no target")
+    proof_path = targets[-1].split("::", 1)[0]
+    if (not proof_path or os.path.isabs(proof_path) or
+            "\\" in proof_path or proof_path == ".." or
+            proof_path.startswith("../") or "/../" in proof_path):
+        raise IntegrationAuthorizationError(
+            "proof-invalid: sealed proof path is unsafe")
+    return proof_path, argv
+
+
+def _phase_micro_plan(task: Mapping[str, object],
+                      assignment: Mapping[str, object],
+                      authoring_result: Mapping[str, object]) -> dict:
+    """Adapt one exact sealed task to the incumbent pickup contract."""
+    proofs = list(task.get("proofs") or [])
+    acceptance = list(task.get("acceptance") or [])
+    if len(proofs) != 1 or not acceptance:
+        raise IntegrationAuthorizationError(
+            "proof-invalid: a Build task requires one sealed proof command")
+    proof_path, argv = _phase_proof(proofs[0])
+    material = {
+        "element_id": task["id"],
+        "scope": list(task["scope"]),
+        "criterion": {
+            "id": acceptance[0],
+            "ids": acceptance,
+            "proof": {"path": proof_path, "argv": argv},
+        },
+    }
+    material["fingerprint"] = hashlib.sha256(json.dumps({
+        "task": task, "assignment": assignment["fingerprint"],
+        "authoring": authoring_result["fingerprint"],
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return material
+
+
+def run_phase_pickup(checkout: str, task: Mapping[str, object],
+                     assignment: Mapping[str, object],
+                     authoring_result: Mapping[str, object], *,
+                     repository_id: str,
+                     emit: Callable[[str], None]) -> dict:
+    """Enter incumbent checkpoint/integration only after scoped authoring.
+
+    This is the successor-only BUILD-C adapter.  Legacy ``run_pickup`` keeps
+    its historical one-element behavior and schemas unchanged.
+    """
+    if not isinstance(task, Mapping) or not isinstance(assignment, Mapping):
+        raise IntegrationAuthorizationError(
+            "build-c-admission: sealed task assignment is invalid")
+    try:
+        authored = checkpoint.validate_phase_authoring_result(
+            checkout, authoring_result, task=task, assignment=assignment)
+    except checkpoint.PhaseAuthoringError as exc:
+        raise IntegrationAuthorizationError(str(exc)) from exc
+    micro_plan = _phase_micro_plan(task, assignment, authored)
+    try:
+        result = run_pickup(checkout, micro_plan, emit=emit)
+        checked_checkpoint, checked_merge = validate_pickup_evidence(
+            result.get("checkpoint"),
+            (result.get("integration") or {}).get("merge_receipt"),
+            micro_plan=micro_plan, revision=str(authored["revision"]))
+        projected = repository.project_repository_receipt(
+            checked_merge, repository_id=repository_id,
+            task_id=str(task["id"]), revision=str(authored["revision"]))
+    except (IntegrationAuthorizationError,
+            repository.RepositoryAcquisitionError) as exc:
+        prefix = "proof-invalid: " if "focused_proof" in str(exc) or \
+            "focused proof" in str(exc) else "build-c-admission: "
+        raise IntegrationAuthorizationError(
+            f"{prefix}{exc}") from exc
+    return {
+        "checkpoint": checked_checkpoint,
+        "integration": projected,
+        "repository_receipt": checked_merge,
+        "micro_plan": micro_plan,
+    }
+
+
+def validate_phase_pickup_evidence(
+        evidence: object, *, task: Mapping[str, object],
+        assignment: Mapping[str, object],
+        authoring_result: Mapping[str, object], repository_id: str) \
+        -> tuple[dict, dict]:
+    """Revalidate the path-free successor BUILD-C evidence projection."""
+    if not isinstance(evidence, Mapping) or set(evidence) != {
+            "checkpoint", "integration", "repository_receipt", "micro_plan"}:
+        raise IntegrationAuthorizationError(
+            "build-c-admission: BUILD-C evidence is missing")
+    try:
+        expected_micro_plan = _phase_micro_plan(
+            task, assignment, authoring_result)
+    except (KeyError, TypeError) as exc:
+        raise IntegrationAuthorizationError(
+            "build-c-admission: authored task identity is invalid") from exc
+    if evidence.get("micro_plan") != expected_micro_plan:
+        raise IntegrationAuthorizationError(
+            "build-c-admission: pickup micro-plan is stale or widened")
+    try:
+        checked_checkpoint, checked_merge = validate_pickup_evidence(
+            evidence.get("checkpoint"), evidence.get("repository_receipt"),
+            micro_plan=expected_micro_plan,
+            revision=str(authoring_result["revision"]))
+        checked_integration = repository.validate_phase_repository_receipt(
+            evidence.get("integration"), repository_id=repository_id,
+            task_id=str(task["id"]),
+            revision=str(authoring_result["revision"]),
+            source_receipt_fingerprint=checked_merge["fingerprint"])
+    except repository.RepositoryAcquisitionError as exc:
+        raise IntegrationAuthorizationError(str(exc)) from exc
+    if checked_checkpoint.get("worktree_revision") != \
+            authoring_result.get("revision"):
+        raise IntegrationAuthorizationError(
+            "build-c-admission: checkpoint revision is stale")
+    return checked_checkpoint, checked_integration
 
 
 def _program_authority(ledger: Mapping[str, object]) -> Mapping[str, object]:

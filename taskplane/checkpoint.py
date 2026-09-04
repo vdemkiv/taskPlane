@@ -64,7 +64,7 @@ ORDERED_CHECKPOINT_PHASES = (
 _SPEC_FIELDS = frozenset({
     "schema", "checkpoint_id", "phase", "ac_ids",
     "predecessor_checkpoint_ids", "worktree_revision", "declared_scope",
-    "focused_proof", "ratchet_baseline",
+    "focused_proof", "authorized_proof_paths", "ratchet_baseline",
 })
 _PROOF_FIELDS = frozenset({"path", "argv"})
 _R0010_TASK = re.compile(r"(?:^|-)r0010(?:-|$)", re.IGNORECASE)
@@ -114,6 +114,18 @@ class CheckpointSpecError(ValueError):
 
 class CheckpointReceiptError(CheckpointSpecError):
     """Engine-observed checkpoint evidence cannot mint a green receipt."""
+
+
+PHASE_AUTHORING_RESULT_SCHEMA = "taskplane.phase-authoring-result/v1"
+PHASE_AUTHORING_RESULT_FIELDS = frozenset({
+    "schema", "status", "task_id", "attempt_id", "handoff_fingerprint",
+    "assignment_fingerprint", "base_revision", "revision",
+    "changed_paths", "proof_commands", "fingerprint",
+})
+
+
+class PhaseAuthoringError(CheckpointSpecError):
+    """An authored Build revision is stale, foreign, dirty, or widened."""
 
 
 def validate_candidate_wiring_for_checkpoint(
@@ -254,6 +266,94 @@ def _git(worktree: str, *args: str) -> subprocess.CompletedProcess[str]:
 def _scope_contains(path: str, scope: Sequence[str]) -> bool:
     return any(path == pattern or fnmatch.fnmatchcase(path, pattern)
                for pattern in scope)
+
+
+def _phase_authoring_facts(worktree: str, *, task: Mapping,
+                           assignment: Mapping) -> dict:
+    """Derive the exact committed diff behind one scoped authoring result."""
+    task_id = str(task.get("id") or "").strip()
+    attempt_id = str(assignment.get("attempt_id") or "").strip()
+    handoff_fingerprint = str(
+        assignment.get("handoff_fingerprint") or "").strip()
+    assignment_fingerprint = str(assignment.get("fingerprint") or "").strip()
+    base_revision = str(assignment.get("base_revision") or "").strip()
+    scope = task.get("scope")
+    proofs = task.get("proofs")
+    if (not task_id or not attempt_id or
+            not _GIT_REVISION.fullmatch(handoff_fingerprint) or
+            not _GIT_REVISION.fullmatch(assignment_fingerprint) or
+            not _GIT_REVISION.fullmatch(base_revision) or
+            not isinstance(scope, list) or not scope or
+            not isinstance(proofs, list) or not proofs or
+            any(not isinstance(item, str) or not item.strip()
+                for item in [*scope, *proofs])):
+        raise PhaseAuthoringError(
+            "authoring assignment or sealed task identity is invalid")
+    head = _git(worktree, "rev-parse", "HEAD")
+    revision = head.stdout.strip()
+    if head.returncode or not _GIT_REVISION.fullmatch(revision):
+        raise PhaseAuthoringError("authored revision is unavailable")
+    ancestor = _git(worktree, "merge-base", "--is-ancestor",
+                    base_revision, revision)
+    if ancestor.returncode:
+        raise PhaseAuthoringError(
+            "authored revision does not descend from its exact base")
+    status = _git(worktree, "status", "--porcelain=v1",
+                  "--untracked-files=all")
+    if status.returncode or status.stdout:
+        raise PhaseAuthoringError(
+            "authored revision must be a clean committed checkout")
+    changed = _git(worktree, "diff", "--name-only", "-z",
+                   base_revision, revision, "--")
+    if changed.returncode:
+        raise PhaseAuthoringError("authored diff could not be inspected")
+    changed_paths = sorted(filter(None, changed.stdout.split("\0")))
+    if not changed_paths:
+        raise PhaseAuthoringError("authored diff is empty")
+    if any(not _scope_contains(path, scope) for path in changed_paths):
+        raise PhaseAuthoringError(
+            "scope-widened: authored diff exceeds the sealed task scope")
+    return {
+        "schema": PHASE_AUTHORING_RESULT_SCHEMA,
+        "status": "authored",
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "handoff_fingerprint": handoff_fingerprint,
+        "assignment_fingerprint": assignment_fingerprint,
+        "base_revision": base_revision,
+        "revision": revision,
+        "changed_paths": changed_paths,
+        "proof_commands": list(proofs),
+    }
+
+
+def mint_phase_authoring_result(worktree: str, *, task: Mapping,
+                                assignment: Mapping) -> dict:
+    """Mint authoring evidence exclusively from Git and sealed assignment."""
+    material = _phase_authoring_facts(
+        worktree, task=task, assignment=assignment)
+    value = {**material, "fingerprint": _canonical_digest(material)}
+    return validate_phase_authoring_result(
+        worktree, value, task=task, assignment=assignment)
+
+
+def validate_phase_authoring_result(worktree: str, result: object, *,
+                                    task: Mapping,
+                                    assignment: Mapping) -> dict:
+    """Re-derive and byte-compare a worker's claimed authored result."""
+    if not isinstance(result, Mapping) or set(result) != \
+            PHASE_AUTHORING_RESULT_FIELDS:
+        raise PhaseAuthoringError("authoring result fields are invalid")
+    expected_material = _phase_authoring_facts(
+        worktree, task=task, assignment=assignment)
+    expected = {
+        **expected_material,
+        "fingerprint": _canonical_digest(expected_material),
+    }
+    if dict(result) != expected:
+        raise PhaseAuthoringError(
+            "authoring result is stale, foreign, or scope-widened")
+    return expected
 
 
 def _reserved_pytest_identity_arg(value: str) -> bool:
@@ -440,6 +540,11 @@ def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
     scope = _strings(spec.get("declared_scope"), "declared_scope")
     for item in scope:
         _repository_path(worktree, item, "declared_scope")
+    proof_scope = _strings(
+        spec.get("authorized_proof_paths", []),
+        "authorized_proof_paths", nonempty=False)
+    for item in proof_scope:
+        _repository_path(worktree, item, "authorized_proof_paths")
 
     proof = spec.get("focused_proof")
     if not isinstance(proof, Mapping):
@@ -451,9 +556,10 @@ def validate_checkpoint_spec(worktree: str, spec: Mapping) -> dict:
     proof_path, absolute_proof = _repository_path(
         worktree, proof.get("path"), "focused_proof.path")
     argv = _strings(proof.get("argv"), "focused_proof.argv")
-    if not _scope_contains(proof_path, scope):
+    if not (_scope_contains(proof_path, scope) or proof_path in proof_scope):
         raise CheckpointSpecError(
-            f"focused proof {proof_path} is outside declared_scope")
+            f"focused proof {proof_path} is outside declared scope and "
+            "sealed proof paths")
     try:
         mode = os.lstat(absolute_proof).st_mode
     except FileNotFoundError as exc:
