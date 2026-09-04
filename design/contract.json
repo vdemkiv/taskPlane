@@ -498,8 +498,9 @@
       "design_element": "One stage-handoff/v2 exporter is called by true Design, Plan, and final Build completion; it writes a 64-KiB closed manifest and digest-addressed artifacts under exports/pickup and records exact repository publication.",
       "validation": "Parameterize Design, Plan, and Build completion, clone the resulting repository with an empty home, validate canonical bytes and all artifact digests, and assert exactly one handoff per phase identity.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_normal_completion_exports_one_repository_handoff",
-        "taskplane/tests/test_stateless_phase_pickup.py::test_fresh_clone_verifies_phase_handoff_and_repository_artifacts"
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_completed_phase_export_starts_all_successor_work",
+        "taskplane/tests/test_pickup.py::test_phase_cli_submits_committed_build_and_exports_terminal_handoff",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_phase_pickup_works_from_fresh_clone_and_empty_home"
       ]
     },
     {
@@ -507,7 +508,8 @@
       "design_element": "Requirement-to-Design pickup validates the repository manifest and initial human authorization, then creates a fresh Design producer contract with design/** write authority and a full-envelope reference; private lifecycle modules are not consumer dependencies.",
       "validation": "Run an isolated subprocess from a fresh clone and empty home with sentinels on every forbidden read, assert zero calls, and compare the emitted Design startup to the exact requirement, scope, contract, and acceptance bytes.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_fresh_design_pickup_uses_only_sealed_repository_evidence"
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_phase_pickup_works_from_fresh_clone_and_empty_home",
+        "taskplane/tests/test_pickup.py::test_phase_cli_returns_safe_exact_work_startup"
       ]
     },
     {
@@ -515,7 +517,9 @@
       "design_element": "Design-to-Plan requires a current human Design approval receipt bound to the Design fingerprint and emits a Plan producer contract plus the exact acceptance map.",
       "validation": "Exercise a fresh positive Plan pickup and sever the Design receipt, its actor, source, subject fingerprint, predecessor authority, and artifact bytes; every negative case must stop before dispatch.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_fresh_plan_pickup_requires_current_design_authority"
+        "taskplane/tests/test_stateless_phase_pickup.py::test_source_advancing_authority_uses_repository_ancestry",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_completed_phase_export_starts_all_successor_work",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_phase_pickup_works_from_fresh_clone_and_empty_home"
       ]
     },
     {
@@ -523,8 +527,10 @@
       "design_element": "Plan-to-Build carries canonical ordinal tasks; the coordinator admits only the first dependency-ready task and mints an exact scoped authoring contract after comparing any request to sealed scope/contracts/proofs.",
       "validation": "Use a multi-task dependency fixture, compare each dispatch byte-for-byte with the sealed task, then request a wider scope and assert authoring and checkpoint counters are both zero.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_fresh_build_pickup_dispatches_exact_ready_scope_only",
-        "taskplane/tests/test_stateless_phase_pickup.py::test_scope_widening_refuses_before_authoring_and_checkpoint"
+        "taskplane/tests/test_pickup.py::test_phase_cli_returns_safe_exact_work_startup",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_invalid_handoffs_refuse_before_every_downstream_effect",
+        "taskplane/tests/test_build_quality.py::test_fresh_build_ignores_completed_plan_progress",
+        "taskplane/tests/test_build_quality.py::test_out_of_scope_committed_diff_never_reaches_build_c"
       ]
     },
     {
@@ -532,8 +538,9 @@
       "design_element": "phase-progress-receipt/v1 forms an ordered predecessor digest chain; interrupted handoffs partition all obligations into completed and remaining and issue a fresh attempt lease only for remaining work.",
       "validation": "Crash after the first durable receipt in each phase, clone the receipt commit, resume with an empty home, and prove no completed obligation is dispatched and done predecessors cannot be resumed.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_interrupted_phase_resume_reuses_only_completed_receipts",
-        "taskplane/tests/test_stateless_phase_pickup.py::test_terminal_predecessor_cannot_be_reopened"
+        "taskplane/tests/test_stage_non_build_handoffs.py::test_stateless_non_build_resume_schedules_only_remaining_work",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_phase_pickup_works_from_fresh_clone_and_empty_home",
+        "taskplane/tests/test_stage_handoff_security.py::test_mixed_phase_receipts_preserve_lineage_without_completing_next_phase"
       ]
     },
     {
@@ -541,8 +548,9 @@
       "design_element": "The closed v2 manifest and closed nested schemas include every listed identity, bounded collection, canonical order, artifact digest, authority receipt, and predecessor head; no optional implicit lineage exists.",
       "validation": "Generate one valid maximal fixture and mutate every field and nested field individually, plus reorder, duplicate, oversize, and digest cases; assert the stable structural or integrity refusal.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_phase_handoff_closed_schema_and_lineage_mutation_matrix",
-        "taskplane/tests/test_stateless_phase_pickup.py::test_phase_handoff_collection_and_byte_bounds"
+        "taskplane/tests/test_stateless_phase_pickup.py::test_invalid_handoffs_refuse_before_every_downstream_effect",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_source_advancing_authority_uses_repository_ancestry",
+        "taskplane/tests/test_stage_handoff_security.py::test_mixed_phase_receipts_preserve_lineage_without_completing_next_phase"
       ]
     },
     {
@@ -550,8 +558,9 @@
       "design_element": "human-gate-receipt/v1 binds human:<identity>, context, exact gate subject, source/repository, decision and predecessor; phase-progress-receipt/v1 names only an engine producer and cannot claim a human actor.",
       "validation": "Test valid initial/Design/Plan gate chains and a table of missing, foreign, stale, mismatched, reused, unattributed, mechanical-as-human, and synthetic actors before dispatch.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_phase_authority_accepts_only_attributable_real_gate_receipts",
-        "taskplane/tests/test_stateless_phase_pickup.py::test_mechanical_progress_cannot_mint_human_authority"
+        "taskplane/tests/test_stateless_phase_pickup.py::test_source_advancing_authority_uses_repository_ancestry",
+        "taskplane/tests/test_stage_handoff_security.py::test_build_complete_handoff_retains_truthful_ancestor_authority",
+        "taskplane/tests/test_stage_loop_integration.py::test_explicit_phase_export_refuses_forged_build_green_receipt_evidence"
       ]
     },
     {
@@ -559,7 +568,9 @@
       "design_element": "One fixed validator order and stable refusal-code map precede attempt minting or all effect ports; export and pickup share collision, containment, and canonical validation.",
       "validation": "Parameterize every named input class, instrument dispatch/authoring/checkpoint/publication/integration ports, and assert the expected boundary code, safe recovery, and five zero counters.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_phase_pickup_refuses_before_every_effect_boundary"
+        "taskplane/tests/test_stateless_phase_pickup.py::test_invalid_handoffs_refuse_before_every_downstream_effect",
+        "taskplane/tests/test_pickup.py::test_phase_cli_refuses_forged_build_export_before_publication",
+        "taskplane/tests/test_pickup.py::test_phase_cli_submit_refuses_caller_authored_evidence"
       ]
     },
     {
@@ -567,9 +578,9 @@
       "design_element": "Build is explicitly authoring then submit; submit validates the authoring result and calls existing build_c.run_pickup, requiring engine checkpoint and repository evidence before minting a phase receipt.",
       "validation": "Use real BUILD-C entry points in the positive CLI journey, remove the coordinator-to-BUILD-C callable, and fail the declared proof; only the positive journey may publish completion.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_phase_build_submit_authors_then_enters_build_c",
-        "taskplane/tests/test_stateless_phase_pickup.py::test_phase_build_c_edge_and_focused_proof_are_mandatory",
-        "taskplane/tests/test_pickup.py::test_severed_pickup_to_build_c_edge_fails"
+        "taskplane/tests/test_pickup.py::test_phase_cli_submits_committed_build_and_exports_terminal_handoff",
+        "taskplane/tests/test_pickup.py::test_severed_pickup_to_build_c_edge_fails",
+        "taskplane/tests/test_pickup.py::test_failing_focused_proof_is_a_named_public_pickup_refusal"
       ]
     },
     {
@@ -584,7 +595,8 @@
         "taskplane/tests/test_pickup.py::test_failed_receipt_publication_leaves_no_collision_and_retry_succeeds",
         "taskplane/tests/test_pickup.py::test_interrupted_checkpoint_preserves_prior_receipts_and_blocks_merge",
         "taskplane/tests/test_r0001_pickup_cold_start.py::test_cold_start_receipt_proves_empty_home_and_exact_sha",
-        "taskplane/tests/test_stateless_phase_pickup.py::test_successor_and_legacy_pickup_routes_preserve_refusal_order"
+        "taskplane/tests/test_pickup.py::test_public_tp_pickup_cli_delegates_workspace_contract_and_renders_result",
+        "taskplane/tests/test_pickup.py::test_phase_cli_returns_safe_exact_work_startup"
       ]
     },
     {
@@ -592,8 +604,10 @@
       "design_element": "The consumer imports only pure repository/schema owners, selected blobs use digest locators, attempt values are new and ephemeral, exclusions are mandatory, and public receipts project out local repository paths.",
       "validation": "Use forbidden-access sentinels and recursive serialized-content scans in fresh clones for every positive journey, then assert a clean checkout at the consumer preflight and zero hidden-state values or host paths.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_phase_pickup_fresh_clone_empty_home_has_zero_hidden_state_access",
-        "taskplane/tests/test_stateless_phase_pickup.py::test_phase_exports_and_public_results_are_secret_and_host_path_free"
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_phase_pickup_works_from_fresh_clone_and_empty_home",
+        "taskplane/tests/test_pickup.py::test_phase_cli_returns_safe_exact_work_startup",
+        "taskplane/tests/test_pickup.py::test_phase_cli_submits_committed_build_and_exports_terminal_handoff",
+        "taskplane/tests/test_r0001_pickup_cold_start.py::test_cold_start_receipt_proves_empty_home_and_exact_sha"
       ]
     },
     {
@@ -601,8 +615,9 @@
       "design_element": "Canonical JSON, semantic handoff id, create-if-absent atomic publication, exact-byte replay, fixed refusal codes, and a closed recovery map make publication and consumption deterministic.",
       "validation": "Export identical material in two clones, compare fingerprints and canonical bytes, replay exactly, inject a same-identity conflict and partial write, and assert stable boundary and safe recovery text.",
       "tests": [
-        "taskplane/tests/test_stateless_phase_pickup.py::test_phase_export_is_deterministic_idempotent_and_conflict_closed",
-        "taskplane/tests/test_stateless_phase_pickup.py::test_phase_refusals_name_safe_non_widening_recovery"
+        "taskplane/tests/test_stage_handoff.py::test_canonical_manifest_is_deterministic_and_content_addressed",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_invalid_handoffs_refuse_before_every_downstream_effect",
+        "taskplane/tests/test_pickup.py::test_failed_receipt_publication_leaves_no_collision_and_retry_succeeds"
       ]
     }
   ],
