@@ -3703,6 +3703,36 @@ STAGE_AUTHORITY_REFERENCE_SCHEMA = \
 STAGE_HANDOFF_DISPATCH_SCHEMA = "taskplane.stage-handoff-dispatch/v1"
 MAX_STAGE_STARTUP_BYTES = 128 * 1024
 MAX_STAGE_RECEIPT_BYTES = 2 * 1024 * 1024
+STATELESS_PHASE_STARTUP_SCHEMA = "taskplane.phase-startup/v1"
+STATELESS_PHASE_WORKER_SCHEMA = "taskplane.phase-worker-dispatch/v1"
+PHASE_PRODUCER_CONTRACT_SCHEMA = "taskplane.phase-producer-contract/v1"
+PHASE_ATTEMPT_LEASE_SCHEMA = "taskplane.phase-attempt-lease/v1"
+PHASE_CONTRACT_BOOTSTRAP_SCHEMA = "taskplane.phase-contract-bootstrap/v1"
+_STATELESS_PHASE_STARTUP_FIELDS = frozenset({
+    "schema", "phase", "mode", "attempt_id", "projection",
+    "full_envelope_reference", "workers", "fingerprint",
+})
+_STATELESS_PHASE_WORKER_FIELDS = frozenset({
+    "schema", "worker_id", "lens", "task_name", "task_slot", "output",
+    "contract_bootstrap", "producer_contract", "lease", "scoped_view",
+    "result_schema", "full_envelope_reference", "fingerprint",
+})
+_PHASE_PRODUCER_CONTRACT_FIELDS = frozenset({
+    "schema", "task", "task_slot", "phase", "read_only", "write_allow",
+    "handoff_fingerprint", "subject_fingerprint", "attempt_id",
+    "result_path", "fingerprint",
+})
+_PHASE_ATTEMPT_LEASE_FIELDS = frozenset({
+    "schema", "attempt_id", "worker_id", "task_slot", "phase",
+    "handoff_fingerprint", "projection_fingerprint",
+    "producer_contract_fingerprint", "nonce", "fingerprint",
+})
+_PHASE_CONTRACT_BOOTSTRAP_FIELDS = frozenset({
+    "schema", "attempt_id", "worker_id", "task_slot",
+    "producer_contract_fingerprint", "lease_fingerprint",
+    "scoped_view_fingerprint", "result_schema_fingerprint",
+    "full_envelope_reference_fingerprint", "environment", "fingerprint",
+})
 _STAGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _STAGE_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 _STAGE_RECEIPT_FIELDS = frozenset({
@@ -4310,6 +4340,309 @@ def stage_startup_bytes(dispatch: dict) -> bytes:
     if dispatch.get("telemetry") != expected_telemetry:
         raise StageDispatchError("stage startup telemetry mismatch")
     return serialized
+
+
+def _stateless_phase_worker_spec(value, *, phase: str,
+                                 ordinal: int) -> dict:
+    row = value if isinstance(value, dict) else {}
+    lens = str(row.get("lens") or "").strip() or None
+    worker_id = str(row.get("worker_id") or lens or
+                    (phase if ordinal == 1 else f"{phase}-{ordinal}")).strip()
+    task_slot = str(row.get("task_slot") or
+                    f"stateless-{phase}-{worker_id}").strip()
+    task_name = str(row.get("task_name") or
+                    f"tp_{'lens' if lens else phase}_{worker_id}").strip()
+    output = str(row.get("output") or
+                 f"{phase}/{'lenses/' + lens if lens else 'result'}.json").strip()
+    for label, item in (("worker id", worker_id), ("task slot", task_slot),
+                        ("task name", task_name)):
+        if not _TASK_SLOT_RE.fullmatch(item):
+            raise StageDispatchError(f"stateless phase {label} is invalid")
+    if (not output or not output.startswith(f"{phase}/") or
+            os.path.isabs(output) or "\\" in output or
+            output.startswith("../") or "/../" in output or
+            any(character in output for character in "*?[]")):
+        raise StageDispatchError("stateless phase worker output is unsafe")
+    return {"worker_id": worker_id, "lens": lens,
+            "task_name": task_name, "task_slot": task_slot,
+            "output": output}
+
+
+def _phase_fingerprinted(material: dict) -> dict:
+    detached = _json_detach(material, "stateless phase transport")
+    return {**detached, "fingerprint": hashlib.sha256(
+        canonical_json_bytes(detached)).hexdigest()}
+
+
+def _phase_worker_dispatch(projection: dict, handoff: dict, *,
+                           attempt_id: str, spec: dict) -> dict:
+    if __package__:
+        from . import review_evidence
+    else:
+        import review_evidence
+    phase = str(projection["phase"])
+    worker_id = str(spec["worker_id"])
+    full_reference = _json_detach(
+        projection["full_envelope_reference"],
+        "phase full-envelope reference")
+    scoped_view = review_evidence.create_phase_scoped_view(
+        handoff, worker_id=worker_id)
+    result_schema = review_evidence.phase_result_schema(phase=phase)
+    producer_contract = _phase_fingerprinted({
+        "schema": PHASE_PRODUCER_CONTRACT_SCHEMA,
+        "task": f"{phase} from sealed handoff {projection['handoff_id']}",
+        "task_slot": spec["task_slot"],
+        "phase": phase,
+        "read_only": True,
+        "write_allow": [spec["output"]],
+        "handoff_fingerprint": projection["handoff_fingerprint"],
+        "subject_fingerprint": projection["subject_fingerprint"],
+        "attempt_id": attempt_id,
+        "result_path": spec["output"],
+    })
+    lease = _phase_fingerprinted({
+        "schema": PHASE_ATTEMPT_LEASE_SCHEMA,
+        "attempt_id": attempt_id,
+        "worker_id": worker_id,
+        "task_slot": spec["task_slot"],
+        "phase": phase,
+        "handoff_fingerprint": projection["handoff_fingerprint"],
+        "projection_fingerprint": projection["fingerprint"],
+        "producer_contract_fingerprint": producer_contract["fingerprint"],
+        # New entropy proves this is attempt-local rather than a serialized
+        # predecessor lease.  It is validated only inside this startup.
+        "nonce": secrets.token_hex(16),
+    })
+    bootstrap = _phase_fingerprinted({
+        "schema": PHASE_CONTRACT_BOOTSTRAP_SCHEMA,
+        "attempt_id": attempt_id,
+        "worker_id": worker_id,
+        "task_slot": spec["task_slot"],
+        "producer_contract_fingerprint": producer_contract["fingerprint"],
+        "lease_fingerprint": lease["fingerprint"],
+        "scoped_view_fingerprint": scoped_view["fingerprint"],
+        "result_schema_fingerprint": result_schema["fingerprint"],
+        "full_envelope_reference_fingerprint": full_reference["fingerprint"],
+        "environment": {"TASKPLANE_TASK": spec["task_slot"]},
+    })
+    return _phase_fingerprinted({
+        "schema": STATELESS_PHASE_WORKER_SCHEMA,
+        "worker_id": worker_id,
+        "lens": spec["lens"],
+        "task_name": spec["task_name"],
+        "task_slot": spec["task_slot"],
+        "output": spec["output"],
+        "contract_bootstrap": bootstrap,
+        "producer_contract": producer_contract,
+        "lease": lease,
+        "scoped_view": scoped_view,
+        "result_schema": result_schema,
+        "full_envelope_reference": full_reference,
+    })
+
+
+def stateless_phase_startup(
+        handoff: dict, *, workers=None, attempt_id: str | None = None) -> dict:
+    """Mint fresh Design/Plan worker transport from one sealed v2 handoff.
+
+    There is intentionally no workspace argument.  The only authority input
+    is the closed handoff, while every lease/bootstrap value is newly created
+    after its authority chain and exact source/subject projections validate.
+    """
+    if __package__:
+        from . import stage_entities
+    else:
+        import stage_entities
+    try:
+        projection = stage_entities.stateless_phase_startup_projection(handoff)
+    except (TypeError, ValueError) as exc:
+        raise StageDispatchError(
+            f"stateless phase handoff refused before dispatch: {exc}") from exc
+    attempt = str(attempt_id or
+                  f"attempt-{secrets.token_hex(16)}").strip()
+    if not _STAGE_ID_RE.fullmatch(attempt):
+        raise StageDispatchError("stateless phase attempt id is invalid")
+    raw_workers = list(workers or [{}])
+    if (not raw_workers or len(raw_workers) > 16 or
+            any(not isinstance(row, dict) for row in raw_workers)):
+        raise StageDispatchError(
+            "stateless phase workers must contain 1-16 objects")
+    specs = [_stateless_phase_worker_spec(
+        row, phase=str(projection["phase"]), ordinal=index)
+        for index, row in enumerate(raw_workers, 1)]
+    identities = [(row["worker_id"], row["task_slot"], row["output"])
+                  for row in specs]
+    if len(set(identities)) != len(identities) or \
+            len({row["worker_id"] for row in specs}) != len(specs) or \
+            len({row["task_slot"] for row in specs}) != len(specs) or \
+            len({row["output"] for row in specs}) != len(specs):
+        raise StageDispatchError("stateless phase worker identities overlap")
+    dispatches = [_phase_worker_dispatch(
+        projection, handoff, attempt_id=attempt, spec=row) for row in specs]
+    startup = _phase_fingerprinted({
+        "schema": STATELESS_PHASE_STARTUP_SCHEMA,
+        "phase": projection["phase"],
+        "mode": projection["mode"],
+        "attempt_id": attempt,
+        "projection": projection,
+        "full_envelope_reference": projection["full_envelope_reference"],
+        "workers": dispatches,
+    })
+    return validate_stateless_phase_startup(startup, handoff)
+
+
+def validate_stateless_phase_startup(startup: dict, handoff: dict) -> dict:
+    """Recheck every closed attempt-local binding immediately pre-dispatch."""
+    if __package__:
+        from . import review_evidence, stage_entities
+    else:
+        import review_evidence
+        import stage_entities
+    if not isinstance(startup, dict) or set(startup) != \
+            _STATELESS_PHASE_STARTUP_FIELDS or startup.get(
+                "schema") != STATELESS_PHASE_STARTUP_SCHEMA:
+        raise StageDispatchError("stateless phase startup fields are invalid")
+    expected_startup_fingerprint = hashlib.sha256(canonical_json_bytes({
+        key: value for key, value in startup.items() if key != "fingerprint"
+    })).hexdigest()
+    if startup.get("fingerprint") != expected_startup_fingerprint:
+        raise StageDispatchError("stateless phase startup fingerprint mismatch")
+    try:
+        projection = stage_entities.validate_stateless_phase_startup_projection(
+            startup.get("projection"), handoff)
+        full_reference = review_evidence.validate_phase_full_envelope_reference(
+            startup.get("full_envelope_reference"), handoff)
+    except (TypeError, ValueError) as exc:
+        raise StageDispatchError(str(exc)) from exc
+    if (startup.get("phase") != projection["phase"] or
+            startup.get("mode") != projection["mode"] or
+            startup.get("full_envelope_reference") !=
+            projection["full_envelope_reference"]):
+        raise StageDispatchError("stateless phase startup authority is stale")
+    attempt = _stage_identifier(
+        startup.get("attempt_id"), "stateless phase attempt id")
+    workers = startup.get("workers")
+    if not isinstance(workers, list) or not 1 <= len(workers) <= 16:
+        raise StageDispatchError("stateless phase worker set is invalid")
+    seen_workers: set[str] = set()
+    seen_slots: set[str] = set()
+    seen_outputs: set[str] = set()
+    for worker in workers:
+        if not isinstance(worker, dict) or set(worker) != \
+                _STATELESS_PHASE_WORKER_FIELDS or worker.get(
+                    "schema") != STATELESS_PHASE_WORKER_SCHEMA:
+            raise StageDispatchError("stateless phase worker fields are invalid")
+        worker_material = {key: value for key, value in worker.items()
+                           if key != "fingerprint"}
+        if worker.get("fingerprint") != hashlib.sha256(
+                canonical_json_bytes(worker_material)).hexdigest():
+            raise StageDispatchError(
+                "stateless phase worker fingerprint mismatch")
+        if len(canonical_json_bytes(worker)) > MAX_STAGE_STARTUP_BYTES:
+            raise StageDispatchError(
+                "stateless phase worker startup exceeds its bound")
+        worker_id = _stage_identifier(
+            worker.get("worker_id"), "stateless phase worker id")
+        task_slot = _stage_identifier(
+            worker.get("task_slot"), "stateless phase task slot")
+        output = str(worker.get("output") or "")
+        if worker_id in seen_workers or task_slot in seen_slots or \
+                output in seen_outputs:
+            raise StageDispatchError("stateless phase worker is reused")
+        seen_workers.add(worker_id)
+        seen_slots.add(task_slot)
+        seen_outputs.add(output)
+        if worker.get("full_envelope_reference") != full_reference:
+            raise StageDispatchError(
+                "stateless phase worker cites a foreign full envelope")
+        try:
+            scoped_view = review_evidence.validate_phase_scoped_view(
+                worker.get("scoped_view"), handoff,
+                expected_worker_id=worker_id)
+            result_schema = review_evidence.validate_phase_result_schema(
+                worker.get("result_schema"),
+                expected_phase=str(projection["phase"]))
+        except (TypeError, ValueError) as exc:
+            raise StageDispatchError(str(exc)) from exc
+        producer = worker.get("producer_contract")
+        if not isinstance(producer, dict) or set(producer) != \
+                _PHASE_PRODUCER_CONTRACT_FIELDS or producer.get(
+                    "schema") != PHASE_PRODUCER_CONTRACT_SCHEMA:
+            raise StageDispatchError("phase producer contract fields are invalid")
+        producer_expected = _phase_fingerprinted({
+            "schema": PHASE_PRODUCER_CONTRACT_SCHEMA,
+            "task": f"{projection['phase']} from sealed handoff "
+                    f"{projection['handoff_id']}",
+            "task_slot": task_slot, "phase": projection["phase"],
+            "read_only": True, "write_allow": [output],
+            "handoff_fingerprint": projection["handoff_fingerprint"],
+            "subject_fingerprint": projection["subject_fingerprint"],
+            "attempt_id": attempt, "result_path": output,
+        })
+        if producer != producer_expected:
+            raise StageDispatchError(
+                "phase producer contract is stale, foreign, or widened")
+        lease = worker.get("lease")
+        if not isinstance(lease, dict) or set(lease) != \
+                _PHASE_ATTEMPT_LEASE_FIELDS or lease.get(
+                    "schema") != PHASE_ATTEMPT_LEASE_SCHEMA:
+            raise StageDispatchError("phase attempt lease fields are invalid")
+        lease_material = {key: value for key, value in lease.items()
+                          if key != "fingerprint"}
+        if (lease.get("attempt_id") != attempt or
+                lease.get("worker_id") != worker_id or
+                lease.get("task_slot") != task_slot or
+                lease.get("phase") != projection["phase"] or
+                lease.get("handoff_fingerprint") !=
+                projection["handoff_fingerprint"] or
+                lease.get("projection_fingerprint") !=
+                projection["fingerprint"] or
+                lease.get("producer_contract_fingerprint") !=
+                producer["fingerprint"] or
+                not re.fullmatch(r"[0-9a-f]{32}", str(
+                    lease.get("nonce") or "")) or
+                lease.get("fingerprint") != hashlib.sha256(
+                    canonical_json_bytes(lease_material)).hexdigest()):
+            raise StageDispatchError(
+                "phase attempt lease is stale, foreign, or reused")
+        bootstrap = worker.get("contract_bootstrap")
+        if not isinstance(bootstrap, dict) or set(bootstrap) != \
+                _PHASE_CONTRACT_BOOTSTRAP_FIELDS or bootstrap.get(
+                    "schema") != PHASE_CONTRACT_BOOTSTRAP_SCHEMA:
+            raise StageDispatchError(
+                "phase contract bootstrap fields are invalid")
+        bootstrap_expected = _phase_fingerprinted({
+            "schema": PHASE_CONTRACT_BOOTSTRAP_SCHEMA,
+            "attempt_id": attempt, "worker_id": worker_id,
+            "task_slot": task_slot,
+            "producer_contract_fingerprint": producer["fingerprint"],
+            "lease_fingerprint": lease["fingerprint"],
+            "scoped_view_fingerprint": scoped_view["fingerprint"],
+            "result_schema_fingerprint": result_schema["fingerprint"],
+            "full_envelope_reference_fingerprint":
+                full_reference["fingerprint"],
+            "environment": {"TASKPLANE_TASK": task_slot},
+        })
+        if bootstrap != bootstrap_expected:
+            raise StageDispatchError(
+                "phase contract bootstrap is stale or foreign")
+    return _json_detach(startup, "stateless phase startup")
+
+
+def stateless_design_lens_dispatches(
+        handoff: dict, workers, *, attempt_id: str | None = None) -> list[dict]:
+    """Return fully bound Design lens briefs ready for native child start."""
+    startup = stateless_phase_startup(
+        handoff, workers=workers, attempt_id=attempt_id)
+    if startup["phase"] != "design":
+        raise StageDispatchError(
+            "Design lens dispatches require a Design successor handoff")
+    return list(startup["workers"])
+
+
+# Successor coordinator vocabulary.
+create_stateless_phase_startup = stateless_phase_startup
+create_stateless_design_lens_dispatches = stateless_design_lens_dispatches
 
 
 def review_execution_root_identity(workspace: str) -> dict:

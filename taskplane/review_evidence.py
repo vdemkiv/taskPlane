@@ -23,6 +23,7 @@ else:
 
 
 MAX_SCOPED_VIEW_BYTES = 16 * 1024
+MAX_PHASE_SCOPED_VIEW_BYTES = 128 * 1024
 MAX_INLINE_REQUIREMENTS_BYTES = 4 * 1024
 _KIND = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _SLOT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
@@ -77,6 +78,178 @@ class ProvenanceError(ValueError):
 
 class RevisionError(ValueError):
     pass
+
+
+PHASE_ENVELOPE_REFERENCE_SCHEMA = \
+    "taskplane.phase-envelope-reference/v1"
+PHASE_SCOPED_VIEW_SCHEMA = "taskplane.phase-scoped-view/v1"
+PHASE_RESULT_SCHEMA = "taskplane.phase-worker-result-schema/v1"
+_PHASE_ENVELOPE_REFERENCE_FIELDS = frozenset({
+    "schema", "handoff_id", "handoff_fingerprint", "repository_id",
+    "source_commit", "source_tree", "bytes", "locator", "fingerprint",
+})
+_PHASE_SCOPED_VIEW_FIELDS = frozenset({
+    "schema", "phase", "mode", "worker_id", "full_envelope_reference",
+    "source", "requirement", "design", "contracts", "acceptance",
+    "obligations", "selected_artifacts", "authority_fingerprints",
+    "lineage", "fingerprint",
+})
+_PHASE_RESULT_SCHEMA_FIELDS = frozenset({
+    "schema", "phase", "result_schema", "required", "properties",
+    "additional_properties", "fingerprint",
+})
+_PHASE_WORKER_RESULT_FIELDS = (
+    "schema", "phase", "status", "worker_id", "attempt_id",
+    "handoff_fingerprint", "subject_fingerprint", "artifact_fingerprint",
+    "evidence", "fingerprint",
+)
+
+
+def _phase_handoff_owner():
+    if __package__:
+        from . import phase_handoff
+    else:
+        import phase_handoff
+    return phase_handoff
+
+
+def _closed_phase_value(value: object, fields: frozenset[str],
+                        label: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ProvenanceError(f"{label} fields are invalid")
+    return value
+
+
+def create_phase_full_envelope_reference(handoff: Mapping[str, object]) \
+        -> dict:
+    """Create a path-free reference to the complete immutable v2 handoff."""
+    owner = _phase_handoff_owner()
+    try:
+        checked = owner.validate_phase_handoff(handoff)
+    except owner.PhaseHandoffError as exc:
+        raise ProvenanceError(str(exc)) from exc
+    handoff_bytes = owner.canonical_bytes(checked)
+    material = {
+        "schema": PHASE_ENVELOPE_REFERENCE_SCHEMA,
+        "handoff_id": checked["handoff_id"],
+        "handoff_fingerprint": checked["fingerprint"],
+        "repository_id": checked["repository"]["id"],
+        "source_commit": checked["source"]["commit"],
+        "source_tree": checked["source"]["tree"],
+        "bytes": len(handoff_bytes),
+        "locator": "repo-phase-handoff://sha256/" +
+            str(checked["fingerprint"]),
+    }
+    return {**material, "fingerprint": content_fingerprint(material)}
+
+
+def validate_phase_full_envelope_reference(
+        reference: Mapping[str, object], handoff: Mapping[str, object]) -> dict:
+    row = _closed_phase_value(
+        reference, _PHASE_ENVELOPE_REFERENCE_FIELDS,
+        "phase full-envelope reference")
+    expected = create_phase_full_envelope_reference(handoff)
+    if dict(row) != expected:
+        raise ProvenanceError(
+            "phase full-envelope reference is stale or foreign")
+    return expected
+
+
+def create_phase_scoped_view(
+        handoff: Mapping[str, object], *, worker_id: str) -> dict:
+    """Project exact Design/Plan inputs without private lifecycle context."""
+    owner = _phase_handoff_owner()
+    try:
+        checked = owner.validate_phase_handoff(handoff)
+    except owner.PhaseHandoffError as exc:
+        raise ProvenanceError(str(exc)) from exc
+    phase = str(checked["successor"]["phase"])
+    if phase not in {"design", "plan"}:
+        raise ProvenanceError(
+            "phase scoped view supports only Design or Plan startup")
+    worker = str(worker_id or "").strip()
+    if not _SLOT.fullmatch(worker):
+        raise ProvenanceError("phase worker id is invalid")
+    material = {
+        "schema": PHASE_SCOPED_VIEW_SCHEMA,
+        "phase": phase,
+        "mode": checked["successor"]["mode"],
+        "worker_id": worker,
+        "full_envelope_reference":
+            create_phase_full_envelope_reference(checked),
+        "source": copy.deepcopy(checked["source"]),
+        "requirement": copy.deepcopy(checked["requirement"]),
+        "design": copy.deepcopy(checked["design"]),
+        "contracts": copy.deepcopy(checked["contracts"]),
+        "acceptance": copy.deepcopy(checked["acceptance"]),
+        "obligations": copy.deepcopy(checked["obligations"]),
+        "selected_artifacts": copy.deepcopy(checked["selected_artifacts"]),
+        "authority_fingerprints": [
+            row["fingerprint"] for row in checked["authority_receipts"]],
+        "lineage": copy.deepcopy(checked["lineage"]),
+    }
+    value = {**material, "fingerprint": content_fingerprint(material)}
+    if len(canonical_bytes(value)) > MAX_PHASE_SCOPED_VIEW_BYTES:
+        raise ArtifactIntegrityError(
+            "phase scoped view exceeds "
+            f"{MAX_PHASE_SCOPED_VIEW_BYTES} byte bound")
+    return value
+
+
+def validate_phase_scoped_view(
+        view: Mapping[str, object], handoff: Mapping[str, object], *,
+        expected_worker_id: str) -> dict:
+    row = _closed_phase_value(
+        view, _PHASE_SCOPED_VIEW_FIELDS, "phase scoped view")
+    expected = create_phase_scoped_view(
+        handoff, worker_id=expected_worker_id)
+    if dict(row) != expected:
+        raise ProvenanceError("phase scoped view is stale or foreign")
+    return expected
+
+
+def phase_result_schema(*, phase: str) -> dict:
+    """Return one closed result boundary for a Design or Plan producer."""
+    checked_phase = str(phase or "").strip()
+    if checked_phase not in {"design", "plan"}:
+        raise ProvenanceError("phase result schema supports Design or Plan")
+    properties = {
+        "schema": {"const": "taskplane.phase-worker-result/v1"},
+        "phase": {"const": checked_phase},
+        "status": {"enum": ["done", "interrupted"]},
+        "worker_id": {"type": "string"},
+        "attempt_id": {"type": "string"},
+        "handoff_fingerprint": {"pattern": "^[0-9a-f]{64}$"},
+        "subject_fingerprint": {"pattern": "^[0-9a-f]{64}$"},
+        "artifact_fingerprint": {"pattern": "^[0-9a-f]{64}$"},
+        "evidence": {"type": "array", "items": "repository-artifact-ref"},
+        "fingerprint": {"pattern": "^[0-9a-f]{64}$"},
+    }
+    material = {
+        "schema": PHASE_RESULT_SCHEMA,
+        "phase": checked_phase,
+        "result_schema": "taskplane.phase-worker-result/v1",
+        "required": list(_PHASE_WORKER_RESULT_FIELDS),
+        "properties": properties,
+        "additional_properties": False,
+    }
+    return {**material, "fingerprint": content_fingerprint(material)}
+
+
+def validate_phase_result_schema(value: Mapping[str, object], *,
+                                 expected_phase: str) -> dict:
+    row = _closed_phase_value(
+        value, _PHASE_RESULT_SCHEMA_FIELDS, "phase result schema")
+    expected = phase_result_schema(phase=expected_phase)
+    if dict(row) != expected:
+        raise ProvenanceError("phase result schema is stale or open")
+    return expected
+
+
+# Names used by the phase pickup coordinator and transport adapters.
+full_envelope_reference = create_phase_full_envelope_reference
+stateless_scoped_view = create_phase_scoped_view
+closed_phase_result_schema = phase_result_schema
 
 
 def _summary_repair_projection(result: dict) -> dict:

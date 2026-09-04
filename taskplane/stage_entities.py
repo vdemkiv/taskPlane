@@ -99,6 +99,153 @@ class SplitValidationError(StageLifecycleError):
     """A split cannot produce a complete, isolated child set."""
 
 
+STATELESS_PHASE_PROJECTION_SCHEMA: Final[str] = \
+    "taskplane.stateless-phase-projection/v1"
+_STATELESS_PHASE_PROJECTION_FIELDS: Final[frozenset[str]] = frozenset({
+    "schema", "phase", "mode", "handoff_id", "handoff_fingerprint",
+    "full_envelope_reference", "source", "requirement", "design", "plan",
+    "subject_fingerprint", "contracts", "acceptance", "obligations",
+    "selected_artifacts", "authority_receipts", "lineage", "write_allow",
+    "fingerprint",
+})
+
+
+def _phase_handoff_owner():
+    if __package__:
+        from . import phase_handoff
+    else:
+        import phase_handoff
+    return phase_handoff
+
+
+def _design_authority_owner():
+    if __package__:
+        from . import design_contract
+    else:
+        import design_contract
+    return design_contract
+
+
+def stateless_phase_startup_projection(
+        handoff: Mapping[str, object]) -> JsonObject:
+    """Project a v2 handoff into exact Design/Plan startup authority.
+
+    The projection is intentionally pure: it has no workspace argument and
+    therefore cannot consult a locator, run, loop, claim, or predecessor
+    lease.  Attempt-local execution authority is minted only by the kernel
+    after this complete immutable projection validates.
+    """
+    owner = _phase_handoff_owner()
+    try:
+        checked = owner.validate_phase_handoff(handoff)
+        _design_authority_owner().validate_phase_authority_chain(checked)
+    except (owner.PhaseHandoffError, ValueError) as exc:
+        raise StageValidationError(str(exc)) from exc
+    phase = str(checked["successor"]["phase"])
+    mode = str(checked["successor"]["mode"])
+    if phase not in {"design", "plan"}:
+        raise StageLifecycleError(
+            "stateless startup projection supports only Design or Plan")
+    if phase == "design":
+        subject = str(checked["requirement"]["fingerprint"])
+        write_allow = ["design/**"]
+    else:
+        design = checked.get("design")
+        if not isinstance(design, Mapping):
+            raise StageValidationError(
+                "Plan startup requires an approved Design identity")
+        subject = str(design["fingerprint"])
+        write_allow = ["plan/**"]
+    material: JsonObject = {
+        "schema": STATELESS_PHASE_PROJECTION_SCHEMA,
+        "phase": phase,
+        "mode": mode,
+        "handoff_id": checked["handoff_id"],
+        "handoff_fingerprint": checked["fingerprint"],
+        "full_envelope_reference":
+            review_evidence.create_phase_full_envelope_reference(checked),
+        "source": copy.deepcopy(checked["source"]),
+        "requirement": copy.deepcopy(checked["requirement"]),
+        "design": copy.deepcopy(checked["design"]),
+        "plan": copy.deepcopy(checked["plan"]),
+        "subject_fingerprint": subject,
+        "contracts": copy.deepcopy(checked["contracts"]),
+        "acceptance": copy.deepcopy(checked["acceptance"]),
+        "obligations": copy.deepcopy(checked["obligations"]),
+        "selected_artifacts": copy.deepcopy(checked["selected_artifacts"]),
+        "authority_receipts": copy.deepcopy(
+            checked["authority_receipts"]),
+        "lineage": copy.deepcopy(checked["lineage"]),
+        "write_allow": write_allow,
+    }
+    material["fingerprint"] = review_evidence.content_fingerprint(material)
+    return validate_stateless_phase_startup_projection(material, checked)
+
+
+def validate_stateless_phase_startup_projection(
+        projection: Mapping[str, object], handoff: Mapping[str, object]) \
+        -> JsonObject:
+    """Reject stale, foreign, widened, or synthetic startup projections."""
+    row = _closed(
+        projection, _STATELESS_PHASE_PROJECTION_FIELDS,
+        "stateless phase startup projection")
+    supplied_fingerprint = _fingerprint(
+        row.get("fingerprint"), "stateless phase projection fingerprint")
+    material = {str(key): copy.deepcopy(value)
+                for key, value in row.items() if key != "fingerprint"}
+    expected_fingerprint = review_evidence.content_fingerprint(material)
+    if supplied_fingerprint != expected_fingerprint:
+        raise StageIntegrityError(
+            "stateless phase startup projection fingerprint mismatch")
+    # Recreate from the sealed handoff and compare every byte.  This binds the
+    # source, requirement, Design, acceptance, contracts and artifact set and
+    # leaves no field that a caller can widen between validation and dispatch.
+    owner = _phase_handoff_owner()
+    try:
+        checked = owner.validate_phase_handoff(handoff)
+    except owner.PhaseHandoffError as exc:
+        raise StageValidationError(str(exc)) from exc
+    phase = str(checked["successor"]["phase"])
+    if phase not in {"design", "plan"}:
+        raise StageLifecycleError(
+            "stateless startup projection supports only Design or Plan")
+    expected_subject = (checked["requirement"]["fingerprint"]
+                        if phase == "design" else
+                        checked["design"]["fingerprint"])
+    exact = {
+        "schema": STATELESS_PHASE_PROJECTION_SCHEMA,
+        "phase": phase,
+        "mode": checked["successor"]["mode"],
+        "handoff_id": checked["handoff_id"],
+        "handoff_fingerprint": checked["fingerprint"],
+        "full_envelope_reference":
+            review_evidence.create_phase_full_envelope_reference(checked),
+        "source": checked["source"],
+        "requirement": checked["requirement"],
+        "design": checked["design"],
+        "plan": checked["plan"],
+        "subject_fingerprint": expected_subject,
+        "contracts": checked["contracts"],
+        "acceptance": checked["acceptance"],
+        "obligations": checked["obligations"],
+        "selected_artifacts": checked["selected_artifacts"],
+        "authority_receipts": checked["authority_receipts"],
+        "lineage": checked["lineage"],
+        "write_allow": [f"{phase}/**"],
+    }
+    exact["fingerprint"] = review_evidence.content_fingerprint(exact)
+    if dict(row) != exact:
+        raise StageIntegrityError(
+            "stateless phase startup projection is stale, foreign, or widened")
+    return copy.deepcopy(exact)
+
+
+# Contract-oriented aliases used by the successor pickup coordinator.
+project_stateless_phase_startup = stateless_phase_startup_projection
+validate_stateless_phase_projection = \
+    validate_stateless_phase_startup_projection
+
+
 def _closed(value: object, fields: frozenset[str], label: str, *,
             optional: frozenset[str] = frozenset()) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
