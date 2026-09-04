@@ -118,14 +118,6 @@ def _phase_handoff_owner():
     return phase_handoff
 
 
-def _design_authority_owner():
-    if __package__:
-        from . import design_contract
-    else:
-        import design_contract
-    return design_contract
-
-
 def stateless_phase_startup_projection(
         handoff: Mapping[str, object]) -> JsonObject:
     """Project a v2 handoff into exact Design/Plan startup authority.
@@ -138,7 +130,6 @@ def stateless_phase_startup_projection(
     owner = _phase_handoff_owner()
     try:
         checked = owner.validate_phase_handoff(handoff)
-        _design_authority_owner().validate_phase_authority_chain(checked)
     except (owner.PhaseHandoffError, ValueError) as exc:
         raise StageValidationError(str(exc)) from exc
     phase = str(checked["successor"]["phase"])
@@ -242,6 +233,41 @@ def validate_stateless_phase_startup_projection(
         raise StageIntegrityError(
             "stateless phase startup projection is stale, foreign, or widened")
     return copy.deepcopy(exact)
+
+
+def create_stateless_phase_scoped_view(
+        handoff: Mapping[str, object], *, worker_id: str) -> JsonObject:
+    """Create the scoped evidence view for one stage-owned phase worker."""
+    return review_evidence.create_phase_scoped_view(
+        handoff, worker_id=worker_id)
+
+
+def stateless_phase_result_schema(*, phase: str) -> JsonObject:
+    """Create the sealed result contract for a stage-owned phase worker."""
+    return review_evidence.phase_result_schema(phase=phase)
+
+
+def validate_stateless_phase_full_envelope_reference(
+        value: Mapping[str, object], handoff: Mapping[str, object]) \
+        -> JsonObject:
+    """Validate one phase startup's reference to its complete handoff."""
+    return review_evidence.validate_phase_full_envelope_reference(
+        value, handoff)
+
+
+def validate_stateless_phase_scoped_view(
+        value: Mapping[str, object], handoff: Mapping[str, object], *,
+        expected_worker_id: str) -> JsonObject:
+    """Validate one stage-owned phase worker's scoped evidence view."""
+    return review_evidence.validate_phase_scoped_view(
+        value, handoff, expected_worker_id=expected_worker_id)
+
+
+def validate_stateless_phase_result_schema(
+        value: Mapping[str, object], *, expected_phase: str) -> JsonObject:
+    """Validate one stage-owned phase worker's result contract."""
+    return review_evidence.validate_phase_result_schema(
+        value, expected_phase=expected_phase)
 
 
 # Contract-oriented aliases used by the successor pickup coordinator.

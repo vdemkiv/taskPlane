@@ -525,6 +525,23 @@ def create_human_gate_receipt(*, gate: str, actor: str, context: str,
     return _validate_authority_receipt(material)
 
 
+def validate_human_gate_actor(value: object) -> str:
+    """Require a named human, never a mechanical or synthetic identity."""
+    actor = _text(value, "authority actor", maximum=256)
+    normalized = actor.lower().replace("_", "-")
+    if (not actor.startswith("human:") or actor == "human:"
+            or normalized in {
+                "human:(unattributed)",
+                "human:mechanical-definition-gate",
+                "human:mechanical", "human:engine", "human:synthetic",
+            }
+            or normalized.startswith("human:synthetic-")
+            or normalized.startswith("human:mechanical-")):
+        raise PhaseHandoffError(
+            "authority-missing", "gate actor is not an attributable human")
+    return actor
+
+
 def _validate_authority_receipt(value: object) -> JsonObject:
     row = _closed(value, _AUTHORITY_FIELDS, "human authority receipt")
     if row.get("schema") != HUMAN_GATE_RECEIPT_SCHEMA:
@@ -532,10 +549,7 @@ def _validate_authority_receipt(value: object) -> JsonObject:
     gate = _text(row.get("gate"), "authority gate", maximum=64)
     if gate not in _GATE_ORDER:
         raise HandoffMalformedError("authority gate is invalid")
-    actor = _text(row.get("actor"), "authority actor", maximum=256)
-    if not actor.startswith("human:") or actor == "human:(unattributed)" or \
-            actor == "human:mechanical-definition-gate":
-        raise PhaseHandoffError("authority-missing", "human actor is not attributable")
+    actor = validate_human_gate_actor(row.get("actor"))
     context = _text(row.get("context"), "authority context", maximum=1024)
     subject = _text(row.get("subject_fingerprint"), "authority subject",
                     maximum=64, pattern=_DIGEST)
@@ -1252,6 +1266,7 @@ __all__ = [
     "progress_receipt_path", "publish_manifest", "publish_phase_handoff",
     "publish_progress_receipt", "receipt_fingerprint",
     "repository_identity", "validate_artifact_reference", "validate_manifest",
+    "validate_human_gate_actor",
     "validate_phase_handoff", "validate_repository_artifact_reference",
     "validate_repository_manifest",
 ]

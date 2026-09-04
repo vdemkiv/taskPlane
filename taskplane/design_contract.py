@@ -75,19 +75,11 @@ _PHASE_GATES = frozenset({
 
 
 def _phase_human_actor(value: object) -> str:
-    actor = str(value or "").strip()
-    normalized = actor.lower().replace("_", "-")
-    if (not actor.startswith("human:") or actor == "human:"
-            or normalized in {
-                "human:(unattributed)",
-                "human:mechanical-definition-gate",
-                "human:mechanical", "human:engine", "human:synthetic",
-            }
-            or normalized.startswith("human:synthetic-")
-            or normalized.startswith("human:mechanical-")):
-        raise PhaseGateAuthorityError(
-            "authority-missing: gate actor is not an attributable human")
-    return actor
+    try:
+        return phase_handoff.validate_human_gate_actor(
+            str(value or "").strip())
+    except phase_handoff.PhaseHandoffError as exc:
+        raise PhaseGateAuthorityError(str(exc)) from exc
 
 
 def create_phase_gate_decision(*, gate: str, actor: str, context: str,

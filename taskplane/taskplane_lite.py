@@ -4377,17 +4377,17 @@ def _phase_fingerprinted(material: dict) -> dict:
 def _phase_worker_dispatch(projection: dict, handoff: dict, *,
                            attempt_id: str, spec: dict) -> dict:
     if __package__:
-        from . import review_evidence
+        from . import stage_entities
     else:
-        import review_evidence
+        import stage_entities
     phase = str(projection["phase"])
     worker_id = str(spec["worker_id"])
     full_reference = _json_detach(
         projection["full_envelope_reference"],
         "phase full-envelope reference")
-    scoped_view = review_evidence.create_phase_scoped_view(
+    scoped_view = stage_entities.create_stateless_phase_scoped_view(
         handoff, worker_id=worker_id)
-    result_schema = review_evidence.phase_result_schema(phase=phase)
+    result_schema = stage_entities.stateless_phase_result_schema(phase=phase)
     producer_contract = _phase_fingerprinted({
         "schema": PHASE_PRODUCER_CONTRACT_SCHEMA,
         "task": f"{phase} from sealed handoff {projection['handoff_id']}",
@@ -4494,9 +4494,8 @@ def stateless_phase_startup(
 def validate_stateless_phase_startup(startup: dict, handoff: dict) -> dict:
     """Recheck every closed attempt-local binding immediately pre-dispatch."""
     if __package__:
-        from . import review_evidence, stage_entities
+        from . import stage_entities
     else:
-        import review_evidence
         import stage_entities
     if not isinstance(startup, dict) or set(startup) != \
             _STATELESS_PHASE_STARTUP_FIELDS or startup.get(
@@ -4510,8 +4509,9 @@ def validate_stateless_phase_startup(startup: dict, handoff: dict) -> dict:
     try:
         projection = stage_entities.validate_stateless_phase_startup_projection(
             startup.get("projection"), handoff)
-        full_reference = review_evidence.validate_phase_full_envelope_reference(
-            startup.get("full_envelope_reference"), handoff)
+        full_reference = \
+            stage_entities.validate_stateless_phase_full_envelope_reference(
+                startup.get("full_envelope_reference"), handoff)
     except (TypeError, ValueError) as exc:
         raise StageDispatchError(str(exc)) from exc
     if (startup.get("phase") != projection["phase"] or
@@ -4556,10 +4556,10 @@ def validate_stateless_phase_startup(startup: dict, handoff: dict) -> dict:
             raise StageDispatchError(
                 "stateless phase worker cites a foreign full envelope")
         try:
-            scoped_view = review_evidence.validate_phase_scoped_view(
+            scoped_view = stage_entities.validate_stateless_phase_scoped_view(
                 worker.get("scoped_view"), handoff,
                 expected_worker_id=worker_id)
-            result_schema = review_evidence.validate_phase_result_schema(
+            result_schema = stage_entities.validate_stateless_phase_result_schema(
                 worker.get("result_schema"),
                 expected_phase=str(projection["phase"]))
         except (TypeError, ValueError) as exc:

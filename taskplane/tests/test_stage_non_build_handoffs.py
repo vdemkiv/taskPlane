@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from taskplane import phase_handoff, taskplane_lite
+from taskplane import design_contract, phase_handoff, taskplane_lite
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +41,32 @@ STARTUP_RELATIONSHIP = (
     "`taskplane.stage-startup/v1`; its `input_handoff` is the versioned "
     "bounded `taskplane.stage-handoff/v1` manifest"
 )
+
+
+@pytest.mark.parametrize(
+    "actor", ["human:synthetic-reviewer", "human:mechanical_reviewer"])
+def test_phase_handoff_owner_rejects_nonhuman_gate_actors(actor: str) -> None:
+    values = {
+        "gate": "initial-authorization", "actor": actor,
+        "context": "attempted approval", "subject_fingerprint": "a" * 64,
+        "repository_id": "github.com/example/taskplane",
+        "source_commit": "1" * 40, "source_tree": "2" * 40,
+    }
+    with pytest.raises(phase_handoff.PhaseHandoffError,
+                       match="authority-missing"):
+        phase_handoff.create_human_gate_receipt(**values)
+    with pytest.raises(design_contract.PhaseGateAuthorityError,
+                       match="authority-missing"):
+        design_contract.create_phase_gate_decision(**{
+            key: values[key] for key in (
+                "gate", "actor", "context", "subject_fingerprint")})
+
+
+def test_design_gate_adapter_preserves_actor_input_normalization() -> None:
+    decision = design_contract.create_phase_gate_decision(
+        gate="initial-authorization", actor=" human:vdemkiv ",
+        context="approved", subject_fingerprint="a" * 64)
+    assert decision["actor"] == "human:vdemkiv"
 
 
 def _flow(name: str) -> dict[str, object]:
