@@ -26,13 +26,13 @@ lens rewrite and never bumped to.
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
-> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.9 are
-> superseded unreleased candidates. The forward release candidate moves as v2.18.10,
+> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
+> superseded unreleased candidates. The forward release candidate moves as v2.19.0,
 > which is not
 > released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.10 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.19.0 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
@@ -49,7 +49,8 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.18.10** | **Fail-closed delivery authority and isolated global hooks — release candidate, not released.** Canonical settings now seed every fresh root, authenticated native meters gate root admission and produce non-zero root-hygiene receipts, and evaluator children must return governed code-quality and test-design evidence that is consumed by the terminal decision. Dashboard source selection rejects corrupt, non-finite, or foreign state. Installed OpenAI hooks no longer start Taskplane in unrelated chats, while package provenance and extracted-package journeys verify the Marketplace candidate end to end. |
+| **v2.19.0** | **Fresh-task native hook bootstrap and installable package repair — release candidate, not released.** The installed OpenAI package now preserves native SessionStart authority, accepts its launcher-only hook commands during onboarding, and can record the first session-bound receipt in the canonical default store before a fresh linked task has a governed locator. Repository bridges, custom homes, ambiguity, and unrelated chats remain fail closed. An extracted-package regression executes the real onboarding and linked-worktree path end to end. |
+| **v2.18.10** | **Fail-closed delivery authority and isolated global hooks — superseded unreleased candidate.** It completed canonical settings, authenticated native metering, evaluator quality evidence, dashboard-source validation, global-hook isolation, and package provenance, but the installed OpenAI archive still rejected its sanitized launcher-only commands during onboarding and fresh native SessionStart could not record a receipt before locator creation. v2.19.0 closes both bootstrap edges. |
 | **v2.18.9** | **Native telemetry, isolated pickups, and one current dashboard — release candidate, not released.** Provider-owned Codex counters are captured at spawn and terminal boundaries, resumed sessions are delta-attributed without double counting, null or zero metering fails closed, and non-zero per-pickup targets and ceilings from canonical settings reach actual hook enforcement. Workers inherit zero conversation turns. Retro and dashboard consumers receive measured totals, while the surfaced dashboard is the full styled current document with a browser-verified visible dependency graph rather than a stale fragment. |
 | **v2.18.8** | **Canonical terminal Plan graph fallback — superseded unreleased candidate.** It restored the authoritative terminal task DAG and truthful unverified waves, but native counter enforcement, zero-context spawn binding, and the exact surfaced dashboard document were not wired end to end. v2.18.9 closes those runtime edges. |
 | **v2.18.7** | **Terminal dashboard and artifact wiring repair — superseded unreleased candidate.** Terminal `failed` retained the bound Design graph and migrated private artifact classes, but a real run with a drifted mutable Plan file still hid its Plan DAG and waves even though canonical task dependencies remained in loop state. v2.18.8 closes that real-run projection gap. |

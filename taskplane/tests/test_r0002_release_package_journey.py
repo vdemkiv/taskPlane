@@ -19,7 +19,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "2.18.10"
+VERSION = "2.19.0"
 
 
 def _script_module(name: str):
@@ -368,7 +368,7 @@ raise SystemExit(1 if result.get("error") else 0)
             "scope": [scope], "tests": "true",
             "criteria": ["installed Plan approval prepares its root seed"],
             "status": "pending", "deps": [],
-            "new_modules": ["build/taskplane-2.18.10"],
+            "new_modules": ["build/taskplane-2.19.0"],
         }
         plan = {
             "requirement": "R-0001", "delivery_mode": "build",
@@ -411,7 +411,7 @@ raise SystemExit(1 if result.get("error") else 0)
             env=environment)
         return case, workspace, environment, plan, plan_gate, approval
 
-    safe_scope = "build/taskplane-2.18.10/canary/**"
+    safe_scope = "build/taskplane-2.19.0/canary/**"
     case, workspace, environment, plan, plan_gate, approval = approve_scope(
         "installed-plan-approval", safe_scope)
     assert plan_gate.returncode == 0, plan_gate.stdout + plan_gate.stderr

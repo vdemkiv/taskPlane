@@ -84,6 +84,17 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.18.10": {
+        "reason": "superseded Marketplace candidate. It completed the "
+                  "fail-closed delivery authority and isolated global-hook "
+                  "work, but the installed OpenAI archive could not parse "
+                  "its launcher-only hook commands during onboarding and a "
+                  "fresh native SessionStart could not bind its receipt "
+                  "before a governed locator existed. 2.19.0 closes both "
+                  "public bootstrap edges; 2.18.10 was never promoted to "
+                  "released truth.",
+        "superseded_by": "2.19.0",
+    },
     "2.18.9": {
         "reason": "superseded local Marketplace candidate. It wired native "
                   "telemetry, zero-context pickups, and the current dashboard, "
