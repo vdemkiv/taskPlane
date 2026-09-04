@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import depgraph as dg  # noqa: E402
 
@@ -150,6 +152,21 @@ def test_source_touchpoints_are_exhaustive_verified_and_provenance_bound():
                    result["source"]["fingerprint"] for row in rows.values())
         assert ws not in json.dumps(result, sort_keys=True)
         assert result["coverage"]["state"] == "incomplete"
+
+
+def test_duplicate_touchpoint_ids_are_rejected_before_source_reads(monkeypatch):
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("duplicate requests must be rejected before reading source")
+
+    monkeypatch.setattr(dg.graph_primitives, "bounded_source_read", unexpected_read)
+    valid = {"input_id": "same", "kind": "file", "path": "a.py"}
+    missing = {"input_id": "same", "kind": "file", "path": "missing.py"}
+    for requested in ([valid, missing], [missing, valid], [
+            {"kind": "file", "path": "a.py"},
+            {"input_id": "input-0000", "kind": "file", "path": "missing.py"}]):
+        with pytest.raises(ValueError, match="duplicate source touchpoint input_id"):
+            dg.build_source_touchpoint_coverage(
+                requested=requested, graph=_coverage_graph(["a.py"]))
 
 
 def test_bounded_coverage_defaults_to_three_and_never_hides_stop_reasons():

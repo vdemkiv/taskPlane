@@ -3303,7 +3303,7 @@ def build_source_touchpoint_coverage(
         item = raw if isinstance(raw, dict) else {"kind": "file", "path": raw}
         input_id = str(item.get("input_id") or f"input-{index:04d}")
         if input_id in used_ids:
-            continue
+            raise ValueError("duplicate source touchpoint input_id")
         used_ids.add(input_id)
         row = {"input_id": input_id, "kind": str(item.get("kind") or "")}
         for key in ("path", "node", "symbol", "key", "name",
