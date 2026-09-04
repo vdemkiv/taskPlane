@@ -228,8 +228,8 @@ def validate_phase_authority_chain(handoff: Mapping[str, object], *,
             receipt, expected_gate=receipt["gate"],
             expected_subject_fingerprint=subjects[receipt["gate"]],
             expected_repository_id=checked["repository"]["id"],
-            expected_source_commit=checked["source"]["commit"],
-            expected_source_tree=checked["source"]["tree"],
+            expected_source_commit=receipt["source_commit"],
+            expected_source_tree=receipt["source_tree"],
             expected_predecessor_authority_fingerprint=predecessor,
             used_fingerprints=tuple(seen))
         seen.add(row["fingerprint"])

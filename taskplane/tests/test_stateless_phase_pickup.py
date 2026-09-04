@@ -11,7 +11,7 @@ from typing import Callable
 
 import pytest
 
-from taskplane import phase_handoff, phase_pickup
+from taskplane import phase_handoff, phase_pickup, taskplane_lite
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -145,6 +145,76 @@ def _published_checkout(tmp_path: Path, journey: str) \
         ["git", "commit", "-qm", f"publish {journey} handoff"],
         cwd=root, check=True)
     return root, handoff
+
+
+def _publish_source_advancing_plan(
+        root: Path, *, initial_commit: str,
+        initial_tree: str) -> dict[str, object]:
+    handoff = _handoff(root, "plan")
+    repository_id = str(handoff["repository"]["id"])
+    initial = phase_handoff.create_human_gate_receipt(
+        gate="initial-authorization", actor="human:vdemkiv",
+        context="approved initial-authorization",
+        subject_fingerprint=handoff["requirement"]["fingerprint"],
+        repository_id=repository_id, source_commit=initial_commit,
+        source_tree=initial_tree)
+    design = phase_handoff.create_human_gate_receipt(
+        gate="design-approval", actor="human:vdemkiv",
+        context="approved design-approval",
+        subject_fingerprint=handoff["design"]["fingerprint"],
+        repository_id=repository_id,
+        source_commit=handoff["source"]["commit"],
+        source_tree=handoff["source"]["tree"],
+        predecessor_authority_fingerprint=initial["fingerprint"])
+    handoff["authority_receipts"] = [initial, design]
+    handoff["handoff_id"] = phase_handoff.handoff_identity(handoff)
+    handoff["fingerprint"] = phase_handoff.manifest_fingerprint(handoff)
+    phase_handoff.publish_phase_handoff(root, handoff)
+    _git(root, "add", "-f", "exports/pickup")
+    _git(root, "commit", "-qm", "publish source-advancing plan")
+    return handoff
+
+
+def test_source_advancing_authority_uses_repository_ancestry(
+        tmp_path: Path) -> None:
+    root = tmp_path / "valid"
+    subprocess.run(["git", "clone", "-q", str(ROOT), str(root)], check=True)
+    _git(root, "config", "user.email", "phase-test@example.invalid")
+    _git(root, "config", "user.name", "Phase test")
+    initial_commit = _git(root, "rev-parse", "HEAD")
+    initial_tree = _git(root, "rev-parse", "HEAD^{tree}")
+    (root / "design" / "source-advance.txt").write_text(
+        "later Design approval\n", encoding="utf-8")
+    _git(root, "add", "design/source-advance.txt")
+    _git(root, "commit", "-qm", "advance Design source")
+    handoff = _publish_source_advancing_plan(
+        root, initial_commit=initial_commit, initial_tree=initial_tree)
+    relative = phase_handoff.handoff_path(str(handoff["handoff_id"]))
+
+    loaded = phase_handoff.load_phase_handoff(root, relative)
+    assert taskplane_lite.create_stateless_phase_startup(loaded)["phase"] == \
+        "plan"
+
+    foreign = tmp_path / "non-ancestor"
+    subprocess.run(["git", "clone", "-q", str(ROOT), str(foreign)],
+                   check=True)
+    _git(foreign, "config", "user.email", "phase-test@example.invalid")
+    _git(foreign, "config", "user.name", "Phase test")
+    base = _git(foreign, "rev-parse", "HEAD")
+    base_tree = _git(foreign, "rev-parse", "HEAD^{tree}")
+    (foreign / "design" / "source-advance.txt").write_text(
+        "current Design approval\n", encoding="utf-8")
+    _git(foreign, "add", "design/source-advance.txt")
+    _git(foreign, "commit", "-qm", "advance current Design source")
+    sibling = subprocess.check_output(
+        ["git", "commit-tree", base_tree, "-p", base], cwd=foreign,
+        input="non-ancestor authority\n", text=True).strip()
+    invalid = _publish_source_advancing_plan(
+        foreign, initial_commit=sibling, initial_tree=base_tree)
+    invalid_path = phase_handoff.handoff_path(str(invalid["handoff_id"]))
+    with pytest.raises(phase_handoff.PhaseHandoffError,
+                       match="authority-stale"):
+        phase_handoff.load_phase_handoff(foreign, invalid_path)
 
 
 @pytest.mark.parametrize(
