@@ -109,6 +109,79 @@ goal ─▶ specs/spec.md + handoff block (requirement deps + named contracts)
       ─▶ .taskplane/trace.jsonl   (every gate decision, the whole run)
 ```
 
+## Repository-native phase continuation
+
+The stateful loop remains the normal lifecycle authority, but a completed or
+interrupted Design, Plan, or Build phase can now be continued from repository
+evidence alone. The portable contract is the sealed
+`taskplane.stage-handoff/v2`; it names the exact repository, source commit and
+tree, requirement, applicable Design and Plan fingerprints, ordered
+obligations and tasks, contracts, acceptance proofs, human authority, selected
+artifact digests, progress receipts, and lineage.
+
+The public surface is intentionally small:
+
+```text
+tp.py phase export --request <repository-relative-json>
+tp.py phase pickup <repository-relative-handoff>
+tp.py phase submit --request <repository-relative-json>
+tp.py phase resume <repository-relative-handoff>
+```
+
+`phase export` accepts `material`, `phase`, `outcome`, `durable_progress`, and
+optional `receipt_evidence`, then calls the same exporter used by normal loop
+completion. `phase pickup` admits done requirement-to-Design,
+Design-to-Plan, and Plan-to-Build transitions. `phase resume` admits only an
+interrupted Design, Plan, or Build handoff whose successor is the same phase.
+Both create fresh attempt-local authority after validation; they never reopen
+a predecessor attempt. `phase submit` accepts exactly `handoff`, `assignment`,
+and `authoring_result`, revalidates the committed scoped Build diff, and uses
+the existing BUILD-C checkpoint and repository-integration boundary before a
+green progress receipt exists.
+
+Initial, Design, and Plan authority comes only from attributable
+`human:<identity>` decisions bound to the exact gate subject and source.
+Mechanical progress identifies an engine producer and never manufactures a
+human actor. Content fingerprints provide integrity, not actor
+authentication. Build receives only the first dependency-ready sealed task,
+its exact write scope, contracts, acceptance references, and proof commands.
+
+Validation fails before effects in this order: bounded JSON and closed schema;
+canonical identity, ordering, uniqueness, and limits; repository/source and
+clean-checkout lineage; selected artifacts; progress receipts; human
+authority; phase transition; then obligation, task, dependency, scope,
+contract, acceptance, and proof closure. Public JSON contains stable status
+and refusal codes, repository-safe identities, lineage and receipt
+fingerprints, counts, and safe recovery. It does not print private roots,
+artifact locators, loop/run/track/claim state, leases, conversations, secrets,
+or absolute host paths.
+
+Recovery is non-widening: restore the exact canonical handoff or
+digest-addressed artifact, use the recorded clean source, resume from the sole
+verified receipt head, return to the real human gate for the exact subject,
+use the sealed task, or restore the sealed proof. Never overwrite a
+same-identity conflict, select an ambiguous receipt fork, bypass BUILD-C,
+apply a trust override, synthesize approval, or broaden scope. Refusal codes
+are `handoff-malformed`, `handoff-integrity`, `repository-foreign`,
+`source-stale`, `checkout-dirty`, `artifact-integrity`, `receipt-lineage`,
+`authority-missing`, `authority-stale`, `transition-invalid`,
+`scope-widened`, `dependency-unmet`, `proof-invalid`, and
+`publication-conflict`; Build submission may also report `authoring-invalid`,
+`build-c-unavailable`, or `build-c-failed`.
+
+Canonical UTF-8 JSON and create-if-absent publication make identical semantic
+exports byte-stable and exact replay idempotent. A conflicting artifact at the
+same identity is refused rather than replaced. Retain published handoffs,
+digest-addressed artifacts, and progress receipts while successors or audits
+cite them. Rollback stops new v2 production but does not rewrite or downgrade
+retained evidence.
+
+The legacy `tp.py pickup <approved-design>` route remains schema-disjoint and
+unchanged, including its v1/v2 receipts, `--trust-source` behavior,
+repository-only resume, cold start, collisions, interrupted-write recovery,
+and refusal ordering. The `phase` route never auto-upgrades or downgrades a
+legacy artifact and accepts no trust override.
+
 ## The loop engine (proposed: taskplane owns it)
 
 Add a small state machine to taskplane so the loop *is* a taskplane feature,
