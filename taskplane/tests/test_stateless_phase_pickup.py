@@ -20,7 +20,8 @@ PROOF = "python3 -m pytest -q taskplane/tests/test_stage_handoff.py"
 
 def _git(root: Path, *args: str) -> str:
     return subprocess.check_output(
-        ["git", *args], cwd=root, text=True).strip()
+        ["git", *args], cwd=root, text=True,
+        encoding="utf-8", errors="replace").strip()
 
 
 def _authority_chain(
@@ -208,7 +209,8 @@ def test_source_advancing_authority_uses_repository_ancestry(
     _git(foreign, "commit", "-qm", "advance current Design source")
     sibling = subprocess.check_output(
         ["git", "commit-tree", base_tree, "-p", base], cwd=foreign,
-        input="non-ancestor authority\n", text=True).strip()
+        input="non-ancestor authority\n", text=True,
+        encoding="utf-8", errors="replace").strip()
     invalid = _publish_source_advancing_plan(
         foreign, initial_commit=sibling, initial_tree=base_tree)
     invalid_path = phase_handoff.handoff_path(str(invalid["handoff_id"]))
@@ -240,7 +242,8 @@ def test_public_phase_pickup_works_from_fresh_clone_and_empty_home(
         [sys.executable, str(consumer / "taskplane" / "tp.py"),
          "phase", command, relative, "--workspace", str(consumer)],
         cwd=consumer, env={**os.environ, "TASKPLANE_HOME": str(private_home)},
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace", check=False)
 
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
@@ -283,7 +286,7 @@ def test_public_completed_phase_export_starts_all_successor_work(
          "phase", "export", "--request", ".git/phase-export-request.json",
          "--workspace", str(producer)],
         cwd=producer, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, check=False)
+        text=True, encoding="utf-8", errors="replace", check=False)
     assert exported.returncode == 0, exported.stderr
     export_result = json.loads(exported.stdout)
     assert (export_result["status"], export_result["code"]) == (
@@ -300,7 +303,7 @@ def test_public_completed_phase_export_starts_all_successor_work(
         [sys.executable, str(consumer / "taskplane" / "tp.py"),
          "phase", "pickup", relative, "--workspace", str(consumer)],
         cwd=consumer, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, check=False)
+        text=True, encoding="utf-8", errors="replace", check=False)
     assert picked_up.returncode == 0, picked_up.stderr
     result = json.loads(picked_up.stdout)
     obligation_ids = [row["id"] for row in handoff["obligations"]]

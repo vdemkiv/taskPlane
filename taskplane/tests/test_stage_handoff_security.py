@@ -180,9 +180,11 @@ def test_build_submit_validation_allows_only_the_sealed_task_scope(
 
 def _build_complete_handoff(root: Path, plan: dict) -> tuple[dict, str]:
     source_commit = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True,
+        encoding="utf-8", errors="replace").strip()
     source_tree = subprocess.check_output(
-        ["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True).strip()
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True,
+        encoding="utf-8", errors="replace").strip()
     receipt = phase_handoff.create_progress_receipt(
         producer="engine:taskplane.phase-pickup/v1", sequence=1,
         phase="build", obligation_id="AC1", task_id="T-001",
@@ -242,7 +244,7 @@ def test_later_export_reuses_tracked_digest_verified_artifacts(tmp_path) -> None
 
     changed = set(subprocess.check_output(
         ["git", "diff", "--name-only", source_commit, "HEAD"],
-        cwd=root, text=True).splitlines())
+        cwd=root, text=True, encoding="utf-8", errors="replace").splitlines())
     assert not changed.intersection(
         reference["destination"]
         for reference in completed["selected_artifacts"])
