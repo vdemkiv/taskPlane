@@ -114,14 +114,17 @@ def _git(checkout: str, *args: str) -> str:
 
 
 def _validated_repository_handoff(
-        checkout: str, handoff: HandoffInput) -> JsonObject:
+        checkout: str, handoff: HandoffInput, *,
+        allowed_task_id: str | None = None) -> JsonObject:
     try:
         if isinstance(handoff, Mapping):
             checked = phase_handoff.validate_repository_manifest(
-                checkout, handoff, require_clean=True)
+                checkout, handoff, require_clean=True,
+                allowed_task_id=allowed_task_id)
         else:
             checked = phase_handoff.load_phase_handoff(
-                checkout, os.fspath(handoff), require_clean=True)
+                checkout, os.fspath(handoff), require_clean=True,
+                allowed_task_id=allowed_task_id)
         design_contract.validate_phase_authority_chain(checked)
         return checked
     except phase_handoff.PhaseHandoffError as exc:
@@ -488,6 +491,31 @@ def run_build_pickup(
         authoring_result=supplied, emit=emit)
 
 
+def submit_committed(
+        checkout: str, handoff: HandoffInput, *, task_id: str,
+        emit: Callable[[str], None] | None = None) -> JsonObject:
+    """Submit one clean committed Build diff without exposing its assignment."""
+    checked = _validated_repository_handoff(
+        checkout, handoff, allowed_task_id=task_id)
+    _validate_plan_proofs(checkout, checked)
+    task = select_ready_build_task(checked, requested_task=task_id)
+    manifest_path = phase_handoff.handoff_path(str(checked["handoff_id"]))
+    assignment = _build_assignment(
+        checked, task=task,
+        base_revision=_git(
+            checkout, "log", "-1", "--format=%H", "--", manifest_path))
+    try:
+        authored = checkpoint.mint_phase_authoring_result(
+            checkout, task=task, assignment=assignment)
+    except checkpoint.PhaseAuthoringError as exc:
+        code = "scope-widened" if str(exc).startswith("scope-widened:") \
+            else "authoring-invalid"
+        raise PhasePickupError(code, str(exc).split(": ", 1)[-1]) from exc
+    return submit_build_pickup(
+        checkout, checked, assignment=assignment,
+        authoring_result=authored, emit=emit)
+
+
 # Thin public vocabulary for the forthcoming CLI adapter.
 prepare = prepare_build_pickup
 submit = submit_build_pickup
@@ -496,5 +524,5 @@ run = run_build_pickup
 
 __all__ = [
     "BUILD_ASSIGNMENT_SCHEMA", "PUBLIC_RESULT_SCHEMA", "PhasePickupError",
-    "prepare", "run", "submit",
+    "prepare", "run", "submit", "submit_committed",
 ]
