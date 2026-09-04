@@ -105,8 +105,8 @@ _STATELESS_PHASE_PROJECTION_FIELDS: Final[frozenset[str]] = frozenset({
     "schema", "phase", "mode", "handoff_id", "handoff_fingerprint",
     "full_envelope_reference", "source", "requirement", "design", "plan",
     "subject_fingerprint", "contracts", "acceptance", "obligations",
-    "selected_artifacts", "authority_receipts", "lineage", "write_allow",
-    "fingerprint",
+    "progress", "selected_artifacts", "authority_receipts", "lineage",
+    "write_allow", "fingerprint",
 })
 
 
@@ -156,6 +156,16 @@ def stateless_phase_startup_projection(
                 "Plan startup requires an approved Design identity")
         subject = str(design["fingerprint"])
         write_allow = ["plan/**"]
+    progress = copy.deepcopy(checked["progress"])
+    remaining = set(progress["remaining"])
+    obligations = [copy.deepcopy(row) for row in checked["obligations"]
+                   if row["id"] in remaining]
+    remaining_acceptance = {
+        acceptance_id for row in obligations
+        for acceptance_id in row["acceptance"]
+    }
+    acceptance = [copy.deepcopy(row) for row in checked["acceptance"]
+                  if row["id"] in remaining_acceptance]
     material: JsonObject = {
         "schema": STATELESS_PHASE_PROJECTION_SCHEMA,
         "phase": phase,
@@ -170,8 +180,9 @@ def stateless_phase_startup_projection(
         "plan": copy.deepcopy(checked["plan"]),
         "subject_fingerprint": subject,
         "contracts": copy.deepcopy(checked["contracts"]),
-        "acceptance": copy.deepcopy(checked["acceptance"]),
-        "obligations": copy.deepcopy(checked["obligations"]),
+        "acceptance": acceptance,
+        "obligations": obligations,
+        "progress": progress,
         "selected_artifacts": copy.deepcopy(checked["selected_artifacts"]),
         "authority_receipts": copy.deepcopy(
             checked["authority_receipts"]),
@@ -212,6 +223,16 @@ def validate_stateless_phase_startup_projection(
     expected_subject = (checked["requirement"]["fingerprint"]
                         if phase == "design" else
                         checked["design"]["fingerprint"])
+    progress = checked["progress"]
+    remaining = set(progress["remaining"])
+    obligations = [row for row in checked["obligations"]
+                   if row["id"] in remaining]
+    remaining_acceptance = {
+        acceptance_id for obligation in obligations
+        for acceptance_id in obligation["acceptance"]
+    }
+    acceptance = [row for row in checked["acceptance"]
+                  if row["id"] in remaining_acceptance]
     exact = {
         "schema": STATELESS_PHASE_PROJECTION_SCHEMA,
         "phase": phase,
@@ -226,8 +247,9 @@ def validate_stateless_phase_startup_projection(
         "plan": checked["plan"],
         "subject_fingerprint": expected_subject,
         "contracts": checked["contracts"],
-        "acceptance": checked["acceptance"],
-        "obligations": checked["obligations"],
+        "acceptance": acceptance,
+        "obligations": obligations,
+        "progress": progress,
         "selected_artifacts": checked["selected_artifacts"],
         "authority_receipts": checked["authority_receipts"],
         "lineage": checked["lineage"],

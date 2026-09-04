@@ -91,7 +91,7 @@ _PHASE_ENVELOPE_REFERENCE_FIELDS = frozenset({
 _PHASE_SCOPED_VIEW_FIELDS = frozenset({
     "schema", "phase", "mode", "worker_id", "full_envelope_reference",
     "source", "requirement", "design", "contracts", "acceptance",
-    "obligations", "selected_artifacts", "authority_fingerprints",
+    "obligations", "progress", "selected_artifacts", "authority_fingerprints",
     "lineage", "fingerprint",
 })
 _PHASE_RESULT_SCHEMA_FIELDS = frozenset({
@@ -170,6 +170,14 @@ def create_phase_scoped_view(
     worker = str(worker_id or "").strip()
     if not _SLOT.fullmatch(worker):
         raise ProvenanceError("phase worker id is invalid")
+    progress = copy.deepcopy(checked["progress"])
+    remaining = set(progress["remaining"])
+    obligations = [copy.deepcopy(row) for row in checked["obligations"]
+                   if row["id"] in remaining]
+    remaining_acceptance = {
+        acceptance_id for row in obligations
+        for acceptance_id in row["acceptance"]
+    }
     material = {
         "schema": PHASE_SCOPED_VIEW_SCHEMA,
         "phase": phase,
@@ -181,8 +189,11 @@ def create_phase_scoped_view(
         "requirement": copy.deepcopy(checked["requirement"]),
         "design": copy.deepcopy(checked["design"]),
         "contracts": copy.deepcopy(checked["contracts"]),
-        "acceptance": copy.deepcopy(checked["acceptance"]),
-        "obligations": copy.deepcopy(checked["obligations"]),
+        "acceptance": [
+            copy.deepcopy(row) for row in checked["acceptance"]
+            if row["id"] in remaining_acceptance],
+        "obligations": obligations,
+        "progress": progress,
         "selected_artifacts": copy.deepcopy(checked["selected_artifacts"]),
         "authority_fingerprints": [
             row["fingerprint"] for row in checked["authority_receipts"]],
