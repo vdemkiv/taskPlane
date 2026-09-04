@@ -247,3 +247,50 @@ def test_later_export_reuses_tracked_digest_verified_artifacts(tmp_path) -> None
         reference["destination"]
         for reference in completed["selected_artifacts"])
     assert phase_handoff.validate_repository_manifest(root, completed) == completed
+
+
+def test_mixed_phase_receipts_preserve_lineage_without_completing_next_phase(
+        tmp_path) -> None:
+    _root, base = _published_checkout(tmp_path, "build")
+    design_receipt = phase_handoff.create_progress_receipt(
+        producer="engine:test", sequence=1, phase="design",
+        obligation_id="AC1", task_id=None, status="green",
+        predecessor_receipt_fingerprint=None)
+    plan_receipt = phase_handoff.create_progress_receipt(
+        producer="engine:test", sequence=2, phase="plan",
+        obligation_id="AC1", task_id=None, status="green",
+        predecessor_receipt_fingerprint=design_receipt["fingerprint"])
+    carried = {
+        key: copy.deepcopy(base[key]) for key in (
+            "repository", "source", "requirement", "design", "plan",
+            "obligations", "tasks", "contracts", "acceptance",
+            "selected_artifacts", "authority_receipts", "exclusions")
+    }
+    plan_handoff = phase_handoff.create_phase_handoff(
+        **carried, producer={"phase": "plan", "outcome": "done"},
+        successor={"phase": "build", "mode": "next-phase"},
+        progress={"completed": ["AC1"], "remaining": []},
+        progress_receipts=[design_receipt, plan_receipt],
+        lineage={
+            "predecessor_handoff_fingerprint": base["fingerprint"],
+            "predecessor_receipt_head": plan_receipt["fingerprint"],
+        })
+    build_receipt = phase_handoff.create_progress_receipt(
+        producer="engine:test", sequence=3, phase="build",
+        obligation_id="AC1", task_id="T-001", status="interrupted",
+        predecessor_receipt_fingerprint=plan_receipt["fingerprint"])
+    build_handoff = phase_handoff.create_phase_handoff(
+        **carried, producer={"phase": "build", "outcome": "interrupted"},
+        successor={"phase": "build", "mode": "same-phase-resume"},
+        progress={"completed": [], "remaining": ["AC1"]},
+        progress_receipts=[design_receipt, plan_receipt, build_receipt],
+        lineage={
+            "predecessor_handoff_fingerprint": plan_handoff["fingerprint"],
+            "predecessor_receipt_head": build_receipt["fingerprint"],
+        })
+
+    assert plan_handoff["progress"]["completed"] == ["AC1"]
+    assert build_handoff["progress"] == {
+        "completed": [], "remaining": ["AC1"]}
+    assert build_handoff["progress_receipts"][:2] == [
+        design_receipt, plan_receipt]

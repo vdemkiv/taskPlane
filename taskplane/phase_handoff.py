@@ -992,7 +992,8 @@ def validate_manifest(manifest: object) -> JsonObject:
                  receipt["task_id"] not in task_ids):
             raise PhaseHandoffError(
                 "receipt-lineage", "progress receipt subject is unknown")
-        if receipt["status"] == "green":
+        if receipt["status"] == "green" and \
+                receipt["phase"] == producer["phase"]:
             completed_ids.append(str(receipt["obligation_id"]))
         predecessor_receipt = str(receipt["fingerprint"])
     if completed_ids != completed:
