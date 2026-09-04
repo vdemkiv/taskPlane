@@ -52,6 +52,19 @@ release and integration corrections require their separately recorded evidence.
    Package tests read the manifest version instead of copying a version string.
 5. Keep each correction local to its owner. These corrections reuse existing
    validation and BUILD-C boundaries and add no lifecycle engine.
+6. Keep startup transport behind the stage API and human attribution checks
+   in the shared handoff owner. The final correction restores the unchanged
+   dependency policy exactly: cycles of 17 modules/49 edges and 7 modules/13
+   edges. Synthetic actors now fail earlier, while normal human decision
+   input normalization and the public exception contract remain compatible.
+
+## Recorded delivery evidence
+
+The [review evidence index](reviews/stateless-pickup-2.19.1/README.md) links the
+original PASS, the later FAIL, each bounded correction judgment, and final
+Engineering review. Earlier producer reports are preserved byte-for-byte;
+none is silently rewritten to name a later source revision. GitHub checks on
+the final PR head are a separate mandatory merge condition.
 
 ## Workflow limitations retained honestly
 
