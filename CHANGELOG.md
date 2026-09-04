@@ -27,12 +27,12 @@ lens rewrite and never bumped to.
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
-> superseded unreleased candidates. The forward release candidate moves as v2.19.0,
+> superseded unreleased candidates. v2.19.0 is superseded by the v2.19.1 candidate,
 > which is not
 > released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.19.0 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or merging v2.19.1 is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
@@ -49,6 +49,7 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.19.1** | **Stateless phase pickup and recovery — release candidate, not released.** Design, Plan, and Build consume repository-native handoffs in fresh checkouts and resume only remaining phase work. Design/Plan completion exports and committed Build submission expose usable bounded startup data; Build submission crosses the existing BUILD-C path and automatically publishes its next handoff. Human approvals retain their actual source commits, cross-phase receipts remain lineage, caller-forged Build evidence is rejected before publication, and deterministic replay/conflict/partial-write handling preserves recovery. |
 | **v2.19.0** | **Fresh-task native hook bootstrap and installable package repair — release candidate, not released.** The installed OpenAI package now preserves native SessionStart authority, accepts its launcher-only hook commands during onboarding, and can record the first session-bound receipt in the canonical default store before a fresh linked task has a governed locator. Repository bridges, custom homes, ambiguity, and unrelated chats remain fail closed. An extracted-package regression executes the real onboarding and linked-worktree path end to end. |
 | **v2.18.10** | **Fail-closed delivery authority and isolated global hooks — superseded unreleased candidate.** It completed canonical settings, authenticated native metering, evaluator quality evidence, dashboard-source validation, global-hook isolation, and package provenance, but the installed OpenAI archive still rejected its sanitized launcher-only commands during onboarding and fresh native SessionStart could not record a receipt before locator creation. v2.19.0 closes both bootstrap edges. |
 | **v2.18.9** | **Native telemetry, isolated pickups, and one current dashboard — release candidate, not released.** Provider-owned Codex counters are captured at spawn and terminal boundaries, resumed sessions are delta-attributed without double counting, null or zero metering fails closed, and non-zero per-pickup targets and ceilings from canonical settings reach actual hook enforcement. Workers inherit zero conversation turns. Retro and dashboard consumers receive measured totals, while the surfaced dashboard is the full styled current document with a browser-verified visible dependency graph rather than a stale fragment. |
