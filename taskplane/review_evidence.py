@@ -155,6 +155,31 @@ def validate_phase_full_envelope_reference(
     return expected
 
 
+def phase_startup_work(handoff: Mapping[str, object]) -> dict:
+    """Return the successor's normalized, schedulable work projection."""
+    obligations = copy.deepcopy(handoff["obligations"])
+    mode = str(handoff["successor"]["mode"])
+    if mode == "next-phase":
+        progress = {
+            "completed": [],
+            "remaining": [row["id"] for row in obligations],
+        }
+    elif mode == "same-phase-resume":
+        progress = copy.deepcopy(handoff["progress"])
+    else:
+        raise ProvenanceError("phase startup mode is invalid")
+    remaining = set(progress["remaining"])
+    scheduled = [row for row in obligations if row["id"] in remaining]
+    acceptance_ids = {
+        acceptance_id for row in scheduled
+        for acceptance_id in row["acceptance"]
+    }
+    acceptance = [copy.deepcopy(row) for row in handoff["acceptance"]
+                  if row["id"] in acceptance_ids]
+    return {"progress": progress, "obligations": scheduled,
+            "acceptance": acceptance}
+
+
 def create_phase_scoped_view(
         handoff: Mapping[str, object], *, worker_id: str) -> dict:
     """Project exact Design/Plan inputs without private lifecycle context."""
@@ -170,14 +195,7 @@ def create_phase_scoped_view(
     worker = str(worker_id or "").strip()
     if not _SLOT.fullmatch(worker):
         raise ProvenanceError("phase worker id is invalid")
-    progress = copy.deepcopy(checked["progress"])
-    remaining = set(progress["remaining"])
-    obligations = [copy.deepcopy(row) for row in checked["obligations"]
-                   if row["id"] in remaining]
-    remaining_acceptance = {
-        acceptance_id for row in obligations
-        for acceptance_id in row["acceptance"]
-    }
+    work = phase_startup_work(checked)
     material = {
         "schema": PHASE_SCOPED_VIEW_SCHEMA,
         "phase": phase,
@@ -189,11 +207,9 @@ def create_phase_scoped_view(
         "requirement": copy.deepcopy(checked["requirement"]),
         "design": copy.deepcopy(checked["design"]),
         "contracts": copy.deepcopy(checked["contracts"]),
-        "acceptance": [
-            copy.deepcopy(row) for row in checked["acceptance"]
-            if row["id"] in remaining_acceptance],
-        "obligations": obligations,
-        "progress": progress,
+        "acceptance": work["acceptance"],
+        "obligations": work["obligations"],
+        "progress": work["progress"],
         "selected_artifacts": copy.deepcopy(checked["selected_artifacts"]),
         "authority_fingerprints": [
             row["fingerprint"] for row in checked["authority_receipts"]],

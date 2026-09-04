@@ -225,3 +225,31 @@ def test_stateless_non_build_resume_schedules_only_remaining_work(
     with pytest.raises(taskplane_lite.StageDispatchError,
                        match="refused before dispatch"):
         taskplane_lite.create_stateless_phase_startup(terminal)
+
+
+def test_design_to_plan_next_phase_schedules_all_successor_work() -> None:
+    handoff = _resume_handoff("design")
+    first = handoff["progress_receipts"][0]
+    second = phase_handoff.create_progress_receipt(
+        producer="engine:test", sequence=2, phase="design",
+        obligation_id="O2", task_id=None, status="green",
+        predecessor_receipt_fingerprint=first["fingerprint"])
+    handoff["producer"] = {"phase": "design", "outcome": "done"}
+    handoff["successor"] = {"phase": "plan", "mode": "next-phase"}
+    handoff["progress"] = {"completed": ["O1", "O2"], "remaining": []}
+    handoff["progress_receipts"] = [first, second]
+    handoff["lineage"]["predecessor_receipt_head"] = second["fingerprint"]
+    handoff["handoff_id"] = phase_handoff.handoff_identity(handoff)
+    handoff["fingerprint"] = phase_handoff.manifest_fingerprint(handoff)
+
+    startup = taskplane_lite.create_stateless_phase_startup(handoff)
+    projection = startup["projection"]
+    scoped = startup["workers"][0]["scoped_view"]
+
+    assert projection["progress"] == {
+        "completed": [], "remaining": ["O1", "O2"]}
+    assert [row["id"] for row in projection["obligations"]] == ["O1", "O2"]
+    assert [row["id"] for row in projection["acceptance"]] == ["A1", "A2"]
+    assert scoped["progress"] == projection["progress"]
+    assert scoped["obligations"] == projection["obligations"]
+    assert scoped["acceptance"] == projection["acceptance"]
