@@ -8087,7 +8087,12 @@ def _phase_failed(exc: Exception, handoff=None) -> int:
 def _phase_pickup_result(handoff: dict, startup: dict) -> dict:
     """Project an internal startup to the deliberately small public receipt."""
     progress = handoff["progress"]
-    remaining = progress["remaining"]
+    if handoff["successor"]["mode"] == "next-phase":
+        completed = []
+        remaining = [row["id"] for row in handoff["obligations"]]
+    else:
+        completed = progress["completed"]
+        remaining = progress["remaining"]
     task = startup.get("task")
     if handoff["successor"]["phase"] == "build":
         safe_startup = {key: startup[key] for key in (
@@ -8126,7 +8131,7 @@ def _phase_pickup_result(handoff: dict, startup: dict) -> dict:
                 "predecessor_handoff_fingerprint"],
             "receipt_head": handoff["lineage"]["predecessor_receipt_head"],
         },
-        "completed_count": len(progress["completed"]),
+        "completed_count": len(completed),
         "remaining_count": len(remaining),
         "next_eligible_obligation": remaining[0] if remaining else None,
         "task_id": task.get("id") if isinstance(task, dict) else None,
@@ -8148,6 +8153,10 @@ def cmd_phase_export(a: argparse.Namespace) -> int:
         if not required <= set(request) or set(request) - (
                 required | {"receipt_evidence"}):
             raise ValueError("phase export request fields are invalid")
+        if request["phase"] == "build":
+            raise phase_pickup.PhasePickupError(
+                "transition-invalid",
+                "Build handoffs are exported only by phase submit")
         result = loop.publish_phase_export(
             workspace, request["material"], phase=request["phase"],
             outcome=request["outcome"],
@@ -8203,21 +8212,77 @@ def cmd_phase_resume(a: argparse.Namespace) -> int:
     return _phase_start(a, "same-phase-resume")
 
 
+def _phase_publish_build_result(
+        workspace: str, handoff: dict, result: dict) -> dict:
+    """Carry one BUILD-C result into the normal repository exporter."""
+    import loop
+    import phase_handoff
+
+    receipts = [*handoff["progress_receipts"], result["progress_receipt"]]
+    green = {
+        receipt["obligation_id"] for receipt in receipts
+        if receipt.get("phase") == "build" and
+        receipt.get("status") == "green"
+    }
+    remaining = [
+        row["id"] for row in handoff["obligations"] if row["id"] not in green]
+    outcome = "interrupted" if remaining else "done"
+    head = tp.git_head(workspace)
+    tree = tp._run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=workspace).stdout.strip()
+    if not head or not tree:
+        raise ValueError("committed Build source is unavailable")
+    material = {key: handoff[key] for key in (
+        "repository", "requirement", "design", "plan", "obligations",
+        "tasks", "contracts", "acceptance", "selected_artifacts",
+        "authority_receipts", "exclusions",
+    )}
+    material.update({
+        "source": {"commit": head, "tree": tree},
+        "progress_receipts": receipts,
+        "lineage": {
+            "predecessor_handoff_fingerprint": handoff["fingerprint"],
+            "predecessor_receipt_head": result["progress_receipt"][
+                "fingerprint"],
+        },
+    })
+    exported = loop.publish_phase_export(
+        workspace, material, phase="build", outcome=outcome,
+        durable_progress={
+            "phase": "build",
+            "state": "active" if remaining else "terminal",
+            "outcome": outcome,
+        })
+    next_handoff = exported["handoff"]
+    public = dict(result)
+    public.pop("fingerprint", None)
+    public["next_handoff"] = {
+        "id": next_handoff["handoff_id"],
+        "fingerprint": next_handoff["fingerprint"],
+        "path": phase_handoff.handoff_path(next_handoff["handoff_id"]),
+        "outcome": outcome,
+    }
+    return _phase_fingerprinted(public)
+
+
 def cmd_phase_submit(a: argparse.Namespace) -> int:
-    """Submit exact Build output to the existing BUILD-C boundary."""
+    """Submit committed Build output through BUILD-C and export its handoff."""
     import phase_handoff
     import phase_pickup
     handoff = None
     try:
         workspace = _workspace(a.workspace)
         request = _phase_request(workspace, a.request)
-        if set(request) != {"handoff", "assignment", "authoring_result"}:
+        if set(request) != {"handoff", "task_id"} or not isinstance(
+                request["task_id"], str) or not request["task_id"]:
             raise ValueError("phase submit request fields are invalid")
         handoff = phase_handoff.load_phase_handoff(
-            workspace, request["handoff"], require_clean=True)
-        return _phase_print(phase_pickup.submit(
-            workspace, handoff, assignment=request["assignment"],
-            authoring_result=request["authoring_result"]))
+            workspace, request["handoff"], require_clean=True,
+            allowed_task_id=request["task_id"])
+        result = phase_pickup.submit_committed(
+            workspace, handoff, task_id=request["task_id"])
+        return _phase_print(_phase_publish_build_result(
+            workspace, handoff, result))
     except (phase_handoff.PhaseHandoffError,
             phase_pickup.PhasePickupError, ValueError, TypeError, KeyError) as exc:
         return _phase_failed(exc, handoff)
@@ -8393,7 +8458,7 @@ def main(argv=None) -> int:
     phase_sub = phase_parser.add_subparsers(
         dest="phase_action", required=True)
     phase_export = phase_sub.add_parser(
-        "export", help="publish one sealed repository phase handoff")
+        "export", help="publish one sealed Design or Plan phase handoff")
     phase_export.add_argument(
         "--request", required=True,
         help="repository-relative phase export request JSON")
@@ -8408,10 +8473,10 @@ def main(argv=None) -> int:
         "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     phase_pickup.set_defaults(fn=cmd_phase_pickup)
     phase_submit = phase_sub.add_parser(
-        "submit", help="validate scoped Build output through BUILD-C")
+        "submit", help="submit committed Build output and export its handoff")
     phase_submit.add_argument(
         "--request", required=True,
-        help="repository-relative Build submission request JSON")
+        help="repository-relative JSON with exact handoff and task_id")
     phase_submit.add_argument(
         "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     phase_submit.set_defaults(fn=cmd_phase_submit)

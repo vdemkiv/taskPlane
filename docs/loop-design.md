@@ -128,9 +128,11 @@ tp.py phase submit --request <repository-relative-json>
 tp.py phase resume <repository-relative-handoff>
 ```
 
-`phase export` accepts `material`, `phase`, `outcome`, `durable_progress`, and
-optional `receipt_evidence`, then calls the same exporter used by normal loop
-completion. `phase pickup` admits done requirement-to-Design,
+`phase export` accepts Design or Plan `material`, `phase`, `outcome`,
+`durable_progress`, and optional `receipt_evidence`, then calls the same
+exporter used by normal loop completion. Build export is refused on this
+public surface: only `phase submit` can carry BUILD-C evidence into a Build
+handoff. `phase pickup` admits done requirement-to-Design,
 Design-to-Plan, and Plan-to-Build transitions. `phase resume` admits only an
 interrupted Design, Plan, or Build handoff whose successor is the same phase.
 Both create fresh attempt-local authority after validation; they never reopen
@@ -141,10 +143,21 @@ closed result schema, and full-envelope reference. For Build it contains the
 exact task, producer contract, scoped view, closed result schema, and
 full-envelope reference. Attempt leases and contract bootstraps stay private.
 The projected startup retains the existing 128-KiB startup ceiling.
-`phase submit` accepts exactly `handoff`, `assignment`, and `authoring_result`,
-revalidates the committed scoped Build diff, and uses the existing BUILD-C
-checkpoint and repository-integration boundary before a green progress receipt
-exists.
+`phase submit` accepts exactly a repository-relative `handoff` and the exact
+`task_id` returned in the safe public startup. It derives the assignment and
+authoring evidence from the clean committed Git diff, then uses the existing
+BUILD-C checkpoint and repository-integration boundary. A canonical green
+progress receipt is automatically carried into the next Build handoff. When
+all obligations are green that handoff is terminal; otherwise it is an
+interrupted same-phase resume exposing only the next eligible task. The result
+returns the next handoff's identity and repository-relative path, never an
+assignment, lease, bootstrap, or caller-authored evidence.
+Keep the request JSON in repository-relative ignored metadata (for example,
+`.git/phase-submit.json`) so it does not dirty the committed Build checkout.
+
+Publication creates repository export files but does not commit them. Commit
+`exports/pickup` before sharing or cloning so a fresh clone can validate and
+continue the returned handoff path.
 
 Initial, Design, and Plan authority comes only from attributable
 `human:<identity>` decisions bound to the exact gate subject and source.

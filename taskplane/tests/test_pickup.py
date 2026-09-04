@@ -18,12 +18,14 @@ from typing import get_type_hints
 import pytest
 
 import checkpoint
+import loop
 import phase_handoff
 import phase_pickup
 import pickup
 import storage
 import taskplane_lite as contract_engine
 import tp
+from taskplane.tests.test_build_quality import _published_build_checkout
 
 
 def _canonical(value: object) -> bytes:
@@ -599,7 +601,10 @@ def _phase_cli_handoff(*, phase: str, mode: str) -> dict[str, object]:
             "outcome": "done" if mode == "next-phase" else "interrupted",
         },
         "successor": {"phase": phase, "mode": mode},
-        "progress": {"completed": [], "remaining": ["AC1"]},
+        "obligations": [{"id": "AC1"}],
+        "progress": ({"completed": ["AC1"], "remaining": []}
+                     if mode == "next-phase" else
+                     {"completed": [], "remaining": ["AC1"]}),
         "lineage": {"predecessor_handoff_fingerprint": None,
                     "predecessor_receipt_head": None},
     }
@@ -669,6 +674,7 @@ def test_phase_cli_returns_safe_exact_work_startup(
 
     result = json.loads(capsys.readouterr().out)
     assert result["startup_fingerprint"] == startup["fingerprint"]
+    assert (result["completed_count"], result["remaining_count"]) == (0, 1)
     public = result["startup"]
     exact = public["task"] if phase == "build" else public["workers"][0]
     if phase == "build":
@@ -683,6 +689,124 @@ def test_phase_cli_returns_safe_exact_work_startup(
                    for value in values)
     assert len(contract_engine.canonical_json_bytes(public)) <= \
         contract_engine.MAX_STAGE_STARTUP_BYTES
+
+
+def test_phase_cli_refuses_forged_build_export_before_publication(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    request = {
+        "material": {}, "phase": "build", "outcome": "done",
+        "durable_progress": {}, "receipt_evidence": {},
+    }
+    (tmp_path / "export.json").write_text(
+        json.dumps(request), encoding="utf-8")
+    published = False
+
+    def forbidden(*_args, **_kwargs):
+        nonlocal published
+        published = True
+        raise AssertionError("forged Build export reached publication")
+
+    monkeypatch.setattr(loop, "publish_phase_export", forbidden)
+    assert tp.main([
+        "phase", "export", "--request", "export.json",
+        "--workspace", str(tmp_path),
+    ]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["code"] == "transition-invalid"
+    assert published is False
+
+
+def test_phase_cli_submit_refuses_caller_authored_evidence(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "submit.json").write_text(json.dumps({
+        "handoff": "exports/pickup/phases/a/handoff.json",
+        "task_id": "T-001",
+        "assignment": {},
+        "authoring_result": {},
+    }), encoding="utf-8")
+    submitted = False
+
+    def forbidden(*_args, **_kwargs):
+        nonlocal submitted
+        submitted = True
+        raise AssertionError("caller-authored evidence reached submission")
+
+    monkeypatch.setattr(phase_pickup, "submit_committed", forbidden)
+    assert tp.main([
+        "phase", "submit", "--request", "submit.json",
+        "--workspace", str(tmp_path),
+    ]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["code"] == "handoff-malformed"
+    assert submitted is False
+
+
+def test_phase_cli_submits_committed_build_and_exports_terminal_handoff(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    checkout, handoff = _published_build_checkout(tmp_path)
+    relative = phase_handoff.handoff_path(str(handoff["handoff_id"]))
+
+    assert tp.main([
+        "phase", "pickup", relative, "--workspace", str(checkout),
+    ]) == 0
+    pickup_result = json.loads(capsys.readouterr().out)
+    task = pickup_result["startup"]["task"]
+    assert task["id"] == pickup_result["task_id"]
+    assert task["scope"] and task["contracts"] and task["proofs"]
+
+    source = checkout / "taskplane" / "phase_handoff.py"
+    source.write_text(
+        source.read_text(encoding="utf-8") +
+        "\n# public CLI committed Build output\n",
+        encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "taskplane/phase_handoff.py"], cwd=checkout,
+        check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "author public CLI Build task"],
+        cwd=checkout, check=True)
+    authored_head = _git(checkout, "rev-parse", "HEAD")
+    authored_tree = _git(checkout, "rev-parse", "HEAD^{tree}")
+
+    request_path = checkout / ".git" / "phase-submit.json"
+    request_path.write_text(json.dumps({
+        "handoff": relative, "task_id": task["id"],
+    }), encoding="utf-8")
+    assert tp.main([
+        "phase", "submit", "--request", ".git/phase-submit.json",
+        "--workspace", str(checkout),
+    ]) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert (result["status"], result["code"], result["task_id"]) == (
+        "complete", "build-integrated", task["id"])
+    assert result["next_handoff"]["outcome"] == "done"
+    assert not os.path.isabs(result["next_handoff"]["path"])
+    values = set(_phase_cli_values(result))
+    assert not {
+        "lease", "contract_bootstrap", "assignment", "authoring_result",
+        str(checkout),
+    } & values
+    assert not any(isinstance(value, str) and os.path.isabs(value)
+                   for value in values)
+
+    subprocess.run(
+        ["git", "add", "-f", "exports/pickup"], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "publish terminal Build handoff"],
+        cwd=checkout, check=True)
+    consumer = tmp_path / "consumer"
+    subprocess.run(
+        ["git", "clone", "-q", str(checkout), str(consumer)], check=True)
+    exported = phase_handoff.load_phase_handoff(
+        consumer, result["next_handoff"]["path"])
+    assert exported["source"] == {
+        "commit": authored_head, "tree": authored_tree}
+    assert exported["successor"] == {
+        "phase": "terminal", "mode": "terminal-evidence"}
+    assert exported["progress"]["remaining"] == []
 
 
 def test_large_focused_proof_retains_bounded_evidence_and_reaches_terminal_pickup(
