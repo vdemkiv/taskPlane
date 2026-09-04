@@ -16,7 +16,7 @@ import re
 import stat
 import subprocess
 import tempfile
-from typing import Final, TypeAlias
+from typing import cast, Final, TypeAlias
 
 
 SCHEMA: Final[str] = "taskplane.stage-handoff/v2"
@@ -768,13 +768,13 @@ def _validate_tasks(value: object, *, contract_ids: set[str],
         acceptance = _string_list(
             row.get("acceptance"), "task acceptance",
             ordered_by=acceptance_order)
+        scope = row.get("scope")
+        if isinstance(scope, list):
+            scope = [_repository_relative(path, "task scope")
+                     for path in scope]
         result.append({
             "id": task_id, "ordinal": expected_ordinal,
-            "scope": _string_list(
-                [_repository_relative(path, "task scope")
-                 for path in row.get("scope", [])]
-                if isinstance(row.get("scope"), list) else row.get("scope"),
-                "task scope", allow_empty=False),
+            "scope": _string_list(scope, "task scope", allow_empty=False),
             "dependencies": dependencies,
             "contracts": contracts,
             "acceptance": acceptance,
@@ -787,10 +787,10 @@ def _validate_tasks(value: object, *, contract_ids: set[str],
 
 def _validate_transition(producer: Mapping[str, object],
                          successor: Mapping[str, object]) -> None:
-    phase = producer["phase"]
-    outcome = producer["outcome"]
-    target = successor["phase"]
-    mode = successor["mode"]
+    phase = cast(str, producer["phase"])
+    outcome = cast(str, producer["outcome"])
+    target = cast(str, successor["phase"])
+    mode = cast(str, successor["mode"])
     next_phase = {"requirement": "design", "design": "plan", "plan": "build"}
     if outcome == "done" and phase in next_phase and \
             mode == "next-phase" and target == next_phase[phase]:
@@ -814,6 +814,12 @@ def handoff_identity(manifest: Mapping[str, object]) -> str:
     if not all(isinstance(value, Mapping) for value in (
             repository, source, requirement, producer, successor, lineage)):
         raise HandoffMalformedError("handoff identity fields are incomplete")
+    repository = cast(Mapping[str, object], repository)
+    source = cast(Mapping[str, object], source)
+    requirement = cast(Mapping[str, object], requirement)
+    producer = cast(Mapping[str, object], producer)
+    successor = cast(Mapping[str, object], successor)
+    lineage = cast(Mapping[str, object], lineage)
     return canonical_fingerprint({
         "repository_id": repository.get("id"),
         "source_commit": source.get("commit"),
@@ -885,7 +891,7 @@ def validate_manifest(manifest: object) -> JsonObject:
         raise HandoffMalformedError("inapplicable Plan identity is present")
 
     obligations = _validate_obligations(row.get("obligations"))
-    obligation_order = {str(item["id"]): int(item["ordinal"])
+    obligation_order = {str(item["id"]): cast(int, item["ordinal"])
                         for item in obligations}
     progress_row = _closed(row.get("progress"), _PROGRESS_FIELDS, "progress")
     completed = _string_list(
@@ -902,19 +908,22 @@ def validate_manifest(manifest: object) -> JsonObject:
     contracts = _validate_contracts(row.get("contracts"))
     contract_ids = {str(item["id"]) for item in contracts}
     acceptance = _validate_acceptance(row.get("acceptance"))
-    acceptance_order = {str(item["id"]): int(item["ordinal"])
+    acceptance_order = {str(item["id"]): cast(int, item["ordinal"])
                         for item in acceptance}
     acceptance_proofs = {
-        str(item["id"]): list(item["proofs"]) for item in acceptance
+        str(item["id"]): list(cast(list[str], item["proofs"]))
+        for item in acceptance
     }
     for obligation in obligations:
-        if any(item not in contract_ids for item in obligation["contracts"]):
+        obligation_contracts = cast(list[str], obligation["contracts"])
+        obligation_acceptance = cast(list[str], obligation["acceptance"])
+        if any(item not in contract_ids for item in obligation_contracts):
             raise HandoffMalformedError("obligation references an unknown contract")
-        if any(item not in acceptance_order for item in obligation["acceptance"]):
+        if any(item not in acceptance_order for item in obligation_acceptance):
             raise HandoffMalformedError("obligation references unknown acceptance")
         expected_proofs = sorted({
             proof
-            for acceptance_id in obligation["acceptance"]
+            for acceptance_id in obligation_acceptance
             for proof in acceptance_proofs[str(acceptance_id)]
         })
         if obligation["proofs"] != expected_proofs:
@@ -923,9 +932,10 @@ def validate_manifest(manifest: object) -> JsonObject:
     tasks = _validate_tasks(row.get("tasks"), contract_ids=contract_ids,
                             acceptance_order=acceptance_order)
     for task in tasks:
+        task_acceptance = cast(list[str], task["acceptance"])
         expected_proofs = sorted({
             proof
-            for acceptance_id in task["acceptance"]
+            for acceptance_id in task_acceptance
             for proof in acceptance_proofs[str(acceptance_id)]
         })
         if task["proofs"] != expected_proofs:
@@ -1061,28 +1071,35 @@ def publish_manifest(repository_root: str | os.PathLike[str],
     """Atomically publish one sealed manifest with exact replay semantics."""
     root = _repository_root(repository_root)
     checked = validate_manifest(manifest)
-    for reference in checked["selected_artifacts"]:
+    selected_artifacts = cast(
+        list[JsonObject], checked["selected_artifacts"])
+    progress_receipts = cast(list[JsonObject], checked["progress_receipts"])
+    repository = cast(JsonObject, checked["repository"])
+    source = cast(JsonObject, checked["source"])
+    for reference in selected_artifacts:
         validate_repository_artifact_reference(
             root, reference, require_tracked=False)
-    for receipt in checked["progress_receipts"]:
-        publish_progress_receipt(root, str(checked["handoff_id"]), receipt)
+    for progress_receipt in progress_receipts:
+        publish_progress_receipt(
+            root, str(checked["handoff_id"]), progress_receipt)
     payload = canonical_bytes(checked)
     destination = handoff_path(str(checked["handoff_id"]))
     replayed = _create_if_absent(root, destination, payload)
-    receipt: JsonObject = {
+    publication_receipt: JsonObject = {
         "schema": PUBLICATION_RECEIPT_SCHEMA,
         "status": "replayed" if replayed else "published",
         "handoff_id": checked["handoff_id"],
         "handoff_fingerprint": checked["fingerprint"],
-        "repository_id": checked["repository"]["id"],
-        "source_commit": checked["source"]["commit"],
-        "source_tree": checked["source"]["tree"],
-        "artifact_count": len(checked["selected_artifacts"]),
-        "artifact_bytes": sum(int(item["bytes"])
-                              for item in checked["selected_artifacts"]),
+        "repository_id": repository["id"],
+        "source_commit": source["commit"],
+        "source_tree": source["tree"],
+        "artifact_count": len(selected_artifacts),
+        "artifact_bytes": sum(cast(int, item["bytes"])
+                              for item in selected_artifacts),
     }
-    receipt["fingerprint"] = receipt_fingerprint(receipt)
-    return receipt
+    publication_receipt["fingerprint"] = receipt_fingerprint(
+        publication_receipt)
+    return publication_receipt
 
 
 def validate_repository_manifest(
@@ -1092,15 +1109,25 @@ def validate_repository_manifest(
     """Verify source, repository, tracked export lineage, and selected blobs."""
     root = _repository_root(repository_root)
     checked = validate_manifest(manifest)
-    if repository_identity(root) != checked["repository"]["id"]:
+    repository = cast(JsonObject, checked["repository"])
+    source = cast(JsonObject, checked["source"])
+    authority_receipts = cast(
+        list[JsonObject], checked["authority_receipts"])
+    selected_artifacts = cast(
+        list[JsonObject], checked["selected_artifacts"])
+    progress_receipts = cast(list[JsonObject], checked["progress_receipts"])
+    tasks = cast(list[JsonObject], checked["tasks"])
+    producer = cast(JsonObject, checked["producer"])
+    successor = cast(JsonObject, checked["successor"])
+    if repository_identity(root) != repository["id"]:
         raise PhaseHandoffError("repository-foreign", "repository identity differs")
-    source_commit = str(checked["source"]["commit"])
-    source_tree = str(checked["source"]["tree"])
+    source_commit = str(source["commit"])
+    source_tree = str(source["tree"])
     observed_tree = _git(root, "rev-parse", f"{source_commit}^{{tree}}")
     if observed_tree != source_tree:
         raise PhaseHandoffError("source-stale", "source tree differs from commit")
     prior_authority_commit: str | None = None
-    for authority in checked["authority_receipts"]:
+    for authority in authority_receipts:
         authority_commit = str(authority["source_commit"])
         authority_tree = str(authority["source_tree"])
         observed_authority_tree = _git(
@@ -1122,9 +1149,9 @@ def validate_repository_manifest(
             root, "status", "--porcelain=v1", "--untracked-files=all",
             code="checkout-dirty"):
         raise PhaseHandoffError("checkout-dirty", "checkout contains local changes")
-    for reference in checked["selected_artifacts"]:
+    for reference in selected_artifacts:
         validate_repository_artifact_reference(root, reference)
-    for receipt in checked["progress_receipts"]:
+    for receipt in progress_receipts:
         receipt_relative = progress_receipt_path(
             str(checked["handoff_id"]), receipt)
         receipt_relative, receipt_data = _safe_regular_file(
@@ -1146,9 +1173,8 @@ def validate_repository_manifest(
         code="source-stale").splitlines()))
     allowed_scope: list[str] = []
     if allowed_task_id is not None:
-        tasks = [task for task in checked["tasks"]
-                 if task["id"] == allowed_task_id]
-        producer, successor = checked["producer"], checked["successor"]
+        matched_tasks = [task for task in tasks
+                         if task["id"] == allowed_task_id]
         build_authorized = (
             producer == {"phase": "plan", "outcome": "done"} and
             successor == {"phase": "build", "mode": "next-phase"}
@@ -1156,10 +1182,11 @@ def validate_repository_manifest(
             producer == {"phase": "build", "outcome": "interrupted"} and
             successor == {"phase": "build", "mode": "same-phase-resume"}
         )
-        if len(tasks) != 1 or not build_authorized:
+        if len(matched_tasks) != 1 or not build_authorized:
             raise PhaseHandoffError(
                 "scope-widened", "task scope is not authorized by this handoff")
-        allowed_scope = [str(path) for path in tasks[0]["scope"]]
+        allowed_scope = [str(path) for path in cast(
+            list[str], matched_tasks[0]["scope"])]
     if not changed or any(
             not path.startswith("exports/pickup/") and not any(
                 fnmatchcase(path, pattern) for pattern in allowed_scope)
@@ -1168,7 +1195,7 @@ def validate_repository_manifest(
             "source-stale", "source-to-export lineage contains unrelated changes")
     required = {manifest_relative} | {
         progress_receipt_path(str(checked["handoff_id"]), receipt)
-        for receipt in checked["progress_receipts"]
+        for receipt in progress_receipts
     }
     if not required <= changed:
         raise PhaseHandoffError("source-stale", "export lineage is incomplete")

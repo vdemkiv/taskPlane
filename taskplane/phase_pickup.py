@@ -15,17 +15,21 @@ import re
 import secrets
 import shlex
 import subprocess
-from typing import Any, Final, TypeAlias
+from typing import Any, Final, TYPE_CHECKING, TypeAlias
 
-if __package__:
+if TYPE_CHECKING:
     from . import build_c, checkpoint, design_contract, phase_handoff
     from . import review_evidence
-else:  # pragma: no cover - direct module import compatibility
-    import build_c
-    import checkpoint
-    import design_contract
-    import phase_handoff
-    import review_evidence
+else:
+    if __package__:
+        from . import build_c, checkpoint, design_contract, phase_handoff
+        from . import review_evidence
+    else:  # pragma: no cover - direct module import compatibility
+        import build_c
+        import checkpoint
+        import design_contract
+        import phase_handoff
+        import review_evidence
 
 
 BUILD_ASSIGNMENT_SCHEMA: Final[str] = \
@@ -251,7 +255,7 @@ def select_ready_build_task(
     if not ready:
         raise PhasePickupError(
             "dependency-unmet", "no unfinished task is dependency-ready")
-    selected = copy.deepcopy(ready[0])
+    selected: JsonObject = copy.deepcopy(ready[0])
     if requested_task is None:
         return selected
     if isinstance(requested_task, str):
