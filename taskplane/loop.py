@@ -2594,7 +2594,7 @@ def project_phase_export(
     else:
         green = {
             str(row.get("obligation_id")) for row in receipts
-            if row.get("status") == "green"
+            if row.get("status") == "green" and row.get("phase") == phase
         }
     if outcome == "interrupted" and evidence:
         raise ValueError(

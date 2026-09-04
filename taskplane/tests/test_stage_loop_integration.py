@@ -175,6 +175,37 @@ def test_explicit_phase_export_refuses_forged_build_green_receipt_evidence(
         durable_progress=durable)["publication"]["root"] == "/repo"
 
 
+def test_plan_export_does_not_reuse_design_green_as_plan_completion(
+        monkeypatch) -> None:
+    monkeypatch.setattr(
+        loop.phase_handoff, "create_phase_handoff", lambda **values: values)
+    design_green = loop.phase_handoff.create_progress_receipt(
+        producer="engine:taskplane.loop/v1", sequence=1, phase="design",
+        obligation_id="AC1", task_id=None, status="green",
+        predecessor_receipt_fingerprint=None)
+    material = {
+        "repository": {}, "source": {}, "requirement": {},
+        "design": {}, "plan": {}, "obligations": [{"id": "AC1"}],
+        "tasks": [], "contracts": [], "acceptance": [],
+        "selected_artifacts": [], "authority_receipts": [],
+        "progress_receipts": [design_green],
+        "lineage": {"predecessor_handoff_fingerprint": "d" * 64,
+                    "predecessor_receipt_head": design_green["fingerprint"]},
+        "exclusions": [],
+    }
+
+    exported = loop.project_phase_export(
+        material, phase="plan", outcome="done",
+        durable_progress={
+            "phase": "plan", "state": "terminal", "outcome": "done"})
+
+    assert [row["phase"] for row in exported["progress_receipts"]] == [
+        "design", "plan"]
+    assert exported["progress_receipts"][-1][
+        "predecessor_receipt_fingerprint"] == design_green["fingerprint"]
+    assert exported["successor"] == {"phase": "build", "mode": "next-phase"}
+
+
 def test_disabled_loop_stage_context_does_not_open_a_locator(
         monkeypatch) -> None:
     monkeypatch.delenv("TASKPLANE_STAGE_NATIVE", raising=False)
