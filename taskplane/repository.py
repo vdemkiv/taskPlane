@@ -40,6 +40,11 @@ _PICKUP_MERGE_FIELDS = frozenset({
     "schema", "status", "task_id", "primary_checkout", "branch_tip",
     "fingerprint",
 })
+PHASE_REPOSITORY_RECEIPT_SCHEMA = "taskplane.repository-phase-receipt/v1"
+_PHASE_REPOSITORY_RECEIPT_FIELDS = frozenset({
+    "schema", "status", "repository_id", "task_id", "revision",
+    "source_receipt_fingerprint", "fingerprint",
+})
 REPOSITORY_PREPARATION_REQUEST_FIELDS = frozenset({
     "schema", "operation_id", "run_id", "target",
     "workspace_locator_fingerprint", "attempt",
@@ -1088,6 +1093,67 @@ def validate_pickup_merge_receipt(receipt: object, *, task_id: str,
         raise RepositoryAcquisitionError(
             "identity", "pickup merge receipt identity is invalid")
     return dict(receipt)
+
+
+def project_phase_repository_receipt(
+        receipt: object, *, repository_id: str, task_id: str,
+        revision: str) -> dict:
+    """Project validated local merge evidence into a portable receipt.
+
+    The incumbent merge receipt retains its absolute checkout for validation
+    inside the repository boundary.  That path is deliberately absent from
+    this successor projection; the projection instead binds the exact full
+    receipt fingerprint, logical repository identity, task, and revision.
+    """
+    checked = validate_pickup_merge_receipt(
+        receipt, task_id=task_id, revision=revision)
+    repository = str(repository_id or "").strip()
+    if not repository or not _AUTHORITY_REPOSITORY_ID.fullmatch(repository):
+        raise RepositoryAcquisitionError(
+            "identity", "phase repository identity is invalid")
+    material = {
+        "schema": PHASE_REPOSITORY_RECEIPT_SCHEMA,
+        "status": "integrated",
+        "repository_id": repository,
+        "task_id": task_id,
+        "revision": revision,
+        "source_receipt_fingerprint": checked["fingerprint"],
+    }
+    return {**material, "fingerprint": _canonical_fingerprint(material)}
+
+
+def validate_phase_repository_receipt(
+        receipt: object, *, repository_id: str, task_id: str,
+        revision: str, source_receipt_fingerprint: str | None = None) -> dict:
+    """Validate the closed host-path-free repository receipt projection."""
+    if not isinstance(receipt, Mapping) or set(receipt) != \
+            _PHASE_REPOSITORY_RECEIPT_FIELDS:
+        raise RepositoryAcquisitionError(
+            "identity", "phase repository receipt fields are invalid")
+    material = {
+        field: receipt[field]
+        for field in _PHASE_REPOSITORY_RECEIPT_FIELDS - {"fingerprint"}
+    }
+    expected = _canonical_fingerprint(material)
+    if receipt.get("schema") != PHASE_REPOSITORY_RECEIPT_SCHEMA or \
+            receipt.get("status") != "integrated" or \
+            receipt.get("repository_id") != repository_id or \
+            receipt.get("task_id") != task_id or \
+            receipt.get("revision") != revision or \
+            not isinstance(receipt.get("source_receipt_fingerprint"), str) or \
+            not _AUTHORITY_FINGERPRINT.fullmatch(
+                str(receipt.get("source_receipt_fingerprint"))) or \
+            (source_receipt_fingerprint is not None and
+             receipt.get("source_receipt_fingerprint") !=
+             source_receipt_fingerprint) or \
+            receipt.get("fingerprint") != expected:
+        raise RepositoryAcquisitionError(
+            "identity", "phase repository receipt identity is invalid")
+    return dict(receipt)
+
+
+# The Build submit adapter uses this shorter contract-oriented name.
+project_repository_receipt = project_phase_repository_receipt
 
 
 class RepositoryManager:
