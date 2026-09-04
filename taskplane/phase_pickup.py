@@ -217,6 +217,10 @@ def _completed_task_ids(handoff: Mapping[str, Any]) -> set[str]:
 def _remaining_obligation_id(
         handoff: Mapping[str, Any], task: Mapping[str, Any]) -> str | None:
     remaining = set(handoff["progress"]["remaining"])
+    if handoff["producer"] == {"phase": "plan", "outcome": "done"} and \
+            handoff["successor"] == {
+                "phase": "build", "mode": "next-phase"}:
+        remaining = {obligation["id"] for obligation in handoff["obligations"]}
     for obligation in handoff["obligations"]:
         if obligation["id"] in remaining and (
                 obligation["id"] == task["id"] or

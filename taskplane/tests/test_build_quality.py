@@ -139,7 +139,9 @@ def _complete_build(strategy: dict, receipt: dict) -> dict:
     )
 
 
-def _published_build_checkout(tmp_path: Path) -> tuple[Path, dict]:
+def _published_build_checkout(
+        tmp_path: Path, *, completed_in_plan: bool = False
+) -> tuple[Path, dict]:
     checkout = tmp_path / "producer"
     subprocess.run(["git", "clone", "-q", str(ROOT), str(checkout)],
                    check=True)
@@ -152,6 +154,24 @@ def _published_build_checkout(tmp_path: Path) -> tuple[Path, dict]:
     subprocess.run(["git", "commit", "-qm", "remove unrelated contract"],
                    cwd=checkout, check=True)
     handoff = _handoff(checkout, "build")
+    if completed_in_plan:
+        receipt = phase_handoff.create_progress_receipt(
+            producer="engine:test", sequence=1, phase="plan",
+            obligation_id="AC1", task_id=None, status="green",
+            predecessor_receipt_fingerprint=None)
+        material = {
+            key: value for key, value in handoff.items()
+            if key not in {"schema", "handoff_id", "fingerprint"}
+        }
+        material.update({
+            "progress": {"completed": ["AC1"], "remaining": []},
+            "progress_receipts": [receipt],
+            "lineage": {
+                "predecessor_handoff_fingerprint": None,
+                "predecessor_receipt_head": receipt["fingerprint"],
+            },
+        })
+        handoff = phase_handoff.create_manifest(**material)
     phase_handoff.publish_phase_handoff(checkout, handoff)
     subprocess.run(["git", "add", "-f", "exports/pickup"],
                    cwd=checkout, check=True)
@@ -333,6 +353,15 @@ def test_committed_build_diff_reconstructs_internal_submission(tmp_path):
     assert result["status"] == "complete"
     assert result["task_id"] == task_id
     assert "lease" not in result
+
+
+def test_fresh_build_ignores_completed_plan_progress(tmp_path):
+    checkout, handoff = _published_build_checkout(
+        tmp_path, completed_in_plan=True)
+
+    pickup = phase_pickup.prepare(str(checkout), handoff)
+
+    assert pickup["task"]["id"] == "T-001"
 
 
 def test_out_of_scope_committed_diff_never_reaches_build_c(
