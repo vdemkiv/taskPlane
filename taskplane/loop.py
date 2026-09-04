@@ -81,6 +81,7 @@ if __package__:
     from . import owned_cleanup
     from . import settings as operational_settings
     from . import plan_topology
+    from . import phase_handoff
     from . import release_evidence
     from . import run_artifacts
     from . import run_store as run_store_engine
@@ -102,6 +103,7 @@ else:  # pragma: no cover - direct CLI module loading
     import owned_cleanup
     from taskplane import settings as operational_settings
     import plan_topology
+    import phase_handoff
     import release_evidence
     import run_artifacts
     import run_store as run_store_engine
@@ -1018,7 +1020,9 @@ def _ensure_run_artifacts(
         settings_digest: str, stage_instance_id: str,
         candidate_fingerprint: str, requirement_id: str,
         requirement_fingerprint: str,
-        stage_id: str = "design") -> tuple[str, dict, dict]:
+        stage_id: str = "design",
+        existing_binding: Mapping[str, object] | None = None
+        ) -> tuple[str, dict, dict]:
     """Create or authenticate the one immutable artifact manifest binding."""
     run_id = str(state.get("run_id") or "").strip()
     locator = runtime_storage.load_workspace_locator(ws)
@@ -1027,6 +1031,19 @@ def _ensure_run_artifacts(
             locator.get("repo_id") != identity.repo_id:
         raise run_artifacts.RunArtifactError(
             "workspace locator belongs to another repository")
+    if existing_binding is not None:
+        binding = run_artifacts.validate_binding(existing_binding)
+        if binding.get("repository_id") != identity.repo_id or \
+                binding.get("run_id") != run_id:
+            raise run_artifacts.RunArtifactError(
+                "run artifact binding belongs to another active run")
+        root = _ensure_run_artifact_parent(ws, state)
+        manifest = run_artifacts.load_manifest(root)
+        if manifest.get("binding") != binding:
+            raise run_artifacts.RunArtifactError(
+                "run artifact manifest belongs to another current binding")
+        run_artifacts.verify_manifest(root, expected_binding=binding)
+        return root, binding, run_artifacts.manifest_locator_reference()
     repository_id = identity.repo_id
     candidate = {
         "id": f"{requirement_id or 'unattached'}@{tp.git_head(ws)}",
@@ -1132,7 +1149,9 @@ def _prepare_run_control_plane(
         candidate_fingerprint=candidate_fingerprint,
         requirement_id=requirement_id,
         requirement_fingerprint=requirement_fingerprint,
-        stage_id=stage_id)
+        stage_id=stage_id, existing_binding=(
+            existing_binding if isinstance(existing_binding, Mapping)
+            else None))
     cleanup_manifest = _ensure_owned_cleanup_manifest(ws, root, binding)
     fields = {
         "run_start_step": step,
@@ -2483,6 +2502,214 @@ _LOOP_STAGE_KINDS = {
 }
 
 
+_PHASE_EXPORT_MATERIAL_FIELDS = frozenset({
+    "repository", "source", "requirement", "design", "plan",
+    "obligations", "tasks", "contracts", "acceptance",
+    "selected_artifacts", "authority_receipts", "progress_receipts",
+    "lineage", "exclusions",
+})
+_PHASE_PROGRESS_FIELDS = frozenset({"phase", "state", "outcome"})
+_PHASE_RECEIPT_EVIDENCE_FIELDS = frozenset({
+    "task_id", "checkpoint_receipt_digest",
+    "integration_receipt_fingerprint",
+})
+
+
+def project_phase_export(
+        material: Mapping[str, object], *, phase: str, outcome: str,
+        durable_progress: Mapping[str, object],
+        receipt_evidence: Mapping[str, Mapping[str, object]] | None = None
+        ) -> dict:
+    """Project one durable loop boundary into the sole portable contract.
+
+    ``material`` contains only the already-approved repository identities and
+    artifact/authority records.  Mutable loop and RunStore identities are not
+    accepted, so this adapter cannot accidentally serialize producer runtime
+    context.  Existing progress receipts are retained byte-for-byte and new
+    receipts extend that one lineage model.
+    """
+    if not isinstance(material, Mapping) or \
+            set(material) != _PHASE_EXPORT_MATERIAL_FIELDS:
+        raise ValueError("phase export material fields are invalid")
+    if not isinstance(durable_progress, Mapping) or \
+            set(durable_progress) != _PHASE_PROGRESS_FIELDS:
+        raise ValueError("durable phase progress fields are invalid")
+    phase = str(phase or "")
+    outcome = str(outcome or "")
+    if phase not in {"design", "plan", "build"} or \
+            durable_progress.get("phase") != phase:
+        raise ValueError("phase export progress belongs to another phase")
+    if outcome not in {"done", "interrupted"}:
+        raise ValueError("phase export outcome is invalid")
+
+    obligations = material.get("obligations")
+    if not isinstance(obligations, list) or not obligations or any(
+            not isinstance(row, Mapping) or not isinstance(row.get("id"), str)
+            for row in obligations):
+        raise ValueError("phase export obligations are invalid")
+    obligation_ids = [str(row["id"]) for row in obligations]
+    durable_state = durable_progress.get("state")
+    durable_outcome = durable_progress.get("outcome")
+    if outcome == "done":
+        if durable_state != "terminal" or durable_outcome != "done":
+            raise ValueError("done phase export lacks terminal progress")
+    elif durable_state == "terminal" and durable_outcome == "done":
+        raise ValueError("terminal predecessor cannot be reopened")
+
+    evidence = dict(receipt_evidence or {})
+    if any(key not in obligation_ids or not isinstance(value, Mapping) or
+           set(value) != _PHASE_RECEIPT_EVIDENCE_FIELDS
+           for key, value in evidence.items()):
+        raise ValueError("phase receipt evidence is invalid")
+    receipts = copy.deepcopy(list(material.get("progress_receipts") or []))
+    if not all(isinstance(row, Mapping) for row in receipts):
+        raise ValueError("phase progress receipts are invalid")
+    lineage = material.get("lineage")
+    if not isinstance(lineage, Mapping) or set(lineage) != {
+            "predecessor_handoff_fingerprint",
+            "predecessor_receipt_head"}:
+        raise ValueError("phase export lineage is invalid")
+    predecessor = (str(receipts[-1].get("fingerprint"))
+                   if receipts else None)
+    if lineage.get("predecessor_receipt_head") != predecessor:
+        raise ValueError("phase export receipt head is stale")
+    green = {
+        str(row.get("obligation_id")) for row in receipts
+        if row.get("status") == "green"
+    }
+    if outcome == "interrupted" and evidence:
+        raise ValueError(
+            "interrupted export accepts only durable progress receipts")
+    completed = [item for item in obligation_ids if item in green]
+    remaining = [item for item in obligation_ids if item not in green]
+    if outcome == "interrupted" and not remaining:
+        raise ValueError("interrupted phase export has no remaining work")
+    tasks = material.get("tasks")
+    task_ids = {
+        str(row.get("id")) for row in (tasks if isinstance(tasks, list) else [])
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    for obligation_id in (obligation_ids if outcome == "done" else []):
+        if obligation_id in green:
+            continue
+        proof = evidence.get(obligation_id) or {}
+        task_id = proof.get("task_id")
+        if task_id is None and phase == "build" and obligation_id in task_ids:
+            task_id = obligation_id
+        receipt = phase_handoff.create_progress_receipt(
+            producer="engine:taskplane.loop/v1",
+            sequence=len(receipts) + 1, phase=phase,
+            obligation_id=obligation_id,
+            task_id=(None if task_id is None else str(task_id)),
+            status="green",
+            predecessor_receipt_fingerprint=predecessor,
+            checkpoint_receipt_digest=proof.get(
+                "checkpoint_receipt_digest"),
+            integration_receipt_fingerprint=proof.get(
+                "integration_receipt_fingerprint"),
+        )
+        receipts.append(receipt)
+        predecessor = str(receipt["fingerprint"])
+        green.add(obligation_id)
+    if outcome == "done":
+        completed = list(obligation_ids)
+        remaining = []
+    if outcome == "interrupted":
+        interrupted_id = remaining[0]
+        last = receipts[-1] if receipts else {}
+        if last.get("status") != "interrupted" or \
+                last.get("phase") != phase or \
+                last.get("obligation_id") != interrupted_id:
+            task_id = interrupted_id if phase == "build" and \
+                interrupted_id in task_ids else None
+            receipt = phase_handoff.create_progress_receipt(
+                producer="engine:taskplane.loop/v1",
+                sequence=len(receipts) + 1, phase=phase,
+                obligation_id=interrupted_id, task_id=task_id,
+                status="interrupted",
+                predecessor_receipt_fingerprint=predecessor,
+            )
+            receipts.append(receipt)
+            predecessor = str(receipt["fingerprint"])
+
+    successor = ({"phase": phase, "mode": "same-phase-resume"}
+                 if outcome == "interrupted" else {
+                     "phase": ({"design": "plan", "plan": "build",
+                                "build": "terminal"}[phase]),
+                     "mode": ("terminal-evidence" if phase == "build"
+                              else "next-phase"),
+                 })
+    portable = {
+        key: copy.deepcopy(material[key])
+        for key in _PHASE_EXPORT_MATERIAL_FIELDS
+        if key not in {"progress_receipts", "lineage"}
+    }
+    return phase_handoff.create_phase_handoff(
+        **portable,
+        producer={"phase": phase, "outcome": outcome},
+        successor=successor,
+        progress={"completed": completed, "remaining": remaining},
+        progress_receipts=receipts,
+        lineage={
+            "predecessor_handoff_fingerprint": lineage.get(
+                "predecessor_handoff_fingerprint"),
+            "predecessor_receipt_head": predecessor,
+        },
+    )
+
+
+def publish_phase_export(
+        repository_root: str, material: Mapping[str, object], *, phase: str,
+        outcome: str, durable_progress: Mapping[str, object],
+        receipt_evidence: Mapping[str, Mapping[str, object]] | None = None
+        ) -> dict:
+    """Publish the pure projection through ``phase_handoff``'s one owner."""
+    handoff = project_phase_export(
+        material, phase=phase, outcome=outcome,
+        durable_progress=durable_progress,
+        receipt_evidence=receipt_evidence)
+    publication = phase_handoff.publish_phase_handoff(
+        repository_root, handoff)
+    return {"handoff": handoff, "publication": publication}
+
+
+def _publish_transition_phase_export(
+        ws: str, completion: Mapping[str, object] | None,
+        transition: Mapping[str, object]) -> dict | None:
+    """Publish an explicitly prepared phase request after RunStore commit."""
+    request = completion.get("phase_export") \
+        if isinstance(completion, Mapping) else None
+    if request is None:
+        return None
+    if not isinstance(request, Mapping) or set(request) != {
+            "material", "receipt_evidence"} or not isinstance(
+                request.get("material"), Mapping) or not isinstance(
+                    request.get("receipt_evidence"), Mapping):
+        raise ValueError("phase export request is invalid")
+    result = transition.get("result")
+    if not isinstance(result, Mapping):
+        raise ValueError("phase export transition result is invalid")
+    head = (result.get("head") if transition.get("operation") == "terminalize"
+            else result.get("predecessor_head"))
+    summary = head.get("summary") if isinstance(head, Mapping) else None
+    if not isinstance(summary, Mapping):
+        raise ValueError("phase export predecessor head is invalid")
+    locator = runtime_storage.load_workspace_locator(ws)
+    if not isinstance(locator, Mapping) or not locator.get("run_id"):
+        raise ValueError("phase export producer RunStore is unavailable")
+    run_id = str(locator["run_id"])
+    if summary.get("run_id") != run_id:
+        raise ValueError("phase export predecessor belongs to another run")
+    durable = _stage_store(ws, run_id).phase_progress_snapshot(
+        run_id, stage_id=str(summary.get("stage_id") or ""))
+    portable_outcome = ("done" if durable["outcome"] == "done"
+                        else "interrupted")
+    return publish_phase_export(
+        ws, request["material"], phase=str(durable["phase"]),
+        outcome=portable_outcome, durable_progress=durable,
+        receipt_evidence=request["receipt_evidence"])
+
+
 def _stage_loop_context(
         ws: str, state: Mapping[str, object] | None = None, *,
         stage_id: str | None = None) -> dict | None:
@@ -3188,6 +3415,7 @@ def _stage_loop_transition(
         terminal_outcome=terminal_outcome, terminal_only=terminal_only,
         completion=completion)
     if replayed is not None:
+        _publish_transition_phase_export(ws, completion, replayed)
         return replayed
     context = _stage_loop_context(ws, state)
     if context is None:
@@ -3256,9 +3484,11 @@ def _stage_loop_transition(
             terminalized_at=authorized_at, reason_code=reason_code,
             reason=reason, completed_deliverables=completed,
             completion_evidence=evidence)
-        return tp.verify_stage_receipt(
+        checked = tp.verify_stage_receipt(
             receipt, expected_operation="terminalize",
             expected_stage_id=str(stage["stage_id"]))
+        _publish_transition_phase_export(ws, completion, checked)
+        return checked
 
     try:
         if __package__:
@@ -3325,9 +3555,11 @@ def _stage_loop_transition(
         operation_id=operation_id, outcome=terminal_outcome, actor=actor,
         terminalized_at=authorized_at,
         completed_deliverables=completed, completion_evidence=evidence)
-    return tp.verify_stage_receipt(
+    checked = tp.verify_stage_receipt(
         receipt, expected_operation="terminalize_and_start",
         expected_stage_id=successor_id)
+    _publish_transition_phase_export(ws, completion, checked)
+    return checked
 
 
 def stage_history(ws: str, run_id: str, *, cursor: object = None,
@@ -11240,6 +11472,11 @@ def _stage_loop_gate_completion(
             })
     if isinstance(approval, Mapping):
         result["approval"] = dict(approval)
+    phase_export_request = state.get("phase_export_request")
+    if phase_export_request is not None:
+        if not isinstance(phase_export_request, Mapping):
+            raise ValueError("phase export request is invalid")
+        result["phase_export"] = copy.deepcopy(dict(phase_export_request))
     if step == "pm":
         requirement_id = state.get("requirement_id")
         result["requirement_id"] = requirement_id
