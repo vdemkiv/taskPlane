@@ -2556,6 +2556,8 @@ def project_phase_export(
     elif durable_state == "terminal" and durable_outcome == "done":
         raise ValueError("terminal predecessor cannot be reopened")
 
+    if phase == "build" and receipt_evidence is not None:
+        raise ValueError("Build phase export refuses receipt evidence")
     evidence = dict(receipt_evidence or {})
     if any(key not in obligation_ids or not isinstance(value, Mapping) or
            set(value) != _PHASE_RECEIPT_EVIDENCE_FIELDS
@@ -2573,10 +2575,27 @@ def project_phase_export(
                    if receipts else None)
     if lineage.get("predecessor_receipt_head") != predecessor:
         raise ValueError("phase export receipt head is stale")
-    green = {
-        str(row.get("obligation_id")) for row in receipts
-        if row.get("status") == "green"
-    }
+    if phase == "build":
+        build_green = [
+            row for row in receipts
+            if row.get("status") == "green" and row.get("phase") == "build"
+        ]
+        for receipt in build_green:
+            if receipt.get("producer") != \
+                    "engine:taskplane.phase-pickup/v1" or not isinstance(
+                        receipt.get("checkpoint_receipt_digest"), str) or not \
+                    receipt.get("checkpoint_receipt_digest") or not isinstance(
+                        receipt.get("integration_receipt_fingerprint"), str) or \
+                    not receipt.get("integration_receipt_fingerprint"):
+                raise ValueError(
+                    "Build progress requires exact phase-pickup/BUILD-C "
+                    "receipts")
+        green = {str(row.get("obligation_id")) for row in build_green}
+    else:
+        green = {
+            str(row.get("obligation_id")) for row in receipts
+            if row.get("status") == "green"
+        }
     if outcome == "interrupted" and evidence:
         raise ValueError(
             "interrupted export accepts only durable progress receipts")
@@ -2589,13 +2608,12 @@ def project_phase_export(
         str(row.get("id")) for row in (tasks if isinstance(tasks, list) else [])
         if isinstance(row, Mapping) and row.get("id")
     }
-    for obligation_id in (obligation_ids if outcome == "done" else []):
+    for obligation_id in (
+            obligation_ids if outcome == "done" and phase != "build" else []):
         if obligation_id in green:
             continue
         proof = evidence.get(obligation_id) or {}
         task_id = proof.get("task_id")
-        if task_id is None and phase == "build" and obligation_id in task_ids:
-            task_id = obligation_id
         receipt = phase_handoff.create_progress_receipt(
             producer="engine:taskplane.loop/v1",
             sequence=len(receipts) + 1, phase=phase,
@@ -2612,6 +2630,9 @@ def project_phase_export(
         predecessor = str(receipt["fingerprint"])
         green.add(obligation_id)
     if outcome == "done":
+        if phase == "build" and green != set(obligation_ids):
+            raise ValueError(
+                "Build completion lacks phase-pickup/BUILD-C progress")
         completed = list(obligation_ids)
         remaining = []
     if outcome == "interrupted":
@@ -2681,10 +2702,11 @@ def _publish_transition_phase_export(
         if isinstance(completion, Mapping) else None
     if request is None:
         return None
-    if not isinstance(request, Mapping) or set(request) != {
-            "material", "receipt_evidence"} or not isinstance(
-                request.get("material"), Mapping) or not isinstance(
-                    request.get("receipt_evidence"), Mapping):
+    if not isinstance(request, Mapping) or set(request) not in (
+            {"material"}, {"material", "receipt_evidence"}) or not isinstance(
+                request.get("material"), Mapping) or (
+                    "receipt_evidence" in request and not isinstance(
+                        request.get("receipt_evidence"), Mapping)):
         raise ValueError("phase export request is invalid")
     result = transition.get("result")
     if not isinstance(result, Mapping):
@@ -2707,7 +2729,7 @@ def _publish_transition_phase_export(
     return publish_phase_export(
         ws, request["material"], phase=str(durable["phase"]),
         outcome=portable_outcome, durable_progress=durable,
-        receipt_evidence=request["receipt_evidence"])
+        receipt_evidence=request.get("receipt_evidence"))
 
 
 def _stage_loop_context(
