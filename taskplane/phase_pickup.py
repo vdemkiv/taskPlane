@@ -211,18 +211,36 @@ def _completed_task_ids(handoff: Mapping[str, Any]) -> set[str]:
     }
 
 
+def _remaining_obligation_id(
+        handoff: Mapping[str, Any], task: Mapping[str, Any]) -> str | None:
+    remaining = set(handoff["progress"]["remaining"])
+    for obligation in handoff["obligations"]:
+        if obligation["id"] in remaining and (
+                obligation["id"] == task["id"] or
+                set(obligation["acceptance"]) & set(task["acceptance"])):
+            return str(obligation["id"])
+    return None
+
+
 def select_ready_build_task(
         handoff: Mapping[str, Any], *,
         requested_task: str | Mapping[str, object] | None = None) -> JsonObject:
     """Select exactly the first unfinished dependency-ready ordinal task."""
     checked = _validated_handoff_value(handoff)
-    if checked["successor"] != {"phase": "build", "mode": "next-phase"}:
+    producer = checked["producer"]
+    successor = checked["successor"]
+    fresh = producer == {"phase": "plan", "outcome": "done"} and \
+        successor == {"phase": "build", "mode": "next-phase"}
+    resume = producer == {"phase": "build", "outcome": "interrupted"} and \
+        successor == {"phase": "build", "mode": "same-phase-resume"}
+    if not (fresh or resume):
         raise PhasePickupError(
-            "transition-invalid", "handoff does not authorize fresh Build")
+            "transition-invalid", "handoff does not authorize Build pickup")
     completed = _completed_task_ids(checked)
     ready = [task for task in checked["tasks"]
              if task["id"] not in completed and
-             set(task["dependencies"]) <= completed]
+             set(task["dependencies"]) <= completed and
+             _remaining_obligation_id(checked, task) is not None]
     if not ready:
         raise PhasePickupError(
             "dependency-unmet", "no unfinished task is dependency-ready")
@@ -374,13 +392,9 @@ def prepare_build_pickup(
 
 def _task_obligation(handoff: Mapping[str, Any], task: Mapping[str, Any]) \
         -> str:
-    completed = set(handoff["progress"]["completed"])
-    for obligation in handoff["obligations"]:
-        if obligation["id"] in completed:
-            continue
-        if obligation["id"] == task["id"] or set(
-                obligation["acceptance"]) & set(task["acceptance"]):
-            return str(obligation["id"])
+    obligation_id = _remaining_obligation_id(handoff, task)
+    if obligation_id is not None:
+        return obligation_id
     raise PhasePickupError(
         "dependency-unmet", "ready task has no remaining sealed obligation")
 
