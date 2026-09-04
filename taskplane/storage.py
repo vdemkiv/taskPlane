@@ -459,20 +459,31 @@ def load_workspace_locator(checkout: str) -> dict | None:
 
 
 def bind_hook_taskplane_home(
-        checkout: str, environment: MutableMapping[str, str]) -> str:
+        checkout: str, environment: MutableMapping[str, str], *,
+        hook_path: str | None = None) -> str:
     """Bind a governed hook process to its dedicated checkout locator.
 
-    Calling this function declares that the invocation is a Taskplane hook,
-    so an absent locator is a severed authority edge rather than evidence of
-    an unmanaged checkout. The locator must name a canonical home. An
-    inherited conflicting or noncanonical value is a closed failure; an
-    explicit secure locator for the canonical user default remains valid.
+    Calling this function declares that the invocation is a Taskplane hook.
+    A governed checkout must bind to its locator. Before governance exists,
+    only the installed native hook may bootstrap a session receipt, and only
+    in the canonical user-default home. Repository bridges, custom homes, and
+    conflicting or noncanonical values remain closed failures.
     """
     locator = load_workspace_locator(checkout)
     if locator is None:
-        raise StorageIdentityError(
-            "Taskplane hook requires a governed workspace locator")
-    expected = str(locator["home"])
+        # A newly-created Codex task has no run locator yet.  The installed
+        # native hook is nevertheless authoritative evidence that the host
+        # loaded Taskplane, and its package command is inert unless the
+        # repository-family launcher already exists.  Bind only that narrow
+        # bootstrap case to the canonical user-default store; repository
+        # bridges and custom/untrusted homes still fail closed.
+        if str(hook_path or "").strip().lower() != "native":
+            raise StorageIdentityError(
+                "Taskplane hook requires a governed workspace locator")
+        expected = taskplane_home(os.path.join(
+            os.path.expanduser("~"), ".taskplane"))
+    else:
+        expected = str(locator["home"])
     configured = str(environment.get("TASKPLANE_HOME") or "")
     if configured:
         canonical = os.path.realpath(

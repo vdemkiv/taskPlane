@@ -1039,6 +1039,17 @@ def load_hook_manifest() -> dict:
             "hook manifests must declare SessionStart")
     installed = json.loads(json.dumps(manifests["claude"]))
     installed["hooks"]["SessionStart"] = codex_hooks["SessionStart"]
+    # These commands run from the installed plugin manifest, even though the
+    # Codex-owned SessionStart declaration supplies the host-specific action
+    # and host name.  Preserve that native authority identity so a genuinely
+    # loaded plugin can issue the first session receipt before a fresh task
+    # has a governed workspace locator.  The repo-local copy remains bridge.
+    for row in installed["hooks"]["SessionStart"]:
+        for hook in row.get("hooks") or []:
+            for field in ("command", "commandWindows"):
+                hook[field] = str(hook.get(field) or "").replace(
+                    "TASKPLANE_HOOK_PATH=bridge",
+                    "TASKPLANE_HOOK_PATH=native")
     return validate_hook_manifest(_workspace_only_hooks(installed))
 
 

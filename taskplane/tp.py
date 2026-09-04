@@ -698,7 +698,9 @@ def _codex_hook_action(command: str) -> str:
         # as the same fail-closed class so repo-local Codex hook installation
         # can preserve the shared Claude/Codex declaration safely.
         return "context"
-    match = re.search(r'tp\.py"?\s+([a-z][a-z0-9-]*)', value)
+    match = re.search(
+        r'(?:tp\.py|["\']?(?:\$TASKPLANE_LAUNCHER|'
+        r'!TASKPLANE_LAUNCHER!)["\']?)\s+([a-z][a-z0-9-]*)', value)
     if not match:
         raise RuntimeError("bundled hook command has no taskplane action")
     return match.group(1)
@@ -5524,7 +5526,7 @@ def _run_hook_command(a) -> int:
         event_cwd if isinstance(event_cwd, str) and event_cwd
         else getattr(a, "workspace", None))
     receipt_home = runtime_storage.bind_hook_taskplane_home(
-        workspace, os.environ)
+        workspace, os.environ, hook_path=hook_path)
     host_caps.record_runtime_hook_receipt(
         receipt_home, hook_path=hook_path, event=event)
     claim = tp.claim_hook_event(
