@@ -2694,44 +2694,6 @@ def publish_phase_export(
     return {"handoff": handoff, "publication": publication}
 
 
-def _publish_transition_phase_export(
-        ws: str, completion: Mapping[str, object] | None,
-        transition: Mapping[str, object]) -> dict | None:
-    """Publish an explicitly prepared phase request after RunStore commit."""
-    request = completion.get("phase_export") \
-        if isinstance(completion, Mapping) else None
-    if request is None:
-        return None
-    if not isinstance(request, Mapping) or set(request) not in (
-            {"material"}, {"material", "receipt_evidence"}) or not isinstance(
-                request.get("material"), Mapping) or (
-                    "receipt_evidence" in request and not isinstance(
-                        request.get("receipt_evidence"), Mapping)):
-        raise ValueError("phase export request is invalid")
-    result = transition.get("result")
-    if not isinstance(result, Mapping):
-        raise ValueError("phase export transition result is invalid")
-    head = (result.get("head") if transition.get("operation") == "terminalize"
-            else result.get("predecessor_head"))
-    summary = head.get("summary") if isinstance(head, Mapping) else None
-    if not isinstance(summary, Mapping):
-        raise ValueError("phase export predecessor head is invalid")
-    locator = runtime_storage.load_workspace_locator(ws)
-    if not isinstance(locator, Mapping) or not locator.get("run_id"):
-        raise ValueError("phase export producer RunStore is unavailable")
-    run_id = str(locator["run_id"])
-    if summary.get("run_id") != run_id:
-        raise ValueError("phase export predecessor belongs to another run")
-    durable = _stage_store(ws, run_id).phase_progress_snapshot(
-        run_id, stage_id=str(summary.get("stage_id") or ""))
-    portable_outcome = ("done" if durable["outcome"] == "done"
-                        else "interrupted")
-    return publish_phase_export(
-        ws, request["material"], phase=str(durable["phase"]),
-        outcome=portable_outcome, durable_progress=durable,
-        receipt_evidence=request.get("receipt_evidence"))
-
-
 def _stage_loop_context(
         ws: str, state: Mapping[str, object] | None = None, *,
         stage_id: str | None = None) -> dict | None:
@@ -3437,7 +3399,6 @@ def _stage_loop_transition(
         terminal_outcome=terminal_outcome, terminal_only=terminal_only,
         completion=completion)
     if replayed is not None:
-        _publish_transition_phase_export(ws, completion, replayed)
         return replayed
     context = _stage_loop_context(ws, state)
     if context is None:
@@ -3506,11 +3467,9 @@ def _stage_loop_transition(
             terminalized_at=authorized_at, reason_code=reason_code,
             reason=reason, completed_deliverables=completed,
             completion_evidence=evidence)
-        checked = tp.verify_stage_receipt(
+        return tp.verify_stage_receipt(
             receipt, expected_operation="terminalize",
             expected_stage_id=str(stage["stage_id"]))
-        _publish_transition_phase_export(ws, completion, checked)
-        return checked
 
     try:
         if __package__:
@@ -3577,11 +3536,9 @@ def _stage_loop_transition(
         operation_id=operation_id, outcome=terminal_outcome, actor=actor,
         terminalized_at=authorized_at,
         completed_deliverables=completed, completion_evidence=evidence)
-    checked = tp.verify_stage_receipt(
+    return tp.verify_stage_receipt(
         receipt, expected_operation="terminalize_and_start",
         expected_stage_id=successor_id)
-    _publish_transition_phase_export(ws, completion, checked)
-    return checked
 
 
 def stage_history(ws: str, run_id: str, *, cursor: object = None,
@@ -11494,11 +11451,6 @@ def _stage_loop_gate_completion(
             })
     if isinstance(approval, Mapping):
         result["approval"] = dict(approval)
-    phase_export_request = state.get("phase_export_request")
-    if phase_export_request is not None:
-        if not isinstance(phase_export_request, Mapping):
-            raise ValueError("phase export request is invalid")
-        result["phase_export"] = copy.deepcopy(dict(phase_export_request))
     if step == "pm":
         requirement_id = state.get("requirement_id")
         result["requirement_id"] = requirement_id

@@ -116,7 +116,7 @@ def _handoff_payload_text(ws, handoff):
     return json.dumps(payloads, sort_keys=True)
 
 
-def test_phase_export_refuses_forged_build_green_receipt_evidence(
+def test_explicit_phase_export_refuses_forged_build_green_receipt_evidence(
         monkeypatch) -> None:
     monkeypatch.setattr(
         loop.phase_handoff, "create_phase_handoff", lambda **values: values)
@@ -167,6 +167,12 @@ def test_phase_export_refuses_forged_build_green_receipt_evidence(
     assert exported["progress"] == {
         "completed": ["T-004"], "remaining": []}
     assert exported["progress_receipts"] == material["progress_receipts"]
+    monkeypatch.setattr(
+        loop.phase_handoff, "publish_phase_handoff",
+        lambda root, handoff: {"root": root, "handoff": handoff})
+    assert loop.publish_phase_export(
+        "/repo", material, phase="build", outcome="done",
+        durable_progress=durable)["publication"]["root"] == "/repo"
 
 
 def test_disabled_loop_stage_context_does_not_open_a_locator(

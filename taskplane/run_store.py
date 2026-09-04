@@ -782,40 +782,6 @@ class RunStore:
             return self._relay_all_stage_journal_outbox_locked(
                 run_id, value)
 
-    def phase_progress_snapshot(self, run_id: str, *, stage_id: str) -> dict:
-        """Project only durable phase progress from an indexed stage head.
-
-        The returned value is deliberately smaller than either the RunStore
-        manifest or the stage aggregate.  It is producer input for a portable
-        phase handoff, never continuation authority in its own right.
-        """
-        run_id = _run_id(run_id)
-        stage_id = _stage_id(stage_id)
-        manifest = self.load(run_id)
-        if manifest.get("schema") != "taskplane.run/v4":
-            raise StageStateError("phase progress requires a v4 run")
-        heads = manifest.get("stage_heads")
-        head = heads.get(stage_id) if isinstance(heads, dict) else None
-        summary = head.get("summary") if isinstance(head, dict) else None
-        if not isinstance(summary, dict):
-            raise StageStateError("phase progress stage is not indexed")
-        phase = str(summary.get("stage_kind") or "")
-        if phase not in {"design", "plan", "build"}:
-            raise StageStateError("phase progress stage kind is unsupported")
-        state = str(summary.get("state") or "")
-        outcome = summary.get("outcome")
-        if state == "active":
-            if outcome is not None:
-                raise StageStateError("active phase progress is invalid")
-        elif state != "terminal" or outcome not in {
-                "done", "closed", "discarded"}:
-            raise StageStateError("terminal phase progress is invalid")
-        return {
-            "phase": phase,
-            "state": state,
-            "outcome": outcome,
-        }
-
     def commit(self, run_id: str, *, expected_revision: int,
                changes: dict) -> dict:
         if not isinstance(changes, dict):
