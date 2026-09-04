@@ -181,6 +181,70 @@ def test_public_phase_pickup_works_from_fresh_clone_and_empty_home(
     assert result["lineage"]["status"] == "verified"
 
 
+@pytest.mark.parametrize(
+    ("material_journey", "producer_phase", "successor_phase"),
+    [("plan", "design", "plan"), ("build", "plan", "build")],
+)
+def test_public_completed_phase_export_starts_all_successor_work(
+        tmp_path: Path, material_journey: str, producer_phase: str,
+        successor_phase: str) -> None:
+    producer = tmp_path / f"{producer_phase}-producer"
+    subprocess.run(["git", "clone", "-q", str(ROOT), str(producer)],
+                   check=True)
+    _git(producer, "config", "user.email", "phase-test@example.invalid")
+    _git(producer, "config", "user.name", "Phase test")
+    source = _handoff(producer, material_journey)
+    material = {key: source[key] for key in (
+        "repository", "source", "requirement", "design", "plan",
+        "obligations", "tasks", "contracts", "acceptance",
+        "selected_artifacts", "authority_receipts", "progress_receipts",
+        "lineage", "exclusions",
+    )}
+    request = producer / ".git" / "phase-export-request.json"
+    request.write_text(json.dumps({
+        "material": material, "phase": producer_phase, "outcome": "done",
+        "durable_progress": {
+            "phase": producer_phase, "state": "terminal", "outcome": "done",
+        },
+    }), encoding="utf-8")
+
+    exported = subprocess.run(
+        [sys.executable, str(producer / "taskplane" / "tp.py"),
+         "phase", "export", "--request", ".git/phase-export-request.json",
+         "--workspace", str(producer)],
+        cwd=producer, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, check=False)
+    assert exported.returncode == 0, exported.stderr
+    export_result = json.loads(exported.stdout)
+    assert (export_result["status"], export_result["code"]) == (
+        "complete", "phase-exported")
+    _git(producer, "add", "-f", "exports/pickup")
+    _git(producer, "commit", "-qm", f"export {producer_phase}")
+
+    consumer = tmp_path / f"{successor_phase}-consumer"
+    subprocess.run(["git", "clone", "-q", str(producer), str(consumer)],
+                   check=True)
+    relative = phase_handoff.handoff_path(export_result["handoff_id"])
+    handoff = phase_handoff.load_phase_handoff(consumer, relative)
+    picked_up = subprocess.run(
+        [sys.executable, str(consumer / "taskplane" / "tp.py"),
+         "phase", "pickup", relative, "--workspace", str(consumer)],
+        cwd=consumer, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, check=False)
+    assert picked_up.returncode == 0, picked_up.stderr
+    result = json.loads(picked_up.stdout)
+    obligation_ids = [row["id"] for row in handoff["obligations"]]
+    startup_obligations = (
+        [row["id"] for row in result["startup"]["projection"]["obligations"]]
+        if successor_phase == "plan"
+        else result["startup"]["task"]["acceptance"]
+    )
+    assert result["phase"] == successor_phase
+    assert (result["completed_count"], result["remaining_count"]) == (
+        0, len(obligation_ids))
+    assert startup_obligations == obligation_ids
+
+
 def _reseal_authority(handoff: dict[str, object]) -> None:
     repository = handoff["repository"]
     source = handoff["source"]
