@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import zipfile
 
 import pytest
@@ -19,6 +20,15 @@ def _packager():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_compatibility_test_job_fetches_pinned_release_history():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    tests_job = workflow.split("\n  tests:\n", 1)[1].split("\n  quality-package:", 1)[0]
+    # These tests execute the pinned historical producer. A shallow checkout
+    # without release tags cannot supply that fixture, even when HEAD is valid.
+    assert re.search(r"(?m)^          fetch-depth: 0$", tests_job)
+    assert "persist-credentials: false" in tests_job
 
 
 def test_matrix_uses_each_archives_own_hook_authority(monkeypatch):

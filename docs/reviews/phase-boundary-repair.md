@@ -240,3 +240,17 @@ and altered-hook refusal checks plus eleven existing release checks passed;
 17 broader package/release checks passed in 63.38 seconds. These integration
 tests are not a clean-candidate release-compatibility receipt; that production
 receipt must still be generated after committing this repair.
+
+The committed `d25d84c36a0d24349f227142a160c383425884ac` production matrix
+subsequently passed all four cells in a clean candidate checkout, and both
+2.19.2 test archives rebuilt. CI run `33965146663` passed seven jobs, but its
+aggregate reported four failures, 4,347 passes, six skips, one deselection and
+597 passing subtests in 1,065.51 seconds. Every failure was a missing historical
+Git object/tag required by the four new compatibility tests: the test job
+fetched only 30 commits, unlike the full-history package job. The CI setup
+now fetches the release history for that same test job, with credentials still
+not persisted. A regression checks that explicit prerequisite. The pinned
+historical producer, exact archive assertions and production validators are
+unchanged. An in-place package test also refused the user's unrelated dirty
+hook configuration as expected; clean-checkout verification is required and
+that configuration is not repaired or included in this change.
