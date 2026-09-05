@@ -201,3 +201,42 @@ per-session transport counters, not admitted phase budgets or billing totals.
 
 All three reported zero cache-write input tokens. None completed a governed
 phase or supplied final Engineering, Retro or release evidence.
+
+## Native retry and package-generation boundary
+
+Startup repair `82f4889293f50b25f2e3cb0455a835a1c5573dbe` passed all eight CI
+checks in run `33962890213`. The full suite passed 4,347 tests and 597 subtests,
+with six skipped and one deselected, in 915.32 seconds. Both clean-candidate
+archives built successfully. These receipts cover that commit, not later
+packaging repairs.
+
+Fresh native root `01a07149-0e93-73f0-8e0f-03795ff24bb8` verified readiness,
+initialized the ordinary loop with its preparation owner, and dispatched
+`tp_step_product_pm_98859eea197f9f28` with zero inherited turns. Child
+`01a07151-d9ee-7740-8e27-87423acdbe84` authored the canary spec and R-0001;
+the mechanical PM gate advanced to Design. No Design worker was dispatched.
+However, the audit records a mismatched/unobserved dispatch, and SubagentStart
+could not bind the pending slot. Its later terminal receipt was gate cleanup,
+not a successful native owner binding. Therefore this proves the startup
+repair and actual Product artifact creation, **not** a clean native phase or
+end-to-end pass. Host connection retries and one malformed worker patch also
+occurred and are not reclassified as taskPlane production defects.
+
+The root's raw completion counters were 800,754 input (707,200 cached), 9,769
+output and 4,507 reasoning-output tokens. The Product child's counters were
+1,394,320 input (1,332,992 cached), 9,853 output and 3,182 reasoning-output
+tokens. Both reported zero cache-write tokens. These per-session transport
+counters are not admitted phase budgets, billing totals or release authority.
+
+The additional real package-compatibility producer failed on
+`2.17.20-on-2.19.2`: current archive validation compared the historical
+package's hooks with current-checkout hooks. Its other version-specific inputs
+already came from the pinned historical source. The bounded repair supplies
+that generation's exact hook authority through the same matrix call; ordinary
+current validation still derives current authority, and schema/equality checks
+remain strict. No historical source, tag, hook trust or runtime hook is edited.
+The regression reproduced the exact failure before the fix. Four new matrix
+and altered-hook refusal checks plus eleven existing release checks passed;
+17 broader package/release checks passed in 63.38 seconds. These integration
+tests are not a clean-candidate release-compatibility receipt; that production
+receipt must still be generated after committing this repair.

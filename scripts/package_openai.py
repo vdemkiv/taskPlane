@@ -828,6 +828,10 @@ def produce_release_compatibility_receipt(
                             CANONICAL_AUTHORITY_FILES
                             if plugin == current else ()
                         ),
+                        expected_hook_manifest=(
+                            load_hook_manifest() if plugin == current else
+                            historical.load_hook_manifest()
+                        ),
                     )
                 else:
                     historical.validate_archive(archives[plugin])
@@ -1356,6 +1360,7 @@ def validate_archive(
     stage_runtime_files: tuple[str, ...] = STAGE_RUNTIME_FILES,
     release_surface_files: tuple[str, ...] = RELEASE_SURFACE_FILES,
     canonical_authority_files: tuple[str, ...] = CANONICAL_AUTHORITY_FILES,
+    expected_hook_manifest: dict | None = None,
 ) -> tuple[int, int]:
     require(path.is_file() and zipfile.is_zipfile(path), "output is not a readable ZIP")
     require(path.stat().st_size <= 100 * 1024 * 1024, "compressed ZIP exceeds 100 MB")
@@ -1483,8 +1488,13 @@ def validate_archive(
         except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise PackageError("ZIP contains an unreadable hooks/hooks.json") from exc
         validate_hook_manifest(hook_manifest)
+        # The matrix supplies the exact authority derived from the pinned
+        # release source, never from the archive being checked. Normal package
+        # validation continues to require this checkout's current authority.
+        hook_authority = (load_hook_manifest() if expected_hook_manifest is None
+                          else validate_hook_manifest(expected_hook_manifest))
         require(
-            hook_manifest == load_hook_manifest(),
+            hook_manifest == hook_authority,
             "ZIP installed SessionStart wiring does not match Codex authority",
         )
         require(
