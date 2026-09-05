@@ -9,7 +9,7 @@ import copy
 import json
 import os
 import re
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from . import design_contract, loop, phase_admission, phase_build, phase_handoff, phase_pickup, phase_plan, phase_producer, phase_review_host, review_evidence, taskplane_lite as kernel
@@ -180,6 +180,68 @@ def _native_contract(workspace: str, brief: dict[str, Any], handoff: dict[str, A
     return contract if build else phase_producer.bind_output_submission(workspace, contract, brief)
 
 
+def resolve_expected(workspace: str, expected: dict[str, Any], *,
+                     native_task_name: str) -> dict[str, Any] | None:
+    """Resolve hook dispatch through owner/review validation above admission.
+
+    This coordinator owns protocol routing. The lower admission adapter owns
+    intents and meters without importing either coordinator back.
+    """
+    matches = []
+    for slot in kernel.list_task_slots(workspace):
+        contract = kernel.load_json(kernel.active_contract_path(workspace, slot))
+        lifecycle = (contract or {}).get("worker_lifecycle") or {}
+        if str(lifecycle.get("stage") or "").startswith("phase-") and \
+                lifecycle.get("expected_task_name") == native_task_name:
+            matches.append(contract)
+    if not matches and not str(expected.get("intent_run_id") or "").startswith("phase-"):
+        return None
+    if len(matches) != 1:
+        raise ValueError("phase native intent has no unique pending contract")
+    contract = matches[0]
+    lifecycle = contract["worker_lifecycle"]
+    if lifecycle["status"] != "pending" or expected.get("task_name") != native_task_name:
+        raise ValueError("phase native intent is not the exact pending worker")
+    startup, brief = contract["phase_startup"], contract["phase_dispatch"]
+    if brief.get("task_name") != native_task_name or contract.get("task_id") != brief.get("task_slot"):
+        raise ValueError("phase native slot differs from its emitted brief")
+    review = brief.get("protocol") == "repository-phase-review"
+    if brief.get("protocol") not in {"repository-phase", "repository-phase-review"} or \
+            lifecycle.get("stage") != "phase-" + brief["phase"] + ("-review" if review else ""):
+        raise ValueError("phase native worker protocol differs from its lifecycle")
+    handoff_id = startup["full_envelope_reference"]["handoff_id"]
+    handoff = cast(dict[str, Any], phase_handoff.load_manifest(
+        workspace, phase_handoff.handoff_path(handoff_id), require_clean=True,
+        allow_phase_output=review))
+    if brief["phase"] == "build":
+        phase_pickup.validate_build_assignment(startup, handoff, checkout=workspace)
+    else:
+        kernel.validate_stateless_phase_startup(startup, handoff)
+    if review:
+        canonical = phase_review_host.validate_dispatch(workspace, handoff, contract)
+    else:
+        canonical = _hydrated_brief(workspace, handoff, startup)
+        policy = _native_contract(workspace, canonical, handoff)
+        if any(contract.get(key) != policy.get(key) for key in (
+                "coding", "read_only", "write_allow", "allowed_tools", "budget", "submission_contract")):
+            raise ValueError("phase native worker contract is stale or widened")
+    if brief != canonical:
+        raise ValueError("phase native worker brief is stale or widened")
+    if contract.get("phase_handoff_fingerprint") != handoff["fingerprint"] or \
+            expected.get("agent") != brief["role"] or expected.get("ref") != handoff_id or \
+            lifecycle.get("dispatch_intent_id") != expected.get("intent_id") or \
+            lifecycle.get("dispatch_intent_run_id") != expected.get("intent_run_id"):
+        raise ValueError("phase native intent authority is foreign")
+    intent = contract.get("phase_dispatch_intent")
+    if not isinstance(intent, dict):
+        raise ValueError("phase native intent is missing from its contract")
+    rebuilt = phase_admission.create_intent(workspace, handoff, brief, wait_policy=intent["wait_policy"])
+    if intent != rebuilt or expected.get("intent_id") != intent["intent_id"] or \
+            expected.get("intent_run_id") != intent["identity"]["run_id"]:
+        raise ValueError("phase native intent is stale or tampered")
+    return {"contract": contract, "handoff": handoff, "startup": startup, "brief": brief}
+
+
 def _dispatch_state(workspace: str, handoff: dict[str, Any], startup: dict[str, Any],
                     brief: dict[str, Any], contract: dict[str, Any], *,
                     observation_authority: bytes | None) -> dict[str, Any]:
@@ -189,7 +251,7 @@ def _dispatch_state(workspace: str, handoff: dict[str, Any], startup: dict[str, 
                 "instruction": "The current phase worker is already running; wait for its result."}
     admission: dict[str, Any] = {"dispatch_allowed": True, "status": "ready"}
     if brief["phase"] == "build":
-        admission = phase_admission.admit(
+        admission = phase_admission.screen_root_dispatch(
             workspace, handoff, startup, brief, reference=contract["phase_admission_reference"],
             observation_authority=observation_authority or b"")
     return {**brief, "activation": activation,
@@ -275,19 +337,7 @@ def bind_native_worker(workspace: str, handoff: dict[str, Any],
 
 def output_references(workspace: str, phase: str, *,
                       publish: bool = False) -> list[dict[str, Any]]:
-    paths = phase_handoff.phase_output_paths(phase)
-    outputs = [(paths[0], phase, "application/json"),
-               (paths[1], phase + "-narrative", "text/markdown")]
-    if phase == "design":
-        _, data = phase_handoff._safe_regular_file(workspace, paths[0], code="artifact-integrity")
-        visual = json.loads(data.decode("utf-8")).get("visualization") or {}
-        if visual.get("required"):
-            if visual.get("path") != "design/visual.html":
-                raise ValueError("repository-phase Design visualization must use design/visual.html")
-            outputs.append(("design/visual.html", "design-visual", "text/html"))
-    return [phase_handoff.create_repository_artifact_reference(
-        workspace, path, kind=kind, media_type=media, publish=publish)
-        for path, kind, media in outputs]
+    return phase_handoff.phase_output_references(workspace, phase, publish=publish)
 
 
 def completed_worker_brief(workspace: str, handoff: dict[str, Any], *,

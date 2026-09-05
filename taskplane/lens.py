@@ -19,6 +19,7 @@ import json
 import os
 
 import glob_match
+import lens_catalog
 import lens_route_policy
 import taskplane_lite as tp
 from path_roles import change_adds_no_test as _adds_no_test
@@ -29,8 +30,6 @@ from language_references import (
     language_quality_registry,
     language_references,
 )
-
-_CATALOG_CACHE: dict | None = None
 
 # Lenses whose judgement is worth a stronger model when the operator has
 # configured a `deep` model; the rest of the deep-tier lenses run `standard`
@@ -131,15 +130,7 @@ def _plugin_root() -> str:
 
 
 def load_catalog(root: str | None = None) -> dict:
-    global _CATALOG_CACHE
-    if _CATALOG_CACHE is not None and root is None:
-        return _CATALOG_CACHE
-    path = os.path.join(root or _plugin_root(), "lenses", "catalog.json")
-    with open(path, encoding="utf-8") as f:
-        cat = json.load(f)
-    if root is None:
-        _CATALOG_CACHE = cat
-    return cat
+    return lens_catalog.load_catalog(root)
 
 
 def focused_route(context: dict, verdict_map: dict,

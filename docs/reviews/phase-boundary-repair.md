@@ -53,9 +53,9 @@ No installed plugin cache, historical receipt, approval, old phase artifact or l
 The middle chain passing is not proof of a complete delivery workflow. The
 read-only audit of `5948bee` found two missing connections:
 
-- No public producer emits the schema-supported Requirement/done → Design
-  handoff. The current test constructs that initial artifact explicitly;
-  `loop.project_phase_export` accepts only Design, Plan and Build.
+- At that candidate, no public producer emitted the schema-supported Requirement/done → Design
+  handoff. The test constructed that initial artifact explicitly;
+  `loop.project_phase_export` accepted only Design, Plan and Build.
 - Build/done exports `terminal/terminal-evidence`, but no consumer carries it
   into stateless Evaluate, Engineering, sign-off or Retro. Generic
   `StageLifecycle` already supplies transactional isolated roots and
@@ -71,6 +71,54 @@ fresh checkout just by copying the JSON. Never export its secret. A successor
 must use an explicit verified-evidence intake or execute fresh independent
 proofs through the existing evaluator. These are unresolved release-claim
 limits; no finalization, Retro or Engineering PASS is inferred.
+
+### Initial entry and dependency-direction repair
+
+The existing public export command now accepts Requirement/done and emits the
+initial Design handoff. It requires clean committed selected Product inputs,
+the existing Product readiness check, exact requirement/graph/dependency
+artifacts and attributable initial human authorization. It creates no
+predecessor tasks, phase receipts or approval. All 31 entry tests passed,
+including separate-process pickup and refusal of private predecessor reads.
+
+CI on `5107884` caught real dependency cycles added by the middle-phase adapter.
+The repair extracts the catalog loader and output observation below their
+callers, moves protocol dispatch above admission, and gives Plan/Build/pickup
+one shared input/error layer. Compatibility facades preserve existing entry
+points. No import-cycle baseline, scanner, evidence rule or approval gate was
+relaxed. The exact ratchet returns `pass` with no violations; the prior SCCs
+remain 17 members/49 edges and 7 members/13 edges, with no new phase SCC.
+Targeted observer/catalog checks passed 39 tests; Build input/quality checks
+passed 37; native dispatch/review checks passed 12. These batches overlap
+earlier checks and are not summed into a unique-suite or native-run claim.
+
+Full strict typing passes for all 120 shipped source files. A local package
+test on this dirty workspace refuses the pre-existing modified hook config
+(`installed hook lacks the bounded plugin fallback`); that user-owned file is
+not part of this repair and remains unchanged. Release/package verification
+must use the clean PR candidate. Terminal Build → Evaluate/EM/Retro and live
+hook trust remain unresolved; this repair does not claim final delivery.
+
+The `5107884` full test job finished with 4,296 passed tests, six failures and
+596 passed subtests in 15m17s. The failures comprise two legacy Markdown-only
+Plan pickup fixtures, an empty-home Build test still expecting immediate native
+readiness, missing UTF-8 declarations, a static native-authority name collision,
+and stale facade scenario source metadata. Scenario
+metadata now identifies the existing plain-goal approval scenario explicitly;
+its only extracted source-flow addition is the prohibition on routing sealed
+handoffs through `loop next`. No historical run fingerprint, score or waiver
+is refreshed, and no new live evaluation is claimed.
+
+The three failing pickup selectors now pass using producer/consumer clone
+executables and full native Design inputs for positive Plan coverage. Empty-home
+Build explicitly requires `waiting` with dispatch disallowed. The authority
+checker matched any function named `admit`; this adapter actually screens an
+already declared dispatch through the existing authenticated root meter. Its
+real API is now `screen_root_dispatch`. The checker/forbidden set is unchanged.
+The exact authority test and four meter tests pass, including traps for task
+scheduling, reservations, new intents and worker lifecycle changes. Screening
+preserves contract bytes, task slots and root identity and changes only its
+telemetry binding. These tests use synthetic provider evidence.
 
 ## Measured host probe
 

@@ -271,11 +271,11 @@ def phase_review_output_paths(phase: str) -> list[str]:
     """
     phase_output_paths(phase)
     if TYPE_CHECKING or __package__:
-        from . import lens
+        from . import lens_catalog
     else:
-        import lens
+        import lens_catalog
     return [f"{phase}/review.json", *(
-        f"{phase}/lenses/{row['id']}.json" for row in lens.load_catalog()["lenses"])]
+        f"{phase}/lenses/{row['id']}.json" for row in lens_catalog.load_catalog()["lenses"])]
 
 
 def handoff_path(handoff_id: str) -> str:
@@ -521,6 +521,24 @@ def create_repository_artifact_reference(
 # Short, explicit aliases used by producer adapters.
 create_artifact_reference = create_repository_artifact_reference
 validate_artifact_reference = validate_repository_artifact_reference
+
+
+def phase_output_references(workspace: str, phase: str, *,
+                            publish: bool = False) -> list[JsonObject]:
+    """Select the same exact authored outputs for owner and review adapters."""
+    paths = phase_output_paths(phase)
+    outputs = [(paths[0], phase, "application/json"),
+               (paths[1], phase + "-narrative", "text/markdown")]
+    if phase == "design":
+        _, data = _safe_regular_file(workspace, paths[0], code="artifact-integrity")
+        visual = json.loads(data.decode("utf-8")).get("visualization") or {}
+        if visual.get("required"):
+            if visual.get("path") != "design/visual.html":
+                raise ValueError("repository-phase Design visualization must use design/visual.html")
+            outputs.append(("design/visual.html", "design-visual", "text/html"))
+    return [create_repository_artifact_reference(
+        workspace, path, kind=kind, media_type=media, publish=publish)
+        for path, kind, media in outputs]
 
 
 def create_human_gate_receipt(*, gate: str, actor: str, context: str,
@@ -1298,6 +1316,7 @@ __all__ = [
     "create_phase_handoff", "create_progress_receipt",
     "create_repository_artifact_reference", "handoff_identity", "handoff_path",
     "load_manifest", "load_phase_handoff", "manifest_fingerprint",
+    "phase_output_references",
     "progress_receipt_path", "publish_manifest", "publish_phase_handoff",
     "publish_progress_receipt", "receipt_fingerprint",
     "repository_identity", "validate_artifact_reference", "validate_manifest",

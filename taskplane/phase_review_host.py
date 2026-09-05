@@ -261,19 +261,13 @@ def validate_dispatch(workspace: str, handoff: Json, contract: Json) -> Json:
     if not isinstance(cached, dict):
         raise ValueError("phase review current cache is malformed")
     phase = phase_review._phase(handoff)
-    # Reuse the owner adapter's exact optional-visual output selection. Import
-    # lazily because the public phase command also calls this host adapter.
-    if TYPE_CHECKING:
-        from . import phase_dispatch
-    elif __package__:
-        from . import phase_dispatch
-    else:
-        import phase_dispatch
-    references = phase_dispatch.output_references(workspace, phase)
+    # Output selection is lower-owned; validating a review child does not
+    # depend on the higher owner dispatch coordinator.
+    references = phase_handoff.phase_output_references(workspace, phase)
     paths = phase_handoff.phase_output_paths(phase)[:2]
     if len(references) == 3:
         paths.append("design/visual.html")
-    contents = {reference["kind"]: phase_handoff._safe_regular_file(
+    contents = {str(reference["kind"]): phase_handoff._safe_regular_file(
         workspace, path, code="artifact-integrity")[1] for path, reference in zip(paths, references)}
     artifact = json.loads(contents[phase].decode("utf-8"))
     owner = {"protocol": "repository-phase", "phase": phase,

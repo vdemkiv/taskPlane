@@ -2616,6 +2616,11 @@ def project_phase_export(
         raise ValueError("durable phase progress fields are invalid")
     phase = str(phase or "")
     outcome = str(outcome or "")
+    if phase == "requirement":
+        from taskplane import phase_entry
+        return phase_entry.project_entry(
+            material, outcome=outcome, durable_progress=durable_progress,
+            receipt_evidence=receipt_evidence)
     if phase not in {"design", "plan", "build"} or \
             durable_progress.get("phase") != phase:
         raise ValueError("phase export progress belongs to another phase")
@@ -2769,6 +2774,9 @@ def publish_phase_export(
         material, phase=phase, outcome=outcome,
         durable_progress=durable_progress,
         receipt_evidence=receipt_evidence)
+    if phase == "requirement":
+        from taskplane import phase_entry
+        phase_entry.validate_entry(repository_root, handoff, product_dor=reqs.product_dor)
     publication = phase_handoff.publish_phase_handoff(
         repository_root, handoff)
     return {"handoff": handoff, "publication": publication}

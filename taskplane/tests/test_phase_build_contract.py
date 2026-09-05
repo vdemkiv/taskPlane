@@ -60,7 +60,8 @@ def test_existing_build_handoff_shared_ownership_refuses():
 
 
 def _git(root, *args):
-    return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+    return subprocess.check_output(["git", *args], cwd=root, text=True,
+                                   encoding="utf-8", errors="replace").strip()
 
 
 @pytest.fixture
@@ -273,7 +274,7 @@ def _quality_command(root, handoff):
     result = subprocess.run([sys.executable, "-B", str(Path(__file__).resolve().parents[1] / "tp.py"),
         "phase", "quality", "--request", ".git/quality-request.json", "--workspace", str(root)],
         cwd=root, env={**os.environ, "TASKPLANE_HOME": str(root.parent / "empty-runtime")},
-        text=True, capture_output=True, check=False)
+        text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
     assert result.stdout, result.stderr
     return result, json.loads(result.stdout)
 
@@ -351,3 +352,21 @@ def test_committed_quality_cli_never_silently_resets_existing_evidence(native_bu
     command, refused = _quality_command(root, handoff)
     assert command.returncode != 0 and refused["status"] == "refused"
     assert path.read_bytes() == original
+
+
+def test_phase_dependency_direction_has_no_pickup_plan_quality_cycle():
+    from taskplane import import_cycles
+    owned = {"taskplane.phase_pickup", "taskplane.phase_plan", "taskplane.phase_build",
+             "taskplane.phase_inputs"}
+    inventory = import_cycles.build_inventory(Path(__file__).resolve().parents[2])
+    assert [row for row in inventory["sccs"] if owned.intersection(row["members"])] == []
+
+
+def test_phase_pickup_keeps_shared_error_and_assignment_api_identity():
+    from taskplane import phase_inputs
+    assert phase_pickup.PhasePickupError is phase_inputs.PhasePickupError
+    assert phase_pickup._build_assignment is phase_inputs._build_assignment
+    assert phase_pickup.validate_build_assignment is phase_inputs.validate_build_assignment
+    error = phase_pickup.PhasePickupError("proof-invalid", "exact proof required")
+    assert error.public_result() == phase_inputs.PhasePickupError(
+        "proof-invalid", "exact proof required").public_result()

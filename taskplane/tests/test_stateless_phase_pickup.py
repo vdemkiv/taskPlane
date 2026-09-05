@@ -12,6 +12,7 @@ from typing import Callable
 import pytest
 
 from taskplane import phase_handoff, phase_pickup, taskplane_lite
+from taskplane.tests.test_design_portable_validation import design_inputs  # noqa: F401
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -148,6 +149,24 @@ def _published_checkout(tmp_path: Path, journey: str) \
     return root, handoff
 
 
+def _published_native_plan(tmp_path: Path, design_inputs) \
+        -> tuple[Path, dict[str, object]]:
+    """Reuse the substantive Design fixture, not legacy Markdown authority.
+
+    Its native lifecycle observations are explicitly synthetic protocol test
+    fixtures; this does not claim a real host review or human approval.
+    """
+    # Import after collection: this helper module itself reuses the legacy
+    # _published_checkout for Design entry and intentional compatibility tests.
+    from taskplane.tests.test_phase_dispatch import _complete_artifact_phase, _with_graph
+
+    root, handoff = _published_checkout(tmp_path, "design")
+    handoff = _with_graph(root, handoff, design_inputs[3])
+    path = _complete_artifact_phase(
+        root, phase_handoff.handoff_path(str(handoff["handoff_id"])), design_inputs[1])
+    return root, phase_handoff.load_phase_handoff(root, path)
+
+
 def _publish_source_advancing_plan(
         root: Path, *, initial_commit: str,
         initial_tree: str) -> dict[str, object]:
@@ -230,8 +249,9 @@ def test_source_advancing_authority_uses_repository_ancestry(
 )
 def test_public_phase_pickup_works_from_fresh_clone_and_empty_home(
         tmp_path: Path, journey: str, command: str, phase: str,
-        task_id: str | None) -> None:
-    producer, handoff = _published_checkout(tmp_path, journey)
+        task_id: str | None, design_inputs) -> None:
+    producer, handoff = (_published_native_plan(tmp_path, design_inputs)
+                         if journey == "plan" else _published_checkout(tmp_path, journey))
     consumer = tmp_path / "consumer"
     subprocess.run(["git", "clone", "-q", str(producer), str(consumer)],
                    check=True)
@@ -245,10 +265,15 @@ def test_public_phase_pickup_works_from_fresh_clone_and_empty_home(
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         encoding="utf-8", errors="replace", check=False)
 
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 0, completed.stdout + completed.stderr
     result = json.loads(completed.stdout)
+    expected_status, expected_code = (
+        ("waiting", "phase-waiting") if phase == "build" else ("ready", "phase-ready"))
     assert (result["status"], result["code"], result["phase"]) == (
-        "ready", "phase-ready", phase)
+        expected_status, expected_code, phase)
+    if phase == "build":
+        # A prepared assignment is not authenticated fresh-root admission.
+        assert result["dispatch"]["dispatch_allowed"] is False
     assert result["task_id"] == task_id
     assert result["handoff_fingerprint"] == handoff["fingerprint"]
     assert result["lineage"]["status"] == "verified"
@@ -260,13 +285,19 @@ def test_public_phase_pickup_works_from_fresh_clone_and_empty_home(
 )
 def test_public_completed_phase_export_starts_all_successor_work(
         tmp_path: Path, material_journey: str, producer_phase: str,
-        successor_phase: str) -> None:
-    producer = tmp_path / f"{producer_phase}-producer"
-    subprocess.run(["git", "clone", "-q", str(ROOT), str(producer)],
-                   check=True)
-    _git(producer, "config", "user.email", "phase-test@example.invalid")
-    _git(producer, "config", "user.name", "Phase test")
-    source = _handoff(producer, material_journey)
+        successor_phase: str, design_inputs) -> None:
+    if material_journey == "plan":
+        producer, source = _published_native_plan(tmp_path, design_inputs)
+        # Publish the already completed, validated Design from the current
+        # repository snapshot, retaining its exact prior approval and proof.
+        source["source"] = {"commit": _git(producer, "rev-parse", "HEAD"),
+                            "tree": _git(producer, "rev-parse", "HEAD^{tree}")}
+    else:
+        producer = tmp_path / f"{producer_phase}-producer"
+        subprocess.run(["git", "clone", "-q", str(ROOT), str(producer)], check=True)
+        _git(producer, "config", "user.email", "phase-test@example.invalid")
+        _git(producer, "config", "user.name", "Phase test")
+        source = _handoff(producer, material_journey)
     material = {key: source[key] for key in (
         "repository", "source", "requirement", "design", "plan",
         "obligations", "tasks", "contracts", "acceptance",
@@ -287,7 +318,7 @@ def test_public_completed_phase_export_starts_all_successor_work(
          "--workspace", str(producer)],
         cwd=producer, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace", check=False)
-    assert exported.returncode == 0, exported.stderr
+    assert exported.returncode == 0, exported.stdout + exported.stderr
     export_result = json.loads(exported.stdout)
     assert (export_result["status"], export_result["code"]) == (
         "complete", "phase-exported")
@@ -304,7 +335,7 @@ def test_public_completed_phase_export_starts_all_successor_work(
          "phase", "pickup", relative, "--workspace", str(consumer)],
         cwd=consumer, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace", check=False)
-    assert picked_up.returncode == 0, picked_up.stderr
+    assert picked_up.returncode == 0, picked_up.stdout + picked_up.stderr
     result = json.loads(picked_up.stdout)
     obligation_ids = [row["id"] for row in handoff["obligations"]]
     startup_obligations = (

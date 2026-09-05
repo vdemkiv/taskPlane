@@ -48,8 +48,8 @@ def prepared(tmp_path, monkeypatch):
 
 def _admit(prepared, authority=AUTHORITY):
     checkout, handoff, startup, brief, preparation, _contract = prepared
-    return phase_admission.admit(str(checkout), handoff, startup, brief,
-                                 reference=preparation["reference"], observation_authority=authority)
+    return phase_admission.screen_root_dispatch(str(checkout), handoff, startup, brief,
+                                                reference=preparation["reference"], observation_authority=authority)
 
 
 def _observe(prepared, tmp_path, *, total=100, resumed=False, session="root-session"):
@@ -94,6 +94,58 @@ def test_authenticated_phase_root_uses_existing_atomic_admission_and_replay(prep
         _admit(prepared, authority=b"foreign-provider-authority")
 
 
+def test_root_screening_only_binds_existing_telemetry_not_execution_authority(
+        prepared, tmp_path, monkeypatch):
+    _observe(prepared, tmp_path)
+    checkout, handoff, startup, brief, preparation, _contract = prepared
+    before = phase_admission._load(str(checkout), preparation["reference"])
+    contract_path = Path(kernel.active_contract_path(str(checkout), brief["task_slot"]))
+    contract_bytes = contract_path.read_bytes()
+    slots = kernel.list_task_slots(str(checkout))
+    forbidden_calls = []
+    reconstructed_receipts = []
+    seal_root_receipt = phase_admission.host_native.start_root_session
+
+    def forbidden(*_args, **_kwargs):
+        forbidden_calls.append(True)
+        raise AssertionError("root screening invoked execution authority")
+
+    def reconstruct_root_receipt(*args, **kwargs):
+        # Receipt verification reuses this pure constructor; it does not launch a root.
+        receipt = seal_root_receipt(*args, **kwargs)
+        reconstructed_receipts.append(receipt)
+        return receipt
+
+    for name in ("prepare_worker_contract", "activate", "bind_worker_contract_event",
+                 "terminalize_worker_contract", "record_worker_terminal", "stage_runtime_dispatch"):
+        monkeypatch.setattr(kernel, name, forbidden)
+    for name in ("_stage_loop_wave_dispatches", "_stage_loop_dispatch"):
+        monkeypatch.setattr(loop, name, forbidden)
+    monkeypatch.setattr(loop.runtime_storage, "claim_stage_execution_root_for_run", forbidden)
+    monkeypatch.setattr(phase_admission.governed_commands, "execute", forbidden)
+    monkeypatch.setattr(phase_admission.governed_commands, "reserve_owned_handoff", forbidden)
+    monkeypatch.setattr(phase_admission.host_native, "start_root_session", reconstruct_root_receipt)
+    monkeypatch.setattr(phase_admission, "create_intent", forbidden)
+
+    decision = phase_admission.screen_root_dispatch(
+        str(checkout), handoff, startup, brief, reference=preparation["reference"],
+        observation_authority=AUTHORITY)
+
+    assert decision["dispatch_allowed"] is True
+    assert forbidden_calls == []
+    assert reconstructed_receipts
+    assert all(receipt == before["host_start"] for receipt in reconstructed_receipts)
+    assert contract_path.read_bytes() == contract_bytes
+    assert kernel.list_task_slots(str(checkout)) == slots
+    after = phase_admission._load(str(checkout), preparation["reference"])
+    assert {key: value for key, value in after.items() if key != "ledger"} == {
+        key: value for key, value in before.items() if key != "ledger"}
+    assert len(after["ledger"]["bindings"]) == 1
+    assert after["ledger"]["bindings"][0]["dispatch_id"] == preparation["intent"]["intent_id"]
+    assert after["ledger"]["dispatches"] == []
+    assert after["intent"]["evidence"]["execution_observed"] is False
+
+
 def test_started_phase_worker_remains_the_current_meter_owner(prepared):
     checkout, _handoff, _startup, brief, preparation, _contract = prepared
     bound = kernel.bind_worker_contract_event(str(checkout), {
@@ -130,8 +182,8 @@ def test_phase_admission_rejects_foreign_cache_and_unsafe_reference(prepared, ca
         altered = copy.deepcopy(brief)
         altered["producer_contract"]["attempt_id"] = "foreign-attempt"
         with pytest.raises(ValueError, match="foreign"):
-            phase_admission.admit(str(checkout), handoff, startup, altered,
-                                  reference=reference, observation_authority=AUTHORITY)
+            phase_admission.screen_root_dispatch(str(checkout), handoff, startup, altered,
+                                                reference=reference, observation_authority=AUTHORITY)
         return
     if case == "symlink":
         source = tmp_path / "foreign.json"

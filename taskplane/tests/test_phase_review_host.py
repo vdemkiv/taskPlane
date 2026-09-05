@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from taskplane import phase_admission, phase_dispatch, phase_handoff, phase_review_host
+from taskplane import phase_dispatch, phase_handoff, phase_review_host
 from taskplane import taskplane_lite as kernel
 from taskplane.tests.test_stateless_phase_pickup import _authority_chain, _git, _published_checkout
 
@@ -198,7 +198,7 @@ def test_nonfirst_child_hook_resolution_rebuilds_actual_selected_candidate(tmp_p
     assert canonical["task_name"] == brief["task_name"]
     queue = kernel.load_json(str(Path(kernel.tp_dir(fixture[0])) / "expected_dispatch.json"))
     expected = next(row for row in queue if row["task_name"] == brief["task_name"])
-    resolved = phase_admission.resolve_expected(fixture[0], expected, native_task_name=brief["task_name"])
+    resolved = phase_dispatch.resolve_expected(fixture[0], expected, native_task_name=brief["task_name"])
     assert resolved["brief"] == canonical
 
 

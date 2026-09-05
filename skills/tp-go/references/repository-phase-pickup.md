@@ -6,6 +6,19 @@ It is distinct from `loop next`: do not recreate or consult predecessor loop
 state to fill gaps. Older Design/Plan documents without a valid handoff are
 reference input for a newly authorized phase, not pickup authority.
 
+For a new Design with no predecessor handoff, use the same `phase export
+--request <repository-relative-json>` command. Its request has `phase:
+"requirement"`, `outcome: "done"`, `durable_progress: {"phase": "requirement",
+"state": "terminal", "outcome": "done"}`, and the existing handoff `material`.
+Select and commit the full requirement, baseline graph, and exactly its declared
+dependency requirement JSON artifacts first. Bind the material to that clean
+source and its explicit attributable initial authorization; the command does
+not infer or mint approval. Design/Plan must be null, tasks and progress receipts
+empty, and both predecessor lineage values null. Product readiness and exact
+acceptance/contract coverage are checked before publication. Commit the export,
+then pass the returned `handoff_path` to a fresh Design pickup. Missing legacy
+inputs need refinement, not synthetic predecessor state.
+
 Run `phase pickup <handoff>` for its declared next phase, or `phase resume
 <handoff>` for an interrupted same-phase handoff. The response contains the
 current owner dispatch. Resolve its package-relative role reference and verify

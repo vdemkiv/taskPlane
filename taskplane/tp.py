@@ -1614,7 +1614,8 @@ def cmd_screen_dispatch(a) -> int:
                 import spend as _spend
                 import loop as _loop_runtime
                 import phase_admission as _phase_admission
-                phase_binding = _phase_admission.resolve_expected(
+                import phase_dispatch as _phase_dispatch
+                phase_binding = _phase_dispatch.resolve_expected(
                     ws, exp, native_task_name=str(agent))
                 transcript = _spend.event_transcript(event)
                 if not transcript:
@@ -1643,7 +1644,7 @@ def cmd_screen_dispatch(a) -> int:
                     _phase_admission.observe_pending(
                         ws, phase_binding["contract"], snapshot=native_snapshot,
                         capability=capability, observation_authority=authority)
-                    admission = _phase_admission.admit(
+                    admission = _phase_admission.screen_root_dispatch(
                         ws, phase_binding["handoff"], phase_binding["startup"],
                         phase_binding["brief"], reference=phase_binding["contract"][
                             "phase_admission_reference"], observation_authority=authority)
@@ -8241,6 +8242,7 @@ def cmd_phase_export(a: argparse.Namespace) -> int:
             "outcome": handoff["producer"]["outcome"],
             "handoff_id": handoff["handoff_id"],
             "handoff_fingerprint": handoff["fingerprint"],
+            "handoff_path": phase_handoff.handoff_path(handoff["handoff_id"]),
             "repository_id": handoff["repository"]["id"],
             "source": handoff["source"],
             "artifact_count": publication["artifact_count"],
@@ -8655,7 +8657,7 @@ def main(argv=None) -> int:
     phase_sub = phase_parser.add_subparsers(
         dest="phase_action", required=True)
     phase_export = phase_sub.add_parser(
-        "export", help="publish one sealed Design or Plan phase handoff")
+        "export", help="publish one sealed Requirement, Design, or Plan handoff")
     phase_export.add_argument(
         "--request", required=True,
         help="repository-relative phase export request JSON")

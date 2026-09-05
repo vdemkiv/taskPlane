@@ -4936,9 +4936,11 @@ def apply_foreign_state_exclusions(contract: dict, workspace: str, *,
 
 # ------------------------------------------------------ submission authority
 
-SUBMISSION_CONTRACT_SCHEMA = "taskplane.submission-contract/v1"
+if __package__:
+    from .phase_output import SUBMISSION_CONTRACT_SCHEMA, SUBMISSION_ARTIFACT_MAX_BYTES
+else:
+    from phase_output import SUBMISSION_CONTRACT_SCHEMA, SUBMISSION_ARTIFACT_MAX_BYTES
 SUBMISSION_STATUS_SCHEMA = "taskplane.submission-status/v1"
-SUBMISSION_ARTIFACT_MAX_BYTES = 1024 * 1024
 
 REVIEW_CONTRACT_ACTION_SCHEMA = "taskplane.review-contract-action/v1"
 REVIEW_CONTRACT_AUTHORITY_SCHEMA = \
@@ -5565,7 +5567,7 @@ def submission_status(workspace: str, contract: dict, *,
     if locator_type == "artifact":
         return _artifact_submission_status(workspace, contract, binding)
     if locator_type == "phase_output":
-        return _phase_producer().submission_status(workspace, contract, binding)
+        return _phase_submission_status(workspace, contract, binding)
     return _submission_result(contract, binding, "corrupt")
 
 
@@ -5721,8 +5723,10 @@ def budget_status(contract: dict, used_actions: int,
 
 _TASK_SLOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
-WORKER_CONTRACT_LIFECYCLE_SCHEMA = \
-    "taskplane.worker-contract-lifecycle/v1"
+if __package__:
+    from .phase_output import WORKER_CONTRACT_LIFECYCLE_SCHEMA
+else:
+    from phase_output import WORKER_CONTRACT_LIFECYCLE_SCHEMA
 WORKER_RELEASE_ACTION_SCHEMA = "taskplane.worker-contract-release-action/v1"
 WORKER_TERMINAL_RECEIPT_SCHEMA = \
     "taskplane.worker-contract-terminal-receipt/v1"
@@ -5754,12 +5758,26 @@ def _design_host_transport():
     return runtime
 
 
-def _phase_producer():
+def _phase_output():
     if __package__:
-        from . import phase_producer as runtime
+        from . import phase_output as runtime
     else:
-        import phase_producer as runtime
+        import phase_output as runtime
     return runtime
+
+
+def _phase_submission_status(workspace: str, contract: dict, binding: dict) -> dict:
+    observed = _phase_output().observe_terminal_output(
+        workspace, contract, workspace_fingerprint=_workspace_identity_fingerprint(workspace))
+    status = str((observed or {}).get("status") or "corrupt")
+    valid = status == "observed"
+    return _submission_result(
+        contract, binding, "valid" if valid else status, valid=valid, block=not valid,
+        artifact=("exact phase lens result JSON" if (observed or {}).get(
+            "protocol") == "repository-phase-review" else
+            "exact phase machine and narrative files (plus required Design visual)"),
+        recovery="write the required phase files, then return to the orchestrator; "
+                 "the worker need not seal result.json")
 
 
 def portable_role_reference(agent: str) -> dict:
@@ -6306,7 +6324,9 @@ def record_worker_terminal(
             workspace, "worker terminal authority is unsupported")
     terminal_at = int(_time.time() if now is None else now)
     normalized = normalize_worker_terminal_outcome(outcome)
-    phase_output = (_phase_producer().observe_terminal_output(workspace, contract)
+    phase_output = (_phase_output().observe_terminal_output(
+                        workspace, contract,
+                        workspace_fingerprint=_workspace_identity_fingerprint(workspace))
                     if authority == "host-lifecycle" else None)
     if phase_output is not None and phase_output["status"] != "observed" and normalized == "success":
         normalized = "failure"
@@ -6434,7 +6454,7 @@ def _verify_worker_terminal_receipt(workspace: str, slot: str,
                                     action: dict) -> None:
     fields = _WORKER_TERMINAL_FIELDS
     if isinstance(receipt, dict) and "phase_output" in receipt:
-        if not _phase_producer().is_phase_contract(contract) or \
+        if not _phase_output().is_phase_contract(contract) or \
                 receipt.get("authority") != "host-lifecycle":
             raise _worker_lifecycle_error(
                 workspace, "worker terminal receipt has foreign phase output")
@@ -6453,7 +6473,7 @@ def _verify_worker_terminal_receipt(workspace: str, slot: str,
             workspace, "worker terminal receipt signature is invalid")
     if "phase_output" in receipt:
         try:
-            _phase_producer().validate_terminal_observation(
+            _phase_output().validate_terminal_observation(
                 receipt["phase_output"], contract["phase_dispatch"])
         except ValueError as exc:
             raise _worker_lifecycle_error(

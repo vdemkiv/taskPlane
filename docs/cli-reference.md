@@ -92,7 +92,7 @@ not repeated in the tables.
 | `tp.py north-star` | on-demand strategic review: print the project's north star, or render a strategic note |
 | `tp.py onboard` | cold-start readiness — folder + git snapshot + init; renders the onboarding dashboard |
 | `tp.py phase` | export or continue sealed repository phase handoffs |
-| `tp.py phase export` | publish one sealed Design or Plan phase handoff |
+| `tp.py phase export` | publish one sealed Requirement, Design, or Plan handoff |
 | `tp.py phase pickup` | return a safe startup for the declared next phase |
 | `tp.py phase quality` | begin empty quality evidence for the committed Build candidate |
 | `tp.py phase resume` | return a safe startup for interrupted same-phase work |
@@ -956,7 +956,7 @@ export or continue sealed repository phase handoffs
 
 ## `tp.py phase export`
 
-publish one sealed Design or Plan phase handoff
+publish one sealed Requirement, Design, or Plan handoff
 
 | Flag | Value | What it does |
 | --- | --- | --- |

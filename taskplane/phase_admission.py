@@ -185,10 +185,15 @@ def prepare(workspace: str, handoff: dict[str, Any], startup: dict[str, Any],
             "dispatch_allowed": False}
 
 
-def admit(workspace: str, handoff: dict[str, Any], startup: dict[str, Any],
-          brief: dict[str, Any], *, reference: str,
-          observation_authority: bytes) -> dict[str, Any]:
-    """Atomically consume authenticated host observations, never intent alone."""
+def screen_root_dispatch(workspace: str, handoff: dict[str, Any], startup: dict[str, Any],
+                         brief: dict[str, Any], *, reference: str,
+                         observation_authority: bytes) -> dict[str, Any]:
+    """Screen one declared dispatch using authenticated root-meter evidence.
+
+    Only the existing telemetry screen/binding is persisted. This adapter
+    neither schedules tasks nor reserves capacity nor starts worker lifecycle;
+    the native host remains the execution owner.
+    """
     identity = _identity(handoff, brief)
     phase_pickup.validate_build_assignment(startup, handoff, checkout=workspace)
     path = _cache_path(workspace, reference)
@@ -232,72 +237,6 @@ def pending_contract(workspace: str) -> dict[str, Any] | None:
     if len(matches) > 1:
         raise ValueError("current phase root observation owner is ambiguous")
     return matches[0] if matches else None
-
-
-def resolve_expected(workspace: str, expected: dict[str, Any], *,
-                     native_task_name: str) -> dict[str, Any] | None:
-    """Revalidate a phase intent against its one exact pending native slot."""
-    matches = []
-    for slot in kernel.list_task_slots(workspace):
-        contract = kernel.load_json(kernel.active_contract_path(workspace, slot))
-        lifecycle = (contract or {}).get("worker_lifecycle") or {}
-        if str(lifecycle.get("stage") or "").startswith("phase-") and \
-                lifecycle.get("expected_task_name") == native_task_name:
-            matches.append(contract)
-    if not matches and not str(expected.get("intent_run_id") or "").startswith("phase-"):
-        return None
-    if len(matches) != 1:
-        raise ValueError("phase native intent has no unique pending contract")
-    contract = matches[0]
-    lifecycle = contract["worker_lifecycle"]
-    if lifecycle["status"] != "pending" or expected.get("task_name") != native_task_name:
-        raise ValueError("phase native intent is not the exact pending worker")
-    startup, brief = contract["phase_startup"], contract["phase_dispatch"]
-    if brief.get("task_name") != native_task_name or contract.get("task_id") != brief.get("task_slot"):
-        raise ValueError("phase native slot differs from its emitted brief")
-    review = brief.get("protocol") == "repository-phase-review"
-    if brief.get("protocol") not in {"repository-phase", "repository-phase-review"} or \
-            lifecycle.get("stage") != "phase-" + brief["phase"] + ("-review" if review else ""):
-        raise ValueError("phase native worker protocol differs from its lifecycle")
-    handoff_id = startup["full_envelope_reference"]["handoff_id"]
-    handoff = cast(dict[str, Any], phase_handoff.load_manifest(
-        workspace, phase_handoff.handoff_path(handoff_id), require_clean=True,
-        allow_phase_output=review))
-    if brief["phase"] == "build":
-        phase_pickup.validate_build_assignment(startup, handoff, checkout=workspace)
-    else:
-        kernel.validate_stateless_phase_startup(startup, handoff)
-    if review:
-        if TYPE_CHECKING or __package__:
-            from . import phase_review_host
-        else:
-            import phase_review_host
-        canonical = phase_review_host.validate_dispatch(workspace, handoff, contract)
-    else:
-        if TYPE_CHECKING or __package__:
-            from . import phase_dispatch
-        else:
-            import phase_dispatch
-        canonical = phase_dispatch._hydrated_brief(workspace, handoff, startup)
-        policy = phase_dispatch._native_contract(workspace, canonical, handoff)
-        if any(contract.get(key) != policy.get(key) for key in (
-                "coding", "read_only", "write_allow", "allowed_tools", "budget", "submission_contract")):
-            raise ValueError("phase native worker contract is stale or widened")
-    if brief != canonical:
-        raise ValueError("phase native worker brief is stale or widened")
-    if contract.get("phase_handoff_fingerprint") != handoff["fingerprint"] or \
-            expected.get("agent") != brief["role"] or expected.get("ref") != handoff_id or \
-            lifecycle.get("dispatch_intent_id") != expected.get("intent_id") or \
-            lifecycle.get("dispatch_intent_run_id") != expected.get("intent_run_id"):
-        raise ValueError("phase native intent authority is foreign")
-    intent = contract.get("phase_dispatch_intent")
-    if not isinstance(intent, dict):
-        raise ValueError("phase native intent is missing from its contract")
-    rebuilt = create_intent(workspace, handoff, brief, wait_policy=intent["wait_policy"])
-    if intent != rebuilt or expected.get("intent_id") != intent["intent_id"] or \
-            expected.get("intent_run_id") != intent["identity"]["run_id"]:
-        raise ValueError("phase native intent is stale or tampered")
-    return {"contract": contract, "handoff": handoff, "startup": startup, "brief": brief}
 
 
 def observe_pending(workspace: str, contract: dict[str, Any], *, snapshot: dict[str, Any],

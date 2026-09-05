@@ -17,13 +17,13 @@ import subprocess
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING or __package__:
-    from . import build_quality, checkpoint, loop, phase_handoff, phase_pickup, phase_plan, taskplane_lite as kernel
+    from . import build_quality, checkpoint, loop, phase_handoff, phase_inputs, phase_plan, taskplane_lite as kernel
 else:
     import build_quality
     import checkpoint
     import loop
     import phase_handoff
-    import phase_pickup
+    import phase_inputs
     import phase_plan
     import taskplane_lite as kernel
 
@@ -33,18 +33,18 @@ def resolve_native_task(workspace: str, handoff: dict[str, Any], task: dict[str,
     phase_plan.validate_obligation_ownership(handoff, handoff["tasks"])
     reference = handoff["plan"]["artifact"]
     if [row for row in handoff["selected_artifacts"] if row["kind"] == "plan"] != [reference]:
-        raise phase_pickup.PhasePickupError("authoring-invalid", "selected Plan authority is ambiguous")
+        raise phase_inputs.PhasePickupError("authoring-invalid", "selected Plan authority is ambiguous")
     phase_handoff.validate_repository_artifact_reference(workspace, reference)
     if reference["media_type"] == "text/markdown":
         return None
     if reference["media_type"] != "application/json":
-        raise phase_pickup.PhasePickupError("authoring-invalid", "Plan artifact format is unsupported")
+        raise phase_inputs.PhasePickupError("authoring-invalid", "Plan artifact format is unsupported")
     plan = phase_plan.selected_json(workspace, handoff, "plan")
     phase_plan.validate_identity(handoff, plan)
     projected = phase_plan.project_tasks(plan, handoff)
     matches = [row for row in projected if row["id"] == task["id"]]
     if projected != handoff["tasks"] or matches != [task]:
-        raise phase_pickup.PhasePickupError("scope-widened", "native Plan task projection differs from sealed Build task")
+        raise phase_inputs.PhasePickupError("scope-widened", "native Plan task projection differs from sealed Build task")
     native = next(row for row in plan["tasks"] if row["id"] == task["id"])
     return {**loop._build_task_brief(native),
             **({"title": native["title"]} if "title" in native else {})}
@@ -52,7 +52,7 @@ def resolve_native_task(workspace: str, handoff: dict[str, Any], task: dict[str,
 
 def quality_path(handoff: dict[str, Any], task: dict[str, Any]) -> str:
     if kernel.plan_task_id_errors([task]) or not re.fullmatch(r"[0-9a-f]{64}", handoff["plan"]["fingerprint"]):
-        raise phase_pickup.PhasePickupError("authoring-invalid", "quality receipt identity is invalid")
+        raise phase_inputs.PhasePickupError("authoring-invalid", "quality receipt identity is invalid")
     return f".taskplane/phase-quality/{task['id']}-{handoff['plan']['fingerprint']}.json"
 
 
@@ -89,7 +89,7 @@ def _quality_authority(workspace: str, handoff: dict[str, Any], native: dict[str
             raise ValueError("native quality authority is missing")
         _, strategy = loop._test_strategy_artifact(workspace, native["test_strategy_authority"])
     except (ValueError, OSError) as exc:
-        raise phase_pickup.PhasePickupError("proof-invalid", "approved native quality authority is invalid") from exc
+        raise phase_inputs.PhasePickupError("proof-invalid", "approved native quality authority is invalid") from exc
     return state, authority, strategy
 
 
@@ -102,7 +102,7 @@ def _quality_context(workspace: str, handoff: dict[str, Any], assignment: dict[s
     state, authority, strategy = _quality_authority(workspace, handoff, native)
     native["test_strategy_authority_receipt"] = authority
     if kernel.git_head(workspace) != authored["revision"]:
-        raise phase_pickup.PhasePickupError("proof-invalid", "quality candidate is stale")
+        raise phase_inputs.PhasePickupError("proof-invalid", "quality candidate is stale")
     binding = loop._build_quality_binding(workspace, state, native, "build")
     expected = build_quality.begin_receipt(
         strategy, binding=binding,
@@ -113,25 +113,25 @@ def _quality_context(workspace: str, handoff: dict[str, Any], assignment: dict[s
 
 
 def begin_quality_receipt(workspace: str, handoff: dict[str, Any], assignment: dict[str, Any]) -> dict[str, Any]:
-    admitted = phase_pickup.validate_build_assignment(assignment, handoff, checkout=workspace)
+    admitted = phase_inputs.validate_build_assignment(assignment, handoff, checkout=workspace)
     authored = checkpoint.mint_phase_authoring_result(workspace, task=admitted["task"], assignment=admitted)
     context = _quality_context(workspace, handoff, admitted, authored)
     if context is None:
-        raise phase_pickup.PhasePickupError("proof-invalid", "this task has no approved native quality contract")
+        raise phase_inputs.PhasePickupError("proof-invalid", "this task has no approved native quality contract")
     return context[2]
 
 
 def _local_quality_path(workspace: str, relative: str) -> str:
     path = os.path.abspath(os.path.join(workspace, relative))
     if os.path.realpath(path) != path or os.path.commonpath((workspace, path)) != workspace:
-        raise phase_pickup.PhasePickupError("proof-invalid", "quality receipt path is unsafe")
+        raise phase_inputs.PhasePickupError("proof-invalid", "quality receipt path is unsafe")
     ignored = subprocess.run(["git", "check-ignore", "-q", "--", relative], cwd=workspace,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    tracked = phase_pickup._git(workspace, "ls-files", "--", relative)
+    tracked = phase_inputs._git(workspace, "ls-files", "--", relative)
     if ignored.returncode or tracked:
-        raise phase_pickup.PhasePickupError("proof-invalid", "quality receipt must remain ignored and untracked")
+        raise phase_inputs.PhasePickupError("proof-invalid", "quality receipt must remain ignored and untracked")
     if os.path.lexists(path) and not stat.S_ISREG(os.lstat(path).st_mode):
-        raise phase_pickup.PhasePickupError("proof-invalid", "quality receipt path is not a regular file")
+        raise phase_inputs.PhasePickupError("proof-invalid", "quality receipt path is not a regular file")
     return path
 
 
@@ -154,9 +154,9 @@ def _prior_candidate(workspace: str, receipt: dict[str, Any], expected: dict[str
     revision = match.group(1)
     if revision == kernel.git_head(workspace):
         raise ValueError("current candidate quality cannot be reset")
-    phase_pickup._git(workspace, "merge-base", "--is-ancestor", assignment["base_revision"], revision)
-    phase_pickup._git(workspace, "merge-base", "--is-ancestor", revision, "HEAD")
-    changed = sorted(filter(None, phase_pickup._git(
+    phase_inputs._git(workspace, "merge-base", "--is-ancestor", assignment["base_revision"], revision)
+    phase_inputs._git(workspace, "merge-base", "--is-ancestor", revision, "HEAD")
+    changed = sorted(filter(None, phase_inputs._git(
         workspace, "diff", "--name-only", "-z", assignment["base_revision"], revision, "--").split("\0")))
     if receipt["changed_paths"] != changed:
         raise ValueError("prior quality changed paths differ")
@@ -179,11 +179,11 @@ def prepare_committed_quality(workspace: str, handoff: dict[str, Any], task_id: 
     receipt is retained byte-for-byte locally before an empty seed replaces it.
     """
     workspace = os.path.realpath(workspace)
-    checked = phase_pickup._validated_repository_handoff(workspace, handoff, allowed_task_id=task_id)
-    phase_pickup._validate_plan_proofs(workspace, checked)
-    task = phase_pickup.select_ready_build_task(checked, requested_task=task_id)
+    checked = phase_inputs._validated_repository_handoff(workspace, handoff, allowed_task_id=task_id)
+    phase_inputs._validate_plan_proofs(workspace, checked)
+    task = phase_inputs.select_ready_build_task(checked, requested_task=task_id)
     manifest_path = phase_handoff.handoff_path(checked["handoff_id"])
-    assignment = phase_pickup._build_assignment(checked, task=task, base_revision=phase_pickup._git(
+    assignment = phase_inputs._build_assignment(checked, task=task, base_revision=phase_inputs._git(
         workspace, "log", "-1", "--format=%H", "--", manifest_path))
     try:
         expected = begin_quality_receipt(workspace, checked, assignment)
@@ -221,7 +221,7 @@ def prepare_committed_quality(workspace: str, handoff: dict[str, Any], task_id: 
                 phase_handoff._create_if_absent(workspace, relative, phase_handoff.canonical_bytes(expected))
             return {"path": relative, "receipt": expected, "reused": False, "retained_path": retained}
     except (ValueError, OSError, checkpoint.PhaseAuthoringError, phase_handoff.PhaseHandoffError) as exc:
-        raise phase_pickup.PhasePickupError("proof-invalid", "quality receipt initialization refused; preserve existing evidence and repair its exact input") from exc
+        raise phase_inputs.PhasePickupError("proof-invalid", "quality receipt initialization refused; preserve existing evidence and repair its exact input") from exc
 
 
 def admit_quality(workspace: str, handoff: dict[str, Any], assignment: dict[str, Any],
@@ -241,7 +241,7 @@ def admit_quality(workspace: str, handoff: dict[str, Any], assignment: dict[str,
             if admitted[field] != expected[field]:
                 raise ValueError("quality evidence scope differs from approved task")
     except (ValueError, OSError, phase_handoff.PhaseHandoffError) as exc:
-        raise phase_pickup.PhasePickupError("proof-invalid", "current native Build-quality receipt is missing, incomplete, or stale") from exc
+        raise phase_inputs.PhasePickupError("proof-invalid", "current native Build-quality receipt is missing, incomplete, or stale") from exc
     data = phase_handoff.canonical_bytes(admitted)
     digest = phase_handoff.canonical_fingerprint(admitted)
     artifact = {"schema": phase_handoff.ARTIFACT_REFERENCE_SCHEMA,
