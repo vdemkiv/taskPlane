@@ -84,6 +84,15 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.19.1": {
+        "reason": "superseded unreleased stateless-pickup candidate. Native "
+                  "Design/Plan producer and consumer contracts, initial "
+                  "Requirement export, Build quality completion, and phase "
+                  "dependency direction required the 2.19.2 wiring repair. "
+                  "Local installation and package preparation did not "
+                  "constitute a release; 2.19.1 was not tagged.",
+        "superseded_by": "2.19.2",
+    },
     "2.19.0": {
         "reason": "superseded unreleased bootstrap candidate. The stateless "
                   "Design, Plan, and Build pickup fixes are prepared together "

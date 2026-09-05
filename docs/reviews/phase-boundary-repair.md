@@ -135,3 +135,22 @@ native hook browser confirmed nine installed hooks, zero active, all nine
 requiring review. Trust has not been changed and no bypass flag was used.
 Therefore this probe demonstrates launcher resolution, not native phase
 execution or end-to-end sign-off.
+
+## Next patch candidate preparation
+
+The routine version-bump authorization is being applied as candidate 2.19.2,
+not a release. Both plugin manifests, the Claude marketplace package metadata,
+the runtime version and the existing compatibility matrix name 2.19.2.
+The verified last-released 2.17.20 baseline and 2.18.0 compatibility generation
+are unchanged. The untagged 2.19.1 source is recorded as a superseded candidate;
+no tag, installation or historical receipt is changed. On 2026-09-05, the
+remote main remained `b0dcda0a3deff70947e93cf1be5af2f90cec3236`, with no
+`v2.19.1` or `v2.19.2` tag.
+
+Version consistency, plugin validation and release-history validation pass;
+19 focused release tests pass. Package checks require a clean committed
+candidate because the unrelated local hook edit still fails the OpenAI
+package precondition. Candidate `e903733` has already passed its clean-checkout
+20-test package/dependency/authority check and ten scenario subtests. Those
+receipts are not transferred to 2.19.2, and do not substitute for the pending
+native canary, Engineering, Retro or protected release evidence.
