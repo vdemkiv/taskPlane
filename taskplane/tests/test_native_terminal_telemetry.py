@@ -76,6 +76,7 @@ def _screen_dispatch(
         workspace: str, expected: dict, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str], *,
         fork_turns: str | None = "none",
+        message: object = "taskplane-role:tp-executor",
         preflight_tokens: int | None = 2) -> list[dict]:
     event = {
         "cwd": workspace,
@@ -83,7 +84,7 @@ def _screen_dispatch(
             "task_name": expected["task_name"],
             "model": None,
             "reasoning_effort": "medium",
-            "message": _role_marker(),
+            "message": message,
         },
     }
     if preflight_tokens is not None:
@@ -896,6 +897,29 @@ def test_null_or_zero_native_meter_refuses_before_worker_dispatch_binding(
     assert "native_session_telemetry" not in state
     assert tp.peek_expectation(
         workspace, expected["task_name"], strict=True)["matched"] is False
+
+
+@pytest.mark.parametrize("message, shape", [
+    ("gAAAA-fixture-opaque-message-do-not-log", "str/39-chars/1-lines"),
+    ({"content": "private-fixture-do-not-log"}, "dict/0-chars/0-lines"),
+    ("prefix taskplane-role:tp-executor suffix", "str/40-chars/1-lines"),
+])
+def test_unobservable_role_reports_only_input_shape_without_retry_loop(
+        tmp_path, monkeypatch, capsys, message, shape):
+    workspace = str(tmp_path)
+    loop.save(workspace, _state())
+    expected = _record_expectation(workspace, label="unobservable-role")
+    output = _screen_dispatch(workspace, expected, monkeypatch, capsys, message=message)
+    denial = next(row["hookSpecificOutput"] for row in output if "hookSpecificOutput" in row)
+    reason = denial["permissionDecisionReason"]
+    assert denial["permissionDecision"] == "deny"
+    assert "role_observation=unavailable" in reason
+    assert f"message_input={shape}" in reason
+    assert "Inspect the host-visible input before retrying" in reason
+    assert "Re-dispatch" not in reason
+    assert "do-not-log" not in reason
+    assert tp.peek_expectation(workspace, expected["task_name"], strict=True)["matched"] is False
+    assert (loop.load(workspace).get("dispatch_telemetry") or {}).get("bindings", []) == []
 
 
 def test_post_start_null_usage_refuses_while_observed_zero_remains_zero():

@@ -298,3 +298,79 @@ identity repair. The next live driver must pass the literal standalone role
 marker and complete role/action payload, without hiding the marker in encoded
 content, and run strict dispatch verification. No clean native phase pass,
 Evaluate, Engineering, final sign-off, Retro or marketplace release is claimed.
+
+## Fresh repository-phase native canary and remaining transport block
+
+Candidate `80215ce8d163ba96890a756fa7fa7be340a1c971` was acquired through
+`repository prepare` for PR #17 into a new isolated runtime. Only the actual
+canary Product requirement and selected baseline graph were sealed as initial
+inputs; no previous loop, worker, events or conversation became phase input.
+The graph retained all 53 modules and 174 edges while excluding the scanner's
+file cache. The real Requirement export emitted handoff
+`f68e1053dcc3ec881bc69015adafe6b9636ba6393678c3838b9c1a495404069d`,
+fingerprint `9b016ac0813d96d3bacebd35dcbe9d248a47dd4d3e9b3182ce0665da6361f2f2`.
+This is an isolated documentation canary, not R-0004 feature delivery or release
+authorization. Its local commits were not pushed.
+
+Fresh native root `01a071a5-8cc5-7120-a620-68fe7ff14dbb` observed
+`ready: true`, `native_effective`, then used the public `phase pickup` path.
+It resolved the exact Design role digest and received a dispatchable owner.
+After two host connection retries, strict PreToolUse denied the native spawn:
+`role_marker=missing`. Task name, inherited model, high effort and zero inherited
+turns matched. Owner `tp_step_designer_design_8df0e89fdd30f36a` never started;
+its contract remains pending with no owner. No outputs, seal submission,
+focused review, Plan export, or subsequent phase occurred.
+
+The retained host function-call record has an opaque single-string message
+(18,020 characters) with no readable role marker. That record is not proof of
+the exact hook stdin, nor proof that the model omitted the marker: the new
+driver explicitly required full literal role/action text. No ciphertext was
+decoded or decrypted. Official hook documentation describes tool arguments but
+does not establish this opaque-message behavior. The immediate proven failure
+is role observation at native dispatch; the precise host transport cause still
+needs a host-visible input diagnostic or a supported host capability.
+
+The denial now reports only input type, character count and line count and
+directs inspection before retry. It never logs prompt content, guesses a role
+from task name, decrypts input, accepts an absent marker or encourages blind
+redispatch. Synthetic opaque, structured and non-standalone message cases
+remain denied with the expectation unmatched and no native telemetry binding.
+This is a diagnostics repair, **not** a native dispatch fix or canary pass.
+The installed alternative Claude CLI reports no authenticated session; no
+account connection or alternate-host run was attempted.
+
+The native root's final raw counters were 749,057 input tokens (681,984
+cached), 10,053 output, 3,533 reasoning-output and zero cache-write input;
+total input plus output was 759,110. These are per-session transport counters,
+not admitted phase budgets, billing totals or whole-repair usage. No child
+usage exists for this refused spawn.
+
+## Historical CI fixture isolation
+
+CI run `33966775498` on `80215ce` passed seven checks; its aggregate reported
+4,365 passed, one skipped, one deselected, five setup errors and 597 passing
+subtests in 938.01 seconds. Full history correctly exposed an old differential
+test that had been skipped when its pinned Git object was absent. It loaded
+the frozen loop against today's changed audit API and failed importing
+`AUDIT_EVERY_DEFAULT`. Pinning only the audit dependency was insufficient:
+other current dependencies prevented the old control from reaching Evaluate.
+
+The fixture now extracts the exact historical runtime at
+`a2139b1ed93cad6e550712506d780b543d7c4b1b`, verifies that it contains the same
+pinned loop blob, and executes the unchanged scripted actions in an isolated
+process. No historical source bytes or production compatibility API are edited.
+Missing history fails rather than skipping the test. Both controls repeat
+exactly, the historical Evaluate route is exercised, and the scorer still
+refuses to invent breadth from a full-catalog route with no recorded request.
+
+The current trace is not required to be byte-identical to that old runtime:
+modern evidence gates reject its old submissions, producing two Execute
+attempts instead of the historical Execute/two-Fix sequence. The test now
+checks both exact sequences, current zero-lens Execute entries, the v2 audit
+schema and explicit breadth/engine fields. It does not claim current end-to-end
+execution. All five historical checks passed in 63.75 seconds; the diagnostic
+and context-boundary selection passed five tests in 2.05 seconds. The two
+changed test files passed 99 tests and eight subtests in 202.98 seconds; strict
+typing passed 121 source files, and lint/diff checks passed. Explicit UTF-8 was
+then added to the historical Git identity read for Windows portability; the
+candidate CI receipt must cover that final fixture form and the committed tree.

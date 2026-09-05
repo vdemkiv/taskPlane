@@ -1577,9 +1577,8 @@ def cmd_screen_dispatch(a) -> int:
         model = ti.get("model")
         effort = ti.get("reasoning_effort")
         observed_context = ti.get("fork_turns")
-        message = ti.get("message") or ti.get("prompt") or ""
-        if not isinstance(message, str):
-            message = ""
+        message_input = ti.get("message") or ti.get("prompt") or ""
+        message = message_input if isinstance(message_input, str) else ""
         ws = _workspace(event.get("cwd"))
         strict = mode == "strict"
         exp = tp.peek_expectation(ws, agent, strict=strict)
@@ -1727,6 +1726,19 @@ def cmd_screen_dispatch(a) -> int:
                       "emitted brief exists; use the exact task_name from "
                       "`tp loop next` or `tp lens dispatch`.")
         else:
+            if native_codex and not marker_present:
+                # Report only shape, never prompt bytes or an inferred/decrypted
+                # marker. Opaque host input and a missing marker are both
+                # unverifiable; neither authorizes an automatic redispatch loop.
+                visibility = (f" role_observation=unavailable; message_input="
+                              f"{type(message_input).__name__}/{len(message)}-chars/"
+                              f"{len(message.splitlines())}-lines. Inspect the "
+                              "host-visible input before retrying; the hook must "
+                              "receive the exact standalone role marker. Do not "
+                              "infer it from task_name or bypass verification.")
+            else:
+                visibility = (" Re-dispatch with the exact native Codex fields "
+                              "from the brief.")
             reason = (f"taskplane dispatch check: brief "
                       f"'{exp.get('ref') or exp['agent']}' requires "
                       f"task_name={exp.get('task_name')}, "
@@ -1737,8 +1749,7 @@ def cmd_screen_dispatch(a) -> int:
                       f"model={model or '<inherit>'}, reasoning_effort="
                       f"{effort or '<unset>'}, fork_turns="
                       f"{observed_context or '<unset>'} (required "
-                      f"{expected_context}). Re-dispatch with the exact "
-                      "native Codex fields from the brief.")
+                      f"{expected_context})." + visibility)
         if mode == "strict":
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
