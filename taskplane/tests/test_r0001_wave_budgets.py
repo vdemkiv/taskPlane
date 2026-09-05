@@ -403,6 +403,7 @@ def test_observed_aggregate_tokens_do_not_stop_the_next_live_wave(
         },
     )
     state = {
+        "run_id": "run",
         "parallel": True, "step": "execute", "goal": "budget",
         "tasks": [{"id": "a", "status": "pending", "deps": [],
                    "scope": ["src/a.py"], "tests": "true"}],
@@ -411,10 +412,15 @@ def test_observed_aggregate_tokens_do_not_stop_the_next_live_wave(
 
     @contextlib.contextmanager
     def mutate(_ws):
-        yield state
+        # Real load/mutate decode separate persisted snapshots. Keep the
+        # telemetry fixture's store distinct from a caller's working copy.
+        fresh = copy.deepcopy(state)
+        yield fresh
+        state.clear()
+        state.update(fresh)
 
     monkeypatch.setattr(loop, "mutate", mutate)
-    monkeypatch.setattr(loop, "load", lambda _ws: state)
+    monkeypatch.setattr(loop, "load", lambda _ws: copy.deepcopy(state))
     monkeypatch.setattr(loop, "_stage_loop_mutation_refusal", lambda _ws: None)
     monkeypatch.setattr(loop, "_validated_delivery_mode", lambda _state: None)
     monkeypatch.setattr(loop, "SystemClock", lambda: FakeClock(wall_time=2))

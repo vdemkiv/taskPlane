@@ -327,6 +327,7 @@ print(json.dumps(r))
 """
             child = subprocess.run([sys.executable, "-I", "-c", code],
                                    input=json.dumps(brief), text=True,
+                                   encoding="utf-8", errors="replace",
                                    capture_output=True, check=True, cwd=self.tmp)
             result = json.loads(child.stdout)
             tp.validate_design_worker_result(plan, brief, result)
