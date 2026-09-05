@@ -254,3 +254,47 @@ historical producer, exact archive assertions and production validators are
 unchanged. An in-place package test also refused the user's unrelated dirty
 hook configuration as expected; clean-checkout verification is required and
 that configuration is not repaired or included in this change.
+
+## Native child identity adapter
+
+The native Product retry exposed a fixture/host protocol mismatch.
+`_worker_event_owner` interpreted `agent_type` as the exact emitted task name;
+the tests supplied that name in both `agent_type` and `task_name`. Current
+Codex supplies a profile in `agent_type` and does not document a task-name
+field in SubagentStart. SubagentStop also supplies a child transcript alongside
+the common parent transcript. See the [official hook reference](https://learn.chatgpt.com/docs/hooks).
+
+One bounded, read-only adapter now correlates the actual hook's parent/child
+IDs with the parent's exact native SubAgentActivity start record, or with the
+current child's session metadata for actions and terminal hooks. These record
+shapes were observed in CLI 0.153.1; transcript format is not a stable public
+API, so missing, foreign, conflicting, oversized or stale identity remains
+unavailable. No session-directory search, conversation reconstruction, agent
+registry, inferred completion, synthetic lifecycle, owner selection by queue
+position, or predecessor execution import is introduced. A child's metadata
+alone cannot activate a pending contract. Only the actual SubagentStart path
+binds it, and existing lifecycle/gate authority remains separate.
+
+The native-shape regression reproduced the unbound start before the repair.
+Thirty identity/lifecycle tests and 85 broader native telemetry, Design,
+phase-output and authority tests passed; strict typing passed 121 source files.
+A read-only diagnostic against the retained child metadata resolves the exact
+observed parent, child and task path without mutating runtime or minting a
+receipt. That is correlation evidence, not a rerun of the live phase. A second
+red regression showed child terminal usage selecting the parent transcript;
+SubagentStop now prefers its supplied child path while ordinary tool events
+retain their original path selection.
+
+The usage/identity integration selection passed 84 tests and eight subtests in
+79.05 seconds. The final identity/lifecycle selection passed 33 tests in 15.83
+seconds, including the real CLI hook shape, read-only child screening, exact
+replay idempotency and refusal to activate a pending contract from a child
+tool event. Strict typing and lint passed after that guard was added. The
+five package-generation tests also passed against committed CI setup repair
+`d0741eef9639f5b1ad7a4a1df185a1d5e48769d4` in a clean checkout.
+
+The dispatch marker mismatch in the previous live retry is not waived by this
+identity repair. The next live driver must pass the literal standalone role
+marker and complete role/action payload, without hiding the marker in encoded
+content, and run strict dispatch verification. No clean native phase pass,
+Evaluate, Engineering, final sign-off, Retro or marketplace release is claimed.

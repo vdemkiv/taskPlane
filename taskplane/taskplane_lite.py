@@ -5931,8 +5931,15 @@ def prepare_worker_contract(
     return out
 
 
-def _worker_event_owner(event: dict) -> dict:
+def _worker_event_identity(event: dict) -> tuple[dict, int | None]:
     event = event if isinstance(event, dict) else {}
+    if __package__:
+        from . import worker_hook_identity
+    else:
+        import worker_hook_identity
+    native = worker_hook_identity.resolve(event)
+    if native is not None:
+        return native
     return {
         "session_id": _bounded_hook_identity(
             event.get("session_id") or event.get("thread_id")
@@ -5942,7 +5949,11 @@ def _worker_event_owner(event: dict) -> dict:
             event.get("agent_id") or event.get("child_id"), 160).strip(),
         "task_name": _bounded_hook_identity(
             event.get("task_name") or event.get("agent_type"), 160).strip(),
-    }
+    }, None
+
+
+def _worker_event_owner(event: dict) -> dict:
+    return _worker_event_identity(event)[0]
 
 
 def _active_worker_contracts(workspace: str) -> list[tuple[str, dict]]:
@@ -6075,7 +6086,15 @@ def release_superseded_pending_worker_contracts(
 def bind_worker_contract_event(workspace: str, event: dict, *,
                                now: int | None = None) -> dict:
     """Bind one pending worker slot to one exact native child start."""
-    owner = _worker_event_owner(event)
+    if event.get("hook_event_name") not in {None, "SubagentStart"}:
+        raise _worker_lifecycle_error(
+            workspace, "worker binding requires SubagentStart, not a child action")
+    owner, native_started_at = _worker_event_identity(event)
+    if (event.get("turn_id") and not event.get("task_name") and
+            not str(event.get("agent_type") or "").startswith("tp_") and
+            (event.get("hook_event_name") != "SubagentStart" or native_started_at is None)):
+        raise _worker_lifecycle_error(
+            workspace, "profile-based worker binding requires exact SubagentStart identity")
     if not all(owner.values()):
         raise _worker_lifecycle_error(
             workspace, "worker start identity is incomplete")
@@ -6092,6 +6111,9 @@ def bind_worker_contract_event(workspace: str, event: dict, *,
             workspace, "worker start does not identify exactly one pending slot")
     slot, contract = candidates[0]
     lifecycle = contract["worker_lifecycle"]
+    if native_started_at is not None and native_started_at < lifecycle["prepared_at"] * 1000:
+        raise _worker_lifecycle_error(
+            workspace, "native child start predates this worker contract")
     if lifecycle.get("status") == "active":
         if lifecycle.get("owner") != owner:
             raise _worker_lifecycle_error(
@@ -6242,12 +6264,15 @@ def record_worker_start_activity(
 
 def _worker_contract_for_event(workspace: str, event: dict) \
         -> tuple[str, dict] | None:
+    workers = _active_worker_contracts(workspace)
+    if not workers:
+        return None
     owner = _worker_event_owner(event)
     if not owner["agent_id"] and not owner["task_name"]:
         return None
     matches = []
     expected = False
-    for slot, contract in _active_worker_contracts(workspace):
+    for slot, contract in workers:
         lifecycle = contract.get("worker_lifecycle") or {}
         if lifecycle.get("expected_task_name") == owner["task_name"]:
             expected = True
