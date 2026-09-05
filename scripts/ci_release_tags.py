@@ -84,12 +84,6 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
-    "2.19.0": {
-        "reason": "superseded unreleased bootstrap candidate. The stateless "
-                  "Design, Plan, and Build pickup fixes are prepared together "
-                  "as 2.19.1; 2.19.0 was not tagged or publicly released.",
-        "superseded_by": "2.19.1",
-    },
     "2.18.10": {
         "reason": "superseded Marketplace candidate. It completed the "
                   "fail-closed delivery authority and isolated global-hook "
@@ -261,20 +255,6 @@ def shipped_versions(root, ref):
     return intro
 
 
-def prepared_versions(root, ref):
-    """Declared candidates across every parent reachable from the source.
-
-    A no-ff merge may skip an intermediate candidate on its first-parent
-    path. Retain that candidate as prepared evidence, never as a release.
-    Unmerged branches and fictional CHANGELOG rows remain out of scope.
-    """
-    rc, out = git(root, "log", "--full-history", "--format=%H", ref,
-                  "--", *MANIFESTS)
-    if rc != 0:
-        return set()
-    return {v for commit in out.split() if (v := version_at(root, commit))}
-
-
 def release_tags(root):
     """tag -> the COMMIT it names (annotated tags dereferenced). Reading the
     tag object's own sha as a commit is what produced the phantom
@@ -378,7 +358,7 @@ def audit(root=ROOT):
     # and the gate reported the older one as fictional. "Prepared" means
     # some commit reachable from HEAD declares it — a CHANGELOG row for a
     # version nobody has prepared anywhere still fails.
-    prepared = prepared_versions(root, "HEAD")
+    prepared = set(shipped_versions(root, "HEAD"))
     if in_flight:
         prepared.add(in_flight)
 

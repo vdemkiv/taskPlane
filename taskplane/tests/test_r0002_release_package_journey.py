@@ -1,4 +1,4 @@
-"""Installed-package journey for the current marketplace candidate.
+"""Installed-package journey for the 2.18.9 marketplace candidate.
 
 The journey executes extracted archives from an isolated directory.  It
 checks public behavior and schemas, not byte identity; the sole digest
@@ -19,8 +19,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = json.loads((ROOT / ".codex-plugin/plugin.json").read_text(
-    encoding="utf-8"))["version"]
+VERSION = "2.19.0"
 
 
 def _script_module(name: str):
@@ -369,7 +368,7 @@ raise SystemExit(1 if result.get("error") else 0)
             "scope": [scope], "tests": "true",
             "criteria": ["installed Plan approval prepares its root seed"],
             "status": "pending", "deps": [],
-            "new_modules": [f"build/taskplane-{VERSION}"],
+            "new_modules": ["build/taskplane-2.19.0"],
         }
         plan = {
             "requirement": "R-0001", "delivery_mode": "build",
@@ -412,7 +411,7 @@ raise SystemExit(1 if result.get("error") else 0)
             env=environment)
         return case, workspace, environment, plan, plan_gate, approval
 
-    safe_scope = f"build/taskplane-{VERSION}/canary/**"
+    safe_scope = "build/taskplane-2.19.0/canary/**"
     case, workspace, environment, plan, plan_gate, approval = approve_scope(
         "installed-plan-approval", safe_scope)
     assert plan_gate.returncode == 0, plan_gate.stdout + plan_gate.stderr
