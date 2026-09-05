@@ -281,6 +281,69 @@ class DesignWorkflowTest(unittest.TestCase):
         self.assertEqual(len(state["design_fingerprint"]), 64)
         self.assertEqual(state["design_approved_by"], "human — approved")
 
+    def test_fresh_design_dispatch_is_executable_without_rebuilding_child_contract(self):
+        loop.init(self.ws, "design this", spec_path="specs/x.md",
+                  requirement_id=self.req["id"], design=True)
+        action = loop.next_action(self.ws)
+        self.assertNotIn("error", action)
+        plan = action["design_team_plan"]
+        for brief in action["design_lens_dispatches"]:
+            self.assertEqual(brief["stage_evidence"]["approved_requirement"]["id"],
+                             self.req["id"])
+            self.assertEqual(brief["stage_evidence"]["acceptance"],
+                             self.req["acceptance"])
+            self.assertEqual(brief["stage_evidence"], plan["stage_evidence"])
+            bootstrap = brief["contract_bootstrap"]
+            self.assertNotEqual(bootstrap["task_slot"],
+                                action["contract_bootstrap"]["task_slot"])
+            contract = tp.load_json(tp.active_contract_path(
+                self.ws, bootstrap["task_slot"]))
+            self.assertTrue(contract["read_only"])
+            self.assertEqual(contract["worker_lifecycle"]["status"], "pending")
+            self.assertEqual(bootstrap["worker_identity"], brief["task_name"])
+            patch = "*** Begin Patch\n*** Add File: " + brief["result_path"] + \
+                "\n+{}\n*** End Patch\n"
+            self.assertTrue(tp.screen_tool(contract, "apply_patch",
+                                           {"command": patch}, self.ws)[0])
+            self.assertFalse(tp.screen_tool(contract, "apply_patch", {
+                "command": patch.replace(brief["result_path"], "src/core/a.py")
+            }, self.ws)[0])
+            self.assertFalse(tp.screen_tool(contract, "exec_command",
+                                            {"cmd": "echo unsafe"}, self.ws)[0])
+            # A fresh process sees only the emitted brief, not engine imports,
+            # private contracts or a fixture-authored expected result shape.
+            code = """import hashlib, json, sys
+b = json.load(sys.stdin)
+e = b['stage_evidence']
+assert e['approved_requirement']['id'] and e['acceptance']
+r = {**b['result_template'], 'outcome': 'pass', 'findings': [],
+     'evidence': {'requirement': e['approved_requirement']['id'],
+                  'acceptance_checked': e['acceptance']}}
+f = b['result_fingerprint']
+payload = json.dumps(r, sort_keys=f['sort_keys'], separators=f['separators'],
+                     ensure_ascii=f['ensure_ascii'], allow_nan=f['allow_nan'])
+r['fingerprint'] = hashlib.sha256(payload.encode(f['encoding'])).hexdigest()
+print(json.dumps(r))
+"""
+            child = subprocess.run([sys.executable, "-I", "-c", code],
+                                   input=json.dumps(brief), text=True,
+                                   capture_output=True, check=True, cwd=self.tmp)
+            result = json.loads(child.stdout)
+            tp.validate_design_worker_result(plan, brief, result)
+            for field in brief["result_schema"]["required"]:
+                self.assertIn(field, result)
+
+    def test_fresh_design_never_receives_another_requirements_design(self):
+        os.makedirs(os.path.join(self.ws, "design"))
+        with open(os.path.join(self.ws, "design", "contract.json"), "w") as stream:
+            json.dump({"schema": "taskplane.design/v1", "requirement": "R-OTHER"}, stream)
+        loop.init(self.ws, "fresh design", spec_path="specs/x.md",
+                  requirement_id=self.req["id"], design=True)
+        action = loop.next_action(self.ws)
+        self.assertNotIn("error", action)
+        self.assertIsNone(action["design"]["contract"])
+        self.assertEqual(action["design"]["excluded"]["reason"], "requirement-mismatch")
+
     def test_design_gate_without_exact_acceptance_tests_records_no_authority(
             self):
         loop.init(self.ws, "design this", spec_path="specs/x.md",
@@ -330,10 +393,18 @@ class DesignWorkflowTest(unittest.TestCase):
         loop.init(self.ws, "design this", spec_path="specs/x.md",
                   requirement_id=self.req["id"], design=True)
         loop.next_action(self.ws)
-        self._write_design()
+        design = self._write_design()
         loop.gate(self.ws, "pass")
         loop.approve(self.ws, by="human")
         state = loop.load(self.ws)
+        action = loop.next_action(self.ws)
+        self.assertEqual(action["step"], "plan")
+        self.assertTrue(action["design"]["approved"])
+        self.assertIsInstance(action["impact"], dict)
+        self.assertEqual(action["plan_output"]["template"]["plan_authority"],
+                         "design:" + state["design_fingerprint"])
+        self.assertEqual(action["impact"]["policy"],
+                         design["graph"]["depth_policy"])
         state["tasks"] = [{"id": "t1", "scope": ["taskplane/**"],
                            "tests": "true", "req": self.req["id"],
                            "criteria": list(self.req["acceptance"]),

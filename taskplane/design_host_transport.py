@@ -32,6 +32,7 @@ JsonDict: TypeAlias = dict[str, Any]
 
 ROLE_REFERENCE_SCHEMA = "taskplane.role-reference/v1"
 DISPATCH_INTENT_SCHEMA = "taskplane.design-lens-dispatch-intent/v1"
+RESULT_SCHEMA = "taskplane.design-lens-result/v1"
 HOST_AUTHORITY_SCHEMA = "taskplane.design-lens-host-authority/v1"
 HOST_RECEIPT_SCHEMA = "taskplane.worker-host-receipt/v1"
 HOST_RECEIPT_FIELDS = frozenset({
@@ -53,6 +54,74 @@ def _fp(value: object) -> str:
     return hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def design_worker_brief(plan: JsonDict, worker: JsonDict) -> JsonDict:
+    """Project the existing native child and its bound result protocol.
+
+    The projection is derived after the team fingerprint is sealed: embedding
+    that fingerprint inside the plan's own workers would be self-referential.
+    It creates no lease, authority, activation, or default review verdict.
+    """
+    identity = {
+        "schema": RESULT_SCHEMA,
+        "lens": worker["lens"],
+        "worker_identity": worker["task_name"],
+        "team_plan_fingerprint": plan["fingerprint"],
+        "candidate_fingerprint": plan["candidate_fingerprint"],
+    }
+    properties: JsonDict = {key: {"const": value} for key, value in identity.items()}
+    properties.update({
+        "outcome": {"enum": ["pass", "changes-required"]},
+        "findings": {"type": "array", "items": {"type": "object"}},
+        "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    })
+    return {
+        **worker,
+        **({"stage_evidence": json.loads(json.dumps(plan["stage_evidence"]))}
+           if "stage_evidence" in plan else {}),
+        "contract_bootstrap": {
+            "schema": "taskplane.worker-contract-bootstrap/v1",
+            "task_slot": worker["task_slot"],
+            "worker_identity": worker["task_name"],
+            "environment": {"TASKPLANE_TASK": worker["task_slot"]},
+            "activation": "pending_subagent_start_binding",
+        },
+        "result_path": worker["output"],
+        "result_template": identity,
+        "result_schema": {
+            "$id": RESULT_SCHEMA, "type": "object",
+            "required": list(properties), "properties": properties,
+        },
+        "result_fingerprint": {
+            "algorithm": "sha256",
+            "input": "all result fields except fingerprint",
+            "encoding": "utf-8", "sort_keys": True,
+            "separators": [",", ":"], "ensure_ascii": False,
+            "allow_nan": False,
+        },
+        "result_transport": {
+            "codex": "apply_patch", "claude": "Write",
+            "scope": worker["output"],
+        },
+    }
+
+
+def validate_design_worker_result(plan: JsonDict, worker: JsonDict,
+                                  result: object) -> JsonDict:
+    """Use the same bound protocol for producer instructions and collection."""
+    brief = design_worker_brief(plan, worker)
+    identity = brief["result_template"]
+    if (not isinstance(result, dict) or
+            any(result.get(key) != value for key, value in identity.items()) or
+            result.get("outcome") not in {"pass", "changes-required"} or
+            not isinstance(result.get("findings"), list) or
+            any(not isinstance(row, dict) for row in result["findings"])):
+        raise ValueError("Design lens result contract is invalid")
+    material = {key: value for key, value in result.items() if key != "fingerprint"}
+    if result.get("fingerprint") != _fp(material):
+        raise ValueError("Design lens result fingerprint is invalid")
+    return dict(result)
 
 
 def portable_role_reference(agent: str) -> JsonDict:
@@ -117,7 +186,8 @@ def _validate_plan(kernel: Any, plan: object) -> list[JsonDict]:
         expected_output = f"design/lenses/{lens}.json"
         if (not lens or not kernel._TASK_SLOT_RE.fullmatch(slot) or
                 task_name != kernel.dispatch_task_name(
-                    "lens", "tp-lens", f"design-{lens}") or
+                    "lens", "tp-lens", f"design-{lens}",
+                    namespace=plan.get("dispatch_namespace")) or
                 task_name in names or slot in slots or
                 output != expected_output):
             raise ValueError("Design lens worker identity is invalid")
@@ -719,19 +789,7 @@ def validate_design_lens_dispatch_completion(
             result = kernel.load_json(
                 os.path.join(workspace, str(worker["output"])), default=None,
                 what="Design lens terminal result")
-            material = ({key: item for key, item in result.items()
-                         if key != "fingerprint"}
-                        if isinstance(result, dict) else {})
-            if (not isinstance(result, dict) or
-                    result.get("schema") != "taskplane.design-lens-result/v1" or
-                    result.get("lens") != lens or
-                    result.get("worker_identity") != worker["task_name"] or
-                    result.get("team_plan_fingerprint") != plan["fingerprint"] or
-                    result.get("candidate_fingerprint") != plan.get(
-                        "candidate_fingerprint") or
-                    result.get("outcome") not in {"pass", "changes-required"} or
-                    result.get("fingerprint") != _fp(material)):
-                raise ValueError("semantic result contract is invalid")
+            result = validate_design_worker_result(plan, worker, result)
             results[lens] = {
                 "assignment_receipt_id": assignment["receipt_id"],
                 "start_receipt_id": start["receipt_id"],

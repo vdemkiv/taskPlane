@@ -519,6 +519,49 @@ def _plan_delivery_mode_from_file(
     return receipt
 
 
+def _plan_output_contract(state: Mapping[str, object]) -> dict:
+    """Publish the metadata the Plan consumer requires, without approval."""
+    template = {"tasks": []}
+    if state.get("design_fingerprint"):
+        template.update({
+            "requirement": state.get("requirement_id"),
+            "delivery_mode": "build", "automatic_lenses": [],
+            # This names the governing evidence, not a new human approval.
+            "plan_authority": "design:" + str(state["design_fingerprint"]),
+        })
+    return {"path": "plan/tasks.json", "human_path": "plan/plan.md",
+            "template": template, "approval_granted": False}
+
+
+def _build_task_brief(task: Mapping[str, object]) -> dict:
+    """Carry the approved task contract, never its mutable execution state."""
+    fields = (*_REANCHOR_CONTRACT_FIELDS, "variant", "model",
+              "evaluation_evidence_edges", "changed_interfaces")
+    return {key: _copy_json(task[key]) for key in fields if key in task}
+
+
+def _build_completion_brief(task: Mapping[str, object], *, parallel: bool) -> dict:
+    result = {
+        "tests": task.get("tests"), "commit_before_submit": parallel,
+        "submit": ["loop", "submit", "pass", *(
+            ["--task", str(task["id"])] if parallel else [])],
+        "worker_may_gate": False,
+    }
+    if _build_quality_required(task):
+        result["quality_admission"] = {
+            "required_before_submit": True,
+            "receipt_schema": build_quality.BUILD_QUALITY_RECEIPT_SCHEMA_ID,
+            "strategy_reference": _copy_json(task.get("test_strategy_authority")),
+            "test_contract": _copy_json(task["test_contract"]),
+            "command": ["loop", "build-quality", "--task", str(task["id"]),
+                        "--strategy", "<verified-strategy.json>",
+                        "--receipt", "<completed-quality-receipt.json>"],
+            "evidence_rule": "Use observed current-candidate evidence; "
+                             "never synthesize green layers or approval.",
+        }
+    return result
+
+
 def build_dispatch_lens_routing(
         state: Mapping[str, object], task: Mapping[str, object] | None,
         *, workspace: str) -> tuple[dict, dict | None]:
@@ -1358,10 +1401,15 @@ def _design_control_plane_errors(ws: str, state: Mapping[str, object]) \
 
 def _design_team_plan(
     ws: str, state: Mapping[str, object], focused_route: Mapping[str, object],
-    dispatch: Mapping[str, object], *, effective_settings=None,
+    dispatch: Mapping[str, object], *, stage_evidence: Mapping[str, object],
+    effective_settings=None,
 ) -> dict:
     """Compile and authorize one native quick worker per selected lens."""
-    del dispatch  # Design workers resolve one canonical settings snapshot.
+    # The owner name already binds the run and durable worker attempt. Use it
+    # for the entire lens wave, not a second mutable name registry.
+    dispatch_namespace = str(dispatch.get("task_name") or "").strip()
+    if not dispatch_namespace:
+        raise ValueError("Design lens team requires an owning dispatch identity")
     selected = [str(value) for value in
                 focused_route.get("dispatchable_selected") or []]
     if not selected or len(selected) != len(set(selected)) or len(selected) > 16:
@@ -1386,7 +1434,7 @@ def _design_team_plan(
         # against this same typed settings snapshot instead.
         worker_dispatch = tp.dispatch_fields(
             "lens", "tp-lens", f"design-{lens_id}", "deep",
-            settings_context=effective)
+            settings_context=effective, namespace=dispatch_namespace)
         if worker_dispatch.get("model") != design_stage.model or \
                 worker_dispatch.get("reasoning_effort") != \
                 design_stage.reasoning or \
@@ -1436,6 +1484,7 @@ def _design_team_plan(
         }
     material = {
         "schema": "taskplane.design-team-plan/v1",
+        "dispatch_namespace": dispatch_namespace,
         "run_id": binding.get("run_id"),
         "stage_instance_id": binding.get("stage_instance_id"),
         "requirement": binding.get("requirement"),
@@ -1445,6 +1494,7 @@ def _design_team_plan(
         "catalog_fingerprint": binding.get("catalog_fingerprint"),
         "decomposition_fingerprint": binding.get(
             "decomposition_fingerprint"),
+        "stage_evidence": _copy_json(stage_evidence),
         "route_fingerprint": focused_route.get("route_fingerprint"),
         "selected": selected,
         "selected_count": len(selected),
@@ -1544,20 +1594,10 @@ def _design_team_errors(ws: str, state: Mapping[str, object]) -> list[str]:
         if not isinstance(result, Mapping):
             errors.append(f"Design lens {worker.get('lens')} has no result")
             continue
-        result_material = {str(key): value for key, value in result.items()
-                           if key != "fingerprint"}
-        expected = hashlib.sha256(json.dumps(
-            result_material, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
-        if result.get("schema") != "taskplane.design-lens-result/v1" or \
-                result.get("lens") != worker.get("lens") or \
-                result.get("worker_identity") != worker.get("task_name") or \
-                result.get("team_plan_fingerprint") != plan.get(
-                    "fingerprint") or result.get("candidate_fingerprint") != \
-                plan.get("candidate_fingerprint") or \
-                result.get("outcome") not in {"pass", "changes-required"} or \
-                result.get("fingerprint") != expected:
-            errors.append(f"Design lens {worker.get('lens')} result is invalid")
+        try:
+            tp.validate_design_worker_result(dict(plan), dict(worker), dict(result))
+        except ValueError as exc:
+            errors.append(f"Design lens {worker.get('lens')} result is invalid: {exc}")
     return errors
 
 
@@ -5132,8 +5172,10 @@ def _reserve_worker_dispatch_ref(
     the same stable name after Fix or an unavailable Evaluate therefore turns
     a new worker slot into an unbindable orphan: no fresh direct native agent
     can own the old name, and nested agent identities do not match it exactly.
-    Keep the historical name for the first attempt, then add a durable attempt
-    discriminator. The worker contract still binds the exact emitted name.
+    Keep a durable attempt discriminator within the run. Callers also pass
+    the run id as the naming namespace, including on the first attempt: the
+    host keeps names across new runs and tracks, not only within this ledger.
+    The worker contract still binds the exact emitted name.
     """
     stage = str(stage or "").strip()
     task = str(task or "").strip()
@@ -6625,7 +6667,7 @@ def _dispatch_public_evaluate_evidence_children(
         kind = str(assignment.get("producer_kind") or "")
         dispatch = tp.dispatch_fields(
             "step", STEP_ROLE["evaluate"], str(task.get("id") or "evaluate"),
-            model_tier)
+            model_tier, namespace=str(state["run_id"]))
         dispatch["task_name"] = (
             str(dispatch["task_name"]) + "_" + kind.replace("-", "_"))[:96]
         intent = _native_dispatch_intent(
@@ -7575,7 +7617,7 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
         dispatch = tp.dispatch_fields(
             "step", "tp-executor", task_id,
             tp.step_tier("execute", task),
-            settings_context=effective_settings)
+            settings_context=effective_settings, namespace=str(state["run_id"]))
         dispatches[task_id] = dispatch
         intent = _native_dispatch_intent(
             ws, state, step="execute", task_id=task_id,
@@ -7609,9 +7651,8 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
         rec = reqs.get_requirement(ws, rid) if rid else None
         is_variant = bool(state.get("ab") and t.get("variant"))
         entry = {**dispatch,
-            "task": {"id": t["id"], "scope": t.get("scope"),
-                     "tests": t.get("tests"), "deps": t.get("deps") or [],
-                     "variant": t.get("variant")},
+            "task": _build_task_brief(t),
+            "completion": _build_completion_brief(t, parallel=True),
             "worktree": runtime_storage.task_worktree_reference(ws, t["id"]),
             "merge_on_pass": not is_variant,
             "lenses": prime["lenses"],
@@ -7761,7 +7802,7 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         worker_workspace=agent_ws)
     dispatch = tp.dispatch_fields(
         "step", STEP_ROLE["execute"], dispatch_ref,
-        tp.step_tier("execute", t))
+        tp.step_tier("execute", t), namespace=str(state["run_id"]))
     contract = tp.prepare_worker_contract(
         agent_ws, contract, stage="execute", task=str(task_id),
         task_name=dispatch["task_name"], role_marker=dispatch["role_marker"])
@@ -7799,6 +7840,8 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     tp.trace(ws, "loop_claim", task=task_id, agent_workspace=agent_ws,
              dor_ready=dor_ready)
     return {"claimed": task_id, "workspace": agent_ws,
+            "task": _build_task_brief(t),
+            "completion": _build_completion_brief(t, parallel=True),
             "contract_bootstrap": {
                 "schema": "taskplane.worker-contract-bootstrap/v1",
                 "task_slot": contract["task_slot"],
@@ -8100,7 +8143,7 @@ def next_action(
         tp.step_tier(step, worker_task),
         capability_snapshot=capability_snapshot,
         enforcement_mode=os.environ.get("TASKPLANE_ENFORCE_DISPATCH"),
-        settings_context=effective_settings)
+        settings_context=effective_settings, namespace=str(state["run_id"]))
     if dispatch.get("dispatch_blocked"):
         tp.trace(ws, "dispatch_route_resolved", step=step,
                  task=(worker_task or {}).get("id"), resolution="blocked",
@@ -8300,6 +8343,7 @@ def next_action(
         try:
             design_team_plan = _design_team_plan(
                 ws, state, focused_route, dispatch,
+                stage_evidence=stage_evidence,
                 effective_settings=effective_settings)
             with mutate(ws) as fresh:
                 if fresh is None or fresh.get("step") != "design" or \
@@ -8371,6 +8415,22 @@ def next_action(
                     tp.trace(ws, "graph_impact", step=step,
                              touched=imp["touched"],
                              impacted=imp["total_impacted"], **heads())
+    elif step == "plan":
+        # The read-only planner cannot discover this through a shell. Supply
+        # one bounded snapshot, including a valid empty result for greenfield
+        # work; an absent graph is not permission to invent dependencies.
+        plan_req = reqs.get_requirement(ws, state.get("requirement_id"))
+        plan_scope = (plan_req or {}).get("context_files") or []
+        design_input = _design_context(ws, state) or {}
+        approved_graph = ((design_input.get("contract") or {}).get("graph") or {}
+                          if design_input.get("approved") else {})
+        plan_modules = depgraph.scope_modules(ws, plan_scope)
+        plan_modules = sorted(set(plan_modules) | set(
+            approved_graph.get("proposed_modules") or []))
+        imp = depgraph.impact(
+            ws, plan_modules, policy=approved_graph.get("depth_policy"))
+        tp.trace(ws, "graph_impact", step=step,
+                 touched=imp["touched"], impacted=imp["total_impacted"], **heads())
     elif step == "design":
         design_req = reqs.get_requirement(ws, state.get("requirement_id"))
         design_scope = (design_req or {}).get("context_files") or []
@@ -8577,7 +8637,9 @@ def next_action(
            if step == "design" and design_decomposition is not None and
            design_lens_policy is not None else {}),
         **({"design_team_plan": design_team_plan,
-            "design_lens_dispatches": design_team_plan["workers"],
+            "design_lens_dispatches": [
+                tp.design_worker_brief(design_team_plan, worker)
+                for worker in design_team_plan["workers"]],
             "design_lens_wait_policy": event_wait_policy(
                 "design-lens-wave", design_team_plan["selected_count"]),
             "design_dispatch_order": [
@@ -8589,6 +8651,10 @@ def next_action(
            if design_team_plan is not None else {}),
         # cross-host artifact: '/'-shaped out, host-shaped in state
         "task": tp.posix_workspace(task),
+        **({"plan_output": _plan_output_contract(state)} if step == "plan" else {}),
+        **({"completion": _build_completion_brief(
+            task, parallel=bool(state.get("parallel")))}
+           if step in {"execute", "fix"} and task is not None else {}),
         "contract": {"read_only": bool(contract.get("read_only")),
                      "scope": contract["coding"]["scope_paths"],
                      "write_allow": contract.get("write_allow"),
@@ -8847,8 +8913,8 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
                   "when it materially clarifies the choice. Never mutate the "
                   "as-built graph. Return to the orchestrator; it validates "
                   "with `loop gate pass` and then pauses for human approval.",
-        "plan": "Run the tp-planner role: derive impact once with `tp graph "
-                "impact --files \"comma,separated,paths\" --json`; write "
+        "plan": "Run the tp-planner role: consume the emitted bounded graph "
+                "impact and plan_output.template; write "
                 "plan/tasks.json (machine) "
                 "and plan/plan.md (human) — tasks with scope, tests (ONE "
                 "command string, never a list), "
@@ -8859,10 +8925,12 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
                 "depth policy, and acceptance mapping without drift. Return "
                 "to the orchestrator; it validates with `loop gate pass`.",
         "execute": f"Run the tp-executor on task {t and t['id']}: build "
-                   "under this contract (TDD), honoring the PRIMED lenses "
-                   "(see `lenses`) and the requirement's acceptance criteria "
-                   "(see `requirement`) plus the approved Design Contract "
-                   "when `design.approved` is true. Then `loop submit pass` (or `fail` "
+                   "under this contract (TDD), honoring task.criteria and "
+                   "its exact contracts, acceptance references and test "
+                   "strategy plus the approved Design Contract "
+                   "when `design.approved` is true. Follow completion, "
+                   "including required Build-quality admission, then "
+                   "`loop submit pass` (or `fail` "
                    "if you couldn't build it); only the orchestrator calls "
                    "`loop gate`.",
         "evaluate": f"Run the tp-evaluator (read-only) on task "
@@ -8957,6 +9025,12 @@ def _design_context(ws: str, state: dict) -> dict | None:
         return None
     contract, errors = _design_contract(ws)
     approved = bool(state.get("design_fingerprint"))
+    if (not approved and contract and
+            contract.get("requirement") != state.get("requirement_id")):
+        return {"approved": False, "stale": None, "fingerprint": None,
+                "contract": None, "errors": [],
+                "excluded": {"reason": "requirement-mismatch",
+                             "requirement": contract.get("requirement")}}
     stale = _design_current_errors(ws, state) if approved else []
     if stale:
         # M8 (v2.2.1): an approved design whose artifacts changed after

@@ -32,6 +32,38 @@ def snapshot(host="codex", *, model="supported", effort="supported",
 
 
 class TestDispatchResolution(unittest.TestCase):
+    def test_native_names_are_stable_per_namespace_and_unique_between_runs(self):
+        legacy = tp.dispatch_task_name("step", "tp-product", "pm")
+        first = tp.dispatch_fields(
+            "step", "tp-product", "pm", "standard", namespace="run-one")
+        replay = tp.dispatch_fields(
+            "step", "tp-product", "pm", "standard", namespace="run-one")
+        second = tp.dispatch_fields(
+            "step", "tp-product", "pm", "standard", namespace="run-two")
+        retry = tp.dispatch_fields(
+            "step", "tp-product", "pm-attempt-2", "standard",
+            namespace="run-one")
+
+        self.assertEqual(first, replay)
+        self.assertEqual(len({legacy, first["task_name"], second["task_name"],
+                              retry["task_name"]}), 4)
+        self.assertEqual(first["role_marker"], "taskplane-role:tp-product")
+        self.assertRegex(first["task_name"], r"^tp_step_product_pm_[a-f0-9]{16}$")
+        self.assertNotIn("run-one", first["task_name"])
+
+    def test_scoped_native_name_preserves_legacy_and_bounds_long_labels(self):
+        self.assertEqual(tp.dispatch_task_name("step", "tp-product", "pm"),
+                         "tp_step_product_pm_13722ee8")
+        left = tp.dispatch_task_name("step", "tp-executor", "t" * 200,
+                                     namespace="run-one")
+        right = tp.dispatch_task_name("step", "tp-executor", "t" * 200,
+                                      namespace="run-two")
+        self.assertLessEqual(len(left), 64)
+        self.assertNotEqual(left, right)
+        for invalid in ("", " ", 1, {}):
+            with self.subTest(namespace=invalid), self.assertRaises(ValueError):
+                tp.dispatch_task_name("step", "tp-product", "pm", namespace=invalid)
+
     def test_supported_route_passes_exact_model_and_effort(self):
         route = hc.resolve_dispatch_route(
             snapshot(), tier="deep", requested_model="gpt-5-codex",

@@ -210,27 +210,48 @@ def _validate_plan_proofs(checkout: str, handoff: Mapping[str, Any]) -> None:
 
 
 def _completed_task_ids(handoff: Mapping[str, Any]) -> set[str]:
-    return {
+    completed = {
         str(receipt["task_id"])
         for receipt in handoff["progress_receipts"]
         if receipt["phase"] == "build" and receipt["status"] == "green"
         and receipt["task_id"] is not None
     }
+    if handoff["successor"]["mode"] == "same-phase-resume":
+        for task in handoff["tasks"]:
+            if task["id"] in completed and \
+                    _remaining_obligation_ids(handoff, task):
+                # Older writers emitted one receipt for an entire task.
+                # Neither rerunning it nor inventing the missing historical
+                # receipts is a valid continuation of that sealed evidence.
+                raise PhasePickupError(
+                    "receipt-lineage",
+                    "prior Build receipt leaves task obligations unresolved; "
+                    "return to Plan for explicit remaining-work recovery")
+    return completed
 
 
-def _remaining_obligation_id(
-        handoff: Mapping[str, Any], task: Mapping[str, Any]) -> str | None:
+def _remaining_obligation_ids(
+        handoff: Mapping[str, Any], task: Mapping[str, Any]) -> list[str]:
+    """Keep every matched obligation in its sealed canonical order."""
     remaining = set(handoff["progress"]["remaining"])
     if handoff["producer"] == {"phase": "plan", "outcome": "done"} and \
             handoff["successor"] == {
                 "phase": "build", "mode": "next-phase"}:
         remaining = {obligation["id"] for obligation in handoff["obligations"]}
-    for obligation in handoff["obligations"]:
+    task_acceptance = set(task["acceptance"])
+    matched = [
+        obligation for obligation in handoff["obligations"]
         if obligation["id"] in remaining and (
-                obligation["id"] == task["id"] or
-                set(obligation["acceptance"]) & set(task["acceptance"])):
-            return str(obligation["id"])
-    return None
+            obligation["id"] == task["id"] or
+            set(obligation["acceptance"]) & task_acceptance)
+    ]
+    if any(not set(obligation["acceptance"]) <= task_acceptance
+           for obligation in matched):
+        raise PhasePickupError(
+            "scope-widened",
+            "sealed task does not cover every acceptance criterion in a "
+            "matched obligation; return to Plan")
+    return [str(obligation["id"]) for obligation in matched]
 
 
 def select_ready_build_task(
@@ -251,7 +272,7 @@ def select_ready_build_task(
     ready = [task for task in checked["tasks"]
              if task["id"] not in completed and
              set(task["dependencies"]) <= completed and
-             _remaining_obligation_id(checked, task) is not None]
+             _remaining_obligation_ids(checked, task)]
     if not ready:
         raise PhasePickupError(
             "dependency-unmet", "no unfinished task is dependency-ready")
@@ -401,11 +422,11 @@ def prepare_build_pickup(
         attempt_id=attempt_id)
 
 
-def _task_obligation(handoff: Mapping[str, Any], task: Mapping[str, Any]) \
-        -> str:
-    obligation_id = _remaining_obligation_id(handoff, task)
-    if obligation_id is not None:
-        return obligation_id
+def _task_obligations(handoff: Mapping[str, Any], task: Mapping[str, Any]) \
+        -> list[str]:
+    obligation_ids = _remaining_obligation_ids(handoff, task)
+    if obligation_ids:
+        return obligation_ids
     raise PhasePickupError(
         "dependency-unmet", "ready task has no remaining sealed obligation")
 
@@ -445,16 +466,25 @@ def submit_build_pickup(
         code = "proof-invalid" if detail.startswith("proof-invalid:") \
             else "build-c-failed"
         raise PhasePickupError(code, detail.split(": ", 1)[-1]) from exc
-    progress = phase_handoff.create_progress_receipt(
-        producer="engine:taskplane.phase-pickup/v1",
-        sequence=len(checked["progress_receipts"]) + 1,
-        phase="build", obligation_id=_task_obligation(checked, task),
-        task_id=str(task["id"]), status="green",
-        predecessor_receipt_fingerprint=checked["lineage"][
-            "predecessor_receipt_head"],
-        checkpoint_receipt_digest=checked_checkpoint["receipt_digest"],
-        integration_receipt_fingerprint=checked_integration["fingerprint"],
-    )
+    progress_receipts = []
+    predecessor = checked["lineage"]["predecessor_receipt_head"]
+    for sequence, obligation_id in enumerate(
+            _task_obligations(checked, task),
+            len(checked["progress_receipts"]) + 1):
+        progress = phase_handoff.create_progress_receipt(
+            producer="engine:taskplane.phase-pickup/v1",
+            sequence=sequence, phase="build", obligation_id=obligation_id,
+            task_id=str(task["id"]), status="green",
+            predecessor_receipt_fingerprint=predecessor,
+            checkpoint_receipt_digest=checked_checkpoint["receipt_digest"],
+            integration_receipt_fingerprint=checked_integration["fingerprint"],
+        )
+        progress_receipts.append(progress)
+        predecessor = progress["fingerprint"]
+    # Preserve the v1 singular field as the terminal receipt/head. A task
+    # completing multiple obligations additionally carries the entire chain;
+    # single-obligation results keep their existing public shape unchanged.
+    progress = progress_receipts[-1]
     material = {
         "schema": PUBLIC_RESULT_SCHEMA,
         "status": "complete", "code": "build-integrated",
@@ -467,6 +497,8 @@ def submit_build_pickup(
         "checkpoint_receipt_digest": checked_checkpoint["receipt_digest"],
         "integration_receipt_fingerprint": checked_integration["fingerprint"],
         "progress_receipt": progress,
+        **({"progress_receipts": progress_receipts}
+           if len(progress_receipts) > 1 else {}),
         "lineage": {
             "predecessor_receipt_head": checked["lineage"][
                 "predecessor_receipt_head"],

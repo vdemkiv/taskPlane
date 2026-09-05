@@ -36,16 +36,22 @@ drop a mandatory risk or treat the ledger as a full-catalog execution request.
 
 1. Read the spec/requirement (the action payload carries the R-record and
    recalled KB decisions — honor settled calls), the context docs
-   (`knowledge/context/*.md`), and the dependency graph with exactly one
-   `tp.py graph impact --files "comma,separated,paths" --json` call before
-   shaping tasks. `--files` takes ONE comma-separated value: do not try
-   positional paths, an empty/default call, or repeated `--files` flags. If `design` is
+   (`knowledge/context/*.md`), and the engine-supplied bounded graph impact
+   before shaping tasks. Do not re-derive it through a shell under a read-only
+   contract; return a missing input to the orchestrator. If `design` is
    present, read the approved Design Contract and verify its fingerprint is
    current before shaping tasks; never silently reinterpret or narrow it.
 2. Write `plan/tasks.json`: `{"tasks":[{"id","scope":[globs],"tests":
    "<command>","req":"R-…","deps":[ids],"type":…,"contracts":[…],
    "new_modules":[…],"design_edges":["FROM->TO:KIND"],
    "impact_policy":{…},"model":"cheap|standard|deep"}]}`
+   Start with `plan_output.template` when supplied and populate its tasks.
+   A Design-governed Plan also requires the exact top-level `requirement`,
+   `delivery_mode: "build"`, `automatic_lenses: []`, and `plan_authority`
+   supplied there. Preserve them; the evidence reference is not a human
+   approval and does not authorize Build. Copy each task's assigned
+   `acceptance_refs`, `test_contract`, and `test_strategy_authority` from the
+   approved Design when present; do not replace them with the whole requirement.
    — every task anchored to a requirement, scope as tight as the work allows
    (the hook will hold the executor to it), tests runnable, deps honest.
    Copy every assigned acceptance criterion into `criteria` **verbatim**;

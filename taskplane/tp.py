@@ -8218,7 +8218,8 @@ def _phase_publish_build_result(
     import loop
     import phase_handoff
 
-    receipts = [*handoff["progress_receipts"], result["progress_receipt"]]
+    new_receipts = result.get("progress_receipts") or [result["progress_receipt"]]
+    receipts = [*handoff["progress_receipts"], *new_receipts]
     green = {
         receipt["obligation_id"] for receipt in receipts
         if receipt.get("phase") == "build" and

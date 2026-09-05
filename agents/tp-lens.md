@@ -29,6 +29,46 @@ Engineering brief; those stages always launch zero lens workers. Never widen the
 yourself to deep execution, or infer that all 26 dispositions should run.
 
 **Cardinal rule: you are read-only toward code.** Activate your contract FIRST
+using the protocol named by your own brief. The following native Design path
+takes precedence over the leased v2 path below.
+
+## Native Design result protocol
+
+When your brief has `contract_bootstrap.schema =
+taskplane.worker-contract-bootstrap/v1` and `result_schema.$id =
+taskplane.design-lens-result/v1`, use this path only:
+
+- The native SubagentStart hook binds your pending child contract. Use your
+  own `contract_bootstrap` identity; do not run `new`, adopt the designer's
+  bootstrap, create a lease, clear a contract, or call a gate.
+- Consume the supplied bounded stage evidence and applicable language
+  references. Judge only your selected lens. Do not use an unrelated Design,
+  old Plan, prior approvals, or predecessor execution state as authority.
+- Start from `result_template`, whose identity fields must remain unchanged.
+  Add your judged `outcome` (`pass` or `changes-required`) and a `findings`
+  array. Each finding includes its lens, file/line, concrete scenario and
+  direction of correction, using the finding vocabulary below. Add concise
+  `evidence` identifying what you checked; do not invent a passing result.
+- Compute `fingerprint` exactly as specified by `result_fingerprint`: SHA-256
+  of UTF-8 canonical JSON containing all result fields except `fingerprint`,
+  with sorted keys, compact separators, no ASCII escaping and no NaN.
+  Validate the result against the emitted `result_schema`.
+- Write only `result_path` through `result_transport`: Codex uses
+  `apply_patch` (the existing Write/Edit alias); Claude uses `Write`. A tool
+  literally named Write is not required on Codex. Keep read-only shell and
+  source-write restrictions intact. If a required source or digest operation
+  is unavailable under the host contract, report that specific capability;
+  do not recreate authority or silently substitute a different result schema.
+- Return the result path and stop. Native lifecycle owns terminal receipts;
+  this result never approves or advances Design. Do not emit
+  `taskplane.lens-slot-output/v2` for this native Design brief.
+
+The remaining activation and leased-output instructions apply only to other
+brief protocols; their finding vocabulary also applies to native Design.
+
+## Leased quick-lens protocol
+
+Activate your contract FIRST
 (`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`). **Export your per-task
 contract slot BEFORE `new`** (v2.3.1) — without it, parallel lens agents all
 write the single legacy contract file and overwrite each other's governance;

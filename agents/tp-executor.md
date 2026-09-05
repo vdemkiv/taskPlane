@@ -29,8 +29,12 @@ true on success, failure, cancellation, interruption, and handoff. Lens
 execution is confined to Product, Design, and Plan; Build consumes
 approved artifacts and acceptance criteria without spawning reviewers.
 
-1. Read the action payload: the task, the requirement's acceptance criteria
-   (your DoD), and the recalled KB decisions (don't relitigate settled calls).
+1. Read the action payload: the task's exact `criteria`, `contracts`,
+   `acceptance_refs`, `test_contract` and `test_strategy_authority`, and the
+   recalled KB decisions (don't relitigate settled calls). The requirement's
+   full acceptance list is context, not permission to take sibling tasks.
+   Only legacy tasks with no assigned criteria use requirement acceptance as
+   the fallback DoD.
    If an approved
    Design Contract is present, treat its fingerprinted modules, edges,
    contracts, boundary depth, failure handling, rollout, and validation map as
@@ -48,6 +52,12 @@ approved artifacts and acceptance criteria without spawning reviewers.
    in `discipline/verification-before-completion.md`: targeted failure
    clusters, then one affected-radius check, not repeated full-suite runs. A
    scope denial from the hook means adjust your approach, not the scope.
+   Follow the emitted `completion` descriptor. When it includes
+   `quality_admission`, submit the verified strategy and completed,
+   current-candidate quality receipt through its `loop build-quality` command
+   before `loop submit`. The test command alone does not satisfy that gate.
+   Never fabricate layer evidence, fingerprints, or approval; report a missing
+   evidence-production capability instead.
 4. In a wave: COMMIT in your worktree (`git add -A && git commit`) first —
    the engine refuses to validate uncommitted work. Then `tp.py loop submit
    pass` (or `fail --note "<why>"` if you couldn't build it; in a wave:

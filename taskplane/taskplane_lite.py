@@ -5733,6 +5733,14 @@ def portable_role_reference(agent: str) -> dict:
     return _design_host_transport().portable_role_reference(agent)
 
 
+def design_worker_brief(plan: dict, worker: dict) -> dict:
+    return _design_host_transport().design_worker_brief(plan, worker)
+
+
+def validate_design_worker_result(plan: dict, worker: dict, result: object) -> dict:
+    return _design_host_transport().validate_design_worker_result(plan, worker, result)
+
+
 def validate_role_reference(value: object, *, expected_agent: str) -> dict:
     return _design_host_transport().validate_role_reference(
         value, expected_agent=expected_agent)
@@ -7199,7 +7207,8 @@ def dispatch_fields(kind: str, agent: str, ref: str,
                     model_tier: str, *, capability_snapshot=None,
                     enforcement_mode: str | None = None,
                     observed_route: dict | None = None,
-                    settings_context=None) -> dict:
+                    settings_context=None,
+                    namespace: str | None = None) -> dict:
     """Resolve one settings snapshot, then delegate pure brief assembly."""
     settings = settings_context or _canonical_operational_settings(
         legacy_environment=True)
@@ -7228,7 +7237,7 @@ def dispatch_fields(kind: str, agent: str, ref: str,
             os.path.dirname(__file__), "..", "agents", agent + ".md"))),
         requested_model=settings.stages[selected].model,
         requested_effort=settings.stages[selected].reasoning,
-        settings_digest=settings.digest, route=route)
+        settings_digest=settings.digest, route=route, namespace=namespace)
 
 
 # --- dispatch verification (tier routing is only real if the driver passes
