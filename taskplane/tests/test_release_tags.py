@@ -218,6 +218,54 @@ def test_current_candidate_has_an_explicit_nonrelease_predecessor():
     assert "never promoted" in disposition["reason"]
 
 
+@pytest.mark.parametrize("merged", [False, True], ids=["pull-request", "main-merge"])
+@pytest.mark.parametrize("candidate_state", [
+    "superseded", "tagged", "missing-disposition", "fictional", "unmerged",
+])
+def test_release_history_retains_reachable_superseded_candidates(
+    tmp_path, monkeypatch, merged, candidate_state,
+):
+    repo = _ReleaseRepository(tmp_path)
+    base = repo.release("1.0.0")
+    _git(tmp_path, "tag", "-a", "v1.0.0", base, "-m", "v1.0.0")
+    _git(tmp_path, "checkout", "-q", "-b", "feature")
+    if candidate_state != "fictional":
+        candidate = repo.release("1.1.0")
+        if candidate_state == "tagged":
+            _git(tmp_path, "tag", "-a", "v1.1.0", candidate, "-m", "v1.1.0")
+        elif candidate_state == "unmerged":
+            _git(tmp_path, "checkout", "-q", "-b", "replacement", "main")
+    repo.release("1.1.1")
+    if candidate_state != "missing-disposition":
+        with (tmp_path / "CHANGELOG.md").open("a", encoding="utf-8") as changelog:
+            changelog.write("| **v1.1.0** | superseded unreleased candidate |\n")
+        _git(tmp_path, "commit", "-qam", "record candidate disposition")
+    if merged:
+        _git(tmp_path, "checkout", "-q", "main")
+        _git(tmp_path, "merge", "-q", "--no-ff",
+             "replacement" if candidate_state == "unmerged" else "feature",
+             "-m", "merge release")
+    monkeypatch.setattr(gate, "NOT_RELEASED", {
+        "1.1.0": {"reason": "superseded candidate", "superseded_by": "1.1.1"},
+    })
+
+    result = gate.audit(tmp_path)
+
+    if candidate_state == "superseded":
+        assert result["ok"], result["problems"]
+        assert "1.1.0" in result["prepared"]
+        assert "1.1.0" not in result["shipped"]
+    else:
+        check = "C7" if candidate_state in {"tagged", "missing-disposition"} else "C4"
+        if candidate_state == "tagged" and not merged:
+            check = "C2"  # A tag on an unmerged PR is not a mainline release.
+        assert not result["ok"]
+        assert {"check": check, "version": "1.1.0"} in [
+            {"check": item["check"], "version": item["version"]}
+            for item in result["problems"]
+        ]
+
+
 def _runtime_with_fingerprint(
     runtime: dict, digest: str, *, name: str = "runner",
     browser: dict | None = None,
