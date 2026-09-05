@@ -1309,12 +1309,37 @@ def design_plan_errors(ws: str, state: dict) -> list:
     if read_errors:
         return read_errors
     assert contract is not None
+    # Preserve the legacy early selector refusal before consulting the graph.
+    try:
+        acceptance_test_map(contract)
+    except DesignAcceptanceError as exc:
+        return ["design acceptance tests are invalid: " + str(exc)]
+    history = state.get("replan_history")
+    return design_plan_artifact_errors(
+        contract, tasks=state.get("tasks") or [], graph=depgraph.load(ws),
+        replan_history=history if isinstance(history, list) else [])
+
+
+def design_plan_artifact_errors(
+        contract: Mapping, *, tasks: list, graph: dict,
+        replan_history: list) -> list:
+    """Existing Design-to-Plan conformance from explicit, sealed inputs.
+
+    The caller validates the Design subject and its authority before this
+    conformance check. No predecessor requirement, graph, or loop state is read.
+    The complete task set and replan history are required, including retained
+    completed work; an empty remaining-work projection is not a complete Plan.
+    """
+    if not isinstance(tasks, list) or not isinstance(replan_history, list):
+        raise ValueError("Plan tasks and replan history must be explicit lists")
+    # Validate even an empty task set's graph input; never infer missing state.
+    depgraph.scope_modules_from_graph(graph, [])
+    errors = []
     try:
         declared_tests = acceptance_test_map(contract)
     except DesignAcceptanceError as exc:
         return ["design acceptance tests are invalid: " + str(exc)]
-    tasks = state.get("tasks") or []
-    errors.extend(_plan_stabilization_errors(state, tasks))
+    errors.extend(_plan_stabilization_errors({"replan_history": replan_history}, tasks))
     if contract.get("requirement") == "R-0013":
         errors.extend(acceptance_wave_errors(contract, tasks))
     planned_modules = set()
@@ -1322,7 +1347,7 @@ def design_plan_errors(ws: str, state: dict) -> list:
     planned_edges = set()
     for task in tasks:
         planned_modules.update(
-            depgraph.scope_modules(ws, task.get("scope") or []))
+            depgraph.scope_modules_from_graph(graph, task.get("scope") or []))
         planned_modules.update(str(x) for x in (task.get("new_modules") or []))
         for row in task.get("contracts") or []:
             cid = row.get("id") if isinstance(row, dict) else row

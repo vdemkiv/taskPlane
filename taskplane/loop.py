@@ -9242,14 +9242,60 @@ def _aggregate_impact_policy(tasks) -> dict:
     return depgraph.aggregate_impact_policy(tasks)
 
 
-def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
+def _plan_dor_errors(ws: str, state: dict, apply: bool = False, *,
+                     sealed_inputs: dict | None = None) -> list:
     """Definition of Ready for implementation, derived from the plan.
 
     M3 (v2.2.1): a Ready CHECK must not mutate. With apply=False
     (default) this is pure — it inspects and reports. Only the plan
     GATE passes apply=True, which merges requirement contracts into
     tasks, records requirement/contract edges, resolves each task's
-    impact policy, and stores the graph DoR verdict on the state."""
+    impact policy, and stores the graph DoR verdict on the state.
+
+    Repository-phase callers supply verified artifact snapshots in
+    sealed_inputs. That read-only path uses the same task policy without
+    reading predecessor requirements, graph, or loop state. Its caller pins
+    current Plan/Design/test-strategy files to the selected artifact bytes.
+    """
+    if sealed_inputs is not None:
+        if apply:
+            raise ValueError("sealed Plan inputs cannot be applied to runtime state")
+        if not isinstance(sealed_inputs, dict) or set(sealed_inputs) != {
+                "requirements_by_id", "graph", "approved_design", "replan_history"}:
+            raise ValueError("sealed Plan inputs require exact requirements_by_id, "
+                             "graph, approved_design, and replan_history fields")
+        requirements = sealed_inputs["requirements_by_id"]
+        if not isinstance(requirements, dict) or any(
+                not isinstance(rid, str) or not rid.strip() or
+                not isinstance(record, dict) or record.get("id") != rid
+                for rid, record in requirements.items()):
+            raise ValueError("sealed Plan requirements_by_id must contain exact "
+                             "requirement records keyed by id")
+        if any(not isinstance(record.get(field), list)
+               for record in requirements.values()
+               for field in ("acceptance", "contracts", "depends_on", "open_questions")):
+            raise ValueError("sealed Plan requirement records require explicit "
+                             "acceptance, contracts, depends_on, and open_questions lists")
+        graph = sealed_inputs["graph"]
+        if not isinstance(graph, dict) or not isinstance(graph.get("modules"), dict) or \
+                not isinstance(graph.get("edges"), list) or \
+                not isinstance(graph.get("meta"), dict):
+            raise ValueError("sealed Plan inputs require a complete graph snapshot")
+        approved_design = sealed_inputs["approved_design"]
+        if not isinstance(approved_design, dict) or \
+                not isinstance(approved_design.get("requirement"), str) or \
+                not approved_design["requirement"].strip() or \
+                approved_design["requirement"] != state.get("requirement_id"):
+            raise ValueError("sealed Plan approved Design must match requirement_id")
+        if not isinstance(sealed_inputs["replan_history"], list) or \
+                not isinstance(state.get("tasks"), list) or any(
+                    not isinstance(task, dict) for task in state["tasks"]):
+            raise ValueError("sealed Plan tasks and replan_history must be explicit lists")
+
+    def requirement_lookup(rid):
+        return sealed_inputs["requirements_by_id"].get(rid) \
+            if sealed_inputs is not None else reqs.get_requirement(ws, rid)
+
     errors = []
     try:
         _plan_delivery_mode_from_file(ws, state, apply=apply)
@@ -9276,7 +9322,7 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
             errors.append(prefix + "explicit acceptance criteria are "
                           "missing or empty")
         rid = task.get("req") or state.get("requirement_id")
-        rec = reqs.get_requirement(ws, rid) if rid else None
+        rec = requirement_lookup(rid) if rid else None
         if rec:
             # Requirements own stable product/contract dependencies; the plan
             # may add contracts but cannot silently erase the requirement's
@@ -9292,7 +9338,7 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
             if apply:
                 task["contracts"] = merged_contracts
             for dep in rec.get("depends_on") or []:
-                if reqs.get_requirement(ws, dep) is None:
+                if requirement_lookup(dep) is None:
                     errors.append(prefix + f"requirement dependency {dep} "
                                   "does not exist")
                 elif apply:
@@ -9325,13 +9371,19 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
             elif rec.get("open_questions"):
                 errors.append(prefix + "requirement has unresolved questions: "
                               + "; ".join(rec["open_questions"]))
-    graph_dor = depgraph.readiness(ws, state.get("tasks") or [])
+    graph_dor = depgraph.readiness_from_graph(
+        sealed_inputs["graph"], state["tasks"]) if sealed_inputs is not None \
+        else depgraph.readiness(ws, state.get("tasks") or [])
     if apply:
         state["graph_dor"] = graph_dor
     errors.extend("graph DoR: " + e for e in graph_dor.get("errors") or [])
     errors.extend(tp.requirement_coverage_errors(state.get("tasks") or [],
-        lambda rid: reqs.get_requirement(ws, rid), state.get("requirement_id")))
-    errors.extend("design DoR: " + e for e in _design_plan_errors(ws, state))
+        requirement_lookup, state.get("requirement_id")))
+    design_errors = _dc.design_plan_artifact_errors(
+        sealed_inputs["approved_design"], tasks=state["tasks"],
+        graph=sealed_inputs["graph"], replan_history=sealed_inputs["replan_history"]) \
+        if sealed_inputs is not None else _design_plan_errors(ws, state)
+    errors.extend("design DoR: " + e for e in design_errors)
     return errors
 
 
