@@ -666,6 +666,10 @@ def test_phase_cli_returns_safe_exact_work_startup(
             lambda _handoff: startup)
     monkeypatch.setattr(
         phase_handoff, "load_phase_handoff", lambda *_a, **_k: handoff)
+    # This test isolates the public privacy projection, not native activation.
+    import phase_dispatch
+    monkeypatch.setattr(phase_dispatch, "bind_native_worker",
+                        lambda _ws, _handoff, _startup, **_kwargs: (_startup, {"phase": phase}))
 
     assert tp.main([
         "phase", command, "exports/pickup/phases/a/handoff.json",

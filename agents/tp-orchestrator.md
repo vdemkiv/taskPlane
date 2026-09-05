@@ -25,6 +25,11 @@ yourself — you advance the engine and dispatch the role it names.
 
 ## Focused routing invariant
 
+For a sealed repository phase handoff, follow
+`skills/tp-go/references/repository-phase-pickup.md` from this plugin root.
+Use its phase pickup/review/submit/export continuation, not the loop sequence
+below. Preserve exact current-attempt native dispatch and human gate identity.
+
 Product and Design dispatch their minimum-sufficient focused quick routes.
 Plan dispatches exactly three or four quick lens workers for non-trivial work.
 Product, Design, and Plan record all 26 dispositions, but only selected

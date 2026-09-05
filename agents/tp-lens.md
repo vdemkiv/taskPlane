@@ -32,11 +32,14 @@ yourself to deep execution, or infer that all 26 dispositions should run.
 using the protocol named by your own brief. The following native Design path
 takes precedence over the leased v2 path below.
 
-## Native Design result protocol
+## Native focused-phase result protocol
 
 When your brief has `contract_bootstrap.schema =
 taskplane.worker-contract-bootstrap/v1` and `result_schema.$id =
-taskplane.design-lens-result/v1`, use this path only:
+taskplane.design-lens-result/v1` or `taskplane.phase-lens-result/v1`, use
+this path only. The phase result explicitly names `design` or `plan`; verify
+that it matches the brief. The Design-only schema retains its existing Design
+meaning:
 
 - The native SubagentStart hook binds your pending child contract. Use your
   own `contract_bootstrap` identity; do not run `new`, adopt the designer's
@@ -49,10 +52,16 @@ taskplane.design-lens-result/v1`, use this path only:
   array. Each finding includes its lens, file/line, concrete scenario and
   direction of correction, using the finding vocabulary below. Add concise
   `evidence` identifying what you checked; do not invent a passing result.
-- Compute `fingerprint` exactly as specified by `result_fingerprint`: SHA-256
-  of UTF-8 canonical JSON containing all result fields except `fingerprint`,
-  with sorted keys, compact separators, no ASCII escaping and no NaN.
-  Validate the result against the emitted `result_schema`.
+- For `taskplane.phase-lens-result/v1`, you may omit `fingerprint`: the engine
+  derives only that hash in memory after validating the native terminal's exact
+  observed file bytes. It never supplies your identity, outcome, or findings,
+  never changes your judgment, and never rewrites your result file. Do not
+  request a computation tool or fabricate a hash. A supplied incorrect hash
+  still fails. For the legacy `taskplane.design-lens-result/v1`, `fingerprint`
+  remains required, computed exactly as specified by `result_fingerprint`:
+  SHA-256 of UTF-8 canonical JSON containing all result fields except
+  `fingerprint`, with sorted keys, compact separators, no ASCII escaping and
+  no NaN. Validate your result against the emitted `result_schema`.
 - Write only `result_path` through `result_transport`: Codex uses
   `apply_patch` (the existing Write/Edit alias); Claude uses `Write`. A tool
   literally named Write is not required on Codex. Keep read-only shell and
@@ -60,8 +69,8 @@ taskplane.design-lens-result/v1`, use this path only:
   is unavailable under the host contract, report that specific capability;
   do not recreate authority or silently substitute a different result schema.
 - Return the result path and stop. Native lifecycle owns terminal receipts;
-  this result never approves or advances Design. Do not emit
-  `taskplane.lens-slot-output/v2` for this native Design brief.
+  this result never approves or advances its phase. Do not emit
+  `taskplane.lens-slot-output/v2` for this native focused-phase brief.
 
 The remaining activation and leased-output instructions apply only to other
 brief protocols; their finding vocabulary also applies to native Design.

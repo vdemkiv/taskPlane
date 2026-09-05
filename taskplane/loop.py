@@ -674,6 +674,40 @@ def _focused_stage_route(
         raise lens_route_policy.LensRoutePolicyError(
             "incumbent applicability mapper is unavailable")
 
+    return _focused_stage_route_from_incumbent(
+        ws, stage=stage, target=target, evidence=material,
+        incumbent=incumbent, mandatory_lenses=mandatory_lenses,
+        maximum_lenses=maximum_lenses,
+        expanded_route_provider_client=expanded_route_provider_client,
+        expanded_route_provider_receipt=expanded_route_provider_receipt)
+
+
+def _focused_stage_route_from_incumbent(
+        ws: str | None, *, stage: str, target: str,
+        evidence: Mapping[str, object], incumbent: Mapping[str, object],
+        mandatory_lenses: Iterable[str] | None = None,
+        maximum_lenses: int | None = None,
+        expanded_route_provider_client:
+        terminal_truth.ExpandedRouteProviderClient | None = None,
+        expanded_route_provider_receipt:
+        terminal_truth.ExpandedRouteProviderReceipt | None = None,
+        ) -> tuple[
+            dict[str, object], dict[str, object], dict[str, object] | None]:
+    """Apply the existing focused policy to an already assembled signal map.
+
+    Repository-phase callers supply sealed signals and no workspace. That
+    path cannot consult a predecessor graph or borrow expanded-route approval;
+    overflow stays non-dispatchable until a new explicit authority is supplied.
+    """
+    if stage not in {"product", "design", "plan"}:
+        raise lens_route_policy.LensRoutePolicyError(
+            "focused adapter requires a routed stage: product, design, or plan")
+    material = json.loads(json.dumps(
+        evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False))
+    evidence_text = " " + json.dumps(
+        material, sort_keys=True, ensure_ascii=False).lower() + " "
+
     catalog = lens_router.load_catalog()
     definitions = list(catalog.get("lenses") or [])
     known = {str(row.get("id") or "") for row in definitions}
@@ -806,13 +840,19 @@ def _focused_stage_route(
     except RuntimeError as exc:
         raise lens_route_policy.LensRoutePolicyError(
             "checkout ReviewKernel runtime is unavailable") from exc
-    try:
-        focused, request = review_module.apply_expanded_route_authority(
-            ws, focused, catalog,
-            provider_client=expanded_route_provider_client,
-            provider_receipt=expanded_route_provider_receipt)
-    except review_module.ReviewKernelError as exc:
-        raise lens_route_policy.LensRoutePolicyError(str(exc)) from exc
+    request = None
+    if ws is not None:
+        try:
+            focused, request = review_module.apply_expanded_route_authority(
+                ws, focused, catalog,
+                provider_client=expanded_route_provider_client,
+                provider_receipt=expanded_route_provider_receipt)
+        except review_module.ReviewKernelError as exc:
+            raise lens_route_policy.LensRoutePolicyError(str(exc)) from exc
+    elif expanded_route_provider_client is not None or \
+            expanded_route_provider_receipt is not None:
+        raise lens_route_policy.LensRoutePolicyError(
+            "sealed focused routing cannot borrow workspace expanded authority")
     projected = review_module.project_focused_route(
         incumbent, focused, catalog)
     projected.setdefault("context", {})["task_to_ac_coverage"] = \

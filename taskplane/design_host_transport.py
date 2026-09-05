@@ -33,6 +33,7 @@ JsonDict: TypeAlias = dict[str, Any]
 ROLE_REFERENCE_SCHEMA = "taskplane.role-reference/v1"
 DISPATCH_INTENT_SCHEMA = "taskplane.design-lens-dispatch-intent/v1"
 RESULT_SCHEMA = "taskplane.design-lens-result/v1"
+PHASE_RESULT_SCHEMA = "taskplane.phase-lens-result/v1"
 HOST_AUTHORITY_SCHEMA = "taskplane.design-lens-host-authority/v1"
 HOST_RECEIPT_SCHEMA = "taskplane.worker-host-receipt/v1"
 HOST_RECEIPT_FIELDS = frozenset({
@@ -63,8 +64,13 @@ def design_worker_brief(plan: JsonDict, worker: JsonDict) -> JsonDict:
     that fingerprint inside the plan's own workers would be self-referential.
     It creates no lease, authority, activation, or default review verdict.
     """
+    phase = plan.get("phase")
+    if phase is not None and phase not in {"design", "plan"}:
+        raise ValueError("native phase lenses require Design or Plan")
+    schema = PHASE_RESULT_SCHEMA if phase is not None else RESULT_SCHEMA
     identity = {
-        "schema": RESULT_SCHEMA,
+        "schema": schema,
+        **({"phase": phase} if phase is not None else {}),
         "lens": worker["lens"],
         "worker_identity": worker["task_name"],
         "team_plan_fingerprint": plan["fingerprint"],
@@ -90,8 +96,10 @@ def design_worker_brief(plan: JsonDict, worker: JsonDict) -> JsonDict:
         "result_path": worker["output"],
         "result_template": identity,
         "result_schema": {
-            "$id": RESULT_SCHEMA, "type": "object",
-            "required": list(properties), "properties": properties,
+            "$id": schema, "type": "object",
+            "required": [key for key in properties
+                         if schema != PHASE_RESULT_SCHEMA or key != "fingerprint"],
+            "properties": properties,
         },
         "result_fingerprint": {
             "algorithm": "sha256",
@@ -99,6 +107,11 @@ def design_worker_brief(plan: JsonDict, worker: JsonDict) -> JsonDict:
             "encoding": "utf-8", "sort_keys": True,
             "separators": [",", ":"], "ensure_ascii": False,
             "allow_nan": False,
+            **({"worker_may_omit": True,
+                "collector_action": "derive_in_memory_after_terminal_byte_validation",
+                "instruction": "The engine computes only an omitted digest, never identity, "
+                    "outcome or findings; it does not rewrite the observed child file."}
+               if schema == PHASE_RESULT_SCHEMA else {}),
         },
         "result_transport": {
             "codex": "apply_patch", "claude": "Write",
@@ -109,7 +122,12 @@ def design_worker_brief(plan: JsonDict, worker: JsonDict) -> JsonDict:
 
 def validate_design_worker_result(plan: JsonDict, worker: JsonDict,
                                   result: object) -> JsonDict:
-    """Use the same bound protocol for producer instructions and collection."""
+    """Validate judgment, then mechanically seal an omitted new-phase digest.
+
+    The caller authenticates the exact native terminal bytes before collection.
+    Hash derivation is neither provenance nor judgment; every identity, outcome
+    and findings field must already be present, and supplied hashes stay strict.
+    """
     brief = design_worker_brief(plan, worker)
     identity = brief["result_template"]
     if (not isinstance(result, dict) or
@@ -119,7 +137,10 @@ def validate_design_worker_result(plan: JsonDict, worker: JsonDict,
             any(not isinstance(row, dict) for row in result["findings"])):
         raise ValueError("Design lens result contract is invalid")
     material = {key: value for key, value in result.items() if key != "fingerprint"}
-    if result.get("fingerprint") != _fp(material):
+    fingerprint = _fp(material)
+    if "fingerprint" not in result and identity["schema"] == PHASE_RESULT_SCHEMA:
+        return {**result, "fingerprint": fingerprint}
+    if result.get("fingerprint") != fingerprint:
         raise ValueError("Design lens result fingerprint is invalid")
     return dict(result)
 

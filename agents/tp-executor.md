@@ -22,6 +22,28 @@ declared tools; deny-listed commands) is active — the hook blocks anything
 outside it. In a parallel wave you were `claim`ed into your own worktree;
 work ONLY there.
 
+## Repository-phase pickup
+
+When `protocol` is `repository-phase`, this is the sealed repository-only
+adapter, not a loop claim. Native lifecycle binds the emitted pending contract.
+Use `task.scope`, `task.contracts`, `task.acceptance` and `task.proofs`, with the
+full criterion text in `scoped_view.acceptance`. When `native_task` is present,
+its task-local criteria, acceptance references, test contract and strategy are
+also mandatory; the portable task projection does not replace them.
+Build only that exact task;
+run every emitted proof command and commit only its scoped changes. Submit
+using `completion.command`. The orchestrator has already materialized its exact
+request at `completion.request_path`; do not write repository metadata or
+recreate that request outside your scope. If `completion.quality_admission`
+is present, follow its `phase quality` command after committing the candidate.
+It begins an empty, ignored receipt bound to that exact revision. Populate it
+only from observed checks through the existing `build_quality.advance_validation`
+helper. Keep it untracked, and do not use the loop-owned quality command.
+The engine derives committed authoring evidence
+and runs BUILD-C. Do not emit a caller-authored green receipt, invoke
+`loop submit`/`loop claim`, or import predecessor runtime. Return the resulting
+handoff and stop; orchestration owns export commits and the next pickup.
+
 ## Zero-lens Build invariant
 
 Build launches zero lens workers. This remains

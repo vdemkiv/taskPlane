@@ -16,7 +16,7 @@ import re
 import stat
 import subprocess
 import tempfile
-from typing import cast, Final, TypeAlias
+from typing import cast, Final, TypeAlias, TYPE_CHECKING
 
 
 SCHEMA: Final[str] = "taskplane.stage-handoff/v2"
@@ -252,6 +252,30 @@ def _repository_relative(value: object, label: str) -> str:
 def artifact_destination(digest: str) -> str:
     checked = _text(digest, "artifact digest", maximum=64, pattern=_DIGEST)
     return f"{ARTIFACT_DIRECTORY}/{checked}"
+
+
+def phase_output_paths(phase: str) -> list[str]:
+    """Exact authoring surface for the two repository-only artifact phases."""
+    if phase == "design":
+        return ["design/contract.json", "design/design.md", "design/visual.html", "design/result.json"]
+    if phase == "plan":
+        return ["plan/tasks.json", "plan/plan.md", "plan/result.json"]
+    raise HandoffMalformedError("artifact output phase must be Design or Plan")
+
+
+def phase_review_output_paths(phase: str) -> list[str]:
+    """Repository changes may include independent, exact catalog outputs.
+
+    This is not the owner's write scope. Each lens gets its own one-file
+    contract; the collector still requires precisely the selected route.
+    """
+    phase_output_paths(phase)
+    if TYPE_CHECKING or __package__:
+        from . import lens
+    else:
+        import lens
+    return [f"{phase}/review.json", *(
+        f"{phase}/lenses/{row['id']}.json" for row in lens.load_catalog()["lenses"])]
 
 
 def handoff_path(handoff_id: str) -> str:
@@ -954,7 +978,11 @@ def validate_manifest(manifest: object) -> JsonObject:
         })
         if task["proofs"] != expected_proofs:
             raise HandoffMalformedError("task proofs do not close over acceptance")
-    if (plan is None) != (not tasks):
+    # A first interrupted Plan may have only its retained draft artifact, not
+    # executable tasks yet. It can resume Plan, never start Build. Completed
+    # Plan and all Build handoffs retain the original nonempty-task invariant.
+    plan_draft = producer == {"phase": "plan", "outcome": "interrupted"} and not tasks
+    if (plan is None) != (not tasks) and not plan_draft:
         raise HandoffMalformedError("tasks must be empty exactly before Plan exists")
 
     artifacts_raw = row.get("selected_artifacts")
@@ -1119,7 +1147,8 @@ def publish_manifest(repository_root: str | os.PathLike[str],
 def validate_repository_manifest(
         repository_root: str | os.PathLike[str], manifest: object, *,
         require_clean: bool = True,
-        allowed_task_id: str | None = None) -> JsonObject:
+        allowed_task_id: str | None = None,
+        allow_phase_output: bool = False) -> JsonObject:
     """Verify source, repository, tracked export lineage, and selected blobs."""
     root = _repository_root(repository_root)
     checked = validate_manifest(manifest)
@@ -1186,6 +1215,11 @@ def validate_repository_manifest(
         root, "diff", "--name-only", source_commit, head, "--",
         code="source-stale").splitlines()))
     allowed_scope: list[str] = []
+    if allow_phase_output:
+        if allowed_task_id is not None:
+            raise PhaseHandoffError("scope-widened", "mixed phase and Build scope")
+        phase = str(successor["phase"])
+        allowed_scope = phase_output_paths(phase) + phase_review_output_paths(phase)
     if allowed_task_id is not None:
         matched_tasks = [task for task in tasks
                          if task["id"] == allowed_task_id]
@@ -1218,7 +1252,8 @@ def validate_repository_manifest(
 
 def load_manifest(repository_root: str | os.PathLike[str], relative_path: str,
                   *, require_clean: bool = True,
-                  allowed_task_id: str | None = None) -> JsonObject:
+                  allowed_task_id: str | None = None,
+                  allow_phase_output: bool = False) -> JsonObject:
     """Read bounded canonical JSON and then perform full repository validation."""
     root = _repository_root(repository_root)
     relative = _repository_relative(relative_path, "handoff path")
@@ -1237,7 +1272,7 @@ def load_manifest(repository_root: str | os.PathLike[str], relative_path: str,
         raise HandoffMalformedError("handoff bytes are not canonical")
     checked = validate_repository_manifest(
         root, value, require_clean=require_clean,
-        allowed_task_id=allowed_task_id)
+        allowed_task_id=allowed_task_id, allow_phase_output=allow_phase_output)
     if relative != handoff_path(str(checked["handoff_id"])):
         raise HandoffIntegrityError("handoff path does not match identity")
     return checked

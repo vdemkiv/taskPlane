@@ -1450,8 +1450,9 @@ def _collision_allowlist() -> list[str]:
 
 
 def _classify_collision(ws: str, kind: str, identity: str,
-                        *, brief_owned: bool = False) -> dict:
-    authority = _collision_authority(ws)
+                        *, brief_owned: bool = False,
+                        authority: dict | None = None) -> dict:
+    authority = _collision_authority(ws) if authority is None else authority
     if brief_owned and authority["governed"]:
         return collision_kernel.classify(
             kind, "tp_" + identity, governed=True,
@@ -1530,16 +1531,26 @@ def cmd_screen_dispatch(a) -> int:
                 "permissionDecisionReason": reason}}))
         return 0
     foreign_message = None
+    phase_collision_authority = None
     try:
         ti = event.get("tool_input") or {}
         agent = (ti.get("task_name") or ti.get("subagent_type")
                  or ti.get("agent_type") or "")
         ws = _workspace(event.get("cwd"))
         expectation = tp.peek_expectation(ws, agent, strict=False)
+        if str((expectation or {}).get("intent_run_id") or "").startswith("phase-"):
+            # The exact pending phase intent selects its own governance
+            # boundary. The preflight below still revalidates the contract;
+            # collision screening must not load a predecessor loop first.
+            phase_collision_authority = {
+                "governed": True, "advisory": False, "step": "phase-dispatch",
+                "run_id": expectation["intent_run_id"],
+            }
         brief_owned = bool(expectation and agent in {
             expectation.get("task_name"), expectation.get("agent")})
         collision = _classify_collision(
-            ws, "agent", str(agent), brief_owned=brief_owned)
+            ws, "agent", str(agent), brief_owned=brief_owned,
+            authority=phase_collision_authority)
         if collision.get("action") == "deny":
             _emit_collision(collision)
             return 0
@@ -1547,7 +1558,7 @@ def cmd_screen_dispatch(a) -> int:
             foreign_message = collision["reason"]
     except Exception as exc:
         try:
-            authority = _collision_authority(
+            authority = phase_collision_authority or _collision_authority(
                 _workspace(event.get("cwd")))
         except Exception:
             authority = {"governed": True, "advisory": False}
@@ -1597,10 +1608,14 @@ def cmd_screen_dispatch(a) -> int:
             not ti.get("role") or ti.get("role") == exp.get("agent"))
         ok = name_ok and not unknown_governed and model_ok and effort_ok \
             and context_ok and role_ok
+        phase_binding = None
         if ok and exp is not None and exp.get("intent_id"):
             try:
                 import spend as _spend
                 import loop as _loop_runtime
+                import phase_admission as _phase_admission
+                phase_binding = _phase_admission.resolve_expected(
+                    ws, exp, native_task_name=str(agent))
                 transcript = _spend.event_transcript(event)
                 if not transcript:
                     raise ValueError(
@@ -1615,9 +1630,25 @@ def cmd_screen_dispatch(a) -> int:
                     raise ValueError(
                         str(projection.get("reason") or
                             "native counter is null or zero"))
-                _loop_runtime.record_native_orchestrator_snapshot(
-                    ws, snapshot=native_snapshot,
-                    observation_authority=_transcript_projection_authority(ws))
+                if phase_binding is None:
+                    _loop_runtime.record_native_orchestrator_snapshot(
+                        ws, snapshot=native_snapshot,
+                        observation_authority=_transcript_projection_authority(ws))
+                elif phase_binding["brief"]["phase"] == "build":
+                    effective = tp._canonical_operational_settings()
+                    capability = host_caps.root_session_capability(
+                        _host_capability_snapshot(ws), settings_digest=effective.digest,
+                        native_snapshot=native_snapshot, turn_id=event.get("turn_id"))
+                    authority = _transcript_projection_authority(ws)
+                    _phase_admission.observe_pending(
+                        ws, phase_binding["contract"], snapshot=native_snapshot,
+                        capability=capability, observation_authority=authority)
+                    admission = _phase_admission.admit(
+                        ws, phase_binding["handoff"], phase_binding["startup"],
+                        phase_binding["brief"], reference=phase_binding["contract"][
+                            "phase_admission_reference"], observation_authority=authority)
+                    if not admission.get("dispatch_allowed"):
+                        raise ValueError("phase Build dispatch requires authenticated fresh-root admission")
             except Exception as meter_error:
                 reason = (
                     "taskplane native dispatch preflight failed closed: "
@@ -1646,7 +1677,7 @@ def cmd_screen_dispatch(a) -> int:
                     "permissionDecision": "deny",
                     "permissionDecisionReason": reason}}))
                 return 0
-        if ok and exp is not None and exp.get("intent_id"):
+        if ok and exp is not None and exp.get("intent_id") and phase_binding is None:
             try:
                 import loop as _loop_runtime
                 observation = _loop_runtime.record_native_dispatch_observation(
@@ -2834,7 +2865,9 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
     try:
         import loop as _loop_runtime
         import spend as _spend
-        if _loop_runtime.load(ws) is None:
+        import phase_admission as _phase_admission
+        phase_contract = _phase_admission.pending_contract(ws)
+        if phase_contract is None and _loop_runtime.load(ws) is None:
             return
         transcript = _spend.event_transcript(event)
         if not transcript:
@@ -2846,6 +2879,17 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                 snapshot, dict) or total <= 0:
             raise ValueError(str(
                 projection.get("reason") or "native counter is null or zero"))
+        if phase_contract is not None:
+            # The pending child names its exact current-attempt admission
+            # owner. Repository phases never discover a predecessor loop.
+            effective = tp._canonical_operational_settings()
+            capability = host_caps.root_session_capability(
+                _host_capability_snapshot(ws), settings_digest=effective.digest,
+                native_snapshot=snapshot, turn_id=event.get("turn_id"))
+            _phase_admission.observe_pending(
+                ws, phase_contract, snapshot=snapshot, capability=capability,
+                observation_authority=_transcript_projection_authority(ws))
+            return
         state = _loop_runtime.load(ws) or {}
         root = state.get("root_hygiene")
         if isinstance(root, dict) and root.get("status") in {"prepared", "open"}:
@@ -8055,7 +8099,7 @@ def _phase_fingerprinted(value: dict) -> dict:
             phase_handoff.canonical_fingerprint(material)}
 
 
-def _phase_refusal(code: str, detail: str, handoff=None) -> dict:
+def _phase_refusal(code: str, detail: str, handoff=None, *, possible_effects=()) -> dict:
     """Return the stable, path-free refusal envelope for phase commands."""
     import phase_pickup
     identity = handoff if isinstance(handoff, dict) else {}
@@ -8066,10 +8110,10 @@ def _phase_refusal(code: str, detail: str, handoff=None) -> dict:
         "handoff_id": identity.get("handoff_id"),
         "handoff_fingerprint": identity.get("fingerprint"),
         "source": source if isinstance(source, dict) else None,
-        "effects": {
-            "dispatch": 0, "authoring": 0, "checkpoint": 0,
-            "publication": 0, "integration": 0,
-        },
+        # A refused adapter may already have prepared a slot or published one
+        # immutable object. Unknown is not a claim of rollback or zero effects.
+        "effects": {key: None if key in possible_effects else 0 for key in (
+            "dispatch", "authoring", "checkpoint", "publication", "integration")},
     })
 
 
@@ -8078,10 +8122,11 @@ def _phase_print(value: dict, returncode: int = 0) -> int:
     return returncode
 
 
-def _phase_failed(exc: Exception, handoff=None) -> int:
+def _phase_failed(exc: Exception, handoff=None, *, possible_effects=()) -> int:
     code = str(getattr(exc, "code", "handoff-malformed"))
     detail = str(getattr(exc, "detail", "phase request is invalid"))
-    return _phase_print(_phase_refusal(code, detail, handoff), 1)
+    return _phase_print(_phase_refusal(code, detail, handoff,
+                                     possible_effects=possible_effects), 1)
 
 
 def _phase_pickup_result(handoff: dict, startup: dict) -> dict:
@@ -8141,14 +8186,39 @@ def _phase_pickup_result(handoff: dict, startup: dict) -> dict:
 
 
 def cmd_phase_export(a: argparse.Namespace) -> int:
-    """Publish one handoff through the normal loop exporter."""
+    """Collect approved phase output and publish its repository handoff."""
     import loop
     import phase_handoff
     import phase_pickup
+    import phase_dispatch
 
     workspace = _workspace(a.workspace)
+    possible_effects: tuple[str, ...] = ()
     try:
         request = _phase_request(workspace, a.request)
+        if set(request) == {"handoff", "result", "decision"}:
+            handoff = phase_handoff.load_phase_handoff(
+                workspace, request["handoff"], require_clean=True,
+                allow_phase_output=True)
+            expected_result = phase_handoff.phase_output_paths(
+                str(handoff["successor"]["phase"]))[-1]
+            if request["result"] != expected_result:
+                raise ValueError("phase result path is not the exact owned output")
+            possible_effects = ("publication",)
+            result = phase_dispatch.export_output(
+                workspace, handoff, _phase_request(workspace, request["result"]),
+                request["decision"])
+            exported, publication = result["handoff"], result["publication"]
+            return _phase_print(_phase_fingerprinted({
+                "schema": phase_pickup.PUBLIC_RESULT_SCHEMA,
+                "status": "complete", "code": "phase-exported",
+                "phase": exported["producer"]["phase"],
+                "outcome": exported["producer"]["outcome"],
+                "handoff_id": exported["handoff_id"],
+                "handoff_fingerprint": exported["fingerprint"],
+                "handoff_path": phase_handoff.handoff_path(exported["handoff_id"]),
+                "publication_receipt_fingerprint": publication["fingerprint"],
+            }))
         required = {"material", "phase", "outcome", "durable_progress"}
         if not required <= set(request) or set(request) - (
                 required | {"receipt_evidence"}):
@@ -8157,6 +8227,7 @@ def cmd_phase_export(a: argparse.Namespace) -> int:
             raise phase_pickup.PhasePickupError(
                 "transition-invalid",
                 "Build handoffs are exported only by phase submit")
+        possible_effects = ("publication",)
         result = loop.publish_phase_export(
             workspace, request["material"], phase=request["phase"],
             outcome=request["outcome"],
@@ -8178,14 +8249,16 @@ def cmd_phase_export(a: argparse.Namespace) -> int:
             "publication_receipt_fingerprint": publication["fingerprint"],
         }))
     except (phase_handoff.PhaseHandoffError,
-            phase_pickup.PhasePickupError, ValueError, TypeError, KeyError) as exc:
-        return _phase_failed(exc)
+            phase_pickup.PhasePickupError, tp.StateError, ValueError, TypeError, KeyError) as exc:
+        return _phase_failed(exc, possible_effects=possible_effects)
 
 
 def _phase_start(a: argparse.Namespace, mode: str) -> int:
     import phase_handoff
     import phase_pickup
+    import phase_dispatch
     handoff = None
+    possible_effects: tuple[str, ...] = ()
     try:
         workspace = _workspace(a.workspace)
         handoff = phase_handoff.load_phase_handoff(
@@ -8196,10 +8269,24 @@ def _phase_start(a: argparse.Namespace, mode: str) -> int:
         startup = (phase_pickup.prepare(workspace, handoff)
                    if handoff["successor"]["phase"] == "build"
                    else tp.create_stateless_phase_startup(handoff))
-        return _phase_print(_phase_pickup_result(handoff, startup))
+        _phase_pickup_result(handoff, startup)  # bound before native activation
+        possible_effects = ("dispatch",)
+        startup, dispatch = phase_dispatch.bind_native_worker(
+            workspace, handoff, startup,
+            observation_authority=_transcript_projection_authority(workspace))
+        result = _phase_pickup_result(handoff, startup)
+        if dispatch.get("dispatch_allowed", True) is not True:
+            result.update(status="waiting", code="phase-waiting")
+        return _phase_print(_phase_fingerprinted({
+            **{key: value for key, value in result.items() if key != "fingerprint"},
+            "dispatch": dispatch,
+        }))
     except (phase_handoff.PhaseHandoffError,
-            phase_pickup.PhasePickupError, ValueError, TypeError, KeyError) as exc:
-        return _phase_failed(exc, handoff)
+            phase_pickup.PhasePickupError, tp.StateError, ValueError, TypeError, KeyError) as exc:
+        if not getattr(exc, "code", None) and isinstance(exc, ValueError):
+            exc = phase_pickup.PhasePickupError(
+                "authoring-invalid", str(exc).replace(workspace, "<checkout>"))
+        return _phase_failed(exc, handoff, possible_effects=possible_effects)
 
 
 def cmd_phase_pickup(a: argparse.Namespace) -> int:
@@ -8210,6 +8297,35 @@ def cmd_phase_pickup(a: argparse.Namespace) -> int:
 def cmd_phase_resume(a: argparse.Namespace) -> int:
     """Prepare only an interrupted same-phase successor."""
     return _phase_start(a, "same-phase-resume")
+
+
+def cmd_phase_quality(a: argparse.Namespace) -> int:
+    """Begin, never approve, quality evidence for the committed Build candidate."""
+    import phase_build
+    import phase_handoff
+    import phase_pickup
+    handoff = None
+    possible_effects: tuple[str, ...] = ()
+    try:
+        workspace = _workspace(a.workspace)
+        request = _phase_request(workspace, a.request)
+        if set(request) != {"handoff", "task_id"} or not isinstance(request["task_id"], str):
+            raise ValueError("phase quality request fields are invalid")
+        handoff = phase_handoff.load_phase_handoff(
+            workspace, request["handoff"], require_clean=True,
+            allowed_task_id=request["task_id"])
+        possible_effects = ("checkpoint", "publication")
+        prepared = phase_build.prepare_committed_quality(workspace, handoff, request["task_id"])
+        return _phase_print(_phase_fingerprinted({
+            "schema": phase_pickup.PUBLIC_RESULT_SCHEMA,
+            "status": "prepared", "code": "phase-quality-prepared", "phase": "build",
+            **prepared, "approval_granted": False,
+            "instruction": "Populate required layers from observed checks using "
+                           "build_quality.advance_validation. Keep the receipt ignored and untracked; "
+                           "submit the same Build request only after its quality gate is complete."}))
+    except (phase_handoff.PhaseHandoffError,
+            phase_pickup.PhasePickupError, tp.StateError, ValueError, TypeError, KeyError) as exc:
+        return _phase_failed(exc, handoff, possible_effects=possible_effects)
 
 
 def _phase_publish_build_result(
@@ -8238,6 +8354,20 @@ def _phase_publish_build_result(
         "tasks", "contracts", "acceptance", "selected_artifacts",
         "authority_receipts", "exclusions",
     )}
+    quality = result.get("build_quality")
+    if quality is not None:
+        # This adapter is entered only after BUILD-C succeeds. Keep admitted
+        # quality evidence portable without committing the mutable local receipt.
+        reference = phase_handoff._validate_artifact_shape(quality["artifact"])
+        data = phase_handoff.canonical_bytes(quality["receipt"])
+        if (reference["kind"] != "build-quality" or reference["bytes"] != len(data) or
+                reference["digest"] != phase_handoff.canonical_fingerprint(quality["receipt"])):
+            raise ValueError("Build-quality publication identity is invalid")
+        phase_handoff._create_if_absent(workspace, reference["destination"], data)
+        phase_handoff.validate_repository_artifact_reference(
+            workspace, reference, require_tracked=False)
+        material["selected_artifacts"] = sorted(
+            [*handoff["selected_artifacts"], reference], key=lambda row: (row["kind"], row["digest"]))
     material.update({
         "source": {"commit": head, "tree": tree},
         "progress_receipts": receipts,
@@ -8266,27 +8396,93 @@ def _phase_publish_build_result(
     return _phase_fingerprinted(public)
 
 
-def cmd_phase_submit(a: argparse.Namespace) -> int:
-    """Submit committed Build output through BUILD-C and export its handoff."""
+def _phase_artifact_submission(workspace: str, handoff: dict, result: dict,
+                               request: dict, *, write_result: bool) -> int:
+    """Connect observed owner output, independent reviews and the human gate."""
+    import design_contract
+    import phase_dispatch
     import phase_handoff
     import phase_pickup
+    phase = str(handoff["successor"]["phase"])
+    prepared = phase_dispatch.prepare_reviews(workspace, handoff, result)
+    if prepared is not None and prepared["status"] != "completed":
+        return _phase_print(_phase_fingerprinted({
+            "schema": phase_pickup.PUBLIC_RESULT_SCHEMA,
+            "status": "review-required", "code": "phase-review-required", "phase": phase,
+            "dispatches": prepared["dispatches"], "wait_policy": prepared["wait_policy"],
+            "resume_request": request, "approval_granted": False,
+            "instruction": "Dispatch only the allowed focused reviewers, wait for every result, "
+                           "commit their outputs, then submit this same request."}))
+    collected = phase_dispatch.collect_output(workspace, handoff, result)
+    result_path = phase_handoff.phase_output_paths(phase)[-1]
+    writes = {result_path: result} if write_result else {}
+    if "review" in collected:
+        writes[phase + "/review.json"] = collected["review"]
+    for relative, value in writes.items():
+        path = os.path.join(workspace, relative)
+        if os.path.realpath(path) != path:
+            raise ValueError("phase result destination is unsafe")
+        tp.atomic_write_json(path, value)
+    notices = design_contract.design_approval_notices(workspace, collected["artifact"]) \
+        if phase == "design" else []
+    return _phase_print(_phase_fingerprinted({
+        "schema": phase_pickup.PUBLIC_RESULT_SCHEMA,
+        "status": "collected", "code": "phase-approval-required",
+        "phase": phase, "result": collected["result"],
+        "result_path": result_path, "commit_required": bool(writes),
+        "commit_paths": list(writes), "notices": notices,
+        "subject_fingerprint": collected["subject_fingerprint"],
+        "export_request": {"handoff": request["handoff"], "result": result_path, "decision": None},
+        "gate": phase + "-approval", "approval_granted": False}))
+
+
+def cmd_phase_submit(a: argparse.Namespace) -> int:
+    """Collect Design/Plan output, or validate Build and export its handoff."""
+    import phase_handoff
+    import phase_pickup
+    import phase_dispatch
     handoff = None
+    possible_effects: tuple[str, ...] = ()
     try:
         workspace = _workspace(a.workspace)
         request = _phase_request(workspace, a.request)
+        if set(request) == {"handoff", "attempt_id", "status"}:
+            handoff = phase_handoff.load_phase_handoff(
+                workspace, request["handoff"], require_clean=True,
+                allow_phase_output=True)
+            phase = str(handoff["successor"]["phase"])
+            brief = phase_dispatch.completed_worker_brief(
+                workspace, handoff, attempt_id=request["attempt_id"],
+                status=request["status"])
+            sealed = phase_dispatch.seal_result(
+                brief, status=request["status"],
+                evidence=phase_dispatch.output_references(workspace, phase))
+            possible_effects = ("dispatch", "publication")
+            return _phase_artifact_submission(workspace, handoff, sealed, request, write_result=True)
+        if set(request) == {"handoff", "result"}:
+            handoff = phase_handoff.load_phase_handoff(
+                workspace, request["handoff"], require_clean=True,
+                allow_phase_output=True)
+            phase = str(handoff["successor"]["phase"])
+            if request["result"] != phase_handoff.phase_output_paths(phase)[-1]:
+                raise ValueError("phase result path is not the exact owned output")
+            possible_effects = ("dispatch", "publication")
+            return _phase_artifact_submission(workspace, handoff,
+                _phase_request(workspace, request["result"]), request, write_result=False)
         if set(request) != {"handoff", "task_id"} or not isinstance(
                 request["task_id"], str) or not request["task_id"]:
             raise ValueError("phase submit request fields are invalid")
         handoff = phase_handoff.load_phase_handoff(
             workspace, request["handoff"], require_clean=True,
             allowed_task_id=request["task_id"])
+        possible_effects = ("checkpoint", "publication", "integration")
         result = phase_pickup.submit_committed(
             workspace, handoff, task_id=request["task_id"])
         return _phase_print(_phase_publish_build_result(
             workspace, handoff, result))
     except (phase_handoff.PhaseHandoffError,
-            phase_pickup.PhasePickupError, ValueError, TypeError, KeyError) as exc:
-        return _phase_failed(exc, handoff)
+            phase_pickup.PhasePickupError, tp.StateError, ValueError, TypeError, KeyError) as exc:
+        return _phase_failed(exc, handoff, possible_effects=possible_effects)
 
 
 def cmd_pickup(a: argparse.Namespace) -> int:
@@ -8474,13 +8670,20 @@ def main(argv=None) -> int:
         "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     phase_pickup.set_defaults(fn=cmd_phase_pickup)
     phase_submit = phase_sub.add_parser(
-        "submit", help="submit committed Build output and export its handoff")
+        "submit", help="collect committed Design, Plan, or Build output")
     phase_submit.add_argument(
         "--request", required=True,
-        help="repository-relative JSON with exact handoff and task_id")
+        help="repository-relative JSON with handoff plus result, observed phase status, or Build task_id")
     phase_submit.add_argument(
         "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     phase_submit.set_defaults(fn=cmd_phase_submit)
+    phase_quality = phase_sub.add_parser(
+        "quality", help="begin empty quality evidence for the committed Build candidate")
+    phase_quality.add_argument(
+        "--request", required=True, help="repository-relative JSON with handoff and Build task_id")
+    phase_quality.add_argument(
+        "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    phase_quality.set_defaults(fn=cmd_phase_quality)
     phase_resume = phase_sub.add_parser(
         "resume", help="return a safe startup for interrupted same-phase work")
     phase_resume.add_argument(

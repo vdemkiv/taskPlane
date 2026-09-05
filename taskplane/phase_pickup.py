@@ -18,17 +18,19 @@ import subprocess
 from typing import Any, Final, TYPE_CHECKING, TypeAlias
 
 if TYPE_CHECKING:
-    from . import build_c, checkpoint, design_contract, phase_handoff
+    from . import build_c, checkpoint, design_contract, phase_handoff, phase_plan, phase_build
     from . import review_evidence
 else:
     if __package__:
-        from . import build_c, checkpoint, design_contract, phase_handoff
+        from . import build_c, checkpoint, design_contract, phase_handoff, phase_plan, phase_build
         from . import review_evidence
     else:  # pragma: no cover - direct module import compatibility
         import build_c
         import checkpoint
         import design_contract
         import phase_handoff
+        import phase_plan
+        import phase_build
         import review_evidence
 
 
@@ -259,6 +261,7 @@ def select_ready_build_task(
         requested_task: str | Mapping[str, object] | None = None) -> JsonObject:
     """Select exactly the first unfinished dependency-ready ordinal task."""
     checked = _validated_handoff_value(handoff)
+    phase_plan.validate_obligation_ownership(checked, checked["tasks"])
     producer = checked["producer"]
     successor = checked["successor"]
     fresh = producer == {"phase": "plan", "outcome": "done"} and \
@@ -416,6 +419,7 @@ def prepare_build_pickup(
     checked = _validated_repository_handoff(checkout, handoff)
     _validate_plan_proofs(checkout, checked)
     task = select_ready_build_task(checked, requested_task=requested_task)
+    phase_build.resolve_native_task(checkout, checked, task)
     base_revision = _git(checkout, "rev-parse", "HEAD")
     return _build_assignment(
         checked, task=task, base_revision=base_revision,
@@ -447,6 +451,7 @@ def submit_build_pickup(
         code = "scope-widened" if str(exc).startswith("scope-widened:") \
             else "authoring-invalid"
         raise PhasePickupError(code, str(exc).split(": ", 1)[-1]) from exc
+    quality = phase_build.admit_quality(checkout, checked, admitted, authored)
     entry = getattr(build_c, "run_phase_pickup", None)
     if not callable(entry):
         raise PhasePickupError(
@@ -497,6 +502,7 @@ def submit_build_pickup(
         "checkpoint_receipt_digest": checked_checkpoint["receipt_digest"],
         "integration_receipt_fingerprint": checked_integration["fingerprint"],
         "progress_receipt": progress,
+        **({"build_quality": quality} if quality is not None else {}),
         **({"progress_receipts": progress_receipts}
            if len(progress_receipts) > 1 else {}),
         "lineage": {
@@ -517,6 +523,7 @@ def run_build_pickup(
     checked = _validated_repository_handoff(checkout, handoff)
     _validate_plan_proofs(checkout, checked)
     task = select_ready_build_task(checked, requested_task=requested_task)
+    phase_build.resolve_native_task(checkout, checked, task)
     assignment = _build_assignment(
         checked, task=task, base_revision=_git(checkout, "rev-parse", "HEAD"))
     supplied = author(copy.deepcopy(assignment))
