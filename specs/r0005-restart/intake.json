@@ -1,0 +1,849 @@
+{
+  "title": "Reliable reusable phases with source-derived decomposition and complete delivery",
+  "artifact_kind": "manual_product_draft_input",
+  "status": "manually_produced_pending_review",
+  "registration_state": "not_registered",
+  "approval_state": "not_approved",
+  "date": "2026-09-05",
+  "input_requirement": "R-0005",
+  "baseline_commit": "8d02d856a77134026f05e83ef4ddcdd714354814",
+  "rollback_commit": "88759129642c9dbf56c05be5fd0012cb566b5412",
+  "rollback_context": {
+    "pull_request": 18,
+    "url": "https://github.com/vdemkiv/taskPlane/pull/18",
+    "merged": true,
+    "merge_commit": "1cf41e9673bce86ccb8e77517c20e9a6b1332e74",
+    "baseline_tree": "284b5c1cb777a3c1b95f2b59849a3e2a803d3af5",
+    "exact_tree_match_verified": true,
+    "pr_checks": {
+      "passed": 8,
+      "failed": 0
+    },
+    "historical_version_status": "unreleased_candidate_before_recent_stateless_pickup_rewrite"
+  },
+  "input_files": [
+    "specs/r0005-restart/inputs/R-0005.md",
+    "specs/r0005-restart/inputs/consolidated-improvement-report.md"
+  ],
+  "baseline_observations": {
+    "inspected": "small read-only source/file inventory",
+    "reuse_candidates": [
+      "canonical graph and decomposition",
+      "plan topology",
+      "wiring closure and evaluation evidence",
+      "stage lifecycle and handoff",
+      "RunStore",
+      "delivery ports",
+      "quality strategy and child evidence",
+      "canonical review finding policy"
+    ],
+    "absent_later_paths": [
+      "taskplane/phase_*.py",
+      "taskplane/worker_hook_identity.py"
+    ],
+    "interpretation": "Historical later-path findings define required behavior, not proof of identical baseline defects or a prescribed file layout."
+  },
+  "problem": "Taskplane must derive tasks from verified dependencies and carry complete, admissible, authorized results through release with fresh reusable phase executions, honest recovery, and actual native-host evidence.",
+  "users": [
+    "project owner",
+    "fresh phase workers",
+    "independent reviewers",
+    "supported native hosts",
+    "maintainers reviewing PR and release evidence"
+  ],
+  "functional_requirements": [
+    {
+      "id": "FR-01",
+      "requirement": "Verify current source touchpoints and bounded dependency coverage before decomposition; distinguish observed source, verified proposals, and realized candidate facts."
+    },
+    {
+      "id": "FR-02",
+      "requirement": "Derive task scope, ownership, dependencies, and order from connected impacted subgraphs; close actual cut edges and declared worker/task/phase/runtime seams."
+    },
+    {
+      "id": "FR-03",
+      "requirement": "Consume integrated candidate conformance and exact production boundary proofs; support honestly bounded standalone Review without invented Plan approval."
+    },
+    {
+      "id": "FR-04",
+      "requirement": "C: apply canonical substantive finding policy after provenance validation and append revalidation of relied-on historical passes."
+    },
+    {
+      "id": "FR-05",
+      "requirement": "E: preserve truthful reason, effects, identity, prerequisites, and authorized continuation; distinguish waits/correction/setup/authority and stop unchanged failing retries."
+    },
+    {
+      "id": "FR-06",
+      "requirement": "A: persist complete produced/inherited artifacts, actual quality strategy bytes, full accessible evidence, and applicable authority for fresh successors."
+    },
+    {
+      "id": "FR-07",
+      "requirement": "B: reconcile owner/reviewer setup and pickup, all durable records, native identity/capability/observations, and uncertain external effects before readiness; reject changed-input replay."
+    },
+    {
+      "id": "FR-08",
+      "requirement": "D: support many-to-many contributions, multiple exact proofs, accountable acceptance ownership, and separate joint integration evidence."
+    },
+    {
+      "id": "FR-09",
+      "requirement": "Connect Product, Design, Plan, Build, Review, Retro, and Release or declared final outcome through explicit durable results and continuation without private predecessor runtime."
+    },
+    {
+      "id": "FR-10",
+      "requirement": "Use one explicit applicable policy separating produced work, mechanical validation, authorized progression, and human sign-off; preserve history and recorded scope-valid authority."
+    },
+    {
+      "id": "FR-11",
+      "requirement": "Reuse incumbent small-responsibility capabilities with one active owner, explicit historical compatibility, retired paths, and bounded migration/rollback."
+    },
+    {
+      "id": "FR-12",
+      "requirement": "Report identity-bound progress, effects, waits, corrections, replay, timing, evidence gaps, and provider/cache usage honestly without double-counting."
+    },
+    {
+      "id": "FR-13",
+      "requirement": "Deliver through current-source Design, exact owned acceptance/proof mapping, bounded PRs, all six labeled journeys, independent final review, scoped sign-off, Retro, and separately authorized release."
+    }
+  ],
+  "priority_order": [
+    {
+      "label": "C",
+      "focus": "admissibility",
+      "reason": "Restore trust in acceptance decisions first."
+    },
+    {
+      "label": "E",
+      "focus": "truthful recovery",
+      "reason": "Make continuation accurate and prevent blind non-progress."
+    },
+    {
+      "label": "A",
+      "focus": "complete producer contracts",
+      "reason": "Supply the artifacts and authority successors actually require."
+    },
+    {
+      "label": "B",
+      "focus": "recoverable execution",
+      "reason": "Reconcile required records and uncertain host effects consistently."
+    },
+    {
+      "label": "D",
+      "focus": "contributions and proof domain",
+      "reason": "Remove invalid planning restrictions without weakening acceptance."
+    }
+  ],
+  "priority_dependency_rule": "Priority guides risk treatment, not permission to bypass dependencies. Design may order prerequisites differently only with an explicit dependency and acceptance rationale.",
+  "phase_behavior": {
+    "input": "Explicit versioned artifacts, scope/authority, output requirements, and any durable checkpoint.",
+    "processing": "Phase-specific expertise transforms inputs into declared outputs.",
+    "validation": "Integrity and domain validation, independent review where applicable, and an explicit authorization policy.",
+    "result": "Complete durable produced/inherited artifacts, full accessible evidence, unresolved issues, attempt/candidate provenance, completion status, and exact continuation.",
+    "distinction": "Produced output, mechanical validity, authorized progression, and human sign-off are distinct facts.",
+    "extensibility": "A phase using existing capabilities requires definition, processing, and domain validation without changing shared dispatch, pickup, storage, hooks, or lifecycle behavior."
+  },
+  "nfr_by_lens": {
+    "security": "Treat paths, symlinks, selectors, manifests, host events, and portable evidence as untrusted; enforce containment, exact provenance/identity, and current authority before effects/recovery. Hashes and copied local receipts are not transferable authentication.",
+    "architecture": "One active owner per migrated lifecycle/graph/seam/finding/acceptance responsibility; reuse incumbent small units and distinguish proposed/as-built truth. No additional framework, coordinator, store, parallel authority, or arbitrary module-count target.",
+    "integrability": "Exact versioned producer/consumer contracts, full portable artifacts/evidence, multiple contributions/proofs, typed refusals, additive/breaking classification, and deterministic eligible historical migration/revalidation; no silent drift.",
+    "data-safety": "Preserve immutable requirements, approvals, passes, and artifacts; append revalidation, reconcile interrupted operations, reject changed-input replay, preserve completed work, and bound rollback without dual owners.",
+    "sre": "Bound traversal/correction, expose degraded capability/evidence and precise continuation, test persistence/effect failures and duplicate events, stop identical failing retries, and preserve legitimate waits.",
+    "privacy-compliance": "Export only necessary telemetry/diagnostics and safe reason codes with provenance; no secrets, full prompts/transcripts, private predecessor runtime, or copied authentication authority.",
+    "cost-finops": "Default graph depth 3 and explicit traversal/fan-out/time limits; avoid unnecessary whole-repository scans/worker fan-out; deduplicate replay and record available provider/cache counters according to their actual semantics.",
+    "qa": "Six production-boundary journeys with positive/targeted-severed evidence and current candidate binding; label real/simulated evidence and never use consumer fixtures, suite counts, skips, or synthetic observations to claim real host completion."
+  },
+  "acceptance_criteria": [
+    {
+      "id": "FP-AC01",
+      "title": "Verified bounded source coverage",
+      "requirement": "Source touchpoints are verified once per bound input before decomposition. Default depth is 3; parser, language, ambiguity, policy, depth, fan-out, time, missing, unsupported, and rejected limits are explicit. Identical inputs yield deterministic semantic results and partial coverage is never complete.",
+      "verification": "Use bounded source/graph fixtures with changed, missing, ambiguous, unsupported, and truncated input; reject unverified proposals.",
+      "source_criteria": [
+        "R-0005:AC1"
+      ],
+      "functional_requirement_ids": [
+        "FR-01"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC02",
+      "title": "Dependency-derived tasks and complete seams",
+      "requirement": "Connected impacted subgraphs determine task ownership/order; extensions are verified before expansion. Each cut edge/runtime seam has exact nodes/symbols, schema/version, cardinality, both owners, direction/order, distinct positive/severed selectors, and source/graph/requirement/Design/Plan/candidate provenance.",
+      "verification": "Public readiness rejects omitted nodes/edges, orphan/duplicate producers or consumers, wrong direction/order, unowned rows, and stale/incomplete bindings.",
+      "source_criteria": [
+        "R-0005:AC2"
+      ],
+      "functional_requirement_ids": [
+        "FR-01",
+        "FR-02"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC03",
+      "title": "Integrated realized conformance",
+      "requirement": "Proposed overlays remain distinct from integrated as-built truth. Conformance detects added, removed/missing, changed, reversed, stale, and unexpected seams, including separately passing task diffs with a shared-contract mismatch.",
+      "verification": "Engineering cannot approve before consuming current conformance and all seam proofs; overlay identity swaps or removed evidence bindings must block the public result.",
+      "source_criteria": [
+        "R-0005:AC3"
+      ],
+      "functional_requirement_ids": [
+        "FR-03"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC04",
+      "title": "Faithful production-boundary proof",
+      "requirement": "Every required worker/task/phase/runtime seam is proven using actual upstream production output and a distinct one-edge severance that makes the same public behavior fail.",
+      "verification": "Reject missing, stale, foreign, multi-edge, ceremonial, or non-failing severance and consumer-only fabricated boundary claims; missing/unexecutable required runtime probes remain blocking gaps.",
+      "source_criteria": [
+        "R-0005:AC4"
+      ],
+      "functional_requirement_ids": [
+        "FR-02",
+        "FR-03",
+        "FR-13"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC05",
+      "title": "Standalone review and compatibility",
+      "requirement": "Review without Plan derives current source/diff seams without inventing Plan authority, and labels declared/derived, partial, timed-out, unsupported, and truncated coverage. Eligible historical graph/evaluation-evidence/wiring records have deterministic migration or revalidation.",
+      "verification": "Standalone and historical-generation fixtures preserve originals and reject a second graph, seam, or evidence authority.",
+      "source_criteria": [
+        "R-0005:AC5"
+      ],
+      "functional_requirement_ids": [
+        "FR-03",
+        "FR-11"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC06",
+      "title": "Entry, native capability, and identity",
+      "requirement": "Supported CLI/native launchers preserve selected valid engine, arguments, contract, and enforcement; absent/invalid/ambiguous candidates fail before effects. Host capability precedes readiness; runs/replacement attempts have unique native identities, children bind owner attempts, and exact replay retains identity.",
+      "verification": "Verify launcher/capability cases, a fresh real native spawn, foreign/broken identity refusals without widened authority, and duplicate events converging through one effective observation owner.",
+      "source_criteria": [
+        "R-0005:AC6"
+      ],
+      "functional_requirement_ids": [
+        "FR-07",
+        "FR-10"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC07",
+      "title": "C: substantive review admissibility",
+      "requirement": "Canonical finding classification/blocking policy follows provenance validation. Pass labels cannot override policy-blocking unresolved findings or missing evidence; legitimate non-blocking debt/observations remain visible. Resolution needs current linked evidence.",
+      "verification": "Contradictory public collection fixtures yield equal decisions for equal applicable classifications; append revalidation of relied-on historical passes, preserve originals, and mark unavailable retained evidence unverified.",
+      "source_criteria": [
+        "R-0005:AC7"
+      ],
+      "functional_requirement_ids": [
+        "FR-04"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC08",
+      "title": "E: truthful authorized recovery",
+      "requirement": "Refusals preserve safe reason, phase/attempt, committed/observed/pending/uncertain effects, permitted continuation/prerequisites, and same-versus-replacement semantics. Missing terminal evidence names observation/wait/reconciliation.",
+      "verification": "Public failures distinguish wait, artifact correction, setup repair, and authority request; execution rechecks authority, unchanged retry preserves identity/completed work, repeated identical failure stops without progress, and legitimate waits use a named event mechanism.",
+      "source_criteria": [
+        "R-0005:AC8"
+      ],
+      "functional_requirement_ids": [
+        "FR-05"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC09",
+      "title": "A: complete producer result",
+      "requirement": "Normal quality-enabled Design seals actual strategy bytes, all required produced/inherited artifacts, accessible evidence, and applicable quality authority. Fresh Plan and Build consume only the package through public interfaces.",
+      "verification": "Remove, alter, or stale required artifacts and require a specific producer-completion or successor-admission refusal; no predecessor runtime access or inserted artifact, receipt, or permission repairs the production connection.",
+      "source_criteria": [
+        "R-0005:AC9"
+      ],
+      "functional_requirement_ids": [
+        "FR-06"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC10",
+      "title": "B: recoverable attempts",
+      "requirement": "Owner/reviewer setup/pickup reconcile every required record before readiness. Same-operation replay repairs setup or returns the valid prior result, while changed input under the identity is refused.",
+      "verification": "Parameterize relevant phases/roles with fault injection at local persistence and external-effect boundaries; reconcile uncertain host work before another launch, report unavailable reconciliation precisely, and make no exactly-once remote claim.",
+      "source_criteria": [
+        "R-0005:AC10"
+      ],
+      "functional_requirement_ids": [
+        "FR-07"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC11",
+      "title": "D: contributions and acceptance",
+      "requirement": "Many-to-many task/criterion contributions support several exact proofs and separately required joint integration evidence. Accountable acceptance ownership does not exclude contributors; task completion is distinct from acceptance.",
+      "verification": "Public Plan/Build/acceptance cases block missing contributions/proofs, stale candidate, or missing joint proof; task completions alone cannot accept, and distinct shell commands are not guessed equivalent.",
+      "source_criteria": [
+        "R-0005:AC11"
+      ],
+      "functional_requirement_ids": [
+        "FR-08"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC12",
+      "title": "J1: real native start through collection",
+      "requirement": "An authorized supported real host supplies genuine observed start/identity, terminal evidence, and actual collected output through production interfaces.",
+      "verification": "Record real host/evidence provenance; missing identity/terminal yields exact refusal without fabricated completion or duplicate launch. Unsupported capability is refused before readiness and unverified; simulation or skip cannot satisfy this criterion.",
+      "source_criteria": [
+        "R-0005:AC12"
+      ],
+      "functional_requirement_ids": [
+        "FR-07",
+        "FR-13"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC13",
+      "title": "J2: quality Design to Plan to Build",
+      "requirement": "A fresh execution trace carries actual Design-selected strategy, complete outputs, and quality authority into fresh Plan and Build.",
+      "verification": "Exercise removed/altered-artifact failure through the same production connection. Label host mode and evidence origin; simulated host tests cannot substitute for J1 or J6.",
+      "source_criteria": [
+        "R-0005:AC13"
+      ],
+      "functional_requirement_ids": [
+        "FR-06",
+        "FR-13"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC14",
+      "title": "J3: interruption and pickup",
+      "requirement": "Production-entry traces cover owner/reviewer roles and applicable phases, fresh pickup, duplicate events, cancellation, and interruption, preserving logical operation identity.",
+      "verification": "Inject faults at relevant persistence/effect boundaries and assert readiness records, launch counts, uncertain effects, and explicit real/simulated labels for each trace.",
+      "source_criteria": [
+        "R-0005:AC14"
+      ],
+      "functional_requirement_ids": [
+        "FR-05",
+        "FR-07",
+        "FR-13"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC15",
+      "title": "J4: rejected review and bounded correction",
+      "requirement": "Production collection refuses pass-with-blocker and progresses only through a bounded authorized correction to a corrected candidate with sufficient current evidence.",
+      "verification": "Verify unchanged failure preserves identity/completed work and stops blind retries; retain correction authority, real/simulated labels, and unresolved evidence gaps.",
+      "source_criteria": [
+        "R-0005:AC15"
+      ],
+      "functional_requirement_ids": [
+        "FR-04",
+        "FR-05",
+        "FR-13"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC16",
+      "title": "J5: multiple tasks and proofs",
+      "requirement": "An actual Plan-produced many-to-many/multiple-proof package reaches Build and aggregate acceptance with joint behavior evidence.",
+      "verification": "Delete each required contribution/proof or change candidate identity and require the same journey to block; no fixture rewrites the producer package to bypass checks, and mode is labeled.",
+      "source_criteria": [
+        "R-0005:AC16"
+      ],
+      "functional_requirement_ids": [
+        "FR-08",
+        "FR-13"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC17",
+      "title": "J6: real finalization",
+      "requirement": "On a supported real host, production Build output provides full accessible evidence to fresh Evaluate, independent Engineering review, applicable scoped human sign-off, Retro, and the declared Release/Publish/final outcome.",
+      "verification": "Missing downstream evidence/authority blocks at its boundary. Prove PR-based delivery and separately authorized publication; Build-only results, documents, synthetic terminals, old approval, or skips cannot satisfy the journey.",
+      "source_criteria": [
+        "R-0005:AC17"
+      ],
+      "functional_requirement_ids": [
+        "FR-09",
+        "FR-10",
+        "FR-13"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC18",
+      "title": "Authority and retained obligations",
+      "requirement": "All supported paths distinguish draft/interrupted output, mechanical validity, and attributed progression authority under the explicit applicable policy; recovery rechecks recorded scope-valid authorization.",
+      "verification": "Reject predecessor conversations/runtime, old Design/Plan/approvals/reviews/completion claims, and stale fingerprints as current authority. Retain R-0004 and R-0001/R-0003 dependencies; keep P14 native canary and P23 whole-suite adjudication separately open.",
+      "source_criteria": [
+        "R-0005:AC18"
+      ],
+      "functional_requirement_ids": [
+        "FR-10"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC19",
+      "title": "Modest reuse and bounded migration",
+      "requirement": "Each proposed unit maps one responsibility and explicit inputs/outputs to incumbent capabilities and acceptance checks. Each bounded migration PR names superseded inactive/removed paths, compatibility, and rollback.",
+      "verification": "Add a phase via definition/processing/domain validation using existing capabilities without shared dispatch/pickup/storage/hook/lifecycle changes; review rejects competing owners, unexplained infrastructure, or silent historical-authority reinterpretation.",
+      "source_criteria": [
+        "R-0005:AC19"
+      ],
+      "functional_requirement_ids": [
+        "FR-11",
+        "FR-13"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC20",
+      "title": "Honest telemetry and privacy",
+      "requirement": "Record run/phase/attempt/operation/candidate identity, continuation, timing, actual terminal outcome, last progress/wait, correction/replay counts, uncertain effects, missing evidence, and next permitted action.",
+      "verification": "Replay/duplicate-event cases count attempts/provider usage once; usage has provenance/cache semantics, unavailable stays unavailable, and exported diagnostics omit secrets, full prompts, transcripts, and predecessor private runtime.",
+      "source_criteria": [
+        "R-0005:AC20"
+      ],
+      "functional_requirement_ids": [
+        "FR-12"
+      ],
+      "status": "not_verified"
+    },
+    {
+      "id": "FP-AC21",
+      "title": "Fresh Product and Design handoff",
+      "requirement": "The manual spec/intake are the only current Product deliverables, with no canonical registration or approval. Later authorized registration retains scope; former Design/Plan remain historical.",
+      "verification": "Review the artifacts for complete original-criterion/journey mappings and no claimed code/runtime/Git/authority mutation. Fresh Design must bind source, assign exact owned positive/negative selectors, and settle policy/compatibility/rollout before applicable gates.",
+      "source_criteria": [
+        "R-0005:AC21"
+      ],
+      "functional_requirement_ids": [
+        "FR-13"
+      ],
+      "status": "not_verified"
+    }
+  ],
+  "original_criterion_mapping": [
+    {
+      "source_criterion": "R-0005:AC1",
+      "fresh_criteria": [
+        "FP-AC01"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC2",
+      "fresh_criteria": [
+        "FP-AC02"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC3",
+      "fresh_criteria": [
+        "FP-AC03"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC4",
+      "fresh_criteria": [
+        "FP-AC04"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC5",
+      "fresh_criteria": [
+        "FP-AC05"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC6",
+      "fresh_criteria": [
+        "FP-AC06"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC7",
+      "fresh_criteria": [
+        "FP-AC07"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC8",
+      "fresh_criteria": [
+        "FP-AC08"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC9",
+      "fresh_criteria": [
+        "FP-AC09"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC10",
+      "fresh_criteria": [
+        "FP-AC10"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC11",
+      "fresh_criteria": [
+        "FP-AC11"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC12",
+      "fresh_criteria": [
+        "FP-AC12"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC13",
+      "fresh_criteria": [
+        "FP-AC13"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC14",
+      "fresh_criteria": [
+        "FP-AC14"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC15",
+      "fresh_criteria": [
+        "FP-AC15"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC16",
+      "fresh_criteria": [
+        "FP-AC16"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC17",
+      "fresh_criteria": [
+        "FP-AC17"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC18",
+      "fresh_criteria": [
+        "FP-AC18"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC19",
+      "fresh_criteria": [
+        "FP-AC19"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC20",
+      "fresh_criteria": [
+        "FP-AC20"
+      ]
+    },
+    {
+      "source_criterion": "R-0005:AC21",
+      "fresh_criteria": [
+        "FP-AC21"
+      ]
+    }
+  ],
+  "journeys": [
+    {
+      "id": "J1",
+      "title": "Real native start and terminal",
+      "criteria": [
+        "FP-AC06",
+        "FP-AC12"
+      ],
+      "evidence_mode": "real_supported_host_required",
+      "positive": "Authorized actual start/identity, terminal, and collected output.",
+      "failure": "Missing identity/terminal refuses without fabrication or duplicate launch; unsupported capability stays unverified."
+    },
+    {
+      "id": "J2",
+      "title": "Quality Design to Plan to Build",
+      "criteria": [
+        "FP-AC09",
+        "FP-AC13"
+      ],
+      "evidence_mode": "explicit_real_or_simulated_host_label",
+      "positive": "Actual Design-produced complete strategy/output/authority package reaches fresh Plan and Build.",
+      "failure": "Removed/altered required artifact blocks the same production connection; simulated evidence cannot substitute for J1/J6."
+    },
+    {
+      "id": "J3",
+      "title": "Interrupted setup and replay",
+      "criteria": [
+        "FP-AC08",
+        "FP-AC10",
+        "FP-AC14"
+      ],
+      "evidence_mode": "explicit_real_or_simulated_host_label",
+      "positive": "Same-operation fresh pickup reconciles owner/reviewer and applicable phases.",
+      "failure": "Faults at persistence/effect boundaries, cancellation, and duplicate events cannot yield false readiness or duplicate work; assert records/launch counts."
+    },
+    {
+      "id": "J4",
+      "title": "Rejected review and bounded correction",
+      "criteria": [
+        "FP-AC07",
+        "FP-AC08",
+        "FP-AC15"
+      ],
+      "evidence_mode": "explicit_real_or_simulated_host_label",
+      "positive": "Authorized bounded correction produces an admissible current candidate.",
+      "failure": "Pass-with-blocker refuses; unchanged failure preserves attempt/work and stops retries; gaps remain explicit."
+    },
+    {
+      "id": "J5",
+      "title": "Multiple tasks and proofs",
+      "criteria": [
+        "FP-AC11",
+        "FP-AC16"
+      ],
+      "evidence_mode": "explicit_real_or_simulated_host_label",
+      "positive": "Production Plan package reaches Build and aggregate acceptance with joint evidence.",
+      "failure": "Missing contribution/proof, stale candidate, or incomplete joint evidence blocks without fixture package rewriting."
+    },
+    {
+      "id": "J6",
+      "title": "Real Build through finalization",
+      "criteria": [
+        "FP-AC17",
+        "FP-AC18",
+        "FP-AC20"
+      ],
+      "evidence_mode": "real_supported_host_required",
+      "positive": "Full Build evidence reaches fresh Evaluate, independent Engineering, applicable human sign-off, Retro, and PR-based declared final outcome.",
+      "failure": "Missing evidence/authority blocks; Build-only results, documents, synthetic terminal events, skips, and historical approval cannot satisfy."
+    }
+  ],
+  "dependency_obligations": {
+    "requirement_dependencies": [
+      {
+        "id": "R-0004",
+        "status": "unresolved_input_preserved"
+      },
+      {
+        "id": "R-0001",
+        "status": "unresolved_input_preserved"
+      },
+      {
+        "id": "R-0003",
+        "status": "unresolved_input_preserved"
+      }
+    ],
+    "deduplication": "R-0004 is repeated in the source; retain one dependency without dropping its substantive obligations.",
+    "obligations": [
+      {
+        "id": "DEP-01",
+        "requirement": "Revalidate current source touchpoints and bounded graph coverage before source-derived ownership/order or expansion.",
+        "criteria": [
+          "FP-AC01",
+          "FP-AC02"
+        ]
+      },
+      {
+        "id": "DEP-02",
+        "requirement": "Carry exact worker/task/phase/runtime producer-consumer contracts, proposed/realized truth, integrated conformance, and positive/severed evidence.",
+        "criteria": [
+          "FP-AC02",
+          "FP-AC03",
+          "FP-AC04",
+          "FP-AC09"
+        ]
+      },
+      {
+        "id": "DEP-03",
+        "requirement": "Bind fresh Design and Plan to the current source, candidate, acceptance map, compatible boundary versions, approval policy, and owned exact selectors.",
+        "criteria": [
+          "FP-AC18",
+          "FP-AC19",
+          "FP-AC21"
+        ]
+      },
+      {
+        "id": "DEP-04",
+        "requirement": "Establish actual native host capability, identity, start/terminal observation and reconciliation through scoped implementation; missing transport evidence does not block Product drafting.",
+        "criteria": [
+          "FP-AC06",
+          "FP-AC10",
+          "FP-AC12",
+          "FP-AC17"
+        ]
+      },
+      {
+        "id": "DEP-05",
+        "requirement": "Carry full accessible evidence and applicable authority through independent Review, human sign-off where required, Retro, PR-based delivery, and separately authorized publication.",
+        "criteria": [
+          "FP-AC17",
+          "FP-AC18",
+          "FP-AC20"
+        ]
+      },
+      {
+        "id": "DEP-06",
+        "requirement": "Preserve original requirement/history and separately open P14 native canary and P23 whole-suite adjudication; do not claim inherited completion.",
+        "criteria": [
+          "FP-AC18"
+        ]
+      }
+    ],
+    "external_service_internals": "Not prescribed; only supported host boundary behavior is in scope.",
+    "completion_imported": false
+  },
+  "canonical_contract_ids": [
+    "contract:graph-decomposition",
+    "contract:slice-validation",
+    "contract:taskplane-source-touchpoint-coverage-v1",
+    "contract:taskplane-cross-task-seam-manifest-v1",
+    "contract:taskplane-realized-seam-conformance-v1",
+    "contract:taskplane-standalone-review-seams-v1",
+    "contract:taskplane.stage-handoff/v2",
+    "contract:taskplane.phase-progress-receipt/v1",
+    "contract:taskplane.phase-pickup-result/v1",
+    "contract:taskplane.phase-review-collection/v1",
+    "contract:taskplane.phase-host-dispatch/v1",
+    "contract:taskplane.stage-authority-binding/v1"
+  ],
+  "contract_relations": [
+    {
+      "contract_id": "contract:graph-decomposition",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:slice-validation",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:taskplane-source-touchpoint-coverage-v1",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:taskplane-cross-task-seam-manifest-v1",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:taskplane-realized-seam-conformance-v1",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:taskplane-standalone-review-seams-v1",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:taskplane.stage-handoff/v2",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:taskplane.phase-progress-receipt/v1",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:taskplane.phase-pickup-result/v1",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:taskplane.phase-review-collection/v1",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:taskplane.phase-host-dispatch/v1",
+      "relation": "changes"
+    },
+    {
+      "contract_id": "contract:taskplane.stage-authority-binding/v1",
+      "relation": "consumes"
+    }
+  ],
+  "contract_version_note": "IDs are preserved from R-0005, separate from relation. No ID or canonical record is allocated. Design must verify 2.19.0 availability and classify compatibility; preserved names do not assert those versions already exist.",
+  "exclusions": [
+    "No Taskplane runtime, contracts, receipts, registry, gates, or Git mutation during this manual Product task.",
+    "No code implementation, Design, Plan, self-approval, release, or publication in Product.",
+    "No inherited authority from old Design/Plan, conversations, private runtime, approvals, reviews, completion claims, or stale fingerprints.",
+    "No imposed removed module paths, generic workflow framework, new coordinator/store, parallel authority, or arbitrary module/line-count targets.",
+    "No unrelated features, external-service internals, unnecessary whole-repository scans, worker fan-out, or ritual full-catalog review wave.",
+    "No direct push to main or publication without applicable separate authorization.",
+    "No fabricated host observations, success from simulation/skip where real proof is required, guessed command equivalence, or invented usage.",
+    "No secrets, full prompts/transcripts, private predecessor runtime, or authentication authority exported as ordinary portable evidence.",
+    "No implied closure of P14 native canary or P23 whole-suite adjudication."
+  ],
+  "scope_handoff": {
+    "current_product_write_paths": [
+      "specs/r0005-restart/spec.md",
+      "specs/r0005-restart/intake.json"
+    ],
+    "prospective_implementation_surfaces": [
+      "existing runtime and tests",
+      "launcher and hook adapters",
+      "role and skill guidance",
+      "delivery documentation"
+    ],
+    "exact_implementation_paths": "Fresh Design must resolve from current source; historical removed paths are not immutable scope.",
+    "dod": {
+      "test_command": null,
+      "reason": "Fresh Design/Plan must assign exact owned public positive/negative selectors before implementation. No Product-only command substitutes for behavior verification."
+    },
+    "next_phase": "fresh_Design_after_Product_review",
+    "start_design_or_implementation_authorized_by_this_artifact": false
+  },
+  "open_questions": [
+    {
+      "id": "DQ-01",
+      "owner_phase": "Design",
+      "product_intake_blocker": false,
+      "question": "Which explicit approval policy applies to each supported path, scope-valid reuse, drafts, independent review, human sign-off, and publishing authority?",
+      "constraint": "Do not invent or waive authorization."
+    },
+    {
+      "id": "DQ-02",
+      "owner_phase": "Design",
+      "product_intake_blocker": false,
+      "question": "Which native host/version and production observation contract provide actual identity/start/terminal evidence, and what scoped transport changes are required?",
+      "constraint": "Unsupported capability remains an implementation/evidence gap; no simulated replacement for J1/J6."
+    },
+    {
+      "id": "DQ-03",
+      "owner_phase": "Design",
+      "product_intake_blocker": false,
+      "question": "Which boundary versions exist in 2.19.0, which historical generations remain readable, and which bounded migrations are additive or breaking?",
+      "constraint": "Identify one active owner, retired paths, and rollback for each slice."
+    },
+    {
+      "id": "DQ-04",
+      "owner_phase": "Design",
+      "product_intake_blocker": false,
+      "question": "What exact owned public positive/negative selectors and dependency-ordered PR slices demonstrate all criteria and journeys against the candidate?",
+      "constraint": "Establish known failing boundary cases before coordination changes; preserve C to E to A to B to D risk priority."
+    }
+  ],
+  "verification_claims": {
+    "implementation_test_execution": false,
+    "journeys_executed": [],
+    "harness_gate_passed": false,
+    "human_signoff": false,
+    "release_completed": false
+  }
+}
