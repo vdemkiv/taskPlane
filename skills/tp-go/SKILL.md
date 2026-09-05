@@ -99,6 +99,11 @@ field. A missing, corrupt, stale, oversized, or authority-mismatched envelope
 blocks dispatch. Codex, Claude, managed, Slack-capable, and accessible text
 fallback rails all carry the same canonical stage and handoff semantics.
 
+For an exported repository phase handoff, use
+`references/repository-phase-pickup.md` instead of the loop dispatch sequence.
+It connects the owner, focused review, approval and successor through the
+public phase commands without loading predecessor runtime.
+
 Non-build stages may terminalize `closed` or `discarded` without creating an
 implementation stage. Their retained immutable artifacts remain auditable;
 later reuse is a new explicitly authorized handoff, never an implicit resume.

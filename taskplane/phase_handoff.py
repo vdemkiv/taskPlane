@@ -16,7 +16,7 @@ import re
 import stat
 import subprocess
 import tempfile
-from typing import cast, Final, TypeAlias
+from typing import cast, Final, TypeAlias, TYPE_CHECKING
 
 
 SCHEMA: Final[str] = "taskplane.stage-handoff/v2"
@@ -252,6 +252,30 @@ def _repository_relative(value: object, label: str) -> str:
 def artifact_destination(digest: str) -> str:
     checked = _text(digest, "artifact digest", maximum=64, pattern=_DIGEST)
     return f"{ARTIFACT_DIRECTORY}/{checked}"
+
+
+def phase_output_paths(phase: str) -> list[str]:
+    """Exact authoring surface for the two repository-only artifact phases."""
+    if phase == "design":
+        return ["design/contract.json", "design/design.md", "design/visual.html", "design/result.json"]
+    if phase == "plan":
+        return ["plan/tasks.json", "plan/plan.md", "plan/result.json"]
+    raise HandoffMalformedError("artifact output phase must be Design or Plan")
+
+
+def phase_review_output_paths(phase: str) -> list[str]:
+    """Repository changes may include independent, exact catalog outputs.
+
+    This is not the owner's write scope. Each lens gets its own one-file
+    contract; the collector still requires precisely the selected route.
+    """
+    phase_output_paths(phase)
+    if TYPE_CHECKING or __package__:
+        from . import lens_catalog
+    else:
+        import lens_catalog
+    return [f"{phase}/review.json", *(
+        f"{phase}/lenses/{row['id']}.json" for row in lens_catalog.load_catalog()["lenses"])]
 
 
 def handoff_path(handoff_id: str) -> str:
@@ -497,6 +521,24 @@ def create_repository_artifact_reference(
 # Short, explicit aliases used by producer adapters.
 create_artifact_reference = create_repository_artifact_reference
 validate_artifact_reference = validate_repository_artifact_reference
+
+
+def phase_output_references(workspace: str, phase: str, *,
+                            publish: bool = False) -> list[JsonObject]:
+    """Select the same exact authored outputs for owner and review adapters."""
+    paths = phase_output_paths(phase)
+    outputs = [(paths[0], phase, "application/json"),
+               (paths[1], phase + "-narrative", "text/markdown")]
+    if phase == "design":
+        _, data = _safe_regular_file(workspace, paths[0], code="artifact-integrity")
+        visual = json.loads(data.decode("utf-8")).get("visualization") or {}
+        if visual.get("required"):
+            if visual.get("path") != "design/visual.html":
+                raise ValueError("repository-phase Design visualization must use design/visual.html")
+            outputs.append(("design/visual.html", "design-visual", "text/html"))
+    return [create_repository_artifact_reference(
+        workspace, path, kind=kind, media_type=media, publish=publish)
+        for path, kind, media in outputs]
 
 
 def create_human_gate_receipt(*, gate: str, actor: str, context: str,
@@ -954,7 +996,11 @@ def validate_manifest(manifest: object) -> JsonObject:
         })
         if task["proofs"] != expected_proofs:
             raise HandoffMalformedError("task proofs do not close over acceptance")
-    if (plan is None) != (not tasks):
+    # A first interrupted Plan may have only its retained draft artifact, not
+    # executable tasks yet. It can resume Plan, never start Build. Completed
+    # Plan and all Build handoffs retain the original nonempty-task invariant.
+    plan_draft = producer == {"phase": "plan", "outcome": "interrupted"} and not tasks
+    if (plan is None) != (not tasks) and not plan_draft:
         raise HandoffMalformedError("tasks must be empty exactly before Plan exists")
 
     artifacts_raw = row.get("selected_artifacts")
@@ -1119,7 +1165,8 @@ def publish_manifest(repository_root: str | os.PathLike[str],
 def validate_repository_manifest(
         repository_root: str | os.PathLike[str], manifest: object, *,
         require_clean: bool = True,
-        allowed_task_id: str | None = None) -> JsonObject:
+        allowed_task_id: str | None = None,
+        allow_phase_output: bool = False) -> JsonObject:
     """Verify source, repository, tracked export lineage, and selected blobs."""
     root = _repository_root(repository_root)
     checked = validate_manifest(manifest)
@@ -1186,6 +1233,11 @@ def validate_repository_manifest(
         root, "diff", "--name-only", source_commit, head, "--",
         code="source-stale").splitlines()))
     allowed_scope: list[str] = []
+    if allow_phase_output:
+        if allowed_task_id is not None:
+            raise PhaseHandoffError("scope-widened", "mixed phase and Build scope")
+        phase = str(successor["phase"])
+        allowed_scope = phase_output_paths(phase) + phase_review_output_paths(phase)
     if allowed_task_id is not None:
         matched_tasks = [task for task in tasks
                          if task["id"] == allowed_task_id]
@@ -1218,7 +1270,8 @@ def validate_repository_manifest(
 
 def load_manifest(repository_root: str | os.PathLike[str], relative_path: str,
                   *, require_clean: bool = True,
-                  allowed_task_id: str | None = None) -> JsonObject:
+                  allowed_task_id: str | None = None,
+                  allow_phase_output: bool = False) -> JsonObject:
     """Read bounded canonical JSON and then perform full repository validation."""
     root = _repository_root(repository_root)
     relative = _repository_relative(relative_path, "handoff path")
@@ -1237,7 +1290,7 @@ def load_manifest(repository_root: str | os.PathLike[str], relative_path: str,
         raise HandoffMalformedError("handoff bytes are not canonical")
     checked = validate_repository_manifest(
         root, value, require_clean=require_clean,
-        allowed_task_id=allowed_task_id)
+        allowed_task_id=allowed_task_id, allow_phase_output=allow_phase_output)
     if relative != handoff_path(str(checked["handoff_id"])):
         raise HandoffIntegrityError("handoff path does not match identity")
     return checked
@@ -1263,6 +1316,7 @@ __all__ = [
     "create_phase_handoff", "create_progress_receipt",
     "create_repository_artifact_reference", "handoff_identity", "handoff_path",
     "load_manifest", "load_phase_handoff", "manifest_fingerprint",
+    "phase_output_references",
     "progress_receipt_path", "publish_manifest", "publish_phase_handoff",
     "publish_progress_receipt", "receipt_fingerprint",
     "repository_identity", "validate_artifact_reference", "validate_manifest",

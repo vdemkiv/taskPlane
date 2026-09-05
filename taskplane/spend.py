@@ -433,7 +433,12 @@ def read_transcript(path: str) -> dict:
 def event_transcript(event: dict) -> "str | None":
     """The transcript path a hook event names, under any of the keys hosts
     have used for it."""
-    for k in ("transcript_path", "agent_transcript_path", "transcript"):
+    keys = ("transcript_path", "agent_transcript_path", "transcript")
+    if (event or {}).get("hook_event_name") == "SubagentStop":
+        # The common path belongs to the parent at this boundary. Attribute
+        # the completed child's counter to the child when both are present.
+        keys = ("agent_transcript_path", "transcript_path", "transcript")
+    for k in keys:
         v = (event or {}).get(k)
         if isinstance(v, str) and v:
             return v

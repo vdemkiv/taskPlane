@@ -1,12 +1,12 @@
 {
   "schema": "taskplane.eval-scenario/v1",
   "skill": "taskplane",
-  "title": "The facade: a goal arrives in plain language and leaves as governed delivery — every routed step under a contract, every gate a human's",
+  "title": "The facade: a new plain-language goal without a sealed predecessor handoff reaches governed approval — every routed step under a contract, every gate a human's",
   "source_files": [
     "skills/taskplane/SKILL.md",
     "skills/taskplane/flow.json"
   ],
-  "inputs_fingerprint": "068c30f1b2a154ac671114f6f43405ebd3f2f9a4cdda9a05e0edef682fef70df",
+  "inputs_fingerprint": "55b6e5b68db75f928cb81d63f98cd3a4b5b5b5a9998e13e869fc290cb6995502",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp loop next",

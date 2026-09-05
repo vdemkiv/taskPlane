@@ -2762,7 +2762,17 @@ def scope_modules(ws: str, scope_globs) -> list:
     directories, unknown paths, absolute paths, and traversal never acquire
     overlay coverage: callers must name each approved file exactly.
     """
-    graph = load(ws)
+    return _scope_modules_from_graph(load(ws), scope_globs)
+
+
+def scope_modules_from_graph(graph: dict, scope_globs) -> list:
+    """Resolve declared ids and exact-file overlays from one explicit graph."""
+    if not isinstance(graph, dict) or not isinstance(graph.get("modules"), dict):
+        raise ValueError("scope module resolution requires a graph snapshot")
+    return _scope_modules_from_graph(graph, scope_globs)
+
+
+def _scope_modules_from_graph(graph: dict, scope_globs) -> list:
     modules = set(modules_for_scope(
         scope_globs, declared_module_ids(graph)))
     declared = set(graph.get("modules") or {})
@@ -2933,12 +2943,36 @@ def readiness(ws: str, tasks) -> dict:
     declared by the planner; a distributed task without a named, recorded
     contract is not implementation-ready.
     """
-    errors, warnings, rows = [], [], []
     try:
         g = scan(ws)
     except Exception as exc:
         return {"passed": False, "errors": [f"graph scan failed: {exc}"],
                 "warnings": [], "tasks": [], "graph": {}}
+    return _readiness_checks(g, tasks, workspace=ws)
+
+
+def _require_graph_snapshot(graph: dict) -> None:
+    if not isinstance(graph, dict) or not isinstance(graph.get("modules"), dict) or \
+            not isinstance(graph.get("edges"), list) or \
+            not isinstance(graph.get("meta"), dict):
+        raise ValueError("a complete graph snapshot with modules, edges, and meta is required")
+
+
+def readiness_from_graph(graph: dict, tasks) -> dict:
+    """Apply the same Ready policy and impact traversal to sealed graph inputs.
+
+    The caller owns snapshot integrity/freshness. This function never scans,
+    reads, reconciles, or writes the workspace's private graph state.
+    """
+    _require_graph_snapshot(graph)
+    if not isinstance(tasks, list):
+        raise ValueError("snapshot readiness tasks must be an explicit list")
+    return _readiness_checks(graph, tasks)
+
+
+def _readiness_checks(g: dict, tasks, *, workspace: str | None = None) -> dict:
+    """Share task checks; only the legacy wrapper requests workspace impact."""
+    errors, warnings, rows = [], [], []
     errors.extend(quality_errors(g))
     for task in tasks or []:
         tid = task.get("id", "?")
@@ -2989,7 +3023,8 @@ def readiness(ws: str, tasks) -> dict:
         if declared_new - set(unknown):
             warnings.append(f"task {tid}: declared new_modules already exist: "
                             + ", ".join(sorted(declared_new - set(unknown))))
-        imp = impact(ws, mods, policy=policy) if mods else None
+        imp = ((impact(workspace, mods, policy=policy) if workspace is not None
+                else impact_from_graph(g, mods, policy=policy)) if mods else None)
         rows.append({"task": tid, "modules": mods, "unknown": unknown,
                      "declared_new_modules": sorted(declared_new),
                      "contracts": contracts, "policy": policy,
@@ -3582,7 +3617,18 @@ def impact(ws: str, changed_files, max_depth: int = 3,
     """Blast radius of a change: the modules touched, then everything that
     depends on them (reverse edges), by depth. This is what a reviewer needs
     BEFORE reading any code — and it costs zero tokens."""
-    g = load(ws)
+    return _impact_from_graph(load(ws), changed_files, max_depth=max_depth, policy=policy)
+
+
+def impact_from_graph(g: dict, changed_files, max_depth: int = 3,
+                      policy: dict | None = None) -> dict:
+    """The existing bounded reverse-edge walk over an explicit graph snapshot."""
+    _require_graph_snapshot(g)
+    return _impact_from_graph(g, changed_files, max_depth=max_depth, policy=policy)
+
+
+def _impact_from_graph(g: dict, changed_files, max_depth: int = 3,
+                       policy: dict | None = None) -> dict:
     policy = dict(policy or {})
     if policy.get("local_depth") is not None:
         try:

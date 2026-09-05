@@ -92,10 +92,11 @@ not repeated in the tables.
 | `tp.py north-star` | on-demand strategic review: print the project's north star, or render a strategic note |
 | `tp.py onboard` | cold-start readiness — folder + git snapshot + init; renders the onboarding dashboard |
 | `tp.py phase` | export or continue sealed repository phase handoffs |
-| `tp.py phase export` | publish one sealed Design or Plan phase handoff |
+| `tp.py phase export` | publish one sealed Requirement, Design, or Plan handoff |
 | `tp.py phase pickup` | return a safe startup for the declared next phase |
+| `tp.py phase quality` | begin empty quality evidence for the committed Build candidate |
 | `tp.py phase resume` | return a safe startup for interrupted same-phase work |
-| `tp.py phase submit` | submit committed Build output and export its handoff |
+| `tp.py phase submit` | collect committed Design, Plan, or Build output |
 | `tp.py pickup` | run one approved shelf Design Contract without a loop |
 | `tp.py preview` | launch a private governed working preview from a closed JSON request |
 | `tp.py production-gate` | validate retained Design authority against the current live Taskplane delivery roots |
@@ -955,7 +956,7 @@ export or continue sealed repository phase handoffs
 
 ## `tp.py phase export`
 
-publish one sealed Design or Plan phase handoff
+publish one sealed Requirement, Design, or Plan handoff
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -974,6 +975,15 @@ Positional arguments:
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py phase quality`
+
+begin empty quality evidence for the committed Build candidate
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | REQUEST (required) | repository-relative JSON with handoff and Build task_id |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py phase resume`
 
 return a safe startup for interrupted same-phase work
@@ -988,11 +998,11 @@ Positional arguments:
 
 ## `tp.py phase submit`
 
-submit committed Build output and export its handoff
+collect committed Design, Plan, or Build output
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--request` | REQUEST (required) | repository-relative JSON with exact handoff and task_id |
+| `--request` | REQUEST (required) | repository-relative JSON with handoff plus result, observed phase status, or Build task_id |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py pickup`

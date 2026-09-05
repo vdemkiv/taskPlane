@@ -108,6 +108,10 @@ the repo-local lifecycle/write receipts required by taskplane provenance.
 
 ### Stage-isolated handoffs
 
+When continuing an exported repository phase handoff, follow
+`../tp-go/references/repository-phase-pickup.md`. Do not route that handoff
+through `loop next` or interpret legacy Design/Plan files as sealed authority.
+
 Each governed specialist receives one bounded stage dispatch.
 `taskplane.stage-dispatch/v1` contains `taskplane.stage-startup/v1`; its
 `input_handoff` is the versioned bounded `taskplane.stage-handoff/v1` manifest.

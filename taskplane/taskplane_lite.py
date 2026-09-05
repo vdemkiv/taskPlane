@@ -4374,6 +4374,16 @@ def _phase_fingerprinted(material: dict) -> dict:
         canonical_json_bytes(detached)).hexdigest()}
 
 
+def _phase_worker_write_allow(phase: str, output: str, lens: object) -> list[str]:
+    if lens:
+        return [output]
+    if __package__:
+        from . import phase_handoff
+    else:
+        import phase_handoff
+    return [*phase_handoff.phase_output_paths(phase)[:-1], output]
+
+
 def _phase_worker_dispatch(projection: dict, handoff: dict, *,
                            attempt_id: str, spec: dict) -> dict:
     if __package__:
@@ -4394,7 +4404,7 @@ def _phase_worker_dispatch(projection: dict, handoff: dict, *,
         "task_slot": spec["task_slot"],
         "phase": phase,
         "read_only": True,
-        "write_allow": [spec["output"]],
+        "write_allow": _phase_worker_write_allow(phase, spec["output"], spec["lens"]),
         "handoff_fingerprint": projection["handoff_fingerprint"],
         "subject_fingerprint": projection["subject_fingerprint"],
         "attempt_id": attempt_id,
@@ -4470,6 +4480,15 @@ def stateless_phase_startup(
     specs = [_stateless_phase_worker_spec(
         row, phase=str(projection["phase"]), ordinal=index)
         for index, row in enumerate(raw_workers, 1)]
+    for supplied, spec in zip(raw_workers, specs):
+        role = "tp-lens" if spec["lens"] else {
+            "design": "tp-designer", "plan": "tp-planner"}[str(projection["phase"])]
+        native_name = dispatch_task_name(
+            "lens" if spec["lens"] else "step", role, spec["worker_id"], namespace=attempt)
+        if not supplied.get("task_slot"):
+            spec["task_slot"] = native_name
+        if not supplied.get("task_name"):
+            spec["task_name"] = native_name
     identities = [(row["worker_id"], row["task_slot"], row["output"])
                   for row in specs]
     if len(set(identities)) != len(identities) or \
@@ -4574,7 +4593,9 @@ def validate_stateless_phase_startup(startup: dict, handoff: dict) -> dict:
             "task": f"{projection['phase']} from sealed handoff "
                     f"{projection['handoff_id']}",
             "task_slot": task_slot, "phase": projection["phase"],
-            "read_only": True, "write_allow": [output],
+            "read_only": True,
+            "write_allow": _phase_worker_write_allow(
+                str(projection["phase"]), output, worker.get("lens")),
             "handoff_fingerprint": projection["handoff_fingerprint"],
             "subject_fingerprint": projection["subject_fingerprint"],
             "attempt_id": attempt, "result_path": output,
@@ -4915,9 +4936,11 @@ def apply_foreign_state_exclusions(contract: dict, workspace: str, *,
 
 # ------------------------------------------------------ submission authority
 
-SUBMISSION_CONTRACT_SCHEMA = "taskplane.submission-contract/v1"
+if __package__:
+    from .phase_output import SUBMISSION_CONTRACT_SCHEMA, SUBMISSION_ARTIFACT_MAX_BYTES
+else:
+    from phase_output import SUBMISSION_CONTRACT_SCHEMA, SUBMISSION_ARTIFACT_MAX_BYTES
 SUBMISSION_STATUS_SCHEMA = "taskplane.submission-status/v1"
-SUBMISSION_ARTIFACT_MAX_BYTES = 1024 * 1024
 
 REVIEW_CONTRACT_ACTION_SCHEMA = "taskplane.review-contract-action/v1"
 REVIEW_CONTRACT_AUTHORITY_SCHEMA = \
@@ -5316,7 +5339,7 @@ def bind_submission_contract(contract: dict, workspace: str, *, task: str,
         raise ValueError("submission locator must be an object")
     locator_copy = json.loads(json.dumps(locator))
     locator_type = locator_copy.get("type")
-    if locator_type not in {"loop_submission", "artifact"}:
+    if locator_type not in {"loop_submission", "artifact", "phase_output"}:
         raise ValueError("unsupported submission locator type")
     if locator_type == "artifact":
         for key in ("path", "receipt_path"):
@@ -5543,6 +5566,8 @@ def submission_status(workspace: str, contract: dict, *,
                                        loop_state)
     if locator_type == "artifact":
         return _artifact_submission_status(workspace, contract, binding)
+    if locator_type == "phase_output":
+        return _phase_submission_status(workspace, contract, binding)
     return _submission_result(contract, binding, "corrupt")
 
 
@@ -5698,8 +5723,10 @@ def budget_status(contract: dict, used_actions: int,
 
 _TASK_SLOT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
-WORKER_CONTRACT_LIFECYCLE_SCHEMA = \
-    "taskplane.worker-contract-lifecycle/v1"
+if __package__:
+    from .phase_output import WORKER_CONTRACT_LIFECYCLE_SCHEMA
+else:
+    from phase_output import WORKER_CONTRACT_LIFECYCLE_SCHEMA
 WORKER_RELEASE_ACTION_SCHEMA = "taskplane.worker-contract-release-action/v1"
 WORKER_TERMINAL_RECEIPT_SCHEMA = \
     "taskplane.worker-contract-terminal-receipt/v1"
@@ -5729,8 +5756,40 @@ def _design_host_transport():
     else:  # direct CLI import
         import design_host_transport as runtime
     return runtime
+
+
+def _phase_output():
+    if __package__:
+        from . import phase_output as runtime
+    else:
+        import phase_output as runtime
+    return runtime
+
+
+def _phase_submission_status(workspace: str, contract: dict, binding: dict) -> dict:
+    observed = _phase_output().observe_terminal_output(
+        workspace, contract, workspace_fingerprint=_workspace_identity_fingerprint(workspace))
+    status = str((observed or {}).get("status") or "corrupt")
+    valid = status == "observed"
+    return _submission_result(
+        contract, binding, "valid" if valid else status, valid=valid, block=not valid,
+        artifact=("exact phase lens result JSON" if (observed or {}).get(
+            "protocol") == "repository-phase-review" else
+            "exact phase machine and narrative files (plus required Design visual)"),
+        recovery="write the required phase files, then return to the orchestrator; "
+                 "the worker need not seal result.json")
+
+
 def portable_role_reference(agent: str) -> dict:
     return _design_host_transport().portable_role_reference(agent)
+
+
+def design_worker_brief(plan: dict, worker: dict) -> dict:
+    return _design_host_transport().design_worker_brief(plan, worker)
+
+
+def validate_design_worker_result(plan: dict, worker: dict, result: object) -> dict:
+    return _design_host_transport().validate_design_worker_result(plan, worker, result)
 
 
 def validate_role_reference(value: object, *, expected_agent: str) -> dict:
@@ -5872,8 +5931,15 @@ def prepare_worker_contract(
     return out
 
 
-def _worker_event_owner(event: dict) -> dict:
+def _worker_event_identity(event: dict) -> tuple[dict, int | None]:
     event = event if isinstance(event, dict) else {}
+    if __package__:
+        from . import worker_hook_identity
+    else:
+        import worker_hook_identity
+    native = worker_hook_identity.resolve(event)
+    if native is not None:
+        return native
     return {
         "session_id": _bounded_hook_identity(
             event.get("session_id") or event.get("thread_id")
@@ -5883,7 +5949,11 @@ def _worker_event_owner(event: dict) -> dict:
             event.get("agent_id") or event.get("child_id"), 160).strip(),
         "task_name": _bounded_hook_identity(
             event.get("task_name") or event.get("agent_type"), 160).strip(),
-    }
+    }, None
+
+
+def _worker_event_owner(event: dict) -> dict:
+    return _worker_event_identity(event)[0]
 
 
 def _active_worker_contracts(workspace: str) -> list[tuple[str, dict]]:
@@ -6016,7 +6086,15 @@ def release_superseded_pending_worker_contracts(
 def bind_worker_contract_event(workspace: str, event: dict, *,
                                now: int | None = None) -> dict:
     """Bind one pending worker slot to one exact native child start."""
-    owner = _worker_event_owner(event)
+    if event.get("hook_event_name") not in {None, "SubagentStart"}:
+        raise _worker_lifecycle_error(
+            workspace, "worker binding requires SubagentStart, not a child action")
+    owner, native_started_at = _worker_event_identity(event)
+    if (event.get("turn_id") and not event.get("task_name") and
+            not str(event.get("agent_type") or "").startswith("tp_") and
+            (event.get("hook_event_name") != "SubagentStart" or native_started_at is None)):
+        raise _worker_lifecycle_error(
+            workspace, "profile-based worker binding requires exact SubagentStart identity")
     if not all(owner.values()):
         raise _worker_lifecycle_error(
             workspace, "worker start identity is incomplete")
@@ -6033,6 +6111,9 @@ def bind_worker_contract_event(workspace: str, event: dict, *,
             workspace, "worker start does not identify exactly one pending slot")
     slot, contract = candidates[0]
     lifecycle = contract["worker_lifecycle"]
+    if native_started_at is not None and native_started_at < lifecycle["prepared_at"] * 1000:
+        raise _worker_lifecycle_error(
+            workspace, "native child start predates this worker contract")
     if lifecycle.get("status") == "active":
         if lifecycle.get("owner") != owner:
             raise _worker_lifecycle_error(
@@ -6183,12 +6264,15 @@ def record_worker_start_activity(
 
 def _worker_contract_for_event(workspace: str, event: dict) \
         -> tuple[str, dict] | None:
+    workers = _active_worker_contracts(workspace)
+    if not workers:
+        return None
     owner = _worker_event_owner(event)
     if not owner["agent_id"] and not owner["task_name"]:
         return None
     matches = []
     expected = False
-    for slot, contract in _active_worker_contracts(workspace):
+    for slot, contract in workers:
         lifecycle = contract.get("worker_lifecycle") or {}
         if lifecycle.get("expected_task_name") == owner["task_name"]:
             expected = True
@@ -6265,6 +6349,13 @@ def record_worker_terminal(
             workspace, "worker terminal authority is unsupported")
     terminal_at = int(_time.time() if now is None else now)
     normalized = normalize_worker_terminal_outcome(outcome)
+    phase_output = (_phase_output().observe_terminal_output(
+                        workspace, contract,
+                        workspace_fingerprint=_workspace_identity_fingerprint(workspace))
+                    if authority == "host-lifecycle" else None)
+    if phase_output is not None and phase_output["status"] != "observed" and normalized == "success":
+        normalized = "failure"
+        submission_status = phase_output["status"]
     authority_key = _worker_contract_authority(workspace, create=False)
     owner_projection = dict(owner) if isinstance(owner, dict) else None
     material = json.dumps({
@@ -6272,6 +6363,7 @@ def record_worker_terminal(
         "contract": contract.get("task_id"), "outcome": normalized,
         "submission": str(submission_status), "terminal_at": terminal_at,
         "authority": authority,
+        **({"phase_output": phase_output} if phase_output is not None else {}),
     }, sort_keys=True, separators=(",", ":"))
     receipt = {
         "schema": WORKER_TERMINAL_RECEIPT_SCHEMA,
@@ -6285,6 +6377,7 @@ def record_worker_terminal(
         "owner": owner_projection, "outcome": normalized,
         "submission_status": str(submission_status or "unknown"),
         "terminal_at": terminal_at, "authority": authority,
+        **({"phase_output": phase_output} if phase_output is not None else {}),
     }
     receipt["signature"] = _worker_signature(
         authority_key["secret"], receipt)
@@ -6384,8 +6477,15 @@ def _verify_worker_release_action(workspace: str, slot: str,
 def _verify_worker_terminal_receipt(workspace: str, slot: str,
                                     receipt: dict, contract: dict,
                                     action: dict) -> None:
+    fields = _WORKER_TERMINAL_FIELDS
+    if isinstance(receipt, dict) and "phase_output" in receipt:
+        if not _phase_output().is_phase_contract(contract) or \
+                receipt.get("authority") != "host-lifecycle":
+            raise _worker_lifecycle_error(
+                workspace, "worker terminal receipt has foreign phase output")
+        fields = fields | {"phase_output"}
     if not isinstance(receipt, dict) or set(receipt) != \
-            _WORKER_TERMINAL_FIELDS or receipt.get(
+            fields or receipt.get(
                 "schema") != WORKER_TERMINAL_RECEIPT_SCHEMA:
         raise _worker_lifecycle_error(
             workspace, "worker terminal receipt schema is malformed")
@@ -6396,6 +6496,13 @@ def _verify_worker_terminal_receipt(workspace: str, slot: str,
                 _worker_signature(authority["secret"], receipt)):
         raise _worker_lifecycle_error(
             workspace, "worker terminal receipt signature is invalid")
+    if "phase_output" in receipt:
+        try:
+            _phase_output().validate_terminal_observation(
+                receipt["phase_output"], contract["phase_dispatch"])
+        except ValueError as exc:
+            raise _worker_lifecycle_error(
+                workspace, "worker terminal phase output is malformed") from exc
     lifecycle = contract.get("worker_lifecycle") or {}
     expected = {
         "workspace_fingerprint": _workspace_identity_fingerprint(workspace),
@@ -7199,7 +7306,8 @@ def dispatch_fields(kind: str, agent: str, ref: str,
                     model_tier: str, *, capability_snapshot=None,
                     enforcement_mode: str | None = None,
                     observed_route: dict | None = None,
-                    settings_context=None) -> dict:
+                    settings_context=None,
+                    namespace: str | None = None) -> dict:
     """Resolve one settings snapshot, then delegate pure brief assembly."""
     settings = settings_context or _canonical_operational_settings(
         legacy_environment=True)
@@ -7228,7 +7336,7 @@ def dispatch_fields(kind: str, agent: str, ref: str,
             os.path.dirname(__file__), "..", "agents", agent + ".md"))),
         requested_model=settings.stages[selected].model,
         requested_effort=settings.stages[selected].reasoning,
-        settings_digest=settings.digest, route=route)
+        settings_digest=settings.digest, route=route, namespace=namespace)
 
 
 # --- dispatch verification (tier routing is only real if the driver passes

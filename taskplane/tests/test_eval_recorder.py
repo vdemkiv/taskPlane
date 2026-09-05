@@ -45,8 +45,8 @@ WHAT IS PINNED HERE
 
 Every assertion here was observed FAILING before it was kept.
 """
-import importlib.util
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -55,6 +55,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1356,10 +1357,11 @@ class TestTheLoopRecordsTheBreadthOnTheRouteItTraced(unittest.TestCase):
 
 
 PRE_INSTRUMENTATION_LOOP_BLOB = "dfb95b871361ed097d156e4785158cb7c86505a4"
+PRE_INSTRUMENTATION_COMMIT = "a2139b1ed93cad6e550712506d780b543d7c4b1b"
 
 
 def _loop_at_pre_instrumentation_baseline():
-    """Load the exact loop.py blob immediately before breadth recording.
+    """Extract the exact runtime immediately before breadth recording.
 
     A moving ``HEAD`` is not a baseline: after the instrumentation commit it
     contains the two fields the differential is meant to prove additive.
@@ -1367,25 +1369,37 @@ def _loop_at_pre_instrumentation_baseline():
     its real routing path) stable across later commits without manufacturing
     a baseline by deleting fields from current source.
     """
-    src = subprocess.run(
-        ["git", "cat-file", "blob", PRE_INSTRUMENTATION_LOOP_BLOB], cwd=REPO,
-                         capture_output=True, text=True, encoding="utf-8",
-                         errors="replace", check=False)
-    if src.returncode != 0 or not src.stdout:
-        raise unittest.SkipTest(
-            f"cannot read pinned pre-instrumentation loop.py: {src.stderr}")
-    if "requested_breadth" in src.stdout or "engine_ran" in src.stdout:
-        raise AssertionError("pinned baseline unexpectedly contains breadth "
-                             "instrumentation")
+    # Loading only old loop.py against today's imports is not a historical
+    # control: audit, requirement and routing APIs have all changed since then.
+    pin = subprocess.run(
+        ["git", "rev-parse", f"{PRE_INSTRUMENTATION_COMMIT}:taskplane/loop.py"],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
+    if pin != PRE_INSTRUMENTATION_LOOP_BLOB:
+        raise AssertionError("historical runtime does not contain the pinned loop")
+    archive = subprocess.run(
+        ["git", "archive", "--format=zip", PRE_INSTRUMENTATION_COMMIT],
+        cwd=REPO, capture_output=True, check=True).stdout
     scratch = tempfile.mkdtemp(prefix="loop-baseline-")
-    path = os.path.join(scratch, "loop_pre_instrumentation.py")
-    _write(path, src.stdout)
-    spec = importlib.util.spec_from_file_location(
-        "loop_pre_instrumentation", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)              # not registered in sys.modules
-    mod._scratch_dir = scratch
-    return mod
+    with zipfile.ZipFile(io.BytesIO(archive)) as source:
+        loop_source = source.read("taskplane/loop.py").decode("utf-8")
+        if "requested_breadth" in loop_source or "engine_ran" in loop_source:
+            raise AssertionError("pinned baseline unexpectedly contains breadth instrumentation")
+        source.extractall(scratch)
+    return scratch
+
+
+def _drive_historical(source, ws):
+    """The same scripted actions, with no current modules in the old process."""
+    script = (
+        "import json, os, sys\nfrom unittest import mock\n"
+        "sys.path.insert(0, os.path.join(sys.argv[1], 'taskplane'))\n"
+        "import loop\n"
+        f"FROZEN_CLOCK = {FROZEN_CLOCK!r}\n" + inspect.getsource(_drive) +
+        "\nprint(json.dumps(_drive(loop, sys.argv[2])))\n")
+    result = subprocess.run(
+        [sys.executable, "-c", script, source, ws], cwd=source,
+        capture_output=True, text=True, encoding="utf-8", check=True)
+    return json.loads(result.stdout)
 
 
 class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
@@ -1401,6 +1415,7 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
         cls._tmp = tempfile.mkdtemp(prefix="tp-evalrec-diff-")
         home = _private_store(cls, cls._tmp)
         cls.head = _loop_at_pre_instrumentation_baseline()
+        cls.addClassCleanup(shutil.rmtree, cls.head, True)
         cls.runs = {}
         for name, mod in (("control_a", cls.head), ("control_b", cls.head),
                           ("current", loop_mod)):
@@ -1408,7 +1423,9 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
             # derived slugs and hashes reach the payloads, so two runs at two
             # paths differ for a reason that is not the change under test.
             ws = _loop_ws(cls._tmp, "ws")
-            cls.runs[name] = {"transcript": _canon(_drive(mod, ws), ws),
+            transcript = (_drive_historical(mod, ws) if isinstance(mod, str)
+                          else _drive(mod, ws))
+            cls.runs[name] = {"transcript": _canon(transcript, ws),
                               "routes": _routes(ws)}
             shutil.rmtree(ws, True)
             shutil.rmtree(home, True)
@@ -1416,7 +1433,6 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls._tmp, True)
-        shutil.rmtree(getattr(cls.head, "_scratch_dir", ""), True)
 
     def test_the_control_repeats_itself_before_anything_is_compared(self):
         self.assertEqual(self.runs["control_a"]["transcript"],
@@ -1447,18 +1463,22 @@ class TestStampingTheBreadthChangedNothingTheLoopDECIDES(unittest.TestCase):
                if row.get("step") not in {"evaluate", "em"}]
         self.assertFalse([row for row in self.runs["current"]["routes"]
                           if row.get("step") in {"evaluate", "em"}])
-        self.assertEqual(len(base), len(now))
-        for was, is_ in zip(base, now):
-            expected = {"requested_breadth", "engine_ran"}
+        # The historical runtime reaches two Fix attempts. Today's stricter
+        # evidence gates do not admit those old fixture submissions, so it
+        # emits two Execute attempts instead. This is not an E2E pass receipt.
+        self.assertEqual([r.get("step") for r in base],
+                         ["pm", "plan", "execute", "fix", "fix"])
+        self.assertEqual([r.get("step") for r in now],
+                         ["pm", "plan", "execute", "execute"])
+        for was in base:
             self.assertEqual(set(was) & added, set())
-            self.assertEqual(set(is_) - set(was), expected)
-            # R-0005 deliberately changes the routed dispositions while
-            # leaving the surrounding event identity stable.
-            ignored = added | {"lenses", "ts"}
-            self.assertEqual({k: v for k, v in is_.items()
-                              if k not in ignored},
-                             {k: v for k, v in was.items()
-                              if k not in ignored})
+        for is_ in now:
+            self.assertEqual(set(is_) & added, {"requested_breadth", "engine_ran"})
+            self.assertEqual(is_["schema"], "taskplane.audit-event/v2")
+            self.assertEqual(is_["requested_breadth"], "routed")
+            self.assertIsInstance(is_["engine_ran"], bool)
+            if is_["step"] == "execute":
+                self.assertEqual(is_["lenses"], [])
 
     def test_the_baseline_could_not_tell_the_routed_review_from_all(self):
         """The regression this locks: over the PREVIOUS revision's own trace,

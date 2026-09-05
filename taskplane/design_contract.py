@@ -3,9 +3,10 @@ loop.py in v2.2.1 (review finding: ~470 embedded lines were turning the
 state machine into a god module). loop.py delegates here; the public
 surface and behavior are unchanged.
 
-Decomposition note (M5): _design_dod_errors below remains the single
-entry point; its sections are being split into per-concern helpers as
-they change — new validation goes in a helper, not inline.
+Decomposition note (M5): design_artifact_errors owns the shared substantive
+checks; design_dod_errors supplies the existing loop inputs. Its sections
+are split into per-concern helpers as they change — new validation goes in
+a helper, not inline.
 """
 from __future__ import annotations
 from collections.abc import Mapping, Sequence
@@ -916,6 +917,27 @@ def design_dod_errors(ws: str, state: dict) -> list:
     if errors:
         return errors
     assert contract is not None
+    requirement = reqs.get_requirement(ws, state.get("requirement_id"))
+    return design_artifact_errors(
+        ws, contract,
+        requirement={**(requirement or {}), "id": state.get("requirement_id")},
+        baseline_graph={"meta": {"content_fingerprint": state.get(
+            "design_graph_fingerprint")}},
+        current_graph=depgraph.load(ws))
+
+
+def design_artifact_errors(
+        workspace: str, contract: dict, *, requirement: Mapping,
+        baseline_graph: Mapping, current_graph: Mapping) -> list:
+    """Run the same Design DoD from explicitly supplied current phase inputs.
+
+    The caller owns validation of the sealed requirement and graph authority.
+    This validator neither loads predecessor requirement/graph state nor grants
+    approval. Narrative and optional visualization bytes belong to this phase
+    and retain their existing workspace-backed checks and content binding.
+    """
+    ws = workspace
+    errors = []
 
     def text(value) -> bool:
         return bool(str(value or "").strip())
@@ -933,7 +955,7 @@ def design_dod_errors(ws: str, state: dict) -> list:
 
     if contract.get("schema") != DESIGN_SCHEMA:
         errors.append(f"design schema must be {DESIGN_SCHEMA}")
-    if contract.get("requirement") != state.get("requirement_id"):
+    if contract.get("requirement") != requirement.get("id"):
         errors.append("design requirement does not match the loop requirement")
     for field in ("title", "summary", "decision"):
         if not text(contract.get(field)):
@@ -995,7 +1017,7 @@ def design_dod_errors(ws: str, state: dict) -> list:
             errors.append("design contract ids need contract: or resource: "
                           "prefixes (the plan readiness rule): " + cid)
         contract_ids.add(cid)
-    rec = reqs.get_requirement(ws, state.get("requirement_id"))
+    rec = requirement
     required_contracts = {
         str(row.get("id") if isinstance(row, dict) else row)
         for row in ((rec or {}).get("contracts") or [])
@@ -1007,9 +1029,9 @@ def design_dod_errors(ws: str, state: dict) -> list:
                       + ", ".join(missing_contracts))
 
     graph = object_field("graph")
-    current_fp = (depgraph.load(ws).get("meta") or {}).get(
+    current_fp = (current_graph.get("meta") or {}).get(
         "content_fingerprint")
-    baseline_fp = state.get("design_graph_fingerprint")
+    baseline_fp = (baseline_graph.get("meta") or {}).get("content_fingerprint")
     if not baseline_fp:
         errors.append("design graph baseline was not captured by the "
                       "engine — run `loop next` once at the design step to "
@@ -1029,7 +1051,7 @@ def design_dod_errors(ws: str, state: dict) -> list:
     if not isinstance(edges, list):
         errors.append("design graph proposed_edges must be a list")
         edges = []
-    known = set((depgraph.load(ws).get("modules") or {})) | proposed_modules
+    known = set((current_graph.get("modules") or {})) | proposed_modules
     edge_nodes = set()
     for edge in edges:
         if not isinstance(edge, dict):
@@ -1287,12 +1309,37 @@ def design_plan_errors(ws: str, state: dict) -> list:
     if read_errors:
         return read_errors
     assert contract is not None
+    # Preserve the legacy early selector refusal before consulting the graph.
+    try:
+        acceptance_test_map(contract)
+    except DesignAcceptanceError as exc:
+        return ["design acceptance tests are invalid: " + str(exc)]
+    history = state.get("replan_history")
+    return design_plan_artifact_errors(
+        contract, tasks=state.get("tasks") or [], graph=depgraph.load(ws),
+        replan_history=history if isinstance(history, list) else [])
+
+
+def design_plan_artifact_errors(
+        contract: Mapping, *, tasks: list, graph: dict,
+        replan_history: list) -> list:
+    """Existing Design-to-Plan conformance from explicit, sealed inputs.
+
+    The caller validates the Design subject and its authority before this
+    conformance check. No predecessor requirement, graph, or loop state is read.
+    The complete task set and replan history are required, including retained
+    completed work; an empty remaining-work projection is not a complete Plan.
+    """
+    if not isinstance(tasks, list) or not isinstance(replan_history, list):
+        raise ValueError("Plan tasks and replan history must be explicit lists")
+    # Validate even an empty task set's graph input; never infer missing state.
+    depgraph.scope_modules_from_graph(graph, [])
+    errors = []
     try:
         declared_tests = acceptance_test_map(contract)
     except DesignAcceptanceError as exc:
         return ["design acceptance tests are invalid: " + str(exc)]
-    tasks = state.get("tasks") or []
-    errors.extend(_plan_stabilization_errors(state, tasks))
+    errors.extend(_plan_stabilization_errors({"replan_history": replan_history}, tasks))
     if contract.get("requirement") == "R-0013":
         errors.extend(acceptance_wave_errors(contract, tasks))
     planned_modules = set()
@@ -1300,7 +1347,7 @@ def design_plan_errors(ws: str, state: dict) -> list:
     planned_edges = set()
     for task in tasks:
         planned_modules.update(
-            depgraph.scope_modules(ws, task.get("scope") or []))
+            depgraph.scope_modules_from_graph(graph, task.get("scope") or []))
         planned_modules.update(str(x) for x in (task.get("new_modules") or []))
         for row in task.get("contracts") or []:
             cid = row.get("id") if isinstance(row, dict) else row

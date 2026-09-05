@@ -104,8 +104,12 @@ def publish_dashboard_refresh(
         )
 
 
-def dispatch_task_name(kind: str, agent: str, ref: str | None = None) -> str:
-    """Return a stable native task identity without erasing its role."""
+def dispatch_task_name(kind: str, agent: str, ref: str | None = None, *,
+                       namespace: str | None = None) -> str:
+    """Name one attempt in its owning run, retaining legacy read compatibility."""
+    if namespace is not None and (
+            not isinstance(namespace, str) or not namespace.strip()):
+        raise ValueError("native dispatch namespace must be a non-empty string")
     role = (agent or "agent").removeprefix("tp-")
     parts = ["tp", kind]
     if role != kind:
@@ -115,8 +119,15 @@ def dispatch_task_name(kind: str, agent: str, ref: str | None = None) -> str:
     identity = "\0".join((str(kind), str(agent), str(ref or "")))
     raw = "_".join(parts).lower()
     name = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "tp_agent"
-    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
-    return name[:55].rstrip("_") + "_" + digest
+    if namespace is None:
+        digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
+    else:
+        # Hash the full tuple before truncating the readable label. A run is
+        # private identity, not a label, and delimiter-containing refs must not
+        # alias another tuple. Replaying the same reservation stays stable.
+        scoped = json.dumps([kind, agent, ref, namespace], ensure_ascii=False)
+        digest = hashlib.sha256(scoped.encode("utf-8")).hexdigest()[:16]
+    return name[:63 - len(digest)].rstrip("_") + "_" + digest
 
 
 def role_marker(agent: str) -> str:
@@ -134,13 +145,14 @@ def dispatch_envelope(
     requested_effort: str,
     settings_digest: str,
     route: Mapping[str, Any] | None = None,
+    namespace: str | None = None,
 ) -> dict[str, Any]:
     """Seal resolved settings and optional host routing into one brief."""
     fields = {
         "role": agent,
         "role_marker": role_marker(agent),
         "role_instructions": role_instructions,
-        "task_name": dispatch_task_name(kind, agent, ref),
+        "task_name": dispatch_task_name(kind, agent, ref, namespace=namespace),
         "model_tier": model_tier,
         "model": route["effective_model"] if route else requested_model,
         "reasoning_effort": (

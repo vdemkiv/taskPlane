@@ -519,6 +519,49 @@ def _plan_delivery_mode_from_file(
     return receipt
 
 
+def _plan_output_contract(state: Mapping[str, object]) -> dict:
+    """Publish the metadata the Plan consumer requires, without approval."""
+    template = {"tasks": []}
+    if state.get("design_fingerprint"):
+        template.update({
+            "requirement": state.get("requirement_id"),
+            "delivery_mode": "build", "automatic_lenses": [],
+            # This names the governing evidence, not a new human approval.
+            "plan_authority": "design:" + str(state["design_fingerprint"]),
+        })
+    return {"path": "plan/tasks.json", "human_path": "plan/plan.md",
+            "template": template, "approval_granted": False}
+
+
+def _build_task_brief(task: Mapping[str, object]) -> dict:
+    """Carry the approved task contract, never its mutable execution state."""
+    fields = (*_REANCHOR_CONTRACT_FIELDS, "variant", "model",
+              "evaluation_evidence_edges", "changed_interfaces")
+    return {key: _copy_json(task[key]) for key in fields if key in task}
+
+
+def _build_completion_brief(task: Mapping[str, object], *, parallel: bool) -> dict:
+    result = {
+        "tests": task.get("tests"), "commit_before_submit": parallel,
+        "submit": ["loop", "submit", "pass", *(
+            ["--task", str(task["id"])] if parallel else [])],
+        "worker_may_gate": False,
+    }
+    if _build_quality_required(task):
+        result["quality_admission"] = {
+            "required_before_submit": True,
+            "receipt_schema": build_quality.BUILD_QUALITY_RECEIPT_SCHEMA_ID,
+            "strategy_reference": _copy_json(task.get("test_strategy_authority")),
+            "test_contract": _copy_json(task["test_contract"]),
+            "command": ["loop", "build-quality", "--task", str(task["id"]),
+                        "--strategy", "<verified-strategy.json>",
+                        "--receipt", "<completed-quality-receipt.json>"],
+            "evidence_rule": "Use observed current-candidate evidence; "
+                             "never synthesize green layers or approval.",
+        }
+    return result
+
+
 def build_dispatch_lens_routing(
         state: Mapping[str, object], task: Mapping[str, object] | None,
         *, workspace: str) -> tuple[dict, dict | None]:
@@ -630,6 +673,40 @@ def _focused_stage_route(
             "mapper_unavailable":
         raise lens_route_policy.LensRoutePolicyError(
             "incumbent applicability mapper is unavailable")
+
+    return _focused_stage_route_from_incumbent(
+        ws, stage=stage, target=target, evidence=material,
+        incumbent=incumbent, mandatory_lenses=mandatory_lenses,
+        maximum_lenses=maximum_lenses,
+        expanded_route_provider_client=expanded_route_provider_client,
+        expanded_route_provider_receipt=expanded_route_provider_receipt)
+
+
+def _focused_stage_route_from_incumbent(
+        ws: str | None, *, stage: str, target: str,
+        evidence: Mapping[str, object], incumbent: Mapping[str, object],
+        mandatory_lenses: Iterable[str] | None = None,
+        maximum_lenses: int | None = None,
+        expanded_route_provider_client:
+        terminal_truth.ExpandedRouteProviderClient | None = None,
+        expanded_route_provider_receipt:
+        terminal_truth.ExpandedRouteProviderReceipt | None = None,
+        ) -> tuple[
+            dict[str, object], dict[str, object], dict[str, object] | None]:
+    """Apply the existing focused policy to an already assembled signal map.
+
+    Repository-phase callers supply sealed signals and no workspace. That
+    path cannot consult a predecessor graph or borrow expanded-route approval;
+    overflow stays non-dispatchable until a new explicit authority is supplied.
+    """
+    if stage not in {"product", "design", "plan"}:
+        raise lens_route_policy.LensRoutePolicyError(
+            "focused adapter requires a routed stage: product, design, or plan")
+    material = json.loads(json.dumps(
+        evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False))
+    evidence_text = " " + json.dumps(
+        material, sort_keys=True, ensure_ascii=False).lower() + " "
 
     catalog = lens_router.load_catalog()
     definitions = list(catalog.get("lenses") or [])
@@ -763,13 +840,19 @@ def _focused_stage_route(
     except RuntimeError as exc:
         raise lens_route_policy.LensRoutePolicyError(
             "checkout ReviewKernel runtime is unavailable") from exc
-    try:
-        focused, request = review_module.apply_expanded_route_authority(
-            ws, focused, catalog,
-            provider_client=expanded_route_provider_client,
-            provider_receipt=expanded_route_provider_receipt)
-    except review_module.ReviewKernelError as exc:
-        raise lens_route_policy.LensRoutePolicyError(str(exc)) from exc
+    request = None
+    if ws is not None:
+        try:
+            focused, request = review_module.apply_expanded_route_authority(
+                ws, focused, catalog,
+                provider_client=expanded_route_provider_client,
+                provider_receipt=expanded_route_provider_receipt)
+        except review_module.ReviewKernelError as exc:
+            raise lens_route_policy.LensRoutePolicyError(str(exc)) from exc
+    elif expanded_route_provider_client is not None or \
+            expanded_route_provider_receipt is not None:
+        raise lens_route_policy.LensRoutePolicyError(
+            "sealed focused routing cannot borrow workspace expanded authority")
     projected = review_module.project_focused_route(
         incumbent, focused, catalog)
     projected.setdefault("context", {})["task_to_ac_coverage"] = \
@@ -1358,10 +1441,15 @@ def _design_control_plane_errors(ws: str, state: Mapping[str, object]) \
 
 def _design_team_plan(
     ws: str, state: Mapping[str, object], focused_route: Mapping[str, object],
-    dispatch: Mapping[str, object], *, effective_settings=None,
+    dispatch: Mapping[str, object], *, stage_evidence: Mapping[str, object],
+    effective_settings=None,
 ) -> dict:
     """Compile and authorize one native quick worker per selected lens."""
-    del dispatch  # Design workers resolve one canonical settings snapshot.
+    # The owner name already binds the run and durable worker attempt. Use it
+    # for the entire lens wave, not a second mutable name registry.
+    dispatch_namespace = str(dispatch.get("task_name") or "").strip()
+    if not dispatch_namespace:
+        raise ValueError("Design lens team requires an owning dispatch identity")
     selected = [str(value) for value in
                 focused_route.get("dispatchable_selected") or []]
     if not selected or len(selected) != len(set(selected)) or len(selected) > 16:
@@ -1386,7 +1474,7 @@ def _design_team_plan(
         # against this same typed settings snapshot instead.
         worker_dispatch = tp.dispatch_fields(
             "lens", "tp-lens", f"design-{lens_id}", "deep",
-            settings_context=effective)
+            settings_context=effective, namespace=dispatch_namespace)
         if worker_dispatch.get("model") != design_stage.model or \
                 worker_dispatch.get("reasoning_effort") != \
                 design_stage.reasoning or \
@@ -1436,6 +1524,7 @@ def _design_team_plan(
         }
     material = {
         "schema": "taskplane.design-team-plan/v1",
+        "dispatch_namespace": dispatch_namespace,
         "run_id": binding.get("run_id"),
         "stage_instance_id": binding.get("stage_instance_id"),
         "requirement": binding.get("requirement"),
@@ -1445,6 +1534,7 @@ def _design_team_plan(
         "catalog_fingerprint": binding.get("catalog_fingerprint"),
         "decomposition_fingerprint": binding.get(
             "decomposition_fingerprint"),
+        "stage_evidence": _copy_json(stage_evidence),
         "route_fingerprint": focused_route.get("route_fingerprint"),
         "selected": selected,
         "selected_count": len(selected),
@@ -1544,20 +1634,10 @@ def _design_team_errors(ws: str, state: Mapping[str, object]) -> list[str]:
         if not isinstance(result, Mapping):
             errors.append(f"Design lens {worker.get('lens')} has no result")
             continue
-        result_material = {str(key): value for key, value in result.items()
-                           if key != "fingerprint"}
-        expected = hashlib.sha256(json.dumps(
-            result_material, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
-        if result.get("schema") != "taskplane.design-lens-result/v1" or \
-                result.get("lens") != worker.get("lens") or \
-                result.get("worker_identity") != worker.get("task_name") or \
-                result.get("team_plan_fingerprint") != plan.get(
-                    "fingerprint") or result.get("candidate_fingerprint") != \
-                plan.get("candidate_fingerprint") or \
-                result.get("outcome") not in {"pass", "changes-required"} or \
-                result.get("fingerprint") != expected:
-            errors.append(f"Design lens {worker.get('lens')} result is invalid")
+        try:
+            tp.validate_design_worker_result(dict(plan), dict(worker), dict(result))
+        except ValueError as exc:
+            errors.append(f"Design lens {worker.get('lens')} result is invalid: {exc}")
     return errors
 
 
@@ -2536,6 +2616,11 @@ def project_phase_export(
         raise ValueError("durable phase progress fields are invalid")
     phase = str(phase or "")
     outcome = str(outcome or "")
+    if phase == "requirement":
+        from taskplane import phase_entry
+        return phase_entry.project_entry(
+            material, outcome=outcome, durable_progress=durable_progress,
+            receipt_evidence=receipt_evidence)
     if phase not in {"design", "plan", "build"} or \
             durable_progress.get("phase") != phase:
         raise ValueError("phase export progress belongs to another phase")
@@ -2689,6 +2774,9 @@ def publish_phase_export(
         material, phase=phase, outcome=outcome,
         durable_progress=durable_progress,
         receipt_evidence=receipt_evidence)
+    if phase == "requirement":
+        from taskplane import phase_entry
+        phase_entry.validate_entry(repository_root, handoff, product_dor=reqs.product_dor)
     publication = phase_handoff.publish_phase_handoff(
         repository_root, handoff)
     return {"handoff": handoff, "publication": publication}
@@ -4898,6 +4986,40 @@ def _stage_native_init_authority(
     return record
 
 
+def _prepared_loop_run_id(ws: str) -> str | None:
+    """Use the verified preflight owner for a first ordinary loop only.
+
+    Repository preparation already allocated the run. A second, unrelated
+    loop UUID cannot own that run's artifacts. This reads current preflight
+    identity; it neither rebinds a locator nor imports predecessor progress.
+    """
+    locator = runtime_storage.load_workspace_locator(ws)
+    if locator is None:
+        return None
+    store = _artifact_owner_store(ws)
+    if locator.get("home") != store.home:
+        raise ValueError("prepared loop store differs from its workspace binding")
+    run_id = str(locator.get("run_id") or "")
+    manifest = store.load(run_id)
+    identity = runtime_storage.resolve_repository_identity(ws)
+    layout = runtime_storage.resolve_layout(identity, home=store.home, run_id=run_id)
+    repository = manifest.get("repository") or {}
+    target = manifest.get("target") or {}
+    preflight = manifest.get("preflight") or {}
+    if (manifest.get("schema") != "taskplane.run/v3"
+            or manifest.get("status") != "ready"
+            or preflight.get("status") != "ready"
+            or preflight.get("pending_action") is not None
+            or locator.get("repo_id") != identity.repo_id
+            or locator.get("repository_key") != layout.repository_key
+            or repository.get("repo_id") != identity.repo_id
+            or repository.get("checkout") != os.path.realpath(ws)
+            or target.get("ok") is not True
+            or (target.get("revision") or target.get("head")) != tp.git_head(ws)):
+        raise ValueError("prepared loop owner or target is not current and ready")
+    return run_id
+
+
 def init(ws: str, goal: str, spec_path: str | None = None,
          max_fix_cycles: int = 2, checkpoints=None,
          requirement_id: str | None = None, parallel: bool = False,
@@ -4935,6 +5057,14 @@ def init(ws: str, goal: str, spec_path: str | None = None,
     # approvals and baseline. `force` discards deliberately, and even then
     # the prior state file is archived (visible, recoverable), never erased.
     existing = load(ws)
+    prepared_run_id = None
+    if existing is None and root_authority is None:
+        try:
+            prepared_run_id = _prepared_loop_run_id(ws)
+        except Exception as exc:
+            return {"error": "prepared loop initialization failed closed: "
+                             f"{exc.__class__.__name__}: {exc}",
+                    "refused": True}
     reused_design = {}
     archived_to = None
     if reuse_approved_design:
@@ -4993,7 +5123,7 @@ def init(ws: str, goal: str, spec_path: str | None = None,
                  archived_to=archived_to)
     state = {
         "governance_revision": 2,
-        "run_id": ((root_authority or {}).get("run_id") or
+        "run_id": ((root_authority or {}).get("run_id") or prepared_run_id or
                    "loop-" + secrets.token_hex(12)),
         "baseline": tp.git_head(ws),
         # Workers submit evidence; only the driver asks the engine to evaluate
@@ -5125,31 +5255,40 @@ def _current_task(state: dict):
 
 def _reserve_worker_dispatch_ref(
         ws: str, state: dict, *, stage: str, task: str,
-        worker_workspace: str) -> tuple[str, int]:
+        worker_workspace: str, parallel_replay: bool = False) -> tuple[str, int]:
     """Reserve a host-unique identity for one native worker attempt.
 
     Codex retains completed task names for the life of a thread. Re-emitting
     the same stable name after Fix or an unavailable Evaluate therefore turns
     a new worker slot into an unbindable orphan: no fresh direct native agent
     can own the old name, and nested agent identities do not match it exactly.
-    Keep the historical name for the first attempt, then add a durable attempt
-    discriminator. The worker contract still binds the exact emitted name.
+    Keep a durable attempt discriminator within the run. Callers also pass
+    the run id as the naming namespace, including on the first attempt: the
+    host keeps names across new runs and tracks, not only within this ledger.
+    The worker contract still binds the exact emitted name.
     """
     stage = str(stage or "").strip()
     task = str(task or "").strip()
     if not stage or not task:
         raise ValueError("worker dispatch sequence identity is incomplete")
     key = f"{stage}:{task}"
+    task_fingerprint = _reanchor_fingerprint(next(
+        row for row in state.get("tasks") or [] if row.get("id") == task)) \
+        if parallel_replay else None
 
     # Upgrade recovery: older state has no sequence ledger. A current pending
     # slot, prior Evaluate warning, or prior Evaluate/Fix cycle proves that the
     # stable first-attempt name has already been consumed on this host.
     legacy_floor = 0
+    worker = None
     try:
-        if tp.worker_contract_for_stage(
-                worker_workspace, stage=stage, task=task) is not None:
+        worker = tp.worker_contract_for_stage(
+            worker_workspace, stage=stage, task=task)
+        if worker is not None:
             legacy_floor = 1
     except tp.StateError:
+        if parallel_replay:
+            raise
         legacy_floor = 1
     if stage == "evaluate":
         current = _current_task(state) or {}
@@ -5168,6 +5307,33 @@ def _reserve_worker_dispatch_ref(
         sequences = fresh.setdefault("worker_dispatch_sequences", {})
         if not isinstance(sequences, dict):
             raise ValueError("worker dispatch sequence ledger is malformed")
+        reservations = fresh.setdefault("parallel_worker_dispatches", {}) \
+            if parallel_replay else {}
+        if not isinstance(reservations, dict):
+            raise ValueError("parallel worker dispatch reservations are malformed")
+        prior = reservations.get(key)
+        if prior is not None:
+            sequence = sequences.get(key)
+            if not isinstance(prior, dict) or \
+                    isinstance(sequence, bool) or not isinstance(sequence, int) or \
+                    sequence < 1 or prior.get("sequence") != sequence or \
+                    prior.get("dispatch_ref") != (
+                        task if sequence == 1 else f"{task}-attempt-{sequence}") or \
+                    prior.get("workspace") != os.path.realpath(worker_workspace) or \
+                    prior.get("task_fingerprint") != task_fingerprint:
+                raise ValueError("parallel worker dispatch reservation mismatched")
+            if prior.get("dispatch") and prior["dispatch"].get("task_name") != \
+                    tp.dispatch_task_name("step", STEP_ROLE[stage], prior["dispatch_ref"],
+                                          namespace=str(fresh["run_id"])):
+                raise ValueError("parallel worker dispatch identity mismatched")
+            if not prior.get("task_slot") or worker is not None:
+                if prior.get("task_slot") and \
+                        prior["task_slot"] != worker["slot"]:
+                    raise ValueError("parallel worker dispatch slot mismatched")
+                state.clear()
+                state.update(fresh)
+                return prior["dispatch_ref"], sequence
+            _parallel_terminal_worker(worker_workspace, prior, task)
         previous = sequences.get(key)
         if isinstance(previous, bool) or not isinstance(previous, int) or \
                 previous < 0:
@@ -5176,6 +5342,14 @@ def _reserve_worker_dispatch_ref(
             previous = max(previous, legacy_floor)
         sequence = previous + 1
         sequences[key] = sequence
+        if parallel_replay:
+            reservations[key] = {
+                "dispatch_ref": task if sequence == 1 else f"{task}-attempt-{sequence}",
+                "sequence": sequence,
+                "workspace": os.path.realpath(worker_workspace),
+                "requires_admission": bool(prior),
+                "task_fingerprint": task_fingerprint,
+            }
         state.clear()
         state.update(fresh)
 
@@ -5183,6 +5357,63 @@ def _reserve_worker_dispatch_ref(
     tp.trace(ws, "worker_dispatch_identity_reserved", stage=stage, task=task,
              sequence=sequence, dispatch_ref=ref)
     return ref, sequence
+
+
+def _parallel_terminal_worker(workspace: str, reservation: dict, task: str) -> None:
+    """Require the existing signed release proof, never infer death from absence."""
+    slot = reservation.get("task_slot")
+    if not isinstance(slot, str) or not tp._TASK_SLOT_RE.fullmatch(slot):
+        raise ValueError("missing worker has no exact terminal recovery slot")
+    receipt = tp.load_json(tp._worker_terminal_path(workspace, slot), default=None)
+    receipt_id = str((receipt or {}).get("receipt_id") or "")
+    if not re.fullmatch(r"worker-terminal-[a-f0-9]{24}", receipt_id):
+        raise ValueError("missing worker requires its authenticated terminal receipt")
+    archived = tp.load_json(os.path.join(
+        tp.tp_dir(workspace), "quarantine", "contracts",
+        f"{slot}-{receipt_id.split('-')[-1]}.json"), default=None)
+    lifecycle = (archived or {}).get("worker_lifecycle") or {}
+    if lifecycle.get("status") != "released" or \
+            lifecycle.get("stage") != "execute" or lifecycle.get("task") != task or \
+            lifecycle.get("expected_task_name") != (
+                reservation.get("dispatch") or {}).get("task_name"):
+        raise ValueError("terminal recovery contract differs from reserved worker")
+    action = lifecycle.get("release_action")
+    tp._verify_worker_release_action(workspace, slot, action, archived)
+    tp._verify_worker_terminal_receipt(workspace, slot, receipt, archived, action)
+    if receipt["outcome"] not in {"failure", "cancellation", "interruption", "handoff"}:
+        raise ValueError("completed worker requires submission/gate recovery, not a new attempt")
+
+
+def _parallel_recoverable_tasks(ws: str, state: dict) -> list[dict]:
+    """Project only stopped/unstarted workers back through normal wave admission.
+
+    This does not rewrite task status, relax dependencies, or replace a live
+    child. A claimed task can remain running after native terminal cleanup;
+    the next wave must still be able to reserve and admit its fresh attempt.
+    """
+    tasks = []
+    reservations = state.get("parallel_worker_dispatches") or {}
+    for task in state.get("tasks") or []:
+        projected = task
+        if task.get("status") == "running" and not task.get("_submission"):
+            worker_ws = task.get("workspace") or \
+                runtime_storage.task_worktree_path(ws, task["id"])
+            worker = tp.worker_contract_for_stage(
+                worker_ws, stage="execute", task=str(task["id"]))
+            reservation = reservations.get(f"execute:{task['id']}") or {}
+            lifecycle = ((worker or {}).get("contract") or {}).get(
+                "worker_lifecycle") or {}
+            if worker is None and reservation.get("task_slot"):
+                _parallel_terminal_worker(worker_ws, reservation, str(task["id"]))
+            elif worker is None and not reservation.get("requires_admission"):
+                raise ValueError("running task has no exact worker recovery reservation")
+            if worker is None or (
+                    lifecycle.get("status") == "pending" and
+                    lifecycle.get("owner") is None and
+                    not reservation.get("dispatch_intent")):
+                projected = {**task, "status": "pending"}
+        tasks.append(projected)
+    return tasks
 
 
 def _parallel_evaluate_workspace(
@@ -6625,7 +6856,7 @@ def _dispatch_public_evaluate_evidence_children(
         kind = str(assignment.get("producer_kind") or "")
         dispatch = tp.dispatch_fields(
             "step", STEP_ROLE["evaluate"], str(task.get("id") or "evaluate"),
-            model_tier)
+            model_tier, namespace=str(state["run_id"]))
         dispatch["task_name"] = (
             str(dispatch["task_name"]) + "_" + kind.replace("-", "_"))[:96]
         intent = _native_dispatch_intent(
@@ -7491,7 +7722,11 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
                            "scope review before any new dispatch.",
         }
     state = load(ws) or state
-    tasks = state.get("tasks") or []
+    try:
+        tasks = _parallel_recoverable_tasks(ws, state)
+    except (ValueError, tp.StateError) as exc:
+        return {"error": "parallel worker recovery refused: " + str(exc),
+                "step": "execute", "parallel": True}
     enforcement = ((state.get("enforcement") or {}).get("current"))
     passed = {t["id"] for t in tasks
               if t.get("status") in DEP_SATISFIED}
@@ -7572,12 +7807,21 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
     root_admissions: list[dict] = []
     for task in ready:
         task_id = str(task["id"])
-        dispatch = tp.dispatch_fields(
-            "step", "tp-executor", task_id,
-            tp.step_tier("execute", task),
-            settings_context=effective_settings)
+        worker_ws = task.get("workspace") or \
+            runtime_storage.task_worktree_path(ws, task_id)
+        try:
+            dispatch_ref, _ = _reserve_worker_dispatch_ref(
+                ws, state, stage="execute", task=task_id,
+                worker_workspace=worker_ws, parallel_replay=True)
+        except (ValueError, tp.StateError) as exc:
+            return {"error": "parallel worker reservation refused: " + str(exc),
+                    "step": "execute", "parallel": True}
+        reservation = state["parallel_worker_dispatches"][f"execute:{task_id}"]
+        dispatch = reservation.get("dispatch") or tp.dispatch_fields(
+            "step", "tp-executor", dispatch_ref, tp.step_tier("execute", task),
+            settings_context=effective_settings, namespace=str(state["run_id"]))
         dispatches[task_id] = dispatch
-        intent = _native_dispatch_intent(
+        intent = reservation.get("dispatch_intent") or _native_dispatch_intent(
             ws, state, step="execute", task_id=task_id,
             dispatch=dispatch, wait_policy=wave_wait_policy,
             wave_id="execute-wave")
@@ -7590,14 +7834,31 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
             intent_id=str(intent["intent_id"]),
             native_task_name=str(dispatch["task_name"]))
         try:
-            root_admissions.append(_screen_public_native_route(
+            admission = _screen_public_native_route(
                 ws, state, stage="execute", tasks=ready,
                 observation_authority=root_observation_authority,
-                dispatch=binding))
+                dispatch=binding)
+            root_admissions.append(admission)
         except (ValueError, dispatch_telemetry.DispatchTelemetryError) as exc:
             return {"error": "native root admission refused before wave: " +
                     str(exc), "step": "execute", "parallel": True,
                     "wave": [], "held": held}
+        with mutate(ws) as fresh:
+            current = fresh["parallel_worker_dispatches"][f"execute:{task_id}"]
+            if current != reservation:
+                return {"error": "parallel worker reservation changed before admission",
+                        "step": "execute", "parallel": True, "wave": [], "held": held}
+            current.update(dispatch=dispatch, dispatch_intent=intent,
+                           wait_policy=intent["wait_policy"], root_admission=admission)
+            state.clear()
+            state.update(fresh)
+        tp.record_expected_dispatch(
+            ws, "step", STEP_ROLE["execute"], dispatch["model_tier"], dispatch.get("model"),
+            ref=task_id, task_name=dispatch["task_name"],
+            reasoning_effort=dispatch["reasoning_effort"],
+            role_marker_value=dispatch["role_marker"],
+            dispatch_route=dispatch.get("dispatch_route"),
+            intent_id=intent["intent_id"], intent_run_id=intent["identity"]["run_id"])
 
     entries = []
     for t in ready:
@@ -7609,9 +7870,8 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
         rec = reqs.get_requirement(ws, rid) if rid else None
         is_variant = bool(state.get("ab") and t.get("variant"))
         entry = {**dispatch,
-            "task": {"id": t["id"], "scope": t.get("scope"),
-                     "tests": t.get("tests"), "deps": t.get("deps") or [],
-                     "variant": t.get("variant")},
+            "task": _build_task_brief(t),
+            "completion": _build_completion_brief(t, parallel=True),
             "worktree": runtime_storage.task_worktree_reference(ws, t["id"]),
             "merge_on_pass": not is_variant,
             "lenses": prime["lenses"],
@@ -7626,7 +7886,7 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
             "runtime_evals": runtime_eval.guidance("execute"),
             **({"enforcement": enforcement} if enforcement else {}),
         }
-        entry["wait_policy"] = dict(wave_wait_policy)
+        entry["wait_policy"] = dict(dispatch_intents[str(t["id"])]["wait_policy"])
         entry["dispatch_intent"] = dispatch_intents[str(t["id"])]
         entries.append(entry)
     tp.trace(ws, "loop_wave", ready=[t["id"] for t in ready],
@@ -7727,10 +7987,30 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     if t.get("status") not in ("pending", "running"):
         return {"error": f"task {task_id} is {t.get('status')} — "
                          "not claimable"}
+    if t.get("_submission"):
+        return {"error": "submitted task requires its orchestrator gate, not another claim",
+                "task": task_id}
     if staged_refusal := _staged_dispatch_refusal(t):
         tp.trace(ws, "loop_staged_dispatch_blocked", task=task_id,
                  surface="claim", reason="mandatory_replan_required")
         return staged_refusal
+    agent_ws = os.path.realpath(os.path.abspath(agent_ws))
+    reservation_key = f"execute:{task_id}"
+    try:
+        worker = tp.worker_contract_for_stage(
+            agent_ws, stage="execute", task=str(task_id))
+    except tp.StateError as exc:
+        return {"error": "parallel worker recovery refused: " + str(exc),
+                "task": task_id}
+    lifecycle = ((worker or {}).get("contract") or {}).get("worker_lifecycle") or {}
+    if worker and (lifecycle.get("status") != "pending" or
+                   lifecycle.get("owner") is not None):
+        return {"error": "active worker cannot be replaced by claim", "task": task_id}
+    prior = (state.get("parallel_worker_dispatches") or {}).get(reservation_key) or {}
+    if (prior.get("task_slot") and worker is None) or (
+            prior.get("requires_admission") and not prior.get("dispatch_intent")):
+        return {"error": "terminal worker retry requires fresh wave/root admission; "
+                         "run loop wave before claiming again", "task": task_id}
     try:
         if __package__:
             from . import preflight as startup_preflight
@@ -7756,18 +8036,35 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
     agent_ws = os.path.realpath(os.path.abspath(agent_ws))
     locator_error = runtime_storage.worker_locator_error(ws, agent_ws, task_id)
     if locator_error: return {"error": locator_error, "task": task_id}
-    dispatch_ref, _ = _reserve_worker_dispatch_ref(
-        ws, state, stage="execute", task=str(task_id),
-        worker_workspace=agent_ws)
-    dispatch = tp.dispatch_fields(
+    try:
+        dispatch_ref, _ = _reserve_worker_dispatch_ref(
+            ws, state, stage="execute", task=str(task_id),
+            worker_workspace=agent_ws, parallel_replay=True)
+    except (ValueError, tp.StateError) as exc:
+        return {"error": "parallel worker reservation refused: " + str(exc),
+                "task": task_id}
+    reservation = state["parallel_worker_dispatches"][reservation_key]
+    dispatch = reservation.get("dispatch") or tp.dispatch_fields(
         "step", STEP_ROLE["execute"], dispatch_ref,
-        tp.step_tier("execute", t))
-    contract = tp.prepare_worker_contract(
-        agent_ws, contract, stage="execute", task=str(task_id),
-        task_name=dispatch["task_name"], role_marker=dispatch["role_marker"])
-    contract = _bind_worker_submission(
-        agent_ws, state, "execute", contract, t)
-    snapshot = tp.git_head(agent_ws)
+        tp.step_tier("execute", t), namespace=str(state["run_id"]))
+    replay = bool(worker and reservation.get("task_slot") == worker["slot"])
+    if replay:
+        contract = json.loads(json.dumps(worker["contract"]))
+        if contract["worker_lifecycle"].get("expected_task_name") != dispatch["task_name"]:
+            return {"error": "parallel worker identity mismatched", "task": task_id}
+    else:
+        contract = tp.prepare_worker_contract(
+            agent_ws, contract, stage="execute", task=str(task_id),
+            task_name=dispatch["task_name"], role_marker=dispatch["role_marker"])
+        contract = _bind_worker_submission(
+            agent_ws, state, "execute", contract, t)
+    intent = reservation.get("dispatch_intent")
+    if intent:
+        contract["worker_lifecycle"].update(
+            dispatch_intent_id=intent["intent_id"],
+            dispatch_intent_run_id=intent["identity"]["run_id"])
+    snapshot = tp.snapshot_ref(agent_ws, task_slot_override=contract["task_slot"]) \
+        if replay else tp.git_head(agent_ws)
     dor_ready, blockers, warnings = tp.dor_check(
         contract, agent_ws, snapshot)
     if not dor_ready:
@@ -7788,17 +8085,35 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
         if t.get("status") not in ("pending", "running"):
             return {"error": f"task {task_id} is {t.get('status')} — "
                              "not claimable"}
+        current = state["parallel_worker_dispatches"][reservation_key]
+        if current != reservation:
+            return {"error": "parallel worker reservation changed before claim; replay claim",
+                    "task": task_id}
+        latest_worker = tp.worker_contract_for_stage(
+            agent_ws, stage="execute", task=str(task_id))
+        if latest_worker != worker:
+            return {"error": "parallel worker changed before claim; replay claim",
+                    "task": task_id}
         tp.activate(
             agent_ws, contract, snapshot=snapshot,
             task_slot_override=contract["task_slot"])
         tp.release_superseded_pending_worker_contracts(
             agent_ws, stage="execute", task=str(task_id),
             keep_slot=contract["task_slot"])
+        current.update(task_slot=contract["task_slot"], dispatch=dispatch)
         t["status"] = "running"
         t["workspace"] = agent_ws
     tp.trace(ws, "loop_claim", task=task_id, agent_workspace=agent_ws,
              dor_ready=dor_ready)
-    return {"claimed": task_id, "workspace": agent_ws,
+    return {**dispatch, "claimed": task_id, "workspace": agent_ws,
+            "native_dispatch_ready": bool(intent),
+            **({"dispatch_intent": intent,
+                "wait_policy": reservation["wait_policy"],
+                "root_admission": reservation["root_admission"]} if intent else {
+                "instruction": "Contract prepared only; run loop wave for native root "
+                               "admission, then replay claim before dispatching."}),
+            "task": _build_task_brief(t),
+            "completion": _build_completion_brief(t, parallel=True),
             "contract_bootstrap": {
                 "schema": "taskplane.worker-contract-bootstrap/v1",
                 "task_slot": contract["task_slot"],
@@ -8100,7 +8415,7 @@ def next_action(
         tp.step_tier(step, worker_task),
         capability_snapshot=capability_snapshot,
         enforcement_mode=os.environ.get("TASKPLANE_ENFORCE_DISPATCH"),
-        settings_context=effective_settings)
+        settings_context=effective_settings, namespace=str(state["run_id"]))
     if dispatch.get("dispatch_blocked"):
         tp.trace(ws, "dispatch_route_resolved", step=step,
                  task=(worker_task or {}).get("id"), resolution="blocked",
@@ -8300,6 +8615,7 @@ def next_action(
         try:
             design_team_plan = _design_team_plan(
                 ws, state, focused_route, dispatch,
+                stage_evidence=stage_evidence,
                 effective_settings=effective_settings)
             with mutate(ws) as fresh:
                 if fresh is None or fresh.get("step") != "design" or \
@@ -8371,6 +8687,22 @@ def next_action(
                     tp.trace(ws, "graph_impact", step=step,
                              touched=imp["touched"],
                              impacted=imp["total_impacted"], **heads())
+    elif step == "plan":
+        # The read-only planner cannot discover this through a shell. Supply
+        # one bounded snapshot, including a valid empty result for greenfield
+        # work; an absent graph is not permission to invent dependencies.
+        plan_req = reqs.get_requirement(ws, state.get("requirement_id"))
+        plan_scope = (plan_req or {}).get("context_files") or []
+        design_input = _design_context(ws, state) or {}
+        approved_graph = ((design_input.get("contract") or {}).get("graph") or {}
+                          if design_input.get("approved") else {})
+        plan_modules = depgraph.scope_modules(ws, plan_scope)
+        plan_modules = sorted(set(plan_modules) | set(
+            approved_graph.get("proposed_modules") or []))
+        imp = depgraph.impact(
+            ws, plan_modules, policy=approved_graph.get("depth_policy"))
+        tp.trace(ws, "graph_impact", step=step,
+                 touched=imp["touched"], impacted=imp["total_impacted"], **heads())
     elif step == "design":
         design_req = reqs.get_requirement(ws, state.get("requirement_id"))
         design_scope = (design_req or {}).get("context_files") or []
@@ -8577,7 +8909,9 @@ def next_action(
            if step == "design" and design_decomposition is not None and
            design_lens_policy is not None else {}),
         **({"design_team_plan": design_team_plan,
-            "design_lens_dispatches": design_team_plan["workers"],
+            "design_lens_dispatches": [
+                tp.design_worker_brief(design_team_plan, worker)
+                for worker in design_team_plan["workers"]],
             "design_lens_wait_policy": event_wait_policy(
                 "design-lens-wave", design_team_plan["selected_count"]),
             "design_dispatch_order": [
@@ -8589,6 +8923,10 @@ def next_action(
            if design_team_plan is not None else {}),
         # cross-host artifact: '/'-shaped out, host-shaped in state
         "task": tp.posix_workspace(task),
+        **({"plan_output": _plan_output_contract(state)} if step == "plan" else {}),
+        **({"completion": _build_completion_brief(
+            task, parallel=bool(state.get("parallel")))}
+           if step in {"execute", "fix"} and task is not None else {}),
         "contract": {"read_only": bool(contract.get("read_only")),
                      "scope": contract["coding"]["scope_paths"],
                      "write_allow": contract.get("write_allow"),
@@ -8847,8 +9185,8 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
                   "when it materially clarifies the choice. Never mutate the "
                   "as-built graph. Return to the orchestrator; it validates "
                   "with `loop gate pass` and then pauses for human approval.",
-        "plan": "Run the tp-planner role: derive impact once with `tp graph "
-                "impact --files \"comma,separated,paths\" --json`; write "
+        "plan": "Run the tp-planner role: consume the emitted bounded graph "
+                "impact and plan_output.template; write "
                 "plan/tasks.json (machine) "
                 "and plan/plan.md (human) — tasks with scope, tests (ONE "
                 "command string, never a list), "
@@ -8859,10 +9197,12 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
                 "depth policy, and acceptance mapping without drift. Return "
                 "to the orchestrator; it validates with `loop gate pass`.",
         "execute": f"Run the tp-executor on task {t and t['id']}: build "
-                   "under this contract (TDD), honoring the PRIMED lenses "
-                   "(see `lenses`) and the requirement's acceptance criteria "
-                   "(see `requirement`) plus the approved Design Contract "
-                   "when `design.approved` is true. Then `loop submit pass` (or `fail` "
+                   "under this contract (TDD), honoring task.criteria and "
+                   "its exact contracts, acceptance references and test "
+                   "strategy plus the approved Design Contract "
+                   "when `design.approved` is true. Follow completion, "
+                   "including required Build-quality admission, then "
+                   "`loop submit pass` (or `fail` "
                    "if you couldn't build it); only the orchestrator calls "
                    "`loop gate`.",
         "evaluate": f"Run the tp-evaluator (read-only) on task "
@@ -8957,6 +9297,12 @@ def _design_context(ws: str, state: dict) -> dict | None:
         return None
     contract, errors = _design_contract(ws)
     approved = bool(state.get("design_fingerprint"))
+    if (not approved and contract and
+            contract.get("requirement") != state.get("requirement_id")):
+        return {"approved": False, "stale": None, "fingerprint": None,
+                "contract": None, "errors": [],
+                "excluded": {"reason": "requirement-mismatch",
+                             "requirement": contract.get("requirement")}}
     stale = _design_current_errors(ws, state) if approved else []
     if stale:
         # M8 (v2.2.1): an approved design whose artifacts changed after
@@ -8986,14 +9332,60 @@ def _aggregate_impact_policy(tasks) -> dict:
     return depgraph.aggregate_impact_policy(tasks)
 
 
-def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
+def _plan_dor_errors(ws: str, state: dict, apply: bool = False, *,
+                     sealed_inputs: dict | None = None) -> list:
     """Definition of Ready for implementation, derived from the plan.
 
     M3 (v2.2.1): a Ready CHECK must not mutate. With apply=False
     (default) this is pure — it inspects and reports. Only the plan
     GATE passes apply=True, which merges requirement contracts into
     tasks, records requirement/contract edges, resolves each task's
-    impact policy, and stores the graph DoR verdict on the state."""
+    impact policy, and stores the graph DoR verdict on the state.
+
+    Repository-phase callers supply verified artifact snapshots in
+    sealed_inputs. That read-only path uses the same task policy without
+    reading predecessor requirements, graph, or loop state. Its caller pins
+    current Plan/Design/test-strategy files to the selected artifact bytes.
+    """
+    if sealed_inputs is not None:
+        if apply:
+            raise ValueError("sealed Plan inputs cannot be applied to runtime state")
+        if not isinstance(sealed_inputs, dict) or set(sealed_inputs) != {
+                "requirements_by_id", "graph", "approved_design", "replan_history"}:
+            raise ValueError("sealed Plan inputs require exact requirements_by_id, "
+                             "graph, approved_design, and replan_history fields")
+        requirements = sealed_inputs["requirements_by_id"]
+        if not isinstance(requirements, dict) or any(
+                not isinstance(rid, str) or not rid.strip() or
+                not isinstance(record, dict) or record.get("id") != rid
+                for rid, record in requirements.items()):
+            raise ValueError("sealed Plan requirements_by_id must contain exact "
+                             "requirement records keyed by id")
+        if any(not isinstance(record.get(field), list)
+               for record in requirements.values()
+               for field in ("acceptance", "contracts", "depends_on", "open_questions")):
+            raise ValueError("sealed Plan requirement records require explicit "
+                             "acceptance, contracts, depends_on, and open_questions lists")
+        graph = sealed_inputs["graph"]
+        if not isinstance(graph, dict) or not isinstance(graph.get("modules"), dict) or \
+                not isinstance(graph.get("edges"), list) or \
+                not isinstance(graph.get("meta"), dict):
+            raise ValueError("sealed Plan inputs require a complete graph snapshot")
+        approved_design = sealed_inputs["approved_design"]
+        if not isinstance(approved_design, dict) or \
+                not isinstance(approved_design.get("requirement"), str) or \
+                not approved_design["requirement"].strip() or \
+                approved_design["requirement"] != state.get("requirement_id"):
+            raise ValueError("sealed Plan approved Design must match requirement_id")
+        if not isinstance(sealed_inputs["replan_history"], list) or \
+                not isinstance(state.get("tasks"), list) or any(
+                    not isinstance(task, dict) for task in state["tasks"]):
+            raise ValueError("sealed Plan tasks and replan_history must be explicit lists")
+
+    def requirement_lookup(rid):
+        return sealed_inputs["requirements_by_id"].get(rid) \
+            if sealed_inputs is not None else reqs.get_requirement(ws, rid)
+
     errors = []
     try:
         _plan_delivery_mode_from_file(ws, state, apply=apply)
@@ -9020,7 +9412,7 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
             errors.append(prefix + "explicit acceptance criteria are "
                           "missing or empty")
         rid = task.get("req") or state.get("requirement_id")
-        rec = reqs.get_requirement(ws, rid) if rid else None
+        rec = requirement_lookup(rid) if rid else None
         if rec:
             # Requirements own stable product/contract dependencies; the plan
             # may add contracts but cannot silently erase the requirement's
@@ -9036,7 +9428,7 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
             if apply:
                 task["contracts"] = merged_contracts
             for dep in rec.get("depends_on") or []:
-                if reqs.get_requirement(ws, dep) is None:
+                if requirement_lookup(dep) is None:
                     errors.append(prefix + f"requirement dependency {dep} "
                                   "does not exist")
                 elif apply:
@@ -9069,13 +9461,19 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
             elif rec.get("open_questions"):
                 errors.append(prefix + "requirement has unresolved questions: "
                               + "; ".join(rec["open_questions"]))
-    graph_dor = depgraph.readiness(ws, state.get("tasks") or [])
+    graph_dor = depgraph.readiness_from_graph(
+        sealed_inputs["graph"], state["tasks"]) if sealed_inputs is not None \
+        else depgraph.readiness(ws, state.get("tasks") or [])
     if apply:
         state["graph_dor"] = graph_dor
     errors.extend("graph DoR: " + e for e in graph_dor.get("errors") or [])
     errors.extend(tp.requirement_coverage_errors(state.get("tasks") or [],
-        lambda rid: reqs.get_requirement(ws, rid), state.get("requirement_id")))
-    errors.extend("design DoR: " + e for e in _design_plan_errors(ws, state))
+        requirement_lookup, state.get("requirement_id")))
+    design_errors = _dc.design_plan_artifact_errors(
+        sealed_inputs["approved_design"], tasks=state["tasks"],
+        graph=sealed_inputs["graph"], replan_history=sealed_inputs["replan_history"]) \
+        if sealed_inputs is not None else _design_plan_errors(ws, state)
+    errors.extend("design DoR: " + e for e in design_errors)
     return errors
 
 

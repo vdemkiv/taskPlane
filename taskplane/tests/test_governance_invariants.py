@@ -30,7 +30,8 @@ def _state(ws, step, tests="true"):
     task = {"id": "t1", "scope": ["src/**"], "tests": tests,
             "criteria": ["feature works"], "status": "pending",
             "fix_cycles": 0}
-    state = {"goal": "g", "step": step, "tasks": [task],
+    state = {"run_id": "loop-governance-fixture",
+             "goal": "g", "step": step, "tasks": [task],
              "current_task": 0, "parallel": False, "max_fix_cycles": 2,
              "checkpoints": ["em"], "baseline": tp.git_head(ws)}
     os.makedirs(os.path.join(ws, "plan"), exist_ok=True)

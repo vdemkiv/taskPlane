@@ -1447,6 +1447,38 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(
             loop.load(ws)["worker_dispatch_sequences"]["evaluate:t1"], 2)
 
+    def test_fresh_product_runs_emit_distinct_names_with_exact_child_bindings(self):
+        ws = git_ws(self.tmp, [])
+        loop.init(ws, "first design input")
+        first = loop.next_action(ws)
+        self.assertNotIn("error", first)
+        first_run = loop.load(ws)["run_id"]
+        event = {"hook_event_name": "SubagentStart", "cwd": ws,
+                 "session_id": "test-loop-session", "turn_id": "turn-first",
+                 "agent_id": "worker-first", "agent_type": first["task_name"],
+                 "task_name": first["task_name"]}
+        tp.bind_worker_contract_event(ws, event)
+        terminal = tp.terminalize_worker_contract(
+            ws, {**event, "hook_event_name": "SubagentStop"},
+            outcome="success", submission_status="missing")
+        self.assertTrue(terminal["released"])
+
+        loop.init(ws, "fresh design input", force=True)
+        second = loop.next_action(ws)
+        self.assertNotIn("error", second)
+        second_run = loop.load(ws)["run_id"]
+        self.assertNotEqual(first_run, second_run)
+        self.assertNotEqual(first["task_name"], second["task_name"])
+        self.assertNotEqual(second["task_name"], "tp_step_product_pm_13722ee8")
+        for action in (first, second):
+            self.assertEqual(action["task_name"],
+                             action["contract_bootstrap"]["worker_identity"])
+        active = tp.load_json(tp.active_contract_path(
+            ws, second["contract_bootstrap"]["task_slot"]))
+        self.assertEqual(active["worker_lifecycle"]["expected_task_name"],
+                         second["task_name"])
+        self.assertIsNone(tp.load_active(ws))
+
     def test_unavailable_retry_emits_fresh_exact_worker_identity(self):
         ws, _, _ = self._gate_evaluator_unavailable()
         self.assertEqual(loop.resolve(ws, "retry")["step"], "evaluate")
@@ -1461,7 +1493,8 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(
             action["task_name"],
             tp.dispatch_task_name(
-                "step", "tp-evaluator", "t1-attempt-2"))
+                "step", "tp-evaluator", "t1-attempt-2",
+                namespace=loop.load(ws)["run_id"]))
         lifecycle = tp.load_json(tp.active_contract_path(
             ws, action["contract_bootstrap"]["task_slot"]))[
                 "worker_lifecycle"]
@@ -2128,6 +2161,10 @@ class TestLoop(unittest.TestCase):
         loop.init(plan_ws, "focused plan", spec_path="specs/spec.md")
         plan = loop.next_action(plan_ws)
         self.assertEqual(plan["step"], "plan")
+        self.assertIsInstance(plan["impact"], dict)
+        self.assertIn("context", plan["impact"])
+        self.assertEqual(plan["plan_output"]["path"], "plan/tasks.json")
+        self.assertFalse(plan["plan_output"]["approval_granted"])
         self.assertEqual(plan["focused_route"]["stage"], "plan")
         self.assertIn(len(plan["focused_route"]["selected"]), {3, 4})
         self.assertEqual(len(plan["lenses"]), 26)
@@ -2549,6 +2586,12 @@ class TestParallelExecution(unittest.TestCase):
         self.assertIn("t3", held)                 # overlaps t1 (src/a)
         self.assertIn("t4", held)                 # dep t1 not passed yet
         self.assertTrue(all(e["lenses"] is not None for e in w["wave"]))
+        for entry in w["wave"]:
+            task_id = entry["task"]["id"]
+            self.assertEqual(entry["task"]["criteria"],
+                             [f"task {task_id} is complete"])
+            self.assertEqual(entry["completion"]["submit"],
+                             ["loop", "submit", "pass", "--task", task_id])
 
     def test_claim_activates_contract_in_worker_worktree(self):
         import taskplane_lite as tpl
@@ -2558,6 +2601,7 @@ class TestParallelExecution(unittest.TestCase):
                         "tp/t1"], cwd=ws)
         out = loop.claim(ws, "t1", agent_ws)
         self.assertEqual(out["claimed"], "t1")
+        self.assertEqual(out["task"]["criteria"], ["task t1 is complete"])
         # The slot-less worktree/orchestrator remains unbound; the native
         # child receives the exact slot through contract_bootstrap.
         self.assertIsNone(tpl.load_active(agent_ws))
