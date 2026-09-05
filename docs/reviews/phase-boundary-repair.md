@@ -47,3 +47,43 @@ The repository-phase adapter now connects the first two paths through actual rol
 ## Release and live-run limits
 
 No installed plugin cache, historical receipt, approval, old phase artifact or live worker contract is rewritten by this source repair. Live verification needs a matching engine and role digest through supported source-development onboarding or plugin installation. It must prove effective native hooks, bounded evidence delivery, permitted artifact writes and genuine fresh-root admission. Engine-derived hashes remove the need to grant a shell to read-only authors. R-0004 remains the existing fresh Design run, with older Design material used only as reference. This document is an RCA and verification boundary, not an Engineering sign-off or retrospective claiming completed delivery.
+
+## Outer-boundary audit: remaining work
+
+The middle chain passing is not proof of a complete delivery workflow. The
+read-only audit of `5948bee` found two missing connections:
+
+- No public producer emits the schema-supported Requirement/done → Design
+  handoff. The current test constructs that initial artifact explicitly;
+  `loop.project_phase_export` accepts only Design, Plan and Build.
+- Build/done exports `terminal/terminal-evidence`, but no consumer carries it
+  into stateless Evaluate, Engineering, sign-off or Retro. Generic
+  `StageLifecycle` already supplies transactional isolated roots and
+  transitions; the semantic Evaluate/EM/Retro checks still read loop state.
+  They need explicit sealed-input adapters, not a fabricated loop positioned
+  at Evaluate and not a second state machine.
+
+Build's exported checkpoint/integration fingerprints are not complete portable
+execution evidence. Checkpoint creation currently discards proof-output bodies
+after retaining their digest/count. The native terminal receipt is authenticated
+with a workspace-local HMAC and cannot be cryptographically revalidated by a
+fresh checkout just by copying the JSON. Never export its secret. A successor
+must use an explicit verified-evidence intake or execute fresh independent
+proofs through the existing evaluator. These are unresolved release-claim
+limits; no finalization, Retro or Engineering PASS is inferred.
+
+## Measured host probe
+
+On 2026-09-05, supported source onboarding in an isolated temporary checkout
+resolved the engine at candidate `5948bee`. Fresh CLI session
+`01a0703b-ce47-7743-b13d-4b9711d035f5` ran version verification and read-only
+onboarding successfully. Its native completion reported 52,132 input tokens
+(35,584 cached), 655 output tokens, 267 reasoning-output tokens and zero
+cache-write input tokens. These are that probe's raw counters, not a total for
+this repair and not an admitted phase meter.
+
+The fresh session still had no trusted/effective hook receipts. The subsequent
+native hook browser confirmed nine installed hooks, zero active, all nine
+requiring review. Trust has not been changed and no bypass flag was used.
+Therefore this probe demonstrates launcher resolution, not native phase
+execution or end-to-end sign-off.
