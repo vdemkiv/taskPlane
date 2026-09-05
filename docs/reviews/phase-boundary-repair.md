@@ -154,3 +154,50 @@ package precondition. Candidate `e903733` has already passed its clean-checkout
 20-test package/dependency/authority check and ten scenario subtests. Those
 receipts are not transferred to 2.19.2, and do not substitute for the pending
 native canary, Engineering, Retro or protected release evidence.
+
+## Approved native probe and prepared-run entry repair
+
+On 2026-09-05 the human explicitly approved the nine hooks in the isolated
+test checkout. The native hook browser then showed all nine active. No trust
+bypass, installed-cache edit or change to the user's development hook config
+was used. The first fresh probe resolved source 2.19.2 but had no hook receipt:
+the isolated checkout had not yet received its required governed storage
+binding. Supported `repository prepare` and private `init` completed that setup.
+Fresh session `01a07131-8919-7a10-9a03-7e5b8133ab67` subsequently reported
+`ready: true`, with matching native/bridge execution and `native_effective`.
+This is real host-readiness evidence, not phase completion.
+
+The next native Product-entry canary failed before dispatch. Repository
+preparation owned run `ab8d619460984f649936ab661addde53`, while ordinary
+`loop init` generated an unrelated loop UUID. Artifact ownership correctly
+refused the mismatch. No requirement, Product worker, gate or successor was
+created. A storage/command regression test reproduced the same error.
+
+First ordinary loop entry now consumes the current ready preflight run ID
+after checking its store, repository, checkout and exact target revision.
+The artifact ownership check remains unchanged. This does not rebind a
+locator, transfer predecessor progress, enable stage-native rollout, or
+reopen a terminal run. Six focused tests cover Product, Design and Plan first
+entry and refusal of a stale target, cancelled preparation and wrong store.
+The native canary still needs rerunning with this repair; no Product PASS is
+inferred from those tests. The affected loop and stage-integration suites also
+passed: 162 tests and 57 subtests in 469.92 seconds. Thirteen additional
+selected integration checks passed, strict typing passed for all 120 source
+files, and the changed-code lint and diff checks passed.
+
+Candidate `d342d534e79c3af9b73f7bce96c0767153f32faf` passed all eight CI checks:
+4,341 tests and 597 subtests passed, with six skipped and one deselected, in
+945.22 seconds. That receipt predates this additional entry repair and is not
+relabeled as evidence for the next commit.
+
+Raw native completion counters for the new probes are below. They are
+per-session transport counters, not admitted phase budgets or billing totals.
+
+| Native session | Scope | Input | Cached input | Output | Reasoning output |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `01a0712c-9245-7c00-a4c9-93564dbc1603` | Trusted, unbound readiness probe | 35,083 | 28,032 | 531 | 227 |
+| `01a07131-8919-7a10-9a03-7e5b8133ab67` | Bound readiness probe | 34,620 | 28,032 | 633 | 247 |
+| `01a07137-1461-74e1-be22-54bb3c2eefc4` | Product-entry refusal before dispatch | 325,209 | 281,472 | 2,470 | 834 |
+
+All three reported zero cache-write input tokens. None completed a governed
+phase or supplied final Engineering, Retro or release evidence.

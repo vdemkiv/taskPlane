@@ -4986,6 +4986,40 @@ def _stage_native_init_authority(
     return record
 
 
+def _prepared_loop_run_id(ws: str) -> str | None:
+    """Use the verified preflight owner for a first ordinary loop only.
+
+    Repository preparation already allocated the run. A second, unrelated
+    loop UUID cannot own that run's artifacts. This reads current preflight
+    identity; it neither rebinds a locator nor imports predecessor progress.
+    """
+    locator = runtime_storage.load_workspace_locator(ws)
+    if locator is None:
+        return None
+    store = _artifact_owner_store(ws)
+    if locator.get("home") != store.home:
+        raise ValueError("prepared loop store differs from its workspace binding")
+    run_id = str(locator.get("run_id") or "")
+    manifest = store.load(run_id)
+    identity = runtime_storage.resolve_repository_identity(ws)
+    layout = runtime_storage.resolve_layout(identity, home=store.home, run_id=run_id)
+    repository = manifest.get("repository") or {}
+    target = manifest.get("target") or {}
+    preflight = manifest.get("preflight") or {}
+    if (manifest.get("schema") != "taskplane.run/v3"
+            or manifest.get("status") != "ready"
+            or preflight.get("status") != "ready"
+            or preflight.get("pending_action") is not None
+            or locator.get("repo_id") != identity.repo_id
+            or locator.get("repository_key") != layout.repository_key
+            or repository.get("repo_id") != identity.repo_id
+            or repository.get("checkout") != os.path.realpath(ws)
+            or target.get("ok") is not True
+            or (target.get("revision") or target.get("head")) != tp.git_head(ws)):
+        raise ValueError("prepared loop owner or target is not current and ready")
+    return run_id
+
+
 def init(ws: str, goal: str, spec_path: str | None = None,
          max_fix_cycles: int = 2, checkpoints=None,
          requirement_id: str | None = None, parallel: bool = False,
@@ -5023,6 +5057,14 @@ def init(ws: str, goal: str, spec_path: str | None = None,
     # approvals and baseline. `force` discards deliberately, and even then
     # the prior state file is archived (visible, recoverable), never erased.
     existing = load(ws)
+    prepared_run_id = None
+    if existing is None and root_authority is None:
+        try:
+            prepared_run_id = _prepared_loop_run_id(ws)
+        except Exception as exc:
+            return {"error": "prepared loop initialization failed closed: "
+                             f"{exc.__class__.__name__}: {exc}",
+                    "refused": True}
     reused_design = {}
     archived_to = None
     if reuse_approved_design:
@@ -5081,7 +5123,7 @@ def init(ws: str, goal: str, spec_path: str | None = None,
                  archived_to=archived_to)
     state = {
         "governance_revision": 2,
-        "run_id": ((root_authority or {}).get("run_id") or
+        "run_id": ((root_authority or {}).get("run_id") or prepared_run_id or
                    "loop-" + secrets.token_hex(12)),
         "baseline": tp.git_head(ws),
         # Workers submit evidence; only the driver asks the engine to evaluate
