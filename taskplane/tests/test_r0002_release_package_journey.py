@@ -1,4 +1,4 @@
-"""Installed-package journey for the 2.18.9 marketplace candidate.
+"""Installed-package journey for the current marketplace candidate.
 
 The journey executes extracted archives from an isolated directory.  It
 checks public behavior and schemas, not byte identity; the sole digest
@@ -19,7 +19,8 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "2.18.10"
+VERSION = json.loads((ROOT / ".codex-plugin/plugin.json").read_text(
+    encoding="utf-8"))["version"]
 
 
 def _script_module(name: str):
@@ -104,7 +105,7 @@ def _expected_installed_hook_manifest(kind: str) -> dict:
 
 def _assert_installed_session_start_wiring(kind: str, manifest: dict) -> None:
     host = "codex" if kind == "openai" else "claude"
-    hook_path = "bridge" if kind == "openai" else "native"
+    hook_path = "native"
     commands = [
         hook[field]
         for entry in manifest["hooks"]["SessionStart"]
@@ -210,6 +211,75 @@ def test_installed_openai_hooks_are_inert_in_an_unonboarded_chat(tmp_path):
     assert not (unrelated / ".taskplane").exists()
 
 
+def test_installed_openai_archive_onboards_and_bootstraps_a_fresh_linked_task(
+        tmp_path):
+    """Exercise the package bytes and topology used by Codex desktop."""
+    archive = _run_package_entry_point("openai", tmp_path / "package")
+    package_root = _extract(archive, tmp_path / "extracted")
+    engine = package_root / "taskplane" / "tp.py"
+    primary = tmp_path / "primary"
+    linked = tmp_path / "linked"
+    primary.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=primary, check=True)
+    subprocess.run([
+        "git", "-c", "user.email=taskplane@example.invalid", "-c",
+        "user.name=Taskplane Test", "commit", "--allow-empty", "-qm",
+        "base",
+    ], cwd=primary, check=True)
+
+    environment = {
+        **os.environ,
+        "CODEX_HOME": str(tmp_path / "codex-home"),
+        "TASKPLANE_MANAGED_HOOK_POLICY": "supported",
+    }
+    environment.pop("TASKPLANE_HOME", None)
+    onboard = subprocess.run(
+        [sys.executable, str(engine), "onboard", "--install-codex-hooks",
+         "--json"],
+        cwd=primary, text=True, encoding="utf-8", capture_output=True,
+        env=environment,
+    )
+    assert onboard.returncode == 0, onboard.stdout + onboard.stderr
+    report = json.loads(onboard.stdout)
+    assert report["codex_hooks"]["status"] == "ready"
+    assert (primary / ".taskplane" / "codex-hook.py").is_file()
+
+    subprocess.run([
+        "git", "worktree", "add", "-q", "--detach", str(linked), "HEAD",
+    ], cwd=primary, check=True)
+    manifest = _packaged_hook_manifest(archive)
+    context = next(
+        hook["command"]
+        for row in manifest["hooks"]["SessionStart"]
+        for hook in row["hooks"]
+        if " context" in hook["command"]
+    )
+    user_home = tmp_path / "user-home"
+    user_home.mkdir()
+    event = {
+        "hook_event_name": "SessionStart",
+        "session_id": "fresh-installed-task",
+        "turn_id": "turn-start",
+        "cwd": str(linked),
+    }
+    hook_environment = {
+        **environment,
+        "HOME": str(user_home),
+        "CODEX_THREAD_ID": "fresh-installed-task",
+    }
+    hook = subprocess.run(
+        context, cwd=linked, shell=True, input=json.dumps(event), text=True,
+        encoding="utf-8", capture_output=True, env=hook_environment,
+    )
+    assert hook.returncode == 0, hook.stdout + hook.stderr
+    receipt = json.loads((
+        user_home / ".taskplane" / "host-receipts" / "native.json"
+    ).read_text(encoding="utf-8"))
+    assert receipt["hook_path"] == "native"
+    assert receipt["event_name"] == "SessionStart"
+    assert not (linked / ".taskplane" / "workspace.json").exists()
+
+
 def test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_for_either_host(
         tmp_path):
     for kind in ("openai", "claude"):
@@ -219,8 +289,8 @@ def test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_
             kind, _packaged_hook_manifest(canonical))
         expected_host = "codex" if kind == "openai" else "claude"
         wrong_host = "claude" if kind == "openai" else "codex"
-        expected_path = "bridge" if kind == "openai" else "native"
-        wrong_path = "native" if kind == "openai" else "bridge"
+        expected_path = "native"
+        wrong_path = "bridge"
         for mutation, old, new in (
                 ("wrong-host", f"--host {expected_host}",
                  f"--host {wrong_host}"),
@@ -299,7 +369,7 @@ raise SystemExit(1 if result.get("error") else 0)
             "scope": [scope], "tests": "true",
             "criteria": ["installed Plan approval prepares its root seed"],
             "status": "pending", "deps": [],
-            "new_modules": ["build/taskplane-2.18.10"],
+            "new_modules": [f"build/taskplane-{VERSION}"],
         }
         plan = {
             "requirement": "R-0001", "delivery_mode": "build",
@@ -342,7 +412,7 @@ raise SystemExit(1 if result.get("error") else 0)
             env=environment)
         return case, workspace, environment, plan, plan_gate, approval
 
-    safe_scope = "build/taskplane-2.18.10/canary/**"
+    safe_scope = f"build/taskplane-{VERSION}/canary/**"
     case, workspace, environment, plan, plan_gate, approval = approve_scope(
         "installed-plan-approval", safe_scope)
     assert plan_gate.returncode == 0, plan_gate.stdout + plan_gate.stderr

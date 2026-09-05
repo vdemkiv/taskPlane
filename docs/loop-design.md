@@ -109,6 +109,99 @@ goal ─▶ specs/spec.md + handoff block (requirement deps + named contracts)
       ─▶ .taskplane/trace.jsonl   (every gate decision, the whole run)
 ```
 
+## Repository-native phase continuation
+
+The stateful loop remains the normal lifecycle authority, but a completed or
+interrupted Design, Plan, or Build phase can now be continued from repository
+evidence alone. The portable contract is the sealed
+`taskplane.stage-handoff/v2`; it names the exact repository, source commit and
+tree, requirement, applicable Design and Plan fingerprints, ordered
+obligations and tasks, contracts, acceptance proofs, human authority, selected
+artifact digests, progress receipts, and lineage.
+
+The public surface is intentionally small:
+
+```text
+tp.py phase export --request <repository-relative-json>
+tp.py phase pickup <repository-relative-handoff>
+tp.py phase submit --request <repository-relative-json>
+tp.py phase resume <repository-relative-handoff>
+```
+
+`phase export` accepts Design or Plan `material`, `phase`, `outcome`,
+`durable_progress`, and optional `receipt_evidence`, then calls the same
+exporter used by normal loop completion. Build export is refused on this
+public surface: only `phase submit` can carry BUILD-C evidence into a Build
+handoff. `phase pickup` admits done requirement-to-Design,
+Design-to-Plan, and Plan-to-Build transitions. `phase resume` admits only an
+interrupted Design, Plan, or Build handoff whose successor is the same phase.
+Both create fresh attempt-local authority after validation; they never reopen
+a predecessor attempt. Their public `startup` field projects the validated
+startup rather than discarding it. For Design and Plan it contains the phase
+projection and each worker's identity, output, producer contract, scoped view,
+closed result schema, and full-envelope reference. For Build it contains the
+exact task, producer contract, scoped view, closed result schema, and
+full-envelope reference. Attempt leases and contract bootstraps stay private.
+The projected startup retains the existing 128-KiB startup ceiling.
+`phase submit` accepts exactly a repository-relative `handoff` and the exact
+`task_id` returned in the safe public startup. It derives the assignment and
+authoring evidence from the clean committed Git diff, then uses the existing
+BUILD-C checkpoint and repository-integration boundary. A canonical green
+progress receipt is automatically carried into the next Build handoff. When
+all obligations are green that handoff is terminal; otherwise it is an
+interrupted same-phase resume exposing only the next eligible task. The result
+returns the next handoff's identity and repository-relative path, never an
+assignment, lease, bootstrap, or caller-authored evidence.
+Keep the request JSON in repository-relative ignored metadata (for example,
+`.git/phase-submit.json`) so it does not dirty the committed Build checkout.
+
+Publication creates repository export files but does not commit them. Commit
+`exports/pickup` before sharing or cloning so a fresh clone can validate and
+continue the returned handoff path.
+
+Initial, Design, and Plan authority comes only from attributable
+`human:<identity>` decisions bound to the exact gate subject and source.
+Mechanical progress identifies an engine producer and never manufactures a
+human actor. Content fingerprints provide integrity, not actor
+authentication. Build receives only the first dependency-ready sealed task,
+its exact write scope, contracts, acceptance references, and proof commands.
+
+Validation fails before effects in this order: bounded JSON and closed schema;
+canonical identity, ordering, uniqueness, and limits; repository/source and
+clean-checkout lineage; selected artifacts; progress receipts; human
+authority; phase transition; then obligation, task, dependency, scope,
+contract, acceptance, and proof closure. Public JSON contains stable status
+and refusal codes, repository-safe identities, lineage and receipt
+fingerprints, counts, and safe recovery. It does not print private roots,
+artifact locators, loop/run/track/claim state, leases, conversations, secrets,
+or absolute host paths.
+
+Recovery is non-widening: restore the exact canonical handoff or
+digest-addressed artifact, use the recorded clean source, resume from the sole
+verified receipt head, return to the real human gate for the exact subject,
+use the sealed task, or restore the sealed proof. Never overwrite a
+same-identity conflict, select an ambiguous receipt fork, bypass BUILD-C,
+apply a trust override, synthesize approval, or broaden scope. Refusal codes
+are `handoff-malformed`, `handoff-integrity`, `repository-foreign`,
+`source-stale`, `checkout-dirty`, `artifact-integrity`, `receipt-lineage`,
+`authority-missing`, `authority-stale`, `transition-invalid`,
+`scope-widened`, `dependency-unmet`, `proof-invalid`, and
+`publication-conflict`; Build submission may also report `authoring-invalid`,
+`build-c-unavailable`, or `build-c-failed`.
+
+Canonical UTF-8 JSON and create-if-absent publication make identical semantic
+exports byte-stable and exact replay idempotent. A conflicting artifact at the
+same identity is refused rather than replaced. Retain published handoffs,
+digest-addressed artifacts, and progress receipts while successors or audits
+cite them. Rollback stops new v2 production but does not rewrite or downgrade
+retained evidence.
+
+The legacy `tp.py pickup <approved-design>` route remains schema-disjoint and
+unchanged, including its v1/v2 receipts, `--trust-source` behavior,
+repository-only resume, cold start, collisions, interrupted-write recovery,
+and refusal ordering. The `phase` route never auto-upgrades or downgrades a
+legacy artifact and accepts no trust override.
+
 ## The loop engine (proposed: taskplane owns it)
 
 Add a small state machine to taskplane so the loop *is* a taskplane feature,

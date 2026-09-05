@@ -147,19 +147,21 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 > **Forward-repair status.** v2.17.20 remains released-incomplete and v2.17.21
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
-> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.9 are
-> superseded unreleased candidates. The forward release candidate moves as v2.18.10,
+> v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
+> superseded unreleased candidates. v2.19.0 is superseded by the v2.19.1 candidate,
 > which is not
 > released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.18.10 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or merging v2.19.1 is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.18.10** | **Fail-closed delivery authority and isolated global hooks — release candidate, not released.** Fresh root sessions now consume canonical settings and authenticated native token meters; evaluator evidence must include substantive code-quality and test-design execution; dashboard sources reject corrupt or foreign state; and globally installed hooks remain inert in unrelated chats. Root-hygiene receipts, package provenance, and exact installed-package journey checks close the release path without weakening authority boundaries. |
+| **v2.19.1** | **Stateless Design, Plan, and Build pickup — release candidate, not released.** Each phase starts from a repository handoff and resumes only its remaining work. Public Build submission validates committed changes through BUILD-C and exports a fresh-clone handoff. Approval ancestry, receipt lineage, compatibility, and publication recovery remain verified. |
+| **v2.19.0** | **Fresh-task native hook bootstrap and installable package repair — release candidate, not released.** Installed OpenAI hooks retain native SessionStart authority, onboarding accepts launcher-only package commands, and a fresh linked task records its first session receipt in the canonical default store before locator creation. Repository bridges, custom homes, ambiguity, and unrelated chats remain fail closed; the extracted-package journey exercises the real path end to end. |
+| **v2.18.10** | **Fail-closed delivery authority and isolated global hooks — superseded unreleased candidate.** It completed canonical settings, native metering, evaluator quality evidence, dashboard-source validation, global-hook isolation, and package provenance, but installed-package onboarding still rejected launcher-only commands and a fresh native SessionStart could not record its receipt before locator creation. v2.19.0 closes both bootstrap edges. |
 | **v2.18.9** | **Native telemetry, isolated pickups, and one current dashboard — release candidate, not released.** Native Codex counters now drive non-zero per-pickup budgets, terminal receipts, Retro, and dashboard metrics; null counters fail closed and resumed sessions are not double counted. Worker spawns enforce zero inherited turns, and the dashboard link now opens the full styled current document whose dependency graph is verified in a real browser. |
 | **v2.18.8** | **Canonical terminal Plan graph fallback — superseded unreleased candidate.** It restored the terminal task DAG and truthful unverified waves, but native metering, zero-context spawn binding, and the exact surfaced dashboard document were not yet wired end to end. v2.18.9 closes those runtime edges. |
 | **v2.18.7** | **Terminal dashboard and artifact wiring repair — superseded unreleased candidate.** It restored terminal Design visibility and migrated private artifact preservation, but a real terminal run with a drifted mutable Plan file still hid its canonical task DAG and waves. v2.18.8 closes that last projection edge. |

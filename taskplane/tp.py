@@ -698,7 +698,9 @@ def _codex_hook_action(command: str) -> str:
         # as the same fail-closed class so repo-local Codex hook installation
         # can preserve the shared Claude/Codex declaration safely.
         return "context"
-    match = re.search(r'tp\.py"?\s+([a-z][a-z0-9-]*)', value)
+    match = re.search(
+        r'(?:tp\.py|["\']?(?:\$TASKPLANE_LAUNCHER|'
+        r'!TASKPLANE_LAUNCHER!)["\']?)\s+([a-z][a-z0-9-]*)', value)
     if not match:
         raise RuntimeError("bundled hook command has no taskplane action")
     return match.group(1)
@@ -5524,7 +5526,7 @@ def _run_hook_command(a) -> int:
         event_cwd if isinstance(event_cwd, str) and event_cwd
         else getattr(a, "workspace", None))
     receipt_home = runtime_storage.bind_hook_taskplane_home(
-        workspace, os.environ)
+        workspace, os.environ, hook_path=hook_path)
     host_caps.record_runtime_hook_receipt(
         receipt_home, hook_path=hook_path, event=event)
     claim = tp.claim_hook_event(
@@ -8028,6 +8030,264 @@ def cmd_help(a) -> int:
     return 0
 
 
+def _phase_request(workspace: str, relative: str) -> dict:
+    """Reuse the bounded JSON reader after enforcing repository locality."""
+    value = str(relative or "")
+    normalized = os.path.normpath(value)
+    if (not value or os.path.isabs(value) or "\\" in value
+            or normalized != value or normalized.startswith("../")):
+        raise ValueError("phase request must be repository-relative")
+    candidate = os.path.abspath(os.path.join(workspace, value))
+    if (os.path.realpath(candidate) != candidate or
+            os.path.commonpath((workspace, candidate)) != workspace):
+        raise ValueError("phase request must be a contained regular file")
+    request, error = _stage_command_request(candidate)
+    if error is not None:
+        raise ValueError("phase request is unavailable or invalid")
+    return request
+
+
+def _phase_fingerprinted(value: dict) -> dict:
+    """Use the repository handoff owner's canonical public identity."""
+    import phase_handoff
+    material = dict(value)
+    return {**material, "fingerprint":
+            phase_handoff.canonical_fingerprint(material)}
+
+
+def _phase_refusal(code: str, detail: str, handoff=None) -> dict:
+    """Return the stable, path-free refusal envelope for phase commands."""
+    import phase_pickup
+    identity = handoff if isinstance(handoff, dict) else {}
+    source = identity.get("source")
+    refusal = phase_pickup.PhasePickupError(code, detail).public_result()
+    return _phase_fingerprinted({
+        **refusal,
+        "handoff_id": identity.get("handoff_id"),
+        "handoff_fingerprint": identity.get("fingerprint"),
+        "source": source if isinstance(source, dict) else None,
+        "effects": {
+            "dispatch": 0, "authoring": 0, "checkpoint": 0,
+            "publication": 0, "integration": 0,
+        },
+    })
+
+
+def _phase_print(value: dict, returncode: int = 0) -> int:
+    print(json.dumps(value, indent=2, sort_keys=True))
+    return returncode
+
+
+def _phase_failed(exc: Exception, handoff=None) -> int:
+    code = str(getattr(exc, "code", "handoff-malformed"))
+    detail = str(getattr(exc, "detail", "phase request is invalid"))
+    return _phase_print(_phase_refusal(code, detail, handoff), 1)
+
+
+def _phase_pickup_result(handoff: dict, startup: dict) -> dict:
+    """Project an internal startup to the deliberately small public receipt."""
+    progress = handoff["progress"]
+    if handoff["successor"]["mode"] == "next-phase":
+        completed = []
+        remaining = [row["id"] for row in handoff["obligations"]]
+    else:
+        completed = progress["completed"]
+        remaining = progress["remaining"]
+    task = startup.get("task")
+    if handoff["successor"]["phase"] == "build":
+        safe_startup = {key: startup[key] for key in (
+            "task", "producer_contract", "scoped_view", "result_schema",
+            "full_envelope_reference")}
+    else:
+        worker_fields = (
+            "schema", "worker_id", "lens", "task_name", "task_slot",
+            "output", "producer_contract", "scoped_view", "result_schema",
+            "full_envelope_reference", "fingerprint")
+        safe_startup = {
+            "phase": startup["phase"], "mode": startup["mode"],
+            "projection": startup["projection"],
+            "full_envelope_reference": startup["full_envelope_reference"],
+            "workers": [
+                {key: worker[key] for key in worker_fields}
+                for worker in startup["workers"]
+            ],
+        }
+    if len(tp.canonical_json_bytes(safe_startup)) > tp.MAX_STAGE_STARTUP_BYTES:
+        raise ValueError("public phase startup exceeds its byte bound")
+    return _phase_fingerprinted({
+        "schema": "taskplane.phase-pickup-result/v1",
+        "status": "ready",
+        "code": "phase-ready",
+        "producer_phase": handoff["producer"]["phase"],
+        "phase": handoff["successor"]["phase"],
+        "mode": handoff["successor"]["mode"],
+        "handoff_id": handoff["handoff_id"],
+        "handoff_fingerprint": handoff["fingerprint"],
+        "repository_id": handoff["repository"]["id"],
+        "source": handoff["source"],
+        "lineage": {
+            "status": "verified",
+            "predecessor_handoff_fingerprint": handoff["lineage"][
+                "predecessor_handoff_fingerprint"],
+            "receipt_head": handoff["lineage"]["predecessor_receipt_head"],
+        },
+        "completed_count": len(completed),
+        "remaining_count": len(remaining),
+        "next_eligible_obligation": remaining[0] if remaining else None,
+        "task_id": task.get("id") if isinstance(task, dict) else None,
+        "startup_fingerprint": startup["fingerprint"],
+        "startup": safe_startup,
+    })
+
+
+def cmd_phase_export(a: argparse.Namespace) -> int:
+    """Publish one handoff through the normal loop exporter."""
+    import loop
+    import phase_handoff
+    import phase_pickup
+
+    workspace = _workspace(a.workspace)
+    try:
+        request = _phase_request(workspace, a.request)
+        required = {"material", "phase", "outcome", "durable_progress"}
+        if not required <= set(request) or set(request) - (
+                required | {"receipt_evidence"}):
+            raise ValueError("phase export request fields are invalid")
+        if request["phase"] == "build":
+            raise phase_pickup.PhasePickupError(
+                "transition-invalid",
+                "Build handoffs are exported only by phase submit")
+        result = loop.publish_phase_export(
+            workspace, request["material"], phase=request["phase"],
+            outcome=request["outcome"],
+            durable_progress=request["durable_progress"],
+            receipt_evidence=request.get("receipt_evidence"))
+        handoff, publication = result["handoff"], result["publication"]
+        return _phase_print(_phase_fingerprinted({
+            "schema": phase_pickup.PUBLIC_RESULT_SCHEMA,
+            "status": "complete", "code": "phase-exported",
+            "phase": handoff["producer"]["phase"],
+            "outcome": handoff["producer"]["outcome"],
+            "handoff_id": handoff["handoff_id"],
+            "handoff_fingerprint": handoff["fingerprint"],
+            "repository_id": handoff["repository"]["id"],
+            "source": handoff["source"],
+            "artifact_count": publication["artifact_count"],
+            "artifact_bytes": publication["artifact_bytes"],
+            "replay_status": publication["status"],
+            "publication_receipt_fingerprint": publication["fingerprint"],
+        }))
+    except (phase_handoff.PhaseHandoffError,
+            phase_pickup.PhasePickupError, ValueError, TypeError, KeyError) as exc:
+        return _phase_failed(exc)
+
+
+def _phase_start(a: argparse.Namespace, mode: str) -> int:
+    import phase_handoff
+    import phase_pickup
+    handoff = None
+    try:
+        workspace = _workspace(a.workspace)
+        handoff = phase_handoff.load_phase_handoff(
+            workspace, a.handoff, require_clean=True)
+        if handoff["successor"]["mode"] != mode:
+            raise phase_pickup.PhasePickupError(
+                "transition-invalid", "handoff does not authorize this command")
+        startup = (phase_pickup.prepare(workspace, handoff)
+                   if handoff["successor"]["phase"] == "build"
+                   else tp.create_stateless_phase_startup(handoff))
+        return _phase_print(_phase_pickup_result(handoff, startup))
+    except (phase_handoff.PhaseHandoffError,
+            phase_pickup.PhasePickupError, ValueError, TypeError, KeyError) as exc:
+        return _phase_failed(exc, handoff)
+
+
+def cmd_phase_pickup(a: argparse.Namespace) -> int:
+    """Prepare only the handoff's declared next phase."""
+    return _phase_start(a, "next-phase")
+
+
+def cmd_phase_resume(a: argparse.Namespace) -> int:
+    """Prepare only an interrupted same-phase successor."""
+    return _phase_start(a, "same-phase-resume")
+
+
+def _phase_publish_build_result(
+        workspace: str, handoff: dict, result: dict) -> dict:
+    """Carry one BUILD-C result into the normal repository exporter."""
+    import loop
+    import phase_handoff
+
+    receipts = [*handoff["progress_receipts"], result["progress_receipt"]]
+    green = {
+        receipt["obligation_id"] for receipt in receipts
+        if receipt.get("phase") == "build" and
+        receipt.get("status") == "green"
+    }
+    remaining = [
+        row["id"] for row in handoff["obligations"] if row["id"] not in green]
+    outcome = "interrupted" if remaining else "done"
+    head = tp.git_head(workspace)
+    tree = tp._run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=workspace).stdout.strip()
+    if not head or not tree:
+        raise ValueError("committed Build source is unavailable")
+    material = {key: handoff[key] for key in (
+        "repository", "requirement", "design", "plan", "obligations",
+        "tasks", "contracts", "acceptance", "selected_artifacts",
+        "authority_receipts", "exclusions",
+    )}
+    material.update({
+        "source": {"commit": head, "tree": tree},
+        "progress_receipts": receipts,
+        "lineage": {
+            "predecessor_handoff_fingerprint": handoff["fingerprint"],
+            "predecessor_receipt_head": result["progress_receipt"][
+                "fingerprint"],
+        },
+    })
+    exported = loop.publish_phase_export(
+        workspace, material, phase="build", outcome=outcome,
+        durable_progress={
+            "phase": "build",
+            "state": "active" if remaining else "terminal",
+            "outcome": outcome,
+        })
+    next_handoff = exported["handoff"]
+    public = dict(result)
+    public.pop("fingerprint", None)
+    public["next_handoff"] = {
+        "id": next_handoff["handoff_id"],
+        "fingerprint": next_handoff["fingerprint"],
+        "path": phase_handoff.handoff_path(next_handoff["handoff_id"]),
+        "outcome": outcome,
+    }
+    return _phase_fingerprinted(public)
+
+
+def cmd_phase_submit(a: argparse.Namespace) -> int:
+    """Submit committed Build output through BUILD-C and export its handoff."""
+    import phase_handoff
+    import phase_pickup
+    handoff = None
+    try:
+        workspace = _workspace(a.workspace)
+        request = _phase_request(workspace, a.request)
+        if set(request) != {"handoff", "task_id"} or not isinstance(
+                request["task_id"], str) or not request["task_id"]:
+            raise ValueError("phase submit request fields are invalid")
+        handoff = phase_handoff.load_phase_handoff(
+            workspace, request["handoff"], require_clean=True,
+            allowed_task_id=request["task_id"])
+        result = phase_pickup.submit_committed(
+            workspace, handoff, task_id=request["task_id"])
+        return _phase_print(_phase_publish_build_result(
+            workspace, handoff, result))
+    except (phase_handoff.PhaseHandoffError,
+            phase_pickup.PhasePickupError, ValueError, TypeError, KeyError) as exc:
+        return _phase_failed(exc, handoff)
+
+
 def cmd_pickup(a: argparse.Namespace) -> int:
     """Run one approved repository shelf contract without loop state."""
     import pickup
@@ -8188,6 +8448,45 @@ def main(argv=None) -> int:
         help="attribute one exact full source SHA to the invoking operator",
     )
     pickup_parser.set_defaults(fn=cmd_pickup)
+
+    phase_parser = sub.add_parser(
+        "phase", help="export or continue sealed repository phase handoffs",
+        allow_abbrev=False,
+    )
+    phase_parser.add_argument(
+        "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    phase_sub = phase_parser.add_subparsers(
+        dest="phase_action", required=True)
+    phase_export = phase_sub.add_parser(
+        "export", help="publish one sealed Design or Plan phase handoff")
+    phase_export.add_argument(
+        "--request", required=True,
+        help="repository-relative phase export request JSON")
+    phase_export.add_argument(
+        "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    phase_export.set_defaults(fn=cmd_phase_export)
+    phase_pickup = phase_sub.add_parser(
+        "pickup", help="return a safe startup for the declared next phase")
+    phase_pickup.add_argument(
+        "handoff", help="repository-relative sealed phase handoff")
+    phase_pickup.add_argument(
+        "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    phase_pickup.set_defaults(fn=cmd_phase_pickup)
+    phase_submit = phase_sub.add_parser(
+        "submit", help="submit committed Build output and export its handoff")
+    phase_submit.add_argument(
+        "--request", required=True,
+        help="repository-relative JSON with exact handoff and task_id")
+    phase_submit.add_argument(
+        "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    phase_submit.set_defaults(fn=cmd_phase_submit)
+    phase_resume = phase_sub.add_parser(
+        "resume", help="return a safe startup for interrupted same-phase work")
+    phase_resume.add_argument(
+        "handoff", help="repository-relative interrupted phase handoff")
+    phase_resume.add_argument(
+        "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    phase_resume.set_defaults(fn=cmd_phase_resume)
 
     n = sub.add_parser("new", help="create + activate a Task Contract")
     n.add_argument("goal", nargs="+")

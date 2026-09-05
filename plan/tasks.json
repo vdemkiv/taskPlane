@@ -1,529 +1,277 @@
 {
-  "schema": "taskplane.plan/v1",
-  "requirement": "R-0002",
-  "design_fingerprint": "ec1bb7bef7edbd60c56aad4d94b5439d1fdbd0d7cb84e050d082081711accce9",
-  "design_contract_current": true,
-  "delivery_mode": "build",
-  "automatic_lenses": [],
-  "plan_authority": "human:vdemkiv standing night-mode approval; four quick Plan lenses incorporated; Build, Fix, Evaluate, and Engineering remain zero-lens",
-  "delivery_policy": {
-    "plan_lenses": {
-      "depth": "QUICK",
-      "selected": ["architecture", "security", "testability", "cost-finops"]
-    },
-    "build_lens_workers": 0,
-    "fix_lens_workers": 0,
-    "evaluate_lens_workers": 0,
-    "engineering_lens_workers": 0
-  },
-  "plan_route": {
-    "schema": "taskplane.lens-route-policy/v1",
-    "stage": "plan",
-    "target": "R-0002",
-    "execution_depth": "QUICK",
-    "selected": ["architecture", "security", "testability", "cost-finops"],
-    "selected_count": 4,
-    "worker_count": 4,
-    "parallel": true,
-    "results": [
-      {
-        "lens": "architecture",
-        "verdict": "attention-resolved-in-plan",
-        "incorporated": [
-          "actual settings-selected Design workers are host-dispatched and terminal-set conserved",
-          "run-adjacent activity logs cover assignment through terminal",
-          "the loop composition root is serialized after disjoint leaf contracts"
-        ]
-      },
-      {
-        "lens": "security",
-        "verdict": "attention-resolved-in-plan",
-        "incorporated": [
-          "full working candidate identity binds worker, failure, publication, cleanup, and terminal evidence",
-          "host-issued receipts replace self-digested worker identity",
-          "cleanup rejects ancestor, descendant, symlink, hardlink, ambiguous, and foreign-run targets"
-        ]
-      },
-      {
-        "lens": "testability",
-        "verdict": "attention-resolved-in-plan",
-        "incorporated": [
-          "public journeys replace source-shape, byte-identity, stale-history, and ceremonial assertions",
-          "exact selectors collect and run before changed-radius and proportional validation",
-          "actual worker invocation, activity conservation, and public correction admission are exercised"
-        ]
-      },
-      {
-        "lens": "cost-finops",
-        "verdict": "pass-with-controls",
-        "incorporated": [
-          "one unsharded Python 3.12 suite with only genuinely independent validations",
-          "no branch-protection join pseudo-test",
-          "runner time, critical path, parallelism, cleanup leaks, tokens, and end-to-end duration are measured"
-        ]
-      }
-    ]
-  },
-  "validation_policy": {
-    "local": "Compile/import, focused static checks, selector collection, and each task's exact selectors only; broad local suites are not the default.",
-    "progression": [
-      "static and import checks for the changed slice",
-      "collect exact acceptance selectors",
-      "run exact selectors",
-      "run changed producer-consumer radius and semantic severed-edge proofs",
-      "run one proportional protected-floor suite",
-      "run one frozen-candidate authoritative GitHub Actions matrix"
-    ],
-    "reuse": "Reuse a green layer only when candidate, changed files and tests, settings digest, selector set, tool and runtime identity, environment, and prior outcome are exactly equal.",
-    "failure_gate": "Every red is classified product, test, infrastructure, environment, mixed, or unknown before any correction. Only an exclusive product inventory may enter Fix.",
-    "terminal_ci": "One unsharded Python 3.12 suite plus only independent quality/package, browser, interpreter-import, OS-boundary, security, and no-egress validations. No pytest shards and no compatibility join job."
-  },
-  "targets": {
-    "baseline": {
-      "test_files": 229,
-      "collected_cases": 4059,
-      "test_loc": 84104,
-      "focused_cases": 39,
-      "focused_seconds": 4.01,
-      "broad_local_seconds_observed": 47.64,
-      "ci_critical_path": "13m10s",
-      "runner_minutes": "unavailable-current-run",
-      "parallelism_factor": 2.11,
-      "cleanup_leaks": "unavailable-not-proven",
-      "token_usage": "unavailable-not-attributable",
-      "end_to_end_duration": "24h58m09s",
-      "artifact_store_mib": 24.7
-    },
-    "delivery": {
-      "portfolio_classified_percent": 100,
-      "redundant_families_removed_percent": 100,
-      "test_count_policy": "report the behavioral result; no arbitrary count or line ceiling",
-      "exact_selector_p95_seconds": 60,
-      "changed_radius_p95_seconds": 300,
-      "ci_critical_path_p95_minutes": 15,
-      "runner_minutes_max": 28,
-      "parallelism_min_when_three_ready": 2.5,
-      "cleanup_leaks": 0,
-      "usage_attribution_percent": 100,
-      "active_implementation_hours": 8,
-      "end_to_end_hours": 12,
-      "activity_log_segment_mib": 8,
-      "run_artifact_soft_alert_mib": 64,
-      "run_artifact_admission_ceiling_mib": 256
-    }
-  },
-  "waves": [
-    {
-      "id": "W0-authority-foundations",
-      "parallel": ["FAILURE-BUILD-QUALITY", "RUN-ARTIFACT-BOUNDARY"],
-      "serialization": "none; the classifier/build-quality files and the run-artifact/cleanup files are pairwise disjoint"
-    },
-    {
-      "id": "W1-disjoint-producers",
-      "after": ["RUN-ARTIFACT-BOUNDARY"],
-      "parallel": ["SETTINGS-DESIGN-GRAPH", "DASHBOARD-GRAPH-PUBLICATION", "TERMINAL-METRICS"],
-      "serialization": "the artifact boundary is a prerequisite; the settings/graph, dashboard, and metrics producers then own disjoint files"
-    },
-    {
-      "id": "W2-control-plane-integration",
-      "after": ["FAILURE-BUILD-QUALITY", "SETTINGS-DESIGN-GRAPH", "DASHBOARD-GRAPH-PUBLICATION", "TERMINAL-METRICS", "RUN-ARTIFACT-BOUNDARY"],
-      "parallel": ["CONTROL-PLANE-HOST-WIRING"],
-      "serialization": "loop.py, tp.py, host hooks, and the Design host role are the single high-fan-in lifecycle and dispatch composition boundary"
-    },
-    {
-      "id": "W3-terminal-lifecycle-proof",
-      "after": ["CONTROL-PLANE-HOST-WIRING"],
-      "parallel": ["RUN-ARTIFACT-LIFECYCLE"],
-      "serialization": "destructive cleanup proof must consume sealed producer, activity, telemetry, and terminal evidence from the completed control-plane path"
-    },
-    {
-      "id": "W4-test-value-adjudication",
-      "after": ["RUN-ARTIFACT-LIFECYCLE"],
-      "parallel": ["TEST-VALUE-ADJUDICATION"],
-      "serialization": "repository-wide evidence-based test deletion follows replacement public-journey proof and has one inventory owner"
-    },
-    {
-      "id": "W5-ci-and-release",
-      "after": ["TEST-VALUE-ADJUDICATION"],
-      "parallel": ["CI-TOPOLOGY", "RELEASE-PACKAGE"],
-      "serialization": "both consume the final test inventory; workflow/runner files and release/package/version files are otherwise disjoint"
-    }
-  ],
   "tasks": [
     {
-      "id": "FAILURE-BUILD-QUALITY",
+      "id": "T-001",
       "scope": [
-        "taskplane/failure_routing.py", "taskplane/evaluation_output.py", "taskplane/test_strategy.py", "taskplane/ci_policy.py", "taskplane/build_quality.py",
-        "taskplane/tests/test_failure_routing.py", "taskplane/tests/test_build_quality.py", "taskplane/tests/test_test_strategy_contract.py"
+        "taskplane/phase_handoff.py",
+        "taskplane/stage_handoff.py",
+        "taskplane/repository.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_failure_routing.py taskplane/tests/test_build_quality.py taskplane/tests/test_test_strategy_contract.py",
-      "test_timeout_seconds": 180,
-      "req": "R-0002",
+      "tests": "python3 -m pytest -q taskplane/tests/test_stage_handoff.py taskplane/tests/test_stage_handoff_security.py",
+      "req": "R-0001",
       "deps": [],
-      "type": "system-design",
-      "contracts": ["contract:taskplane.failure-record/v1", "contract:taskplane.build-quality-receipt/v1"],
-      "new_modules": ["taskplane/failure_routing.py", "taskplane/evaluation_output.py", "taskplane/test_strategy.py", "taskplane/ci_policy.py", "taskplane/build_quality.py"],
-      "design_edges": [
-        "taskplane/evaluation_output.py->contract:taskplane.failure-record/v1:changes",
-        "contract:taskplane.failure-record/v1->taskplane/failure_routing.py:consumed-by",
-        "taskplane/test_strategy.py->taskplane/build_quality.py:consumed-by",
-        "taskplane/build_quality.py->contract:taskplane.build-quality-receipt/v1:provides"
-      ],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "test_strategy_authority": {
-        "schema": "taskplane.plan-test-strategy-reference/v1",
-        "path": "design/test-strategy.json",
-        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
-        "criterion_ids": ["AC-TST1", "AC-TST3", "AC-CI2"],
-        "changed_producer_ids": ["validation:test-strategy"]
-      },
-      "test_contract": {
-        "changed_producers": ["taskplane/evaluation_output.py", "taskplane/failure_routing.py", "taskplane/test_strategy.py", "taskplane/build_quality.py"],
-        "all_consumers": ["Build quality admission", "Evaluate verdict admission", "CI failure ingestion", "Fix admission", "Retro failure reporting"],
-        "freshness": "Candidate, run, stage instance, settings digest, selector set, evidence digest, runtime, and receipt schema are bound.",
-        "severed_edges": "Uncollectable selectors, missing consumers, unverifiable evidence, stale candidate identity, unknown class, or mixed inventory holds correction authority.",
-        "fixtures": "Only serialized or external interface changes require same-slice fixtures; in-process interfaces require a real consumer journey.",
-        "classification_before_correction": ["product", "test", "infrastructure", "environment", "mixed", "unknown"]
-      },
+      "type": "code",
       "criteria": [
-        "One canonical failure schema is produced for Build, Evaluate, and CI observations, binds the full working candidate, and fails closed on missing or unverifiable evidence.",
-        "The quality receipt collects exact selectors and proves static checks, exact behavior, producer consumers, freshness, semantic severed edges, and applicable fixture co-change through one canonical progression."
-      ]
+        "AC1 — normal completion exports. Completing each of Design, Plan, and Build through the supported public flow produces one bounded, sealed, repository-resident handoff whose fingerprint verifies after a fresh clone. Verify with: parameterized public-surface integration tests for all three producer phases, including canonical byte/fingerprint and repository-only artifact checks.",
+        "AC6 — complete closed lineage. Every accepted successor artifact proves exact source commit and tree identity, repository identity, requirement fingerprint, applicable Design and Plan fingerprints, producer phase and outcome, ordered task scopes/dependencies/contracts/acceptance proofs, authority record, selected artifact digests, predecessor receipts, and its own canonical fingerprint; unknown or missing fields are rejected. Verify with: schema closure tests plus one-field-at-a-time omission, mutation, unknown-field, reorder, duplicate, and size-bound fixtures."
+      ],
+      "contracts": [
+        "contract:stateless-phase-pickup",
+        "contract:stage-artifact-handoff",
+        "contract:pickup-receipt-lineage",
+        "contract:phase-public-result"
+      ],
+      "new_modules": [
+        "taskplane/phase_handoff.py"
+      ],
+      "design_edges": [
+        "taskplane/stage_handoff.py->contract:stage-artifact-handoff:changes",
+        "taskplane/phase_handoff.py->contract:stage-artifact-handoff:provides",
+        "taskplane/phase_handoff.py->contract:stateless-phase-pickup:provides",
+        "contract:pickup-receipt-lineage->taskplane/phase_handoff.py:consumed-by",
+        "taskplane/repository.py->contract:phase-public-result:projects"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      }
     },
     {
-      "id": "RUN-ARTIFACT-BOUNDARY",
-      "scope": ["taskplane/run_store.py", "taskplane/run_artifacts.py", "taskplane/owned_cleanup.py", "taskplane/tests/test_run_artifacts.py", "taskplane/tests/test_owned_cleanup.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_run_artifacts.py taskplane/tests/test_owned_cleanup.py::test_cleanup_runs_on_every_terminal_outcome taskplane/tests/test_owned_cleanup.py::test_cleanup_preserves_evidence_and_proves_zero_leaks taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets",
-      "test_timeout_seconds": 180,
-      "req": "R-0002",
-      "deps": [],
-      "type": "system-design",
-      "contracts": ["resource:taskplane.run-artifacts/v1"],
-      "new_modules": ["taskplane/run_store.py", "taskplane/run_artifacts.py", "taskplane/owned_cleanup.py"],
-      "design_edges": [
-        "taskplane/run_store.py->taskplane/run_artifacts.py:owns",
-        "resource:taskplane.run-artifacts/v1->taskplane/owned_cleanup.py:protected-from"
-      ],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "test_strategy_authority": {
-        "schema": "taskplane.plan-test-strategy-reference/v1",
-        "path": "design/test-strategy.json",
-        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
-        "criterion_ids": ["AC-CLN1", "AC-CLN2"],
-        "changed_producer_ids": ["validation:test-strategy"]
-      },
-      "test_contract": {
-        "changed_producers": ["taskplane/run_store.py", "taskplane/run_artifacts.py", "taskplane/owned_cleanup.py"],
-        "all_consumers": ["dashboard publisher", "dependency graph publisher", "telemetry publisher", "agent activity logger", "validation evidence", "cleanup receipt", "Retro archive"],
-        "freshness": "Every manifest and event binds repository, run, stage instance, full working candidate, settings digest, source fingerprint, and schema.",
-        "severed_edges": "Missing class directories, manifest mismatch, unreadable evidence, or target overlap in either direction blocks cleanup atomically.",
-        "fixtures": "Filesystem fixtures cover private permissions, no-follow creation, symlinks, hardlinks, foreign runs, ambiguous ownership, every terminal outcome, and recovery.",
-        "classification_before_correction": ["product", "test", "infrastructure", "environment", "mixed", "unknown"]
-      },
-      "criteria": [
-        "One private run-adjacent manifest owns separate dashboard, dependency-graphs, telemetry, agent-activity, validation, cleanup, and retro artifact classes without becoming lifecycle state.",
-        "Cleanup prevalidates the complete deletion set, refuses unsafe or ambiguous ownership, preserves durable evidence, and proves zero exact-owned leaks on all terminal outcomes."
-      ]
-    },
-    {
-      "id": "SETTINGS-DESIGN-GRAPH",
-      "scope": ["taskplane/operational-settings.json", "taskplane/settings.py", "taskplane/depgraph.py", "taskplane/plan_topology.py", "taskplane/tests/test_design_decomposition_settings.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_design_decomposition_settings.py::test_design_policy_is_dynamic_and_configured_by_the_canonical_values taskplane/tests/test_design_decomposition_settings.py::test_design_policy_refuses_overflow_and_zero_lens_stage_weakening taskplane/tests/test_design_decomposition_settings.py::test_design_decomposition_expands_graph_paths_and_refreshes_fingerprints taskplane/tests/test_design_decomposition_settings.py::test_design_decomposition_reports_degradation_and_refuses_unsafe_scope",
-      "test_timeout_seconds": 120,
-      "req": "R-0002",
-      "deps": ["RUN-ARTIFACT-BOUNDARY"],
-      "type": "configuration",
-      "contracts": ["contract:taskplane.stage-graph-snapshot/v1", "resource:taskplane.run-artifacts/v1"],
-      "new_modules": ["taskplane/settings.py", "taskplane/depgraph.py", "taskplane/plan_topology.py"],
-      "design_edges": [
-        "taskplane/plan_topology.py->contract:taskplane.stage-graph-snapshot/v1:changes",
-        "taskplane/depgraph.py->resource:taskplane.run-artifacts/v1:publishes"
-      ],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "test_strategy_authority": {
-        "schema": "taskplane.plan-test-strategy-reference/v1",
-        "path": "design/test-strategy.json",
-        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
-        "criterion_ids": ["AC-SET1", "AC-SET2", "AC-SET3", "AC-SET4", "AC-SET5", "AC-P0"],
-        "changed_producer_ids": ["validation:test-strategy"]
-      },
-      "test_contract": {
-        "changed_producers": ["taskplane/operational-settings.json", "taskplane/settings.py", "taskplane/depgraph.py", "taskplane/plan_topology.py"],
-        "all_consumers": ["loop initialization", "automatic decomposition", "Design lens selection", "host worker assignment", "stage graph snapshot", "dashboard graph", "CI plan"],
-        "freshness": "Settings, catalog, requirement, decomposition, graph, candidate, and source fingerprints change the team and stage-graph receipts.",
-        "severed_edges": "Skipping decomposition, forcing a fixed list, exceeding the sixteen-worker cap, accepting unsafe scope, or reusing a prior-run graph fails exact behavior.",
-        "fixtures": "Canonical settings are prepopulated with working defaults; safe overrides change behavior without code edits and governance-weakening overrides fail closed.",
-        "classification_before_correction": ["product", "test", "infrastructure", "environment", "mixed", "unknown"]
-      },
-      "criteria": [
-        "The default settings file is complete yet simple, treats sixteen as a Design cap rather than a target, and supports dynamic routes and safe overrides without source changes.",
-        "Every Design entry performs current-run decomposition before lens selection and seals the current graph for consumers."
-      ]
-    },
-    {
-      "id": "DASHBOARD-GRAPH-PUBLICATION",
-      "scope": ["taskplane/dashboard.py", "taskplane/host_native.py", "taskplane/views.py", "taskplane/tests/test_dashboard_stage_graph_provenance.py", "taskplane/tests/test_dashboard_browser.py", "taskplane/tests/test_host_native_publication.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_dashboard_stage_graph_provenance.py taskplane/tests/test_host_native_publication.py taskplane/tests/test_dashboard_browser.py::test_real_browser_production_refresh_styles_and_shows_dependency_graph taskplane/tests/test_dashboard_browser.py::test_real_browser_current_design_dependency_graph_is_visible_and_accessible_at_390_and_768",
-      "test_timeout_seconds": 240,
-      "req": "R-0002",
-      "deps": ["RUN-ARTIFACT-BOUNDARY"],
-      "type": "frontend",
-      "contracts": ["contract:taskplane.stage-graph-snapshot/v1", "resource:taskplane.run-artifacts/v1"],
-      "new_modules": ["taskplane/dashboard.py", "taskplane/host_native.py", "taskplane/views.py"],
-      "design_edges": [
-        "contract:taskplane.stage-graph-snapshot/v1->taskplane/dashboard.py:consumed-by",
-        "contract:taskplane.stage-graph-snapshot/v1->taskplane/host_native.py:consumed-by",
-        "taskplane/host_native.py->taskplane/views.py:publishes",
-        "taskplane/dashboard.py->resource:taskplane.run-artifacts/v1:publishes"
-      ],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "test_strategy_authority": {
-        "schema": "taskplane.plan-test-strategy-reference/v1",
-        "path": "design/test-strategy.json",
-        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
-        "criterion_ids": ["AC-REG"],
-        "changed_producer_ids": ["dashboard:canonical-snapshot", "dashboard:phase-graphs", "dashboard:publication"]
-      },
-      "test_contract": {
-        "changed_producers": ["taskplane/dashboard.py", "taskplane/host_native.py", "taskplane/views.py"],
-        "all_consumers": ["durable HTML", "host-native panel", "browser preview", "current-head publication", "dashboard artifact class"],
-        "freshness": "The complete visible binding contains run, requirement, stage, revision, settings digest, authority receipt, snapshot fingerprint, graph receipt, and publication epoch.",
-        "severed_edges": "Workspace mutation after snapshot, delayed prior-stage publication, missing host acknowledgement, degraded graph, or prior-run receipt keeps actions inert and cannot replace current head.",
-        "fixtures": "Browser fixtures exercise current Design and Plan graphs, responsive 390 and 768 pixel layouts, computed styles, nonzero geometry, accessible SVG text, offline file preview, and action safety.",
-        "classification_before_correction": ["product", "test", "infrastructure", "environment", "mixed", "unknown"]
-      },
-      "criteria": [
-        "All dashboard and native surfaces render the same sealed current-run graph and full provenance binding, and a delayed or unacknowledged publication cannot become current.",
-        "The graph is visibly nonzero with real computed styles and geometry on desktop and compact layouts; static file previews remain truthful and read-only."
-      ]
-    },
-    {
-      "id": "TERMINAL-METRICS",
-      "scope": ["taskplane/dispatch_telemetry.py", "taskplane/wave_metrics.py", "taskplane/retro.py", "taskplane/tests/test_retro_metrics_truth.py", "taskplane/tests/test_wave_metrics.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_retro_metrics_truth.py taskplane/tests/test_wave_metrics.py",
-      "test_timeout_seconds": 120,
-      "req": "R-0002",
-      "deps": ["RUN-ARTIFACT-BOUNDARY"],
-      "type": "observability",
-      "contracts": ["contract:taskplane.wave-metrics-receipt/v1", "resource:taskplane.run-artifacts/v1"],
-      "new_modules": ["taskplane/dispatch_telemetry.py", "taskplane/wave_metrics.py", "taskplane/retro.py"],
-      "design_edges": [
-        "taskplane/dispatch_telemetry.py->contract:taskplane.wave-metrics-receipt/v1:changes",
-        "contract:taskplane.wave-metrics-receipt/v1->taskplane/retro.py:consumed-by",
-        "taskplane/dispatch_telemetry.py->resource:taskplane.run-artifacts/v1:publishes"
-      ],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "test_strategy_authority": {
-        "schema": "taskplane.plan-test-strategy-reference/v1",
-        "path": "design/test-strategy.json",
-        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
-        "criterion_ids": ["AC-MET"],
-        "changed_producer_ids": ["validation:test-strategy"]
-      },
-      "test_contract": {
-        "changed_producers": ["taskplane/dispatch_telemetry.py", "taskplane/wave_metrics.py", "taskplane/retro.py"],
-        "all_consumers": ["dashboard metrics", "Engineering sign-off", "Retro report", "Retro ZIP", "cleanup terminal seal"],
-        "freshness": "Every dispatch and evaluator attempt is attributable to one run, candidate, worker, stage, outcome, usage source, and receipt digest.",
-        "severed_edges": "A nonempty run with missing attempt usage cannot claim measured totals or zero; sealing blocks or reports attributable unavailable.",
-        "fixtures": "Lifecycle ledgers cover measured usage, unavailable host usage, evaluator identities, cancellations, interruptions, handoffs, and terminal retries.",
-        "classification_before_correction": ["product", "test", "infrastructure", "environment", "mixed", "unknown"]
-      },
-      "criteria": [
-        "Terminal metrics preserve measured or attributable unavailable usage, evaluator identities and outcomes, and never coerce missing telemetry to zero.",
-        "Retro consumes the sealed terminal ledger before cleanup and reports baseline, target, and achieved wall-clock, CI, parallelism, cleanup, portfolio, and token metrics."
-      ]
-    },
-    {
-      "id": "CONTROL-PLANE-HOST-WIRING",
+      "id": "T-002",
       "scope": [
-        "taskplane/loop.py", "taskplane/tp.py", "taskplane/taskplane_lite.py", "taskplane/design_host_transport.py", "hooks/hooks.json", ".codex/hooks.json", "skills/tp-design/SKILL.md", "skills/tp-go/SKILL.md",
-        "taskplane/tests/test_stage_loop_integration.py", "taskplane/tests/test_r0002_control_plane_journey.py", "taskplane/tests/test_r0002_failure_correction_journey.py",
-        "taskplane/tests/test_r0002_build_quality_journey.py", "taskplane/tests/test_r0002_terminal_journey.py", "taskplane/tests/test_r0002_cross_host_journey.py", "taskplane/tests/test_r0002_dashboard_authority_journey.py"
+        "taskplane/design_contract.py",
+        "taskplane/stage_entities.py",
+        "taskplane/taskplane_lite.py",
+        "taskplane/review_evidence.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_stage_loop_integration.py taskplane/tests/test_r0002_control_plane_journey.py taskplane/tests/test_r0002_failure_correction_journey.py taskplane/tests/test_r0002_build_quality_journey.py taskplane/tests/test_r0002_terminal_journey.py taskplane/tests/test_r0002_cross_host_journey.py taskplane/tests/test_r0002_dashboard_authority_journey.py",
-      "test_timeout_seconds": 300,
-      "req": "R-0002",
-      "deps": ["FAILURE-BUILD-QUALITY", "RUN-ARTIFACT-BOUNDARY", "SETTINGS-DESIGN-GRAPH", "DASHBOARD-GRAPH-PUBLICATION", "TERMINAL-METRICS"],
-      "type": "system-design",
-      "contracts": ["contract:taskplane.stage-graph-snapshot/v1", "contract:taskplane.failure-record/v1", "contract:taskplane.wave-metrics-receipt/v1", "resource:taskplane.run-artifacts/v1", "contract:taskplane.build-quality-receipt/v1"],
-      "new_modules": ["taskplane/loop.py", "taskplane/design_host_transport.py"],
-      "design_edges": [
-        "taskplane/loop.py->taskplane/settings.py:consumes",
-        "taskplane/loop.py->taskplane/depgraph.py:consumes",
-        "taskplane/loop.py->taskplane/design_host_transport.py:consumes",
-        "contract:taskplane.build-quality-receipt/v1->taskplane/loop.py:consumed-by",
-        "taskplane/loop.py->resource:taskplane.run-artifacts/v1:publishes"
+      "tests": "python3 -m pytest -q taskplane/tests/test_stage_non_build_handoffs.py",
+      "req": "R-0001",
+      "deps": [
+        "T-001"
       ],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "acceptance_refs": [
-        "A fresh governed Design run shows the active requirement and a visible nonzero dependency graph derived from the same canonical snapshot.",
-        "Automatic decomposition completes before dynamic Design lens selection and settings changes alter actual selection without source edits.",
-        "Every failure has a complete typed record before repair; non-product and unknown failures cannot enter product Fix.",
-        "Retro reports measured token totals or explicit unavailable status, retains evaluator identities, and never converts missing usage to zero.",
-        "Behavioral journey tests cover the public producers and consumers; source-shape, byte-identity, stale-history, and ceremonial tests are removed."
-      ],
-      "test_strategy_authority": {
-        "schema": "taskplane.plan-test-strategy-reference/v1",
-        "path": "design/test-strategy.json",
-        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
-        "criterion_ids": ["AC-REG", "AC-SET1", "AC-SET2", "AC-SET3", "AC-SET4", "AC-SET5", "AC-P0", "AC-CI2", "AC-MET", "AC-TST1", "AC-TST2", "AC-TST3"],
-        "changed_producer_ids": ["dashboard:canonical-snapshot", "dashboard:phase-graphs", "dashboard:publication", "validation:test-strategy"]
-      },
-      "test_contract": {
-        "changed_producers": ["taskplane/loop.py", "taskplane/tp.py", "host hooks", "Design host role"],
-        "all_consumers": ["every flow initialization", "decomposition", "Design route", "native host worker dispatcher", "worker lifecycle hooks", "activity log", "Design gate", "Build quality gate", "Evaluate failure gate", "Fix admission", "Engineering and Retro"],
-        "freshness": "Repository, run, stage instance, requirement, full working candidate, settings, catalog, team plan, graph, authority revision, worker attempt, output, and terminal set are jointly bound.",
-        "severed_edges": "A settings-only change must alter actual assignment where policy demands it; any missing, duplicate, self-attested, stale, foreign-host, or unlogged worker prevents Design completion.",
-        "fixtures": "Public journeys use real host-dispatch adapters and lifecycle hooks; they do not accept a generated plan or self-digested result as execution proof.",
-        "classification_before_correction": ["product", "test", "infrastructure", "environment", "mixed", "unknown"]
-      },
+      "type": "code",
       "criteria": [
-        "Every Taskplane flow pins one validated settings and active-run identity before effects, automatically decomposes before Design selection, dispatches exactly the selected worker set through the host, waits once, and conserves host-issued terminal receipts.",
-        "Every worker assignment, start, progress, attention, cancellation, interruption, handoff, usage, evidence reference, and terminal outcome is durably logged beside the run.",
-        "Build cannot enter Evaluate without a current quality receipt; Evaluate cannot enter correction without a typed failure inventory; only exclusive product failure opens Fix.",
-        "Cross-host handoff preserves portable role and artifact references while rejecting absolute, foreign-run, stale-candidate, or replayed authority."
-      ]
-    },
-    {
-      "id": "RUN-ARTIFACT-LIFECYCLE",
-      "scope": ["taskplane/tests/test_r0002_run_artifacts_journey.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0002_run_artifacts_journey.py",
-      "test_timeout_seconds": 240,
-      "req": "R-0002",
-      "deps": ["CONTROL-PLANE-HOST-WIRING"],
-      "type": "integration",
-      "contracts": ["resource:taskplane.run-artifacts/v1"],
-      "new_modules": ["taskplane/tests/test_r0002_run_artifacts_journey.py"],
-      "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "acceptance_refs": ["Dashboard publications, graph and dependency evidence, telemetry, and every agent activity log are stored as separate durable artifact classes beside the run and survive every cleanup outcome."],
-      "test_strategy_authority": {
-        "schema": "taskplane.plan-test-strategy-reference/v1",
-        "path": "design/test-strategy.json",
-        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
-        "criterion_ids": ["AC-CLN1", "AC-CLN2", "AC-REL"],
-        "changed_producer_ids": ["dashboard:canonical-snapshot", "dashboard:phase-graphs", "dashboard:publication", "validation:test-strategy"]
-      },
-      "test_contract": {
-        "changed_producers": ["public governed lifecycle"],
-        "all_consumers": ["artifact manifest", "all seven artifact classes", "cleanup", "handoff", "Retro ZIP"],
-        "freshness": "The journey proves all artifact references and activity events bind the same active run and exact candidate.",
-        "severed_edges": "Remove one class publisher, one worker event, or one cleanup exclusion and the public lifecycle proof fails.",
-        "fixtures": "Temporary repositories model success, failure, cancellation, interruption, handoff, timeout, recovery, unsafe aliases, and foreign evidence.",
-        "classification_before_correction": ["product", "test", "infrastructure", "environment", "mixed", "unknown"]
-      },
-      "criteria": ["The public governed lifecycle creates all seven separate durable artifact classes, logs every worker outcome, removes only exact-owned ephemera, preserves evidence, and verifies zero leaks for every terminal path."]
-    },
-    {
-      "id": "TEST-VALUE-ADJUDICATION",
-      "scope": [
-        "taskplane/test_portfolio.json", "taskplane/tests/test_r0002_test_value_journey.py", "taskplane/tests/test_review_surfaces.py", "taskplane/tests/test_dashboard_coverage_v2.py",
-        "taskplane/tests/test_workflow_review_kernel_parity.py", "taskplane/tests/test_evaluate_routing.py", "taskplane/tests/test_loop.py", "taskplane/tests/test_stage_waves.py",
-        "taskplane/tests/test_settings_flow_wiring.py", "taskplane/tests/test_host_native_compatibility.py", "taskplane/tests/test_r0002_cross_host_conformance.py",
-        "taskplane/tests/test_r0002_reviewkernel_regression_floor.py", "taskplane/tests/test_ci_execution_policy.py", "taskplane/tests/test_ci_failure_batching.py",
-        "taskplane/tests/test_design_conformance_r0001.py", "taskplane/tests/test_r0001_*.py", "taskplane/tests/test_r0013_*.py", "taskplane/tests/fixtures/ci-policy/**", "taskplane/tests/fixtures/test-strategy/**"
+        "AC2 — fresh Design continuation. Given only a clean fresh checkout and an approved requirement/spec handoff, a new task with an empty private home starts Design with the exact requirement identity, scope, contracts, and acceptance obligations, without a locator or predecessor state. Verify with: an isolated subprocess journey that forbids loop/run/track, lease, workspace-locator, conversation, and predecessor-runtime reads.",
+        "AC3 — fresh Plan continuation. Given only a clean fresh checkout and an approved Design handoff, a new task with an empty private home starts Plan with matching source, requirement, Design fingerprint, contracts, and acceptance map; stale or absent Design approval is refused before dispatch. Verify with: positive isolated continuation plus approval-removed and approval-stale severed variants.",
+        "AC7 — authority remains truthful. Human identity and approval are required and attributable at real requirement/Design/Plan gates; mechanical progress carries mechanical receipts and cannot manufacture a human actor. Verify with: positive gate-lineage fixtures and severed tests for missing, foreign, stale, mismatched, reused, or synthetic human authority."
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_r0002_test_value_journey.py taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green taskplane/tests/test_dashboard_browser.py::test_real_browser_production_refresh_styles_and_shows_dependency_graph",
-      "test_timeout_seconds": 300,
-      "req": "R-0002",
-      "deps": ["CONTROL-PLANE-HOST-WIRING", "RUN-ARTIFACT-LIFECYCLE"],
+      "contracts": [
+        "contract:human-gate-authority",
+        "contract:phase-startup",
+        "contract:stage-artifact-handoff"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/design_contract.py->contract:human-gate-authority:consumes",
+        "contract:human-gate-authority->taskplane/phase_handoff.py:consumed-by"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      }
+    },
+    {
+      "id": "T-003",
+      "scope": [
+        "taskplane/phase_pickup.py",
+        "taskplane/build_c.py",
+        "taskplane/checkpoint.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_build_quality.py taskplane/tests/test_pickup.py::test_severed_pickup_to_build_c_edge_fails",
+      "req": "R-0001",
+      "deps": [
+        "T-001",
+        "T-002"
+      ],
+      "type": "code",
+      "criteria": [
+        "AC4 — fresh Build continuation. Given only a clean fresh checkout and an approved Plan handoff, a new task with an empty private home starts the approved Build work in declared dependency order and exposes only exact task scopes, contracts, and proof commands. Verify with: a multi-task Plan fixture that asserts ordered assignments and a scope-widening variant that observes zero authoring/checkpoint calls.",
+        "AC9 — BUILD-C is not bypassed. A valid Build pickup obtains an exact scoped authoring assignment, reaches the existing BUILD-C checkpoint and repository integration boundaries, reports their verified receipts, and cannot report completion when the pickup-to-BUILD-C edge is deliberately severed or when focused proof fails. Verify with: positive public CLI integration and severed-edge/failing-proof tests using real BUILD-C entry points."
+      ],
+      "contracts": [
+        "contract:stateless-phase-pickup",
+        "contract:phase-startup",
+        "contract:phase-public-result",
+        "contract:build-c-admission",
+        "contract:pickup-receipt-lineage"
+      ],
+      "new_modules": [
+        "taskplane/phase_pickup.py"
+      ],
+      "design_edges": [
+        "contract:stateless-phase-pickup->taskplane/phase_pickup.py:consumed-by",
+        "taskplane/phase_pickup.py->taskplane/phase_handoff.py:validates-with",
+        "taskplane/phase_pickup.py->contract:phase-startup:provides",
+        "taskplane/phase_pickup.py->contract:phase-public-result:provides",
+        "taskplane/phase_pickup.py->taskplane/build_c.py:calls-after-authoring",
+        "taskplane/build_c.py->contract:build-c-admission:consumes",
+        "taskplane/build_c.py->taskplane/checkpoint.py:calls",
+        "taskplane/build_c.py->taskplane/repository.py:integrates-with",
+        "taskplane/phase_pickup.py->contract:pickup-receipt-lineage:changes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      }
+    },
+    {
+      "id": "T-004",
+      "scope": [
+        "taskplane/loop.py",
+        "taskplane/run_store.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_stage_loop_integration.py taskplane/tests/test_stage_non_build_handoffs.py",
+      "req": "R-0001",
+      "deps": [
+        "T-001",
+        "T-002",
+        "T-003"
+      ],
+      "type": "code",
+      "criteria": [
+        "AC5 — interrupted same-phase resume. For Design, Plan, and Build, an interrupted handoff resumes the same phase from its last durable receipt, preserves completed obligations, schedules only remaining work, and never reopens a terminal predecessor. Verify with: crash-after-first-durable-receipt tests in a second checkout and empty private home for each phase, including exact predecessor digest chains and no duplicate completed work."
+      ],
+      "contracts": [
+        "contract:stateless-phase-pickup",
+        "contract:human-gate-authority",
+        "contract:stage-artifact-handoff",
+        "contract:pickup-receipt-lineage"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/loop.py->taskplane/phase_handoff.py:publishes"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      }
+    },
+    {
+      "id": "T-005",
+      "scope": [
+        "taskplane/tp.py",
+        "docs/cli-reference.md",
+        "docs/loop-design.md"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_pickup.py::test_pickup_cli_requires_canonical_trust_source_and_rejects_all_lookalikes_before_dispatch",
+      "req": "R-0001",
+      "deps": [
+        "T-001",
+        "T-002",
+        "T-003",
+        "T-004"
+      ],
+      "type": "code",
+      "criteria": [
+        "AC11 — no hidden-state dependency or leakage. Each positive journey succeeds in a fresh clone with an empty unrelated private home and no loop.json, track, claim, lease, run store, workspace locator, prior conversation, or predecessor runtime context; exported artifacts and public output contain none of those values or any secret/absolute host path. Verify with: isolated environment audits, forbidden-access sentinels, recursive serialized-content scans, and an exact clean-checkout assertion.",
+        "AC12 — deterministic public contract and recovery. Identical semantic exports have identical fingerprints and exact replay is idempotent; conflicting bytes at the same identity fail closed; every refusal names the boundary and a safe recovery that does not weaken authority or widen scope. Verify with: repeat/export/import tests across two clean clones, collision and partial-publication fault injection, and public CLI output assertions."
+      ],
+      "contracts": [
+        "contract:stateless-phase-pickup",
+        "contract:phase-public-result"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/tp.py->taskplane/phase_handoff.py:calls",
+        "taskplane/tp.py->taskplane/phase_pickup.py:calls"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      }
+    },
+    {
+      "id": "T-006",
+      "scope": [
+        "taskplane/tests/test_stateless_phase_pickup.py"
+      ],
+      "tests": "python3 -m pytest -q taskplane/tests/test_stateless_phase_pickup.py",
+      "req": "R-0001",
+      "deps": [
+        "T-001",
+        "T-002",
+        "T-003",
+        "T-004",
+        "T-005"
+      ],
       "type": "test",
-      "contracts": ["contract:taskplane.build-quality-receipt/v1"],
-      "new_modules": ["taskplane/tests/test_r0002_test_value_journey.py"],
-      "design_edges": [],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "acceptance_refs": ["Behavioral journey tests cover the public producers and consumers; source-shape, byte-identity, stale-history, and ceremonial tests are removed."],
-      "test_strategy_authority": {
-        "schema": "taskplane.plan-test-strategy-reference/v1",
-        "path": "design/test-strategy.json",
-        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
-        "criterion_ids": ["AC-TST1", "AC-TST2", "AC-TST3"],
-        "changed_producer_ids": ["validation:test-strategy"]
-      },
-      "test_contract": {
-        "changed_producers": ["taskplane/test_portfolio.json", "current behavioral test inventory"],
-        "all_consumers": ["Build exact-selector contract", "changed-radius validation", "protected floors", "authoritative CI", "release audit"],
-        "freshness": "The portfolio records current collected cases, files, families, protected contracts, replacement journeys, fixture consumers, and evidence revision without imposing count or line ratchets.",
-        "severed_edges": "Every removal requires current-product authority and retained semantic proof; source text, line count, byte identity, fixture existence, historical acceptance, and workflow job names cannot stand alone.",
-        "fixtures": "Delete unconsumed or stale fixtures with their tests; keep fixtures only where serialized compatibility, portability, security, release, or public behavior consumes them.",
-        "classification_before_correction": ["product", "test", "infrastructure", "environment", "mixed", "unknown"]
-      },
       "criteria": [
-        "Every tracked test file is classified for current-product value; all identified shape-only, byte-identity-as-correctness, line/count ratchet, stale-history, duplicate, stale-fixture, and ceremonial families are removed or rewritten after replacement proof.",
-        "Security and authority boundaries, exact-owned cleanup, portability, release version/tag provenance, real browser behavior, current-run graph provenance, typed failure routing, and truthful metrics remain protected."
-      ]
-    },
-    {
-      "id": "CI-TOPOLOGY",
-      "scope": [".github/workflows/ci.yml", "scripts/ci_local.py", "taskplane/tests/test_ci_local.py", "taskplane/tests/test_github_workflow_execution.py", "taskplane/tests/test_ci_runtime_wiring.py", "taskplane/tests/test_r0002_ci_journey.py"],
-      "tests": "python3 -m pytest -q taskplane/tests/test_ci_local.py taskplane/tests/test_github_workflow_execution.py taskplane/tests/test_ci_runtime_wiring.py taskplane/tests/test_r0002_ci_journey.py",
-      "test_timeout_seconds": 300,
-      "req": "R-0002",
-      "deps": ["FAILURE-BUILD-QUALITY", "RUN-ARTIFACT-BOUNDARY", "TEST-VALUE-ADJUDICATION"],
-      "type": "devops",
-      "contracts": ["contract:taskplane.failure-record/v1", "contract:taskplane.build-quality-receipt/v1", "resource:taskplane.run-artifacts/v1"],
-      "new_modules": ["scripts/ci_local.py", ".github/workflows/ci.yml", "taskplane/tests/test_r0002_ci_journey.py"],
+        "AC8 — fail closed before effects. Malformed, tampered, stale, foreign, ambiguous, dirty, incomplete, replay-conflicting, and scope-widened inputs each return a stable named refusal before phase dispatch, code authoring, checkpoint execution, receipt publication, or integration. Verify with: parameterized negative tests that install effect counters at every downstream boundary and assert all counters remain zero."
+      ],
+      "contracts": [
+        "contract:stateless-phase-pickup",
+        "contract:build-c-admission",
+        "contract:human-gate-authority",
+        "contract:stage-artifact-handoff",
+        "contract:pickup-receipt-lineage",
+        "contract:phase-startup",
+        "contract:phase-public-result"
+      ],
+      "new_modules": [
+        "taskplane/tests/test_stateless_phase_pickup.py"
+      ],
       "design_edges": [
-        "scripts/ci_local.py->contract:taskplane.failure-record/v1:changes",
-        ".github/workflows/ci.yml->scripts/ci_local.py:executes"
+        "taskplane/tests/test_stateless_phase_pickup.py->contract:stateless-phase-pickup:verifies"
       ],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "acceptance_refs": ["GitHub Actions runs one unsharded authoritative Python 3.12 suite plus only genuinely independent validations."],
-      "test_strategy_authority": {
-        "schema": "taskplane.plan-test-strategy-reference/v1",
-        "path": "design/test-strategy.json",
-        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
-        "criterion_ids": ["AC-CI1"],
-        "changed_producer_ids": ["validation:test-strategy"]
-      },
-      "test_contract": {
-        "changed_producers": ["scripts/ci_local.py", ".github/workflows/ci.yml"],
-        "all_consumers": ["one Python 3.12 suite job", "independent browser validation", "quality and package validation", "interpreter import smoke", "OS and portability boundary", "security and no-egress validation", "release proof"],
-        "freshness": "Each direct job receipt binds the exact candidate, settings, command, runtime, environment, and artifact manifest; no synthetic join rebrands job results.",
-        "severed_edges": "Adding a pytest shard, overlapping compatibility tests, a branch-protection join pseudo-test, missing typed red receipt, or missing always-cleanup fails the journey.",
-        "fixtures": "Workflow behavior is parsed and executed through the runner plan; raw YAML strings or check names alone are not acceptance evidence.",
-        "classification_before_correction": ["product", "test", "infrastructure", "environment", "mixed", "unknown"]
-      },
-      "criteria": [
-        "GitHub Actions runs the complete pytest inventory exactly once on Python 3.12, in parallel only with genuinely independent validations, and exposes no join job disguised as tests.",
-        "Every red cell publishes a typed failure and durable evidence before enforcement; cleanup runs on every outcome and cannot target run artifacts."
-      ]
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      }
     },
     {
-      "id": "RELEASE-PACKAGE",
+      "id": "T-007",
       "scope": [
-        "scripts/package_openai.py", "scripts/package_claude.py", "scripts/ci_evals.py", "scripts/ci_release_tags.py", "taskplane/release_evidence.py",
-        ".codex-plugin/plugin.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "CHANGELOG.md", "README.md",
-        "taskplane/tests/test_release_freshness.py", "taskplane/tests/test_release_tags.py", "taskplane/tests/test_r0002_release_package_journey.py"
+        "taskplane/pickup.py",
+        "taskplane/tests/test_pickup.py",
+        "taskplane/tests/test_r0001_pickup_cold_start.py",
+        "taskplane/tests/test_stage_handoff.py",
+        "taskplane/tests/test_stage_handoff_security.py",
+        "taskplane/tests/test_stage_non_build_handoffs.py",
+        "taskplane/tests/test_stage_loop_integration.py",
+        "taskplane/tests/test_build_quality.py"
       ],
-      "tests": "python3 -m pytest -q taskplane/tests/test_release_freshness.py taskplane/tests/test_release_tags.py taskplane/tests/test_r0002_release_package_journey.py",
-      "test_timeout_seconds": 300,
-      "req": "R-0002",
-      "deps": ["TEST-VALUE-ADJUDICATION"],
-      "type": "release",
-      "contracts": ["resource:taskplane.run-artifacts/v1"],
-      "new_modules": ["scripts/package_openai.py", "scripts/package_claude.py", "taskplane/tests/test_r0002_release_package_journey.py"],
-      "design_edges": ["scripts/package_openai.py->scripts/package_claude.py:parity"],
-      "impact_policy": {"local_depth": 3, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
-      "test_strategy_authority": {
-        "schema": "taskplane.plan-test-strategy-reference/v1",
-        "path": "design/test-strategy.json",
-        "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6",
-        "criterion_ids": ["AC-REL"],
-        "changed_producer_ids": ["validation:test-strategy"]
-      },
-      "test_contract": {
-        "changed_producers": ["release evidence", "Codex plugin manifest", "Claude plugin manifest and marketplace", "OpenAI and Claude packagers"],
-        "all_consumers": ["version audit", "protected-main release gate", "marketplace archive", "installed Taskplane runtime", "Retro ZIP"],
-        "freshness": "Version, release candidate, protected-main CI, archive members, installation probe, and provenance are bound to the merged candidate.",
-        "severed_edges": "Omitting a new runtime owner, settings, hook, skill, artifact schema, version surface, or install behavior blocks packaging.",
-        "fixtures": "Package tests inspect members, schemas, versions, provenance, installation, and executable behavior; archive byte identity is not treated as correctness unless reproducibility is explicitly declared.",
-        "classification_before_correction": ["product", "test", "infrastructure", "environment", "mixed", "unknown"]
-      },
+      "tests": "python3 -m pytest -q taskplane/tests/test_stateless_phase_pickup.py taskplane/tests/test_pickup.py taskplane/tests/test_r0001_pickup_cold_start.py taskplane/tests/test_stage_handoff.py taskplane/tests/test_stage_handoff_security.py taskplane/tests/test_stage_non_build_handoffs.py taskplane/tests/test_stage_loop_integration.py taskplane/tests/test_build_quality.py",
+      "req": "R-0001",
+      "deps": [
+        "T-001",
+        "T-002",
+        "T-003",
+        "T-004",
+        "T-005"
+      ],
+      "type": "test",
       "criteria": [
-        "The next version is consistent across release and marketplace surfaces, both packages include all new runtime owners and canonical defaults, and an installed fresh package executes the governed public journey.",
-        "The final merged candidate, authoritative green CI, installed version, marketplace archive, and complete Retro evidence ZIP share one auditable provenance chain."
-      ]
+        "AC10 — v1/v2 compatibility. The existing valid pickup v1/v2 shelf, trust-source, repository-only resume, collision, interrupted-write, and cold-start cases retain their documented results and refusal ordering. Verify with: the existing pickup and cold-start suites run unchanged, plus compatibility fixtures exercised alongside the successor contract."
+      ],
+      "contracts": [
+        "contract:stateless-phase-pickup",
+        "contract:build-c-admission",
+        "contract:stage-artifact-handoff",
+        "contract:pickup-receipt-lineage"
+      ],
+      "new_modules": [],
+      "design_edges": [
+        "taskplane/pickup.py->ext:pickup-v1-v2:preserves",
+        "taskplane/tests/test_pickup.py->ext:pickup-v1-v2:verifies"
+      ],
+      "impact_policy": {
+        "local_depth": 3,
+        "boundary_mode": "contract-only",
+        "contract_depth": 1,
+        "requirement_depth": 1
+      }
     }
   ]
 }

@@ -5,10 +5,14 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
-from taskplane import build_quality, ci_policy, test_strategy
+from taskplane import (
+    build_quality, ci_policy, phase_handoff, phase_pickup, test_strategy,
+)
+from taskplane.tests.test_stateless_phase_pickup import _handoff
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -133,6 +137,47 @@ def _complete_build(strategy: dict, receipt: dict) -> dict:
         {"scope": ["taskplane/tests/test_test_strategy_contract.py"], "passed": True},
         "ci",
     )
+
+
+def _published_build_checkout(
+        tmp_path: Path, *, completed_in_plan: bool = False
+) -> tuple[Path, dict]:
+    checkout = tmp_path / "producer"
+    subprocess.run(["git", "clone", "-q", str(ROOT), str(checkout)],
+                   check=True)
+    subprocess.run(["git", "config", "user.email", "build@example.invalid"],
+                   cwd=checkout, check=True)
+    subprocess.run(["git", "config", "user.name", "Build test"],
+                   cwd=checkout, check=True)
+    subprocess.run(["git", "rm", "-q", "design/contract.json"],
+                   cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-qm", "remove unrelated contract"],
+                   cwd=checkout, check=True)
+    handoff = _handoff(checkout, "build")
+    if completed_in_plan:
+        receipt = phase_handoff.create_progress_receipt(
+            producer="engine:test", sequence=1, phase="plan",
+            obligation_id="AC1", task_id=None, status="green",
+            predecessor_receipt_fingerprint=None)
+        material = {
+            key: value for key, value in handoff.items()
+            if key not in {"schema", "handoff_id", "fingerprint"}
+        }
+        material.update({
+            "progress": {"completed": ["AC1"], "remaining": []},
+            "progress_receipts": [receipt],
+            "lineage": {
+                "predecessor_handoff_fingerprint": None,
+                "predecessor_receipt_head": receipt["fingerprint"],
+            },
+        })
+        handoff = phase_handoff.create_manifest(**material)
+    phase_handoff.publish_phase_handoff(checkout, handoff)
+    subprocess.run(["git", "add", "-f", "exports/pickup"],
+                   cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-qm", "publish build handoff"],
+                   cwd=checkout, check=True)
+    return checkout, handoff
 
 
 def test_receipt_proves_the_complete_build_progression_and_exact_binding():
@@ -284,3 +329,62 @@ def test_ci_adapter_consumes_the_same_progression_authority():
 
     assert progression["authoritative"] is True
     assert progression["completed"] == list(build_quality.VALIDATION_LAYERS)
+
+
+def test_committed_build_diff_reconstructs_internal_submission(tmp_path):
+    checkout, handoff = _published_build_checkout(tmp_path)
+    pickup = phase_pickup.prepare(str(checkout), handoff)
+    task_id = pickup["task"]["id"]
+    del pickup
+
+    source = checkout / "taskplane" / "phase_handoff.py"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n# committed Build output\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "taskplane/phase_handoff.py"],
+                   cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-qm", "author Build task"],
+                   cwd=checkout, check=True)
+
+    result = phase_pickup.submit_committed(
+        str(checkout), handoff, task_id=task_id)
+
+    assert result["status"] == "complete"
+    assert result["task_id"] == task_id
+    assert "lease" not in result
+
+
+def test_fresh_build_ignores_completed_plan_progress(tmp_path):
+    checkout, handoff = _published_build_checkout(
+        tmp_path, completed_in_plan=True)
+
+    pickup = phase_pickup.prepare(str(checkout), handoff)
+
+    assert pickup["task"]["id"] == "T-001"
+
+
+def test_out_of_scope_committed_diff_never_reaches_build_c(
+        tmp_path, monkeypatch):
+    checkout, handoff = _published_build_checkout(tmp_path)
+    task_id = phase_pickup.prepare(str(checkout), handoff)["task"]["id"]
+    readme = checkout / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\nout of scope\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "README.md"], cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-qm", "author outside Build scope"],
+                   cwd=checkout, check=True)
+    reached_build_c = False
+
+    def forbidden(*_args, **_kwargs):
+        nonlocal reached_build_c
+        reached_build_c = True
+        raise AssertionError("BUILD-C ran for an out-of-scope diff")
+
+    monkeypatch.setattr(phase_pickup.build_c, "run_phase_pickup", forbidden)
+    with pytest.raises(phase_pickup.PhasePickupError, match="source-stale"):
+        phase_pickup.submit_committed(
+            str(checkout), handoff, task_id=task_id)
+    assert reached_build_c is False

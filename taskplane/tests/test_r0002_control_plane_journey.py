@@ -104,7 +104,7 @@ def test_control_plane_refreshes_verification_but_rejects_tampered_identity(
         },
     }
     with pytest.raises(run_artifacts.RunArtifactError,
-                       match="changed at run_artifact_binding"):
+                       match="run artifact binding fingerprint is stale"):
         loop._prepare_run_control_plane(str(workspace), tampered_binding)
 
 

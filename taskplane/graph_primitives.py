@@ -10,6 +10,7 @@ import json
 import os
 import posixpath
 import re
+import stat
 
 import glob_match
 
@@ -31,6 +32,76 @@ DEPENDENCY_EDGE_KINDS = frozenset({
 
 _FIXTURE_SEGMENTS = frozenset({"fixtures", "testdata", "goldens"})
 _GRAPH_LOADER = None
+
+
+def bounded_source_read(workspace: str, relpath: str,
+                        *, max_bytes: int) -> dict:
+    """Read one untrusted repository file without following or racing links.
+
+    The returned text is an in-process parser input, not a durable/public
+    artifact.  Callers must project only the relative path, byte count and
+    digest.  Stable reason codes intentionally replace operating-system error
+    text so host paths and other private details cannot leak into evidence.
+    """
+    rel = str(relpath or "").replace("\\", "/")
+    if not rel or rel.startswith("/") or "\x00" in rel or any(
+            part in {"", ".", ".."} for part in rel.split("/")):
+        return {"status": "rejected", "reason_code": "source-outside-root"}
+    root = os.path.realpath(workspace)
+    candidate = os.path.join(root, *rel.split("/"))
+    try:
+        before = os.lstat(candidate)
+    except OSError:
+        return {"status": "unresolved", "reason_code": "source-missing"}
+    if stat.S_ISLNK(before.st_mode):
+        return {"status": "rejected", "reason_code": "source-symlink"}
+    if not stat.S_ISREG(before.st_mode):
+        return {"status": "rejected", "reason_code": "source-nonregular"}
+    resolved = os.path.realpath(candidate)
+    if resolved != root and not resolved.startswith(root + os.sep):
+        return {"status": "rejected", "reason_code": "source-outside-root"}
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = None
+    try:
+        descriptor = os.open(candidate, flags)
+        after = os.fstat(descriptor)
+        if not stat.S_ISREG(after.st_mode):
+            return {"status": "rejected",
+                    "reason_code": "source-nonregular"}
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            return {"status": "rejected", "reason_code": "source-replaced"}
+        chunks, total = [], 0
+        ceiling = max(1, int(max_bytes))
+        while total <= ceiling:
+            chunk = os.read(descriptor, min(65536, ceiling + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        payload = b"".join(chunks)
+        if len(payload) > ceiling:
+            return {"status": "incomplete",
+                    "reason_code": "file-byte-limit",
+                    "byte_count": len(payload)}
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return {"status": "incomplete", "reason_code": "parser-error",
+                    "byte_count": len(payload)}
+        import hashlib
+        return {"status": "verified", "text": text,
+                "byte_count": len(payload),
+                "file_fingerprint": hashlib.sha256(payload).hexdigest()}
+    except OSError:
+        # O_NOFOLLOW and concurrent replacement failures intentionally share
+        # the same stable, non-disclosing fail-closed result.
+        return {"status": "rejected", "reason_code": "source-replaced"}
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def register_graph_loader(loader) -> None:

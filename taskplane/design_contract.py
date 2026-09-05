@@ -23,6 +23,11 @@ import requirements as reqs
 import taskplane_lite as tp
 import wiring_closure
 
+try:
+    from . import phase_handoff
+except (ImportError, ValueError):  # direct-module compatibility
+    import phase_handoff
+
 
 def read_json(path: str) -> tuple[dict | None, list]:
     try:
@@ -53,6 +58,185 @@ _PICKUP_SHA = re.compile(r"[0-9a-f]{40,64}\Z")
 
 class PickupAuthorityError(ValueError):
     """A shelf Design Contract lacks authentic current pickup authority."""
+
+
+class PhaseGateAuthorityError(ValueError):
+    """A portable phase gate receipt is missing or bound to another subject."""
+
+
+_PHASE_GATE_DECISION_FIELDS = frozenset({
+    "schema", "gate", "actor", "context", "decision",
+    "subject_fingerprint",
+})
+PHASE_GATE_DECISION_SCHEMA = "taskplane.human-gate-decision/v1"
+_PHASE_GATES = frozenset({
+    "initial-authorization", "design-approval", "plan-approval",
+})
+
+
+def _phase_human_actor(value: object) -> str:
+    try:
+        return phase_handoff.validate_human_gate_actor(
+            str(value or "").strip())
+    except phase_handoff.PhaseHandoffError as exc:
+        raise PhaseGateAuthorityError(str(exc)) from exc
+
+
+def create_phase_gate_decision(*, gate: str, actor: str, context: str,
+                               subject_fingerprint: str,
+                               decision: str = "approved") -> dict:
+    """Capture the exact human-gate observation used to mint a receipt.
+
+    This is deliberately a different schema from engine progress.  Callers
+    cannot pass a progress receipt, an anonymous legacy approval, or one of
+    Taskplane's mechanical gate labels and have it reinterpreted as a human.
+    """
+    value = {
+        "schema": PHASE_GATE_DECISION_SCHEMA,
+        "gate": str(gate or "").strip(),
+        "actor": _phase_human_actor(actor),
+        "context": str(context or "").strip(),
+        "decision": str(decision or "").strip(),
+        "subject_fingerprint": str(subject_fingerprint or "").strip(),
+    }
+    if value["gate"] not in _PHASE_GATES:
+        raise PhaseGateAuthorityError("authority-missing: gate is invalid")
+    if not value["context"]:
+        raise PhaseGateAuthorityError(
+            "authority-missing: human gate context is required")
+    if value["decision"] != "approved":
+        raise PhaseGateAuthorityError(
+            "authority-missing: gate decision is not approved")
+    if not _PICKUP_DIGEST.fullmatch(value["subject_fingerprint"]):
+        raise PhaseGateAuthorityError(
+            "authority-stale: gate subject fingerprint is invalid")
+    return value
+
+
+def create_phase_human_gate_receipt(
+        decision: Mapping[str, object], *, repository_id: str,
+        source_commit: str, source_tree: str,
+        predecessor_authority_fingerprint: str | None = None) -> dict:
+    """Create a closed v2 receipt from one explicit human-gate decision."""
+    if not isinstance(decision, Mapping) or set(decision) != \
+            _PHASE_GATE_DECISION_FIELDS or decision.get(
+                "schema") != PHASE_GATE_DECISION_SCHEMA:
+        raise PhaseGateAuthorityError(
+            "authority-missing: human gate decision fields are invalid")
+    checked = create_phase_gate_decision(
+        gate=str(decision.get("gate") or ""),
+        actor=str(decision.get("actor") or ""),
+        context=str(decision.get("context") or ""),
+        decision=str(decision.get("decision") or ""),
+        subject_fingerprint=str(
+            decision.get("subject_fingerprint") or ""))
+    try:
+        return phase_handoff.create_human_gate_receipt(
+            gate=checked["gate"], actor=checked["actor"],
+            context=checked["context"],
+            subject_fingerprint=checked["subject_fingerprint"],
+            repository_id=repository_id, source_commit=source_commit,
+            source_tree=source_tree,
+            predecessor_authority_fingerprint=
+                predecessor_authority_fingerprint,
+            decision="approved", cryptographic_authenticity_claimed=False)
+    except phase_handoff.PhaseHandoffError as exc:
+        raise PhaseGateAuthorityError(str(exc)) from exc
+
+
+def validate_phase_human_gate_receipt(
+        receipt: Mapping[str, object], *, expected_gate: str,
+        expected_subject_fingerprint: str, expected_repository_id: str,
+        expected_source_commit: str, expected_source_tree: str,
+        expected_predecessor_authority_fingerprint: str | None,
+        used_fingerprints: Sequence[str] = ()) -> dict:
+    """Validate closure, attribution, freshness and single-subject use.
+
+    Reconstruction through the v2 schema owner checks every field and the
+    receipt fingerprint.  The explicit expected values then prevent foreign,
+    stale, mismatched, or cross-subject replay before a successor dispatch.
+    """
+    if not isinstance(receipt, Mapping):
+        raise PhaseGateAuthorityError(
+            "authority-missing: human gate receipt is missing")
+    try:
+        reconstructed = phase_handoff.create_human_gate_receipt(
+            gate=receipt.get("gate"), actor=receipt.get("actor"),
+            context=receipt.get("context"),
+            subject_fingerprint=receipt.get("subject_fingerprint"),
+            repository_id=receipt.get("repository_id"),
+            source_commit=receipt.get("source_commit"),
+            source_tree=receipt.get("source_tree"),
+            decision=receipt.get("decision"),
+            predecessor_authority_fingerprint=receipt.get(
+                "predecessor_authority_fingerprint"),
+            cryptographic_authenticity_claimed=receipt.get(
+                "cryptographic_authenticity_claimed"))
+    except phase_handoff.PhaseHandoffError as exc:
+        raise PhaseGateAuthorityError(str(exc)) from exc
+    if dict(receipt) != reconstructed:
+        raise PhaseGateAuthorityError(
+            "authority-stale: human gate receipt is not canonical or closed")
+    _phase_human_actor(reconstructed["actor"])
+    expected = {
+        "gate": expected_gate,
+        "subject_fingerprint": expected_subject_fingerprint,
+        "repository_id": expected_repository_id,
+        "source_commit": expected_source_commit,
+        "source_tree": expected_source_tree,
+        "predecessor_authority_fingerprint":
+            expected_predecessor_authority_fingerprint,
+    }
+    if any(reconstructed.get(key) != value
+           for key, value in expected.items()):
+        raise PhaseGateAuthorityError(
+            "authority-stale: human gate receipt binding is foreign or stale")
+    if reconstructed["fingerprint"] in set(used_fingerprints):
+        raise PhaseGateAuthorityError(
+            "authority-stale: human gate receipt was already consumed")
+    return reconstructed
+
+
+def validate_phase_authority_chain(handoff: Mapping[str, object], *,
+                                   used_fingerprints: Sequence[str] = ()) \
+        -> list[dict]:
+    """Revalidate the exact v2 gate chain independently of runtime state."""
+    try:
+        checked = phase_handoff.validate_phase_handoff(handoff)
+    except phase_handoff.PhaseHandoffError as exc:
+        raise PhaseGateAuthorityError(str(exc)) from exc
+    subjects = {
+        "initial-authorization": checked["requirement"]["fingerprint"],
+        "design-approval": None if checked["design"] is None else
+            checked["design"]["fingerprint"],
+        "plan-approval": None if checked["plan"] is None else
+            checked["plan"]["fingerprint"],
+    }
+    predecessor = None
+    validated = []
+    seen = set(used_fingerprints)
+    for receipt in checked["authority_receipts"]:
+        row = validate_phase_human_gate_receipt(
+            receipt, expected_gate=receipt["gate"],
+            expected_subject_fingerprint=subjects[receipt["gate"]],
+            expected_repository_id=checked["repository"]["id"],
+            expected_source_commit=receipt["source_commit"],
+            expected_source_tree=receipt["source_tree"],
+            expected_predecessor_authority_fingerprint=predecessor,
+            used_fingerprints=tuple(seen))
+        seen.add(row["fingerprint"])
+        predecessor = row["fingerprint"]
+        validated.append(row)
+    return validated
+
+
+# Public successor vocabulary; the phase-prefixed names remain explicit at
+# internal call sites so legacy approved-shelf authority cannot be confused
+# with repository-native gate receipts.
+create_human_gate_decision = create_phase_gate_decision
+create_human_gate_receipt = create_phase_human_gate_receipt
+validate_human_gate_receipt = validate_phase_human_gate_receipt
+validate_human_gate_authority = validate_phase_authority_chain
 
 
 def _pickup_canonical(value: object) -> bytes:

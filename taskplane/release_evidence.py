@@ -46,7 +46,7 @@ PROTECTED_MAIN_RELEASE_EVIDENCE_SCHEMA = (
 )
 PROTECTED_MAIN_RELEASE_GATE_SCHEMA = "taskplane.protected-main-release-gate/v1"
 
-CURRENT_VERSION = "2.18.10"
+CURRENT_VERSION = "2.19.1"
 PREVIOUS_VERSION = "2.17.20"
 
 
@@ -55,7 +55,7 @@ def root_hygiene_projection(receipt: Mapping[str, object]) -> dict:
     from taskplane import wave_metrics
     return wave_metrics.root_hygiene_projection(receipt, consumer="release")
 COMPATIBILITY_PREVIOUS_VERSION = "2.18.0"
-SUPERSEDED_CANDIDATE_VERSION = "2.18.9"
+SUPERSEDED_CANDIDATE_VERSION = "2.18.10"
 PREVIOUS_RELEASE_TAG = "v2.17.20"
 PREVIOUS_RELEASE_COMMIT = "4a0378e7f080136d27f01d4ab7ecdf9bac8a1ad6"
 HISTORICAL_GRAPH_REVISION = "2757822ede49177fc52de8c173302286364d6206"

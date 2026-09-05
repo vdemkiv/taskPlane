@@ -166,3 +166,31 @@ def test_hook_home_binding_rejects_noncanonical_and_accepts_secure_default_home(
     with pytest.raises(storage.StorageIdentityError, match="not canonical"):
         storage.bind_hook_taskplane_home(
             str(default_checkout), {"HOME": str(user_home)})
+
+
+def test_native_session_bootstrap_uses_only_canonical_default_without_locator(
+        tmp_path, monkeypatch):
+    checkout = tmp_path / "fresh-checkout"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    user_home = tmp_path / "user-home"
+    user_home.mkdir()
+    monkeypatch.setenv("HOME", str(user_home))
+    canonical = user_home / ".taskplane"
+
+    environment = {"HOME": str(user_home)}
+    assert storage.bind_hook_taskplane_home(
+        str(checkout), environment, hook_path="native") == str(canonical)
+    assert environment["TASKPLANE_HOME"] == str(canonical)
+
+    with pytest.raises(storage.StorageIdentityError,
+                       match="requires a governed workspace locator"):
+        storage.bind_hook_taskplane_home(
+            str(checkout), {"HOME": str(user_home)}, hook_path="bridge")
+    with pytest.raises(storage.StorageIdentityError,
+                       match="does not match"):
+        storage.bind_hook_taskplane_home(
+            str(checkout), {
+                "HOME": str(user_home),
+                "TASKPLANE_HOME": str(tmp_path / "unbound-custom-home"),
+            }, hook_path="native")

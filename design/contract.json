@@ -1,214 +1,971 @@
 {
   "schema": "taskplane.design/v1",
-  "requirement": "R-0002",
-  "title": "Current-run control plane and durable delivery evidence",
-  "summary": "Wire the existing settings, decomposition, dashboard, failure-routing, cleanup, telemetry, and CI primitives into one active-run control plane. Design decomposes before dynamic parallel lenses; every failure is typed before correction; Build proves test design and code quality; separately classified run artifacts survive cleanup; and CI executes one authoritative unsharded Python 3.12 suite.",
-  "decision": "Keep loop.py as a thin composition root over existing owners, with one pinned active-run snapshot and the private RunStore as the sole mutable run authority. Add only narrow build-quality and durable-artifact adapters; create no second settings file, graph authority, lifecycle, test runner, or dashboard store.",
-  "selected_approach": "single-active-run-control-plane",
+  "requirement": "R-0001",
+  "title": "Repository-native stateless phase pickup",
+  "summary": "Evolve the bounded stage handoff to a closed repository-native v2 contract and add a pure stateless pickup coordinator. Normal Design, Plan, and Build completion and interrupted same-phase work publish deterministic handoffs whose repository artifacts, human authority, task scopes, acceptance proofs, and receipt lineage verify before any new-session effect.",
   "current_state": {
-    "summary": "Typed settings, decomposition, graph, dashboard, failure, cleanup, telemetry, CI, and release components exist, but important production edges are missing. Current Design graph publication can be stale, lens routing did not prove actual workers, Build/CI can bypass typed failure admission, terminal metrics lack a complete production caller, host acknowledgement is discarded, CI repeats pytest subsets, and cleanup has no explicit durable artifact boundary. The prior wave took 24h58m09s while CI was about 13m10s, so lifecycle churn is the dominant problem.",
-    "sources": ["taskplane/loop.py", "taskplane/settings.py", "taskplane/operational-settings.json", "taskplane/depgraph.py", "taskplane/plan_topology.py", "taskplane/dashboard.py", "taskplane/host_native.py", "taskplane/views.py", "taskplane/failure_routing.py", "taskplane/evaluation_output.py", "taskplane/test_strategy.py", "taskplane/ci_policy.py", "taskplane/owned_cleanup.py", "taskplane/wave_metrics.py", "taskplane/retro.py", "taskplane/run_store.py", "taskplane/dispatch_telemetry.py", "scripts/ci_local.py", ".github/workflows/ci.yml", "scripts/package_openai.py", "scripts/package_claude.py", "taskplane/tests"]
+    "summary": "The repository already has three useful but disconnected capabilities: private ArtifactStore-backed stage-handoff/v1 and stage-startup/v1 for live runs; a legacy approved-shelf pickup with pickup receipts v1/v2 and repository-only resume; and BUILD-C checkpoint/integration for an already-authored exact scope. Normal phase completion does not publish a fresh-clone continuation artifact. The stage path depends on a workspace locator and RunStore, the legacy pickup is Build-only and starts at checkpoint rather than authoring, current pickup merge evidence contains host paths, and Design/Plan gate attribution is not yet exported as exact subject-bound repository evidence. The current Design lens wave also failed safely because its 16 dispatch entries omitted worker bootstrap and result-boundary fields.",
+    "sources": [
+      "specs/spec.md",
+      "taskplane/pickup.py",
+      "taskplane/design_contract.py",
+      "taskplane/stage_handoff.py",
+      "taskplane/stage_entities.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/run_store.py",
+      "taskplane/loop.py",
+      "taskplane/build_c.py",
+      "taskplane/checkpoint.py",
+      "taskplane/repository.py",
+      "taskplane/review_evidence.py",
+      "taskplane/tp.py",
+      "taskplane/tests/test_pickup.py",
+      "taskplane/tests/test_r0001_pickup_cold_start.py",
+      "taskplane/tests/test_stage_handoff.py",
+      "taskplane/tests/test_stage_handoff_security.py",
+      "taskplane/tests/test_stage_non_build_handoffs.py",
+      "taskplane/tests/test_stage_loop_integration.py",
+      "taskplane/tests/test_build_quality.py",
+      "docs/cli-reference.md",
+      "docs/loop-design.md"
+    ]
   },
   "alternatives": [
     {
-      "id": "single-active-run-control-plane",
-      "name": "Thin composition root over incumbent owners",
-      "description": "Pin one settings/candidate/run snapshot, sequence existing producers, and require sealed receipts at public gates. Store durable evidence classes beneath one run-adjacent artifact root while RunStore retains lifecycle authority.",
+      "id": "stage-handoff-v2",
+      "name": "Repository-native stage handoff v2",
+      "description": "Add a closed taskplane.stage-handoff/v2 with repository-addressed artifacts and receipts, plus a stateless phase pickup coordinator. Keep the stateful loop as producer-side lifecycle authority, project true gate receipts at export, issue fresh attempt contracts after import, and enter the incumbent BUILD-C path only after scoped Build authoring.",
       "tradeoffs": {
-        "gains": ["Closes missing production edges without a rewrite", "Keeps one settings and run authority", "Makes dashboard, correction, telemetry, activity, and cleanup independently observable", "Cuts repeated diagnosis and validation"],
-        "costs": ["Requires legacy receipt migration", "Touches high-fan-in lifecycle and CI boundaries", "Needs public journeys before obsolete tests are removed"],
-        "revisit_when": "A second repository or remote service must coordinate live policy across independent installations."
+        "gains": [
+          "Reuses the existing stage, artifact, authority, checkpoint, and repository concepts without serializing private state",
+          "One schema covers requirement-to-Design, Design-to-Plan, Plan-to-Build, Build terminal evidence, and same-phase resume",
+          "Makes empty-home validation and pre-effect refusal mechanically testable",
+          "Preserves legacy pickup v1/v2 as a disjoint compatibility adapter"
+        ],
+        "costs": [
+          "Requires a new closed v2 schema and repository artifact store",
+          "Requires explicit producer adapters at Design, Plan, and Build completion",
+          "Requires a two-step Build pickup in which authoring precedes BUILD-C submission"
+        ],
+        "revisit_when": "A remote artifact registry or cross-repository trust service becomes an approved product requirement; replace only the repository artifact resolver behind the same digest contract."
       }
     },
     {
-      "id": "new-orchestration-service",
-      "name": "Replace orchestration with a new service",
-      "description": "Move settings, graph, dispatch, telemetry, and cleanup into a daemon or remote service.",
+      "id": "portable-runstore-bundle",
+      "name": "Export and restore the current RunStore aggregate",
+      "description": "Serialize the current stage aggregate, private artifact store, locator, lifecycle receipts, and run metadata, then restore them in the successor before using the existing stage dispatcher.",
       "tradeoffs": {
-        "gains": ["Could later centralize multi-repository policy"],
-        "costs": ["Creates a second authority and availability domain", "Requires broad migration and cross-host authentication", "Increases delivery time without closing current reachability gaps"],
-        "revisit_when": "The product explicitly requires centrally revoked multi-repository policy."
+        "gains": [
+          "Small transition-layer changes",
+          "Reuses the current stage dispatcher without a new public projection"
+        ],
+        "costs": [
+          "Violates the explicit ban on run, locator, lease, and predecessor-runtime dependency",
+          "Turns mutable private lifecycle state into portable authority",
+          "Cannot prove fresh-clone and empty-private-home continuation",
+          "Leaks host-specific identities and creates replay ambiguity"
+        ],
+        "revisit_when": "Never under R-0001; only a future requirement that explicitly makes private run migration the product could reconsider it."
       }
     },
     {
-      "id": "patch-each-helper-independently",
-      "name": "Patch each helper at its nearest caller",
-      "description": "Add local calls without an active-run composition contract.",
+      "id": "extend-legacy-shelf",
+      "name": "Stretch approved-shelf pickup v1/v2 across phases",
+      "description": "Add optional Design, Plan, phase, authority, and ordering fields to the existing approved-pickup contract and pickup receipt schemas and reuse the current tp.py pickup implementation.",
       "tradeoffs": {
-        "gains": ["Small individual diffs"],
-        "costs": ["Preserves split-brain reads", "Cannot prove ordering or current-run identity", "Repeats classification and telemetry projection"],
-        "revisit_when": "Only as a temporary migration adapter with sealed input and output bindings."
+        "gains": [
+          "Keeps one old command path",
+          "Reuses current source-trust and collision code"
+        ],
+        "costs": [
+          "Silently reinterprets closed v1/v2 contracts and refusal ordering",
+          "The one-element/one-criterion model cannot express Plan dependency order or same-phase progress",
+          "Current run_pickup begins at checkpoint and has no authoring contract",
+          "Would entangle compatibility logic with the successor authority model"
+        ],
+        "revisit_when": "Only after the documented v1/v2 compatibility window ends and a separately approved migration permits a breaking legacy schema change."
       }
     }
   ],
+  "selected_approach": "stage-handoff-v2",
+  "decision": "Use a repository-native stage-handoff/v2 and stateless phase coordinator because it is the only approach that preserves existing lifecycle and BUILD-C owners while making the sealed repository handoff the complete successor authority. The consumer remains a pure, synchronous, fail-closed boundary; the stateful loop may supply export material but no loop or private-store value survives into the handoff. Legacy pickup v1/v2 remains byte- and order-compatible on its existing command path.",
   "modules": {
-    "existing": ["taskplane/loop.py", "taskplane/settings.py", "taskplane/depgraph.py", "taskplane/plan_topology.py", "taskplane/dashboard.py", "taskplane/host_native.py", "taskplane/views.py", "taskplane/failure_routing.py", "taskplane/evaluation_output.py", "taskplane/test_strategy.py", "taskplane/ci_policy.py", "taskplane/owned_cleanup.py", "taskplane/wave_metrics.py", "taskplane/retro.py", "taskplane/run_store.py", "taskplane/dispatch_telemetry.py", "scripts/ci_local.py", ".github/workflows/ci.yml", "scripts/package_openai.py", "scripts/package_claude.py"],
-    "new": ["taskplane/build_quality.py", "taskplane/run_artifacts.py", "taskplane/design_host_transport.py"]
-  },
-  "contracts": [
-    {"relation": "changes", "id": "contract:taskplane.stage-graph-snapshot/v1", "description": "Sealed active-run graph projection shared by every renderer, binding run, requirement, stage, candidate, settings, source, revision, and publication."},
-    {"relation": "changes", "id": "contract:taskplane.failure-record/v1", "description": "Closed candidate-bound Build, Evaluate, or CI failure observation and classification; only exclusive product failures route to Fix."},
-    {"relation": "changes", "id": "contract:taskplane.wave-metrics-receipt/v1", "description": "Terminal measured-or-unavailable usage projection with evaluator attempt identities and no missing-to-zero coercion."},
-    {"relation": "provides", "id": "resource:taskplane.run-artifacts/v1", "description": "Run-adjacent dashboard, dependency-graph, telemetry, agent-activity, validation, cleanup, and Retro evidence classes protected from cleanup."},
-    {"relation": "provides", "id": "contract:taskplane.build-quality-receipt/v1", "description": "Zero-lens proof of focused static checks, selector collection/execution, consumer radius, semantic severed edges, applicable fixture co-change, and proportional-suite freshness."}
-  ],
-  "graph": {
-    "baseline_fingerprint": "095f7a59573740f4c40e63fba934fff4c87b75ad16fb6f786b2135c543d8de29",
-    "proposed_modules": ["taskplane/loop.py", "taskplane/settings.py", "taskplane/depgraph.py", "taskplane/plan_topology.py", "taskplane/dashboard.py", "taskplane/host_native.py", "taskplane/views.py", "taskplane/failure_routing.py", "taskplane/evaluation_output.py", "taskplane/test_strategy.py", "taskplane/ci_policy.py", "taskplane/owned_cleanup.py", "taskplane/wave_metrics.py", "taskplane/retro.py", "taskplane/run_store.py", "taskplane/dispatch_telemetry.py", "taskplane/build_quality.py", "taskplane/run_artifacts.py", "taskplane/design_host_transport.py", "scripts/ci_local.py", ".github/workflows/ci.yml", "scripts/package_openai.py", "scripts/package_claude.py"],
-    "proposed_edges": [
-      {"from": "taskplane/loop.py", "to": "taskplane/settings.py", "kind": "consumes", "reason": "Pin validated settings before stage effects."},
-      {"from": "taskplane/loop.py", "to": "taskplane/depgraph.py", "kind": "consumes", "reason": "Decompose before Design selection."},
-      {"from": "taskplane/loop.py", "to": "taskplane/design_host_transport.py", "kind": "consumes", "reason": "Bind the exact settings-selected Design team to native host assignment, lifecycle receipts, and terminal conservation."},
-      {"from": "taskplane/plan_topology.py", "to": "contract:taskplane.stage-graph-snapshot/v1", "kind": "changes", "reason": "Seal the current stage graph once."},
-      {"from": "contract:taskplane.stage-graph-snapshot/v1", "to": "taskplane/dashboard.py", "kind": "consumed-by", "reason": "Render only the frozen graph projection."},
-      {"from": "contract:taskplane.stage-graph-snapshot/v1", "to": "taskplane/host_native.py", "kind": "consumed-by", "reason": "Expose the same graph and provenance natively."},
-      {"from": "taskplane/host_native.py", "to": "taskplane/views.py", "kind": "publishes", "reason": "Reach one acknowledged visible current head."},
-      {"from": "taskplane/evaluation_output.py", "to": "contract:taskplane.failure-record/v1", "kind": "changes", "reason": "Evaluator emits typed observations."},
-      {"from": "scripts/ci_local.py", "to": "contract:taskplane.failure-record/v1", "kind": "changes", "reason": "CI uses the same contract and never defaults unknown to product."},
-      {"from": "contract:taskplane.failure-record/v1", "to": "taskplane/failure_routing.py", "kind": "consumed-by", "reason": "One admission gate derives correction authority."},
-      {"from": "taskplane/test_strategy.py", "to": "taskplane/build_quality.py", "kind": "consumed-by", "reason": "Declared public journeys become executable evidence."},
-      {"from": "taskplane/build_quality.py", "to": "contract:taskplane.build-quality-receipt/v1", "kind": "provides", "reason": "Close Build quality before Evaluate."},
-      {"from": "contract:taskplane.build-quality-receipt/v1", "to": "taskplane/loop.py", "kind": "consumed-by", "reason": "Build refuses missing or stale quality evidence."},
-      {"from": "taskplane/dispatch_telemetry.py", "to": "contract:taskplane.wave-metrics-receipt/v1", "kind": "changes", "reason": "Dispatches and evaluator attempts contribute measured or unavailable usage."},
-      {"from": "contract:taskplane.wave-metrics-receipt/v1", "to": "taskplane/retro.py", "kind": "consumed-by", "reason": "Retro preserves token and evaluator truth."},
-      {"from": "taskplane/run_store.py", "to": "taskplane/run_artifacts.py", "kind": "owns", "reason": "Private run identity anchors its adjacent artifacts."},
-      {"from": "taskplane/dashboard.py", "to": "resource:taskplane.run-artifacts/v1", "kind": "publishes", "reason": "Dashboard output uses its own durable class."},
-      {"from": "taskplane/depgraph.py", "to": "resource:taskplane.run-artifacts/v1", "kind": "publishes", "reason": "Dependency and phase graphs use their own durable class."},
-      {"from": "taskplane/dispatch_telemetry.py", "to": "resource:taskplane.run-artifacts/v1", "kind": "publishes", "reason": "Telemetry uses its own durable class."},
-      {"from": "taskplane/loop.py", "to": "resource:taskplane.run-artifacts/v1", "kind": "publishes", "reason": "Every agent dispatch, progress, attention, and terminal event is logged."},
-      {"from": "resource:taskplane.run-artifacts/v1", "to": "taskplane/owned_cleanup.py", "kind": "protected-from", "reason": "Cleanup excludes sealed artifact roots and rechecks readability."},
-      {"from": ".github/workflows/ci.yml", "to": "scripts/ci_local.py", "kind": "executes", "reason": "Run one unsharded 3.12 suite plus disjoint validations."},
-      {"from": "scripts/package_openai.py", "to": "scripts/package_claude.py", "kind": "parity", "reason": "Both archives include required runtime owners and settings."}
+    "existing": [
+      "taskplane/pickup.py",
+      "taskplane/design_contract.py",
+      "taskplane/stage_handoff.py",
+      "taskplane/stage_entities.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/run_store.py",
+      "taskplane/loop.py",
+      "taskplane/build_c.py",
+      "taskplane/checkpoint.py",
+      "taskplane/repository.py",
+      "taskplane/review_evidence.py",
+      "taskplane/tp.py",
+      "taskplane/tests/test_pickup.py",
+      "taskplane/tests/test_r0001_pickup_cold_start.py",
+      "taskplane/tests/test_stage_handoff.py",
+      "taskplane/tests/test_stage_handoff_security.py",
+      "taskplane/tests/test_stage_non_build_handoffs.py",
+      "taskplane/tests/test_stage_loop_integration.py",
+      "taskplane/tests/test_build_quality.py",
+      "docs/cli-reference.md",
+      "docs/loop-design.md"
     ],
-    "depth_policy": {"local_depth": 3, "contract_depth": 1, "requirement_depth": 1, "boundary_mode": "contract-only"},
-    "dor": [
-      {"check": "active run and requirement are bound", "evidence": "R-0002 sign-off and control-plane binding"},
-      {"check": "decomposition is ready", "evidence": "current receipt and nonzero graph"},
-      {"check": "dynamic Design team executed", "evidence": "planned/dispatched/terminal conservation"}
-    ],
-    "dod": [
-      {"check": "public journeys are collectable and green", "evidence": "Build quality receipts and terminal CI"},
-      {"check": "changed producer edges are fresh", "evidence": "consumer, applicable fixture, and severed-edge receipts"},
-      {"check": "terminal evidence survives cleanup", "evidence": "artifact manifest, cleanup exclusion, and zero leaks"}
+    "new": [
+      "taskplane/phase_handoff.py",
+      "taskplane/phase_pickup.py",
+      "taskplane/tests/test_stateless_phase_pickup.py"
     ]
   },
-  "acceptance_map": [
+  "contracts": [
     {
-      "criterion": "A fresh governed Design run shows the active requirement and a visible nonzero dependency graph derived from the same canonical snapshot.",
-      "design_element": "Active-run snapshot, decomposition graph receipt, snapshot-only publication, and monotonic current-head CAS.",
-      "validation": "Drive a fresh public loop into Design and prove delayed prior-run values cannot replace its graph.",
-      "tests": ["taskplane/tests/test_design_decomposition_settings.py::test_design_decomposition_expands_graph_paths_and_refreshes_fingerprints", "taskplane/tests/test_dashboard_stage_graph_provenance.py::test_fresh_design_and_plan_do_not_reuse_prior_run_graph_artifacts", "taskplane/tests/test_dashboard_browser.py::test_real_browser_production_refresh_styles_and_shows_dependency_graph", "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied", "taskplane/tests/test_host_native_dashboard.py::test_codex_and_claude_project_equal_semantics_for_all_components", "taskplane/tests/test_status_and_large_delivery.py::test_large_dashboard_automatically_delivers_complete_markdown", "taskplane/tests/test_worker_contract_lifecycle.py::test_authenticated_release_refuses_before_terminal_and_tampering", "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"],
-      "public_entrypoint": "tp loop next plus dashboard publication",
-      "controlled_dependencies": ["private RunStore", "publication root", "browser executable"]
+      "relation": "provides",
+      "id": "contract:stateless-phase-pickup",
+      "description": "Public repository-only export, pickup, submit, and same-phase resume surface with stable success and refusal envelopes."
     },
     {
-      "criterion": "Automatic decomposition completes before dynamic Design lens selection and settings changes alter actual selection without source edits.",
-      "design_element": "Settings-bound sequence and DesignTeamPlan with a cap of sixteen justified quick workers.",
-      "validation": "Change only safe lens policy and prove decomposition precedes a changed actual worker set.",
-      "tests": ["taskplane/tests/test_design_decomposition_settings.py::test_design_policy_is_dynamic_and_configured_by_the_canonical_values", "taskplane/tests/test_r0002_control_plane_journey.py::test_dynamic_design_team_creates_one_portable_authorized_worker_per_lens", "taskplane/tests/test_r0002_cross_host_journey.py::test_exact_dynamic_design_set_uses_portable_roles_and_host_receipts", "taskplane/tests/test_settings_inventory.py::test_every_operational_setting_has_one_canonical_owner", "taskplane/tests/test_settings.py::test_valid_canonical_settings_load_typed", "taskplane/tests/test_settings.py::test_invalid_or_unknown_settings_fail_closed", "taskplane/tests/test_settings.py::test_precedence_migration_and_safe_override_contract", "taskplane/tests/test_settings_flow_wiring.py::test_public_cli_refuses_invalid_settings_before_flow_state_or_artifacts", "taskplane/tests/test_settings_cross_host.py::test_effective_settings_are_portable_and_safely_observable", "taskplane/tests/test_atomic_governed_preflight.py::test_preflight_is_atomic_before_any_worker_or_worktree", "taskplane/tests/test_stage_bounded_handoff.py::test_worker_receives_no_inherited_conversation_turns"],
-      "public_entrypoint": "tp loop next",
-      "controlled_dependencies": ["canonical settings", "lens catalog", "worker dispatcher"]
+      "relation": "consumes",
+      "id": "contract:build-c-admission",
+      "description": "Existing BUILD-C engine checkpoint and repository integration remain mandatory after scoped Build authoring."
     },
     {
-      "criterion": "Every failure has a complete typed record before repair; non-product and unknown failures cannot enter product Fix.",
-      "design_element": "One failure schema, typed Build/Evaluate/CI producers, and class-owned correction states.",
-      "validation": "Exercise all classes through public gates; only exclusive product inventory opens Fix.",
-      "tests": ["taskplane/tests/test_failure_routing.py::test_build_evaluate_and_ci_use_the_same_failure_contract", "taskplane/tests/test_failure_routing.py::test_product_fix_requires_an_exclusively_product_inventory", "taskplane/tests/test_r0002_failure_correction_journey.py::test_non_product_failure_inventory_cannot_open_product_fix"],
-      "public_entrypoint": "loop submit/gate/resolve and CI ingestion",
-      "controlled_dependencies": ["test runner", "CI facts", "evaluator output"]
+      "relation": "consumes",
+      "id": "contract:human-gate-authority",
+      "description": "Attributable initial, Design, and Plan gate receipts bind real human actors to exact subject fingerprints without synthetic authentication claims."
     },
     {
-      "criterion": "Retro reports measured token totals or explicit unavailable status, retains evaluator identities, and never converts missing usage to zero.",
-      "design_element": "Metrics sealing before cleanup with evaluator attempt references and explicit unavailable projections.",
-      "validation": "Complete measured and unavailable terminal journeys, clean owned state, and inspect retained outputs.",
-      "tests": ["taskplane/tests/test_retro_metrics_truth.py::test_real_terminal_ledger_renders_token_and_evaluator_truth", "taskplane/tests/test_retro_metrics_truth.py::test_severed_usage_refuses_sealing_and_retro_reports_unknown", "taskplane/tests/test_r0002_terminal_journey.py::test_public_signoff_sets_attributable_metrics_truth_before_retro", "taskplane/tests/test_wave_metrics.py::test_wave_receipt_covers_baselines_targets_and_guardrails"],
-      "public_entrypoint": "Engineering sign-off to Retro",
-      "controlled_dependencies": ["dispatch ledger", "usage receipt", "evaluator terminals"]
+      "relation": "changes",
+      "id": "contract:stage-artifact-handoff",
+      "description": "Add closed taskplane.stage-handoff/v2 and repository-artifact-reference/v1 while retaining private stage-handoff/v1."
     },
     {
-      "criterion": "Behavioral journey tests cover the public producers and consumers; source-shape, byte-identity, stale-history, and ceremonial tests are removed.",
-      "design_element": "Test-value inventory, producer-consumer map, semantic severed-edge proof, and Build quality receipt.",
-      "validation": "Reject uncollectable or shape-only evidence and prove real consumer mutations before portfolio pruning.",
-      "tests": ["taskplane/tests/test_r0002_build_quality_journey.py::test_recorded_build_quality_is_current_then_severs_when_candidate_moves", "taskplane/tests/test_r0002_test_value_journey.py::test_ledger_is_explicitly_targeted_and_paths_match_the_current_tree", "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures", "taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete", "taskplane/tests/test_r0002_ci_journey.py::test_r0002_credential_empty_guard_executes_one_no_egress_corpus", "taskplane/tests/test_release_tags.py::test_pushed_sha_proof_refuses_when_remote_cannot_be_refreshed", "taskplane/tests/test_collision_integration.py::test_both_manifests_route_skill_to_dedicated_screen", "taskplane/tests/test_audit_sweep.py::TestAuditCadence::test_audit_due_fires_at_every_fifth_by_default", "taskplane/tests/test_build_quality.py::test_receipt_proves_the_complete_build_progression_and_exact_binding"],
-      "public_entrypoint": "Plan strategy and Build gate",
-      "controlled_dependencies": ["pytest collection", "static tools", "dependency radius"]
+      "relation": "changes",
+      "id": "contract:pickup-receipt-lineage",
+      "description": "Add phase-progress-receipt/v1 and complete predecessor chains while preserving pickup-receipt/v1 and v2 behavior."
     },
     {
-      "criterion": "GitHub Actions runs one unsharded authoritative Python 3.12 suite plus only genuinely independent validations.",
-      "design_element": "Frozen CI plan with one suite and disjoint quality/package, browser, interpreter-import, and OS checks.",
-      "validation": "Execute one candidate and reject shard or compatibility-join receipts as authoritative tests.",
-      "tests": ["taskplane/tests/test_r0002_ci_journey.py::test_r0002_direct_ci_journey_reduces_thirteen_pytest_processes_to_three", "taskplane/tests/test_ci_local.py::test_direct_topology_is_disjoint_and_names_only_justified_serialization", "taskplane/tests/test_ci_local.py::test_runner_plan_has_one_unsharded_suite_and_no_pytest_replays"],
-      "public_entrypoint": "GitHub Actions",
-      "controlled_dependencies": ["GitHub Actions", "Python 3.12", "browser and OS runners"]
+      "relation": "provides",
+      "id": "contract:phase-startup",
+      "description": "Bounded phase startup with exact scoped view, full-envelope reference, attempt-local bootstrap, producer contract, lease, and closed result schema."
     },
     {
-      "criterion": "Dashboard publications, graph and dependency evidence, telemetry, and every agent activity log are stored as separate durable artifact classes beside the run and survive every cleanup outcome.",
-      "design_element": "RunArtifactStore projection beside the private run, allowlisted class manifest, append-only activity references, evidence-before-cleanup, and explicit cleanup exclusion.",
-      "validation": "Exercise every terminal outcome and prove distinct classes, complete activity events, exact cleanup, and retained readability.",
-      "tests": ["taskplane/tests/test_r0002_terminal_journey.py::test_public_non_normal_terminal_journey_is_bound_clean_and_replay_safe", "taskplane/tests/test_r0002_terminal_journey.py::test_session_start_replays_only_an_already_persisted_exact_intent", "taskplane/tests/test_host_native_publication.py::test_dashboard_and_graph_are_preserved_in_separate_run_artifact_classes", "taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets", "taskplane/tests/test_owned_cleanup.py::test_cleanup_replay_is_exact_and_idempotent", "taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green", "taskplane/tests/test_release_provenance.py::test_premerge_first_parent_topology_matches_release_gate"],
-      "public_entrypoint": "every governed dispatch/event and terminal cleanup",
-      "controlled_dependencies": ["RunStore layout", "filesystem durability", "cleanup manifest"]
+      "relation": "provides",
+      "id": "contract:phase-public-result",
+      "description": "Path-free machine-readable outcome carrying boundary code, handoff/source identity, phase/mode, lineage, and verified checkpoint/integration status."
     }
   ],
   "architecture": {
-    "design_sequence": ["capture snapshot", "decompose", "select risks", "parallel quick lenses", "single wait", "conserve terminals", "synthesize", "publish gate"],
-    "failure_routes": {"product": "product_fix", "test": "test_correction", "infrastructure": "infrastructure_recovery", "environment": "environment_recovery", "mixed": "classification_hold", "unknown": "classification_hold"},
-    "run_artifact_classes": ["dashboard", "dependency-graphs", "telemetry", "agent-activity", "validation", "cleanup", "retro"],
-    "cleanup_rule": "Seal evidence first; delete only exact owned temporary resources; never target the durable artifact root; verify artifact readability and zero leaks.",
-    "ci_rule": "One unsharded Python 3.12 suite; parallelize only genuinely disjoint validations; no pseudo-test join."
-  },
-  "test_strategy": {
-    "authority": {
-      "schema": "taskplane.design-test-strategy-reference/v1",
-      "path": "design/test-strategy.json",
-      "strategy_fingerprint": "774cfa1cecdddcbccc8595c378a9416efc297bf55d93db43ecab7c663212d7a6"
+    "handoff_schema": "taskplane.stage-handoff/v2",
+    "artifact_reference_schema": "taskplane.repository-artifact-reference/v1",
+    "progress_receipt_schema": "taskplane.phase-progress-receipt/v1",
+    "human_receipt_schema": "taskplane.human-gate-receipt/v1",
+    "startup_schema": "taskplane.phase-startup/v1",
+    "result_schema": "taskplane.phase-pickup-result/v1",
+    "storage": {
+      "manifest": "exports/pickup/phases/<handoff-id>/handoff.json",
+      "artifacts": "exports/pickup/artifacts/sha256/<digest>",
+      "receipts": "exports/pickup/phase-receipts/<handoff-id>/<sequence>-<digest>.json",
+      "publication": "same-directory temporary, flush and fsync, no-follow validation, create-if-absent, exact-byte replay, same-identity conflict refusal"
     },
-    "keep": ["public journeys", "security and authority", "cross-host behavior", "release provenance", "exact-owned cleanup", "high-signal semantic regressions"],
-    "remove": ["source/AST/line-count assertions", "byte identity as correctness", "history replay", "unconsumed fixtures", "duplicate suite subsets", "CI-name ceremony", "helper-only acceptance"],
-    "progression": ["compile/import", "focused Ruff and typed boundaries", "collect exact selectors", "run exact selectors", "consumer radius and semantic severed edges", "one proportional suite", "classify failures", "Evaluate"],
-    "freshness": "Reuse green only for matching candidate, changed files/tests, settings, selectors, runtime, environment, and outcome; fingerprints prove freshness, not correctness."
+    "manifest_fields": [
+      "schema",
+      "handoff_id",
+      "repository",
+      "source",
+      "requirement",
+      "design",
+      "plan",
+      "producer",
+      "successor",
+      "obligations",
+      "progress",
+      "tasks",
+      "contracts",
+      "acceptance",
+      "selected_artifacts",
+      "authority_receipts",
+      "progress_receipts",
+      "lineage",
+      "exclusions",
+      "fingerprint"
+    ],
+    "canonicalization": "UTF-8 canonical JSON with lexicographically sorted object keys, compact separators, no NaN, schema-defined list order, and SHA-256 over every field except the top-level fingerprint",
+    "identity": "handoff_id is SHA-256 of repository identity, source commit/tree, requirement fingerprint, producer phase/outcome, successor phase/mode, and predecessor handoff/receipt head; the canonical fingerprint covers the full manifest",
+    "phase_rules": {
+      "next_phase": [
+        "requirement->design",
+        "design->plan",
+        "plan->build"
+      ],
+      "terminal_evidence": [
+        "build->terminal"
+      ],
+      "same_phase_resume": [
+        "design->design",
+        "plan->plan",
+        "build->build"
+      ],
+      "terminal_rule": "done may advance only to the declared next phase or terminal evidence; interrupted may resume only the same phase; a terminal predecessor is never reopened"
+    },
+    "authority_rules": [
+      "Initial authorization is required for requirement-to-Design and is bound to the requirement fingerprint",
+      "Design approval is required for Design-to-Plan and Plan-to-Build and is bound to the current Design fingerprint",
+      "Plan approval is required for Plan-to-Build and is bound to the current Plan fingerprint",
+      "Actors must be explicit human:<identity> values; (unattributed), mechanical-definition-gate, missing, foreign, stale, mismatched, reused, or synthetic actors are refused",
+      "Mechanical progress receipts identify an engine producer and contain no human actor",
+      "cryptographic_authenticity_claimed remains false unless a separately verifiable public-key receipt is actually supplied"
+    ],
+    "pre_effect_validation_order": [
+      "input size, JSON, and closed schema",
+      "canonical fingerprint, list order, uniqueness, and bounds",
+      "repository identity, source commit/tree, tracked export lineage, and clean checkout",
+      "selected artifact existence, regular-file containment, bytes, and digest",
+      "progress/predecessor receipt chain, exact replay, and conflict",
+      "human authority subject, actor, source, freshness, and non-reuse",
+      "producer/successor phase and outcome transition",
+      "obligation partition, task dependency order, scope, contracts, acceptance, and proof closure"
+    ],
+    "worker_dispatch": {
+      "fresh_values": [
+        "contract_bootstrap",
+        "producer_contract",
+        "attempt_lease",
+        "scoped_view",
+        "result_schema",
+        "full_envelope_reference"
+      ],
+      "design_contract": "read-only product code; write_allow design/**",
+      "plan_contract": "read-only product code; write_allow plan/**",
+      "build_contract": "write only the exact active Plan task scope; no dependency, contract, proof, or scope expansion",
+      "resume": "issue a new attempt lease bound to the same handoff and receipt head; never import a predecessor lease or execution root"
+    },
+    "build_sequence": [
+      "validate the complete Plan handoff and choose the first dependency-ready task",
+      "mint exact scoped authoring bootstrap, producer contract, lease, scoped view, result schema, and envelope reference",
+      "dispatch code authoring under the exact scope",
+      "validate the authoring result and exact Git diff before checkpoint calls",
+      "call the existing build_c.run_pickup checkpoint and repository integration boundary",
+      "validate and redact BUILD-C receipts into a path-free phase progress receipt",
+      "commit the progress receipt and expose only the next dependency-ready task"
+    ],
+    "public_surface": {
+      "commands": [
+        "tp.py phase export --request <repository-relative-json>",
+        "tp.py phase pickup <repository-relative-handoff>",
+        "tp.py phase submit --request <repository-relative-json>",
+        "tp.py phase resume <repository-relative-handoff>"
+      ],
+      "normal_flow": "loop completion calls the same exporter after true Design and Plan approvals and after final Build integration; interrupted flow calls it with outcome interrupted and the durable receipt head",
+      "legacy": "tp.py pickup <approved-design> remains unchanged and never routes through the v2 consumer"
+    }
   },
-  "observability": {
-    "signals": ["active_run_snapshot_fingerprint", "design_decomposition_ms", "design_selected_dispatched_terminal_counts", "dashboard_graph_source_and_state", "dashboard_publication_sequence_and_ack", "failure_class_and_route", "build_quality_layer_ms_and_reuse", "ci_critical_path_and_runner_minutes", "cleanup_owned_and_leak_counts", "run_artifact_class_counts_and_post_cleanup_readability", "agent_activity_event_and_terminal_counts", "wave_elapsed_seconds", "token_status_total_uncached_effective", "evaluator_attempt_status"],
-    "alerts": ["Block on stale or missing run/requirement/settings/graph/candidate/worker/publication/quality/classification/metrics/cleanup binding.", "Block product Fix for non-product, mixed, or unknown failures.", "Block cleanup if a target overlaps run artifacts or ownership is ambiguous.", "Block clean Retro when usage is missing without attributable unavailable evidence.", "Block release for arbitrary pytest shards or pseudo-test join receipts."]
+  "graph": {
+    "baseline_fingerprint": "1c63d34f0d191e21c84151405d48f43bf4553d1e5863f81078b4a83e1db9afe3",
+    "proposed_modules": [
+      "taskplane/pickup.py",
+      "taskplane/design_contract.py",
+      "taskplane/stage_handoff.py",
+      "taskplane/stage_entities.py",
+      "taskplane/taskplane_lite.py",
+      "taskplane/run_store.py",
+      "taskplane/loop.py",
+      "taskplane/build_c.py",
+      "taskplane/checkpoint.py",
+      "taskplane/repository.py",
+      "taskplane/review_evidence.py",
+      "taskplane/tp.py",
+      "taskplane/phase_handoff.py",
+      "taskplane/phase_pickup.py",
+      "taskplane/tests/test_stateless_phase_pickup.py",
+      "taskplane/tests/test_pickup.py",
+      "taskplane/tests/test_r0001_pickup_cold_start.py",
+      "taskplane/tests/test_stage_handoff.py",
+      "taskplane/tests/test_stage_handoff_security.py",
+      "taskplane/tests/test_stage_non_build_handoffs.py",
+      "taskplane/tests/test_stage_loop_integration.py",
+      "taskplane/tests/test_build_quality.py",
+      "docs/cli-reference.md",
+      "docs/loop-design.md"
+    ],
+    "proposed_edges": [
+      {
+        "from": "taskplane/loop.py",
+        "to": "taskplane/phase_handoff.py",
+        "kind": "publishes",
+        "reason": "Normal approved Design, approved Plan, integrated Build, and interrupted phase boundaries call the one public repository exporter."
+      },
+      {
+        "from": "taskplane/design_contract.py",
+        "to": "contract:human-gate-authority",
+        "kind": "consumes",
+        "reason": "Design fingerprint and real approval subject are revalidated before portable export."
+      },
+      {
+        "from": "contract:human-gate-authority",
+        "to": "taskplane/phase_handoff.py",
+        "kind": "consumed-by",
+        "reason": "The exporter accepts only exact subject-bound initial, Design, and Plan gate receipts."
+      },
+      {
+        "from": "taskplane/stage_handoff.py",
+        "to": "contract:stage-artifact-handoff",
+        "kind": "changes",
+        "reason": "The stage-handoff family gains a closed repository-native v2 while private v1 remains valid."
+      },
+      {
+        "from": "taskplane/phase_handoff.py",
+        "to": "contract:stage-artifact-handoff",
+        "kind": "provides",
+        "reason": "Pure v2 construction, validation, artifact verification, canonical identity, and atomic publication live in one owner."
+      },
+      {
+        "from": "taskplane/phase_handoff.py",
+        "to": "contract:stateless-phase-pickup",
+        "kind": "provides",
+        "reason": "A repository-resident handoff becomes the complete continuation source."
+      },
+      {
+        "from": "taskplane/tp.py",
+        "to": "taskplane/phase_handoff.py",
+        "kind": "calls",
+        "reason": "The public phase export command uses the same producer as normal completion."
+      },
+      {
+        "from": "taskplane/tp.py",
+        "to": "taskplane/phase_pickup.py",
+        "kind": "calls",
+        "reason": "The public phase pickup, submit, and resume commands share one stateless coordinator."
+      },
+      {
+        "from": "contract:stateless-phase-pickup",
+        "to": "taskplane/phase_pickup.py",
+        "kind": "consumed-by",
+        "reason": "The coordinator admits work only from a fully verified v2 handoff."
+      },
+      {
+        "from": "taskplane/phase_pickup.py",
+        "to": "taskplane/phase_handoff.py",
+        "kind": "validates-with",
+        "reason": "All repository, artifact, authority, transition, and lineage checks complete before dispatch."
+      },
+      {
+        "from": "taskplane/phase_pickup.py",
+        "to": "contract:phase-startup",
+        "kind": "provides",
+        "reason": "Fresh attempt-local bootstrap, producer contract, lease, scope, result schema, and full-envelope reference are minted only after validation."
+      },
+      {
+        "from": "taskplane/phase_pickup.py",
+        "to": "contract:phase-public-result",
+        "kind": "provides",
+        "reason": "Every success or refusal exposes stable path-free identity and recovery data."
+      },
+      {
+        "from": "taskplane/phase_pickup.py",
+        "to": "taskplane/build_c.py",
+        "kind": "calls-after-authoring",
+        "reason": "Build submission enters the incumbent BUILD-C path only after exact scoped authoring result validation."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "contract:build-c-admission",
+        "kind": "consumes",
+        "reason": "Existing engine-minted checkpoint and repository-integration evidence remain mandatory."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "taskplane/checkpoint.py",
+        "kind": "calls",
+        "reason": "Focused proof runs through the existing BUILD-C checkpoint engine."
+      },
+      {
+        "from": "taskplane/build_c.py",
+        "to": "taskplane/repository.py",
+        "kind": "integrates-with",
+        "reason": "Only the repository owner accepts the validated revision."
+      },
+      {
+        "from": "taskplane/phase_pickup.py",
+        "to": "contract:pickup-receipt-lineage",
+        "kind": "changes",
+        "reason": "Each accepted obligation appends one canonical predecessor-linked progress receipt."
+      },
+      {
+        "from": "contract:pickup-receipt-lineage",
+        "to": "taskplane/phase_handoff.py",
+        "kind": "consumed-by",
+        "reason": "Interrupted and terminal exports bind the complete ordered receipt head and completed/remaining partition."
+      },
+      {
+        "from": "taskplane/repository.py",
+        "to": "contract:phase-public-result",
+        "kind": "projects",
+        "reason": "Full local merge evidence is validated and reduced to a host-path-free repository identity receipt."
+      },
+      {
+        "from": "taskplane/pickup.py",
+        "to": "ext:pickup-v1-v2",
+        "kind": "preserves",
+        "reason": "The historical approved-shelf input, trust-source handling, receipts, collisions, interruption, and cold-start order remain unchanged."
+      },
+      {
+        "from": "taskplane/tests/test_stateless_phase_pickup.py",
+        "to": "contract:stateless-phase-pickup",
+        "kind": "verifies",
+        "reason": "Fresh-clone positive journeys and a pre-effect refusal matrix prove the public successor contract."
+      },
+      {
+        "from": "taskplane/tests/test_pickup.py",
+        "to": "ext:pickup-v1-v2",
+        "kind": "verifies",
+        "reason": "The unchanged legacy suite pins compatibility and refusal order."
+      }
+    ],
+    "depth_policy": {
+      "local_depth": 3,
+      "boundary_mode": "contract-only",
+      "contract_depth": 1,
+      "requirement_depth": 1
+    },
+    "dor": [
+      {
+        "check": "R-0001 is complete and unambiguous",
+        "evidence": "The immutable payload contains all 12 exact acceptance criteria, five named requirement contracts, no dependencies, and open_questions=[]."
+      },
+      {
+        "check": "The baseline graph and selected code context are current",
+        "evidence": "Design decomposition is ready and non-degraded at 9562e1b8d6d6e5c8ccdb43cecf76a68c49d8d510 with baseline fingerprint 1c63d34f0d191e21c84151405d48f43bf4553d1e5863f81078b4a83e1db9afe3, 57 modules, 171 edges, and declared context patterns fully matched."
+      },
+      {
+        "check": "Current owners and trust boundaries have been inspected",
+        "evidence": "The design cites the legacy pickup, stage-handoff/startup, loop transition, Design fingerprint, authority, BUILD-C, checkpoint, repository, artifact, CLI, and focused test sources and treats the new graph as an overlay."
+      },
+      {
+        "check": "Distributed and private-state boundaries are explicit",
+        "evidence": "Local traversal depth is three and stops at named contracts; RunStore, locator, predecessor lease, conversation, logs, and runtime context are producer-side only and absent from the v2 consumer graph."
+      },
+      {
+        "check": "Focused-route bootstrap failure is recorded without invented evidence",
+        "evidence": "The payload ordered 16 workers but each dispatch lacked contract_bootstrap, producer_contract, lease, scoped view, result schema, and full-envelope reference; workers safely refused and the designer supplies one visibly self-attested solution-design row."
+      }
+    ],
+    "dod": [
+      {
+        "check": "The realized graph matches every proposed module, edge, and named contract",
+        "evidence": "Engineering Review records the approved Design fingerprint, all proposed modules and FROM->TO:KIND edges, all contract ids, verdict conformant, and drift=[]; every Plan task carries its owning design_edges entries."
+      },
+      {
+        "check": "The stateless consumer has no private-state dependency",
+        "evidence": "Import/monkeypatch sentinels and graph review prove phase_pickup does not read loop.json, RunStore, track, claim, lease store, workspace locator, conversation, predecessor runtime, or absolute host paths; all hidden-state counters remain zero."
+      },
+      {
+        "check": "All phase and same-phase journeys pass from fresh clones",
+        "evidence": "Exact selectors in test_stateless_phase_pickup.py cover requirement-to-Design, Design-to-Plan, Plan-to-Build, Build terminal export, and interrupted Design/Plan/Build resume with empty private homes."
+      },
+      {
+        "check": "Every invalid input fails before effects",
+        "evidence": "The parameterized mutation matrix covers unknown/missing/reordered/duplicate/oversize, tamper, stale/foreign/dirty, authority, replay conflict, dependency, proof, and scope errors while dispatch, authoring, checkpoint, publication, and integration counters remain zero."
+      },
+      {
+        "check": "BUILD-C cannot be bypassed",
+        "evidence": "A valid Build journey records exact scoped authoring followed by existing engine checkpoint and repository receipts; a semantic severed-edge fixture and failing focused proof both block completion."
+      },
+      {
+        "check": "Legacy and packaging compatibility remain green",
+        "evidence": "Existing pickup, cold-start, stage-handoff, stage-loop, and Build-quality selectors run unchanged; successor modules pass strict typing, Python 3.14 validation, Python 3.10 import-floor checks, and clean-wheel installation."
+      }
+    ]
   },
   "quality_targets": {
-    "baseline": ["233 test files and 3951 cases in the final local collection", "39 net low-value cases removed in the bounded final audit", "CI critical path about 13m10s", "effective parallelism 2.11x", "wave duration 24h58m09s", "token usage unavailable from retained receipts"],
-    "targets": ["No numeric deletion gate; retained tests protect current contracts", "exact feedback under 60s and changed radius under 5m", "CI p95 no more than 15m and runner minutes no more than 28", "zero cleanup leaks and all artifact classes readable", "tokens measured or explicitly unavailable", "end-to-end wave no more than 12h"]
+    "manifest_max_bytes": 65536,
+    "artifact_reference_max_count": 64,
+    "startup_max_bytes": 131072,
+    "cold_start_to_first_checkpoint_max_seconds": 120,
+    "forbidden_hidden_state_reads": 0,
+    "refusal_downstream_effects": 0,
+    "scope_widening_authoring_calls": 0,
+    "scope_widening_checkpoint_calls": 0,
+    "exact_replay_new_publications": 0,
+    "build_checkpoint_and_integration_required": true,
+    "python_runtime_floor": "3.10",
+    "python_validation_target": "3.14"
   },
+  "acceptance_map": [
+    {
+      "criterion": "AC1 Normal completion exports: completing Design, Plan, and Build through supported public flows produces one bounded sealed repository-resident handoff whose canonical fingerprint and repository-only artifacts verify after a fresh clone.",
+      "design_element": "One stage-handoff/v2 exporter is called by true Design, Plan, and final Build completion; it writes a 64-KiB closed manifest and digest-addressed artifacts under exports/pickup and records exact repository publication.",
+      "validation": "Parameterize Design, Plan, and Build completion, clone the resulting repository with an empty home, validate canonical bytes and all artifact digests, and assert exactly one handoff per phase identity.",
+      "tests": [
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_completed_phase_export_starts_all_successor_work",
+        "taskplane/tests/test_pickup.py::test_phase_cli_submits_committed_build_and_exports_terminal_handoff",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_phase_pickup_works_from_fresh_clone_and_empty_home"
+      ]
+    },
+    {
+      "criterion": "AC2 Fresh Design continuation: with only a clean fresh checkout, approved requirement/spec handoff, and empty private home, a new task starts Design with exact requirement identity, scope, contracts, and acceptance obligations while forbidden loop/run/track, lease, locator, conversation, and predecessor-runtime reads remain zero.",
+      "design_element": "Requirement-to-Design pickup validates the repository manifest and initial human authorization, then creates a fresh Design producer contract with design/** write authority and a full-envelope reference; private lifecycle modules are not consumer dependencies.",
+      "validation": "Run an isolated subprocess from a fresh clone and empty home with sentinels on every forbidden read, assert zero calls, and compare the emitted Design startup to the exact requirement, scope, contract, and acceptance bytes.",
+      "tests": [
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_phase_pickup_works_from_fresh_clone_and_empty_home",
+        "taskplane/tests/test_pickup.py::test_phase_cli_returns_safe_exact_work_startup"
+      ]
+    },
+    {
+      "criterion": "AC3 Fresh Plan continuation: with only a clean fresh checkout, approved Design handoff, and empty private home, a new task starts Plan with matching source, requirement, Design fingerprint, contracts, and acceptance map; removed or stale Design approval is refused before dispatch.",
+      "design_element": "Design-to-Plan requires a current human Design approval receipt bound to the Design fingerprint and emits a Plan producer contract plus the exact acceptance map.",
+      "validation": "Exercise a fresh positive Plan pickup and sever the Design receipt, its actor, source, subject fingerprint, predecessor authority, and artifact bytes; every negative case must stop before dispatch.",
+      "tests": [
+        "taskplane/tests/test_stateless_phase_pickup.py::test_source_advancing_authority_uses_repository_ancestry",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_completed_phase_export_starts_all_successor_work",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_phase_pickup_works_from_fresh_clone_and_empty_home"
+      ]
+    },
+    {
+      "criterion": "AC4 Fresh Build continuation: with only a clean fresh checkout, approved Plan handoff, and empty private home, a new task starts approved Build work in declared dependency order and exposes only exact task scopes, contracts, and proof commands; scope widening causes zero authoring and checkpoint calls.",
+      "design_element": "Plan-to-Build carries canonical ordinal tasks; the coordinator admits only the first dependency-ready task and mints an exact scoped authoring contract after comparing any request to sealed scope/contracts/proofs.",
+      "validation": "Use a multi-task dependency fixture, compare each dispatch byte-for-byte with the sealed task, then request a wider scope and assert authoring and checkpoint counters are both zero.",
+      "tests": [
+        "taskplane/tests/test_pickup.py::test_phase_cli_returns_safe_exact_work_startup",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_invalid_handoffs_refuse_before_every_downstream_effect",
+        "taskplane/tests/test_build_quality.py::test_fresh_build_ignores_completed_plan_progress",
+        "taskplane/tests/test_build_quality.py::test_out_of_scope_committed_diff_never_reaches_build_c"
+      ]
+    },
+    {
+      "criterion": "AC5 Interrupted same-phase resume: after the first durable receipt, interrupted Design, Plan, and Build resume in a second checkout and empty private home, preserve completed obligations and exact predecessor digest lineage, schedule only remaining work, and never reopen a terminal predecessor.",
+      "design_element": "phase-progress-receipt/v1 forms an ordered predecessor digest chain; interrupted handoffs partition all obligations into completed and remaining and issue a fresh attempt lease only for remaining work.",
+      "validation": "Crash after the first durable receipt in each phase, clone the receipt commit, resume with an empty home, and prove no completed obligation is dispatched and done predecessors cannot be resumed.",
+      "tests": [
+        "taskplane/tests/test_stage_non_build_handoffs.py::test_stateless_non_build_resume_schedules_only_remaining_work",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_phase_pickup_works_from_fresh_clone_and_empty_home",
+        "taskplane/tests/test_stage_handoff_security.py::test_mixed_phase_receipts_preserve_lineage_without_completing_next_phase"
+      ]
+    },
+    {
+      "criterion": "AC6 Complete closed lineage: every accepted successor artifact proves source commit and tree, repository, requirement, applicable Design and Plan fingerprints, producer phase and outcome, ordered task scopes/dependencies/contracts/acceptance proofs, authority, selected artifact digests, predecessor receipts, and canonical fingerprint; one-field omission, mutation, unknown-field, reorder, duplicate, and size-bound fixtures fail.",
+      "design_element": "The closed v2 manifest and closed nested schemas include every listed identity, bounded collection, canonical order, artifact digest, authority receipt, and predecessor head; no optional implicit lineage exists.",
+      "validation": "Generate one valid maximal fixture and mutate every field and nested field individually, plus reorder, duplicate, oversize, and digest cases; assert the stable structural or integrity refusal.",
+      "tests": [
+        "taskplane/tests/test_stateless_phase_pickup.py::test_invalid_handoffs_refuse_before_every_downstream_effect",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_source_advancing_authority_uses_repository_ancestry",
+        "taskplane/tests/test_stage_handoff_security.py::test_mixed_phase_receipts_preserve_lineage_without_completing_next_phase"
+      ]
+    },
+    {
+      "criterion": "AC7 Truthful authority: human identity and approval are attributable at real requirement, Design, and Plan gates, mechanical progress carries mechanical receipts, and missing, foreign, stale, mismatched, reused, or synthetic human authority is rejected.",
+      "design_element": "human-gate-receipt/v1 binds human:<identity>, context, exact gate subject, source/repository, decision and predecessor; phase-progress-receipt/v1 names only an engine producer and cannot claim a human actor.",
+      "validation": "Test valid initial/Design/Plan gate chains and a table of missing, foreign, stale, mismatched, reused, unattributed, mechanical-as-human, and synthetic actors before dispatch.",
+      "tests": [
+        "taskplane/tests/test_stateless_phase_pickup.py::test_source_advancing_authority_uses_repository_ancestry",
+        "taskplane/tests/test_stage_handoff_security.py::test_build_complete_handoff_retains_truthful_ancestor_authority",
+        "taskplane/tests/test_stage_loop_integration.py::test_explicit_phase_export_refuses_forged_build_green_receipt_evidence"
+      ]
+    },
+    {
+      "criterion": "AC8 Fail closed before effects: malformed, tampered, stale, foreign, ambiguous, dirty, incomplete, replay-conflicting, and scope-widened inputs each return a stable named refusal before dispatch, code authoring, checkpoint, publication, or integration, with every downstream effect counter remaining zero.",
+      "design_element": "One fixed validator order and stable refusal-code map precede attempt minting or all effect ports; export and pickup share collision, containment, and canonical validation.",
+      "validation": "Parameterize every named input class, instrument dispatch/authoring/checkpoint/publication/integration ports, and assert the expected boundary code, safe recovery, and five zero counters.",
+      "tests": [
+        "taskplane/tests/test_stateless_phase_pickup.py::test_invalid_handoffs_refuse_before_every_downstream_effect",
+        "taskplane/tests/test_pickup.py::test_phase_cli_refuses_forged_build_export_before_publication",
+        "taskplane/tests/test_pickup.py::test_phase_cli_submit_refuses_caller_authored_evidence"
+      ]
+    },
+    {
+      "criterion": "AC9 BUILD-C is not bypassed: valid Build pickup receives exact scoped authoring, reaches existing BUILD-C checkpoint and repository-integration boundaries, and reports verified receipts; severing the pickup-to-BUILD-C edge or failing focused proof prevents completion.",
+      "design_element": "Build is explicitly authoring then submit; submit validates the authoring result and calls existing build_c.run_pickup, requiring engine checkpoint and repository evidence before minting a phase receipt.",
+      "validation": "Use real BUILD-C entry points in the positive CLI journey, remove the coordinator-to-BUILD-C callable, and fail the declared proof; only the positive journey may publish completion.",
+      "tests": [
+        "taskplane/tests/test_pickup.py::test_phase_cli_submits_committed_build_and_exports_terminal_handoff",
+        "taskplane/tests/test_pickup.py::test_severed_pickup_to_build_c_edge_fails",
+        "taskplane/tests/test_pickup.py::test_failing_focused_proof_is_a_named_public_pickup_refusal"
+      ]
+    },
+    {
+      "criterion": "AC10 v1/v2 compatibility: existing valid pickup v1/v2 shelf, trust-source, repository-only resume, collision, interrupted-write, and cold-start cases retain documented results and refusal ordering under unchanged legacy suites plus successor compatibility fixtures.",
+      "design_element": "The new public phase command and stage-handoff/v2 are schema-disjoint; taskplane/pickup.py, approved shelf schemas, pickup receipts v1/v2, --trust-source parsing, and legacy refusal order remain unchanged.",
+      "validation": "Run the unchanged legacy pickup and cold-start selectors beside a route-isolation fixture proving no successor file is interpreted as legacy or vice versa.",
+      "tests": [
+        "taskplane/tests/test_pickup.py::test_signed_shelf_pickup_reaches_checkpoint_and_green_merge_without_orchestration_state",
+        "taskplane/tests/test_pickup.py::test_second_checkout_resumes_from_git_receipts_without_private_home",
+        "taskplane/tests/test_pickup.py::test_pickup_cli_requires_canonical_trust_source_and_rejects_all_lookalikes_before_dispatch",
+        "taskplane/tests/test_pickup.py::test_receipt_lineage_rejects_collision_fork_gap_and_digest_tamper",
+        "taskplane/tests/test_pickup.py::test_failed_receipt_publication_leaves_no_collision_and_retry_succeeds",
+        "taskplane/tests/test_pickup.py::test_interrupted_checkpoint_preserves_prior_receipts_and_blocks_merge",
+        "taskplane/tests/test_r0001_pickup_cold_start.py::test_cold_start_receipt_proves_empty_home_and_exact_sha",
+        "taskplane/tests/test_pickup.py::test_public_tp_pickup_cli_delegates_workspace_contract_and_renders_result",
+        "taskplane/tests/test_pickup.py::test_phase_cli_returns_safe_exact_work_startup"
+      ]
+    },
+    {
+      "criterion": "AC11 No hidden-state dependency or leakage: every positive journey succeeds in a fresh clone and empty unrelated private home without loop.json, track, claim, lease, run store, locator, prior conversation, or predecessor runtime context; exports and public output contain none of those values, secrets, or absolute host paths.",
+      "design_element": "The consumer imports only pure repository/schema owners, selected blobs use digest locators, attempt values are new and ephemeral, exclusions are mandatory, and public receipts project out local repository paths.",
+      "validation": "Use forbidden-access sentinels and recursive serialized-content scans in fresh clones for every positive journey, then assert a clean checkout at the consumer preflight and zero hidden-state values or host paths.",
+      "tests": [
+        "taskplane/tests/test_stateless_phase_pickup.py::test_public_phase_pickup_works_from_fresh_clone_and_empty_home",
+        "taskplane/tests/test_pickup.py::test_phase_cli_returns_safe_exact_work_startup",
+        "taskplane/tests/test_pickup.py::test_phase_cli_submits_committed_build_and_exports_terminal_handoff",
+        "taskplane/tests/test_r0001_pickup_cold_start.py::test_cold_start_receipt_proves_empty_home_and_exact_sha"
+      ]
+    },
+    {
+      "criterion": "AC12 Deterministic public contract and recovery: identical semantic exports have identical fingerprints, exact replay is idempotent, same-identity byte conflicts fail closed, and every refusal names its boundary and safe recovery without weakening authority or widening scope.",
+      "design_element": "Canonical JSON, semantic handoff id, create-if-absent atomic publication, exact-byte replay, fixed refusal codes, and a closed recovery map make publication and consumption deterministic.",
+      "validation": "Export identical material in two clones, compare fingerprints and canonical bytes, replay exactly, inject a same-identity conflict and partial write, and assert stable boundary and safe recovery text.",
+      "tests": [
+        "taskplane/tests/test_stage_handoff.py::test_canonical_manifest_is_deterministic_and_content_addressed",
+        "taskplane/tests/test_stateless_phase_pickup.py::test_invalid_handoffs_refuse_before_every_downstream_effect",
+        "taskplane/tests/test_pickup.py::test_failed_receipt_publication_leaves_no_collision_and_retry_succeeds"
+      ]
+    }
+  ],
   "risks": [
-    {"risk": "Composition root becomes another god module.", "mitigation": "Policy and effects remain in typed owners; loop sequences immutable inputs and validates receipts.", "owner": "architecture owner"},
-    {"risk": "Graph publication reopens mutable files or accepts delayed output.", "mitigation": "Seal graph in snapshot and require expected-head publication CAS.", "owner": "dashboard owner"},
-    {"risk": "Sixteen becomes a lens fill target.", "mitigation": "Every optional lens names an independently evidenced uncovered risk.", "owner": "Design routing owner"},
-    {"risk": "Failure labels are mistaken for classification.", "mitigation": "Typed facts feed one classifier; unknown holds and candidate changes sever authority.", "owner": "failure owner"},
-    {"risk": "Test deletion removes protected behavior.", "mitigation": "Adjudicate by current contract and semantic mutation; counts never authorize deletion.", "owner": "portfolio owner"},
-    {"risk": "Cleanup deletes evidence or user state.", "mitigation": "Reserve-before-use, live identity checks, artifact-root exclusion, and no deletion on ambiguity.", "owner": "cleanup owner"},
-    {"risk": "Activity or Retro exports leak private data.", "mitigation": "Private detail, minimized pseudonymous projections, allowlisted exports, and TTLs.", "owner": "privacy owner"},
-    {"risk": "CI optimization adds overhead.", "mitigation": "Keep one suite, only disjoint validations, and no join job.", "owner": "CI owner"}
+    {
+      "risk": "A producer accidentally serializes private loop or host state into a portable artifact.",
+      "mitigation": "Closed schemas, mandatory exclusions, fixed digest artifact paths, forbidden-key/value scans, no-follow containment, and fresh-clone tests with private-state read sentinels.",
+      "owner": "taskplane/phase_handoff.py"
+    },
+    {
+      "risk": "Attribution is mistaken for cryptographic authentication or a mechanical step invents a human approval.",
+      "mitigation": "Require human:<identity> only from actual gate adapters, bind exact subjects and predecessor authority, record cryptographic_authenticity_claimed=false, and keep engine progress receipts actor-free.",
+      "owner": "taskplane/design_contract.py and taskplane/loop.py"
+    },
+    {
+      "risk": "A resumed Build widens scope or runs a task before its dependencies are green.",
+      "mitigation": "Compare the request to the sealed ordinal task, derive readiness only from verified predecessor receipts, mint the worker contract after validation, and verify the authored Git diff again before BUILD-C.",
+      "owner": "taskplane/phase_pickup.py"
+    },
+    {
+      "risk": "The successor path reports Build success without real BUILD-C proof.",
+      "mitigation": "Make build_c.run_pickup a mandatory post-authoring dependency, validate engine and repository receipts, and retain semantic severed-edge and failing-proof tests.",
+      "owner": "taskplane/build_c.py"
+    },
+    {
+      "risk": "Atomic artifact publication leaves a collision, partial file, or unshareable working-tree-only result.",
+      "mitigation": "Use create-if-absent fsynced publication, exact-byte idempotency, conflict refusal, tracked-path verification, and repository-owner publication receipts; completion is not reported until the export commit is recorded.",
+      "owner": "taskplane/phase_handoff.py and taskplane/repository.py"
+    },
+    {
+      "risk": "A broad successor rewrite regresses legacy pickup v1/v2 refusal order.",
+      "mitigation": "Keep legacy pickup.py routing and schemas unchanged, place successor commands and schema in separate modules, and run existing suites unchanged in every slice.",
+      "owner": "taskplane/tp.py"
+    },
+    {
+      "risk": "The new modules work only in the repository and are omitted or fail on a supported Python runtime.",
+      "mitigation": "Verify clean-wheel contents/imports, direct and package import modes, strict typing, the Python 3.10 floor, and the Python 3.14 validation lane.",
+      "owner": "Build and CI"
+    }
   ],
   "failure_modes": [
-    {"mode": "A run input changes mid-stage.", "detection": "Snapshot fingerprint mismatch.", "recovery": "Restart Design from a new snapshot; never reuse stale authority."},
-    {"mode": "A Design worker is missing or unbound.", "detection": "Planned/dispatched/terminal sets differ.", "recovery": "Hold Design and dispatch only missing bound work."},
-    {"mode": "Dashboard is stale, degraded, or unacknowledged.", "detection": "Publication CAS or graph state is not ready.", "recovery": "Preserve rejected evidence, disable actions, and replay current snapshot."},
-    {"mode": "Failure classification is incomplete.", "detection": "Failure record or candidate binding fails.", "recovery": "Hold and mutate neither product nor tests."},
-    {"mode": "A selector does not collect or edge proof is ceremonial.", "detection": "Build quality collection or semantic mutation fails.", "recovery": "Classify as test-design failure and rerun only the invalidated layer."},
-    {"mode": "Usage cannot be retrieved.", "detection": "Terminal metrics lacks measured provider receipt.", "recovery": "Emit attributable unavailable with null totals."},
-    {"mode": "Cleanup overlaps durable artifacts or ownership is ambiguous.", "detection": "Containment, identity, or exclusion check fails.", "recovery": "Delete nothing and emit manual-recovery evidence."},
-    {"mode": "Agent activity is incomplete.", "detection": "Dispatch/start/terminal conservation fails.", "recovery": "Hold cleanup/sign-off and reconcile from private receipts."}
+    {
+      "mode": "Manifest JSON, schema, order, size, or fingerprint is invalid.",
+      "detection": "Closed-schema and canonical-byte validation returns handoff-malformed or handoff-integrity before repository or effect ports.",
+      "recovery": "Restore the exact repository artifact or re-export from the unchanged approved phase subject; do not ignore fields or recompute authority in the consumer."
+    },
+    {
+      "mode": "Repository, source commit/tree, or checkout cleanliness differs from the export.",
+      "detection": "Repository identity and Git object verification returns repository-foreign, source-stale, or checkout-dirty.",
+      "recovery": "Use a clean checkout of the recorded repository/export commit or create a new handoff from the new source; never trust-source around v2."
+    },
+    {
+      "mode": "A selected blob is missing, symlinked, untracked, oversized, or has different bytes.",
+      "detection": "Repository artifact verification returns artifact-integrity before authority or dispatch.",
+      "recovery": "Restore the exact digest-addressed blob from repository history or re-export the phase; never substitute another destination."
+    },
+    {
+      "mode": "A receipt chain has a gap, fork, duplicate, stale predecessor, or same-identity conflict.",
+      "detection": "Ordered receipt validation returns receipt-lineage or publication-conflict.",
+      "recovery": "Resume from the last single verified head or reconcile the interrupted atomic publication; do not choose between ambiguous forks."
+    },
+    {
+      "mode": "Required initial, Design, or Plan human authority is absent or does not bind the current subject.",
+      "detection": "Authority validation returns authority-missing or authority-stale, including unattributed, synthetic, foreign, reused, or mismatched receipts.",
+      "recovery": "Return to the real human gate for the exact current subject and export a new handoff; mechanical code cannot repair or invent approval."
+    },
+    {
+      "mode": "A same-phase handoff targets another phase or attempts to reopen a done predecessor.",
+      "detection": "Producer/successor state-machine validation returns transition-invalid.",
+      "recovery": "Use next-phase pickup for done work or export interrupted work with an equal producer/successor phase."
+    },
+    {
+      "mode": "Requested Build scope, dependency order, contract, acceptance, or proof differs from the sealed Plan task.",
+      "detection": "Task closure returns scope-widened, dependency-unmet, or proof-invalid before attempt bootstrap and authoring.",
+      "recovery": "Use the exact sealed task or return to Plan and obtain a new attributed Plan approval; never widen in pickup."
+    },
+    {
+      "mode": "Authoring completes but BUILD-C checkpoint or repository integration does not verify.",
+      "detection": "The submit path returns the existing BUILD-C/checkpoint/integration refusal and publishes no green progress receipt.",
+      "recovery": "Correct the scoped implementation or focused proof under the same authorized task; if scope changes, return to Plan."
+    }
   ],
-  "rollout": {
-    "strategy": "Pin active-run settings/candidate state; finish graph publication ordering and artifact/activity durability; wire failure producers and Build quality; create public journey tests; then remove obsolete tests and duplicate CI jobs. Run focused local validation once, one authoritative GitHub matrix, Engineering sign-off, terminal metrics, exact cleanup, minimized Retro ZIP, merge, bump, package, and install.",
-    "rollback": "Revert the whole candidate while retaining new run artifacts read-only. Never accept stale graph authority, unclassified Fix, a second settings source, or deletion of evidence."
+  "observability": {
+    "signals": [
+      "phase export result: phase, outcome, source commit/tree, handoff fingerprint, artifact count/bytes, replay status, publication receipt fingerprint",
+      "phase pickup result: producer/successor phase, mode, receipt-chain head, completed/remaining counts, next eligible obligation, startup fingerprint",
+      "phase refusal result: stable boundary code, handoff/source identity when safely available, zero downstream-effect vector, and safe recovery code",
+      "Build submit result: authoring receipt fingerprint, BUILD-C checkpoint receipt digest, repository integration fingerprint, and progress receipt head",
+      "fresh-clone audit: forbidden hidden-state reads, serialized forbidden values, absolute host paths, private-home writes, and checkout cleanliness"
+    ],
+    "alerts_none_rationale": "This is a synchronous local CLI and repository contract with no long-running service or SLO. CI is the actionable enforcement surface: any compatibility regression, nonzero hidden-state/effect counter, authority acceptance defect, artifact leak, or severed BUILD-C edge fails the exact selector and blocks delivery."
   },
+  "rollout": {
+    "strategy": "Deliver three independently reversible slices: (1) pure stage-handoff/v2 schema, canonical repository artifact publication, public manual export/pickup, and mutation fixtures; (2) Design/Plan/Build producer adapters, gate receipts, progress receipts, and same-phase resume; (3) normal loop completion wiring plus Build authoring-to-BUILD-C submit. Keep legacy pickup.py and receipt v1/v2 behavior unchanged throughout. Advance only when fresh-clone, zero-hidden-state, zero-pre-effect, authority, packaging, and existing legacy selectors are green.",
+    "rollback": "Stop automatic v2 production at the single loop adapter and revert only the exact export publication commit or implementation slice. Retain already published v2 handoffs as immutable audit artifacts; older versions ignore their disjoint schema and no v1/v2 artifact is rewritten. If the v2 consumer is unavailable it fails closed as unsupported rather than falling back to legacy or private state."
+  },
+  "compatibility": {
+    "legacy_input_schemas": [
+      "taskplane.approved-pickup-contract/v1",
+      "taskplane.pickup-receipt/v1",
+      "taskplane.pickup-receipt/v2",
+      "taskplane.pickup-cold-start/v1"
+    ],
+    "successor_schema": "taskplane.stage-handoff/v2",
+    "rules": [
+      "tp.py pickup <approved-design> remains the legacy entry and preserves all existing errors and ordering",
+      "tp.py phase handles v2 only; no auto-upgrade, permissive fallback, or trust-source flag is accepted",
+      "legacy repository-only receipt resume and interrupted-write reconciliation remain unchanged",
+      "v2 artifacts are ignored by legacy readers and are never downgraded into signed shelf authority",
+      "existing stage-handoff/v1 remains the private in-run representation and may be projected to v2 only by the validated public exporter"
+    ]
+  },
+  "refusals": [
+    {
+      "code": "handoff-malformed",
+      "recovery": "Restore bounded canonical JSON with the exact supported schema."
+    },
+    {
+      "code": "handoff-integrity",
+      "recovery": "Restore exact bytes from repository history or re-export the unchanged subject."
+    },
+    {
+      "code": "repository-foreign",
+      "recovery": "Use the recorded repository; do not override repository identity."
+    },
+    {
+      "code": "source-stale",
+      "recovery": "Checkout the recorded source/export lineage or create a newly approved handoff."
+    },
+    {
+      "code": "checkout-dirty",
+      "recovery": "Preserve user work and retry in a clean checkout."
+    },
+    {
+      "code": "artifact-integrity",
+      "recovery": "Restore every exact digest-addressed selected artifact."
+    },
+    {
+      "code": "receipt-lineage",
+      "recovery": "Resume from the sole verified receipt head; do not choose an ambiguous fork."
+    },
+    {
+      "code": "authority-missing",
+      "recovery": "Obtain the real required human gate decision for the exact subject."
+    },
+    {
+      "code": "authority-stale",
+      "recovery": "Return to the real gate and export a new exact-subject handoff."
+    },
+    {
+      "code": "transition-invalid",
+      "recovery": "Use only the declared next phase or same-phase interrupted resume."
+    },
+    {
+      "code": "scope-widened",
+      "recovery": "Use the sealed task scope or return to Plan for a new approval."
+    },
+    {
+      "code": "dependency-unmet",
+      "recovery": "Complete and verify predecessor tasks in declared order."
+    },
+    {
+      "code": "proof-invalid",
+      "recovery": "Restore the exact sealed proof or return to Plan."
+    },
+    {
+      "code": "publication-conflict",
+      "recovery": "Preserve both candidates and reconcile to one exact approved identity; never overwrite."
+    }
+  ],
   "design_route": {
-    "team_plan_fingerprint": "91e8ebcc3f448b43bf6958067290d26a27590585f90f301beb7493a0a0cbc337",
-    "candidate_fingerprint": "b14fa9c51ad1561e12f013c85e5e7923d89c6c268b1ca0f878758cce74421287",
-    "execution": "one parallel quick wave followed by one consolidation",
-    "selected": ["architecture", "backend", "frontend", "i18n", "mobile", "security", "solution-design", "cost-finops", "data-safety", "devops", "qa", "testability", "integrability", "sre", "accessibility", "privacy-compliance"]
+    "schema": "taskplane.design-focused-route-evidence/v1",
+    "source_route_fingerprint": "b2895b9fcf68768b48a76c40bfde8cc3908677c748a4907227f9adb2763e2113",
+    "selected_worker_count": 16,
+    "selected_workers": [
+      "solution-design",
+      "architecture",
+      "qa",
+      "testability",
+      "tradeoffs",
+      "mobile",
+      "security",
+      "data-safety",
+      "devops",
+      "sre",
+      "frontend",
+      "services-selection",
+      "accessibility",
+      "privacy-compliance",
+      "cost-finops",
+      "i18n"
+    ],
+    "bootstrap_defect": {
+      "status": "workers-safely-refused",
+      "evidence": "All 16 design_lens_dispatches entries had keys brief, contract, dispatch_intent, lens, model, model_tier, output, reasoning_effort, role_marker, role_reference, task_name, and task_slot, but none had per-lens contract_bootstrap, producer_contract, lease, scoped view, result schema, or full-envelope reference.",
+      "effect": "No worker result is consumed as Design evidence; the designer supplies the required solution-design judgment as explicit self-attestation.",
+      "required_correction": "After a v2 handoff validates, mint a fresh attempt-local contract_bootstrap, producer_contract, lease, scoped_view, closed result_schema, and full_envelope_reference before SubagentStart; never export predecessor attempt authority."
+    },
+    "dispositions": [
+      {
+        "lens": "product",
+        "disposition": "not_applicable",
+        "evidence": "No applicable Design-stage Product signal; R-0001 has complete acceptance, named contracts, and no open questions."
+      },
+      {
+        "lens": "security",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected for authentication, secret exclusion, unsafe-input, and scope-enforcement signals; worker refused because the dispatch lacked bootstrap authority."
+      },
+      {
+        "lens": "code-quality",
+        "disposition": "not_applicable",
+        "evidence": "No positive code-quality signal at proposed-HOW stage; implementation quality remains Build evidence."
+      },
+      {
+        "lens": "testability",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected for fresh-clone, severed-edge, and pre-effect test seams; worker refused because the dispatch lacked bootstrap authority."
+      },
+      {
+        "lens": "design",
+        "disposition": "not_applicable",
+        "evidence": "No interactive UI decision; the public contract is machine-readable CLI data."
+      },
+      {
+        "lens": "scalability",
+        "disposition": "not_applicable",
+        "evidence": "The flow is bounded local filesystem/Git work with explicit 64-KiB and 64-reference ceilings, not a throughput service."
+      },
+      {
+        "lens": "integrability",
+        "disposition": "not_applicable",
+        "evidence": "The focused router emitted no positive integrability signal; integration concerns are nevertheless covered by explicit legacy and BUILD-C acceptance mappings."
+      },
+      {
+        "lens": "data-safety",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected for atomic publication, collision, tamper, interruption, and rollback; worker refused because the dispatch lacked bootstrap authority."
+      },
+      {
+        "lens": "tech-writer",
+        "disposition": "not_applicable",
+        "evidence": "No focused technical-writing signal; public documentation remains a mapped implementation deliverable."
+      },
+      {
+        "lens": "qa",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected for all-phase positive and mutation matrices; worker refused because the dispatch lacked bootstrap authority."
+      },
+      {
+        "lens": "devops",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected for repository rollout, clean-clone operation, and packaging; worker refused because the dispatch lacked bootstrap authority."
+      },
+      {
+        "lens": "dba",
+        "disposition": "not_applicable",
+        "evidence": "No database, schema migration, query, or index is introduced."
+      },
+      {
+        "lens": "sre",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected for stable refusal observability and recovery; worker refused because the dispatch lacked bootstrap authority."
+      },
+      {
+        "lens": "project-management",
+        "disposition": "not_applicable",
+        "evidence": "No positive focused delivery-management signal; rollout slices and abort criteria are still explicit in the core Design."
+      },
+      {
+        "lens": "frontend",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected by the focused route, but no frontend surface is in R-0001 and the worker refused because the dispatch lacked bootstrap authority."
+      },
+      {
+        "lens": "backend",
+        "disposition": "not_applicable",
+        "evidence": "No service API or database backend is introduced; the Python CLI boundary is covered by architecture and solution design."
+      },
+      {
+        "lens": "tradeoffs",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected from explicit alternatives and one-way authority decisions; worker refused, while the designer records three real alternatives and revisit triggers."
+      },
+      {
+        "lens": "solution-design",
+        "disposition": "execute-light-self-attested",
+        "evidence": "Mandatory coverage performed by the designer against R-0001, the baseline graph, current code, Python reference, alternatives, boundaries, rollback, and executable acceptance mappings; independent worker unavailable due to bootstrap defect."
+      },
+      {
+        "lens": "services-selection",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected to check dependency/service additions; worker refused, and the selected design adds no external service or runtime dependency."
+      },
+      {
+        "lens": "time-to-market",
+        "disposition": "not_applicable",
+        "evidence": "No positive focused time-to-market signal; the three-slice rollout is independently reversible."
+      },
+      {
+        "lens": "architecture",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected for the 21-dependent hub signal and cross-boundary contract change; worker refused, while the designer defines module ownership and contract-only depth."
+      },
+      {
+        "lens": "mobile",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected by the route, but no mobile target exists and the worker refused because the dispatch lacked bootstrap authority."
+      },
+      {
+        "lens": "accessibility",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected by the route, but the output is machine-readable CLI data with no new UI and the worker refused because the dispatch lacked bootstrap authority."
+      },
+      {
+        "lens": "privacy-compliance",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected for private-state, conversation, secret, and host-path exclusion; worker refused, while the closed schema and zero-leak tests cover the risk."
+      },
+      {
+        "lens": "cost-finops",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected for bounded resource signals; worker refused, and fixed byte/reference/task bounds plus no network service make cost finite."
+      },
+      {
+        "lens": "i18n",
+        "disposition": "execute_light-refused",
+        "evidence": "Selected by the route; worker refused. Public codes remain stable ASCII identifiers and human prose is documentation-only."
+      }
+    ]
+  },
+  "visualization": {
+    "required": false,
+    "kind": "none",
+    "path": null,
+    "reason": "The decision is a linear trust sequence with one Build-only post-authoring branch. The phase-by-phase narrative, closed schema fields, and proposed dependency edges communicate it more precisely than an additional visual, and this worker is contracted to author only design/design.md and design/contract.json."
   },
   "lens_evidence": [
-    {"lens": "solution-design", "verdict": "pass", "blockers": 0, "evidence": "The consolidated 16-lens review found reachability rather than missing-helper defects. This contract binds one incumbent-owner composition path, public journey validation, artifact preservation, class-owned corrections, and one terminal suite; all requested changes are Plan work.", "produced_by": "tp_lens_design_solution_design_bf435820", "content_fingerprint": "cd40517cf9e9db256a8a90072abb461085ab34024f652cc4c2968f5642358d8d", "independent": true, "tier": "quick"}
+    {
+      "lens": "solution-design",
+      "verdict": "pass",
+      "blockers": 0,
+      "evidence": "The designer traced R-0001 through existing legacy pickup, stage handoff/startup, authority, BUILD-C, checkpoint, repository, artifact, CLI, and test boundaries; compared three real approaches; selected a repository-native v2 overlay; defined numeric bounds, truthful authority, Build authoring before BUILD-C, same-phase receipt resume, compatibility, failure recovery, graph DoR/DoD, and exact tests for all 12 criteria. Independent lens dispatch was unavailable because the 16 emitted worker briefs lacked bootstrap contracts, leases, scoped views, result schemas, and full-envelope references.",
+      "produced_by": "tp_step_designer_design_attempt_2_7ec56e8b",
+      "content_fingerprint": "87c9df00fc004a2e4a6ba20b5bf241e77636bdd223f0cc001221be6e343d497c",
+      "self_attested": true,
+      "tier": "designer-required"
+    }
   ],
-  "visualization": {"required": true, "kind": "data-flow", "path": "design/visual.html", "reason": "The snapshot fans into stages, dashboard, corrections, CI, artifacts, cleanup, and Retro; sequence and evidence boundaries benefit from a visual."},
   "open_questions": []
 }

@@ -20,6 +20,8 @@ else:
 
 
 SCHEMA: Final[str] = "taskplane.stage-handoff/v1"
+SCHEMA_V1: Final[str] = SCHEMA
+SCHEMA_V2: Final[str] = "taskplane.stage-handoff/v2"
 MAX_MANIFEST_BYTES: Final[int] = 64 * 1024
 MAX_ARTIFACT_REFERENCES: Final[int] = 64
 TERMINAL_OUTCOMES: Final[frozenset[str]] = frozenset({
@@ -462,3 +464,43 @@ def read_manifest(store: review_evidence.ArtifactStore,
         expected_authority_revision=expected_authority_revision,
         expected_authority_fingerprint=expected_authority_fingerprint,
         allow_nonconsumable_reuse=allow_nonconsumable_reuse)
+
+
+def _phase_handoff_module():
+    """Import the repository-native v2 owner without changing v1 imports."""
+    if __package__:
+        from . import phase_handoff
+    else:
+        import phase_handoff
+    return phase_handoff
+
+
+def create_repository_manifest(**values: object) -> JsonObject:
+    """Create a closed repository-native v2 handoff.
+
+    The historical ``create_manifest`` remains the private ArtifactStore-backed
+    v1 API.  Keeping distinct entry points prevents either schema from being
+    silently reinterpreted as the other.
+    """
+    return _phase_handoff_module().create_manifest(**values)
+
+
+def validate_repository_manifest(manifest: object) -> JsonObject:
+    """Validate one v2 value without consulting private Taskplane state."""
+    return _phase_handoff_module().validate_manifest(manifest)
+
+
+def repository_manifest_fingerprint(manifest: Mapping[str, object]) -> str:
+    return _phase_handoff_module().manifest_fingerprint(manifest)
+
+
+def publish_repository_manifest(workspace: str, manifest: object) -> JsonObject:
+    return _phase_handoff_module().publish_manifest(workspace, manifest)
+
+
+def load_repository_manifest(workspace: str, relative_path: str, *,
+                             require_clean: bool = True,
+                             allowed_task_id: str | None = None) -> JsonObject:
+    return _phase_handoff_module().load_manifest(
+        workspace, relative_path, require_clean=require_clean,
+        allowed_task_id=allowed_task_id)

@@ -116,6 +116,96 @@ def _handoff_payload_text(ws, handoff):
     return json.dumps(payloads, sort_keys=True)
 
 
+def test_explicit_phase_export_refuses_forged_build_green_receipt_evidence(
+        monkeypatch) -> None:
+    monkeypatch.setattr(
+        loop.phase_handoff, "create_phase_handoff", lambda **values: values)
+    material = {
+        "repository": {}, "source": {}, "requirement": {},
+        "design": {}, "plan": {},
+        "obligations": [{"id": "T-004"}],
+        "tasks": [{"id": "T-004"}],
+        "contracts": [], "acceptance": [], "selected_artifacts": [],
+        "authority_receipts": [], "progress_receipts": [],
+        "lineage": {"predecessor_handoff_fingerprint": None,
+                    "predecessor_receipt_head": None},
+        "exclusions": [],
+    }
+    durable = {"phase": "build", "state": "terminal", "outcome": "done"}
+
+    def export(receipt_evidence=None):
+        return loop.project_phase_export(
+            material, phase="build", outcome="done",
+            durable_progress=durable, receipt_evidence=receipt_evidence)
+
+    def green_receipt(producer):
+        return loop.phase_handoff.create_progress_receipt(
+            producer=producer, sequence=1, phase="build",
+            obligation_id="T-004", task_id="T-004", status="green",
+            predecessor_receipt_fingerprint=None,
+            checkpoint_receipt_digest="a" * 64,
+            integration_receipt_fingerprint="b" * 64)
+
+    with pytest.raises(ValueError, match="Build.*receipt evidence"):
+        export({"T-004": {
+            "task_id": "T-004", "checkpoint_receipt_digest": "a" * 64,
+            "integration_receipt_fingerprint": "b" * 64}})
+
+    with pytest.raises(ValueError, match="Build completion lacks"):
+        export()
+
+    forged = green_receipt("engine:taskplane.loop/v1")
+    material["progress_receipts"] = [forged]
+    material["lineage"]["predecessor_receipt_head"] = forged["fingerprint"]
+    with pytest.raises(ValueError, match="exact phase-pickup/BUILD-C"):
+        export()
+
+    admitted = green_receipt("engine:taskplane.phase-pickup/v1")
+    material["progress_receipts"] = [admitted]
+    material["lineage"]["predecessor_receipt_head"] = admitted["fingerprint"]
+    exported = export()
+    assert exported["progress"] == {
+        "completed": ["T-004"], "remaining": []}
+    assert exported["progress_receipts"] == material["progress_receipts"]
+    monkeypatch.setattr(
+        loop.phase_handoff, "publish_phase_handoff",
+        lambda root, handoff: {"root": root, "handoff": handoff})
+    assert loop.publish_phase_export(
+        "/repo", material, phase="build", outcome="done",
+        durable_progress=durable)["publication"]["root"] == "/repo"
+
+
+def test_plan_export_does_not_reuse_design_green_as_plan_completion(
+        monkeypatch) -> None:
+    monkeypatch.setattr(
+        loop.phase_handoff, "create_phase_handoff", lambda **values: values)
+    design_green = loop.phase_handoff.create_progress_receipt(
+        producer="engine:taskplane.loop/v1", sequence=1, phase="design",
+        obligation_id="AC1", task_id=None, status="green",
+        predecessor_receipt_fingerprint=None)
+    material = {
+        "repository": {}, "source": {}, "requirement": {},
+        "design": {}, "plan": {}, "obligations": [{"id": "AC1"}],
+        "tasks": [], "contracts": [], "acceptance": [],
+        "selected_artifacts": [], "authority_receipts": [],
+        "progress_receipts": [design_green],
+        "lineage": {"predecessor_handoff_fingerprint": "d" * 64,
+                    "predecessor_receipt_head": design_green["fingerprint"]},
+        "exclusions": [],
+    }
+
+    exported = loop.project_phase_export(
+        material, phase="plan", outcome="done",
+        durable_progress={
+            "phase": "plan", "state": "terminal", "outcome": "done"})
+
+    assert [row["phase"] for row in exported["progress_receipts"]] == [
+        "design", "plan"]
+    assert exported["progress_receipts"][-1][
+        "predecessor_receipt_fingerprint"] == design_green["fingerprint"]
+    assert exported["successor"] == {"phase": "build", "mode": "next-phase"}
+
+
 def test_disabled_loop_stage_context_does_not_open_a_locator(
         monkeypatch) -> None:
     monkeypatch.delenv("TASKPLANE_STAGE_NATIVE", raising=False)

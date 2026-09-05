@@ -3144,6 +3144,439 @@ def bounded_changed_symbol_callers(*, snapshot: dict, changed_symbols,
     }
 
 
+SOURCE_TOUCHPOINT_COVERAGE_SCHEMA = \
+    "taskplane.source-touchpoint-coverage/v1"
+SOURCE_TOUCHPOINT_COVERAGE_DEFAULT_BOUNDS = {
+    "local_depth": 3,
+    "contract_depth": 1,
+    "requirement_depth": 1,
+    "max_files": 4096,
+    "max_file_bytes": 1024 * 1024,
+    "max_aggregate_bytes": 64 * 1024 * 1024,
+    "max_symbols": 4096,
+    "max_edges": 16384,
+    "max_fanout_per_node": 256,
+    "parser_timeout_seconds": 1,
+    "aggregate_timeout_seconds": 30,
+    "automatic_retries": 0,
+    "agent_fanout_per_node": 0,
+}
+_SOURCE_TOUCHPOINT_KINDS = frozenset({
+    "file", "module", "symbol", "config-key", "contract",
+    "runtime-declaration",
+})
+def _source_coverage_bounds(raw: dict | None) -> dict:
+    supplied = raw if isinstance(raw, dict) else {}
+    out = dict(SOURCE_TOUCHPOINT_COVERAGE_DEFAULT_BOUNDS)
+    for key, default in tuple(out.items()):
+        try:
+            value = int(supplied.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        # Zero is meaningful only for the two deliberate "no work" bounds.
+        minimum = 0 if key in {"automatic_retries",
+                               "agent_fanout_per_node"} else 1
+        out[key] = max(minimum, value)
+    return out
+
+
+def _source_symbol_names(path: str, text: str) -> tuple[set[str], str | None]:
+    """Return locally declared symbols without importing/executing source."""
+    extension = posixpath.splitext(path)[1].lower()
+    if extension not in CODE_EXT:
+        return set(), "unsupported-language"
+    if extension == ".py":
+        try:
+            tree = ast.parse(text, filename=path)
+        except (SyntaxError, ValueError, MemoryError):
+            return set(), "parser-error"
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) \
+                    else [node.target]
+                names.update(target.id for target in targets
+                             if isinstance(target, ast.Name))
+        return names, None
+    patterns = {
+        ".rb": r"(?m)^\s*(?:def|class|module)\s+([A-Za-z_]\w*[!?=]?)",
+        ".go": r"(?m)^\s*(?:func|type|var|const)\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)",
+        ".js": r"(?m)(?:^|\s)(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)",
+        ".jsx": r"(?m)(?:^|\s)(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)",
+        ".mjs": r"(?m)(?:^|\s)(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)",
+        ".ts": r"(?m)(?:^|\s)(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][\w$]*)",
+        ".tsx": r"(?m)(?:^|\s)(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][\w$]*)",
+        ".java": r"(?m)\b(?:class|interface|enum|record)\s+([A-Za-z_]\w*)",
+        ".cs": r"(?m)\b(?:class|interface|enum|record|struct)\s+([A-Za-z_]\w*)",
+    }
+    return set(re.findall(patterns.get(extension, r"(?!)"), text)), None
+
+
+def _source_config_has_key(path: str, text: str, key: str) -> bool:
+    parts = [part for part in str(key or "").split(".") if part]
+    if not parts:
+        return False
+    if path.lower().endswith(".json"):
+        try:
+            value = json.loads(text)
+        except (TypeError, ValueError):
+            return False
+        for part in parts:
+            if not isinstance(value, dict) or part not in value:
+                return False
+            value = value[part]
+        return True
+    # YAML is not executed and no optional loader is imported.  This bounded
+    # conservative check verifies a literal key only; nested ambiguity stays
+    # unresolved rather than being guessed.
+    if len(parts) != 1:
+        return False
+    return re.search(r"(?m)^\s*" + re.escape(parts[0]) + r"\s*:", text) \
+        is not None
+
+
+def _public_touchpoint_path(value: object) -> str:
+    """Return a safe repository-relative evidence path or a fixed sentinel."""
+    path = str(value or "").replace("\\", "/")
+    if not path or path.startswith("/") or "\x00" in path or any(
+            part in {"", ".", ".."} for part in path.split("/")):
+        return "<invalid>"
+    return path
+
+
+def build_source_touchpoint_coverage(
+        ws: str | None = None, requested=None, *, workspace: str | None = None,
+        touchpoints=None, graph: dict | None = None, source: dict | None = None,
+        requirement: dict | str | None = None, bounds: dict | None = None,
+        clock=None) -> dict:
+    """Verify feature touchpoints and expand their bounded source impact.
+
+    This is the sole producer of the v1 coverage contract.  It is deliberately
+    synchronous and dependency-free: repository bytes are read through the
+    no-follow primitive, parsed as data, and never imported or executed.
+    """
+    root = os.path.abspath(workspace or ws or "")
+    graph = graph if isinstance(graph, dict) else load(root)
+    requested = touchpoints if touchpoints is not None else requested
+    requested = list(requested or [])
+    limits = _source_coverage_bounds(bounds)
+    monotonic = clock or time.monotonic
+    started = monotonic()
+    reasons: set[str] = set()
+    counters = {
+        "requested": len(requested), "verified": 0, "non_verified": 0,
+        "files_read": 0, "bytes_read": 0, "symbols_seen": 0,
+        "edges_examined": 0, "unexplored_edges": 0,
+    }
+    graph_fingerprint = str(
+        (graph.get("meta") or {}).get("content_fingerprint") or
+        _canonical_fingerprint({
+            "modules": graph.get("modules") or {},
+            "files": graph.get("files") or {},
+            "edges": graph.get("edges") or [],
+        }))
+    source = source if isinstance(source, dict) else {}
+    source_tree = str(source.get("tree") or source.get("revision") or
+                      (graph.get("meta") or {}).get("scanned_head") or "")
+    source_record = {
+        "tree": source_tree,
+        "graph_fingerprint": graph_fingerprint,
+    }
+    source_record["fingerprint"] = _canonical_fingerprint(source_record)
+    req_id = str(requirement.get("id") if isinstance(requirement, dict)
+                 else requirement or "")
+    requirement_record = {"id": req_id}
+    requirement_record["fingerprint"] = _canonical_fingerprint(
+        requirement_record)
+    graph_record = {
+        "fingerprint": graph_fingerprint,
+        "scanned_head": str((graph.get("meta") or {}).get("scanned_head")
+                            or source_tree),
+    }
+
+    canonical_requested = []
+    used_ids = set()
+    for index, raw in enumerate(requested):
+        item = raw if isinstance(raw, dict) else {"kind": "file", "path": raw}
+        input_id = str(item.get("input_id") or f"input-{index:04d}")
+        if input_id in used_ids:
+            raise ValueError("duplicate source touchpoint input_id")
+        used_ids.add(input_id)
+        row = {"input_id": input_id, "kind": str(item.get("kind") or "")}
+        for key in ("path", "node", "symbol", "key", "name",
+                    "runtime_kind"):
+            if item.get(key) is not None:
+                row[key] = (_public_touchpoint_path(item[key]) if key ==
+                            "path" else str(item[key]))
+        canonical_requested.append(row)
+    canonical_requested.sort(key=lambda row: row["input_id"])
+
+    read_cache: dict[str, dict] = {}
+
+    def read_source(path: str) -> dict:
+        if path in read_cache:
+            return read_cache[path]
+        if monotonic() - started >= limits["aggregate_timeout_seconds"]:
+            result = {"status": "incomplete",
+                      "reason_code": "aggregate-timeout"}
+        elif counters["files_read"] >= limits["max_files"]:
+            result = {"status": "incomplete", "reason_code": "file-limit"}
+        else:
+            result = graph_primitives.bounded_source_read(
+                root, path, max_bytes=limits["max_file_bytes"])
+            if result.get("byte_count"):
+                projected = counters["bytes_read"] + int(result["byte_count"])
+                if projected > limits["max_aggregate_bytes"]:
+                    result = {"status": "incomplete",
+                              "reason_code": "aggregate-byte-limit"}
+                else:
+                    counters["bytes_read"] = projected
+            counters["files_read"] += 1
+        if result.get("reason_code"):
+            reasons.add(result["reason_code"])
+        read_cache[path] = result
+        return result
+
+    graph_files = sorted(str(path) for path in (graph.get("files") or {}))
+    graph_modules = set(str(node) for node in (graph.get("modules") or {}))
+    symbol_index: dict[str, list[dict]] | None = None
+
+    def symbols() -> dict[str, list[dict]]:
+        nonlocal symbol_index
+        if symbol_index is not None:
+            return symbol_index
+        symbol_index = {}
+        for path in graph_files:
+            if posixpath.splitext(path)[1].lower() not in CODE_EXT:
+                continue
+            read = read_source(path)
+            if read.get("status") != "verified":
+                continue
+            parser_started = monotonic()
+            names, error = _source_symbol_names(path, read["text"])
+            if monotonic() - parser_started >= limits["parser_timeout_seconds"]:
+                reasons.add("parser-timeout")
+                continue
+            if error:
+                reasons.add(error)
+                continue
+            for name in sorted(names):
+                if counters["symbols_seen"] >= limits["max_symbols"]:
+                    reasons.add("symbol-limit")
+                    return symbol_index
+                counters["symbols_seen"] += 1
+                symbol_index.setdefault(name, []).append({
+                    "path": path, "node": module_of(path,
+                                                     declared_module_ids(graph)),
+                    "file_fingerprint": read["file_fingerprint"],
+                })
+        return symbol_index
+
+    results, start_nodes = [], set()
+    provenance = {"source_fingerprint": source_record["fingerprint"],
+                  "graph_fingerprint": graph_fingerprint}
+    for item in canonical_requested:
+        row = {"input_id": item["input_id"], "kind": item["kind"],
+               "state": "unresolved", "provenance": dict(provenance)}
+        kind = item["kind"]
+        reason = None
+        if kind not in _SOURCE_TOUCHPOINT_KINDS:
+            row["state"], reason = "rejected", "unsupported-language"
+        elif kind == "file":
+            path = item.get("path", "")
+            read = ({"status": "rejected",
+                     "reason_code": "source-outside-root"}
+                    if path == "<invalid>" else read_source(path))
+            if read.get("status") == "verified":
+                row.update({"state": "verified", "path": path,
+                            "node": module_of(path,
+                                              declared_module_ids(graph))})
+                row["provenance"]["file_fingerprint"] = \
+                    read["file_fingerprint"]
+                start_nodes.add(row["node"])
+            else:
+                row["state"] = ("rejected" if read.get("status") ==
+                                "rejected" else "unresolved")
+                reason = read.get("reason_code") or "source-missing"
+        elif kind in {"module", "contract"}:
+            node = item.get("node", "")
+            if node in graph_modules and (kind != "contract" or
+                                          node.startswith("contract:")):
+                row.update({"state": "verified", "node": node})
+                start_nodes.add(node)
+            else:
+                reason = "missing-symbol"
+        elif kind == "symbol":
+            path, name = item.get("path", ""), item.get("symbol", "")
+            if path == "<invalid>":
+                reason = "source-outside-root"
+            elif path and posixpath.splitext(path)[1].lower() not in CODE_EXT:
+                reason = "unsupported-language"
+            else:
+                matches = list(symbols().get(name, []))
+                if path:
+                    matches = [match for match in matches
+                               if match["path"] == path]
+                if len(matches) == 1:
+                    match = matches[0]
+                    row.update({"state": "verified", "path": match["path"],
+                                "node": match["node"], "symbol": name})
+                    row["provenance"]["file_fingerprint"] = \
+                        match["file_fingerprint"]
+                    start_nodes.add(match["node"])
+                else:
+                    reason = ("ambiguous-symbol" if len(matches) > 1
+                              else "missing-symbol")
+        elif kind == "config-key":
+            path, key = item.get("path", ""), item.get("key", "")
+            if path == "<invalid>":
+                reason = "source-outside-root"
+            elif posixpath.splitext(path)[1].lower() not in {".json", ".yml",
+                                                           ".yaml"}:
+                reason = "unsupported-language"
+            else:
+                read = read_source(path)
+                if read.get("status") == "verified" and \
+                        _source_config_has_key(path, read["text"], key):
+                    node = module_of(path, declared_module_ids(graph))
+                    row.update({"state": "verified", "path": path,
+                                "node": node, "key": key})
+                    row["provenance"]["file_fingerprint"] = \
+                        read["file_fingerprint"]
+                    start_nodes.add(node)
+                else:
+                    reason = read.get("reason_code") or "missing-symbol"
+        else:  # runtime-declaration
+            reason = "unsupported-runtime"
+        if reason:
+            row["reason_code"] = reason
+            reasons.add(reason)
+        if row["state"] == "verified":
+            counters["verified"] += 1
+        else:
+            counters["non_verified"] += 1
+        results.append(row)
+
+    reverse: dict[str, list[dict]] = {}
+    for raw in graph.get("edges") or []:
+        if not isinstance(raw, dict) or not graph_primitives.is_dependency_edge(raw):
+            continue
+        source_node, target_node = str(raw.get("from") or ""), str(
+            raw.get("to") or "")
+        if source_node and target_node:
+            reverse.setdefault(target_node, []).append({
+                "from": source_node, "to": target_node,
+                "kind": str(raw.get("kind") or "depends"),
+            })
+    for rows in reverse.values():
+        rows.sort(key=lambda edge: (edge["from"], edge["to"], edge["kind"]))
+
+    seen = set(start_nodes)
+    included_edges = []
+    frontier = [(node, 0, 0, 0) for node in sorted(start_nodes)]
+    pending = set()
+    while frontier:
+        next_frontier = []
+        for node, local_hops, contract_hops, requirement_hops in frontier:
+            rows = reverse.get(node, [])
+            admitted = rows[:limits["max_fanout_per_node"]]
+            if len(rows) > len(admitted):
+                reasons.add("fanout-limit")
+                counters["unexplored_edges"] += len(rows) - len(admitted)
+                pending.update(edge["from"] for edge in rows[len(admitted):])
+            for edge in admitted:
+                source_node = edge["from"]
+                next_local = local_hops
+                next_contract = contract_hops
+                next_requirement = requirement_hops
+                if node.startswith("req:") or source_node.startswith("req:"):
+                    next_requirement += 1
+                    if next_requirement > limits["requirement_depth"]:
+                        reasons.add("boundary-policy")
+                        counters["unexplored_edges"] += 1
+                        pending.add(source_node)
+                        continue
+                elif graph_primitives.is_boundary(node) or \
+                        graph_primitives.is_boundary(source_node):
+                    next_contract += 1
+                    if next_contract > limits["contract_depth"]:
+                        reasons.add("boundary-policy")
+                        counters["unexplored_edges"] += 1
+                        pending.add(source_node)
+                        continue
+                else:
+                    next_local += 1
+                    if next_local > limits["local_depth"]:
+                        reasons.add("depth-limit")
+                        counters["unexplored_edges"] += 1
+                        pending.add(source_node)
+                        continue
+                if counters["edges_examined"] >= limits["max_edges"]:
+                    reasons.add("edge-limit")
+                    counters["unexplored_edges"] += 1
+                    pending.add(edge["from"])
+                    continue
+                if monotonic() - started >= limits["aggregate_timeout_seconds"]:
+                    reasons.add("aggregate-timeout")
+                    counters["unexplored_edges"] += 1
+                    pending.add(edge["from"])
+                    continue
+                counters["edges_examined"] += 1
+                included_edges.append(edge)
+                if source_node not in seen:
+                    seen.add(source_node)
+                    next_frontier.append((source_node, next_local,
+                                          next_contract, next_requirement))
+        frontier = sorted(next_frontier, key=lambda item: item[0])
+
+    unresolved_ids = sorted(row["input_id"] for row in results
+                            if row["state"] != "verified")
+    truncated_reasons = {"depth-limit", "fanout-limit", "file-limit",
+                         "file-byte-limit", "aggregate-byte-limit",
+                         "symbol-limit", "edge-limit", "aggregate-timeout"}
+    incomplete_reasons = {"parser-timeout", "parser-error", "source-symlink",
+                          "source-nonregular", "source-outside-root",
+                          "source-replaced", "boundary-policy"}
+    if reasons & truncated_reasons:
+        state = "truncated"
+    elif reasons & incomplete_reasons:
+        state = "incomplete"
+    elif unresolved_ids:
+        state = "unresolved"
+    else:
+        state = "complete"
+    record = {
+        "schema": SOURCE_TOUCHPOINT_COVERAGE_SCHEMA,
+        "producer": "taskplane/depgraph.py::build_source_touchpoint_coverage",
+        "source": source_record,
+        "graph": graph_record,
+        "requirement": requirement_record,
+        "requested": canonical_requested,
+        "results": sorted(results, key=lambda row: (
+            row["input_id"], row.get("node", ""))),
+        "impacted_subgraph": {
+            "nodes": sorted(seen),
+            "edges": sorted(included_edges, key=lambda edge: (
+                edge["from"], edge["to"], edge["kind"])),
+        },
+        "coverage": {
+            "state": state, "complete": state == "complete",
+            "exhausted": state == "complete", "frontier": sorted(pending),
+            "unresolved_input_ids": unresolved_ids,
+        },
+        "bounds": limits,
+        "counters": counters,
+        "reason_codes": sorted(reasons),
+        "extensions": {"stage_bounds": {
+            "discovery": dict(limits), "coverage": dict(limits)}},
+    }
+    record["fingerprint"] = _canonical_fingerprint(record)
+    return record
+
+
 def impact(ws: str, changed_files, max_depth: int = 3,
            policy: dict | None = None) -> dict:
     """Blast radius of a change: the modules touched, then everything that

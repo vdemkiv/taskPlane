@@ -91,6 +91,11 @@ not repeated in the tables.
 | `tp.py new` | create + activate a Task Contract |
 | `tp.py north-star` | on-demand strategic review: print the project's north star, or render a strategic note |
 | `tp.py onboard` | cold-start readiness — folder + git snapshot + init; renders the onboarding dashboard |
+| `tp.py phase` | export or continue sealed repository phase handoffs |
+| `tp.py phase export` | publish one sealed Design or Plan phase handoff |
+| `tp.py phase pickup` | return a safe startup for the declared next phase |
+| `tp.py phase resume` | return a safe startup for interrupted same-phase work |
+| `tp.py phase submit` | submit committed Build output and export its handoff |
 | `tp.py pickup` | run one approved shelf Design Contract without a loop |
 | `tp.py preview` | launch a private governed working preview from a closed JSON request |
 | `tp.py production-gate` | validate retained Design authority against the current live Taskplane delivery roots |
@@ -938,6 +943,56 @@ cold-start readiness — folder + git snapshot + init; renders the onboarding da
 | `--install-codex-hooks` | flag | install/refresh the repo-local Codex lifecycle hook bridge before reporting readiness |
 | `--json` | flag | print the readiness report instead of the widget |
 | `--out` | OUT | also write the fragment to this path |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py phase`
+
+export or continue sealed repository phase handoffs
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py phase export`
+
+publish one sealed Design or Plan phase handoff
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | REQUEST (required) | repository-relative phase export request JSON |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py phase pickup`
+
+return a safe startup for the declared next phase
+
+Positional arguments:
+
+- `handoff` (required) — repository-relative sealed phase handoff
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py phase resume`
+
+return a safe startup for interrupted same-phase work
+
+Positional arguments:
+
+- `handoff` (required) — repository-relative interrupted phase handoff
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py phase submit`
+
+submit committed Build output and export its handoff
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | REQUEST (required) | repository-relative JSON with exact handoff and task_id |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py pickup`
