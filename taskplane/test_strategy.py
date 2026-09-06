@@ -7,6 +7,7 @@ metadata-only evidence before attempting a correction.
 
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import json
@@ -48,6 +49,155 @@ _NODE_ID = re.compile(r"^[^\s:]+\.py::[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-
 
 class StrategyContractError(ValueError):
     """The strategy cannot authorize correction or terminal validation."""
+
+
+def inspect_boundary_test(
+    source: str, *, filename: str, producer_api: str, consumer_api: str,
+    evidence_class: str = "boundary",
+) -> dict[str, object]:
+    """Inspect changed Python dataflow without executing untrusted test code.
+
+    Only direct producer output and plain name aliases are statically traceable.
+    Helpers, dynamic dispatch and control-flow joins require additional proof;
+    an unrecognized expression is never presumed authentic. Even a clean scan
+    is not runtime evidence. The incumbent producer owner must independently
+    authenticate the actual artifact and attempt at collection time.
+    """
+    if evidence_class not in {"boundary", "journey", "consumer-unit"}:
+        raise StrategyContractError("unknown boundary evidence class")
+    if not all(isinstance(value, str) and value.strip()
+               for value in (filename, producer_api, consumer_api)):
+        raise StrategyContractError("changed file and boundary APIs are required")
+    findings: list[dict[str, object]] = []
+    calls: set[int] = set()
+    consumers: set[int] = set()
+    aliases: dict[str, str] = {}
+
+    def finding(code: str, node: ast.AST) -> None:
+        row = {"code": code, "line": getattr(node, "lineno", 1), "file": filename}
+        if row not in findings:
+            findings.append(row)
+
+    def name(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return aliases.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            return name(node.value) + "." + node.attr
+        return ""
+
+    def origin(node: ast.AST, values: dict[str, frozenset[int]]) -> frozenset[int]:
+        if isinstance(node, ast.Name):
+            return values.get(node.id, frozenset())
+        if isinstance(node, ast.Call) and name(node.func) == producer_api:
+            # An assignment can shadow an imported or otherwise declared API.
+            if isinstance(node.func, ast.Name) and node.func.id in values:
+                return frozenset()
+            calls.add(node.lineno)
+            return frozenset({node.lineno})
+        return frozenset()
+
+    def invalidate(node: ast.AST, values: dict[str, frozenset[int]]) -> None:
+        affected = set().union(*(values.get(item.id, frozenset())
+            for item in ast.walk(node) if isinstance(item, ast.Name)))
+        for key, provenance in list(values.items()):
+            if affected.intersection(provenance):
+                values[key] = frozenset()
+
+    def inspect_expression(node: ast.AST, values: dict[str, frozenset[int]]) -> None:
+        for item in ast.walk(node):
+            if not isinstance(item, ast.Call):
+                continue
+            api = name(item.func)
+            tail = api.rsplit(".", 1)[-1]
+            if api == consumer_api:
+                consumers.add(item.lineno)
+                inputs = [*item.args, *(keyword.value for keyword in item.keywords)]
+                if not inputs or any(not origin(value, values) for value in inputs):
+                    finding("unproven-consumer-input", item)
+            elif api == producer_api:
+                if not origin(item, values):
+                    finding("producer-substitution", item)
+            elif tail in {"setattr", "setitem", "patch", "patch.object", "delattr"} or \
+                    api.startswith("unittest.mock.patch") or ".patch" in api:
+                finding("producer-substitution", item)
+                for key in values:
+                    values[key] = frozenset()
+            elif tail in {"write", "write_bytes", "write_text", "dump", "copyfile", "copy2", "copytree"}:
+                finding("artifact-insertion-or-copy", item)
+                invalidate(item, values)
+            elif tail in {"update", "append", "extend", "insert", "pop", "clear", "setdefault", "remove"}:
+                finding("artifact-mutation", item)
+                invalidate(item, values)
+            elif tail in {"eval", "exec", "compile", "__import__", "getattr"}:
+                finding("dynamic-dataflow", item)
+            elif any(origin(argument, values) for argument in item.args) or (
+                    isinstance(item.func, ast.Attribute) and origin(item.func.value, values)):
+                finding("unverified-artifact-call", item)
+                invalidate(item, values)
+
+    def statements(nodes: list[ast.stmt], values: dict[str, frozenset[int]]) -> None:
+        for node in nodes:
+            if isinstance(node, ast.ImportFrom):
+                for imported in node.names:
+                    aliases[imported.asname or imported.name] = f"{node.module}.{imported.name}"
+            elif isinstance(node, ast.Import):
+                for imported in node.names:
+                    aliases[imported.asname or imported.name.split(".")[0]] = (
+                        imported.name if imported.asname else imported.name.split(".")[0])
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                for decorator in node.decorator_list:
+                    inspect_expression(decorator, values)
+                # Never transfer locals from one test/function into another.
+                statements(node.body, {})
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if node.value is not None:
+                    inspect_expression(node.value, values)
+                lineage = origin(node.value, values) if node.value is not None else frozenset()
+                for target in targets:
+                    if isinstance(target, ast.Name) and not isinstance(node, ast.AugAssign):
+                        if name(target) == producer_api:
+                            finding("producer-substitution", node)
+                        values[target.id] = lineage
+                    else:
+                        finding("artifact-mutation", node)
+                        invalidate(target, values)
+            elif isinstance(node, ast.Delete):
+                finding("artifact-mutation", node)
+                invalidate(node, values)
+            elif isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try,
+                                   ast.With, ast.AsyncWith, ast.Match)):
+                # Inspect every branch, then conservatively invalidate locals
+                # at the join. No first passing branch can hide another path.
+                for child in ast.iter_child_nodes(node):
+                    if isinstance(child, ast.expr):
+                        inspect_expression(child, values)
+                    elif isinstance(child, ast.stmt):
+                        statements([child], dict(values))
+                    elif isinstance(child, (ast.ExceptHandler, ast.match_case)):
+                        statements(child.body, dict(values))
+                for key in values:
+                    values[key] = frozenset()
+            else:
+                inspect_expression(node, values)
+
+    try:
+        tree = ast.parse(source, filename=filename)
+    except (SyntaxError, ValueError, RecursionError):
+        finding("unparseable-test", ast.Pass())
+    else:
+        statements(tree.body, {})
+    if not consumers:
+        finding("missing-consumer-call", ast.Pass())
+    if not calls:
+        finding("missing-producer-call", ast.Pass())
+    return {
+        "scanned_files": [filename], "source_fingerprint": hashlib.sha256(source.encode()).hexdigest(),
+        "evidence_class": evidence_class, "findings": findings,
+        "producer_call_sites": sorted(calls), "consumer_call_sites": sorted(consumers),
+        "allowed": evidence_class == "consumer-unit" or not findings,
+        "boundary_eligible": False, "runtime_provenance_required": True,
+    }
 
 
 def _fingerprint(value: Any) -> str:

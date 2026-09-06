@@ -117,6 +117,111 @@ class WiringClosureError(ValueError):
     """A Design selector or producer/consumer edge is not closed."""
 
 
+@dataclass(frozen=True)
+class BoundaryObservation:
+    """Untrusted proof input, never a receipt or producer authority.
+
+    The incumbent owner must verify the entire observation against retained
+    execution evidence, including the original artifact reference and bytes.
+    Identity carries run, attempt, operation, candidate and any further owner
+    bindings (task/slot, source, definition, contract, gate and ordered event).
+    """
+
+    selector: str
+    behavior: str
+    identity: tuple[str, ...]
+    conditions_fingerprint: str
+    status: str
+    outcome: str
+    output: bytes | None
+    artifact_reference: str | None
+    changed_edges: tuple[str, ...]
+    refusal_edge: str | None
+    evidence_class: str = "boundary"
+
+
+def assess_boundary_pair(
+    edge: Mapping[str, str], positive: BoundaryObservation | None,
+    negative: BoundaryObservation | None, *,
+    verify_owner: Callable[[BoundaryObservation], None] | None = None,
+) -> list[str]:
+    """Return every policy gap; an empty list is not a wiring receipt.
+
+    ``verify_owner`` is a trusted orchestrator composition port to the existing
+    provenance owner, never a callable supplied by reviewed test code. It must
+    authenticate current candidate/attempt identity, producer call, output
+    lineage and the actual public execution including controlled edge removal.
+    Missing verification fails closed. No content hash or AST claim replaces it.
+    """
+    gaps: list[str] = []
+    for side, observed in (("positive", positive), ("negative", negative)):
+        if not isinstance(observed, BoundaryObservation):
+            gaps.append(f"{side}:probe-missing")
+            continue
+        if observed.status != "executed":
+            gaps.append(f"{side}:probe-unavailable")
+        selector = "positive_selector" if side == "positive" else "severed_selector"
+        if observed.selector != edge.get(selector):
+            gaps.append(f"{side}:selector")
+        if observed.evidence_class not in {"boundary", "journey"}:
+            gaps.append(f"{side}:evidence-class")
+        if len(observed.identity) < 4 or any(not isinstance(value, str) or not value
+                                           for value in observed.identity):
+            gaps.append(f"{side}:identity")
+        if not observed.behavior or not re.fullmatch(r"[0-9a-f]{64}", observed.conditions_fingerprint):
+            gaps.append(f"{side}:conditions")
+        try:
+            if verify_owner is None:
+                raise WiringClosureError("producer owner unavailable")
+            verified = verify_owner(observed)
+            if verified is not None:
+                raise WiringClosureError("owner verification must raise on refusal")
+        except Exception:
+            # Owner exceptions may contain private paths or receipt material.
+            # Preserve the independently attributable gap, not those details.
+            gaps.append(f"{side}:producer-provenance")
+    if isinstance(positive, BoundaryObservation):
+        if positive.outcome != "accepted":
+            gaps.append("positive:non-passing")
+        if not isinstance(positive.output, bytes) or not positive.artifact_reference:
+            gaps.append("positive:missing-upstream-output")
+        if positive.changed_edges or positive.refusal_edge is not None:
+            gaps.append("positive:altered-edge")
+    if isinstance(negative, BoundaryObservation):
+        if negative.changed_edges != (edge.get("id"),):
+            gaps.append("negative:single-edge")
+        if negative.outcome != "refused":
+            gaps.append("negative:non-failing")
+        if negative.refusal_edge != edge.get("id"):
+            gaps.append("negative:unattributable")
+    if isinstance(positive, BoundaryObservation) and isinstance(negative, BoundaryObservation):
+        if positive.identity != negative.identity:
+            gaps.append("negative:foreign-or-stale")
+        if positive.behavior != negative.behavior:
+            gaps.append("negative:different-public-behavior")
+        if positive.conditions_fingerprint != negative.conditions_fingerprint:
+            gaps.append("negative:changed-nontarget-conditions")
+    return gaps
+
+
+def assess_plan_wiring(
+    manifest: Sequence[Mapping[str, str]], *, task_ids: Iterable[str],
+    pairs: Mapping[str, tuple[BoundaryObservation | None, BoundaryObservation | None]],
+    verify_owner: Callable[[BoundaryObservation], None] | None = None,
+) -> dict[str, list[str]]:
+    """Assess all W01-W34 independently, preserving every missing probe."""
+    rows = validate_plan_wiring_manifest(manifest, task_ids=task_ids)
+    if set(pairs) - set(PLAN_WIRING_EDGE_IDS):
+        raise WiringClosureError("foreign Plan wiring proof")
+    gaps = {}
+    for row in rows:
+        positive, negative = pairs.get(row["id"], (None, None))
+        errors = assess_boundary_pair(row, positive, negative, verify_owner=verify_owner)
+        if errors:
+            gaps[row["id"]] = errors
+    return gaps
+
+
 def plan_owner_producer_inventory() -> dict[str, str]:
     """Return the wiring validator's accountable producer authority."""
     return {PLAN_OWNER_PRODUCER: PLAN_OWNER_PRODUCER_OWNER}
