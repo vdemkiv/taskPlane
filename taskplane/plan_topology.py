@@ -37,6 +37,12 @@ PLAN_DASHBOARD_SCHEMA = "taskplane.dashboard-plan-task-dag/v1"
 PLAN_WAVES_DASHBOARD_SCHEMA = "taskplane.dashboard-plan-waves/v1"
 PLAN_TRACEABILITY_SCHEMA = "taskplane.plan-traceability/v1"
 PLAN_OWNER_INVENTORY_SCHEMA = "taskplane.plan-owner-inventory/v1"
+PLAN_TRACEABILITY_PRODUCER = "taskplane/plan_topology.py"
+PLAN_TRACEABILITY_PRODUCER_OWNER = "plan-traceability-producer-owner"
+PLAN_TRACEABILITY_PRODUCER_CHAIN = (
+    *_depgraph.DESIGN_TRACEABILITY_PRODUCER_CHAIN,
+    PLAN_TRACEABILITY_PRODUCER,
+)
 
 
 class PlanTopologyError(RuntimeError):
@@ -68,6 +74,10 @@ def _traceability_inputs(
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
     try:
         design = _depgraph.design_traceability_inventory(dict(design_contract))
+        if tuple(design.get("producer_chain") or ()) != \
+                _depgraph.DESIGN_TRACEABILITY_PRODUCER_CHAIN:
+            raise ValueError(
+                "depgraph producer provenance is missing or stale")
         links = _depgraph.validate_plan_traceability_foreign_keys(
             design, dict(plan))
         wiring = _wiring_closure.validate_plan_wiring_manifest(
@@ -161,6 +171,7 @@ def build_plan_traceability(
     material = {
         "schema": PLAN_TRACEABILITY_SCHEMA,
         "status": "closed",
+        "producer_chain": list(PLAN_TRACEABILITY_PRODUCER_CHAIN),
         "requirement": design["requirement"],
         "design_inventory_fingerprint": design["fingerprint"],
         "depth_policy": design["depth_policy"],
@@ -230,10 +241,26 @@ def build_plan_owner_inventory(
         identity: str(row.get("owner") or "").strip()
         for identity, row in design["responsibilities"].items()
     }
+    try:
+        producer_owners = dict(
+            _wiring_closure.plan_owner_producer_inventory())
+    except (TypeError, ValueError) as exc:
+        raise PlanTopologyError(
+            "wiring_closure producer ownership is invalid") from exc
+    expected_wiring_owner = {
+        _wiring_closure.PLAN_OWNER_PRODUCER:
+            _wiring_closure.PLAN_OWNER_PRODUCER_OWNER,
+    }
+    if producer_owners != expected_wiring_owner:
+        raise PlanTopologyError(
+            "wiring_closure producer ownership is missing or stale")
+    producer_owners[PLAN_TRACEABILITY_PRODUCER] = \
+        PLAN_TRACEABILITY_PRODUCER_OWNER
     _unique_authorities(task_owners, "task")
     _unique_authorities(criterion_owners, "criterion")
     _unique_authorities(journey_owners, "journey")
     _unique_authorities(responsibility_owners, "responsibility")
+    _unique_authorities(producer_owners, "producer")
     material = {
         "schema": PLAN_OWNER_INVENTORY_SCHEMA,
         "status": "closed",
@@ -242,6 +269,7 @@ def build_plan_owner_inventory(
         "criterion_owners": dict(sorted(criterion_owners.items())),
         "journey_owners": dict(sorted(journey_owners.items())),
         "responsibility_owners": dict(sorted(responsibility_owners.items())),
+        "producer_owners": dict(sorted(producer_owners.items())),
     }
     material["fingerprint"] = content_fingerprint(material)
     return material

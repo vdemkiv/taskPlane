@@ -104,6 +104,7 @@ _STDLIB = getattr(__import__("sys"), "stdlib_module_names", frozenset())
 
 DESIGN_TRACEABILITY_INVENTORY_SCHEMA = \
     "taskplane.design-traceability-inventory/v1"
+DESIGN_TRACEABILITY_PRODUCER = "taskplane/graph_decomposition.py"
 
 
 def design_traceability_inventory(contract: dict) -> dict:
@@ -208,6 +209,7 @@ def design_traceability_inventory(contract: dict) -> dict:
 
     material = {
         "schema": DESIGN_TRACEABILITY_INVENTORY_SCHEMA,
+        "producer_chain": [DESIGN_TRACEABILITY_PRODUCER],
         "requirement": str(contract.get("requirement") or "").strip(),
         "criteria": criteria,
         "contracts": contract_rows,

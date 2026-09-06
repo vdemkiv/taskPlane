@@ -861,9 +861,25 @@ def _canonical_fingerprint(value: object) -> str:
         allow_nan=False).encode("utf-8")).hexdigest()
 
 
+DESIGN_TRACEABILITY_PRODUCER = "taskplane/depgraph.py"
+DESIGN_TRACEABILITY_PRODUCER_CHAIN = (
+    graph_decomposition.DESIGN_TRACEABILITY_PRODUCER,
+    DESIGN_TRACEABILITY_PRODUCER,
+)
+
+
 def design_traceability_inventory(contract: dict) -> dict:
-    """Expose the decomposition owner's canonical Design inventory."""
-    return graph_decomposition.design_traceability_inventory(contract)
+    """Expose and attest the decomposition owner's canonical inventory."""
+    inventory = graph_decomposition.design_traceability_inventory(contract)
+    if tuple(inventory.get("producer_chain") or ()) != (
+            graph_decomposition.DESIGN_TRACEABILITY_PRODUCER,):
+        raise ValueError(
+            "graph_decomposition producer provenance is missing or stale")
+    inventory = copy.deepcopy(inventory)
+    inventory.pop("fingerprint", None)
+    inventory["producer_chain"] = list(DESIGN_TRACEABILITY_PRODUCER_CHAIN)
+    inventory["fingerprint"] = _canonical_fingerprint(inventory)
+    return inventory
 
 
 def validate_plan_traceability_foreign_keys(

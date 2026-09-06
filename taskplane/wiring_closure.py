@@ -30,6 +30,8 @@ EXPECTED_CRITERION_COUNT = 12
 EXPECTED_EDGE_IDS = tuple(f"W{number:02d}" for number in range(1, 33))
 EXPECTED_PRODUCER_COUNT = 18
 PLAN_WIRING_EDGE_IDS = tuple(f"W{number:02d}" for number in range(1, 35))
+PLAN_OWNER_PRODUCER = "taskplane/wiring_closure.py"
+PLAN_OWNER_PRODUCER_OWNER = "plan-wiring-producer-owner"
 _FIVE_CLASS_BOUNDARY_PRODUCERS = frozenset(
     {
         "trusted host adapter private channel",
@@ -129,6 +131,11 @@ _PRODUCER_FIELDS = frozenset({"producer", "consumer_classes", "edge_ids"})
 
 class WiringClosureError(ValueError):
     """A Design selector or producer/consumer edge is not closed."""
+
+
+def plan_owner_producer_inventory() -> dict[str, str]:
+    """Return the wiring validator's accountable producer authority."""
+    return {PLAN_OWNER_PRODUCER: PLAN_OWNER_PRODUCER_OWNER}
 
 
 def validate_plan_wiring_manifest(

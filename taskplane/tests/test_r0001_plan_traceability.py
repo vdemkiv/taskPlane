@@ -22,13 +22,18 @@ def _approved_artifacts() -> tuple[dict, dict]:
     return design, plan
 
 
-def test_traceability_foreign_keys_and_bidirectional_coverage():
+def test_traceability_foreign_keys_and_bidirectional_coverage(monkeypatch):
     design, plan = _approved_artifacts()
 
     receipt = plan_topology.build_plan_traceability(design, plan)
 
     assert receipt["schema"] == "taskplane.plan-traceability/v1"
     assert receipt["status"] == "closed"
+    assert receipt["producer_chain"] == [
+        "taskplane/graph_decomposition.py",
+        "taskplane/depgraph.py",
+        "taskplane/plan_topology.py",
+    ]
     assert receipt["counts"] == {
         "criteria": 21,
         "contracts": 18,
@@ -81,14 +86,51 @@ def test_traceability_foreign_keys_and_bidirectional_coverage():
     with pytest.raises(plan_topology.PlanTopologyError, match="W01-W34"):
         plan_topology.build_plan_traceability(design, duplicate_wiring)
 
+    upstream = (
+        plan_topology._depgraph.graph_decomposition
+        .design_traceability_inventory
+    )
+    with monkeypatch.context() as patch:
+        def severed_decomposition_output(contract):
+            inventory = upstream(contract)
+            inventory["producer_chain"] = []
+            return inventory
 
-def test_plan_owner_inventory_complete():
+        patch.setattr(
+            plan_topology._depgraph.graph_decomposition,
+            "design_traceability_inventory",
+            severed_decomposition_output,
+        )
+        with pytest.raises(
+            plan_topology.PlanTopologyError,
+            match="graph_decomposition producer provenance",
+        ):
+            plan_topology.build_plan_traceability(design, plan)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            plan_topology._depgraph,
+            "design_traceability_inventory",
+            upstream,
+        )
+        with pytest.raises(
+            plan_topology.PlanTopologyError,
+            match="depgraph producer provenance",
+        ):
+            plan_topology.build_plan_traceability(design, plan)
+
+
+def test_plan_owner_inventory_complete(monkeypatch):
     design, plan = _approved_artifacts()
 
     inventory = plan_topology.build_plan_owner_inventory(design, plan)
 
     assert inventory["schema"] == "taskplane.plan-owner-inventory/v1"
     assert inventory["status"] == "closed"
+    assert inventory["producer_owners"] == {
+        "taskplane/plan_topology.py": "plan-traceability-producer-owner",
+        "taskplane/wiring_closure.py": "plan-wiring-producer-owner",
+    }
     assert len(inventory["task_owners"]) == 23
     assert len(inventory["criterion_owners"]) == 21
     assert len(inventory["journey_owners"]) == 8
@@ -111,3 +153,15 @@ def test_plan_owner_inventory_complete():
     ]
     with pytest.raises(plan_topology.PlanTopologyError, match="duplicate task authority"):
         plan_topology.build_plan_owner_inventory(design, duplicate_authority)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            plan_topology._wiring_closure,
+            "plan_owner_producer_inventory",
+            lambda: {},
+        )
+        with pytest.raises(
+            plan_topology.PlanTopologyError,
+            match="wiring_closure producer ownership",
+        ):
+            plan_topology.build_plan_owner_inventory(design, plan)
