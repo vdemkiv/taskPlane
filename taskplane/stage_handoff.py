@@ -598,6 +598,138 @@ def validate_v2_manifest(
     return dict(row)
 
 
+def create_v2_manifest(
+    store: review_evidence.ArtifactStore, *, phase_result: Mapping[str, object],
+    produced_artifacts: Iterable[dict[str, object]],
+    inherited_artifacts: Iterable[dict[str, object]],
+    producer_stage_id: str, producer_outcome: str,
+    requirement: Mapping[str, object], design: Mapping[str, object] | None,
+    target: Mapping[str, object] | None, commit: Mapping[str, object] | None,
+    contracts: Mapping[str, object], deliverables: Iterable[str],
+    evidence_references: Iterable[dict[str, object]], exclusions: Iterable[str],
+    authorization: Mapping[str, object], allow_nonconsumable_reuse: bool = False,
+    knowledge_apply_receipts: Iterable[dict[str, object]] = (),
+    unresolved_issues: Iterable[str] = (),
+) -> JsonObject:
+    """Explicit complete-package writer; existing lifecycle writes stay v1.
+
+    Collection owns produced bytes. Callers cannot relabel inherited artifacts
+    as outputs, omit an output, or publish an uncollected replacement.
+    """
+    produced, inherited = _bounded_reference_inputs(produced_artifacts, inherited_artifacts)
+    selected = []
+    for row in produced + inherited:
+        reference = row.get("reference")
+        if not isinstance(reference, dict):
+            raise HandoffValidationError("artifact reference must be an object")
+        selected.append(reference)
+    base = create_manifest(store, selected_artifacts=selected,
+        producer_stage_id=producer_stage_id, producer_outcome=producer_outcome,
+        requirement=requirement, design=design, target=target, commit=commit,
+        contracts=contracts, deliverables=deliverables,
+        evidence_references=evidence_references, exclusions=exclusions,
+        authorization=authorization, allow_nonconsumable_reuse=allow_nonconsumable_reuse)
+    body = {**base, "schema": "taskplane.stage-handoff/v2",
+            "phase_result": dict(phase_result), "produced_artifacts": produced,
+            "inherited_artifacts": inherited,
+            "knowledge_apply_receipts": list(knowledge_apply_receipts),
+            "unresolved_issues": list(unresolved_issues)}
+    body["fingerprint"] = manifest_fingerprint(body)
+    validated = validate_v2_manifest(store, body)
+    _validate_complete_v2_outputs(store, validated)
+    return validated
+
+
+def _validate_complete_v2_outputs(
+    store: review_evidence.ArtifactStore, manifest: Mapping[str, object]
+) -> None:
+    """Current package admission, separate from historical structural reading."""
+    result = manifest["phase_result"]
+    if not isinstance(result, Mapping):
+        raise HandoffValidationError("phase result must be an object")
+    authorization = _closed(manifest["authorization"], _AUTHORITY_FIELDS, "authorization")
+    authority = _closed(authorization["authority_record"], _AUTHORITY_RECORD_FIELDS, "authority record")
+    if result["authority_fingerprint"] != authority["fingerprint"]:
+        raise HandoffValidationError("phase result authority differs from handoff")
+    target = manifest["target"]
+    if isinstance(target, Mapping) and result["candidate_fingerprint"] != target["fingerprint"]:
+        raise HandoffValidationError("phase result candidate differs from handoff")
+    produced = _v2_artifact_rows(manifest["produced_artifacts"])
+    inherited = _v2_artifact_rows(manifest["inherited_artifacts"])
+    actual = _portable_references(store, (_v2_reference(row) for row in produced), "produced artifacts")
+    collected = _validate_portable_references(store, sorted(
+        _v2_collected_references(result["collected_output_references"]),
+        key=lambda row: (str(row["kind"]), str(row["fingerprint"]))), "collected outputs")
+    if actual != collected:
+        raise HandoffValidationError("complete package differs from collected outputs")
+    raw_declarations = result["produced_artifact_schema_versions"]
+    if not isinstance(raw_declarations, list):
+        raise HandoffValidationError("output declarations must be a list")
+    declarations = []
+    for raw in raw_declarations:
+        declaration = _closed(raw, frozenset({"artifact_class", "artifact_schema_version"}), "output declaration")
+        declarations.append((declaration["artifact_class"], declaration["artifact_schema_version"]))
+    classes = set()
+    for group, rows in (("produced_artifacts", produced), ("inherited_artifacts", inherited)):
+        for row in rows:
+            artifact_class = str(row["artifact_class"])
+            if artifact_class in classes:
+                raise HandoffValidationError("complete package has ambiguous artifact ownership")
+            classes.add(artifact_class)
+            identity = (row["artifact_class"], row["artifact_schema_version"])
+            if group == "produced_artifacts" and identity not in declarations:
+                raise HandoffValidationError("output schema is not declared by runtime")
+            payload = store.read(_v2_reference(row))
+            if not isinstance(payload, Mapping) or payload.get("schema") != row["artifact_schema_version"]:
+                raise HandoffValidationError("artifact bytes differ from declared schema")
+
+
+def _v2_artifact_rows(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        raise HandoffValidationError("schema artifacts must be a list")
+    return [_closed(row, frozenset({"artifact_class", "artifact_schema_version", "reference"}),
+                    "schema artifact") for row in value]
+
+
+def _v2_reference(row: Mapping[str, object]) -> dict[str, object]:
+    reference = row["reference"]
+    if not isinstance(reference, dict):
+        raise HandoffValidationError("artifact reference must be an object")
+    return dict(reference)
+
+
+def _v2_collected_references(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+        raise HandoffValidationError("collected outputs must be a list of references")
+    return [dict(row) for row in value]
+
+
+def store_v2_manifest(
+    store: review_evidence.ArtifactStore, manifest: Mapping[str, object]
+) -> JsonObject:
+    """Persist only complete current v2 packages without changing the v1 writer."""
+    validated = validate_v2_manifest(store, manifest)
+    _validate_complete_v2_outputs(store, validated)
+    return store.put("stage-handoff", validated, fingerprint=str(validated["fingerprint"]))
+
+
+def read_v2_manifest(
+    store: review_evidence.ArtifactStore, reference: Mapping[str, object], *,
+    expected_authority_revision: int, expected_authority_fingerprint: str,
+) -> JsonObject:
+    """Consume current v2 bytes under separately supplied authority; no downgrade."""
+    value = validate_v2_manifest(store, store.read(dict(reference)))
+    authorization = _closed(value["authorization"], _AUTHORITY_FIELDS, "authorization")
+    authority = _closed(authorization["authority_record"], _AUTHORITY_RECORD_FIELDS, "authority record")
+    if authority["revision"] != expected_authority_revision or authority["fingerprint"] != expected_authority_fingerprint:
+        raise StaleAuthorityError("v2 handoff authority is stale")
+    producer = _closed(value["producer"], frozenset({"stage_id", "outcome"}), "producer")
+    if producer["outcome"] != "done":
+        raise HandoffValidationError("current phase packages require a done producer")
+    _validate_complete_v2_outputs(store, value)
+    return value
+
+
 def _seconds(value: object, label: str) -> int:
     if type(value) is not int or value < 0:
         raise HandoffValidationError(f"{label} must be non-negative integer seconds")

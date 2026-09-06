@@ -10317,6 +10317,237 @@ def _strategy_authority_strings(value: object, label: str) -> list[str]:
     return list(value)
 
 
+@dataclass(frozen=True)
+class PhasePackage:
+    """Orchestrator-held verified input; agents receive only its artifact values."""
+
+    store: object
+    registry: object
+    reference: Mapping[str, object]
+    phase_id: str
+    authority_revision: int
+    authority_fingerprint: str
+    run_id: str
+    candidate_fingerprint: str
+
+    def manifest(self) -> dict:
+        if __package__:
+            from . import stage_handoff
+        else:
+            import stage_handoff
+
+        value = stage_handoff.read_v2_manifest(self.store, self.reference,
+            expected_authority_revision=self.authority_revision,
+            expected_authority_fingerprint=self.authority_fingerprint)
+        result = value["phase_result"]
+        _phase_result_definition(self.registry, result)
+        definition = self.registry.admit(self.phase_id, ()).to_dict()
+        if result["phase_id"] not in definition["predecessors"]:
+            raise ValueError("package producer is not a declared predecessor")
+        if result["run_id"] != self.run_id or result["candidate_fingerprint"] != self.candidate_fingerprint:
+            raise ValueError("package run or candidate differs from current input")
+        return value
+
+    @property
+    def artifacts(self) -> tuple:
+        if __package__:
+            from . import agent_runtime
+        else:
+            import agent_runtime
+
+        value = self.manifest()
+        rows = value["produced_artifacts"] + value["inherited_artifacts"]
+        declarations = self.registry.admit(self.phase_id, ()).to_dict()["consumes"]
+        selected = []
+        for declaration in declarations:
+            matches = [row for row in rows if row["artifact_class"] == declaration["artifact_class"]]
+            if len(matches) > 1 or (declaration["required"] and not matches):
+                raise ValueError("package lacks an unambiguous required artifact")
+            for row in matches:
+                if row["artifact_schema_version"] != declaration["artifact_schema_version"]:
+                    raise ValueError("package consumed schema differs from definition")
+                selected.append(agent_runtime.Artifact(row["artifact_class"], row["artifact_schema_version"], row["reference"]))
+        return tuple(selected)
+
+    def read(self, artifact_class: str) -> dict:
+        matches = [artifact for artifact in self.artifacts if artifact.artifact_class == artifact_class]
+        if len(matches) != 1:
+            raise ValueError("package artifact is missing or ambiguous: " + artifact_class)
+        return self.store.read(dict(matches[0].reference))
+
+
+def _phase_result_definition(registry: object, result: Mapping[str, object]) -> dict:
+    if __package__:
+        from . import stage_entities
+    else:
+        import stage_entities
+
+    stage_entities.validate_contract(result)
+    definition = registry.admit(str(result["phase_id"]), ()).to_dict()
+    expected = {"definition_set_fingerprint": registry.definition_set_fingerprint,
+        "phase_definition_fingerprint": definition["fingerprint"],
+        "skill_content_fingerprint": definition["skill_content_fingerprint"],
+        "validator_identities": definition["domain_validator_refs"],
+        "validator_inventory_fingerprint": definition["validator_inventory_fingerprint"],
+        "capability_set_fingerprint": registry.capability_set_fingerprint,
+        "budget": definition["budget"]}
+    for relation, field in (("consumes", "consumed_artifact_schema_versions"), ("produces", "produced_artifact_schema_versions")):
+        expected[field] = [{key: row[key] for key in ("artifact_class", "artifact_schema_version")}
+                           for row in definition[relation]]
+    if result["status"] != "accepted" or any(result[key] != value for key, value in expected.items()):
+        raise ValueError("phase result differs from the current definition")
+    return definition
+
+
+def consume_phase_handoff(store: object, reference: Mapping[str, object], *,
+        registry: object, phase_id: str, expected_authority_revision: int,
+        expected_authority_fingerprint: str, expected_run_id: str,
+        expected_candidate_fingerprint: str) -> PhasePackage:
+    """Explicit package route; no active lifecycle selector is changed here."""
+    package = PhasePackage(store, registry, _copy_json(reference), phase_id,
+        expected_authority_revision, expected_authority_fingerprint,
+        expected_run_id, expected_candidate_fingerprint)
+    package.artifacts  # Validate the whole package before exposing any output.
+    return package
+
+
+def produce_phase_handoff(store: object, *, registry: object,
+        phase_result: Mapping[str, object], dispatch: object,
+        predecessor: Mapping[str, object] | None,
+        authorization: Mapping[str, object], producer_stage_id: str,
+        requirement: Mapping[str, object], design: Mapping[str, object] | None,
+        knowledge_apply_receipts: Iterable[dict] = (), unresolved_issues: Iterable[str] = ()) -> dict:
+    """Compose collected outputs and all inherited bytes using the sole writer.
+
+    This explicit route remains inactive in the installed lifecycle until its
+    separately authorized cutover. It grants no evaluation or gate authority.
+    """
+    if __package__:
+        from . import agent_runtime, review_evidence, stage_handoff
+    else:
+        import agent_runtime
+        import review_evidence
+        import stage_handoff
+
+    definition = _phase_result_definition(registry, phase_result)
+    authority = authorization["authority_record"]
+    inherited = []
+    inputs = ()
+    if predecessor is not None:
+        package = consume_phase_handoff(store, predecessor, registry=registry,
+            phase_id=str(phase_result["phase_id"]), expected_authority_revision=authority["revision"],
+            expected_authority_fingerprint=authority["fingerprint"], expected_run_id=str(phase_result["run_id"]),
+            expected_candidate_fingerprint=str(phase_result["candidate_fingerprint"]))
+        previous = package.manifest()
+        inputs = package.artifacts
+        inherited = previous["produced_artifacts"] + previous["inherited_artifacts"]
+    elif not definition["entry"]:
+        raise ValueError("non-entry package requires its actual predecessor")
+    if (dispatch.package != inputs or
+            any(phase_result.get(key) != value for key, value in dispatch.bindings.items()) or
+            phase_result["sealed_package_fingerprint"] != agent_runtime.package_fingerprint(
+                inputs, dispatch.knowledge, dispatch.envelope)):
+        raise ValueError("runtime output differs from its actual input package")
+    produced = []
+    for reference in phase_result["collected_output_references"]:
+        portable = review_evidence.portable_artifact_reference(store, reference)
+        payload = store.read(portable)
+        matches = [row for row in definition["produces"]
+                   if row["artifact_class"] == portable["kind"] and row["artifact_schema_version"] == payload.get("schema")]
+        if len(matches) != 1:
+            raise ValueError("collected output has no unambiguous declaration")
+        produced.append({"artifact_class": matches[0]["artifact_class"],
+            "artifact_schema_version": matches[0]["artifact_schema_version"], "reference": portable})
+    for declaration in definition["produces"]:
+        count = sum(row["artifact_class"] == declaration["artifact_class"] for row in produced)
+        if (declaration["required"] and not count) or (count > 1 and declaration["cardinality"] != "many"):
+            raise ValueError("complete package lacks a declared output")
+    if {row["artifact_class"] for row in inherited} & {row["artifact_class"] for row in produced}:
+        raise ValueError("package cannot silently replace inherited output")
+    evidence = store.put("phase-result", dict(phase_result))
+    value = stage_handoff.create_v2_manifest(store, phase_result=phase_result,
+        produced_artifacts=produced, inherited_artifacts=inherited,
+        knowledge_apply_receipts=knowledge_apply_receipts, unresolved_issues=unresolved_issues,
+        producer_stage_id=producer_stage_id, producer_outcome="done", requirement=requirement, design=design,
+        target=None, commit=None, contracts={"provided": [], "consumed": [], "changed": []},
+        deliverables=[row["artifact_class"] for row in produced],
+        evidence_references=[evidence] + ([] if predecessor is None else [dict(predecessor)]),
+        exclusions=sorted(stage_handoff.REQUIRED_EXCLUSIONS), authorization=authorization)
+    return stage_handoff.store_v2_manifest(store, value)
+
+
+def validate_spec_phase_artifact(value: Mapping[str, object]) -> dict:
+    """Registered domain validation for the inactive specification adapters."""
+    if __package__:
+        from . import stage_entities
+    else:
+        import stage_entities
+
+    if not isinstance(value, Mapping):
+        raise ValueError("phase artifact must be an object")
+    if set(value) & {"gate", "successor", "successors", "predecessors", "evaluation_lenses", "working_lenses", "dag_edges"}:
+        raise ValueError("agent artifact contains authority fields")
+    schema = value.get("schema")
+    if schema == test_strategy.SCHEMA:
+        return test_strategy.validate_strategy(value)
+    if schema == "taskplane.stage/v1":
+        return stage_entities.validate_stage(value)
+    if schema == "taskplane.requirement/v1":
+        if not value.get("id") or not value.get("acceptance_criteria"):
+            raise ValueError("requirement needs identity and acceptance criteria")
+    elif schema == "taskplane.design/v1":
+        if not value.get("requirement") or not _dc.acceptance_test_map(value):
+            raise ValueError("Design requires exact acceptance selectors")
+        if not isinstance(value.get("test_strategy"), Mapping):
+            raise ValueError("Design requires its selected strategy")
+    elif schema == "taskplane.plan-task/v1":
+        task = value.get("task")
+        if not isinstance(task, Mapping) or not task.get("test_strategy_authority_receipt"):
+            raise ValueError("Plan output requires sealed Design quality authority")
+        errors = tp.plan_test_command_errors(task.get("tests"))
+        if errors:
+            raise ValueError("; ".join(errors))
+    else:
+        raise ValueError("unsupported specification artifact schema")
+    return _copy_json(value)
+
+
+def store_spec_phase_outputs(store: object, definition: Mapping[str, object],
+        authored: Mapping[str, Mapping[str, object]]) -> tuple:
+    """Store validated declared candidate documents; never advance the lifecycle."""
+    if __package__:
+        from . import agent_runtime
+    else:
+        import agent_runtime
+
+    declarations = {row["artifact_class"]: row for row in definition["produces"]}
+    if set(authored) - set(declarations) or any(row["required"] and key not in authored for key, row in declarations.items()):
+        raise ValueError("candidate outputs differ from the declared produces set")
+    prepared = []
+    for artifact_class, payload in authored.items():
+        value = validate_spec_phase_artifact(payload)
+        schema = declarations[artifact_class]["artifact_schema_version"]
+        if value["schema"] != schema:
+            raise ValueError("candidate output schema differs from definition")
+        prepared.append((artifact_class, schema, value))
+    return tuple(agent_runtime.Artifact(name, schema, store.put(name, value)) for name, schema, value in prepared)
+
+
+def seal_phase_plan_task(store: object, package: PhasePackage,
+        state: Mapping[str, object], task: Mapping[str, object]) -> dict:
+    """Plan-owned candidate producer using actual sealed Design outputs."""
+    if package.store is not store:
+        raise ValueError("Plan package artifact store differs")
+    if not any(row["artifact_class"] == "plan-task"
+               for row in package.registry.admit(package.phase_id, ()).to_dict()["produces"]):
+        raise ValueError("phase definition cannot produce Plan authority")
+    result = _copy_json(task)
+    result["test_strategy_authority_receipt"] = _seal_task_test_strategy_authority(
+        "", state, result, design_package=package)
+    value = {"schema": "taskplane.plan-task/v1", "task": result}
+    return validate_spec_phase_artifact(value)
+
+
 def _test_strategy_artifact(ws: str, reference: Mapping[str, object]) \
         -> tuple[str, dict]:
     rel = _dc.design_safe_rel(reference.get("path"))
@@ -10359,7 +10590,8 @@ def _test_strategy_plan_contract(task: Mapping[str, object]) -> dict:
 
 
 def _seal_task_test_strategy_authority(
-        ws: str, state: Mapping[str, object], task: Mapping[str, object]
+        ws: str, state: Mapping[str, object], task: Mapping[str, object], *,
+        design_package: PhasePackage | None = None,
         ) -> dict | None:
     """Derive one Design+Plan authority; Build can never mint this record."""
     if not state.get("design_required"):
@@ -10368,7 +10600,8 @@ def _seal_task_test_strategy_authority(
         return None
     if not isinstance(task.get("test_contract"), Mapping):
         return None
-    design, errors = _design_contract(ws)
+    design, errors = (_design_contract(ws) if design_package is None
+                      else (design_package.read("design"), []))
     if errors or design is None:
         raise ValueError("approved Design test strategy is unavailable: "
                          + "; ".join(errors))
@@ -10390,7 +10623,21 @@ def _seal_task_test_strategy_authority(
            for field in ("path", "strategy_fingerprint")):
         raise ValueError(
             "Plan test strategy differs from the approved Design artifact")
-    rel, strategy = _test_strategy_artifact(ws, design_reference)
+    if design_package is None:
+        rel, strategy = _test_strategy_artifact(ws, design_reference)
+    else:
+        strategy = test_strategy.validate_strategy(design_package.read("test-strategy"))
+        rel = design_reference["path"]
+        if strategy["contract_fingerprint_sha256"] != design_reference["strategy_fingerprint"]:
+            raise ValueError("sealed Design strategy fingerprint differs")
+        if __package__:
+            from . import review_evidence
+        else:
+            import review_evidence
+        if review_evidence.content_fingerprint(design) != state.get("design_fingerprint"):
+            raise ValueError("sealed Design contract fingerprint differs")
+        if design_package.run_id != state.get("run_id"):
+            raise ValueError("sealed Design package belongs to another run")
     criterion_ids = _strategy_authority_strings(
         plan_reference.get("criterion_ids"),
         "Plan test-strategy criterion_ids")
@@ -10479,14 +10726,24 @@ def _seal_task_test_strategy_authority(
             "changed_producer_ids": producer_ids,
         },
     }
+    if design_package is not None:
+        material["package_binding"] = {
+            "run_id": design_package.run_id,
+            "candidate_fingerprint": design_package.candidate_fingerprint,
+            "authority_fingerprint": design_package.authority_fingerprint,
+            "definition_set_fingerprint": design_package.registry.definition_set_fingerprint,
+            "artifacts": [artifact.projection() for artifact in design_package.artifacts
+                          if artifact.artifact_class in {"design", "test-strategy"}],
+        }
     return {**material, "fingerprint": hashlib.sha256(
         tp.canonical_json_bytes(material)).hexdigest()}
 
 
 def _validated_task_test_strategy_authority(
-        ws: str, state: Mapping[str, object], task: Mapping[str, object]
+        ws: str, state: Mapping[str, object], task: Mapping[str, object], *,
+        design_package: PhasePackage | None = None,
         ) -> dict | None:
-    expected = _seal_task_test_strategy_authority(ws, state, task)
+    expected = _seal_task_test_strategy_authority(ws, state, task, design_package=design_package)
     if expected is None:
         return None
     recorded = task.get("test_strategy_authority_receipt")
