@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -33,12 +34,16 @@ except ImportError:  # Windows retains the in-process lock and atomic replace
 try:
     from taskplane import (
         delivery_ports,
+        dispatch_telemetry,
         expanded_route_authority_provider,
+        recovery,
         wiring_closure,
     )
 except ImportError:  # direct executable/import compatibility
     import delivery_ports
+    import dispatch_telemetry
     import expanded_route_authority_provider
+    import recovery
     import wiring_closure
 
 
@@ -194,6 +199,113 @@ class TerminalTruthError(RuntimeError):
         super().__init__(detail)
         self.code = code
         self.detail = detail
+
+
+@dataclass(frozen=True)
+class TelemetrySafety:
+    """Bounded observations supplied by incumbent lifecycle/budget owners.
+
+    Durations are observations, not authorization to reclaim, retry or dispatch.
+    An unavailable projected budget remains None. These checks do not replace
+    the owner's CAS, fence, deadline or canonical budget enforcement.
+    """
+
+    builder_wait_seconds: float = 0
+    seal_wait_seconds: float = 0
+    cas_conflict: bool = False
+    orphan_reservation: bool = False
+    projected_use_ratio: float | None = None
+    heartbeat_age_seconds: float = 0
+    heartbeat_interval_seconds: float = 10
+    lease_remaining_seconds: float = 1
+    cancellation_pending_seconds: float = 0
+    uncertainty_seconds: float = 0
+
+    def __post_init__(self) -> None:
+        for name in ("builder_wait_seconds", "seal_wait_seconds", "heartbeat_age_seconds",
+                     "heartbeat_interval_seconds", "lease_remaining_seconds",
+                     "cancellation_pending_seconds", "uncertainty_seconds", "projected_use_ratio"):
+            value = getattr(self, name)
+            if value is None and name == "projected_use_ratio":
+                continue
+            if type(value) not in {int, float} or not math.isfinite(value) or \
+                    (name != "lease_remaining_seconds" and value < 0):
+                raise TerminalTruthError("telemetry_incomplete", "invalid telemetry safety observation")
+        if self.heartbeat_interval_seconds <= 0 or type(self.cas_conflict) is not bool or \
+                type(self.orphan_reservation) is not bool:
+            raise TerminalTruthError("telemetry_incomplete", "invalid telemetry safety observation")
+
+
+def attempt_telemetry_readiness(
+    receipt: Mapping[str, object] | None,
+    inputs: dispatch_telemetry.AttemptTelemetryInputs,
+    *, safety: TelemetrySafety = TelemetrySafety(),
+) -> dict[str, object]:
+    """W20–W24 prerequisite for sealing, Retro and continuation.
+
+    Verify actual producer output before reporting readiness. This is a
+    mechanical predicate, not a second terminal authority. Downstream callers
+    must still obtain their existing gate, terminal metrics and release proofs.
+    Errors are stable codes; private producer exceptions never enter exports.
+    """
+    alerts: list[dict[str, object]] = []
+    expected: dict[str, object] | None = None
+    source_error = False
+    incomplete = False
+    try:
+        expected = dispatch_telemetry.produce_attempt_telemetry(inputs)
+    except dispatch_telemetry.TelemetryIncompleteError:
+        incomplete = True
+    except (ValueError, KeyError, TypeError, OSError, dispatch_telemetry.DispatchTelemetryError):
+        source_error = True
+    operation = delivery_ports.content_fingerprint({"run": inputs.nonce_bindings.get("run_id"),
+        "field": "operation_id", "value": inputs.nonce_bindings.get("operation_id")})
+
+    def alert(seam: str, state: str, action: str) -> None:
+        alerts.append({"seam": seam, "state": state, "operation_id": operation,
+            "action": action, "recovery": recovery.decide_recovery(
+                failure_class="artifact", attempt=1, safe=False)})
+
+    if receipt is None or incomplete or inputs.runtime_receipt == {} or safety.builder_wait_seconds >= 30:
+        alert("W20", "telemetry_incomplete", "hold_inspect_producer_no_seal")
+    if source_error or (receipt is not None and receipt != expected) or safety.seal_wait_seconds > 60:
+        alert("W21", "seal_blocked", "reconcile_identity_no_continuation")
+    if safety.cas_conflict or safety.orphan_reservation or \
+            (safety.projected_use_ratio is not None and safety.projected_use_ratio > .9):
+        alert("W22", "budget_blocked", "reconcile_operation_no_dispatch_or_double_charge")
+    if safety.heartbeat_age_seconds > 2 * safety.heartbeat_interval_seconds or \
+            safety.lease_remaining_seconds < 0:
+        alert("W23", "lease_stale", "reconcile_effects_reclaim_only_effect_free")
+    if safety.cancellation_pending_seconds > 60 or safety.uncertainty_seconds > 300:
+        alert("W24", "cancellation_reconcile", "fence_preserve_reconcile_or_request_human_rescope")
+    if expected is not None and expected["effect_state"] == "uncertain":
+        alert("W24", "cancellation_reconcile", "fence_preserve_reconcile_or_request_human_rescope")
+    material: dict[str, object] = {
+        "schema": "taskplane.attempt-telemetry-readiness/v1", "ready": not alerts,
+        "telemetry_fingerprint": expected["fingerprint"] if expected is not None else None,
+        "operation_id": operation, "alerts": alerts,
+    }
+    return {**material, "fingerprint": delivery_ports.content_fingerprint(material)}
+
+
+def require_attempt_telemetry(
+    readiness: Mapping[str, object], receipt: Mapping[str, object] | None,
+    inputs: dispatch_telemetry.AttemptTelemetryInputs, *, consumer: str,
+    safety: TelemetrySafety = TelemetrySafety(),
+) -> dict[str, object]:
+    """Re-read producer truth at each downstream boundary; copied flags fail."""
+    if consumer not in {"seal", "retro", "continuation"}:
+        raise TerminalTruthError("seal_blocked", "unsupported telemetry consumer")
+    actual = attempt_telemetry_readiness(receipt, inputs, safety=safety)
+    if readiness != actual or receipt is None:
+        raise TerminalTruthError("seal_blocked", "seal_blocked: readiness output is missing or changed")
+    if actual["ready"] is not True:
+        alerts = actual["alerts"]
+        state = "seal_blocked"
+        if isinstance(alerts, list) and alerts and isinstance(alerts[0], dict):
+            state = str(alerts[0]["state"])
+        raise TerminalTruthError(state, state + ": telemetry prerequisite refused")
+    return dict(receipt)
 
 
 class _ExpandedRouteProviderTransportOverflow(RuntimeError):
