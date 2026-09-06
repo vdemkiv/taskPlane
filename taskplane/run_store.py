@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from collections.abc import Callable, Mapping
 import copy
+from datetime import datetime, timezone
 import hashlib
 import importlib
 import json
@@ -16,9 +18,10 @@ import uuid
 import storage
 import taskplane_lite as tp
 try:
-    from . import run_artifacts
+    from . import run_artifacts, stage_handoff
 except ImportError:  # pragma: no cover - direct-module compatibility
     import run_artifacts
+    import stage_handoff
 
 
 class RunStoreError(RuntimeError):
@@ -600,6 +603,167 @@ class RunStore:
     def __init__(self, *, home: str | None = None):
         ensure_stage_compatibility()
         self.home = storage.taskplane_home(home)
+
+    def _knowledge_path(self, workspace: str) -> str:
+        # Use the incumbent knowledge-root resolution, including migration.
+        return os.path.join(tp.kb_root(workspace), "governed-updates.json")
+
+    def _load_knowledge(self, path: str) -> dict:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                state = json.load(handle)
+        except FileNotFoundError:
+            return {"schema": "taskplane.governed-knowledge/v1", "scopes": {}, "operations": {}}
+        except (OSError, ValueError) as exc:
+            raise RunStoreError("knowledge state is unavailable") from exc
+        if (not isinstance(state, dict)
+                or set(state) != {"schema", "scopes", "operations"}
+                or state["schema"] != "taskplane.governed-knowledge/v1"
+                or not isinstance(state["scopes"], dict)
+                or not isinstance(state["operations"], dict)):
+            raise RunStoreError("knowledge state is invalid")
+        return state
+
+    @staticmethod
+    def _knowledge_scope(state: dict, scope: list[str]) -> dict:
+        identity = hashlib.sha256(_canonical_json_bytes(scope)).hexdigest()
+        initial = {"scope": scope, "lineage": [], "content": {}}
+        initial["fingerprint"] = hashlib.sha256(_canonical_json_bytes(initial)).hexdigest()
+        snapshot = copy.deepcopy(state["scopes"].get(identity, initial))
+        if (not isinstance(snapshot, dict)
+                or set(snapshot) != {"scope", "lineage", "content", "fingerprint"}
+                or snapshot["scope"] != scope
+                or not isinstance(snapshot["lineage"], list)
+                or not isinstance(snapshot["content"], dict)):
+            raise RunStoreError("knowledge scope is invalid")
+        material = {name: value for name, value in snapshot.items() if name != "fingerprint"}
+        if snapshot["fingerprint"] != hashlib.sha256(_canonical_json_bytes(material)).hexdigest():
+            raise RunStoreError("knowledge scope fingerprint mismatch")
+        return snapshot
+
+    def knowledge_snapshot(self, workspace: str, *, scope: list[str]) -> dict:
+        """Read only the caller's selected scope, without receipt/private bodies."""
+        path = self._knowledge_path(workspace)
+        with _lock(path):
+            return self._knowledge_scope(self._load_knowledge(path), scope)
+
+    def apply_knowledge(
+        self, workspace: str, proposal: Mapping[str, object], *, scope: list[str],
+        writer_id: str, fencing_token: int, current_writer: Callable[[], tuple[str, int]],
+        authorize: Callable[[dict[str, object], str], str | None] | None,
+        retention_class: str, key: stage_handoff.SigningKey,
+        now: int, expires_at: int, freshness: Mapping[str, object],
+        action: str = "apply",
+    ) -> dict[str, object]:
+        """Apply through the incumbent KB root and shared serialization owner.
+
+        Only the orchestrator supplies the trusted current writer and admission
+        port. The port rechecks evaluator admission, canonical gate, exact
+        proposal/candidate/provenance, scope and retention authority under the
+        lock, returning its gate fingerprint or None. Agents receive neither
+        this port nor the signing key. No lifecycle authority comes from data.
+
+        One atomic record contains both append-only lineage and the original
+        signed replay receipt. A crash before replacement applies nothing; a
+        crash after replacement returns that receipt without another effect.
+        Fingerprints-only retention never persists a proposal body, including
+        to journals or staging files. Rejections/conflicts are returned sealed
+        to the orchestrator as findings and leave the knowledge store unchanged.
+        """
+        value = stage_handoff.prepare_knowledge_proposal(proposal, expected_scope=scope)
+        # Unlike a producer, a consumer must never mint a missing identity.
+        if proposal.get("proposal_fingerprint") != value["proposal_fingerprint"]:
+            raise stage_handoff.HandoffIntegrityError("knowledge producer identity is missing")
+        if action not in {"apply", "delete", "minimize"}:
+            raise RunStoreError("unsupported knowledge action")
+        entities = _stage_entities_module()
+        writer_id = _operation_id(writer_id, "knowledge writer")
+        if type(fencing_token) is not int or fencing_token < 1:
+            raise RunStoreError("knowledge writer fence is invalid")
+        path = self._knowledge_path(workspace)
+        scope_id = hashlib.sha256(_canonical_json_bytes(scope)).hexdigest()
+        operation = str(value["operation_id"])
+        operation_key = str(value["run_id"]) + ":" + operation
+        request = hashlib.sha256(_canonical_json_bytes({
+            "proposal": value["proposal_fingerprint"], "freshness": dict(freshness),
+            "scope": scope, "retention_class": retention_class,
+        })).hexdigest()
+        with _lock(path):
+            state = self._load_knowledge(path)
+            snapshot = self._knowledge_scope(state, scope)
+            previous = state["operations"].get(operation_key)
+            if previous is not None:
+                if previous["request_fingerprint"] != request:
+                    raise OperationConflict("knowledge operation reused with changed input")
+                existing = previous["receipts"].get(action)
+                if existing is not None:
+                    return copy.deepcopy(existing)
+            gate = authorize(copy.deepcopy(value), action) if callable(authorize) else None
+            gate_valid = isinstance(gate, str) and bool(_FINGERPRINT.fullmatch(gate))
+            fence_valid = callable(current_writer) and current_writer() == (writer_id, fencing_token)
+            fence_valid = fence_valid and fencing_token >= max(
+                (entry["fencing_token"] for entry in snapshot["lineage"]), default=1)
+            if previous is not None:
+                fence_valid = fence_valid and fencing_token >= previous["fencing_token"]
+            retention_valid = retention_class in {"fingerprints-only", "scoped-facts"}
+            outcome = "applied" if action == "apply" else "tombstoned"
+            reason = "continue"
+            if not gate_valid or not fence_valid or not retention_valid:
+                outcome, reason = "rejected", "hold"
+            elif action == "apply" and value["base_knowledge_fingerprint"] != snapshot["fingerprint"]:
+                outcome, reason = "conflict", "fresh-package"
+            elif action != "apply" and previous is None:
+                outcome, reason = "rejected", "hold"
+            elif action == "apply" and any(
+                superseded not in {entry["proposal_fingerprint"] for entry in snapshot["lineage"]}
+                for superseded in value["supersedes"]
+            ):
+                outcome, reason = "rejected", "hold"
+            new_fingerprint = None
+            next_snapshot = copy.deepcopy(snapshot)
+            if outcome in {"applied", "tombstoned"}:
+                entry = {"proposal_fingerprint": value["proposal_fingerprint"],
+                    "content_fingerprint": hashlib.sha256(str(value["content"]).encode()).hexdigest(),
+                    "run_id": value["run_id"], "phase_id": value["phase_id"],
+                    "attempt_id": value["attempt_id"], "operation_id": operation,
+                    "candidate_fingerprint": value["candidate_fingerprint"],
+                    "observation_fingerprint": hashlib.sha256(str(value["finding_or_observation_reference"]).encode()).hexdigest(),
+                    "supersedes": value["supersedes"], "action": action,
+                    "writer_id": writer_id, "fencing_token": fencing_token,
+                    "retention_class": retention_class, "prior_fingerprint": snapshot["fingerprint"]}
+                next_snapshot["lineage"].append(entry)
+                if action == "apply" and retention_class == "scoped-facts":
+                    next_snapshot["content"][value["proposal_fingerprint"]] = value["content"]
+                elif action != "apply":
+                    next_snapshot["content"].pop(value["proposal_fingerprint"], None)
+                new_fingerprint = hashlib.sha256(_canonical_json_bytes({
+                    "scope": scope, "lineage": next_snapshot["lineage"],
+                    "content": next_snapshot["content"]})).hexdigest()
+                next_snapshot["fingerprint"] = new_fingerprint
+            result = entities.create_contract({
+                "schema": entities.KNOWLEDGE_APPLY_SCHEMA,
+                "base_fingerprint": value["base_knowledge_fingerprint"],
+                "current_fingerprint": snapshot["fingerprint"],
+                "new_fingerprint": new_fingerprint,
+                "proposal_fingerprint": value["proposal_fingerprint"],
+                "gate_receipt_fingerprint": gate if gate_valid else "0" * 64,
+                "operation_id": operation, "writer_id": writer_id,
+                "fencing_token": fencing_token,
+                "retention_class": retention_class if retention_valid else "unassigned",
+                "applied_at": datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z"),
+                "outcome": outcome, "continuation": {"kind": reason, "phase_id": value["phase_id"]},
+            })
+            receipt = stage_handoff.sign_contract(result, key=key, issued_at=now,
+                expires_at=expires_at, freshness=freshness)
+            if outcome in {"applied", "tombstoned"}:
+                state["scopes"][scope_id] = next_snapshot
+                record = copy.deepcopy(previous) if previous else {
+                    "request_fingerprint": request, "receipts": {}, "fencing_token": fencing_token}
+                record["receipts"][action] = receipt
+                record["fencing_token"] = fencing_token
+                state["operations"][operation_key] = record
+                _atomic_write_json(path, state)
+            return receipt
 
     def _manifest_path(self, run_id: str) -> str:
         return os.path.join(self.home, "runs", _run_id(run_id),

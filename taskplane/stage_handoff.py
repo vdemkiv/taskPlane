@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 import hashlib
 import hmac
+import json
 import re
 from typing import Final, TypeAlias
 
@@ -601,6 +602,90 @@ def _seconds(value: object, label: str) -> int:
     if type(value) is not int or value < 0:
         raise HandoffValidationError(f"{label} must be non-negative integer seconds")
     return value
+
+
+def prepare_knowledge_proposal(
+    value: Mapping[str, object], *, expected_scope: list[str]
+) -> JsonObject:
+    """Validate a bounded fact proposal without writing or granting authority.
+
+    This domain boundary is deliberately stricter than the historical value
+    reader: portable facts are structured observations, never strategy prose.
+    The existing evidence-reference spelling remains the v1 wire spelling.
+    """
+    if __package__:
+        from . import stage_entities as entities
+    else:
+        import stage_entities as flat_entities
+
+        entities = flat_entities
+    row = entities.create_contract(value)
+    if row["schema"] != entities.KNOWLEDGE_UPDATE_SCHEMA:
+        raise HandoffValidationError("unsupported knowledge proposal")
+    if row["scope"] != expected_scope or len(expected_scope) != 2:
+        raise HandoffValidationError("knowledge scope mismatch")
+    if (not expected_scope[0].startswith("repository:")
+            or expected_scope[1] != "phase:" + str(row["phase_id"])):
+        raise HandoffValidationError("knowledge repository/phase scope is invalid")
+    _identifier(expected_scope[0][len("repository:"):], "knowledge repository")
+    reference = row["finding_or_observation_reference"]
+    if not isinstance(reference, str) or not re.fullmatch(
+            r"artifact://(?:finding|observation)/[0-9a-f]{64}", reference):
+        raise HandoffValidationError("knowledge observation provenance is invalid")
+    content = row["content"]
+    if not isinstance(content, str):
+        raise HandoffValidationError("knowledge content is invalid")
+    if row["content_class"] == "evidence-reference":
+        if not re.fullmatch(r"artifact://[a-z][a-z0-9-]*/[0-9a-f]{64}", content):
+            raise HandoffValidationError("knowledge evidence reference is invalid")
+    else:
+        try:
+            fact = json.loads(content)
+        except ValueError as exc:
+            raise HandoffValidationError("knowledge requires a structured fact") from exc
+        fact = _closed(fact, frozenset({"subject", "predicate", "value"}), "knowledge fact")
+        _identifier(fact["subject"], "fact subject")
+        _identifier(fact["predicate"], "fact predicate")
+        if type(fact["value"]) not in {bool, int}:
+            raise HandoffValidationError("knowledge fact requires a boolean or integer observation")
+    supersedes = row["supersedes"]
+    if not isinstance(supersedes, list):
+        raise HandoffValidationError("supersedes must be a list")
+    for superseded in supersedes:
+        _fingerprint(superseded, "superseded proposal")
+    return row
+
+
+def consume_knowledge_receipt(
+    receipt: Mapping[str, object], *, proposal: Mapping[str, object],
+    trusted_keys: Mapping[str, SigningKey], expected_freshness: Mapping[str, object],
+    now: int,
+) -> JsonObject:
+    """Consume the owner's actual authenticated receipt bound to one proposal."""
+    if __package__:
+        from . import stage_entities as entities
+    else:
+        import stage_entities as flat_entities
+
+        entities = flat_entities
+    source = entities.validate_contract(proposal)
+    if source["schema"] != entities.KNOWLEDGE_UPDATE_SCHEMA:
+        raise HandoffValidationError("unsupported knowledge proposal")
+    verified = verify_contract(receipt, trusted_keys=trusted_keys,
+        expected_schema=entities.KNOWLEDGE_APPLY_SCHEMA,
+        expected_freshness=expected_freshness, now=now)
+    result = verified["payload"]
+    if not isinstance(result, dict):
+        raise HandoffValidationError("knowledge receipt is invalid")
+    for receipt_field, proposal_field in (
+        ("proposal_fingerprint", "proposal_fingerprint"),
+        ("operation_id", "operation_id"), ("base_fingerprint", "base_knowledge_fingerprint"),
+    ):
+        if result[receipt_field] != source[proposal_field]:
+            raise HandoffValidationError("knowledge receipt proposal binding mismatch")
+    if result["outcome"] == "applied" and result["base_fingerprint"] != result["current_fingerprint"]:
+        raise HandoffValidationError("knowledge receipt violates compare-and-swap")
+    return result
 
 
 @dataclass(frozen=True)
