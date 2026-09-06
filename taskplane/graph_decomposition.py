@@ -325,7 +325,8 @@ def require_complete_source_coverage(coverage: dict, *, source_tree: str | None 
 
 def derive_verified_source(workspace: str, graph: dict, coverage: dict, prev: dict | None = None):
     """Run decomposition only for complete coverage of this graph source."""
-    source_tree = str(((graph or {}).get("meta") or {}).get("scanned_head") or "").strip()
+    meta = (graph or {}).get("meta") or {}
+    source_tree = str(meta.get("source_tree") or meta.get("scanned_head") or "").strip()
     if not source_tree:
         raise ValueError("graph source tree is unavailable for decomposition")
     require_complete_source_coverage(coverage, source_tree=source_tree)

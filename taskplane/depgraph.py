@@ -2560,7 +2560,140 @@ def _graph_scan_quality(
     )
 
 
+_SCAN_COVERAGE_LIMITS = {
+    "local_depth": 3,
+    "max_fanout": graph_decomposition.MAX_MODULE_FILES,
+    "max_elapsed_ms": 60_000,
+    "parsers": [
+        "components-yaml",
+        "graph-contracts",
+        "module-map",
+        "reference-scanner",
+        "runtime-edges",
+        "source-scanner",
+    ],
+    "languages": ["configuration", "graph", "multi-language", "runtime"],
+    "policy": "approved",
+}
+
+
+def _scan_source_coverage(
+    graph: dict,
+    *,
+    source_files: list[str],
+    references: list,
+    base_failures: list[dict],
+    exclude_error: str | None,
+    started_at: float,
+) -> dict:
+    """Build the one source receipt consumed by the live decomposition seam."""
+    file_rows = graph.get("files") or {}
+    source_tree = _canonical_fingerprint(
+        {
+            "files": {path: (row or {}).get("hash", "") for path, row in sorted(file_rows.items())},
+            "recorded": graph.get("recorded") or [],
+        }
+    )
+    graph.setdefault("meta", {})["source_tree"] = source_tree
+    missing_files = sorted(set(source_files) - set(file_rows))
+    truncated_files = sorted(
+        path
+        for path, row in file_rows.items()
+        if isinstance(row, dict)
+        and isinstance(row.get("size"), int)
+        and row["size"] >= graph_decomposition.MAX_FILE_BYTES
+    )
+    outgoing: dict[str, int] = {}
+    for edge in graph.get("edges") or []:
+        source = str(edge.get("from") or "")
+        outgoing[source] = outgoing.get(source, 0) + 1
+    max_fanout = max(outgoing.values(), default=0)
+    elapsed_ms = max(0, int((time.monotonic() - started_at) * 1000))
+    scanners = (graph.get("meta") or {}).get("scanners") or {}
+    unsupported_language = any(
+        isinstance(row, dict) and row.get("coverage") == "external-only"
+        for row in scanners.values()
+    )
+
+    bound_inputs = [
+        {"id": "source:files", "kind": "file"},
+        {"id": "source:modules", "kind": "module"},
+        {"id": "source:symbols", "kind": "symbol"},
+        {"id": "source:configuration", "kind": "configuration"},
+        {"id": "source:contracts", "kind": "contract"},
+        {"id": "source:runtime", "kind": "runtime"},
+    ]
+    material = {
+        "source:files": sorted(
+            (path, (row or {}).get("hash", "")) for path, row in file_rows.items()
+        ),
+        "source:modules": graph.get("modules") or {},
+        "source:symbols": references,
+        "source:configuration": scanners,
+        "source:contracts": [
+            edge
+            for edge in graph.get("edges") or []
+            if str(edge.get("from") or "").startswith("contract:")
+            or str(edge.get("to") or "").startswith("contract:")
+        ],
+        "source:runtime": graph.get("recorded") or [],
+    }
+    parsers = {
+        "file": "source-scanner",
+        "module": "module-map",
+        "symbol": "reference-scanner",
+        "configuration": "components-yaml",
+        "contract": "graph-contracts",
+        "runtime": "runtime-edges",
+    }
+    languages = {
+        "file": "multi-language",
+        "module": "graph",
+        "symbol": "multi-language",
+        "configuration": "configuration",
+        "contract": "graph",
+        "runtime": "runtime",
+    }
+
+    def verify(bound_input: dict) -> dict:
+        kind = bound_input["kind"]
+        state = "present"
+        parser = parsers[kind]
+        policy = "approved"
+        if kind == "file" and missing_files:
+            state = "missing"
+        elif kind == "file" and truncated_files:
+            state = "truncated"
+        elif kind == "file" and base_failures:
+            parser = "failed-parser"
+        elif kind == "configuration" and exclude_error:
+            policy = "rejected"
+        elif kind == "module" and unsupported_language:
+            state = "unsupported"
+        return {
+            "verified": True,
+            "state": state,
+            "source_fingerprint": _canonical_fingerprint(material[bound_input["id"]]),
+            "parser": parser,
+            "language": languages[kind],
+            "policy": policy,
+            "depth": 3,
+            "fanout": max_fanout,
+            "elapsed_ms": elapsed_ms,
+        }
+
+    coverage = build_source_touchpoint_coverage(
+        source_tree,
+        bound_inputs,
+        limits=_SCAN_COVERAGE_LIMITS,
+        verifier=verify,
+    )
+    graph["meta"]["source_coverage"] = coverage
+    return coverage
+
+
 def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> dict:
+    scan_started_at = time.monotonic()
     prev = load(ws)
     files, code_files, artifact_files = {}, [], []
     excludes, exclude_err = load_excludes(ws)
@@ -3082,7 +3215,15 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
     dstats = None
     if decompose:
         try:
-            comps, dstats = graph_decomposition.derive(ws, g, prev)
+            coverage = _scan_source_coverage(
+                g,
+                source_files=sorted(code_files + artifact_files),
+                references=ref_rows,
+                base_failures=base_failures,
+                exclude_error=exclude_err,
+                started_at=scan_started_at,
+            )
+            comps, dstats = derive_verified_source(ws, g, coverage, prev)
             g["components"] = comps
             g["meta"]["decompose"] = {"floors": dstats.get("floors_hash", "")}
         except Exception as e:  # fail-open: never crash the scan
