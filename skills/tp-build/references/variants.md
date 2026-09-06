@@ -1,5 +1,29 @@
 # A/B variants — build it twice, choose once
 
+## Shared Build effect boundary (inactive T12 adapter)
+
+`taskplane.build_c.run_build_phase` is an additive, inactive composition port
+for Build, including each isolated variant. Activation belongs to HG-E/T15C;
+this interface does not change current routing or authorize a new attempt.
+The orchestrator supplies the sealed runtime dispatch, admitted lease, trusted
+fenced launch and terminal-observation adapters, and pinned effect paths.
+Build receives package inputs and the existing restricted tool boundary.
+
+The nonce owner reserves the operation before the lease owner durably reserves
+its effects. The adapter revalidates package bytes, definition, budget,
+containment and current authority immediately before launch, passing the exact
+attempt, operation and fencing token to the trusted host port. A host callback
+return does not resolve effects. Matching terminal identity, release and
+non-overlap evidence must reach the existing lease reconciliation owner.
+Missing or uncertain observations produce a closed refusal and the
+orchestrator's continuation; pickup never relaunches that operation. A host
+without remote fencing must remain held until authoritative reconciliation.
+
+The adapter creates no store, coordinator, knowledge writer or review worker.
+Knowledge remains sealed input; accepted artifacts are candidates for the
+orchestrator's next judgment, not Build approval. Local tests with simulated
+hosts do not establish J0, J1, J6 or full W01–W34 evidence.
+
 When a feature's design space is genuinely wide (two credible UX shapes,
 two credible architectures, or both), one build examines one point in the
 space. Variants examine two — under identical governance — and let the
