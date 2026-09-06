@@ -47,6 +47,24 @@ hooks are authoritative for contract lifecycle, but not completion evidence. The
 `PreToolUse` screen, worker submission, evaluator evidence, orchestrator-only
 gate, and human checkpoints remain authoritative.
 
+## Sealed phase continuation
+
+For adapters using the additive phase interfaces, `taskplane/loop.py` owns
+`phase_evaluator_request` and `continue_phase_result`. Evaluation lenses come
+from the admitted registry; the agent's working lenses are omitted. The loop
+requires the current signed runtime result and canonical review, applies the
+declared gate, requests knowledge compare-and-swap through the incumbent owner,
+commits the result, and checks telemetry readiness before selecting declared
+edges. Trusted authority, gate, knowledge, and artifact ports are host
+capabilities; never put them in a worker package or reconstruct them from a
+role label. `taskplane/tp.py:phase_continuation_output` and the loop's
+`require_phase_continuation` revalidate committed evidence and current
+authority at consumption. Missing evidence or authority holds progression;
+knowledge conflicts and rejections remain visible while the accepted runtime
+result is preserved. These interfaces do not activate a new phase rail or
+change rollout gates. Simulated host identity and unavailable usage keep their
+original provenance in the output.
+
 ## Long-running loops
 
 For a run likely to span many steps, recommend that the user start Codex Goal

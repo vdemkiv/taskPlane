@@ -27,6 +27,8 @@ existing spec (→plan).
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
+from typing import Callable, TYPE_CHECKING
 import base64
 import copy
 import contextlib
@@ -67,6 +69,9 @@ import storage as runtime_storage
 import spend
 import taskplane_lite as tp
 import yield_meter
+
+if TYPE_CHECKING:
+    from taskplane.review_evidence import ArtifactStore
 
 if __package__:
     from . import brief_projection
@@ -116,6 +121,215 @@ LOOP_FILE = "loop.json"
 REVIEW_RAW_DIFF_RETENTION_SECONDS = 24 * 60 * 60
 REVIEW_RAW_DIFF_MAX_ARTIFACTS = 32
 REVIEW_RAW_DIFF_MAX_BYTES = 16 * 1024 * 1024
+
+
+PhaseAuthorityCheck = Callable[[str, Mapping[str, object]], None]
+
+
+@dataclass(frozen=True)
+class PhaseContinuationPorts:
+    """Trusted incumbent ports, never fields supplied by a phase agent.
+
+    The host authority check raises unless this session owns the exact action
+    and candidate. The gate port applies the declared current gate; knowledge
+    uses RunStore.apply_knowledge (including its under-lock authority recheck).
+    Commit uses the incumbent artifact store. No port is delivered to workers.
+    These additive connections do not switch legacy phase adapters on.
+    """
+
+    authorize: PhaseAuthorityCheck
+    gate: Callable[[Mapping[str, object], Mapping[str, object]], str | None]
+    apply_knowledge: Callable[[Mapping[str, object], str], Mapping[str, object]]
+    commit: Callable[[Mapping[str, object]], Mapping[str, object]]
+
+
+def _phase_object(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
+        raise ValueError("phase continuation object missing")
+    return dict(value)
+
+
+def _phase_result(inputs: dispatch_telemetry.AttemptTelemetryInputs,
+                  registry: operational_settings.PhaseRegistry,
+                  store: ArtifactStore) -> tuple[dict[str, object], dict[str, object]]:
+    from taskplane import stage_handoff, stage_entities
+
+    verified = stage_handoff.verify_contract(inputs.runtime_receipt,
+        trusted_keys=inputs.trusted_keys, expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
+        expected_freshness=inputs.freshness, now=inputs.now, store=store)
+    result = _phase_object(verified["payload"])
+    nonce = inputs.nonce_source.validate(inputs.nonce, inputs.nonce_bindings)
+    for field in ("run_id", "phase_id", "attempt_id", "operation_id", "candidate_fingerprint",
+                  "definition_set_fingerprint", "phase_definition_fingerprint",
+                  "sealed_package_fingerprint", "knowledge_fingerprint", "authority_fingerprint",
+                  "nonce_digest"):
+        if result[field] != nonce[field]:
+            raise ValueError("phase attempt binding changed")
+    definition = registry.admit(str(result["phase_id"]), ()).to_dict()
+    if result["definition_set_fingerprint"] != registry.definition_set_fingerprint or \
+            result["phase_definition_fingerprint"] != definition["fingerprint"] or \
+            result["capability_set_fingerprint"] != registry.capability_set_fingerprint:
+        raise ValueError("phase definition binding changed")
+    if result["status"] != "accepted" or result["evaluator_dispatch_eligibility"] is not True:
+        raise ValueError("phase result does not admit evaluation")
+    return result, definition
+
+
+def phase_evaluator_request(inputs: dispatch_telemetry.AttemptTelemetryInputs,
+        registry: operational_settings.PhaseRegistry, store: ArtifactStore,
+        authorize: PhaseAuthorityCheck) -> dict[str, object]:
+    """Choose evaluation from the admitted definition, excluding working lenses."""
+    result, definition = _phase_result(inputs, registry, store)
+    authorize("choose-evaluator", result)
+    return {"phase_id": result["phase_id"], "candidate_fingerprint": result["candidate_fingerprint"],
+        "phase_result_fingerprint": result["fingerprint"],
+        "definition_set_fingerprint": registry.definition_set_fingerprint,
+        "evaluation_lenses": copy.deepcopy(definition["evaluation_lenses"]),
+        "collected_output_references": copy.deepcopy(result["collected_output_references"])}
+
+
+def _phase_review(store: ArtifactStore, review: Mapping[str, object],
+                  result: Mapping[str, object]) -> dict[str, object]:
+    from taskplane import review_evidence
+    from taskplane import review as review_owner
+
+    envelope_ref = _phase_object(review.get("envelope"))
+    envelope = _phase_object(store.read(envelope_ref))
+    change = _phase_object(envelope.get("change"))
+    if envelope.get("target_fingerprint") != result["candidate_fingerprint"] or \
+            change.get("phase_result_fingerprint") != result["fingerprint"] or \
+            change.get("definition_set_fingerprint") != result["definition_set_fingerprint"]:
+        raise ValueError("review is not bound to this phase result")
+    leases, outputs = review.get("leases"), review.get("results")
+    if not isinstance(leases, list) or not isinstance(outputs, list):
+        raise ValueError("review evidence inventory missing")
+    collection = review_evidence.collect_slot_results(store,
+        [_phase_object(row) for row in leases], [_phase_object(row) for row in outputs])
+    review_evidence.require_approvable_collection(collection)
+    for collected in collection["results"]:
+        reports = collected.get("lens_results")
+        if not isinstance(reports, list) or not reports:
+            raise ValueError("current review judgment is missing")
+        seen = []
+        for report in reports:
+            verdict = _phase_object(report)
+            identity = str(verdict.get("lens") or "")
+            if verdict.get("verdict") != "pass":
+                raise ValueError("review does not admit continuation")
+            review_owner._validated_checked_evidence(verdict, lens_id=identity,
+                slot_id=collected["slot_id"], canonical_revision=collected["canonical_revision"])
+            seen.append(identity)
+        if sorted(seen) != sorted(collected["lens_ids"]):
+            raise ValueError("review judgments do not match the collected inventory")
+    revision = review_evidence.sealed_current_revision(store, _phase_object(review.get("revision")))
+    if collection["context_fingerprint"] != envelope["context_fingerprint"] or \
+            collection["result_fingerprints"] != revision["result_fingerprints"]:
+        raise ValueError("review collection is not current")
+    findings = revision["findings"]
+    if not isinstance(findings, list) or any(not isinstance(row, dict) for row in findings):
+        raise ValueError("review findings missing")
+    # A reported pass or a worker's resolved flag cannot override policy.
+    # Accepted resolution must arrive through a fresh canonical revision.
+    if classify_findings(findings)["blockers"]:
+        raise ValueError("canonical review has unresolved policy blockers")
+    return revision
+
+
+def continue_phase_result(inputs: dispatch_telemetry.AttemptTelemetryInputs,
+        registry: operational_settings.PhaseRegistry, store: ArtifactStore,
+        review: Mapping[str, object], ports: PhaseContinuationPorts) -> dict[str, object]:
+    """Compose gate, knowledge CAS, commit and seal in the sole loop owner.
+
+    Knowledge conflicts/rejections stay visible and hold continuation, while
+    preserving the accepted runtime result. No phase order is hardcoded and
+    this function creates neither a lifecycle store nor an authority issuer.
+    """
+    result, definition = _phase_result(inputs, registry, store)
+    ports.authorize("continue", result)
+    phase_evaluator_request(inputs, registry, store, ports.authorize)
+    reviewed = _phase_review(store, review, result)
+    ports.authorize("gate", result)
+    gate_fingerprint = ports.gate(definition, reviewed)
+    if not isinstance(gate_fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", gate_fingerprint):
+        raise PermissionError("declared current gate is missing")
+    receipts = []
+    for proposal in inputs.knowledge_proposals:
+        if any(proposal.get(field) != result[field] for field in
+               ("run_id", "phase_id", "attempt_id", "candidate_fingerprint")):
+            raise ValueError("knowledge proposal belongs to another result")
+        ports.authorize("commit-knowledge", result)
+        receipts.append(ports.apply_knowledge(proposal, gate_fingerprint))
+    effective = replace(inputs, knowledge_receipts=tuple(receipts))
+    telemetry = dispatch_telemetry.produce_attempt_telemetry(effective)
+    readiness = terminal_truth.attempt_telemetry_readiness(telemetry, effective)
+    terminal_truth.require_attempt_telemetry(readiness, telemetry, effective, consumer="seal")
+    from taskplane import stage_handoff
+    for proposal, receipt in zip(effective.knowledge_proposals, effective.knowledge_receipts):
+        applied = stage_handoff.consume_knowledge_receipt(receipt, proposal=proposal,
+            trusted_keys=effective.trusted_keys, expected_freshness=effective.freshness, now=effective.now)
+        if applied["gate_receipt_fingerprint"] != gate_fingerprint:
+            raise ValueError("knowledge receipt belongs to another gate")
+    ports.authorize("commit-result", result)
+    committed = ports.commit(result)
+    record = {"committed_result": dict(committed), "gate_fingerprint": gate_fingerprint,
+        "telemetry": telemetry, "telemetry_readiness": readiness,
+        "knowledge_receipts": [dict(row) for row in receipts],
+        "review_fingerprint": reviewed["findings_fingerprint"]}
+    return require_phase_continuation(record, effective, registry, store, review, ports.authorize,
+        projection=False)
+
+
+def require_phase_continuation(value: object, inputs: dispatch_telemetry.AttemptTelemetryInputs,
+        registry: operational_settings.PhaseRegistry, store: ArtifactStore,
+        review: Mapping[str, object], authorize: PhaseAuthorityCheck, *,
+        projection: bool = True) -> dict[str, object]:
+    """Revalidate loop/CLI output at consumption; portable values confer no authority."""
+    result, definition = _phase_result(inputs, registry, store)
+    authorize("continue", result)
+    record = _phase_object(value)
+    reviewed = _phase_review(store, review, result)
+    reference = _phase_object(record.get("committed_result"))
+    if store.read(reference) != result:
+        raise ValueError("committed phase result is missing or changed")
+    if record.get("knowledge_receipts") != list(inputs.knowledge_receipts) or \
+            record.get("review_fingerprint") != reviewed["findings_fingerprint"]:
+        raise ValueError("phase evidence changed before continuation")
+    gate_fingerprint = record.get("gate_fingerprint")
+    if not isinstance(gate_fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", gate_fingerprint):
+        raise PermissionError("phase gate receipt missing")
+    authorize("gate:" + gate_fingerprint, result)
+    from taskplane import stage_handoff
+    for proposal, receipt in zip(inputs.knowledge_proposals, inputs.knowledge_receipts):
+        applied = stage_handoff.consume_knowledge_receipt(receipt, proposal=proposal,
+            trusted_keys=inputs.trusted_keys, expected_freshness=inputs.freshness, now=inputs.now)
+        if applied["gate_receipt_fingerprint"] != gate_fingerprint:
+            raise ValueError("knowledge receipt belongs to another gate")
+    telemetry = terminal_truth.require_attempt_telemetry(
+        _phase_object(record.get("telemetry_readiness")), _phase_object(record.get("telemetry")),
+        inputs, consumer="continuation")
+    counts = _phase_object(telemetry["knowledge_update_admission_counts"])
+    held = bool(counts.get("conflict") or counts.get("rejected"))
+    successors = []
+    conditions = definition["edge_conditions"]
+    if not isinstance(conditions, list):
+        raise ValueError("phase edge conditions missing")
+    for edge in conditions:
+        row = _phase_object(edge)
+        if row["condition"] == "accepted":
+            successors.append(row["successor"])
+    if not held and not definition["terminal"] and not successors:
+        raise ValueError("no admitted continuation edge")
+    continuation = ({"kind": "hold", "successors": []} if held else
+        {"kind": "advance" if successors else "complete", "successors": successors})
+    base = {key: record[key] for key in ("committed_result", "gate_fingerprint", "telemetry",
+        "telemetry_readiness", "knowledge_receipts", "review_fingerprint")}
+    expected = {**base, "continuation": continuation, "findings": reviewed["findings"],
+        "host_kind_version": result["host_kind_version"]}
+    if projection and record != expected:
+        raise ValueError("phase continuation output is missing or changed")
+    if not projection and record != base:
+        raise ValueError("unexpected phase continuation fields")
+    return expected
 
 
 def _retained_review_diff_payload(*, base: str, files: list[str],

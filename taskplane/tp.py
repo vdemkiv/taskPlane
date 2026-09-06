@@ -55,6 +55,14 @@ import runpy
 import shlex
 import time as _time
 import traceback
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from taskplane.dispatch_telemetry import AttemptTelemetryInputs
+    from taskplane.loop import PhaseAuthorityCheck
+    from taskplane.review_evidence import ArtifactStore
+    from taskplane.settings import PhaseRegistry
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import taskplane_lite as tp  # noqa: E402
@@ -3578,6 +3586,21 @@ def _loop_evidence_workspaces(loopmod, workspace: str,
             "error": "this worktree is not the claimed workspace for "
                      f"task {task.get('id')!r}"}
     return authority, evidence_ws, None
+
+def phase_continuation_output(value: object, *, inputs: AttemptTelemetryInputs,
+        registry: PhaseRegistry, store: ArtifactStore,
+        revision: Mapping[str, object], authorize: PhaseAuthorityCheck) -> dict[str, object]:
+    """Project the existing loop owner's sealed result without CLI authority.
+
+    Phase adapters provide trusted incumbent ports; JSON, worker role labels
+    and native UI state never supply these capabilities. Activation remains
+    with the separately governed phase cutover.
+    """
+    from taskplane import loop as loop_owner
+
+    return loop_owner.require_phase_continuation(value, inputs, registry,
+        store, revision, authorize)
+
 
 def cmd_loop(a) -> int:
     """Drive the taskplane-owned Evaluate-Loop state machine."""
