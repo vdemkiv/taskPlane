@@ -525,15 +525,6 @@ def read_manifest(
     )
 
 
-def _entities():
-    # Keep the existing stage -> handoff import direction usable by the CLI.
-    if __package__:
-        from . import stage_entities
-    else:
-        import stage_entities
-    return stage_entities
-
-
 def validate_v2_manifest(
     store: review_evidence.ArtifactStore, manifest: Mapping[str, object]
 ) -> JsonObject:
@@ -543,7 +534,13 @@ def validate_v2_manifest(
     projection. The projection is never stored, returned or treated as a v1
     authorization. The original v2 identity is checked independently.
     """
-    entities = _entities()
+    # Delay this import to retain the stage -> handoff import direction.
+    if __package__:
+        from . import stage_entities as entities
+    else:
+        import stage_entities as flat_entities
+
+        entities = flat_entities
     row = _closed(
         manifest, _MANIFEST_FIELDS | entities._HANDOFF_V2_ADDITIONS, "v2 handoff manifest"
     )
@@ -559,14 +556,23 @@ def validate_v2_manifest(
     if not isinstance(result, Mapping) or result.get("schema") != entities.AGENT_RUNTIME_SCHEMA:
         raise HandoffValidationError("v2 handoff requires an agent runtime result")
     entities.validate_contract(result, store=store)
-    if row["producer"]["outcome"] == "done" and result["status"] != "accepted":
+    producer = _closed(row["producer"], frozenset({"stage_id", "outcome"}), "producer")
+    if producer["outcome"] == "done" and result["status"] != "accepted":
         raise HandoffValidationError("done handoff requires an accepted result")
-    selected = {(item["kind"], item["fingerprint"]) for item in row["selected_artifacts"]}
+    selected = set()
+    for raw in entities._contract_list(row["selected_artifacts"], "selected artifacts"):
+        selected_reference = entities._portable_reference(raw, "selected artifact")
+        selected.add((selected_reference["kind"], selected_reference["fingerprint"]))
     seen = set()
     for group in ("produced_artifacts", "inherited_artifacts"):
         entities._schema_artifacts(row[group], group, references=True)
-        for artifact in row[group]:
-            reference = artifact["reference"]
+        for artifact in entities._contract_list(row[group], group):
+            item = entities._closed(
+                artifact,
+                frozenset({"artifact_class", "artifact_schema_version", "reference"}),
+                group,
+            )
+            reference = entities._portable_reference(item["reference"], "artifact reference")
             identity = (reference["kind"], reference["fingerprint"])
             if identity not in selected:
                 raise HandoffValidationError("v2 artifact is not selected")
@@ -614,7 +620,7 @@ class SigningKey:
     status: str = "active"
     changed_at: int | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.key_id, str) or not _IDENTIFIER.fullmatch(self.key_id):
             raise HandoffValidationError("signing key id is invalid")
         if not isinstance(self.secret, bytes) or len(self.secret) < 32:
@@ -694,7 +700,8 @@ def disable_signing_key(
 def _freshness(value: object) -> dict[str, object]:
     row = _closed(value, _FRESHNESS_FIELDS, "signature freshness")
     for key in ("candidate_sha", "source_tree"):
-        if not isinstance(row[key], str) or not _COMMIT.fullmatch(row[key]):
+        identity = row[key]
+        if not isinstance(identity, str) or not _COMMIT.fullmatch(identity):
             raise HandoffValidationError(f"signature freshness {key} is invalid")
     _fingerprint(row["impact_manifest_fingerprint"], "impact manifest fingerprint")
     return dict(row)
@@ -714,7 +721,7 @@ def sign_contract(
     issued_at: int,
     expires_at: int,
     freshness: Mapping[str, object],
-    store=None,
+    store: review_evidence.ArtifactStore | None = None,
 ) -> JsonObject:
     """Authenticate a validated value; does not publish or activate a producer."""
     _seconds(issued_at, "signature issued-at")
@@ -723,7 +730,13 @@ def sign_contract(
         raise HandoffValidationError("key issuance is disabled")
     if not key.not_before <= issued_at < expires_at <= key.not_after:
         raise HandoffValidationError("signature issuance is outside key validity")
-    payload = _entities().validate_contract(value, store=store)
+    if __package__:
+        from . import stage_entities as entities
+    else:
+        import stage_entities as flat_entities
+
+        entities = flat_entities
+    payload = entities.validate_contract(value, store=store)
     result = {
         "schema": SIGNATURE_SCHEMA,
         "algorithm": SIGNATURE_ALGORITHM,
@@ -746,7 +759,7 @@ def verify_contract(
     expected_freshness: Mapping[str, object],
     now: int,
     historical: bool = False,
-    store=None,
+    store: review_evidence.ArtifactStore | None = None,
 ) -> JsonObject:
     """Verify using out-of-band trust, exact schema and candidate bindings.
 
@@ -769,9 +782,16 @@ def verify_contract(
     key = _trusted_keys(trusted_keys).get(row["key_id"])
     if key is None:
         raise HandoffValidationError("untrusted signing key")
-    if _freshness(row["freshness"]) != _freshness(expected_freshness):
+    freshness = _freshness(row["freshness"])
+    if freshness != _freshness(expected_freshness):
         raise HandoffValidationError("signature freshness mismatch")
-    payload = _entities().validate_contract(row["payload"], store=store)
+    if __package__:
+        from . import stage_entities as entities
+    else:
+        import stage_entities as flat_entities
+
+        entities = flat_entities
+    payload = entities.validate_contract(row["payload"], store=store)
     if payload["schema"] != expected_schema:
         raise HandoffValidationError("signature payload schema mismatch")
     signature = row["signature"]
@@ -801,5 +821,5 @@ def verify_contract(
         "key_status": key.status,
         "historical": historical,
         "key_id": key.key_id,
-        "freshness": dict(row["freshness"]),
+        "freshness": freshness,
     }

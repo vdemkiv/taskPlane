@@ -303,13 +303,15 @@ def _contract_json(value: Mapping[str, object]) -> bytes:
     return data
 
 
-def read_contract_json(data: str | bytes, *, store=None) -> JsonObject:
+def read_contract_json(
+    data: str | bytes, *, store: review_evidence.ArtifactStore | None = None
+) -> JsonObject:
     """Read bounded UTF-8 JSON without accepting duplicate field authority."""
     if not isinstance(data, (str, bytes)) or len(data) > MAX_INPUT_MANIFEST_BYTES:
         raise StageValidationError("contract JSON input is invalid or oversized")
 
-    def pairs(items):
-        result = {}
+    def pairs(items: list[tuple[str, object]]) -> JsonObject:
+        result: JsonObject = {}
         for key, value in items:
             if key in result:
                 raise StageValidationError(f"duplicate contract field: {key}")
@@ -332,7 +334,7 @@ def _contract_budget(value: object) -> None:
             raise StageValidationError(f"budget {key} must be non-negative integer")
 
 
-def _contract_list(value: object, label: str) -> list:
+def _contract_list(value: object, label: str) -> list[object]:
     if not isinstance(value, list):
         raise StageValidationError(f"{label} must be a list")
     return value
@@ -340,9 +342,7 @@ def _contract_list(value: object, label: str) -> list:
 
 def _contract_strings(value: object, label: str) -> list[str]:
     # Ordered definitions and validators retain order; do not sort a DAG.
-    rows = _contract_list(value, label)
-    for item in rows:
-        _bounded_text(item, label)
+    rows = [_bounded_text(item, label) for item in _contract_list(value, label)]
     if len(rows) != len(set(rows)):
         raise StageValidationError(f"{label} contains duplicates")
     return rows
@@ -426,11 +426,14 @@ def _validate_phase_definition(row: Mapping[str, object]) -> None:
         item = _closed(edge, frozenset({"successor", "condition"}), "edge condition")
         endpoints.append(_identifier(item["successor"], "edge successor"))
         _bounded_text(item["condition"], "edge condition")
-    if len(endpoints) != len(set(endpoints)) or set(endpoints) != set(row["successors"]):
+    successors = _contract_strings(row["successors"], "successors")
+    if len(endpoints) != len(set(endpoints)) or set(endpoints) != set(successors):
         raise StageValidationError("edge conditions must match successors exactly")
 
 
-def _validate_runtime_result(row: Mapping[str, object], *, store=None) -> None:
+def _validate_runtime_result(
+    row: Mapping[str, object], *, store: review_evidence.ArtifactStore | None = None
+) -> None:
     for key in ("run_id", "phase_id", "attempt_id", "operation_id", "lease_id"):
         _identifier(row[key], key)
     _bounded_text(row["host_kind_version"], "host kind/version")
@@ -474,7 +477,9 @@ def _validate_runtime_result(row: Mapping[str, object], *, store=None) -> None:
         raise StageValidationError("unsupported runtime result status")
 
 
-def validate_contract(value: Mapping[str, object], *, store=None) -> JsonObject:
+def validate_contract(
+    value: object, *, store: review_evidence.ArtifactStore | None = None
+) -> JsonObject:
     """Validate T01 closed value schemas without minting domain authority.
 
     The incumbent stage/handoff validators remain the only v1 owners. New
@@ -483,7 +488,7 @@ def validate_contract(value: Mapping[str, object], *, store=None) -> JsonObject:
     """
     if not isinstance(value, Mapping):
         raise StageValidationError("contract must be an object")
-    value = json.loads(_contract_json(dict(value)))
+    value = dict(json.loads(_contract_json(dict(value))))
     schema = value.get("schema")
     if schema == SCHEMA:
         return validate_stage(value)
@@ -537,7 +542,9 @@ def validate_contract(value: Mapping[str, object], *, store=None) -> JsonObject:
     return value
 
 
-def create_contract(value: Mapping[str, object], *, store=None) -> JsonObject:
+def create_contract(
+    value: Mapping[str, object], *, store: review_evidence.ArtifactStore | None = None
+) -> JsonObject:
     """Produce a detached closed value; no persistence or progression effects."""
     if not isinstance(value, Mapping):
         raise StageValidationError("contract must be an object")
@@ -552,7 +559,9 @@ def create_contract(value: Mapping[str, object], *, store=None) -> JsonObject:
     return validate_contract(result, store=store)
 
 
-def canonical_contract_bytes(value: Mapping[str, object], *, store=None) -> bytes:
+def canonical_contract_bytes(
+    value: Mapping[str, object], *, store: review_evidence.ArtifactStore | None = None
+) -> bytes:
     """Canonical UTF-8, sorted string keys, compact separators, finite numbers."""
     return _contract_json(validate_contract(value, store=store))
 

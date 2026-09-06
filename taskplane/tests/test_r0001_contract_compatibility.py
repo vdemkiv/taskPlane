@@ -7,6 +7,12 @@ produced value or signature at the declared boundary, never replace success.
 
 from __future__ import annotations
 
+import inspect
+from pathlib import Path
+import re
+import subprocess
+import sys
+
 import pytest
 
 from taskplane import review_evidence, stage_entities as entities, stage_handoff as handoff
@@ -19,6 +25,60 @@ FRESHNESS = {
     "source_tree": "2" * 40,
     "impact_manifest_fingerprint": "3" * 64,
 }
+
+
+def test_contract_apis_strict_typing(tmp_path: Path) -> None:
+    """Check actual implementation bodies without the legacy module exclusions.
+
+    Source locations only bound this T01 check; mypy judges the types. Older
+    lifecycle diagnostics remain visible outside the two new contract sections.
+    """
+    config = tmp_path / "mypy.ini"
+    config.write_text("[mypy]\n", encoding="utf-8")
+    root = Path(__file__).resolve().parents[2]
+    sections = (
+        (entities._strict_json, entities.canonical_contract_bytes),
+        (handoff.validate_v2_manifest, handoff.verify_contract),
+    )
+    spans = {}
+    for first, last in sections:
+        filename = inspect.getsourcefile(first)
+        assert filename is not None
+        _, start = inspect.getsourcelines(first)
+        last_lines, last_start = inspect.getsourcelines(last)
+        spans[Path(filename).resolve()] = (start, last_start + len(last_lines))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mypy",
+            "--strict",
+            "--config-file",
+            str(config),
+            "--follow-imports=silent",
+            "--explicit-package-bases",
+            "--ignore-missing-imports",
+            "--no-incremental",
+            "--no-error-summary",
+            "--show-error-codes",
+            *(str(path) for path in spans),
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode in (0, 1), result.stdout + result.stderr
+    errors = re.findall(r"^(.+?):(\d+): error: (.+)$", result.stdout, re.MULTILINE)
+    assert result.returncode == 0 or errors, result.stdout + result.stderr
+    scoped_errors = []
+    for filename, line, message in errors:
+        path = (root / filename).resolve()
+        assert path in spans, f"unexpected diagnostic target: {filename}: {message}"
+        start, end = spans[path]
+        if start <= int(line) < end:
+            scoped_errors.append(f"{filename}:{line}: {message}")
+    assert not scoped_errors, "\n".join(scoped_errors)
 
 
 def _definition():
