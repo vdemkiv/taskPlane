@@ -8,6 +8,7 @@ sentinel and never a guessed active or terminal stage.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 import base64
 import copy
 import hashlib
@@ -22,12 +23,16 @@ if __package__:
     from . import review_evidence
     from . import run_store as run_store_module
     from . import stage_entities
+    from . import stage_handoff
     from . import storage
 else:  # pragma: no cover - direct script import mode
     import review_evidence
     import run_store as run_store_module
     import stage_entities
+    import stage_handoff as flat_stage_handoff
     import storage
+
+    stage_handoff = flat_stage_handoff
 
 
 SOURCE_SCHEMA: Final[str] = "taskplane.legacy-source-bundle/v1"
@@ -82,6 +87,88 @@ class MigrationError(RuntimeError):
 
 class MigrationIntegrityError(MigrationError):
     """Retained source, sentinel, receipt, or projection failed verification."""
+
+
+@dataclass(frozen=True)
+class CompatibleContract:
+    """An inspected value, never a gate, recovery grant, or writer selection.
+
+    Authentication describes only the out-of-band signing trust supplied by
+    the caller. Domain owners must still recheck their scope-valid authority.
+    Retained values preserve their original version and bytes, including old
+    requirement identities; compatibility never upgrades historical authority.
+    """
+
+    payload: dict[str, object]
+    source_bytes: bytes
+    signature_valid: bool = False
+    current_authentication: bool = False
+
+    @property
+    def progression_authority(self) -> bool:
+        return False
+
+
+def read_compatible_contract(
+    data: str | bytes, *, store: review_evidence.ArtifactStore | None = None
+) -> CompatibleContract:
+    """Read retained T01 versions without adaptation or current authority.
+
+    The incumbent closed reader rejects unknown schemas, duplicate fields,
+    stale fingerprints and incomplete values. Draft/interrupted values do not
+    gain completion or progression authority by being mechanically readable.
+    """
+    payload = stage_entities.read_contract_json(data, store=store)
+    source = data.encode("utf-8") if isinstance(data, str) else data
+    return CompatibleContract(payload=payload, source_bytes=source)
+
+
+def read_authenticated_contract(
+    value: Mapping[str, object],
+    *,
+    trusted_keys: Mapping[str, stage_handoff.SigningKey],
+    expected_schema: str,
+    expected_freshness: Mapping[str, object],
+    now: int,
+    historical: bool = False,
+    store: review_evidence.ArtifactStore | None = None,
+) -> CompatibleContract:
+    """Read signed old/new contracts with exact externally supplied bindings.
+
+    Historical authentication can verify retained signatures but cannot become
+    current authentication. A missing signature never falls back to a retained
+    read. Neither route changes producers or infers domain progression policy.
+    """
+    verified = stage_handoff.verify_contract(
+        value,
+        trusted_keys=trusted_keys,
+        expected_schema=expected_schema,
+        expected_freshness=expected_freshness,
+        now=now,
+        historical=historical,
+        store=store,
+    )
+    payload = verified["payload"]
+    if not isinstance(payload, dict):
+        raise MigrationIntegrityError("verified contract payload must be an object")
+    return CompatibleContract(
+        payload=dict(payload),
+        source_bytes=review_evidence.canonical_bytes(value),
+        signature_valid=verified["signature_valid"] is True,
+        current_authentication=verified["authority_valid"] is True,
+    )
+
+
+def active_producer_schema(family: str) -> str | None:
+    """Report the incumbent selection before the separately approved cutover.
+
+    Reader support does not activate phase/runtime/knowledge producers. No
+    setter is exposed here; later cutover work owns the sole writer switch.
+    """
+    return {
+        "taskplane.stage": stage_entities.SCHEMA,
+        "taskplane.stage-handoff": stage_handoff.SCHEMA,
+    }.get(family)
 
 
 def _fingerprint(value: object) -> str:
