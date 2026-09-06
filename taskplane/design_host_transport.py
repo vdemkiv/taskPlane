@@ -15,16 +15,21 @@ from pathlib import Path
 import re
 import stat
 import time
+import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING, TypeAlias
 
 if TYPE_CHECKING:
-    from . import run_artifacts, storage
+    from . import host_capabilities, run_artifacts, stage_entities, stage_migration, storage
 else:
     try:
-        from . import run_artifacts, storage
+        from . import host_capabilities, run_artifacts, stage_entities, storage
     except (ImportError, ValueError):  # direct-module compatibility
         import run_artifacts
         import storage
+        import host_capabilities
+        import stage_entities
 
 
 JsonDict: TypeAlias = dict[str, Any]
@@ -47,6 +52,254 @@ TERMINAL_FIELDS = frozenset({
     "signature",
 })
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+class NativeEntryError(ValueError):
+    """A diagnostic entry binding was refused before engine execution."""
+
+
+def _entry_text(value: object) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise NativeEntryError("invalid_binding: nonempty text required")
+    return value
+
+
+def _entry_strings(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise NativeEntryError("invalid_binding: string sequence required")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or "\x00" in item:
+            raise NativeEntryError("invalid_binding: string sequence required")
+        result.append(item)
+    return tuple(result)
+
+
+@dataclass(frozen=True)
+class NativeEntryRequest:
+    """Diagnostic request only; never a capability or permission to launch."""
+
+    workspace: str
+    engine_candidates: tuple[str, ...]
+    selected_engine: str
+    arguments: tuple[str, ...]
+    environment: tuple[tuple[str, str], ...]
+    contract_bytes: bytes
+    expected_contract_fingerprint: str
+    run_id: str
+    attempt_id: str
+    owner_attempt_id: str
+    operation_id: str
+    task_slot: str
+    enforcement_mode: str
+    host_kind: str
+    host_version: str
+    session_id: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": "taskplane.native-entry-request/v1",
+            "workspace": self.workspace,
+            "engine_candidates": list(self.engine_candidates),
+            "selected_engine": self.selected_engine,
+            "arguments": list(self.arguments),
+            "environment": [list(row) for row in self.environment],
+            "contract_bytes": self.contract_bytes.decode("utf-8"),
+            "expected_contract_fingerprint": self.expected_contract_fingerprint,
+            "run_id": self.run_id,
+            "attempt_id": self.attempt_id,
+            "owner_attempt_id": self.owner_attempt_id,
+            "operation_id": self.operation_id,
+            "task_slot": self.task_slot,
+            "enforcement_mode": self.enforcement_mode,
+            "host_kind": self.host_kind,
+            "host_version": self.host_version,
+            "session_id": self.session_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> NativeEntryRequest:
+        fields = set(cls.__dataclass_fields__) | {"schema"}
+        if (
+            not isinstance(value, dict)
+            or set(value) != fields
+            or value.get("schema") != "taskplane.native-entry-request/v1"
+        ):
+            raise NativeEntryError("invalid_binding: request shape")
+        pairs = value["environment"]
+        if not isinstance(pairs, list):
+            raise NativeEntryError("invalid_binding: environment")
+        environment: list[tuple[str, str]] = []
+        for pair in pairs:
+            row = _entry_strings(pair)
+            if len(row) != 2:
+                raise NativeEntryError("invalid_binding: environment pair")
+            environment.append((_entry_text(row[0]), row[1]))
+        return cls(
+            workspace=_entry_text(value["workspace"]),
+            engine_candidates=_entry_strings(value["engine_candidates"]),
+            selected_engine=_entry_text(value["selected_engine"]),
+            arguments=_entry_strings(value["arguments"]),
+            environment=tuple(environment),
+            contract_bytes=_entry_text(value["contract_bytes"]).encode("utf-8"),
+            expected_contract_fingerprint=_entry_text(value["expected_contract_fingerprint"]),
+            run_id=_entry_text(value["run_id"]),
+            attempt_id=_entry_text(value["attempt_id"]),
+            owner_attempt_id=_entry_text(value["owner_attempt_id"]),
+            operation_id=_entry_text(value["operation_id"]),
+            task_slot=_entry_text(value["task_slot"]),
+            enforcement_mode=_entry_text(value["enforcement_mode"]),
+            host_kind=_entry_text(value["host_kind"]),
+            host_version=_entry_text(value["host_version"]),
+            session_id=_entry_text(value["session_id"]),
+        )
+
+    @property
+    def fingerprint(self) -> str:
+        return _fp(self.to_dict())
+
+
+@dataclass(frozen=True)
+class NativeEntryPreflight:
+    command: tuple[str, ...]
+    environment: tuple[tuple[str, str], ...]
+    contract_bytes: bytes
+    enforcement_mode: str
+    request_fingerprint: str
+    observation: Mapping[str, object]
+
+
+def prepare_native_entry(
+    request: NativeEntryRequest,
+    snapshot: host_capabilities.HostCapabilitySnapshot | None,
+) -> NativeEntryPreflight:
+    """Inspect the incumbent inputs without activating a phase writer.
+
+    S0 has no verified complete native canary. Even a structurally live hook
+    snapshot therefore yields degraded observation, never executable readiness.
+    A future host adapter must prove the complete envelope before changing this.
+    """
+    if TYPE_CHECKING or __package__:
+        from . import tp as cli
+        from . import stage_migration as migration
+    else:
+        import tp as flat_cli
+        import stage_migration as flat_migration
+
+        cli = flat_cli
+        migration = flat_migration
+    request = NativeEntryRequest.from_dict(request.to_dict())
+    if len(request.engine_candidates) != 1:
+        raise NativeEntryError("invalid_or_ambiguous_engine: exactly one candidate required")
+    engine = Path(request.engine_candidates[0])
+    root = engine.parent.parent
+    candidate = cli._valid_plugin_root(str(root), str(root))
+    if (
+        candidate is None
+        or not engine.is_absolute()
+        or str(engine.resolve()) != candidate[2]
+        or request.selected_engine != str(engine)
+    ):
+        raise NativeEntryError("invalid_or_ambiguous_engine: selected engine is invalid")
+    try:
+        retained = migration.read_compatible_contract(request.contract_bytes)
+    except ValueError as exc:
+        raise NativeEntryError("invalid_binding: contract reader refused input") from exc
+    contract = retained.payload
+    authority = contract.get("authority")
+    if (
+        contract.get("schema") != stage_entities.SCHEMA
+        or contract.get("fingerprint") != request.expected_contract_fingerprint
+        or contract.get("run_id") != request.run_id
+        or not isinstance(authority, dict)
+        or authority.get("session_id") != request.session_id
+        or request.enforcement_mode not in {"strict", "warn", "off"}
+        or not re.fullmatch(r"task_[a-zA-Z0-9_-]+", request.task_slot)
+        or len(dict(request.environment)) != len(request.environment)
+        or dict(request.environment).get("TASKPLANE_TASK") != request.task_slot
+    ):
+        raise NativeEntryError("invalid_binding: contract, owner, task or enforcement is foreign")
+    if snapshot is not None and (
+        snapshot.workspace_fingerprint
+        != hashlib.sha256(
+            os.path.normcase(os.path.realpath(request.workspace)).encode("utf-8")
+        ).hexdigest()
+        or snapshot.session_fingerprint != hashlib.sha256(request.session_id.encode()).hexdigest()
+        or snapshot.host != request.host_kind
+        or snapshot.host_version != request.host_version
+    ):
+        raise NativeEntryError("invalid_binding: host capability is foreign")
+    available: list[str] = []
+    missing = [
+        "real_canary",
+        "host_owned_start_identity",
+        "host_owned_terminal_identity",
+        "collected_output",
+        "duplicate_convergence",
+        "missing_event_refusal",
+    ]
+    requirements = {
+        "hook_execution": "native_plugin_hooks_loaded",
+        "stable_event_identity": "stable_event_identity",
+        "managed_policy_permission": "managed_policy_permission",
+    }
+    for name, capability in requirements.items():
+        row = snapshot.capabilities.get(capability) if snapshot else None
+        (available if row and row.status == "supported" else missing).append(name)
+    if snapshot is None:
+        missing.append("current_host_snapshot")
+    fingerprint = request.fingerprint
+    observation: dict[str, object] = {
+        "schema": "taskplane.native-entry-preflight/v1",
+        "action": "refusal",
+        "request_fingerprint": fingerprint,
+        "receipt_id": "entry-" + fingerprint,
+        "run_id": request.run_id,
+        "stage_id": contract["stage_id"],
+        "attempt_id": request.attempt_id,
+        "owner_attempt_id": request.owner_attempt_id,
+        "operation_id": request.operation_id,
+        "task_slot": request.task_slot,
+        "contract_fingerprint": request.expected_contract_fingerprint,
+        "host_kind": request.host_kind,
+        "host_version": request.host_version,
+        "capability_fingerprint": snapshot.fingerprint if snapshot else None,
+        "available_capabilities": sorted(available),
+        "missing_capabilities": sorted(missing),
+        "last_observed_event": None,
+        "effect_state": "none",
+        "reconciliation_action": "repair_capability_then_run_real_canary",
+        "evidence_mode": "degraded_observation",
+        "error_code": "unsupported_capability",
+        "blocking_journeys": ["J0", "J1", "J6", "sign-off", "publication"],
+        "native_identity_claimed": False,
+        "ready": False,
+        "success": False,
+    }
+    return NativeEntryPreflight(
+        command=(sys.executable, request.selected_engine, *request.arguments),
+        environment=request.environment,
+        contract_bytes=retained.source_bytes,
+        enforcement_mode=request.enforcement_mode,
+        request_fingerprint=fingerprint,
+        observation=observation,
+    )
+
+
+def consume_native_entry(
+    request: NativeEntryRequest,
+    prepared: NativeEntryPreflight,
+    snapshot: host_capabilities.HostCapabilitySnapshot | None,
+) -> dict[str, object]:
+    """Recheck the exact producer edge; copied receipt identity grants nothing."""
+    # Recompute the diagnostic expectation from its exact external inputs.
+    expected = _prepare_native_entry(request, snapshot)
+    if prepared != expected:
+        raise NativeEntryError("invalid_binding: foreign or contradictory observation")
+    return dict(prepared.observation)
+
+
+_prepare_native_entry = prepare_native_entry
 
 
 def _fp(value: object) -> str:
@@ -745,6 +998,8 @@ def validate_design_lens_dispatch_completion(
 
 
 __all__ = [
+    "NativeEntryError", "NativeEntryRequest", "NativeEntryPreflight",
+    "prepare_native_entry", "consume_native_entry",
     "DISPATCH_INTENT_SCHEMA", "HOST_AUTHORITY_SCHEMA", "HOST_RECEIPT_SCHEMA",
     "ROLE_REFERENCE_SCHEMA", "attach_design_lens_host_authority",
     "design_terminal_activity", "portable_role_reference",
