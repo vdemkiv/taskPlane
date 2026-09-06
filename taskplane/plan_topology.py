@@ -23,11 +23,20 @@ try:
 except ImportError:  # pragma: no cover - direct module loading
     from delivery_ports import content_fingerprint  # type: ignore
 
+try:
+    from . import depgraph as _depgraph
+    from . import wiring_closure as _wiring_closure
+except ImportError:  # pragma: no cover - direct module loading
+    import depgraph as _depgraph  # type: ignore
+    import wiring_closure as _wiring_closure  # type: ignore
+
 
 TOPOLOGY_SCHEMA = "taskplane.plan-topology/v1"
 SEALED_READY_SET_SCHEMA = "taskplane.sealed-ready-set/v1"
 PLAN_DASHBOARD_SCHEMA = "taskplane.dashboard-plan-task-dag/v1"
 PLAN_WAVES_DASHBOARD_SCHEMA = "taskplane.dashboard-plan-waves/v1"
+PLAN_TRACEABILITY_SCHEMA = "taskplane.plan-traceability/v1"
+PLAN_OWNER_INVENTORY_SCHEMA = "taskplane.plan-owner-inventory/v1"
 
 
 class PlanTopologyError(RuntimeError):
@@ -52,6 +61,190 @@ def canonical_plan_fingerprint(plan: Mapping[str, Any]) -> str:
     except (TypeError, ValueError) as exc:
         raise PlanTopologyError("Plan dashboard source is not canonical JSON") from exc
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _traceability_inputs(
+        design_contract: Mapping[str, Any], plan: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
+    try:
+        design = _depgraph.design_traceability_inventory(dict(design_contract))
+        links = _depgraph.validate_plan_traceability_foreign_keys(
+            design, dict(plan))
+        wiring = _wiring_closure.validate_plan_wiring_manifest(
+            plan.get("wiring_manifest"), task_ids=links["tasks"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PlanTopologyError(str(exc)) from exc
+    return design, links, wiring
+
+
+def build_plan_traceability(
+        design_contract: Mapping[str, Any], plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Seal complete Design-to-Plan foreign keys and reverse coverage.
+
+    The result distinguishes many-task contribution from accountable owner
+    authority.  It refuses any orphan canonical entity, foreign reference, or
+    incomplete W01-W34 row before a Plan can be treated as traceable.
+    """
+    if not isinstance(design_contract, Mapping) or not isinstance(plan, Mapping):
+        raise PlanTopologyError("Design Contract and Plan must be objects")
+    design, links, wiring = _traceability_inputs(design_contract, plan)
+
+    raw_journeys = plan.get("journeys")
+    if not isinstance(raw_journeys, list):
+        raise PlanTopologyError("Plan journeys must be a list")
+    journey_rows: dict[str, dict[str, Any]] = {}
+    task_journeys = {task_id: [] for task_id in links["tasks"]}
+    for index, raw in enumerate(raw_journeys, 1):
+        if not isinstance(raw, Mapping):
+            raise PlanTopologyError(f"Plan journey row {index} must be an object")
+        journey_id = str(raw.get("id") or "").strip()
+        if not journey_id:
+            raise PlanTopologyError(f"Plan journey row {index} id is required")
+        if journey_id in journey_rows:
+            raise PlanTopologyError(f"duplicate Plan journey: {journey_id}")
+        if journey_id not in design["journeys"]:
+            raise PlanTopologyError(f"foreign journey: {journey_id}")
+        task_id = str(raw.get("task") or "").strip()
+        if task_id not in links["tasks"]:
+            raise PlanTopologyError(
+                f"Plan journey {journey_id} has foreign task: {task_id}")
+        canonical = design["journeys"][journey_id]
+        for field in ("positive", "severed", "evidence_mode"):
+            if str(raw.get(field) or "") != str(canonical.get(field) or ""):
+                raise PlanTopologyError(
+                    f"Plan journey {journey_id} {field} is stale")
+        journey_rows[journey_id] = {
+            "task": task_id,
+            "criteria": sorted(map(str, canonical["criteria"])),
+            "owner": str(canonical["owner"]),
+            "positive": str(raw["positive"]),
+            "severed": str(raw["severed"]),
+            "evidence_mode": str(raw["evidence_mode"]),
+        }
+        task_journeys[task_id].append(journey_id)
+    missing_journeys = sorted(set(design["journeys"]) - set(journey_rows))
+    if missing_journeys:
+        raise PlanTopologyError(f"orphan journey: {missing_journeys[0]}")
+
+    task_wiring = {task_id: [] for task_id in links["tasks"]}
+    for row in wiring:
+        task_wiring[row["task"]].append(row["id"])
+
+    tasks = {}
+    for task_id, row in sorted(links["tasks"].items()):
+        tasks[task_id] = {
+            **row,
+            "journeys": sorted(task_journeys[task_id]),
+            "wiring_rows": sorted(task_wiring[task_id]),
+        }
+
+    criteria = {}
+    for criterion_id, row in sorted(design["criteria"].items()):
+        criteria[criterion_id] = {
+            "owner": str(row["owner"]),
+            "tasks": links["criterion_tasks"][criterion_id],
+            "journeys": sorted(
+                journey_id for journey_id, journey in journey_rows.items()
+                if criterion_id in journey["criteria"]),
+        }
+    contracts = {}
+    for contract_id, row in sorted(design["contracts"].items()):
+        contracts[contract_id] = {
+            "relation": str(row.get("relation") or ""),
+            "tasks": links["contract_tasks"][contract_id],
+            "design_edges": sorted(
+                edge_id for edge_id, edge in design["design_edges"].items()
+                if edge.get("to") == contract_id),
+        }
+
+    material = {
+        "schema": PLAN_TRACEABILITY_SCHEMA,
+        "status": "closed",
+        "requirement": design["requirement"],
+        "design_inventory_fingerprint": design["fingerprint"],
+        "depth_policy": design["depth_policy"],
+        "counts": {
+            "criteria": len(criteria),
+            "contracts": len(contracts),
+            "tasks": len(tasks),
+            "journeys": len(journey_rows),
+            "wiring_rows": len(wiring),
+            "design_edges": len(design["design_edges"]),
+        },
+        "criteria": criteria,
+        "contracts": contracts,
+        "tasks": tasks,
+        "journeys": dict(sorted(journey_rows.items())),
+        "design_edges": {
+            edge_id: {
+                "tasks": links["design_edge_tasks"][edge_id],
+                "from": str(row["from"]),
+                "to": str(row["to"]),
+                "kind": str(row["kind"]),
+            }
+            for edge_id, row in sorted(design["design_edges"].items())
+        },
+        "wiring_rows": wiring,
+    }
+    material["fingerprint"] = content_fingerprint(material)
+    return material
+
+
+def _unique_authorities(rows: Mapping[str, str], label: str) -> None:
+    reverse: dict[str, list[str]] = {}
+    for identity, owner in rows.items():
+        if not owner:
+            raise PlanTopologyError(f"{label} {identity} owner is required")
+        reverse.setdefault(owner, []).append(identity)
+    duplicate = sorted(
+        (owner, identities) for owner, identities in reverse.items()
+        if len(identities) > 1)
+    if duplicate:
+        owner, identities = duplicate[0]
+        raise PlanTopologyError(
+            f"duplicate {label} authority: {owner}: {sorted(identities)}")
+
+
+def build_plan_owner_inventory(
+        design_contract: Mapping[str, Any], plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Seal accountable owners separately from many-to-many contributions."""
+    trace = build_plan_traceability(design_contract, plan)
+    design = _depgraph.design_traceability_inventory(dict(design_contract))
+    raw_tasks = plan.get("tasks")
+    assert isinstance(raw_tasks, list)  # validated by trace construction
+    task_owners = {
+        str(row["id"]): str(row.get("owner") or "").strip()
+        for row in raw_tasks
+    }
+    criterion_owners = {
+        identity: str(row.get("owner") or "").strip()
+        for identity, row in design["criteria"].items()
+    }
+    journey_owners = {
+        identity: str(row.get("owner") or "").strip()
+        for identity, row in design["journeys"].items()
+    }
+    responsibility_owners = {
+        identity: str(row.get("owner") or "").strip()
+        for identity, row in design["responsibilities"].items()
+    }
+    _unique_authorities(task_owners, "task")
+    _unique_authorities(criterion_owners, "criterion")
+    _unique_authorities(journey_owners, "journey")
+    _unique_authorities(responsibility_owners, "responsibility")
+    material = {
+        "schema": PLAN_OWNER_INVENTORY_SCHEMA,
+        "status": "closed",
+        "traceability_fingerprint": trace["fingerprint"],
+        "task_owners": dict(sorted(task_owners.items())),
+        "criterion_owners": dict(sorted(criterion_owners.items())),
+        "journey_owners": dict(sorted(journey_owners.items())),
+        "responsibility_owners": dict(sorted(responsibility_owners.items())),
+    }
+    material["fingerprint"] = content_fingerprint(material)
+    return material
 
 
 def _finite_number(value: object, label: str) -> float:

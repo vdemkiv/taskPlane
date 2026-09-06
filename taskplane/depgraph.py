@@ -861,6 +861,126 @@ def _canonical_fingerprint(value: object) -> str:
         allow_nan=False).encode("utf-8")).hexdigest()
 
 
+def design_traceability_inventory(contract: dict) -> dict:
+    """Expose the decomposition owner's canonical Design inventory."""
+    return graph_decomposition.design_traceability_inventory(contract)
+
+
+def validate_plan_traceability_foreign_keys(
+        design_inventory: dict, plan: dict) -> dict:
+    """Validate Plan references and close forward and reverse indexes."""
+    if not isinstance(plan, dict):
+        raise ValueError("Plan must be an object")
+    if str(plan.get("requirement") or "") != design_inventory["requirement"]:
+        raise ValueError("Plan requirement is foreign to the Design Contract")
+    raw_tasks = plan.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raise ValueError("Plan tasks must be a non-empty list")
+
+    canonical_criteria = set(design_inventory["criteria"])
+    canonical_contracts = set(design_inventory["contracts"])
+    canonical_edges = set(design_inventory["design_edges"])
+    tasks = {}
+    criterion_tasks = {identity: [] for identity in canonical_criteria}
+    contract_tasks = {identity: [] for identity in canonical_contracts}
+    edge_tasks = {identity: [] for identity in canonical_edges}
+
+    for index, raw in enumerate(raw_tasks, 1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Plan task row {index} must be an object")
+        task_id = str(raw.get("id") or "").strip()
+        if not task_id:
+            raise ValueError(f"Plan task row {index} id is required")
+        if task_id in tasks:
+            raise ValueError(f"duplicate Plan task: {task_id}")
+
+        raw_criteria = raw.get("criteria")
+        raw_refs = raw.get("acceptance_refs")
+        if not isinstance(raw_criteria, list) or not raw_criteria:
+            raise ValueError(f"Plan task {task_id} criteria are required")
+        if raw_refs != raw_criteria:
+            raise ValueError(
+                f"Plan task {task_id} criteria and acceptance_refs diverge")
+        criterion_ids = []
+        for value in raw_criteria:
+            match = re.match(r"^(FP-AC[0-9]{2})(?:\s|$)", str(value))
+            criterion_id = match.group(1) if match else str(value)
+            if criterion_id not in canonical_criteria:
+                raise ValueError(
+                    f"Plan task {task_id} has foreign criterion: {criterion_id}")
+            canonical_text = str(
+                design_inventory["criteria"][criterion_id].get("criterion") or "")
+            if str(value) != canonical_text:
+                raise ValueError(
+                    f"Plan task {task_id} criterion bytes are stale: "
+                    f"{criterion_id}")
+            if criterion_id in criterion_ids:
+                raise ValueError(
+                    f"Plan task {task_id} repeats criterion: {criterion_id}")
+            criterion_ids.append(criterion_id)
+            criterion_tasks[criterion_id].append(task_id)
+
+        raw_contracts = raw.get("contracts")
+        if not isinstance(raw_contracts, list) or not raw_contracts:
+            raise ValueError(f"Plan task {task_id} contracts are required")
+        task_contracts = list(map(str, raw_contracts))
+        if len(task_contracts) != len(set(task_contracts)):
+            raise ValueError(f"Plan task {task_id} repeats a contract")
+        foreign_contracts = sorted(set(task_contracts) - canonical_contracts)
+        if foreign_contracts:
+            raise ValueError(
+                f"Plan task {task_id} has foreign contract: "
+                f"{foreign_contracts[0]}")
+        for contract_id in task_contracts:
+            contract_tasks[contract_id].append(task_id)
+
+        raw_edges = raw.get("design_edges")
+        if not isinstance(raw_edges, list):
+            raise ValueError(f"Plan task {task_id} design_edges must be a list")
+        task_edges = list(map(str, raw_edges))
+        if len(task_edges) != len(set(task_edges)):
+            raise ValueError(f"Plan task {task_id} repeats a Design edge")
+        foreign_edges = sorted(set(task_edges) - canonical_edges)
+        if foreign_edges:
+            raise ValueError(
+                f"Plan task {task_id} has foreign Design edge: "
+                f"{foreign_edges[0]}")
+        for edge_id in task_edges:
+            edge_tasks[edge_id].append(task_id)
+
+        tasks[task_id] = {
+            "criteria": sorted(criterion_ids),
+            "contracts": sorted(task_contracts),
+            "design_edges": sorted(task_edges),
+        }
+
+    orphan_criteria = sorted(
+        identity for identity, owners in criterion_tasks.items() if not owners)
+    orphan_contracts = sorted(
+        identity for identity, owners in contract_tasks.items() if not owners)
+    orphan_edges = sorted(
+        identity for identity, owners in edge_tasks.items() if not owners)
+    if orphan_criteria:
+        raise ValueError(f"orphan criterion: {orphan_criteria[0]}")
+    if orphan_contracts:
+        raise ValueError(f"orphan contract: {orphan_contracts[0]}")
+    if orphan_edges:
+        raise ValueError(f"orphan Design edge: {orphan_edges[0]}")
+
+    return {
+        "tasks": tasks,
+        "criterion_tasks": {
+            key: sorted(value) for key, value in sorted(criterion_tasks.items())
+        },
+        "contract_tasks": {
+            key: sorted(value) for key, value in sorted(contract_tasks.items())
+        },
+        "design_edge_tasks": {
+            key: sorted(value) for key, value in sorted(edge_tasks.items())
+        },
+    }
+
+
 def _safe_context_pattern(value: object) -> str:
     """Validate one repository-relative pattern without touching the host FS."""
     pattern = str(value or "").strip()

@@ -29,6 +29,7 @@ CANDIDATE_CHECKOUT_WIRING_SCHEMA = "taskplane.candidate-checkout-wiring/v1"
 EXPECTED_CRITERION_COUNT = 12
 EXPECTED_EDGE_IDS = tuple(f"W{number:02d}" for number in range(1, 33))
 EXPECTED_PRODUCER_COUNT = 18
+PLAN_WIRING_EDGE_IDS = tuple(f"W{number:02d}" for number in range(1, 35))
 _FIVE_CLASS_BOUNDARY_PRODUCERS = frozenset(
     {
         "trusted host adapter private channel",
@@ -128,6 +129,64 @@ _PRODUCER_FIELDS = frozenset({"producer", "consumer_classes", "edge_ids"})
 
 class WiringClosureError(ValueError):
     """A Design selector or producer/consumer edge is not closed."""
+
+
+def validate_plan_wiring_manifest(
+        wiring_manifest: Sequence[Mapping[str, Any]], *, task_ids: Iterable[str],
+) -> list[dict[str, str]]:
+    """Validate the approved W01-W34 Plan ledger and its task foreign keys."""
+    rows = _items(wiring_manifest, "Plan wiring_manifest")
+    ids = [
+        str(row.get("id") or "") if isinstance(row, Mapping) else ""
+        for row in rows
+    ]
+    if tuple(ids) != PLAN_WIRING_EDGE_IDS:
+        raise WiringClosureError(
+            "Plan wiring edge ids must be exactly W01-W34")
+    known_tasks = set(map(str, task_ids))
+    normalized = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise WiringClosureError("Plan wiring rows must be objects")
+        edge_id = str(row["id"])
+        task_id = _text(row.get("task"), f"Plan wiring {edge_id} task")
+        if task_id not in known_tasks:
+            raise WiringClosureError(
+                f"Plan wiring {edge_id} has foreign task: {task_id}")
+        producer = _text(
+            row.get("producer"), f"Plan wiring {edge_id} producer")
+        boundary = _text(
+            row.get("boundary"), f"Plan wiring {edge_id} boundary")
+        consumer = _text(
+            row.get("consumer"), f"Plan wiring {edge_id} consumer")
+        positive = _text(
+            row.get("positive_selector"),
+            f"Plan wiring {edge_id} positive_selector")
+        severed = _text(
+            row.get("severed_selector"),
+            f"Plan wiring {edge_id} severed_selector")
+        expected_positive = (
+            "taskplane/tests/test_r0001_wiring_manifest.py::"
+            f"test_wiring_production_path[{edge_id}]")
+        expected_severed = (
+            "taskplane/tests/test_r0001_wiring_manifest.py::"
+            f"test_wiring_severed_edge_fails_closed[{edge_id}]")
+        if positive != expected_positive or severed != expected_severed:
+            raise WiringClosureError(
+                f"Plan wiring {edge_id} selectors are not exact")
+        if positive == severed:
+            raise WiringClosureError(
+                f"Plan wiring {edge_id} selectors are not distinct")
+        normalized.append({
+            "id": edge_id,
+            "task": task_id,
+            "producer": producer,
+            "boundary": boundary,
+            "consumer": consumer,
+            "positive_selector": positive,
+            "severed_selector": severed,
+        })
+    return normalized
 
 
 _REGISTERED_CHECKOUT_TOKEN = object()

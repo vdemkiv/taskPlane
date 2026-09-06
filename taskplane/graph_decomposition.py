@@ -102,6 +102,127 @@ _COMPONENTS_YAML = "components.yaml"
 
 _STDLIB = getattr(__import__("sys"), "stdlib_module_names", frozenset())
 
+DESIGN_TRACEABILITY_INVENTORY_SCHEMA = \
+    "taskplane.design-traceability-inventory/v1"
+
+
+def design_traceability_inventory(contract: dict) -> dict:
+    """Close the canonical Design entities consumed by Plan traceability."""
+    if not isinstance(contract, dict):
+        raise ValueError("Design Contract must be an object")
+    counts = contract.get("design_counts")
+    if not isinstance(counts, dict):
+        raise ValueError("Design Contract counts are required")
+    acceptance = contract.get("acceptance_map")
+    contracts = contract.get("contracts")
+    journeys = contract.get("journeys")
+    ownership = contract.get("module_ownership")
+    graph = contract.get("graph")
+    if not isinstance(acceptance, list):
+        raise ValueError("Design acceptance_map must be a list")
+    if not isinstance(contracts, list):
+        raise ValueError("Design contracts must be a list")
+    if not isinstance(journeys, list):
+        raise ValueError("Design journeys must be a list")
+    if not isinstance(ownership, list):
+        raise ValueError("Design module_ownership must be a list")
+    if not isinstance(graph, dict) or not isinstance(
+            graph.get("proposed_edges"), list):
+        raise ValueError("Design proposed graph edges are required")
+
+    def unique_rows(rows, field: str, label: str) -> dict[str, dict]:
+        result = {}
+        for index, raw in enumerate(rows, 1):
+            if not isinstance(raw, dict):
+                raise ValueError(f"Design {label} row {index} must be an object")
+            identity = str(raw.get(field) or "").strip()
+            if not identity:
+                raise ValueError(f"Design {label} row {index} {field} is required")
+            if identity in result:
+                raise ValueError(f"duplicate Design {label}: {identity}")
+            result[identity] = json.loads(json.dumps(raw))
+        return result
+
+    criteria = unique_rows(acceptance, "criterion_id", "criterion")
+    expected_criteria = [
+        f"FP-AC{number:02d}"
+        for number in range(1, int(counts.get("criteria") or 0) + 1)
+    ]
+    if sorted(criteria) != expected_criteria:
+        raise ValueError("Design criteria are not the canonical FP-AC inventory")
+    for criterion_id, row in criteria.items():
+        criterion = str(row.get("criterion") or "")
+        if not criterion.startswith(criterion_id + " "):
+            raise ValueError(
+                f"Design criterion text is not bound to {criterion_id}")
+        if not str(row.get("owner") or "").strip():
+            raise ValueError(f"Design criterion owner is required: {criterion_id}")
+
+    contract_rows = unique_rows(contracts, "id", "contract")
+    journey_rows = unique_rows(journeys, "id", "journey")
+    expected_journeys = [
+        f"J{number}" for number in range(int(counts.get("journeys") or 0))
+    ]
+    if sorted(journey_rows) != expected_journeys:
+        raise ValueError("Design journeys are not the canonical J0-J7 inventory")
+    for journey_id, row in journey_rows.items():
+        if not str(row.get("owner") or "").strip():
+            raise ValueError(f"Design journey owner is required: {journey_id}")
+        refs = row.get("criteria")
+        if not isinstance(refs, list) or not refs:
+            raise ValueError(f"Design journey criteria are required: {journey_id}")
+        foreign = sorted(set(map(str, refs)) - set(criteria))
+        if foreign:
+            raise ValueError(
+                f"Design journey {journey_id} has foreign criteria: {foreign}")
+
+    edge_rows = {}
+    for index, raw in enumerate(graph["proposed_edges"], 1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Design edge row {index} must be an object")
+        source = str(raw.get("from") or "").strip()
+        target = str(raw.get("to") or "").strip()
+        kind = str(raw.get("kind") or "").strip()
+        if not source or not target or not kind:
+            raise ValueError(f"Design edge row {index} is incomplete")
+        if target.startswith("contract:") and target not in contract_rows:
+            raise ValueError(f"Design edge has foreign contract: {target}")
+        edge_id = f"{source}->{target}:{kind}"
+        if edge_id in edge_rows:
+            raise ValueError(f"duplicate Design edge: {edge_id}")
+        edge_rows[edge_id] = json.loads(json.dumps(raw))
+
+    responsibility_rows = unique_rows(
+        ownership, "responsibility", "responsibility")
+    actual_counts = {
+        "criteria": len(criteria),
+        "contracts": len(contract_rows),
+        "journeys": len(journey_rows),
+        "proposed_edges": len(edge_rows),
+    }
+    for name, actual in actual_counts.items():
+        if int(counts.get(name) or -1) != actual:
+            raise ValueError(
+                f"Design {name} count is stale: expected {counts.get(name)}, "
+                f"found {actual}")
+
+    material = {
+        "schema": DESIGN_TRACEABILITY_INVENTORY_SCHEMA,
+        "requirement": str(contract.get("requirement") or "").strip(),
+        "criteria": criteria,
+        "contracts": contract_rows,
+        "journeys": journey_rows,
+        "design_edges": edge_rows,
+        "responsibilities": responsibility_rows,
+        "depth_policy": json.loads(json.dumps(graph.get("depth_policy") or {})),
+    }
+    encoded = json.dumps(
+        material, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")
+    material["fingerprint"] = hashlib.sha256(encoded).hexdigest()
+    return material
+
 
 class _DerivationError(Exception):
     """Internal: a per-module derivation failure (caught by derive())."""
