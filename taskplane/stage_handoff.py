@@ -7,7 +7,10 @@ successor can use the manifest.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+import hashlib
+import hmac
 import re
 from typing import Final, TypeAlias
 
@@ -63,6 +66,15 @@ _AUTHORITY_RECORD_FIELDS: Final[frozenset[str]] = frozenset({
 _NONCONSUMABLE_REUSE_FIELDS: Final[frozenset[str]] = frozenset({
     "schema", "producer_outcome", "authority_fingerprint",
 })
+SIGNATURE_SCHEMA: Final[str] = "taskplane.contract-signature/v1"
+SIGNATURE_ALGORITHM: Final[str] = "HMAC-SHA256"
+_SIGNATURE_FIELDS: Final[frozenset[str]] = frozenset({
+    "schema", "algorithm", "key_id", "payload_schema", "payload",
+    "issued_at", "expires_at", "freshness", "signature",
+})
+_FRESHNESS_FIELDS: Final[frozenset[str]] = frozenset({
+    "candidate_sha", "source_tree", "impact_manifest_fingerprint",
+})
 
 
 class HandoffValidationError(ValueError):
@@ -81,7 +93,9 @@ def _closed(value: object, fields: frozenset[str],
             label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise HandoffValidationError(f"{label} must be an object")
-    keys = {str(key) for key in value}
+    if any(not isinstance(key, str) for key in value):
+        raise HandoffValidationError(f"{label} field names must be strings")
+    keys = set(value)
     unknown = keys - fields
     missing = fields - keys
     if unknown:
@@ -308,9 +322,9 @@ def validate_manifest(
         expected_authority_fingerprint: str | None = None,
         allow_nonconsumable_reuse: bool = False) -> JsonObject:
     """Validate schema, authority, artifact integrity, and numeric bounds."""
-    row = _closed(manifest, _MANIFEST_FIELDS, "handoff manifest")
-    if row.get("schema") != SCHEMA:
+    if isinstance(manifest, Mapping) and manifest.get("schema") != SCHEMA:
         raise HandoffValidationError("unsupported handoff manifest schema")
+    row = _closed(manifest, _MANIFEST_FIELDS, "handoff manifest")
     if manifest_fingerprint(row) != row.get("fingerprint"):
         raise HandoffIntegrityError("handoff manifest fingerprint mismatch")
 
@@ -462,3 +476,241 @@ def read_manifest(store: review_evidence.ArtifactStore,
         expected_authority_revision=expected_authority_revision,
         expected_authority_fingerprint=expected_authority_fingerprint,
         allow_nonconsumable_reuse=allow_nonconsumable_reuse)
+
+
+def _entities():
+    # Keep the existing stage -> handoff import direction usable by the CLI.
+    if __package__:
+        from . import stage_entities
+    else:
+        import stage_entities
+    return stage_entities
+
+
+def validate_v2_manifest(store: review_evidence.ArtifactStore,
+                         manifest: Mapping[str, object]) -> JsonObject:
+    """Additive v2 schema reader, not a writer switch or migration authority.
+
+    V1 fields are checked by their incumbent validator using a local structural
+    projection. The projection is never stored, returned or treated as a v1
+    authorization. The original v2 identity is checked independently.
+    """
+    entities = _entities()
+    row = _closed(manifest, _MANIFEST_FIELDS | entities._HANDOFF_V2_ADDITIONS,
+                  "v2 handoff manifest")
+    if row["schema"] != entities.HANDOFF_V2_SCHEMA:
+        raise HandoffValidationError("unsupported v2 handoff schema")
+    if manifest_fingerprint(row) != row["fingerprint"]:
+        raise HandoffIntegrityError("v2 handoff fingerprint mismatch")
+    base = {key: value for key, value in row.items() if key in _MANIFEST_FIELDS}
+    base["schema"] = SCHEMA
+    base["fingerprint"] = manifest_fingerprint(base)
+    validate_manifest(store, base, allow_nonconsumable_reuse=True)
+    result = row["phase_result"]
+    if not isinstance(result, Mapping) or result.get("schema") != entities.AGENT_RUNTIME_SCHEMA:
+        raise HandoffValidationError("v2 handoff requires an agent runtime result")
+    entities.validate_contract(result, store=store)
+    if row["producer"]["outcome"] == "done" and result["status"] != "accepted":
+        raise HandoffValidationError("done handoff requires an accepted result")
+    selected = {(item["kind"], item["fingerprint"])
+                for item in row["selected_artifacts"]}
+    seen = set()
+    for group in ("produced_artifacts", "inherited_artifacts"):
+        entities._schema_artifacts(row[group], group, references=True)
+        for artifact in row[group]:
+            reference = artifact["reference"]
+            identity = (reference["kind"], reference["fingerprint"])
+            if identity not in selected:
+                raise HandoffValidationError("v2 artifact is not selected")
+            if identity in seen:
+                raise HandoffValidationError("v2 artifact has duplicate ownership")
+            seen.add(identity)
+            review_evidence.verify_portable_artifact_reference(store, reference)
+    if seen != selected:
+        raise HandoffValidationError("v2 selected artifact lacks schema and ownership")
+    for receipt in entities._contract_list(row["knowledge_apply_receipts"], "knowledge apply receipts"):
+        if not isinstance(receipt, Mapping) or receipt.get("schema") != entities.KNOWLEDGE_APPLY_SCHEMA:
+            raise HandoffValidationError("unsupported knowledge apply receipt")
+        entities.validate_contract(receipt, store=store)
+    entities._contract_strings(row["unresolved_issues"], "unresolved issues")
+    if len(entities._contract_json(dict(row))) > MAX_MANIFEST_BYTES:
+        raise HandoffValidationError("v2 handoff exceeds manifest bound")
+    return dict(row)
+
+
+def _seconds(value: object, label: str) -> int:
+    if type(value) is not int or value < 0:
+        raise HandoffValidationError(f"{label} must be non-negative integer seconds")
+    return value
+
+
+@dataclass(frozen=True)
+class SigningKey:
+    """Trusted in-memory key policy supplied by the incumbent host key owner.
+
+    HMAC verification is local to the trusted control plane: verifiers possess
+    signing authority and this is not a public-key signature. Secret storage,
+    key generation, fencing and emergency effect shutdown belong to that owner.
+    No payload, key ID or embedded certificate can establish a trusted key.
+    """
+
+    key_id: str
+    secret: bytes = field(repr=False)
+    not_before: int
+    not_after: int
+    status: str = "active"
+    changed_at: int | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.key_id, str) or not _IDENTIFIER.fullmatch(self.key_id):
+            raise HandoffValidationError("signing key id is invalid")
+        if not isinstance(self.secret, bytes) or len(self.secret) < 32:
+            raise HandoffValidationError("signing key requires at least 256 bits")
+        _seconds(self.not_before, "key not-before")
+        _seconds(self.not_after, "key not-after")
+        if self.not_after <= self.not_before:
+            raise HandoffValidationError("signing key validity interval is invalid")
+        if self.status not in {"active", "retired", "revoked", "compromised"}:
+            raise HandoffValidationError("signing key status is invalid")
+        if self.status == "active":
+            if self.changed_at is not None:
+                raise HandoffValidationError("active key has a disable time")
+        elif self.changed_at is None or _seconds(self.changed_at, "key change time") < self.not_before:
+            raise HandoffValidationError("disabled key requires a valid change time")
+
+
+def _trusted_keys(keys: Mapping[str, SigningKey]) -> dict[str, SigningKey]:
+    if not isinstance(keys, Mapping):
+        raise HandoffValidationError("trusted keys must be a mapping")
+    result = dict(keys)
+    for key_id, key in result.items():
+        if not isinstance(key, SigningKey) or key.key_id != key_id:
+            raise HandoffValidationError("trusted key identity mismatch")
+    return result
+
+
+def rotate_signing_key(keys: Mapping[str, SigningKey], key_id: str,
+                       replacement: SigningKey, *, at: int) -> dict[str, SigningKey]:
+    """Return a replacement policy retaining verification history; never mutate."""
+    result = _trusted_keys(keys)
+    _seconds(at, "rotation time")
+    current = result.get(key_id)
+    if current is None or not isinstance(replacement, SigningKey) or \
+            replacement.key_id in result or replacement.status != "active" or \
+            not replacement.not_before <= at < replacement.not_after or \
+            hmac.compare_digest(current.secret, replacement.secret):
+        raise HandoffValidationError("signing key rotation is invalid")
+    if at < current.not_before or (current.changed_at is not None and at < current.changed_at):
+        raise HandoffValidationError("rotation time precedes key history")
+    if current.status == "active":
+        result[key_id] = replace(current, status="retired", changed_at=at)
+    result[replacement.key_id] = replacement
+    return result
+
+
+def disable_signing_key(keys: Mapping[str, SigningKey], key_id: str, *,
+                        at: int, compromised: bool = False) -> dict[str, SigningKey]:
+    """Pure revocation policy update. T03 atomically applies it with effect fencing."""
+    result = _trusted_keys(keys)
+    _seconds(at, "key disable time")
+    if type(compromised) is not bool:
+        raise HandoffValidationError("compromise marker must be boolean")
+    current = result.get(key_id)
+    if current is None or at < current.not_before or \
+            (current.changed_at is not None and at < current.changed_at):
+        raise HandoffValidationError("key disable history is invalid")
+    status = "compromised" if compromised else "revoked"
+    if current.status == "compromised" or current.status == status:
+        return result  # replay cannot erase or move the original cutoff
+    result[key_id] = replace(current, status=status, changed_at=at)
+    return result
+
+
+def _freshness(value: object) -> dict[str, object]:
+    row = _closed(value, _FRESHNESS_FIELDS, "signature freshness")
+    for key in ("candidate_sha", "source_tree"):
+        if not isinstance(row[key], str) or not _COMMIT.fullmatch(row[key]):
+            raise HandoffValidationError(f"signature freshness {key} is invalid")
+    _fingerprint(row["impact_manifest_fingerprint"], "impact manifest fingerprint")
+    return dict(row)
+
+
+def _signature_bytes(value: Mapping[str, object]) -> bytes:
+    material = {key: item for key, item in value.items() if key != "signature"}
+    # Domain separation plus authenticated algorithm/schema/key/binding metadata
+    # makes substitution and unsigned digest fallback impossible.
+    return SIGNATURE_SCHEMA.encode("ascii") + b"\0" + review_evidence.canonical_bytes(material)
+
+
+def sign_contract(value: Mapping[str, object], *, key: SigningKey,
+                  issued_at: int, expires_at: int,
+                  freshness: Mapping[str, object], store=None) -> JsonObject:
+    """Authenticate a validated value; does not publish or activate a producer."""
+    _seconds(issued_at, "signature issued-at")
+    _seconds(expires_at, "signature expires-at")
+    if not isinstance(key, SigningKey) or key.status != "active":
+        raise HandoffValidationError("key issuance is disabled")
+    if not key.not_before <= issued_at < expires_at <= key.not_after:
+        raise HandoffValidationError("signature issuance is outside key validity")
+    payload = _entities().validate_contract(value, store=store)
+    result = {"schema": SIGNATURE_SCHEMA, "algorithm": SIGNATURE_ALGORITHM,
+              "key_id": key.key_id, "payload_schema": payload["schema"],
+              "payload": payload, "issued_at": issued_at, "expires_at": expires_at,
+              "freshness": _freshness(freshness)}
+    result["signature"] = hmac.new(key.secret, _signature_bytes(result), hashlib.sha256).hexdigest()
+    return result
+
+
+def verify_contract(value: Mapping[str, object], *, trusted_keys: Mapping[str, SigningKey],
+                    expected_schema: str, expected_freshness: Mapping[str, object],
+                    now: int, historical: bool = False, store=None) -> JsonObject:
+    """Verify using out-of-band trust, exact schema and candidate bindings.
+
+    Historical verification reports mathematical integrity and key status but
+    always returns authority_valid=False. Revoked/compromised/expired records
+    remain readable without becoming current authority or rewriting originals.
+    A valid current signature is authentication only; domain gates still apply.
+    """
+    row = _closed(value, _SIGNATURE_FIELDS, "signed contract")
+    if row["schema"] != SIGNATURE_SCHEMA:
+        raise HandoffValidationError("unsupported signature schema")
+    if row["algorithm"] != SIGNATURE_ALGORITHM:
+        raise HandoffValidationError("unsupported signature algorithm; downgrade refused")
+    if type(historical) is not bool:
+        raise HandoffValidationError("historical mode must be boolean")
+    if row["payload_schema"] != expected_schema:
+        raise HandoffValidationError("signature payload schema downgrade or mismatch")
+    if not isinstance(row["key_id"], str):
+        raise HandoffValidationError("untrusted signing key")
+    key = _trusted_keys(trusted_keys).get(row["key_id"])
+    if key is None:
+        raise HandoffValidationError("untrusted signing key")
+    if _freshness(row["freshness"]) != _freshness(expected_freshness):
+        raise HandoffValidationError("signature freshness mismatch")
+    payload = _entities().validate_contract(row["payload"], store=store)
+    if payload["schema"] != expected_schema:
+        raise HandoffValidationError("signature payload schema mismatch")
+    signature = row["signature"]
+    if not isinstance(signature, str) or not _FINGERPRINT.fullmatch(signature):
+        raise HandoffIntegrityError("signature is invalid")
+    expected = hmac.new(key.secret, _signature_bytes(row), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise HandoffIntegrityError("signature mismatch")
+    issued = _seconds(row["issued_at"], "signature issued-at")
+    expires = _seconds(row["expires_at"], "signature expires-at")
+    _seconds(now, "verification time")
+    if not key.not_before <= issued < expires <= key.not_after:
+        raise HandoffValidationError("signature issuance is outside key validity")
+    if now < issued:
+        raise HandoffValidationError("signature is not yet valid")
+    if key.changed_at is not None and issued >= key.changed_at:
+        raise HandoffValidationError("signature issuance occurred after key disable")
+    if not historical:
+        if key.status in {"revoked", "compromised"}:
+            raise HandoffValidationError(f"signing key is {key.status}")
+        if now >= expires:
+            raise HandoffValidationError("signature is expired")
+    return {"payload": payload, "signature_valid": True,
+            "authority_valid": not historical, "key_status": key.status,
+            "historical": historical, "key_id": key.key_id,
+            "freshness": dict(row["freshness"])}

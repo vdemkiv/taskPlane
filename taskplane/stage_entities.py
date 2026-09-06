@@ -82,6 +82,321 @@ _LINEAGE_FIELDS: Final[frozenset[str]] = frozenset({
     "handoff_fingerprint", "split_operation_id", "fingerprint",
 })
 
+# Additive value contracts only. Their domain owners still validate DAG,
+# capabilities, effect truth, CAS and progression before activating a writer.
+PHASE_DEFINITION_SCHEMA: Final[str] = "taskplane.phase-definition/v1"
+AGENT_RUNTIME_SCHEMA: Final[str] = "taskplane.agent-runtime/v1"
+KNOWLEDGE_UPDATE_SCHEMA: Final[str] = "taskplane.knowledge-update/v1"
+KNOWLEDGE_APPLY_SCHEMA: Final[str] = "taskplane.knowledge-apply-receipt/v1"
+HANDOFF_V2_SCHEMA: Final[str] = "taskplane.stage-handoff/v2"
+_PHASE_FIELDS: Final[frozenset[str]] = frozenset({
+    "id", "role", "skill_ref", "skill_content_fingerprint", "consumes",
+    "produces", "domain_validator_refs", "validator_inventory_fingerprint",
+    "capability_requirements", "working_lenses", "evaluation_lenses", "budget",
+    "model_tier", "gate", "predecessors", "successors", "edge_conditions",
+    "entry", "terminal", "telemetry_scope",
+})
+_RUNTIME_FIELDS: Final[frozenset[str]] = frozenset({
+    "run_id", "phase_id", "attempt_id", "operation_id", "candidate_fingerprint",
+    "definition_set_fingerprint", "phase_definition_fingerprint",
+    "skill_content_fingerprint", "validator_identities",
+    "validator_inventory_fingerprint", "consumed_artifact_schema_versions",
+    "produced_artifact_schema_versions", "capability_set_fingerprint",
+    "sealed_package_fingerprint", "knowledge_fingerprint", "authority_fingerprint",
+    "host_kind_version", "nonce_digest", "lease_id", "fencing_token", "deadline",
+    "budget", "start_identity", "progress_identity", "terminal_identity",
+    "effect_state", "collected_output_references", "produces_conformance",
+    "knowledge_proposals", "evaluator_dispatch_eligibility", "retry_class",
+    "status", "reason_code", "continuation",
+})
+_KNOWLEDGE_UPDATE_FIELDS: Final[frozenset[str]] = frozenset({
+    "base_knowledge_fingerprint", "run_id", "phase_id", "attempt_id",
+    "operation_id", "candidate_fingerprint", "finding_or_observation_reference",
+    "scope", "content_class", "content", "supersedes",
+})
+_KNOWLEDGE_APPLY_FIELDS: Final[frozenset[str]] = frozenset({
+    "base_fingerprint", "current_fingerprint", "new_fingerprint",
+    "proposal_fingerprint", "gate_receipt_fingerprint", "operation_id",
+    "writer_id", "fencing_token", "retention_class", "applied_at", "outcome",
+    "continuation",
+})
+_HANDOFF_V2_ADDITIONS: Final[frozenset[str]] = frozenset({
+    "phase_result", "produced_artifacts", "inherited_artifacts",
+    "knowledge_apply_receipts", "unresolved_issues",
+})
+_CONTRACT_FIELDS: Final[Mapping[str, frozenset[str]]] = {
+    PHASE_DEFINITION_SCHEMA: _PHASE_FIELDS,
+    AGENT_RUNTIME_SCHEMA: _RUNTIME_FIELDS,
+    KNOWLEDGE_UPDATE_SCHEMA: _KNOWLEDGE_UPDATE_FIELDS,
+    KNOWLEDGE_APPLY_SCHEMA: _KNOWLEDGE_APPLY_FIELDS,
+}
+_CONTRACT_SELF_FIELDS: Final[Mapping[str, str]] = {
+    KNOWLEDGE_UPDATE_SCHEMA: "proposal_fingerprint",
+    KNOWLEDGE_APPLY_SCHEMA: "seal",
+}
+
+
+def _strict_json(value: object, depth: int = 0) -> None:
+    """Reject lossy JSON coercions before hashing, including nested keys."""
+    if depth > 32:
+        raise StageValidationError("contract nesting exceeds 32 levels")
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise StageValidationError("contract field names must be strings")
+        for child in value.values():
+            _strict_json(child, depth + 1)
+    elif isinstance(value, list):
+        if len(value) > MAX_COLLECTION_ITEMS:
+            raise StageValidationError("contract collection is too large")
+        for child in value:
+            _strict_json(child, depth + 1)
+    elif value is not None and type(value) not in (str, int, float, bool):
+        raise StageValidationError("contract must contain JSON values")
+    elif isinstance(value, float) and not math.isfinite(value):
+        raise StageValidationError("contract numbers must be finite")
+
+
+def _contract_json(value: Mapping[str, object]) -> bytes:
+    _strict_json(value)
+    try:
+        data = review_evidence.canonical_bytes(value)
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise StageValidationError("contract must be canonical UTF-8 JSON") from exc
+    if len(data) > MAX_INPUT_MANIFEST_BYTES:
+        raise StageValidationError("contract exceeds 65536 bytes")
+    return data
+
+
+def read_contract_json(data: str | bytes, *, store=None) -> JsonObject:
+    """Read bounded UTF-8 JSON without accepting duplicate field authority."""
+    if not isinstance(data, (str, bytes)) or len(data) > MAX_INPUT_MANIFEST_BYTES:
+        raise StageValidationError("contract JSON input is invalid or oversized")
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise StageValidationError(f"duplicate contract field: {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(data.decode("utf-8") if isinstance(data, bytes) else data,
+                           object_pairs_hook=pairs)
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise StageValidationError(f"invalid contract JSON: {exc}") from exc
+    return validate_contract(value, store=store)
+
+
+def _contract_budget(value: object) -> None:
+    row = _closed(value, frozenset({"tokens", "wall_ms", "attempts", "corrections"}), "budget")
+    for key, count in row.items():
+        if type(count) is not int or count < 0:
+            raise StageValidationError(f"budget {key} must be non-negative integer")
+
+
+def _contract_list(value: object, label: str) -> list:
+    if not isinstance(value, list):
+        raise StageValidationError(f"{label} must be a list")
+    return value
+
+
+def _contract_strings(value: object, label: str) -> list[str]:
+    # Ordered definitions and validators retain order; do not sort a DAG.
+    rows = _contract_list(value, label)
+    for item in rows:
+        _bounded_text(item, label)
+    if len(rows) != len(set(rows)):
+        raise StageValidationError(f"{label} contains duplicates")
+    return rows
+
+
+def _continuation(value: object) -> None:
+    row = _closed(value, frozenset({"kind", "phase_id"}), "continuation")
+    if row["kind"] not in {"continue", "evaluate", "wait", "reconcile", "retry",
+                            "fresh-package", "terminal", "hold"}:
+        raise StageValidationError("unsupported continuation kind")
+    if row["phase_id"] is not None:
+        _identifier(row["phase_id"], "continuation phase id")
+
+
+def _schema_artifacts(value: object, label: str, *, references: bool = False) -> None:
+    identities = []
+    for item in _contract_list(value, label):
+        fields = {"artifact_class", "artifact_schema_version"}
+        if references:
+            fields.add("reference")
+        row = _closed(item, frozenset(fields), label)
+        identities.append(_bounded_text(row["artifact_class"], "artifact class"))
+        _bounded_text(row["artifact_schema_version"], "artifact schema version")
+        if references:
+            _portable_reference(row["reference"], "artifact reference")
+    if len(identities) != len(set(identities)):
+        raise StageValidationError(f"{label} contains duplicate artifact classes")
+
+
+def _validate_phase_definition(row: Mapping[str, object]) -> None:
+    for key in ("id", "role"):
+        _identifier(row[key], key)
+    for key in ("skill_ref", "model_tier", "gate"):
+        _bounded_text(row[key], key)
+    for key in ("domain_validator_refs", "capability_requirements", "working_lenses",
+                "evaluation_lenses", "predecessors", "successors", "telemetry_scope"):
+        _contract_strings(row[key], key)
+    for key in ("entry", "terminal"):
+        if type(row[key]) is not bool:
+            raise StageValidationError(f"{key} must be boolean")
+    _contract_budget(row["budget"])
+    for relation in ("consumes", "produces"):
+        identities = []
+        for artifact in _contract_list(row[relation], relation):
+            fields = {"artifact_class", "artifact_schema_version", "required"}
+            fields.update({"knowledge_scope", "knowledge_fingerprint_required"}
+                          if relation == "consumes" else {"cardinality"})
+            item = _closed(artifact, frozenset(fields), relation)
+            identities.append(_bounded_text(item["artifact_class"], "artifact class"))
+            _bounded_text(item["artifact_schema_version"], "artifact schema version")
+            if type(item["required"]) is not bool:
+                raise StageValidationError("artifact required must be boolean")
+            if relation == "consumes":
+                _contract_strings(item["knowledge_scope"], "knowledge scope")
+                if type(item["knowledge_fingerprint_required"]) is not bool:
+                    raise StageValidationError("knowledge fingerprint required must be boolean")
+            elif item["cardinality"] not in {"one", "many"}:
+                raise StageValidationError("unsupported artifact cardinality")
+        if len(identities) != len(set(identities)):
+            raise StageValidationError(f"{relation} contains duplicate artifact classes")
+    endpoints = []
+    for edge in _contract_list(row["edge_conditions"], "edge conditions"):
+        item = _closed(edge, frozenset({"successor", "condition"}), "edge condition")
+        endpoints.append(_identifier(item["successor"], "edge successor"))
+        _bounded_text(item["condition"], "edge condition")
+    if len(endpoints) != len(set(endpoints)) or set(endpoints) != set(row["successors"]):
+        raise StageValidationError("edge conditions must match successors exactly")
+
+
+def _validate_runtime_result(row: Mapping[str, object], *, store=None) -> None:
+    for key in ("run_id", "phase_id", "attempt_id", "operation_id", "lease_id"):
+        _identifier(row[key], key)
+    _bounded_text(row["host_kind_version"], "host kind/version")
+    _timestamp(row["deadline"], "deadline")
+    _contract_budget(row["budget"])
+    if type(row["fencing_token"]) is not int or row["fencing_token"] < 1:
+        raise StageValidationError("fencing token must be positive")
+    for key in ("start_identity", "terminal_identity"):
+        if row[key] is not None:
+            _bounded_text(row[key], key)
+    for key in ("validator_identities", "progress_identity"):
+        _contract_strings(row[key], key)
+    for key in ("consumed_artifact_schema_versions", "produced_artifact_schema_versions"):
+        _schema_artifacts(row[key], key)
+    _references(row["collected_output_references"], "collected output references")
+    for proposal in _contract_list(row["knowledge_proposals"], "knowledge proposals"):
+        if not isinstance(proposal, dict) or proposal.get("schema") != KNOWLEDGE_UPDATE_SCHEMA:
+            raise StageValidationError("unsupported knowledge proposal")
+        validate_contract(proposal, store=store)
+    for key in ("produces_conformance", "evaluator_dispatch_eligibility"):
+        if type(row[key]) is not bool:
+            raise StageValidationError(f"{key} must be boolean")
+    if row["effect_state"] not in {"none", "effect_free", "applied", "uncertain", "reconciled"}:
+        raise StageValidationError("unsupported effect state")
+    if row["retry_class"] not in {"none", "effect_free", "attempt_bound", "reconcile", "permanent"}:
+        raise StageValidationError("unsupported retry class")
+    _continuation(row["continuation"])
+    if row["status"] == "accepted":
+        if row["reason_code"] is not None or not row["produces_conformance"] or \
+                not row["start_identity"] or not row["terminal_identity"]:
+            raise StageValidationError("accepted result requires conforming terminal evidence")
+    elif row["status"] == "refused":
+        _identifier(row["reason_code"], "refusal reason code")
+        if row["evaluator_dispatch_eligibility"]:
+            raise StageValidationError("refused result cannot be evaluator eligible")
+    else:
+        raise StageValidationError("unsupported runtime result status")
+
+
+def validate_contract(value: Mapping[str, object], *, store=None) -> JsonObject:
+    """Validate T01 closed value schemas without minting domain authority.
+
+    The incumbent stage/handoff validators remain the only v1 owners. New
+    shapes are additive and do not activate their producers. A seal/fingerprint
+    is content identity; authentication requires stage_handoff.verify_contract.
+    """
+    if not isinstance(value, Mapping):
+        raise StageValidationError("contract must be an object")
+    value = json.loads(_contract_json(dict(value)))
+    schema = value.get("schema")
+    if schema == SCHEMA:
+        return validate_stage(value)
+    if schema == stage_handoff.SCHEMA:
+        if store is None:
+            raise StageValidationError("handoff validation requires artifact store")
+        return stage_handoff.validate_manifest(store, value, allow_nonconsumable_reuse=True)
+    if schema == HANDOFF_V2_SCHEMA:
+        if store is None:
+            raise StageValidationError("handoff validation requires artifact store")
+        stage_handoff.validate_v2_manifest(store, value)
+        return value
+    if not isinstance(schema, str) or schema not in _CONTRACT_FIELDS:
+        raise StageValidationError("unsupported contract schema")
+    self_field = _CONTRACT_SELF_FIELDS.get(schema, "fingerprint")
+    row = _closed(value, _CONTRACT_FIELDS[schema] | {"schema", self_field}, "contract")
+    for key, item in row.items():
+        if key.endswith("fingerprint") or key in {"nonce_digest", "seal"}:
+            if key == "new_fingerprint" and item is None:
+                continue
+            _fingerprint(item, key)
+    material = {key: item for key, item in row.items() if key != self_field}
+    if review_evidence.content_fingerprint(material) != row[self_field]:
+        raise StageIntegrityError("contract fingerprint mismatch")
+    if schema == PHASE_DEFINITION_SCHEMA:
+        _validate_phase_definition(row)
+    elif schema == AGENT_RUNTIME_SCHEMA:
+        _validate_runtime_result(row, store=store)
+    elif schema == KNOWLEDGE_UPDATE_SCHEMA:
+        for key in ("run_id", "phase_id", "attempt_id", "operation_id"):
+            _identifier(row[key], key)
+        _bounded_text(row["finding_or_observation_reference"], "observation reference")
+        _contract_strings(row["scope"], "knowledge scope")
+        _contract_strings(row["supersedes"], "supersedes")
+        if row["content_class"] not in {"fact", "evidence-reference"}:
+            raise StageValidationError("unsupported knowledge content class")
+        _bounded_text(row["content"], "knowledge content", maximum=4096)
+    elif schema == KNOWLEDGE_APPLY_SCHEMA:
+        for key in ("operation_id", "writer_id", "retention_class"):
+            _identifier(row[key], key)
+        _timestamp(row["applied_at"], "knowledge apply time")
+        if type(row["fencing_token"]) is not int or row["fencing_token"] < 1:
+            raise StageValidationError("fencing token must be positive")
+        if row["outcome"] not in {"applied", "replay", "conflict", "rejected", "tombstoned"}:
+            raise StageValidationError("unsupported knowledge apply outcome")
+        if row["outcome"] in {"conflict", "rejected"} and row["new_fingerprint"] is not None:
+            raise StageValidationError("non-applied knowledge result has a new fingerprint")
+        if row["outcome"] in {"applied", "replay", "tombstoned"} and row["new_fingerprint"] is None:
+            raise StageValidationError("applied knowledge result lacks new fingerprint")
+        _continuation(row["continuation"])
+    return value
+
+
+def create_contract(value: Mapping[str, object], *, store=None) -> JsonObject:
+    """Produce a detached closed value; no persistence or progression effects."""
+    if not isinstance(value, Mapping):
+        raise StageValidationError("contract must be an object")
+    result = json.loads(_contract_json(dict(value)))
+    schema = result.get("schema")
+    if not isinstance(schema, str):
+        raise StageValidationError("unsupported contract schema")
+    self_field = _CONTRACT_SELF_FIELDS.get(schema, "fingerprint")
+    # Supplied identities must validate, never silently repair stale records.
+    if self_field not in result:
+        result[self_field] = review_evidence.content_fingerprint(result)
+    return validate_contract(result, store=store)
+
+
+def canonical_contract_bytes(value: Mapping[str, object], *, store=None) -> bytes:
+    """Canonical UTF-8, sorted string keys, compact separators, finite numbers."""
+    return _contract_json(validate_contract(value, store=store))
+
 
 class StageValidationError(ValueError):
     """A stage value violates the closed canonical schema."""
