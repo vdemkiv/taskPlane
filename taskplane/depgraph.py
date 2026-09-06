@@ -41,8 +41,7 @@ import storage as runtime_storage
 import taskplane_lite as tp
 
 GRAPH_FILE = "graph.json"
-CODE_EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".go",
-            ".cs", ".java", ".rb")
+CODE_EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".go", ".cs", ".java", ".rb")
 # ------------------------------------------------------------------ artifacts
 #
 # D-0016. CODE_EXT decided what EXISTS, not just what gets parsed for imports —
@@ -67,10 +66,25 @@ ARTIFACT_EXT = (".md", ".json", ".yml", ".yaml", ".sql", ".tf")
 # `git ls-files`, which honors .gitignore). Covers vendored and build trees
 # (vendor/ for Go, target/ for Rust/Java) so third-party code never becomes
 # graph modules and pollutes blast radius.
-SKIP_DIRS = {".git", "node_modules", "__pycache__", ".taskplane", ".tp-work",
-             "venv", ".venv", "dist", "build", "target", "vendor",
-             ".tox", ".mypy_cache", ".pytest_cache", ".eval", ".em-review",
-             ".security-review"}
+SKIP_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".taskplane",
+    ".tp-work",
+    "venv",
+    ".venv",
+    "dist",
+    "build",
+    "target",
+    "vendor",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".eval",
+    ".em-review",
+    ".security-review",
+}
 
 
 def _path(ws: str) -> str:
@@ -82,8 +96,7 @@ def _path(ws: str) -> str:
 
 
 def _empty() -> dict:
-    return {"modules": {}, "edges": [], "files": {}, "recorded": [],
-            "meta": {}}
+    return {"modules": {}, "edges": [], "files": {}, "recorded": [], "meta": {}}
 
 
 # Corruption blocks gates (fail-closed) WITH this remedy. It must steer the
@@ -95,7 +108,8 @@ _CORRUPT_REMEDY = (
     "inspect or restore graph.json in the knowledge store (from a backup/"
     "snapshot, or git if the store is versioned). Do NOT delete it and "
     "re-scan: a re-scan only rebuilds scanned edges — recorded manual edges "
-    "live in this file's 'recorded' section and would be lost")
+    "live in this file's 'recorded' section and would be lost"
+)
 
 
 # Per-process read memo: graph.json is parsed by many consumers per command
@@ -109,53 +123,86 @@ _GRAPH_CACHE: dict[str, tuple] = {}
 # See batch().
 _BATCH: dict[str, dict] = {}
 _SCANNER_CACHE_VERSION: dict[bool, str] = {}
-_STRICT_GRAPH_QUALITY = contextvars.ContextVar(
-    "taskplane_strict_graph_quality", default=False)
+_STRICT_GRAPH_QUALITY = contextvars.ContextVar("taskplane_strict_graph_quality", default=False)
 
 GRAPH_SCAN_QUALITY_SCHEMA = "taskplane.graph-scan-quality/v1"
 DESIGN_DECOMPOSITION_SCHEMA = "taskplane.design-decomposition-receipt/v1"
-GRAPH_SCAN_RECOVERY = (
-    "repair the named source/producer and rerun `tp graph scan --strict`")
+GRAPH_SCAN_RECOVERY = "repair the named source/producer and rerun `tp graph scan --strict`"
 ARCHITECTURE_MAP_SCHEMA = "taskplane.architecture-map-proof/v1"
 ARCHITECTURE_MAX_BYTES = 1024 * 1024
 ARCHITECTURE_MAX_NODES = 512
 ARCHITECTURE_MAX_EDGES = 2048
 DESIGN_ARCHITECTURE_SCHEMA = "taskplane.design-architecture-map/v1"
-TERMINAL_CAPABILITY_CUSTODY_SCHEMA = \
-    "taskplane.terminal-capability-custody-decision/v1"
+TERMINAL_CAPABILITY_CUSTODY_SCHEMA = "taskplane.terminal-capability-custody-decision/v1"
 TERMINAL_CAPABILITY_CUSTODY_SECTION = "terminal_capability_custody"
 TERMINAL_CAPABILITY_CUSTODY_MAX_BYTES = 128 * 1024
-ARCHITECTURE_AUTHORITY_FLOOR_SCHEMA = \
-    "taskplane.architecture-authority-floor/v1"
-CURRENT_GRAPH_AUTHORITY_FLOOR_SCHEMA = \
-    "taskplane.current-graph-authority-floor/v1"
-SEMANTIC_ENDPOINT_REGISTRY_SCHEMA = \
-    "taskplane.semantic-endpoint-registry/v1"
-_ARCHITECTURE_MAP_KEYS = frozenset({
-    "schema", "decision_record", "scanner_input", "scanner_rule", "nodes",
-    "required_properties", "required_singleton_sccs", "semantic_edges",
-    "content_fingerprint",
-})
+ARCHITECTURE_AUTHORITY_FLOOR_SCHEMA = "taskplane.architecture-authority-floor/v1"
+CURRENT_GRAPH_AUTHORITY_FLOOR_SCHEMA = "taskplane.current-graph-authority-floor/v1"
+SEMANTIC_ENDPOINT_REGISTRY_SCHEMA = "taskplane.semantic-endpoint-registry/v1"
+_ARCHITECTURE_MAP_KEYS = frozenset(
+    {
+        "schema",
+        "decision_record",
+        "scanner_input",
+        "scanner_rule",
+        "nodes",
+        "required_properties",
+        "required_singleton_sccs",
+        "semantic_edges",
+        "content_fingerprint",
+    }
+)
 _ARCHITECTURE_NODE_KEYS = frozenset({"id", "kind", "path_globs"})
-_ARCHITECTURE_NODE_KINDS = frozenset({
-    "external-host", "existing", "new", "producer", "test", "file",
-    "contract", "resource",
-})
-_ARCHITECTURE_REQUIRED_PROPERTIES = frozenset({
-    "native-authority, design-sweep, and terminal-truth owners are singleton SCCs",
-    "no new owner imports or invokes a host transport or transition adapter",
-    "governance adapters reach Codex only through contract:delivery.codex-native-dispatch",
-    "all eight surface producers reach the coordinator through contract:delivery.exact-sha-terminal-truth",
-    "tests observe every node and every declared production edge",
-})
+_ARCHITECTURE_NODE_KINDS = frozenset(
+    {
+        "external-host",
+        "existing",
+        "new",
+        "producer",
+        "test",
+        "file",
+        "contract",
+        "resource",
+    }
+)
+_ARCHITECTURE_REQUIRED_PROPERTIES = frozenset(
+    {
+        "native-authority, design-sweep, and terminal-truth owners are singleton SCCs",
+        "no new owner imports or invokes a host transport or transition adapter",
+        "governance adapters reach Codex only through contract:delivery.codex-native-dispatch",
+        "all eight surface producers reach the coordinator through contract:delivery.exact-sha-terminal-truth",
+        "tests observe every node and every declared production edge",
+    }
+)
 _SEMANTIC_EDGE_KEYS = frozenset({"from", "to", "kind", "reason"})
-_SEMANTIC_EDGE_KINDS = frozenset({
-    "blocks", "bound-by", "calls", "catalog-input", "changes",
-    "completion-attention", "consumed-by", "consumes", "coordinated-by",
-    "depends", "depends_on", "evidence", "handoff", "imports", "intent",
-    "observed-by", "produces", "projects", "provides", "requires",
-    "transported-by", "uses", "validated-by", "verified-by",
-})
+_SEMANTIC_EDGE_KINDS = frozenset(
+    {
+        "blocks",
+        "bound-by",
+        "calls",
+        "catalog-input",
+        "changes",
+        "completion-attention",
+        "consumed-by",
+        "consumes",
+        "coordinated-by",
+        "depends",
+        "depends_on",
+        "evidence",
+        "handoff",
+        "imports",
+        "intent",
+        "observed-by",
+        "produces",
+        "projects",
+        "provides",
+        "requires",
+        "transported-by",
+        "uses",
+        "validated-by",
+        "verified-by",
+    }
+)
 _GRAPH_NODE_ID = re.compile(r"^[A-Za-z0-9._/-]+(?::[A-Za-z0-9._/-]+)*$")
 
 # These floors are engine-owned copies of the two separately approved graph
@@ -167,29 +214,26 @@ _GRAPH_NODE_ID = re.compile(r"^[A-Za-z0-9._/-]+(?::[A-Za-z0-9._/-]+)*$")
 _ARCHITECTURE_AUTHORITY_FLOORS = {
     "D-R0013-native-adapter-quarantine": {
         "schema": ARCHITECTURE_AUTHORITY_FLOOR_SCHEMA,
-        "content_fingerprint":
-            "2ce2f31148d4078d64f62de89b8eff9a902693b68395773f53b5371623030ebc",
+        "content_fingerprint": "2ce2f31148d4078d64f62de89b8eff9a902693b68395773f53b5371623030ebc",
         "node_count": 14,
-        "node_set_fingerprint":
-            "3d98e052e20e872af075cb337589fc51c10dc2fb4f8609342a1eb41a40310280",
+        "node_set_fingerprint": "3d98e052e20e872af075cb337589fc51c10dc2fb4f8609342a1eb41a40310280",
         "semantic_edge_count": 24,
-        "semantic_edge_set_fingerprint":
-            "605ea7d0927748f945477d32048a1e641d7b0a1441992ac1fd0e4b36c6d6325b",
-        "singleton_sccs": frozenset({
-            "component:native-authority-validator",
-            "component:design-sweep-validator",
-            "component:terminal-truth-coordinator",
-        }),
+        "semantic_edge_set_fingerprint": "605ea7d0927748f945477d32048a1e641d7b0a1441992ac1fd0e4b36c6d6325b",
+        "singleton_sccs": frozenset(
+            {
+                "component:native-authority-validator",
+                "component:design-sweep-validator",
+                "component:terminal-truth-coordinator",
+            }
+        ),
     },
 }
 _CURRENT_GRAPH_AUTHORITY_FLOORS = {
     "R-0002": {
         "schema": CURRENT_GRAPH_AUTHORITY_FLOOR_SCHEMA,
         "edge_count": 23,
-        "edge_fingerprint":
-            "d79577ead44054407fbc767fb86a40c5f61da79f84811dfa8d93328f8c5b3d4c",
-        "edge_set_fingerprint":
-            "09d2b45bc0196ed898120235a7c949b76f4cc81e479b86b7366d856b9b3d5748",
+        "edge_fingerprint": "d79577ead44054407fbc767fb86a40c5f61da79f84811dfa8d93328f8c5b3d4c",
+        "edge_set_fingerprint": "09d2b45bc0196ed898120235a7c949b76f4cc81e479b86b7366d856b9b3d5748",
     },
 }
 
@@ -197,46 +241,49 @@ _CURRENT_GRAPH_AUTHORITY_FLOORS = {
 # above.  Prefix syntax is not registration: every ext:/contract:/resource:/
 # svc:/req:/component:/surface: endpoint must appear here before it can enter
 # a production graph.
-_SEMANTIC_ENDPOINT_REGISTRY = frozenset({
-    "component:design-sweep-validator",
-    "component:native-authority-validator",
-    "component:r0013-contract-tests",
-    "component:taskplane-governance-adapters",
-    "component:terminal-truth-coordinator",
-    "contract:ci.reproducible-python-quality",
-    "contract:dashboard.accessible-truthful-actions",
-    "contract:delivery.acceptance-wave-ceiling",
-    "contract:delivery.bounded-stage-handoff",
-    "contract:delivery.codex-native-dispatch",
-    "contract:delivery.event-driven-wait",
-    "contract:delivery.exact-sha-terminal-truth",
-    "contract:delivery.execution-zero-lens",
-    "contract:delivery.production-wiring",
-    "contract:design.codex-native-capability-inventory",
-    "contract:design.quick-concurrent-all-lens-sweep",
-    "contract:docs.generated-truth",
-    "contract:i18n.locale-and-grapheme",
-    "contract:privacy.retention-and-disclosure",
-    "contract:quality.review-remediation",
-    "contract:release.compatibility-and-authority",
-    "contract:review.high-closure-gate",
-    "contract:runtime.durable-state-and-authority",
-    "contract:runtime.scoped-dependency-binding",
-    "ext:codex-native-orchestration",
-    "resource:exports.exact-sha-terminal-truth",
-    "resource:review.exact-candidate-evidence",
-    "resource:review.finding-traceability",
-    "surface:exports-terminal-evidence",
-    "surface:git-head",
-    "surface:governed-progress",
-    "surface:public-report",
-    "surface:release-evidence",
-    "surface:repository-verification-report",
-    "surface:run-journal",
-    "surface:tasks-and-gates",
-})
-_SEMANTIC_ENDPOINT_REGISTRY_FINGERPRINT = \
+_SEMANTIC_ENDPOINT_REGISTRY = frozenset(
+    {
+        "component:design-sweep-validator",
+        "component:native-authority-validator",
+        "component:r0013-contract-tests",
+        "component:taskplane-governance-adapters",
+        "component:terminal-truth-coordinator",
+        "contract:ci.reproducible-python-quality",
+        "contract:dashboard.accessible-truthful-actions",
+        "contract:delivery.acceptance-wave-ceiling",
+        "contract:delivery.bounded-stage-handoff",
+        "contract:delivery.codex-native-dispatch",
+        "contract:delivery.event-driven-wait",
+        "contract:delivery.exact-sha-terminal-truth",
+        "contract:delivery.execution-zero-lens",
+        "contract:delivery.production-wiring",
+        "contract:design.codex-native-capability-inventory",
+        "contract:design.quick-concurrent-all-lens-sweep",
+        "contract:docs.generated-truth",
+        "contract:i18n.locale-and-grapheme",
+        "contract:privacy.retention-and-disclosure",
+        "contract:quality.review-remediation",
+        "contract:release.compatibility-and-authority",
+        "contract:review.high-closure-gate",
+        "contract:runtime.durable-state-and-authority",
+        "contract:runtime.scoped-dependency-binding",
+        "ext:codex-native-orchestration",
+        "resource:exports.exact-sha-terminal-truth",
+        "resource:review.exact-candidate-evidence",
+        "resource:review.finding-traceability",
+        "surface:exports-terminal-evidence",
+        "surface:git-head",
+        "surface:governed-progress",
+        "surface:public-report",
+        "surface:release-evidence",
+        "surface:repository-verification-report",
+        "surface:run-journal",
+        "surface:tasks-and-gates",
+    }
+)
+_SEMANTIC_ENDPOINT_REGISTRY_FINGERPRINT = (
     "3756cfb3f83c1d7ac5d024c7bd4672b7e61dd0e3226818327aa286b6c8ba5053"
+)
 
 
 class GraphQualityDegraded(RuntimeError):
@@ -247,9 +294,11 @@ def _fingerprinted_scan_quality(record: dict) -> dict:
     """Bind graph-scan quality to canonical material, excluding itself."""
     material = copy.deepcopy(record)
     material.pop("fingerprint", None)
-    digest = hashlib.sha256(json.dumps(
-        material, sort_keys=True, separators=(",", ":"),
-        ensure_ascii=False).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+    ).hexdigest()
     material["fingerprint"] = digest
     return material
 
@@ -257,24 +306,24 @@ def _fingerprinted_scan_quality(record: dict) -> dict:
 def scan_quality(graph: dict) -> dict:
     """Return the canonical producer-complete graph scan quality record."""
     raw = ((graph or {}).get("meta") or {}).get("graph_scan_quality")
-    if isinstance(raw, dict) and raw.get("schema") == \
-            GRAPH_SCAN_QUALITY_SCHEMA:
+    if isinstance(raw, dict) and raw.get("schema") == GRAPH_SCAN_QUALITY_SCHEMA:
         return _fingerprinted_scan_quality(raw)
-    return _fingerprinted_scan_quality({
-        "schema": GRAPH_SCAN_QUALITY_SCHEMA,
-        "degraded": False,
-        "mode": "modules",
-        "scanned_revision": str(((graph or {}).get("meta") or {}).get(
-            "scanned_head") or ""),
-        "affected_modules": [],
-        "failures": [],
-        "producers": {
-            "base-scanner": {"status": "complete", "failures": []},
-            "decomposition": {"status": "not-requested", "failures": []},
-            "architecture-map": {"status": "not-requested", "failures": []},
-        },
-        "recovery": GRAPH_SCAN_RECOVERY,
-    })
+    return _fingerprinted_scan_quality(
+        {
+            "schema": GRAPH_SCAN_QUALITY_SCHEMA,
+            "degraded": False,
+            "mode": "modules",
+            "scanned_revision": str(((graph or {}).get("meta") or {}).get("scanned_head") or ""),
+            "affected_modules": [],
+            "failures": [],
+            "producers": {
+                "base-scanner": {"status": "complete", "failures": []},
+                "decomposition": {"status": "not-requested", "failures": []},
+                "architecture-map": {"status": "not-requested", "failures": []},
+            },
+            "recovery": GRAPH_SCAN_RECOVERY,
+        }
+    )
 
 
 def quality_errors(graph: dict) -> list[str]:
@@ -287,10 +336,13 @@ def quality_errors(graph: dict) -> list[str]:
         details.append(
             f"{row.get('producer', 'unknown')} {row.get('module', '?')} "
             f"{row.get('file', '?')} {row.get('error_class', 'error')}: "
-            f"{row.get('reason', 'unknown reason')}")
+            f"{row.get('reason', 'unknown reason')}"
+        )
     suffix = "; ".join(details) or "producer reported degradation"
-    return [f"graph scan quality is degraded: {suffix} — "
-            f"{quality.get('recovery') or GRAPH_SCAN_RECOVERY}"]
+    return [
+        f"graph scan quality is degraded: {suffix} — "
+        f"{quality.get('recovery') or GRAPH_SCAN_RECOVERY}"
+    ]
 
 
 def require_quality(graph: dict) -> None:
@@ -321,11 +373,12 @@ def scanner_cache_version(*, decompose: bool = False) -> str:
         try:
             sources = [__file__, graph_primitives.__file__]
             if decompose:
-                sources.extend((
-                    graph_decomposition.__file__,
-                    os.path.join(os.path.dirname(__file__),
-                                 "lens_signals.py"),
-                ))
+                sources.extend(
+                    (
+                        graph_decomposition.__file__,
+                        os.path.join(os.path.dirname(__file__), "lens_signals.py"),
+                    )
+                )
             digest = hashlib.sha256()
             for source in sources:
                 with open(source, "rb") as handle:
@@ -345,8 +398,13 @@ def _managed_cache_path(ws: str, *, decompose: bool) -> tuple[str, str] | None:
     if not head:
         return None
     path = os.path.join(
-        locator["home"], "cache", "graphs", locator["repository_key"],
-        head, f"{scanner_cache_version(decompose=decompose)}.json")
+        locator["home"],
+        "cache",
+        "graphs",
+        locator["repository_key"],
+        head,
+        f"{scanner_cache_version(decompose=decompose)}.json",
+    )
     return path, head
 
 
@@ -356,18 +414,18 @@ def _restore_managed_cache(ws: str, *, decompose: bool) -> dict | None:
         return None
     path, head = located
     try:
-        value = tp.load_json(path, default=None,
-                             what="managed dependency graph cache")
+        value = tp.load_json(path, default=None, what="managed dependency graph cache")
     except tp.StateError:
         return None
-    if not isinstance(value, dict) or value.get("schema") != \
-            "taskplane.graph-cache/v1" or value.get("head") != head or \
-            value.get("scanner_version") != scanner_cache_version(
-                decompose=decompose) or not isinstance(value.get("graph"),
-                                                       dict) or \
-            value.get("components_fingerprint") != \
-            _components_file_fingerprint(ws) or \
-            value.get("design_fingerprint") != _design_file_fingerprint(ws):
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "taskplane.graph-cache/v1"
+        or value.get("head") != head
+        or value.get("scanner_version") != scanner_cache_version(decompose=decompose)
+        or not isinstance(value.get("graph"), dict)
+        or value.get("components_fingerprint") != _components_file_fingerprint(ws)
+        or value.get("design_fingerprint") != _design_file_fingerprint(ws)
+    ):
         return None
     graph = value["graph"]
     save(ws, graph)
@@ -379,13 +437,19 @@ def _write_managed_cache(ws: str, graph: dict, *, decompose: bool) -> None:
     if not located:
         return
     path, head = located
-    tp.atomic_write_json(path, {
-        "schema": "taskplane.graph-cache/v1", "head": head,
-        "scanner_version": scanner_cache_version(decompose=decompose),
-        "components_fingerprint": _components_file_fingerprint(ws),
-        "design_fingerprint": _design_file_fingerprint(ws),
-        "graph": graph,
-    }, indent=1, sort_keys=True)
+    tp.atomic_write_json(
+        path,
+        {
+            "schema": "taskplane.graph-cache/v1",
+            "head": head,
+            "scanner_version": scanner_cache_version(decompose=decompose),
+            "components_fingerprint": _components_file_fingerprint(ws),
+            "design_fingerprint": _design_file_fingerprint(ws),
+            "graph": graph,
+        },
+        indent=1,
+        sort_keys=True,
+    )
 
 
 def load(ws: str) -> dict:
@@ -398,7 +462,7 @@ def load(ws: str) -> dict:
     per-process memo. Mutate only via scan/record_edge/link_requirement or
     inside a batch() block."""
     p = os.path.abspath(_path(ws))
-    if p in _BATCH:                       # a batch sees its own mutations
+    if p in _BATCH:  # a batch sees its own mutations
         return _BATCH[p]
     try:
         sig = _stat_sig(p)
@@ -408,17 +472,13 @@ def load(ws: str) -> dict:
     if hit is not None and hit[0] == sig:
         return hit[1]
     try:
-        g = tp.load_json(p, default=None,
-                         what="dependency graph (graph.json)")
+        g = tp.load_json(p, default=None, what="dependency graph (graph.json)")
     except tp.StateError:
-        raise tp.StateError(p, "corrupt dependency graph (graph.json)",
-                            _CORRUPT_REMEDY) from None
+        raise tp.StateError(p, "corrupt dependency graph (graph.json)", _CORRUPT_REMEDY) from None
     if g is None:
         return _empty()
     if not isinstance(g, dict):
-        raise tp.StateError(
-            p, "corrupt dependency graph (not a JSON object)",
-            _CORRUPT_REMEDY)
+        raise tp.StateError(p, "corrupt dependency graph (not a JSON object)", _CORRUPT_REMEDY)
     g.setdefault("modules", {})
     g.setdefault("edges", [])
     g.setdefault("files", {})
@@ -457,17 +517,17 @@ def batch(ws: str):
     On an exception nothing is flushed and the read memo is dropped (the
     in-memory graph may hold partial mutations)."""
     p = os.path.abspath(_path(ws))
-    if p in _BATCH:                        # nested: the outer batch flushes
+    if p in _BATCH:  # nested: the outer batch flushes
         yield _BATCH[p]
         return
     with tp.file_lock(p):
-        _GRAPH_CACHE.pop(p, None)          # re-read under the lock
+        _GRAPH_CACHE.pop(p, None)  # re-read under the lock
         g = load(ws)
         _BATCH[p] = g
         try:
             yield g
         except BaseException:
-            _GRAPH_CACHE.pop(p, None)      # partial mutations — not truth
+            _GRAPH_CACHE.pop(p, None)  # partial mutations — not truth
             raise
         finally:
             _BATCH.pop(p, None)
@@ -484,30 +544,35 @@ def _stamp_meta(ws: str, g: dict, *, scanned: bool = False) -> dict:
     recording does not pretend the code tree was rescanned.
     """
     graph_material = {
-        "files": {p: row.get("hash", "")
-                  for p, row in (g.get("files") or {}).items()},
-        "edges": sorted((e["from"], e["to"], e["kind"],
-                         e.get("source"), e.get("confidence"))
-                        for e in (g.get("edges") or [])),
-        "architecture_map": str((((g.get("meta") or {}).get(
-            "architecture_map") or {}).get("fingerprint") or "")),
-        "terminal_capability_custody": str((((g.get("meta") or {}).get(
-            "terminal_capability_custody") or {}).get("fingerprint") or "")),
+        "files": {p: row.get("hash", "") for p, row in (g.get("files") or {}).items()},
+        "edges": sorted(
+            (e["from"], e["to"], e["kind"], e.get("source"), e.get("confidence"))
+            for e in (g.get("edges") or [])
+        ),
+        "architecture_map": str(
+            (((g.get("meta") or {}).get("architecture_map") or {}).get("fingerprint") or "")
+        ),
+        "terminal_capability_custody": str(
+            (
+                ((g.get("meta") or {}).get("terminal_capability_custody") or {}).get("fingerprint")
+                or ""
+            )
+        ),
     }
     meta = dict(g.get("meta") or {})
-    meta.update({
-        "schema": 2,
-        "updated_at": int(time.time()),
-        "content_fingerprint": hashlib.sha256(
-            json.dumps(graph_material, sort_keys=True,
-                       separators=(",", ":")).encode()).hexdigest(),
-        "source_counts": {
-            source: sum(1 for e in (g.get("edges") or [])
-                        if e.get("source") == source)
-            for source in sorted({e.get("source", "unknown")
-                                  for e in (g.get("edges") or [])})
-        },
-    })
+    meta.update(
+        {
+            "schema": 2,
+            "updated_at": int(time.time()),
+            "content_fingerprint": hashlib.sha256(
+                json.dumps(graph_material, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "source_counts": {
+                source: sum(1 for e in (g.get("edges") or []) if e.get("source") == source)
+                for source in sorted({e.get("source", "unknown") for e in (g.get("edges") or [])})
+            },
+        }
+    )
     if scanned:
         meta["scanned_at"] = int(time.time())
         meta["scanned_head"] = tp.git_head(ws)
@@ -521,8 +586,7 @@ def summary(ws: str) -> dict:
     this instead of reaching into the raw file, so a schema change here can't
     silently zero the mission-control graph tab.)"""
     g = load(ws)
-    return {"modules": len(g.get("modules") or {}),
-            "edges": len(g.get("edges") or [])}
+    return {"modules": len(g.get("modules") or {}), "edges": len(g.get("edges") or [])}
 
 
 # ------------------------------------------------ shared graph primitives
@@ -547,6 +611,7 @@ is_dependency_edge = graph_primitives.is_dependency_edge
 
 # ------------------------------------------------------------------ scanners
 
+
 def _bounded_parse_reason(exc: BaseException) -> str:
     """One-line, bounded producer reason suitable for JSON and terminals."""
     if isinstance(exc, SyntaxError):
@@ -560,8 +625,7 @@ def _bounded_parse_reason(exc: BaseException) -> str:
     return " ".join(reason.split())[:240]
 
 
-def _py_imports_checked(src: str, relpath: str,
-                        known_stems: dict) -> tuple[set, dict | None]:
+def _py_imports_checked(src: str, relpath: str, known_stems: dict) -> tuple[set, dict | None]:
     out = set()
     try:
         tree = ast.parse(src)
@@ -603,12 +667,18 @@ def _py_imports(src: str, relpath: str, known_stems: dict) -> set:
 
 _JS_IMPORT = re.compile(
     r"""(?:import\s+(?:[^'"]*\s+from\s+)?|require\s*\(\s*|export\s+[^'"]*"""
-    r"""from\s+)['"]([^'"]+)['"]""")
+    r"""from\s+)['"]([^'"]+)['"]"""
+)
 
 
-def _js_imports(src: str, relpath: str, file_index: set,
-                manifests: dict | None = None,
-                declared_ids=None, root_mod: "str | None" = None) -> set:
+def _js_imports(
+    src: str,
+    relpath: str,
+    file_index: set,
+    manifests: dict | None = None,
+    declared_ids=None,
+    root_mod: "str | None" = None,
+) -> set:
     out = set()
     for target in _JS_IMPORT.findall(src):
         if target.startswith("."):
@@ -616,11 +686,13 @@ def _js_imports(src: str, relpath: str, file_index: set,
             # posixpath, not os.path: on Windows os.path.join/normpath
             # would emit backslashes that never match the '/'-keyed
             # file_index, silently dropping every relative JS import.
-            resolved = posixpath.normpath(
-                posixpath.join(posixpath.dirname(relpath), target))
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(relpath), target))
             # find an actual file this resolves to
-            for cand in (resolved, *(f"{resolved}{e}" for e in CODE_EXT),
-                         *(f"{resolved}/index{e}" for e in CODE_EXT)):
+            for cand in (
+                resolved,
+                *(f"{resolved}{e}" for e in CODE_EXT),
+                *(f"{resolved}/index{e}" for e in CODE_EXT),
+            ):
                 if cand in file_index:
                     out.add(module_of(cand, manifests))
                     break
@@ -636,8 +708,8 @@ def _js_imports(src: str, relpath: str, file_index: set,
                 # is passed in — recovering it from `declared_ids` is what
                 # silently failed in v2.10.0 (see root_module).
                 rel_in = strip_root_prefix(
-                    target, root_mod if root_mod is not None
-                    else root_module(declared_ids))
+                    target, root_mod if root_mod is not None else root_module(declared_ids)
+                )
                 if rel_in:
                     inside = module_of(rel_in + "/_", manifests)
             out.add(inside if inside else "ext:" + target.split("/")[0])
@@ -645,8 +717,11 @@ def _js_imports(src: str, relpath: str, file_index: set,
 
 
 _CS_NS = re.compile(r"^\s*namespace\s+([\w.]+)", re.M)
-_CS_USING = re.compile(r"^\s*(?:global\s+)?using\s+(?:static\s+)?"
-                       r"([\w.]+)\s*;", re.M)
+_CS_USING = re.compile(
+    r"^\s*(?:global\s+)?using\s+(?:static\s+)?"
+    r"([\w.]+)\s*;",
+    re.M,
+)
 
 
 def _cs_declared(src: str) -> list:
@@ -661,7 +736,7 @@ def _cs_imports(src: str, ns_map: dict) -> set:
     for u in _CS_USING.findall(src):
         hit = None
         parts = u.split(".")
-        for i in range(len(parts), 0, -1):        # longest prefix wins
+        for i in range(len(parts), 0, -1):  # longest prefix wins
             hit = ns_map.get(".".join(parts[:i]))
             if hit:
                 break
@@ -673,8 +748,11 @@ def _cs_imports(src: str, ns_map: dict) -> set:
 
 
 _JAVA_PKG = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.M)
-_JAVA_IMPORT = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+?)"
-                          r"(?:\.\*)?\s*;", re.M)
+_JAVA_IMPORT = re.compile(
+    r"^\s*import\s+(?:static\s+)?([\w.]+?)"
+    r"(?:\.\*)?\s*;",
+    re.M,
+)
 
 
 def _java_declared(src: str) -> list:
@@ -695,21 +773,35 @@ def _java_imports(src: str, pkg_map: dict) -> set:
         if hit:
             out.add(hit)
         elif not imp.startswith(("java.", "javax.", "jakarta.annotation")):
-            out.add("ext:" + ".".join(parts[:3 if parts[0] in
-                                             ("org", "com", "io", "net")
-                                             else 1]))
+            out.add("ext:" + ".".join(parts[: 3 if parts[0] in ("org", "com", "io", "net") else 1]))
     return out
 
 
 _RB_REQ_REL = re.compile(r"""require_relative\s+['"]([^'"]+)['"]""")
 _RB_REQ = re.compile(r"""(?<!_)require\s+['"]([^'"]+)['"]""")
-_RB_STDLIB = {"json", "yaml", "set", "time", "date", "uri", "net/http",
-              "logger", "csv", "fileutils", "pathname", "securerandom",
-              "digest", "base64", "open3", "socket", "erb", "openssl"}
+_RB_STDLIB = {
+    "json",
+    "yaml",
+    "set",
+    "time",
+    "date",
+    "uri",
+    "net/http",
+    "logger",
+    "csv",
+    "fileutils",
+    "pathname",
+    "securerandom",
+    "digest",
+    "base64",
+    "open3",
+    "socket",
+    "erb",
+    "openssl",
+}
 
 
-def _ruby_imports(src: str, relpath: str, file_index: set,
-                  manifests: dict | None = None) -> set:
+def _ruby_imports(src: str, relpath: str, file_index: set, manifests: dict | None = None) -> set:
     """require_relative resolved to files; bare require matched against
     repo lib paths first (Rails-style lib/foo/bar → lib/foo), else a gem.
     (Rails constant autoloading carries no import statements — those edges
@@ -743,8 +835,7 @@ _GEMFILE_GEM = re.compile(r"""^\s*gem\s+['"]([\w-]+)['"]""", re.M)
 # skips a root package.json — a root manifest is about the repository, not
 # a module in it, and spreading its dependencies over every package would
 # be invention rather than resolution.
-_POM_DEP = re.compile(
-    r"<dependency>(.*?)</dependency>", re.S | re.I)
+_POM_DEP = re.compile(r"<dependency>(.*?)</dependency>", re.S | re.I)
 _POM_ARTIFACT = re.compile(r"<artifactId>\s*([^<\s]+)\s*</artifactId>", re.I)
 _POM_SCOPE = re.compile(r"<scope>\s*([^<\s]+)\s*</scope>", re.I)
 
@@ -756,7 +847,7 @@ def _compose_services(src: str) -> list:
         if re.match(r"^services\s*:", line):
             in_services = True
             continue
-        if in_services and re.match(r"^\S", line):     # left the block
+        if in_services and re.match(r"^\S", line):  # left the block
             in_services = False
         if not in_services:
             continue
@@ -780,6 +871,7 @@ def _compose_services(src: str) -> list:
 
 # ------------------------------------------------------------------ scan
 
+
 def _git_candidates(ws: str) -> list | None:
     """Candidate files honoring .gitignore: tracked + untracked-unignored,
     minus deleted-but-tracked. None when `ws` is not a git work tree (or git
@@ -789,18 +881,18 @@ def _git_candidates(ws: str) -> list | None:
     full-tree walk into one git call."""
     try:
         r = subprocess.run(
-            ["git", "-C", ws, "ls-files", "-z", "--cached", "--others",
-             "--exclude-standard"],
-            capture_output=True, timeout=60)
+            ["git", "-C", ws, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            capture_output=True,
+            timeout=60,
+        )
         if r.returncode != 0:
             return None
-        names = {n for n in r.stdout.decode("utf-8", "replace").split("\0")
-                 if n}
-        d = subprocess.run(["git", "-C", ws, "ls-files", "-z", "--deleted"],
-                           capture_output=True, timeout=60)
+        names = {n for n in r.stdout.decode("utf-8", "replace").split("\0") if n}
+        d = subprocess.run(
+            ["git", "-C", ws, "ls-files", "-z", "--deleted"], capture_output=True, timeout=60
+        )
         if d.returncode == 0:
-            names -= {n for n in d.stdout.decode("utf-8", "replace")
-                      .split("\0") if n}
+            names -= {n for n in d.stdout.decode("utf-8", "replace").split("\0") if n}
         return sorted(names)
     except Exception:
         return None
@@ -810,7 +902,8 @@ _GO_LIMITATION = (
     "internal Go imports are not resolved to modules — the Go scanner "
     "records external (ext:) edges only, so intra-repo Go dependencies are "
     "absent and impact()/hub signals under-count for Go code. Record "
-    "intra-repo Go edges explicitly (record_edge / `tp graph edge`).")
+    "intra-repo Go edges explicitly (record_edge / `tp graph edge`)."
+)
 # D-0007 narrowed the gap without closing it: an import path that a go.mod in
 # this repo DECLARES now resolves to that module. What is still missing is
 # every import whose module path is not declared here — so the disclosure must
@@ -822,7 +915,8 @@ _GO_LIMITATION_DECLARED = (
     "repo does not declare still lands as ext:<last-segment>, so intra-repo "
     "Go dependencies outside the declared module set are absent and "
     "impact()/hub signals under-count for them. Record those explicitly "
-    "(record_edge / `tp graph edge`).")
+    "(record_edge / `tp graph edge`)."
+)
 
 
 def scan(ws: str, decompose: bool = False, *, strict: bool = False) -> dict:
@@ -837,7 +931,7 @@ def scan(ws: str, decompose: bool = False, *, strict: bool = False) -> dict:
     behavior (decompose.py is not even imported), and a graph that never
     decomposed carries no `components` key at all."""
     p = os.path.abspath(_path(ws))
-    if p in _BATCH:                        # inside batch(): lock already held
+    if p in _BATCH:  # inside batch(): lock already held
         graph = _scan_locked(ws, into=_BATCH[p], decompose=decompose)
         if strict or _STRICT_GRAPH_QUALITY.get():
             require_quality(graph)
@@ -856,9 +950,11 @@ def scan(ws: str, decompose: bool = False, *, strict: bool = False) -> dict:
 
 
 def _canonical_fingerprint(value: object) -> str:
-    return hashlib.sha256(json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 DESIGN_TRACEABILITY_PRODUCER = "taskplane/depgraph.py"
@@ -868,13 +964,32 @@ DESIGN_TRACEABILITY_PRODUCER_CHAIN = (
 )
 
 
+def build_source_touchpoint_coverage(
+    source_tree: str, bound_inputs, *, limits: dict, verifier
+) -> dict:
+    """Expose the decomposition owner's bounded source verification."""
+    return graph_decomposition.build_source_touchpoint_coverage(
+        source_tree, bound_inputs, limits=limits, verifier=verifier
+    )
+
+
+def require_complete_source_coverage(coverage: dict, *, source_tree: str | None = None) -> dict:
+    """Validate source evidence before a graph consumer trusts it."""
+    return graph_decomposition.require_complete_source_coverage(coverage, source_tree=source_tree)
+
+
+def derive_verified_source(workspace: str, graph: dict, coverage: dict, prev: dict | None = None):
+    """Gate graph decomposition on complete source coverage."""
+    return graph_decomposition.derive_verified_source(workspace, graph, coverage, prev)
+
+
 def design_traceability_inventory(contract: dict) -> dict:
     """Expose and attest the decomposition owner's canonical inventory."""
     inventory = graph_decomposition.design_traceability_inventory(contract)
     if tuple(inventory.get("producer_chain") or ()) != (
-            graph_decomposition.DESIGN_TRACEABILITY_PRODUCER,):
-        raise ValueError(
-            "graph_decomposition producer provenance is missing or stale")
+        graph_decomposition.DESIGN_TRACEABILITY_PRODUCER,
+    ):
+        raise ValueError("graph_decomposition producer provenance is missing or stale")
     inventory = copy.deepcopy(inventory)
     inventory.pop("fingerprint", None)
     inventory["producer_chain"] = list(DESIGN_TRACEABILITY_PRODUCER_CHAIN)
@@ -882,8 +997,7 @@ def design_traceability_inventory(contract: dict) -> dict:
     return inventory
 
 
-def validate_plan_traceability_foreign_keys(
-        design_inventory: dict, plan: dict) -> dict:
+def validate_plan_traceability_foreign_keys(design_inventory: dict, plan: dict) -> dict:
     """Validate Plan references and close forward and reverse indexes."""
     if not isinstance(plan, dict):
         raise ValueError("Plan must be an object")
@@ -915,24 +1029,18 @@ def validate_plan_traceability_foreign_keys(
         if not isinstance(raw_criteria, list) or not raw_criteria:
             raise ValueError(f"Plan task {task_id} criteria are required")
         if raw_refs != raw_criteria:
-            raise ValueError(
-                f"Plan task {task_id} criteria and acceptance_refs diverge")
+            raise ValueError(f"Plan task {task_id} criteria and acceptance_refs diverge")
         criterion_ids = []
         for value in raw_criteria:
             match = re.match(r"^(FP-AC[0-9]{2})(?:\s|$)", str(value))
             criterion_id = match.group(1) if match else str(value)
             if criterion_id not in canonical_criteria:
-                raise ValueError(
-                    f"Plan task {task_id} has foreign criterion: {criterion_id}")
-            canonical_text = str(
-                design_inventory["criteria"][criterion_id].get("criterion") or "")
+                raise ValueError(f"Plan task {task_id} has foreign criterion: {criterion_id}")
+            canonical_text = str(design_inventory["criteria"][criterion_id].get("criterion") or "")
             if str(value) != canonical_text:
-                raise ValueError(
-                    f"Plan task {task_id} criterion bytes are stale: "
-                    f"{criterion_id}")
+                raise ValueError(f"Plan task {task_id} criterion bytes are stale: {criterion_id}")
             if criterion_id in criterion_ids:
-                raise ValueError(
-                    f"Plan task {task_id} repeats criterion: {criterion_id}")
+                raise ValueError(f"Plan task {task_id} repeats criterion: {criterion_id}")
             criterion_ids.append(criterion_id)
             criterion_tasks[criterion_id].append(task_id)
 
@@ -944,9 +1052,7 @@ def validate_plan_traceability_foreign_keys(
             raise ValueError(f"Plan task {task_id} repeats a contract")
         foreign_contracts = sorted(set(task_contracts) - canonical_contracts)
         if foreign_contracts:
-            raise ValueError(
-                f"Plan task {task_id} has foreign contract: "
-                f"{foreign_contracts[0]}")
+            raise ValueError(f"Plan task {task_id} has foreign contract: {foreign_contracts[0]}")
         for contract_id in task_contracts:
             contract_tasks[contract_id].append(task_id)
 
@@ -958,9 +1064,7 @@ def validate_plan_traceability_foreign_keys(
             raise ValueError(f"Plan task {task_id} repeats a Design edge")
         foreign_edges = sorted(set(task_edges) - canonical_edges)
         if foreign_edges:
-            raise ValueError(
-                f"Plan task {task_id} has foreign Design edge: "
-                f"{foreign_edges[0]}")
+            raise ValueError(f"Plan task {task_id} has foreign Design edge: {foreign_edges[0]}")
         for edge_id in task_edges:
             edge_tasks[edge_id].append(task_id)
 
@@ -970,12 +1074,9 @@ def validate_plan_traceability_foreign_keys(
             "design_edges": sorted(task_edges),
         }
 
-    orphan_criteria = sorted(
-        identity for identity, owners in criterion_tasks.items() if not owners)
-    orphan_contracts = sorted(
-        identity for identity, owners in contract_tasks.items() if not owners)
-    orphan_edges = sorted(
-        identity for identity, owners in edge_tasks.items() if not owners)
+    orphan_criteria = sorted(identity for identity, owners in criterion_tasks.items() if not owners)
+    orphan_contracts = sorted(identity for identity, owners in contract_tasks.items() if not owners)
+    orphan_edges = sorted(identity for identity, owners in edge_tasks.items() if not owners)
     if orphan_criteria:
         raise ValueError(f"orphan criterion: {orphan_criteria[0]}")
     if orphan_contracts:
@@ -985,45 +1086,44 @@ def validate_plan_traceability_foreign_keys(
 
     return {
         "tasks": tasks,
-        "criterion_tasks": {
-            key: sorted(value) for key, value in sorted(criterion_tasks.items())
-        },
-        "contract_tasks": {
-            key: sorted(value) for key, value in sorted(contract_tasks.items())
-        },
-        "design_edge_tasks": {
-            key: sorted(value) for key, value in sorted(edge_tasks.items())
-        },
+        "criterion_tasks": {key: sorted(value) for key, value in sorted(criterion_tasks.items())},
+        "contract_tasks": {key: sorted(value) for key, value in sorted(contract_tasks.items())},
+        "design_edge_tasks": {key: sorted(value) for key, value in sorted(edge_tasks.items())},
     }
 
 
 def _safe_context_pattern(value: object) -> str:
     """Validate one repository-relative pattern without touching the host FS."""
     pattern = str(value or "").strip()
-    if not pattern or "\x00" in pattern or "\\" in pattern or \
-            posixpath.isabs(pattern) or any(
-                part == ".." for part in pattern.split("/")):
-        raise ValueError(
-            "Design decomposition context patterns must be safe relative paths")
+    if (
+        not pattern
+        or "\x00" in pattern
+        or "\\" in pattern
+        or posixpath.isabs(pattern)
+        or any(part == ".." for part in pattern.split("/"))
+    ):
+        raise ValueError("Design decomposition context patterns must be safe relative paths")
     while pattern.startswith("./"):
         pattern = pattern[2:]
     if not pattern:
-        raise ValueError(
-            "Design decomposition context patterns must be safe relative paths")
+        raise ValueError("Design decomposition context patterns must be safe relative paths")
     return pattern
 
 
 def _safe_graph_path(value: object) -> str:
     path = str(value or "")
-    if not path or "\x00" in path or "\\" in path or \
-            posixpath.isabs(path) or any(
-                part in {"", ".", ".."} for part in path.split("/")):
+    if (
+        not path
+        or "\x00" in path
+        or "\\" in path
+        or posixpath.isabs(path)
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+    ):
         raise ValueError("dependency graph contains an unsafe repository path")
     return path
 
 
-def prepare_design_decomposition(
-        ws: str, context_files, *, settings_digest: str) -> dict:
+def prepare_design_decomposition(ws: str, context_files, *, settings_digest: str) -> dict:
     """Refresh and project the mandatory component evidence for Design.
 
     This is the orchestrator-owned production boundary: it deliberately calls
@@ -1039,8 +1139,7 @@ def prepare_design_decomposition(
     if context_files is None:
         requested: list[str] = []
     elif isinstance(context_files, (list, tuple, set, frozenset)):
-        requested = sorted({_safe_context_pattern(item)
-                            for item in context_files})
+        requested = sorted({_safe_context_pattern(item) for item in context_files})
     else:
         raise ValueError("Design decomposition context files must be a list")
 
@@ -1048,13 +1147,21 @@ def prepare_design_decomposition(
     if not head_before or head_before == "unknown":
         raise ValueError("Design decomposition requires an exact git HEAD")
     graph = scan(ws, decompose=True)
-    files = sorted(_safe_graph_path(path)
-                   for path in (graph.get("files") or {}))
+    files = sorted(_safe_graph_path(path) for path in (graph.get("files") or {}))
     if requested:
-        expanded = sorted({path for path in files for pattern in requested
-                           if glob_match.path_matches(path, pattern)})
-        unmatched = [pattern for pattern in requested if not any(
-            glob_match.path_matches(path, pattern) for path in files)]
+        expanded = sorted(
+            {
+                path
+                for path in files
+                for pattern in requested
+                if glob_match.path_matches(path, pattern)
+            }
+        )
+        unmatched = [
+            pattern
+            for pattern in requested
+            if not any(glob_match.path_matches(path, pattern) for path in files)
+        ]
         scope_mode = "declared"
     else:
         expanded = files
@@ -1069,28 +1176,32 @@ def prepare_design_decomposition(
     for raw in components:
         if not isinstance(raw, dict):
             continue
-        component_files = sorted(
-            _safe_graph_path(path) for path in (raw.get("files") or []))
+        component_files = sorted(_safe_graph_path(path) for path in (raw.get("files") or []))
         if not expanded_set.intersection(component_files):
             continue
         lens_map = raw.get("lens_map") or {}
-        dependencies = sorted({
-            (str(edge.get("to") or ""), str(edge.get("kind") or ""))
-            for edge in (raw.get("deps") or []) if isinstance(edge, dict)
-        })
-        projected.append({
-            "id": str(raw.get("id") or ""),
-            "module": str(raw.get("module") or ""),
-            "files": component_files,
-            "derived_by": str(raw.get("derived_by") or ""),
-            "degraded": bool(raw.get("degraded")),
-            "dependencies": [{"to": target, "kind": kind}
-                             for target, kind in dependencies],
-            "lens_candidates": sorted(
-                str(lens_id) for lens_id, verdict in lens_map.items()
-                if isinstance(verdict, dict) and
-                verdict.get("verdict") in {"deep", "light"}),
-        })
+        dependencies = sorted(
+            {
+                (str(edge.get("to") or ""), str(edge.get("kind") or ""))
+                for edge in (raw.get("deps") or [])
+                if isinstance(edge, dict)
+            }
+        )
+        projected.append(
+            {
+                "id": str(raw.get("id") or ""),
+                "module": str(raw.get("module") or ""),
+                "files": component_files,
+                "derived_by": str(raw.get("derived_by") or ""),
+                "degraded": bool(raw.get("degraded")),
+                "dependencies": [{"to": target, "kind": kind} for target, kind in dependencies],
+                "lens_candidates": sorted(
+                    str(lens_id)
+                    for lens_id, verdict in lens_map.items()
+                    if isinstance(verdict, dict) and verdict.get("verdict") in {"deep", "light"}
+                ),
+            }
+        )
     projected.sort(key=lambda row: row["id"])
 
     quality = scan_quality(graph)
@@ -1101,8 +1212,7 @@ def prepare_design_decomposition(
     degraded_reasons = []
     if quality.get("degraded"):
         degraded_reasons.append("graph-scan-quality")
-    if quality.get("mode") != "components" or not isinstance(
-            raw_components, list):
+    if quality.get("mode") != "components" or not isinstance(raw_components, list):
         degraded_reasons.append("component-layer-unavailable")
     if head_before != scanned_head or head != scanned_head or head != head_before:
         degraded_reasons.append("scanned-head-mismatch")
@@ -1149,64 +1259,89 @@ def validate_design_decomposition_receipt(value: object) -> dict:
     if not isinstance(value, dict):
         raise ValueError("Design decomposition receipt must be an object")
     required = {
-        "schema", "status", "head", "scanned_head", "graph_fingerprint",
-        "component_fingerprint", "floors_fingerprint", "settings_digest",
-        "context", "component_count", "selected_component_count",
-        "components", "degraded", "degraded_reasons",
-        "quality_fingerprint", "fingerprint",
+        "schema",
+        "status",
+        "head",
+        "scanned_head",
+        "graph_fingerprint",
+        "component_fingerprint",
+        "floors_fingerprint",
+        "settings_digest",
+        "context",
+        "component_count",
+        "selected_component_count",
+        "components",
+        "degraded",
+        "degraded_reasons",
+        "quality_fingerprint",
+        "fingerprint",
     }
-    if set(value) != required or value.get("schema") != \
-            DESIGN_DECOMPOSITION_SCHEMA:
+    if set(value) != required or value.get("schema") != DESIGN_DECOMPOSITION_SCHEMA:
         raise ValueError("Design decomposition receipt shape is invalid")
-    material = {key: item for key, item in value.items()
-                if key != "fingerprint"}
+    material = {key: item for key, item in value.items() if key != "fingerprint"}
     if value.get("fingerprint") != _canonical_fingerprint(material):
         raise ValueError("Design decomposition receipt fingerprint is stale")
     status = value.get("status")
     degraded = value.get("degraded")
     reasons = value.get("degraded_reasons")
-    if status not in {"ready", "degraded"} or not isinstance(
-            degraded, bool) or not isinstance(reasons, list) or any(
-                not isinstance(reason, str) or not reason for reason in reasons):
+    if (
+        status not in {"ready", "degraded"}
+        or not isinstance(degraded, bool)
+        or not isinstance(reasons, list)
+        or any(not isinstance(reason, str) or not reason for reason in reasons)
+    ):
         raise ValueError("Design decomposition receipt status is invalid")
     if (status == "degraded") != degraded or degraded != bool(reasons):
         raise ValueError("Design decomposition degradation is inconsistent")
-    if not isinstance(value.get("head"), str) or not value["head"] or \
-            value.get("scanned_head") != value.get("head"):
+    if (
+        not isinstance(value.get("head"), str)
+        or not value["head"]
+        or value.get("scanned_head") != value.get("head")
+    ):
         raise ValueError("Design decomposition source HEAD is stale")
     for field in (
-            "graph_fingerprint", "component_fingerprint",
-            "floors_fingerprint", "settings_digest", "quality_fingerprint"):
+        "graph_fingerprint",
+        "component_fingerprint",
+        "floors_fingerprint",
+        "settings_digest",
+        "quality_fingerprint",
+    ):
         if re.fullmatch(r"[0-9a-f]{64}", str(value.get(field) or "")) is None:
-            raise ValueError(
-                f"Design decomposition {field} is not a SHA-256 digest")
+            raise ValueError(f"Design decomposition {field} is not a SHA-256 digest")
     context = value.get("context")
     if not isinstance(context, dict) or set(context) != {
-            "mode", "patterns", "expanded_files", "unmatched_patterns"}:
+        "mode",
+        "patterns",
+        "expanded_files",
+        "unmatched_patterns",
+    }:
         raise ValueError("Design decomposition context is invalid")
     for field in ("patterns", "expanded_files", "unmatched_patterns"):
         rows = context.get(field)
-        if not isinstance(rows, list) or any(
-                not isinstance(row, str) for row in rows):
+        if not isinstance(rows, list) or any(not isinstance(row, str) for row in rows):
             raise ValueError("Design decomposition context is invalid")
     components = value.get("components")
     total = value.get("component_count")
     selected = value.get("selected_component_count")
-    if not isinstance(components, list) or isinstance(total, bool) or \
-            not isinstance(total, int) or total < 0 or isinstance(
-                selected, bool) or not isinstance(selected, int) or \
-            selected != len(components) or selected > total:
+    if (
+        not isinstance(components, list)
+        or isinstance(total, bool)
+        or not isinstance(total, int)
+        or total < 0
+        or isinstance(selected, bool)
+        or not isinstance(selected, int)
+        or selected != len(components)
+        or selected > total
+    ):
         raise ValueError("Design decomposition component counts are invalid")
-    if len({str(row.get("id") or "") for row in components
-            if isinstance(row, dict)}) != len(components) or any(
-                not isinstance(row, dict) or not str(row.get("id") or "")
-                for row in components):
+    if len({str(row.get("id") or "") for row in components if isinstance(row, dict)}) != len(
+        components
+    ) or any(not isinstance(row, dict) or not str(row.get("id") or "") for row in components):
         raise ValueError("Design decomposition components are invalid")
     return copy.deepcopy(value)
 
 
-def publish_design_decomposition(ws: str, artifact_root,
-                                 receipt: object) -> dict:
+def publish_design_decomposition(ws: str, artifact_root, receipt: object) -> dict:
     """Publish a validated current-run graph receipt to its durable class.
 
     The run-artifact manifest supplies the run, initial stage instance,
@@ -1218,12 +1353,14 @@ def publish_design_decomposition(ws: str, artifact_root,
     current_head = str(tp.git_head(ws) or "")
     current_graph = load(ws)
     current_graph_fingerprint = str(
-        (current_graph.get("meta") or {}).get("content_fingerprint") or "")
-    if checked["head"] != current_head or \
-            checked["scanned_head"] != current_head or \
-            checked["graph_fingerprint"] != current_graph_fingerprint:
-        raise ValueError(
-            "Design decomposition is stale for the current workspace graph")
+        (current_graph.get("meta") or {}).get("content_fingerprint") or ""
+    )
+    if (
+        checked["head"] != current_head
+        or checked["scanned_head"] != current_head
+        or checked["graph_fingerprint"] != current_graph_fingerprint
+    ):
+        raise ValueError("Design decomposition is stale for the current workspace graph")
     try:
         from . import run_artifacts
     except ImportError:  # pragma: no cover - direct CLI module loading
@@ -1231,12 +1368,9 @@ def publish_design_decomposition(ws: str, artifact_root,
     manifest = run_artifacts.load_manifest(artifact_root)
     binding = manifest.get("binding") or {}
     if binding.get("stage_id") not in {"product", "design"}:
-        raise ValueError(
-            "Design decomposition artifacts require a governed root-stage "
-            "manifest")
+        raise ValueError("Design decomposition artifacts require a governed root-stage manifest")
     if binding.get("settings_digest") != checked["settings_digest"]:
-        raise ValueError(
-            "Design decomposition settings do not match the active run")
+        raise ValueError("Design decomposition settings do not match the active run")
     return run_artifacts.publish_artifact(
         artifact_root,
         "dependency-graphs",
@@ -1257,8 +1391,7 @@ def publish_design_decomposition(ws: str, artifact_root,
 def _scan_volatile_stripped(g: dict) -> str:
     """Canonical JSON of a graph minus the volatile meta timestamps — the
     only fields that move on a content-identical rescan."""
-    meta = {k: v for k, v in (g.get("meta") or {}).items()
-            if k not in ("updated_at", "scanned_at")}
+    meta = {k: v for k, v in (g.get("meta") or {}).items() if k not in ("updated_at", "scanned_at")}
     stable = {k: v for k, v in g.items() if k != "meta"}
     stable["meta"] = meta
     return json.dumps(stable, sort_keys=True, default=str)
@@ -1279,6 +1412,7 @@ def load_excludes(ws: str) -> tuple[list, str | None]:
     narrowed blast radius, and that fails toward LESS review.
     """
     import path_roles
+
     path = os.path.join(ws, "components.yaml")
     if not os.path.exists(path):
         return [], None
@@ -1341,8 +1475,10 @@ def terminal_capability_custody_proof(ws: str) -> dict:
             "status": "incomplete",
             "selected": "",
             "alternatives": [],
-            "errors": ["components.yaml exceeds terminal custody decision "
-                       f"bound {TERMINAL_CAPABILITY_CUSTODY_MAX_BYTES} bytes"],
+            "errors": [
+                "components.yaml exceeds terminal custody decision "
+                f"bound {TERMINAL_CAPABILITY_CUSTODY_MAX_BYTES} bytes"
+            ],
             "source": "components.yaml#/terminal_capability_custody",
             "source_fingerprint": _components_file_fingerprint(ws),
         }
@@ -1367,15 +1503,15 @@ def terminal_capability_custody_proof(ws: str) -> dict:
         top = top_re.match(line)
         if top:
             section = top.group(1)
-            configured = configured or section == \
-                TERMINAL_CAPABILITY_CUSTODY_SECTION
+            configured = configured or section == TERMINAL_CAPABILITY_CUSTODY_SECTION
             continue
         if section != TERMINAL_CAPABILITY_CUSTODY_SECTION:
             continue
         item = item_re.match(line)
         if not item or not item.group(2).strip():
-            errors.append("terminal_capability_custody has unsupported or "
-                          f"empty entry: {raw_line.strip()}")
+            errors.append(
+                f"terminal_capability_custody has unsupported or empty entry: {raw_line.strip()}"
+            )
             continue
         entries.append((item.group(1), item.group(2).strip()))
 
@@ -1395,12 +1531,19 @@ def terminal_capability_custody_proof(ws: str) -> dict:
         proof["fingerprint"] = _canonical_json_fingerprint(material)
         return proof
 
-    allowed = {"schema", "decision_record", "selected", "gain", "cost",
-               "alternative", "revisit_when", "evidence"}
+    allowed = {
+        "schema",
+        "decision_record",
+        "selected",
+        "gain",
+        "cost",
+        "alternative",
+        "revisit_when",
+        "evidence",
+    }
     unknown = sorted({key for key, _value in entries} - allowed)
     if unknown:
-        errors.append("terminal_capability_custody has unknown fields: "
-                      + ", ".join(unknown))
+        errors.append("terminal_capability_custody has unknown fields: " + ", ".join(unknown))
     singular = {}
     for key, value in entries:
         if key == "alternative" or key not in allowed:
@@ -1409,24 +1552,22 @@ def terminal_capability_custody_proof(ws: str) -> dict:
             errors.append("terminal_capability_custody repeats field: " + key)
         else:
             singular[key] = value
-    required = {"schema", "decision_record", "selected", "gain", "cost",
-                "revisit_when", "evidence"}
+    required = {"schema", "decision_record", "selected", "gain", "cost", "revisit_when", "evidence"}
     missing = sorted(required - set(singular))
     if missing:
-        errors.append("terminal_capability_custody is missing fields: "
-                      + ", ".join(missing))
+        errors.append("terminal_capability_custody is missing fields: " + ", ".join(missing))
     if singular.get("schema") != TERMINAL_CAPABILITY_CUSTODY_SCHEMA:
         errors.append("terminal_capability_custody has unknown schema")
-    if singular.get("decision_record") != \
-            "D-R0013-terminal-capability-custody":
-        errors.append("terminal_capability_custody decision_record is not "
-                      "the accepted R-0013 authority")
+    if singular.get("decision_record") != "D-R0013-terminal-capability-custody":
+        errors.append(
+            "terminal_capability_custody decision_record is not the accepted R-0013 authority"
+        )
     if singular.get("selected") != "durably-protected-issuer":
-        errors.append("terminal_capability_custody selection does not match "
-                      "the durable production issuer")
+        errors.append(
+            "terminal_capability_custody selection does not match the durable production issuer"
+        )
     if singular.get("evidence") != "taskplane/terminal_truth.py":
-        errors.append("terminal_capability_custody evidence must name "
-                      "taskplane/terminal_truth.py")
+        errors.append("terminal_capability_custody evidence must name taskplane/terminal_truth.py")
 
     alternatives = []
     for value in [value for key, value in entries if key == "alternative"]:
@@ -1434,43 +1575,53 @@ def terminal_capability_custody_proof(ws: str) -> dict:
         option = {"id": parts[0] if parts else ""}
         for part in parts[1:]:
             if ":" not in part:
-                errors.append("terminal capability alternative has malformed "
-                              f"trade-off: {value}")
+                errors.append(f"terminal capability alternative has malformed trade-off: {value}")
                 continue
             key, detail = (piece.strip() for piece in part.split(":", 1))
             if key not in {"gain", "cost"} or not detail or key in option:
-                errors.append("terminal capability alternative has invalid "
-                              f"{key or 'field'}: {value}")
+                errors.append(
+                    f"terminal capability alternative has invalid {key or 'field'}: {value}"
+                )
                 continue
             option[key] = detail
-        if not option.get("id") or not option.get("gain") or not \
-                option.get("cost"):
-            errors.append("terminal capability alternative must define id, "
-                          "gain, and cost: " + value)
+        if not option.get("id") or not option.get("gain") or not option.get("cost"):
+            errors.append(
+                "terminal capability alternative must define id, gain, and cost: " + value
+            )
         alternatives.append(option)
     alternative_ids = [row.get("id") for row in alternatives]
     expected_alternatives = {
-        "process-only-custody", "host-authenticated-reissuance",
+        "process-only-custody",
+        "host-authenticated-reissuance",
         "durably-protected-issuer",
     }
     if len(alternatives) != 3 or set(alternative_ids) != expected_alternatives:
-        errors.append("terminal_capability_custody must compare exactly "
-                      "process-only custody, host-authenticated reissuance, "
-                      "and a durably protected issuer")
+        errors.append(
+            "terminal_capability_custody must compare exactly "
+            "process-only custody, host-authenticated reissuance, "
+            "and a durably protected issuer"
+        )
     if len(alternative_ids) != len(set(alternative_ids)):
         errors.append("terminal capability alternatives must be unique")
-    process_only = next((row for row in alternatives
-                         if row.get("id") == "process-only-custody"), {})
-    if "authority isolation" not in str(process_only.get("gain") or "") or \
-            "restart recoverability" not in str(
-                process_only.get("cost") or ""):
-        errors.append("process-only custody must state authority isolation "
-                      "gained and restart recoverability spent")
+    process_only = next(
+        (row for row in alternatives if row.get("id") == "process-only-custody"), {}
+    )
+    if "authority isolation" not in str(
+        process_only.get("gain") or ""
+    ) or "restart recoverability" not in str(process_only.get("cost") or ""):
+        errors.append(
+            "process-only custody must state authority isolation "
+            "gained and restart recoverability spent"
+        )
     revisit = singular.get("revisit_when", "").lower()
-    if "first finalizer process replacement" not in revisit or \
-            "failed restart canary" not in revisit:
-        errors.append("terminal capability custody needs the observable first "
-                      "finalizer replacement and failed restart canary trigger")
+    if (
+        "first finalizer process replacement" not in revisit
+        or "failed restart canary" not in revisit
+    ):
+        errors.append(
+            "terminal capability custody needs the observable first "
+            "finalizer replacement and failed restart canary trigger"
+        )
 
     runtime_path = os.path.join(ws, "taskplane", "terminal_truth.py")
     runtime_markers = {
@@ -1484,17 +1635,15 @@ def terminal_capability_custody_proof(ws: str) -> dict:
             runtime_source = stream.read(2 * 1024 * 1024)
     except OSError as exc:
         runtime_source = ""
-        errors.append(
-            f"terminal capability runtime evidence cannot be read: {exc}")
+        errors.append(f"terminal capability runtime evidence cannot be read: {exc}")
     observed_runtime = {
-        marker: token in runtime_source
-        for marker, token in runtime_markers.items()
+        marker: token in runtime_source for marker, token in runtime_markers.items()
     }
-    missing_runtime = sorted(marker for marker, present
-                             in observed_runtime.items() if not present)
+    missing_runtime = sorted(marker for marker, present in observed_runtime.items() if not present)
     if missing_runtime:
-        errors.append("durably protected issuer is not wired in production: "
-                      + ", ".join(missing_runtime))
+        errors.append(
+            "durably protected issuer is not wired in production: " + ", ".join(missing_runtime)
+        )
 
     complete = not errors
     proof = {
@@ -1537,14 +1686,18 @@ def _design_file_fingerprint(ws: str) -> str:
 def _safe_architecture_glob(pattern: str) -> bool:
     value = str(pattern or "").replace("\\", "/")
     parts = [part for part in value.split("/") if part]
-    return bool(value and not value.startswith(("/", "./"))
-                and ".." not in parts and not os.path.isabs(value))
+    return bool(
+        value
+        and not value.startswith(("/", "./"))
+        and ".." not in parts
+        and not os.path.isabs(value)
+    )
 
 
 def _canonical_json_fingerprint(value) -> str:
-    return hashlib.sha256(json.dumps(
-        value, sort_keys=True, separators=(",", ":"),
-        ensure_ascii=False).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
 
 
 def _read_design_architecture(ws: str) -> dict:
@@ -1559,28 +1712,55 @@ def _read_design_architecture(ws: str) -> dict:
         with open(path, "rb") as stream:
             raw = stream.read(ARCHITECTURE_MAX_BYTES + 1)
     except FileNotFoundError:
-        return {"configured": False, "nodes": [], "semantic_edges": [],
-                "design_edges": [], "singleton_sccs": [], "errors": []}
+        return {
+            "configured": False,
+            "nodes": [],
+            "semantic_edges": [],
+            "design_edges": [],
+            "singleton_sccs": [],
+            "errors": [],
+        }
     except OSError as exc:
-        return {"configured": True, "nodes": [], "semantic_edges": [],
-                "design_edges": [], "singleton_sccs": [],
-                "errors": [f"design/contract.json cannot be read: {exc}"]}
+        return {
+            "configured": True,
+            "nodes": [],
+            "semantic_edges": [],
+            "design_edges": [],
+            "singleton_sccs": [],
+            "errors": [f"design/contract.json cannot be read: {exc}"],
+        }
     if len(raw) > ARCHITECTURE_MAX_BYTES:
-        return {"configured": True, "nodes": [], "semantic_edges": [],
-                "design_edges": [], "singleton_sccs": [], "errors": [
-                    "design/contract.json exceeds architecture proof bound "
-                    f"{ARCHITECTURE_MAX_BYTES} bytes"]}
+        return {
+            "configured": True,
+            "nodes": [],
+            "semantic_edges": [],
+            "design_edges": [],
+            "singleton_sccs": [],
+            "errors": [
+                "design/contract.json exceeds architecture proof bound "
+                f"{ARCHITECTURE_MAX_BYTES} bytes"
+            ],
+        }
     try:
         contract = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return {"configured": True, "nodes": [], "semantic_edges": [],
-                "design_edges": [], "singleton_sccs": [], "errors": [
-                    "design/contract.json is not valid UTF-8 JSON: "
-                    f"{type(exc).__name__}"]}
+        return {
+            "configured": True,
+            "nodes": [],
+            "semantic_edges": [],
+            "design_edges": [],
+            "singleton_sccs": [],
+            "errors": [f"design/contract.json is not valid UTF-8 JSON: {type(exc).__name__}"],
+        }
     if not isinstance(contract, dict):
-        return {"configured": True, "nodes": [], "semantic_edges": [],
-                "design_edges": [], "singleton_sccs": [],
-                "errors": ["design/contract.json root must be an object"]}
+        return {
+            "configured": True,
+            "nodes": [],
+            "semantic_edges": [],
+            "design_edges": [],
+            "singleton_sccs": [],
+            "errors": ["design/contract.json root must be an object"],
+        }
     architecture = contract.get("architecture_decomposition")
     requirement = str(contract.get("requirement") or "").strip()
     if "architecture_decomposition" not in contract:
@@ -1590,44 +1770,57 @@ def _read_design_architecture(ws: str) -> dict:
         # ids are local to a knowledge store and can be reused, so an id from
         # a historical store is not authority to activate an unrelated map.
         # Designs that opt in still fail closed against both immutable floors.
-        return {"configured": False, "nodes": [], "semantic_edges": [],
-                "design_edges": [], "singleton_sccs": [], "errors": []}
+        return {
+            "configured": False,
+            "nodes": [],
+            "semantic_edges": [],
+            "design_edges": [],
+            "singleton_sccs": [],
+            "errors": [],
+        }
     errors = []
     if not isinstance(architecture, dict):
-        return {"configured": True, "nodes": [], "semantic_edges": [],
-                "design_edges": [], "singleton_sccs": [], "errors": [
-                    "accepted design is missing architecture_decomposition"]}
+        return {
+            "configured": True,
+            "nodes": [],
+            "semantic_edges": [],
+            "design_edges": [],
+            "singleton_sccs": [],
+            "errors": ["accepted design is missing architecture_decomposition"],
+        }
     unknown = sorted(set(architecture) - _ARCHITECTURE_MAP_KEYS)
     if unknown:
-        errors.append("architecture_decomposition has unknown sections: "
-                      + ", ".join(unknown))
+        errors.append("architecture_decomposition has unknown sections: " + ", ".join(unknown))
     if architecture.get("schema") != DESIGN_ARCHITECTURE_SCHEMA:
-        errors.append("architecture_decomposition has unknown schema: "
-                      + str(architecture.get("schema") or "missing"))
+        errors.append(
+            "architecture_decomposition has unknown schema: "
+            + str(architecture.get("schema") or "missing")
+        )
     decision_record = str(architecture.get("decision_record") or "").strip()
     authority_floor = _ARCHITECTURE_AUTHORITY_FLOORS.get(decision_record)
     if authority_floor is None:
-        errors.append("architecture_decomposition decision_record has no "
-                      "accepted authority floor: "
-                      + (decision_record or "missing"))
+        errors.append(
+            "architecture_decomposition decision_record has no "
+            "accepted authority floor: " + (decision_record or "missing")
+        )
     fingerprint = str(architecture.get("content_fingerprint") or "")
-    material = {key: architecture[key] for key in sorted(architecture)
-                if key != "content_fingerprint"}
+    material = {
+        key: architecture[key] for key in sorted(architecture) if key != "content_fingerprint"
+    }
     expected_fingerprint = _canonical_json_fingerprint(material)
     if fingerprint != expected_fingerprint:
-        errors.append("architecture_decomposition content_fingerprint does "
-                      "not bind the complete accepted map")
-    if authority_floor is not None and fingerprint != \
-            authority_floor["content_fingerprint"]:
-        errors.append("architecture_decomposition does not match the immutable "
-                      f"authority floor for {decision_record}")
-    if architecture.get("scanner_input") != \
-            "design/contract.json#/architecture_decomposition":
-        errors.append("architecture_decomposition scanner_input is missing "
-                      "or points elsewhere")
+        errors.append(
+            "architecture_decomposition content_fingerprint does not bind the complete accepted map"
+        )
+    if authority_floor is not None and fingerprint != authority_floor["content_fingerprint"]:
+        errors.append(
+            "architecture_decomposition does not match the immutable "
+            f"authority floor for {decision_record}"
+        )
+    if architecture.get("scanner_input") != "design/contract.json#/architecture_decomposition":
+        errors.append("architecture_decomposition scanner_input is missing or points elsewhere")
     for field in ("decision_record", "scanner_rule"):
-        if not isinstance(architecture.get(field), str) or not \
-                architecture[field].strip():
+        if not isinstance(architecture.get(field), str) or not architecture[field].strip():
             errors.append(f"architecture_decomposition {field} is required")
     nodes = architecture.get("nodes")
     if not isinstance(nodes, list):
@@ -1635,90 +1828,132 @@ def _read_design_architecture(ws: str) -> dict:
         nodes = []
     if authority_floor is not None:
         node_set = sorted(
-            nodes, key=lambda row: str(row.get("id") or "")
-            if isinstance(row, dict) else "")
-        if len(nodes) != authority_floor["node_count"] or \
-                _canonical_json_fingerprint(node_set) != \
-                authority_floor["node_set_fingerprint"]:
-            errors.append("architecture_decomposition nodes do not match the "
-                          "immutable 14-node id/kind/path-glob authority")
+            nodes, key=lambda row: str(row.get("id") or "") if isinstance(row, dict) else ""
+        )
+        if (
+            len(nodes) != authority_floor["node_count"]
+            or _canonical_json_fingerprint(node_set) != authority_floor["node_set_fingerprint"]
+        ):
+            errors.append(
+                "architecture_decomposition nodes do not match the "
+                "immutable 14-node id/kind/path-glob authority"
+            )
     semantic_edges = architecture.get("semantic_edges")
     if not isinstance(semantic_edges, list):
         errors.append("architecture_decomposition semantic_edges must be a list")
         semantic_edges = []
     if authority_floor is not None:
-        edge_set = sorted(semantic_edges, key=lambda row: (
-            str(row.get("from") or ""), str(row.get("to") or ""),
-            str(row.get("kind") or ""), str(row.get("reason") or ""))
-            if isinstance(row, dict) else ("", "", "", ""))
-        if len(semantic_edges) != authority_floor["semantic_edge_count"] or \
-                _canonical_json_fingerprint(edge_set) != \
-                authority_floor["semantic_edge_set_fingerprint"]:
-            errors.append("architecture_decomposition semantic_edges do not "
-                          "match the immutable 24-edge authority")
+        edge_set = sorted(
+            semantic_edges,
+            key=lambda row: (
+                str(row.get("from") or ""),
+                str(row.get("to") or ""),
+                str(row.get("kind") or ""),
+                str(row.get("reason") or ""),
+            )
+            if isinstance(row, dict)
+            else ("", "", "", ""),
+        )
+        if (
+            len(semantic_edges) != authority_floor["semantic_edge_count"]
+            or _canonical_json_fingerprint(edge_set)
+            != authority_floor["semantic_edge_set_fingerprint"]
+        ):
+            errors.append(
+                "architecture_decomposition semantic_edges do not "
+                "match the immutable 24-edge authority"
+            )
     singleton_sccs = architecture.get("required_singleton_sccs")
     if not isinstance(singleton_sccs, list):
-        errors.append("architecture_decomposition required_singleton_sccs "
-                      "must be a list")
+        errors.append("architecture_decomposition required_singleton_sccs must be a list")
         singleton_sccs = []
-    singleton_values = [item.strip() for item in singleton_sccs
-                        if isinstance(item, str) and item.strip()]
+    singleton_values = [
+        item.strip() for item in singleton_sccs if isinstance(item, str) and item.strip()
+    ]
     if len(singleton_values) != len(singleton_sccs):
-        errors.append("architecture_decomposition required_singleton_sccs "
-                      "must contain only non-empty strings")
-    if authority_floor is not None and (len(singleton_values) != 3 or
-            set(singleton_values) != authority_floor["singleton_sccs"]):
-        errors.append("architecture_decomposition required_singleton_sccs "
-                      "do not match the immutable three-singleton authority")
+        errors.append(
+            "architecture_decomposition required_singleton_sccs must contain only non-empty strings"
+        )
+    if authority_floor is not None and (
+        len(singleton_values) != 3 or set(singleton_values) != authority_floor["singleton_sccs"]
+    ):
+        errors.append(
+            "architecture_decomposition required_singleton_sccs "
+            "do not match the immutable three-singleton authority"
+        )
     properties = architecture.get("required_properties")
-    if not isinstance(properties, list) or not properties or not all(
-            isinstance(item, str) and item.strip() for item in properties):
-        errors.append("architecture_decomposition required_properties must "
-                      "be a non-empty string list")
+    if (
+        not isinstance(properties, list)
+        or not properties
+        or not all(isinstance(item, str) and item.strip() for item in properties)
+    ):
+        errors.append(
+            "architecture_decomposition required_properties must be a non-empty string list"
+        )
     graph = contract.get("graph")
-    design_edges = graph.get("proposed_edges") if isinstance(graph, dict) \
-        else None
+    design_edges = graph.get("proposed_edges") if isinstance(graph, dict) else None
     if not isinstance(design_edges, list):
         errors.append("current design graph.proposed_edges must be a list")
         design_edges = []
     graph_floor = _CURRENT_GRAPH_AUTHORITY_FLOORS.get(requirement)
     if graph_floor is None:
-        errors.append("current design requirement has no approved graph "
-                      "authority floor: " + (requirement or "missing"))
+        errors.append(
+            "current design requirement has no approved graph "
+            "authority floor: " + (requirement or "missing")
+        )
     elif not design_edges:
         errors.append("current design graph.proposed_edges must be non-empty")
-    elif len(design_edges) != graph_floor["edge_count"] or \
-            _canonical_json_fingerprint(design_edges) != \
-            graph_floor["edge_fingerprint"] or \
-            _canonical_json_fingerprint(sorted(design_edges, key=lambda row: (
-                str(row.get("from") or ""), str(row.get("to") or ""),
-                str(row.get("kind") or ""), str(row.get("reason") or ""))
-                if isinstance(row, dict) else ("", "", "", ""))) != \
-            graph_floor["edge_set_fingerprint"]:
-        errors.append("current design graph.proposed_edges do not match the "
-                      f"approved authority for {requirement}")
-    proposed_modules = graph.get("proposed_modules") if isinstance(
-        graph, dict) else None
+    elif (
+        len(design_edges) != graph_floor["edge_count"]
+        or _canonical_json_fingerprint(design_edges) != graph_floor["edge_fingerprint"]
+        or _canonical_json_fingerprint(
+            sorted(
+                design_edges,
+                key=lambda row: (
+                    str(row.get("from") or ""),
+                    str(row.get("to") or ""),
+                    str(row.get("kind") or ""),
+                    str(row.get("reason") or ""),
+                )
+                if isinstance(row, dict)
+                else ("", "", "", ""),
+            )
+        )
+        != graph_floor["edge_set_fingerprint"]
+    ):
+        errors.append(
+            "current design graph.proposed_edges do not match the "
+            f"approved authority for {requirement}"
+        )
+    proposed_modules = graph.get("proposed_modules") if isinstance(graph, dict) else None
     if not isinstance(proposed_modules, list) or not all(
-            isinstance(item, str) and item.strip() for item in proposed_modules):
+        isinstance(item, str) and item.strip() for item in proposed_modules
+    ):
         errors.append("current design graph.proposed_modules must be a list")
         proposed_modules = []
-    contract_ids = [str(row.get("id") or "").strip()
-                    for row in (contract.get("contracts") or [])
-                    if isinstance(row, dict) and row.get("id")]
-    return {"configured": True, "nodes": nodes,
-            "semantic_edges": semantic_edges, "design_edges": design_edges,
-            "singleton_sccs": singleton_sccs, "errors": errors,
-            "decision_record": decision_record, "requirement": requirement,
-            "authority_floor": authority_floor,
-            "graph_authority_floor": graph_floor,
-            "required_properties": properties or [],
-            "proposed_modules": proposed_modules,
-            "contract_ids": contract_ids}
+    contract_ids = [
+        str(row.get("id") or "").strip()
+        for row in (contract.get("contracts") or [])
+        if isinstance(row, dict) and row.get("id")
+    ]
+    return {
+        "configured": True,
+        "nodes": nodes,
+        "semantic_edges": semantic_edges,
+        "design_edges": design_edges,
+        "singleton_sccs": singleton_sccs,
+        "errors": errors,
+        "decision_record": decision_record,
+        "requirement": requirement,
+        "authority_floor": authority_floor,
+        "graph_authority_floor": graph_floor,
+        "required_properties": properties or [],
+        "proposed_modules": proposed_modules,
+        "contract_ids": contract_ids,
+    }
 
 
-def _python_file_import_edges(ws: str,
-                              files: set[str]) -> tuple[set, list[str]]:
+def _python_file_import_edges(ws: str, files: set[str]) -> tuple[set, list[str]]:
     """Observe exact Python file imports inside the declared file universe."""
     aliases: dict[str, set[str]] = {}
     module_for: dict[str, str] = {}
@@ -1746,9 +1981,7 @@ def _python_file_import_edges(ws: str,
             with open(full, encoding="utf-8", errors="replace") as stream:
                 tree = ast.parse(stream.read(), filename=source)
         except (OSError, SyntaxError) as exc:
-            errors.append(
-                f"owner source cannot be inspected: {source}: "
-                f"{type(exc).__name__}")
+            errors.append(f"owner source cannot be inspected: {source}: {type(exc).__name__}")
             continue
         candidates = set()
         package = module.rsplit(".", 1)[0] if "." in module else ""
@@ -1766,13 +1999,11 @@ def _python_file_import_edges(ws: str,
                     candidates.add(base)
                 for alias in item.names:
                     if alias.name != "*":
-                        candidates.add(".".join(
-                            part for part in (base, alias.name) if part))
+                        candidates.add(".".join(part for part in (base, alias.name) if part))
         for candidate in sorted(candidates):
             targets = aliases.get(candidate) or set()
             if len(targets) > 1:
-                errors.append(
-                    f"ambiguous owner import {candidate!r} from {source}")
+                errors.append(f"ambiguous owner import {candidate!r} from {source}")
                 continue
             if targets:
                 target = next(iter(targets))
@@ -1781,10 +2012,14 @@ def _python_file_import_edges(ws: str,
     return observed, errors
 
 
-def _semantic_edges(rows, *, label: str, architecture_ids: set[str],
-                    known_files: set[str],
-                    endpoint_registry: frozenset[str]) -> \
-        tuple[list[dict], list[str]]:
+def _semantic_edges(
+    rows,
+    *,
+    label: str,
+    architecture_ids: set[str],
+    known_files: set[str],
+    endpoint_registry: frozenset[str],
+) -> tuple[list[dict], list[str]]:
     """Validate one semantic authority without inventing missing endpoints."""
     edges, errors = [], []
     seen = set()
@@ -1795,9 +2030,10 @@ def _semantic_edges(rows, *, label: str, architecture_ids: set[str],
         if node in architecture_ids:
             return True
         normalized = node.replace("\\", "/").strip("/")
-        return bool(normalized and any(
-            path == normalized or path.startswith(normalized + "/")
-            for path in known_files))
+        return bool(
+            normalized
+            and any(path == normalized or path.startswith(normalized + "/") for path in known_files)
+        )
 
     for index, row in enumerate(rows or []):
         if not isinstance(row, dict):
@@ -1805,34 +2041,27 @@ def _semantic_edges(rows, *, label: str, architecture_ids: set[str],
             continue
         unknown = sorted(set(row) - _SEMANTIC_EDGE_KEYS)
         if unknown:
-            errors.append(f"{label}[{index}] has unknown fields: "
-                          + ", ".join(unknown))
-        source, target, kind = (str(row.get(key) or "").strip()
-                                for key in ("from", "to", "kind"))
+            errors.append(f"{label}[{index}] has unknown fields: " + ", ".join(unknown))
+        source, target, kind = (str(row.get(key) or "").strip() for key in ("from", "to", "kind"))
         reason = str(row.get("reason") or "").strip()
         if not source or not target or not reason:
             errors.append(f"{label}[{index}] requires from, to, kind, reason")
             continue
-        if not _GRAPH_NODE_ID.fullmatch(source) or not \
-                _GRAPH_NODE_ID.fullmatch(target):
+        if not _GRAPH_NODE_ID.fullmatch(source) or not _GRAPH_NODE_ID.fullmatch(target):
             errors.append(f"{label}[{index}] has unsafe node identity")
         if kind not in _SEMANTIC_EDGE_KINDS:
             errors.append(f"{label}[{index}] has unknown semantic kind: {kind}")
         key = (source, target, kind)
         if key in seen:
-            errors.append(f"{label} has duplicate edge: "
-                          f"{source} -> {target}:{kind}")
+            errors.append(f"{label} has duplicate edge: {source} -> {target}:{kind}")
         seen.add(key)
         for endpoint in (source, target):
             if ":" in endpoint and endpoint not in endpoint_registry:
-                errors.append(f"{label}[{index}] names unregistered semantic "
-                              f"endpoint: {endpoint}")
+                errors.append(f"{label}[{index}] names unregistered semantic endpoint: {endpoint}")
                 continue
             if not endpoint_exists(endpoint):
-                errors.append(f"{label}[{index}] names unknown endpoint: "
-                              f"{endpoint}")
-        edges.append({"from": source, "to": target, "kind": kind,
-                      "reason": reason})
+                errors.append(f"{label}[{index}] names unknown endpoint: {endpoint}")
+        edges.append({"from": source, "to": target, "kind": kind, "reason": reason})
     return edges, errors
 
 
@@ -1840,11 +2069,9 @@ def _disk_glob_hits(ws: str, pattern: str, *, limit: int = 32) -> list[str]:
     """Bounded existence check used to distinguish missing from ignored."""
     hits = []
     for root, dirs, names in os.walk(ws):
-        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS
-                         and not d.startswith(".tp-"))
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith(".tp-"))
         for name in sorted(names):
-            rel = os.path.relpath(os.path.join(root, name), ws).replace(
-                os.sep, "/")
+            rel = os.path.relpath(os.path.join(root, name), ws).replace(os.sep, "/")
             if glob_match.path_matches(rel, pattern):
                 hits.append(rel)
                 if len(hits) >= limit:
@@ -1852,9 +2079,13 @@ def _disk_glob_hits(ws: str, pattern: str, *, limit: int = 32) -> list[str]:
     return hits
 
 
-def architecture_map_proof(ws: str, *, known_files=None,
-                           max_nodes: int = ARCHITECTURE_MAX_NODES,
-                           max_edges: int = ARCHITECTURE_MAX_EDGES) -> dict:
+def architecture_map_proof(
+    ws: str,
+    *,
+    known_files=None,
+    max_nodes: int = ARCHITECTURE_MAX_NODES,
+    max_edges: int = ARCHITECTURE_MAX_EDGES,
+) -> dict:
     """Validate the accepted Design map without partial or substitute proof."""
     parsed = _read_design_architecture(ws)
     nodes = list(parsed["nodes"])
@@ -1863,11 +2094,14 @@ def architecture_map_proof(ws: str, *, known_files=None,
     errors = list(parsed["errors"])
     custody = terminal_capability_custody_proof(ws)
     if custody.get("configured") and not custody.get("complete"):
-        errors.extend("terminal capability custody: " + str(reason)
-                      for reason in custody.get("errors") or [
-                          "decision proof is incomplete"])
-    if _canonical_json_fingerprint(sorted(_SEMANTIC_ENDPOINT_REGISTRY)) != \
-            _SEMANTIC_ENDPOINT_REGISTRY_FINGERPRINT:
+        errors.extend(
+            "terminal capability custody: " + str(reason)
+            for reason in custody.get("errors") or ["decision proof is incomplete"]
+        )
+    if (
+        _canonical_json_fingerprint(sorted(_SEMANTIC_ENDPOINT_REGISTRY))
+        != _SEMANTIC_ENDPOINT_REGISTRY_FINGERPRINT
+    ):
         errors.append("semantic endpoint registry fingerprint is invalid")
     try:
         node_limit = max(0, int(max_nodes))
@@ -1878,19 +2112,16 @@ def architecture_map_proof(ws: str, *, known_files=None,
     total_edges = len(architecture_edge_rows) + len(design_edge_rows)
     truncated = len(nodes) > node_limit or total_edges > edge_limit
     if len(nodes) > node_limit:
-        errors.append(
-            f"owner node count {len(nodes)} exceeds bound {node_limit}")
+        errors.append(f"owner node count {len(nodes)} exceeds bound {node_limit}")
     if total_edges > edge_limit:
-        errors.append(
-            f"semantic edge count {total_edges} exceeds bound {edge_limit}")
+        errors.append(f"semantic edge count {total_edges} exceeds bound {edge_limit}")
 
     available = set(known_files) if known_files is not None else set()
     if known_files is None:
         for root, dirs, names in os.walk(ws):
             dirs[:] = sorted(d for d in dirs if d != ".git")
             for name in names:
-                available.add(os.path.relpath(
-                    os.path.join(root, name), ws).replace(os.sep, "/"))
+                available.add(os.path.relpath(os.path.join(root, name), ws).replace(os.sep, "/"))
     node_ids, node_details, node_files = [], [], {}
     seen_ids = set()
     for index, row in enumerate(nodes[:node_limit]):
@@ -1899,26 +2130,28 @@ def architecture_map_proof(ws: str, *, known_files=None,
             continue
         unknown = sorted(set(row) - _ARCHITECTURE_NODE_KEYS)
         if unknown:
-            errors.append(f"architecture node[{index}] has unknown fields: "
-                          + ", ".join(unknown))
+            errors.append(f"architecture node[{index}] has unknown fields: " + ", ".join(unknown))
         node_id = str(row.get("id") or "").strip()
         kind = str(row.get("kind") or "").strip()
         patterns = row.get("path_globs")
         if not node_id or node_id in seen_ids:
-            errors.append(f"architecture node[{index}] has missing or "
-                          f"duplicate id: {node_id or 'missing'}")
+            errors.append(
+                f"architecture node[{index}] has missing or duplicate id: {node_id or 'missing'}"
+            )
             continue
         if not _GRAPH_NODE_ID.fullmatch(node_id):
             errors.append(f"architecture node[{index}] has unsafe id: {node_id}")
         if ":" in node_id and node_id not in _SEMANTIC_ENDPOINT_REGISTRY:
-            errors.append(f"architecture node[{index}] names unregistered "
-                          f"semantic endpoint: {node_id}")
+            errors.append(
+                f"architecture node[{index}] names unregistered semantic endpoint: {node_id}"
+            )
         seen_ids.add(node_id)
         node_ids.append(node_id)
         if kind not in _ARCHITECTURE_NODE_KINDS:
             errors.append(f"architecture node {node_id} has unknown kind: {kind}")
         if not isinstance(patterns, list) or not all(
-                isinstance(item, str) and item for item in patterns):
+            isinstance(item, str) and item for item in patterns
+        ):
             errors.append(f"architecture node {node_id} path_globs must be a list")
             patterns = []
         boundary_kind = kind in {"external-host", "contract", "resource"}
@@ -1926,74 +2159,92 @@ def architecture_map_proof(ws: str, *, known_files=None,
             errors.append(f"boundary node {node_id} cannot declare path globs")
         if not boundary_kind and not patterns:
             errors.append(f"architecture node {node_id} has no path globs")
-        prefix_for_kind = {"external-host": "ext:", "contract": "contract:",
-                           "resource": "resource:"}.get(kind)
+        prefix_for_kind = {
+            "external-host": "ext:",
+            "contract": "contract:",
+            "resource": "resource:",
+        }.get(kind)
         if prefix_for_kind and not node_id.startswith(prefix_for_kind):
-            errors.append(f"architecture node {node_id} kind {kind} requires "
-                          f"a {prefix_for_kind} identity")
+            errors.append(
+                f"architecture node {node_id} kind {kind} requires a {prefix_for_kind} identity"
+            )
         matches = set()
         for pattern in patterns:
             normalized = pattern.replace("\\", "/")
             if not _safe_architecture_glob(normalized):
-                errors.append(f"architecture node {node_id} has unsafe glob: "
-                              f"{pattern}")
+                errors.append(f"architecture node {node_id} has unsafe glob: {pattern}")
                 continue
-            hits = {path for path in available
-                    if glob_match.path_matches(path, normalized)}
+            hits = {path for path in available if glob_match.path_matches(path, normalized)}
             root_real = os.path.realpath(ws)
             for hit in sorted(hits):
                 hit_real = os.path.realpath(os.path.join(ws, *hit.split("/")))
-                if not (hit_real.startswith(root_real + os.sep)
-                        and os.path.isfile(hit_real)):
-                    errors.append(f"architecture node {node_id} glob resolves "
-                                  f"outside candidate files: {hit}")
+                if not (hit_real.startswith(root_real + os.sep) and os.path.isfile(hit_real)):
+                    errors.append(
+                        f"architecture node {node_id} glob resolves outside candidate files: {hit}"
+                    )
             if not hits:
                 disk_hits = _disk_glob_hits(ws, normalized)
                 if disk_hits:
-                    errors.append(f"architecture node {node_id} glob is "
-                                  f"ignored or excluded: {normalized}")
+                    errors.append(
+                        f"architecture node {node_id} glob is ignored or excluded: {normalized}"
+                    )
                 else:
-                    errors.append(f"architecture node {node_id} glob has no "
-                                  f"candidate files: {normalized}")
+                    errors.append(
+                        f"architecture node {node_id} glob has no candidate files: {normalized}"
+                    )
             matches.update(hits)
         node_files[node_id] = sorted(matches)
-        node_details.append({"id": node_id, "kind": kind,
-                             "path_globs": list(patterns),
-                             "matched_files": sorted(matches)})
+        node_details.append(
+            {
+                "id": node_id,
+                "kind": kind,
+                "path_globs": list(patterns),
+                "matched_files": sorted(matches),
+            }
+        )
 
     properties = {str(item) for item in parsed.get("required_properties") or []}
     missing_properties = sorted(_ARCHITECTURE_REQUIRED_PROPERTIES - properties)
     unknown_properties = sorted(properties - _ARCHITECTURE_REQUIRED_PROPERTIES)
     if parsed["configured"] and missing_properties:
-        errors.append("architecture_decomposition is missing required "
-                      "properties: " + "; ".join(missing_properties))
+        errors.append(
+            "architecture_decomposition is missing required "
+            "properties: " + "; ".join(missing_properties)
+        )
     if parsed["configured"] and unknown_properties:
-        errors.append("architecture_decomposition has unknown required "
-                      "properties: " + "; ".join(unknown_properties))
+        errors.append(
+            "architecture_decomposition has unknown required "
+            "properties: " + "; ".join(unknown_properties)
+        )
 
     architecture_ids = set(node_ids)
     bounded_architecture_edges, edge_errors = _semantic_edges(
         architecture_edge_rows[:edge_limit],
         label="architecture_decomposition.semantic_edges",
-        architecture_ids=architecture_ids, known_files=available,
-        endpoint_registry=_SEMANTIC_ENDPOINT_REGISTRY)
+        architecture_ids=architecture_ids,
+        known_files=available,
+        endpoint_registry=_SEMANTIC_ENDPOINT_REGISTRY,
+    )
     errors.extend(edge_errors)
     remaining = max(0, edge_limit - len(bounded_architecture_edges))
     bounded_design_edges, design_edge_errors = _semantic_edges(
-        design_edge_rows[:remaining], label="graph.proposed_edges",
-        architecture_ids=(architecture_ids
-                          | set(parsed.get("proposed_modules") or [])
-                          | set(parsed.get("contract_ids") or [])),
+        design_edge_rows[:remaining],
+        label="graph.proposed_edges",
+        architecture_ids=(
+            architecture_ids
+            | set(parsed.get("proposed_modules") or [])
+            | set(parsed.get("contract_ids") or [])
+        ),
         known_files=available,
-        endpoint_registry=_SEMANTIC_ENDPOINT_REGISTRY)
+        endpoint_registry=_SEMANTIC_ENDPOINT_REGISTRY,
+    )
     errors.extend(design_edge_errors)
 
     file_owners: dict[str, set[str]] = {}
     for node_id, matched in node_files.items():
         for path in matched:
             file_owners.setdefault(path, set()).add(node_id)
-    file_imports, import_errors = _python_file_import_edges(
-        ws, set(file_owners))
+    file_imports, import_errors = _python_file_import_edges(ws, set(file_owners))
     errors.extend(import_errors)
     architecture_imports = set()
     for source_file, target_file in file_imports:
@@ -2002,30 +2253,39 @@ def architecture_map_proof(ws: str, *, known_files=None,
                 if source != target:
                     architecture_imports.add((source, target))
 
-    new_owners = {row["id"] for row in node_details
-                  if row["kind"] == "new"}
+    new_owners = {row["id"] for row in node_details if row["kind"] == "new"}
     forbidden_targets = {
         "component:taskplane-governance-adapters",
         "ext:codex-native-orchestration",
     }
     forbidden_imports = sorted(
-        (source, target) for source, target in architecture_imports
-        if source in new_owners and target in forbidden_targets)
+        (source, target)
+        for source, target in architecture_imports
+        if source in new_owners and target in forbidden_targets
+    )
     if forbidden_imports:
-        errors.append("new owners depend on host transport or transition "
-                      "adapters: " + ", ".join(
-                          f"{source} -> {target}"
-                          for source, target in forbidden_imports))
+        errors.append(
+            "new owners depend on host transport or transition "
+            "adapters: "
+            + ", ".join(f"{source} -> {target}" for source, target in forbidden_imports)
+        )
 
-    accepted_edge_keys = {(row["from"], row["to"], row["kind"])
-                          for row in bounded_architecture_edges}
+    accepted_edge_keys = {
+        (row["from"], row["to"], row["kind"]) for row in bounded_architecture_edges
+    }
     required_edge_keys = {
         ("taskplane", "contract:delivery.codex-native-dispatch", "intent"),
-        ("contract:delivery.codex-native-dispatch",
-         "ext:codex-native-orchestration", "transported-by"),
+        (
+            "contract:delivery.codex-native-dispatch",
+            "ext:codex-native-orchestration",
+            "transported-by",
+        ),
         ("taskplane", "contract:delivery.exact-sha-terminal-truth", "changes"),
-        ("contract:delivery.exact-sha-terminal-truth",
-         "taskplane/terminal_truth.py", "coordinated-by"),
+        (
+            "contract:delivery.exact-sha-terminal-truth",
+            "taskplane/terminal_truth.py",
+            "coordinated-by",
+        ),
     }
     missing_required_edges = sorted(required_edge_keys - accepted_edge_keys)
     # M-02's accepted edge floor is mandatory only when this repository has
@@ -2033,37 +2293,41 @@ def architecture_map_proof(ws: str, *, known_files=None,
     # ordinary repository with no design/contract.json turns "not requested"
     # into a fabricated degraded scan and blocks Plan before impact can run.
     if parsed["configured"] and missing_required_edges:
-        errors.append("architecture_decomposition semantic authority omits "
-                      "required edges: " + ", ".join(
-                          f"{source} -> {target}:{kind}"
-                          for source, target, kind in missing_required_edges))
+        errors.append(
+            "architecture_decomposition semantic authority omits "
+            "required edges: "
+            + ", ".join(
+                f"{source} -> {target}:{kind}" for source, target, kind in missing_required_edges
+            )
+        )
 
-    singleton_sccs = [str(item or "").strip()
-                      for item in parsed["singleton_sccs"]]
+    singleton_sccs = [str(item or "").strip() for item in parsed["singleton_sccs"]]
     if len(singleton_sccs) != len(set(singleton_sccs)):
         errors.append("required_singleton_sccs must be unique")
     unknown_singletons = sorted(set(singleton_sccs) - architecture_ids)
     if unknown_singletons:
-        errors.append("required_singleton_sccs names unknown nodes: "
-                      + ", ".join(unknown_singletons))
+        errors.append(
+            "required_singleton_sccs names unknown nodes: " + ", ".join(unknown_singletons)
+        )
 
     sccs, cyclic = [], []
     if not truncated and not unknown_singletons:
         try:
-            sccs = graph_primitives.strongly_connected_components(
-                node_ids, architecture_imports)
-            self_edges = {source for source, target in architecture_imports
-                          if source == target}
-            cyclic = [component for component in sccs
-                      if len(component) > 1 or component[0] in self_edges]
-            memberships = {member: component for component in sccs
-                           for member in component}
-            non_singletons = [node for node in singleton_sccs
-                              if len(memberships.get(node, [])) != 1
-                              or node in self_edges]
+            sccs = graph_primitives.strongly_connected_components(node_ids, architecture_imports)
+            self_edges = {source for source, target in architecture_imports if source == target}
+            cyclic = [
+                component for component in sccs if len(component) > 1 or component[0] in self_edges
+            ]
+            memberships = {member: component for component in sccs for member in component}
+            non_singletons = [
+                node
+                for node in singleton_sccs
+                if len(memberships.get(node, [])) != 1 or node in self_edges
+            ]
             if non_singletons:
-                errors.append("required singleton SCCs are cyclic: "
-                              + ", ".join(sorted(non_singletons)))
+                errors.append(
+                    "required singleton SCCs are cyclic: " + ", ".join(sorted(non_singletons))
+                )
         except ValueError as exc:
             errors.append(str(exc))
 
@@ -2073,13 +2337,16 @@ def architecture_map_proof(ws: str, *, known_files=None,
     if configured and not architecture_edge_rows:
         errors.append("architecture_decomposition declares no semantic edges")
     complete = bool(configured and not errors and not truncated)
-    import_rows = [{"from": source, "to": target, "kind": "imports"}
-                   for source, target in sorted(architecture_imports)]
+    import_rows = [
+        {"from": source, "to": target, "kind": "imports"}
+        for source, target in sorted(architecture_imports)
+    ]
     proof = {
         "schema": ARCHITECTURE_MAP_SCHEMA,
         "configured": configured,
-        "status": ("complete" if complete else
-                   "incomplete" if configured or errors else "not-requested"),
+        "status": (
+            "complete" if complete else "incomplete" if configured or errors else "not-requested"
+        ),
         "complete": complete,
         "truncated": truncated,
         "node_count": len(nodes),
@@ -2103,15 +2370,15 @@ def architecture_map_proof(ws: str, *, known_files=None,
             "schema": ARCHITECTURE_AUTHORITY_FLOOR_SCHEMA,
             "decision_record": str(parsed.get("decision_record") or ""),
             "content_fingerprint": str(
-                (parsed.get("authority_floor") or {}).get(
-                    "content_fingerprint") or ""),
+                (parsed.get("authority_floor") or {}).get("content_fingerprint") or ""
+            ),
         },
         "current_design_authority": {
             "schema": CURRENT_GRAPH_AUTHORITY_FLOOR_SCHEMA,
             "requirement": str(parsed.get("requirement") or ""),
             "edge_fingerprint": str(
-                (parsed.get("graph_authority_floor") or {}).get(
-                    "edge_fingerprint") or ""),
+                (parsed.get("graph_authority_floor") or {}).get("edge_fingerprint") or ""
+            ),
         },
         "semantic_endpoint_registry": {
             "schema": SEMANTIC_ENDPOINT_REGISTRY_SCHEMA,
@@ -2121,9 +2388,11 @@ def architecture_map_proof(ws: str, *, known_files=None,
         "terminal_capability_custody": custody,
     }
     material = dict(proof)
-    proof["fingerprint"] = hashlib.sha256(json.dumps(
-        material, sort_keys=True, separators=(",", ":"),
-        ensure_ascii=False).encode("utf-8")).hexdigest()
+    proof["fingerprint"] = hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+    ).hexdigest()
     return proof
 
 
@@ -2153,8 +2422,7 @@ def architecture_map_proof(ws: str, *, known_files=None,
 # writes `agents\reviewer.md`, and a token that stopped at the separator would
 # resolve a DIFFERENT set of edges on the two hosts. Candidates are normalized
 # to '/' before lookup, so both spellings reach the same file or neither does.
-_REF_TOKEN = re.compile(
-    r"[A-Za-z0-9_@.][A-Za-z0-9_./@+\\-]{0,180}\.[A-Za-z0-9]{1,6}")
+_REF_TOKEN = re.compile(r"[A-Za-z0-9_@.][A-Za-z0-9_./@+\\-]{0,180}\.[A-Za-z0-9]{1,6}")
 
 # Artifact directories whose contents are DISPATCHED rather than read, and
 # the wider set of directories whose artifacts DO the dispatching. A skill
@@ -2167,15 +2435,16 @@ _REF_TOKEN = re.compile(
 # naming convention is acceptable HERE and nowhere that decides whether an
 # edge exists at all — every edge below is resolved against a real file.
 DISPATCH_DIRS = frozenset({"agents", "agent", "commands", "command"})
-EXECUTABLE_DIRS = DISPATCH_DIRS | frozenset({
-    "skills", "skill", "hooks", "workflows", "workflow"})
+EXECUTABLE_DIRS = DISPATCH_DIRS | frozenset({"skills", "skill", "hooks", "workflows", "workflow"})
 
 
 def _ref_kind(source: str, target: str) -> str:
     def _segs(p):
         return set(posixpath.dirname(str(p)).split("/"))
-    return ("calls" if (_segs(target) & DISPATCH_DIRS)
-            and (_segs(source) & EXECUTABLE_DIRS) else "uses")
+
+    return (
+        "calls" if (_segs(target) & DISPATCH_DIRS) and (_segs(source) & EXECUTABLE_DIRS) else "uses"
+    )
 
 
 def _file_refs(src: str, relpath: str, file_index, artifact_only: bool) -> set:
@@ -2187,8 +2456,7 @@ def _file_refs(src: str, relpath: str, file_index, artifact_only: bool) -> set:
         if here:
             cands.append(posixpath.normpath(posixpath.join(here, tok)))
         for cand in cands:
-            if (cand == relpath or cand not in file_index
-                    or not posixpath.dirname(cand)):
+            if cand == relpath or cand not in file_index or not posixpath.dirname(cand):
                 continue
             if artifact_only and not _is_artifact(cand):
                 continue
@@ -2210,91 +2478,101 @@ def _is_artifact(relpath: str) -> bool:
     return bool(posixpath.dirname(rel)) and rel.endswith(ARTIFACT_EXT)
 
 
-def _graph_scan_quality(base_failures: list[dict], dstats: dict | None,
-                        architecture: dict | None, *, decompose: bool,
-                        scanned_revision: str) -> dict:
+def _graph_scan_quality(
+    base_failures: list[dict],
+    dstats: dict | None,
+    architecture: dict | None,
+    *,
+    decompose: bool,
+    scanned_revision: str,
+) -> dict:
     """Combine producer reports without letting decomposition mask base AST."""
     base = [copy.deepcopy(row) for row in base_failures]
     for row in base:
         row["producer"] = "base-scanner"
-    decomposition = [copy.deepcopy(row)
-                     for row in ((dstats or {}).get("failures") or [])]
+    decomposition = [copy.deepcopy(row) for row in ((dstats or {}).get("failures") or [])]
     for row in decomposition:
         row["producer"] = "decomposition"
     if decompose and (dstats or {}).get("error") and not decomposition:
-        decomposition.append({
-            "producer": "decomposition",
-            "file": "",
-            "module": "(graph)",
-            "parser": "decomposition",
-            "error_class": "DecompositionError",
-            "reason": " ".join(str(dstats["error"]).split())[:240],
-            "file_fingerprint": "",
-        })
+        decomposition.append(
+            {
+                "producer": "decomposition",
+                "file": "",
+                "module": "(graph)",
+                "parser": "decomposition",
+                "error_class": "DecompositionError",
+                "reason": " ".join(str(dstats["error"]).split())[:240],
+                "file_fingerprint": "",
+            }
+        )
     architecture_failures = []
     if architecture and architecture.get("status") == "incomplete":
-        architecture_failures = [{
-            "producer": "architecture-map",
-            "file": "components.yaml",
-            "module": "(architecture-map)",
-            "parser": "owner-graph",
-            "error_class": "ArchitectureMapIncomplete",
-            "reason": str(reason)[:480],
-            "file_fingerprint": str(
-                architecture.get("source_fingerprint") or ""),
-        } for reason in (architecture.get("errors") or [
-            "architecture map proof is incomplete"])]
-    key = lambda row: (str(row.get("producer") or ""),
-                       str(row.get("module") or ""),
-                       str(row.get("file") or ""),
-                       str(row.get("reason") or ""))
+        architecture_failures = [
+            {
+                "producer": "architecture-map",
+                "file": "components.yaml",
+                "module": "(architecture-map)",
+                "parser": "owner-graph",
+                "error_class": "ArchitectureMapIncomplete",
+                "reason": str(reason)[:480],
+                "file_fingerprint": str(architecture.get("source_fingerprint") or ""),
+            }
+            for reason in (architecture.get("errors") or ["architecture map proof is incomplete"])
+        ]
+    key = lambda row: (
+        str(row.get("producer") or ""),
+        str(row.get("module") or ""),
+        str(row.get("file") or ""),
+        str(row.get("reason") or ""),
+    )
     base.sort(key=key)
     decomposition.sort(key=key)
     architecture_failures.sort(key=key)
     failures = sorted(base + decomposition + architecture_failures, key=key)
-    return _fingerprinted_scan_quality({
-        "schema": GRAPH_SCAN_QUALITY_SCHEMA,
-        "degraded": bool(failures),
-        "mode": "components" if decompose else "modules",
-        "scanned_revision": str(scanned_revision or ""),
-        "affected_modules": sorted({str(row.get("module") or "")
-                                    for row in failures
-                                    if str(row.get("module") or "")}),
-        "failures": failures,
-        "producers": {
-            "base-scanner": {
-                "status": "degraded" if base else "complete",
-                "failures": base,
+    return _fingerprinted_scan_quality(
+        {
+            "schema": GRAPH_SCAN_QUALITY_SCHEMA,
+            "degraded": bool(failures),
+            "mode": "components" if decompose else "modules",
+            "scanned_revision": str(scanned_revision or ""),
+            "affected_modules": sorted(
+                {str(row.get("module") or "") for row in failures if str(row.get("module") or "")}
+            ),
+            "failures": failures,
+            "producers": {
+                "base-scanner": {
+                    "status": "degraded" if base else "complete",
+                    "failures": base,
+                },
+                "decomposition": {
+                    "status": ("degraded" if decomposition else "complete")
+                    if decompose
+                    else "not-requested",
+                    "failures": decomposition,
+                },
+                "architecture-map": {
+                    "status": ((architecture or {}).get("status") or "not-requested"),
+                    "failures": architecture_failures,
+                },
             },
-            "decomposition": {
-                "status": ("degraded" if decomposition else "complete")
-                if decompose else "not-requested",
-                "failures": decomposition,
-            },
-            "architecture-map": {
-                "status": ((architecture or {}).get("status")
-                           or "not-requested"),
-                "failures": architecture_failures,
-            },
-        },
-        "recovery": GRAPH_SCAN_RECOVERY,
-    })
+            "recovery": GRAPH_SCAN_RECOVERY,
+        }
+    )
 
 
-def _scan_locked(ws: str, into: dict | None = None,
-                 decompose: bool = False) -> dict:
+def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> dict:
     prev = load(ws)
     files, code_files, artifact_files = {}, [], []
     excludes, exclude_err = load_excludes(ws)
     import path_roles as _pr
+
     listed = _git_candidates(ws)
     if listed is not None:
         # Git work tree: .gitignore is authoritative. Still drop the
         # loop-owned/runtime dirs and any COMMITTED vendored tree.
         for rel in listed:
             parts = rel.split("/")
-            if any(seg in SKIP_DIRS or seg.startswith(".tp-")
-                   for seg in parts[:-1]):
+            if any(seg in SKIP_DIRS or seg.startswith(".tp-") for seg in parts[:-1]):
                 continue
             if rel.startswith("knowledge/"):
                 continue
@@ -2311,15 +2589,13 @@ def _scan_locked(ws: str, into: dict | None = None,
             # the first-seen-wins basename/namespace maps below depend on
             # filesystem order, making a bare `import utils` resolve
             # non-reproducibly when two files share a basename.
-            dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS
-                             and not d.startswith(".tp-"))
+            dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith(".tp-"))
             for n in sorted(names):
                 # os.walk yields host separators; git ls-files (the other
                 # enumeration path) yields '/'. Normalize here so the two
                 # produce identical ids and every downstream '/'-shaped
                 # glob keeps matching on Windows.
-                rel = os.path.relpath(os.path.join(root, n), ws).replace(
-                    os.sep, "/")
+                rel = os.path.relpath(os.path.join(root, n), ws).replace(os.sep, "/")
                 if rel.startswith("knowledge/"):
                     continue
                 if _pr.is_excluded(rel, excludes):
@@ -2335,8 +2611,7 @@ def _scan_locked(ws: str, into: dict | None = None,
     # end up with one call site using the declared id and another the guess.
     def _read_text(rel):
         try:
-            with open(os.path.join(ws, rel), encoding="utf-8",
-                      errors="replace") as fh:
+            with open(os.path.join(ws, rel), encoding="utf-8", errors="replace") as fh:
                 return fh.read()
         except OSError:
             return None
@@ -2372,8 +2647,7 @@ def _scan_locked(ws: str, into: dict | None = None,
     for rel in code_files:
         if rel.endswith((".cs", ".java")):
             try:
-                with open(os.path.join(ws, rel), encoding="utf-8",
-                          errors="replace") as fh:
+                with open(os.path.join(ws, rel), encoding="utf-8", errors="replace") as fh:
                     sources[rel] = fh.read()
             except OSError:
                 continue
@@ -2386,7 +2660,7 @@ def _scan_locked(ws: str, into: dict | None = None,
 
     file_entries, edges = {}, set()
     base_failures: list[dict] = []
-    ref_rows: list = []          # (file, module, [resolved target files])
+    ref_rows: list = []  # (file, module, [resolved target files])
     prev_files = prev.get("files", {})
     for rel in code_files:
         full = os.path.join(ws, rel)
@@ -2403,21 +2677,27 @@ def _scan_locked(ws: str, into: dict | None = None,
         # imports AND edges WITHOUT being re-read or re-hashed. This is what
         # makes a rescan scale with the DIFF, not the whole tree — on a big
         # repo the em-gate true-up and retro no longer re-hash every file.
-        if (cached and size is not None and cached.get("size") == size
-                and cached.get("mtime_ns") == mtime_ns
-                and "imports" in cached
-                and "refs" in cached
-                and (not rel.endswith(".py")
-                     or cached.get("parse_checked") is True)
-                and not (rel.endswith(".py") and
-                         isinstance(cached.get("parse_failure"), dict))):
+        if (
+            cached
+            and size is not None
+            and cached.get("size") == size
+            and cached.get("mtime_ns") == mtime_ns
+            and "imports" in cached
+            and "refs" in cached
+            and (not rel.endswith(".py") or cached.get("parse_checked") is True)
+            and not (rel.endswith(".py") and isinstance(cached.get("parse_failure"), dict))
+        ):
             imports = set(cached["imports"])
             imports.discard(mod)
             refs = list(cached["refs"])
-            file_entries[rel] = {"hash": cached.get("hash", ""),
-                                 "imports": sorted(imports), "refs": refs,
-                                 "size": size, "mtime": mtime,
-                                 "mtime_ns": mtime_ns}
+            file_entries[rel] = {
+                "hash": cached.get("hash", ""),
+                "imports": sorted(imports),
+                "refs": refs,
+                "size": size,
+                "mtime": mtime,
+                "mtime_ns": mtime_ns,
+            }
             if rel.endswith(".py"):
                 file_entries[rel]["parse_checked"] = True
                 failure = cached.get("parse_failure")
@@ -2436,18 +2716,19 @@ def _scan_locked(ws: str, into: dict | None = None,
                 src = fh.read()
         except OSError:
             continue
-        digest = hashlib.sha1(src.encode()).hexdigest()[:12]
+        digest = hashlib.sha1(src.encode(), usedforsecurity=False).hexdigest()[:12]
         parse_failure = None
-        if (cached and cached.get("hash") == digest and "refs" in cached
-                and (not rel.endswith(".py")
-                     or cached.get("parse_checked") is True)):
+        if (
+            cached
+            and cached.get("hash") == digest
+            and "refs" in cached
+            and (not rel.endswith(".py") or cached.get("parse_checked") is True)
+        ):
             imports = set(cached["imports"])
-            if rel.endswith(".py") and isinstance(
-                    cached.get("parse_failure"), dict):
+            if rel.endswith(".py") and isinstance(cached.get("parse_failure"), dict):
                 parse_failure = copy.deepcopy(cached["parse_failure"])
         elif rel.endswith(".py"):
-            imports, parse_failure = _py_imports_checked(
-                src, rel, known_stems)
+            imports, parse_failure = _py_imports_checked(src, rel, known_stems)
         elif rel.endswith(".go"):
             # PARTIAL COVERAGE (mirrors the Ruby autoloading note). A Go
             # import path is resolvable to an internal module exactly when
@@ -2470,17 +2751,14 @@ def _scan_locked(ws: str, into: dict | None = None,
             # 256-module repo. It now uses the same resolution the JS path
             # uses, so there is ONE rule for "this import is ours".
             imports = set()
-            for block, single in re.findall(
-                    r'import\s+\(([^)]*)\)|import\s+"([^"]+)"', src, re.S):
-                for t in ([single] if single
-                          else re.findall(r'"([^"]+)"', block)):
+            for block, single in re.findall(r'import\s+\(([^)]*)\)|import\s+"([^"]+)"', src, re.S):
+                for t in [single] if single else re.findall(r'"([^"]+)"', block):
                     inside = _declared_target(t, declared_ids)
                     if not inside:
                         rel_in = strip_root_prefix(t, root_mod)
                         if rel_in:
                             inside = module_of(rel_in + "/_", manifests)
-                    imports.add(inside if inside
-                                else "ext:" + t.split("/")[-1])
+                    imports.add(inside if inside else "ext:" + t.split("/")[-1])
         elif rel.endswith(".cs"):
             imports = _cs_imports(src, ns_map)
         elif rel.endswith(".java"):
@@ -2488,13 +2766,17 @@ def _scan_locked(ws: str, into: dict | None = None,
         elif rel.endswith(".rb"):
             imports = _ruby_imports(src, rel, set(files), manifests)
         else:
-            imports = _js_imports(src, rel, set(files), manifests,
-                                  declared_ids, root_mod)
+            imports = _js_imports(src, rel, set(files), manifests, declared_ids, root_mod)
         imports.discard(mod)
         refs = sorted(_file_refs(src, rel, files, artifact_only=True))
-        file_entries[rel] = {"hash": digest, "imports": sorted(imports),
-                             "refs": refs, "size": size, "mtime": mtime,
-                             "mtime_ns": mtime_ns}
+        file_entries[rel] = {
+            "hash": digest,
+            "imports": sorted(imports),
+            "refs": refs,
+            "size": size,
+            "mtime": mtime,
+            "mtime_ns": mtime_ns,
+        }
         if rel.endswith(".py"):
             file_entries[rel]["parse_checked"] = True
             if parse_failure is not None:
@@ -2521,15 +2803,23 @@ def _scan_locked(ws: str, into: dict | None = None,
             mtime_ns = st.st_mtime_ns
         except OSError:
             size = mtime = mtime_ns = None
-        if (cached and size is not None and cached.get("size") == size
-                and cached.get("mtime_ns") == mtime_ns
-                and "refs" in cached):
+        if (
+            cached
+            and size is not None
+            and cached.get("size") == size
+            and cached.get("mtime_ns") == mtime_ns
+            and "refs" in cached
+        ):
             refs = list(cached["refs"])
-            file_entries[rel] = {"hash": cached.get("hash", ""),
-                                 "imports": [], "refs": refs,
-                                 "size": size, "mtime": mtime,
-                                 "mtime_ns": mtime_ns,
-                                 "artifact": True}
+            file_entries[rel] = {
+                "hash": cached.get("hash", ""),
+                "imports": [],
+                "refs": refs,
+                "size": size,
+                "mtime": mtime,
+                "mtime_ns": mtime_ns,
+                "artifact": True,
+            }
             ref_rows.append((rel, _mod(rel), refs))
             continue
         try:
@@ -2539,27 +2829,31 @@ def _scan_locked(ws: str, into: dict | None = None,
             continue
         refs = sorted(_file_refs(src, rel, files, artifact_only=False))
         file_entries[rel] = {
-            "hash": hashlib.sha1(src.encode()).hexdigest()[:12],
-            "imports": [], "refs": refs, "size": size, "mtime": mtime,
-            "mtime_ns": mtime_ns, "artifact": True}
+            "hash": hashlib.sha1(src.encode(), usedforsecurity=False).hexdigest()[:12],
+            "imports": [],
+            "refs": refs,
+            "size": size,
+            "mtime": mtime,
+            "mtime_ns": mtime_ns,
+            "artifact": True,
+        }
         ref_rows.append((rel, _mod(rel), refs))
 
     # manifests: .csproj project/package references, Gemfile gems
     for rel in files:
         if rel.endswith(".csproj"):
-            with open(os.path.join(ws, rel), encoding="utf-8",
-                      errors="replace") as fh:
+            with open(os.path.join(ws, rel), encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
             mod = _mod(rel)
             for pref in _CSPROJ_PROJ.findall(text):
-                tgt = posixpath.normpath(posixpath.join(
-                    posixpath.dirname(rel), pref.replace("\\", "/")))
+                tgt = posixpath.normpath(
+                    posixpath.join(posixpath.dirname(rel), pref.replace("\\", "/"))
+                )
                 edges.add((mod, _mod(tgt), "project_ref"))
             for pkg in _CSPROJ_PKG.findall(text):
                 edges.add((mod, "ext:" + pkg.split(".")[0], "imports"))
         elif posixpath.basename(rel) == "pom.xml" and posixpath.dirname(rel):
-            with open(os.path.join(ws, rel), encoding="utf-8",
-                      errors="replace") as fh:
+            with open(os.path.join(ws, rel), encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
             mod = _mod(rel)
             for block in _POM_DEP.findall(text):
@@ -2567,21 +2861,18 @@ def _scan_locked(ws: str, into: dict | None = None,
                 if not art:
                     continue
                 scope = _POM_SCOPE.search(block)
-                if scope and scope.group(1).lower() in ("test", "provided",
-                                                        "system"):
-                    continue      # not a runtime dependency of the product
+                if scope and scope.group(1).lower() in ("test", "provided", "system"):
+                    continue  # not a runtime dependency of the product
                 edges.add((mod, "ext:" + art.group(1), "imports"))
         elif posixpath.basename(rel) == "Gemfile":
-            with open(os.path.join(ws, rel), encoding="utf-8",
-                      errors="replace") as fh:
+            with open(os.path.join(ws, rel), encoding="utf-8", errors="replace") as fh:
                 for gem in _GEMFILE_GEM.findall(fh.read()):
                     edges.add((_mod(rel), "ext:" + gem, "imports"))
 
     # infra: docker-compose services
     for rel in files:
         if re.search(r"docker-compose[^/]*\.ya?ml$", rel):
-            with open(os.path.join(ws, rel), encoding="utf-8",
-                      errors="replace") as fh:
+            with open(os.path.join(ws, rel), encoding="utf-8", errors="replace") as fh:
                 for svc in _compose_services(fh.read()):
                     sid = f"svc:{svc['name']}"
                     for dep in svc["depends_on"]:
@@ -2609,14 +2900,12 @@ def _scan_locked(ws: str, into: dict | None = None,
     # owns no files directly, and filtering to leaf modules would drop it.
     resolvable = set(known_stems.values())
     resolvable.update(_mod(rel) for rel in files)
-    edges = {(a, b, k) for (a, b, k) in edges
-             if b.startswith(("ext:", "svc:")) or b in resolvable}
+    edges = {(a, b, k) for (a, b, k) in edges if b.startswith(("ext:", "svc:")) or b in resolvable}
 
     # H-31: the accepted Design decomposition is a production graph input,
     # not inert documentation. The proof is exact and fail-closed: no bounded
     # prefix, unknown path/identity/edge, or declared SCC drift can pass.
-    architecture = architecture_map_proof(
-        ws, known_files=set(files))
+    architecture = architecture_map_proof(ws, known_files=set(files))
 
     modules = {}
     for rel in code_files + artifact_files:
@@ -2644,13 +2933,14 @@ def _scan_locked(ws: str, into: dict | None = None,
         # the ordinary single-module Go repo "external-only" even while its
         # imports resolved. Either form of declaration counts.
         go_declared = bool(root_mod) or any(
-            posixpath.basename(rel) == "go.mod"
-            and posixpath.dirname(rel) in manifests
-            for rel in files)
+            posixpath.basename(rel) == "go.mod" and posixpath.dirname(rel) in manifests
+            for rel in files
+        )
         scanners_meta["go"] = (
-            {"coverage": "declared-modules",
-             "limitation": _GO_LIMITATION_DECLARED} if go_declared else
-            {"coverage": "external-only", "limitation": _GO_LIMITATION})
+            {"coverage": "declared-modules", "limitation": _GO_LIMITATION_DECLARED}
+            if go_declared
+            else {"coverage": "external-only", "limitation": _GO_LIMITATION}
+        )
     # Narrowing the graph is disclosed IN the payload, same as the Go
     # scanner's partial coverage: an impact consumer must be able to see
     # that the blast radius was scoped by declaration rather than trust a
@@ -2660,11 +2950,12 @@ def _scan_locked(ws: str, into: dict | None = None,
     # a reviewer reading a module list needs to know whether "12 files" means
     # twelve source files or eight source files and four skills.
     if artifact_files:
-        scanners_meta["artifacts"] = {"extensions": list(ARTIFACT_EXT),
-                                      "files": len(artifact_files)}
+        scanners_meta["artifacts"] = {
+            "extensions": list(ARTIFACT_EXT),
+            "files": len(artifact_files),
+        }
     if excludes:
-        scanners_meta["excluded"] = {"declared_in": "components.yaml",
-                                     "prefixes": sorted(excludes)}
+        scanners_meta["excluded"] = {"declared_in": "components.yaml", "prefixes": sorted(excludes)}
     if exclude_err:
         scanners_meta["exclude_error"] = exclude_err
     meta: dict = {"scanners": scanners_meta} if scanners_meta else {}
@@ -2681,9 +2972,10 @@ def _scan_locked(ws: str, into: dict | None = None,
         meta["terminal_capability_custody"] = custody
     g = {
         "modules": modules,
-        "edges": sorted([{"from": a, "to": b, "kind": k}
-                         for a, b, k in edges],
-                        key=lambda e: (e["from"], e["to"])),
+        "edges": sorted(
+            [{"from": a, "to": b, "kind": k} for a, b, k in edges],
+            key=lambda e: (e["from"], e["to"]),
+        ),
         "files": file_entries,
         "recorded": prev.get("recorded", []),
         "meta": meta,
@@ -2692,39 +2984,61 @@ def _scan_locked(ws: str, into: dict | None = None,
         for node in architecture["node_details"]:
             kind = node["kind"]
             public_kind = {
-                "external-host": "external", "contract": "contract",
-                "resource": "resource", "producer": "surface",
+                "external-host": "external",
+                "contract": "contract",
+                "resource": "resource",
+                "producer": "surface",
             }.get(kind, "component")
             g["modules"][node["id"]] = {
-                "kind": public_kind, "files": len(node["matched_files"]),
+                "kind": public_kind,
+                "files": len(node["matched_files"]),
                 "paths": node["matched_files"],
                 "declared_by": architecture["source"],
             }
-        g["edges"].extend({
-            "from": edge["from"], "to": edge["to"],
-            "kind": edge["kind"],
-            "reason": edge["reason"],
-            "source": ("design/contract.json#/architecture_decomposition/"
-                       "semantic_edges"),
-            "confidence": "high", "declared": True,
-        } for edge in architecture["declared_edges"])
-        g["edges"].extend({
-            "from": edge["from"], "to": edge["to"],
-            "kind": edge["kind"], "reason": edge["reason"],
-            "source": "design/contract.json#/graph/proposed_edges",
-            "confidence": "high", "declared": True,
-        } for edge in architecture["current_design_edges"])
-        g["edges"].extend({
-            "from": edge["from"], "to": edge["to"],
-            "kind": edge["kind"],
-            "source": ("design/contract.json#/architecture_decomposition/"
-                       "observed-imports"),
-            "confidence": "high", "observed": True,
-        } for edge in architecture["architecture_import_edges"])
+        g["edges"].extend(
+            {
+                "from": edge["from"],
+                "to": edge["to"],
+                "kind": edge["kind"],
+                "reason": edge["reason"],
+                "source": ("design/contract.json#/architecture_decomposition/semantic_edges"),
+                "confidence": "high",
+                "declared": True,
+            }
+            for edge in architecture["declared_edges"]
+        )
+        g["edges"].extend(
+            {
+                "from": edge["from"],
+                "to": edge["to"],
+                "kind": edge["kind"],
+                "reason": edge["reason"],
+                "source": "design/contract.json#/graph/proposed_edges",
+                "confidence": "high",
+                "declared": True,
+            }
+            for edge in architecture["current_design_edges"]
+        )
+        g["edges"].extend(
+            {
+                "from": edge["from"],
+                "to": edge["to"],
+                "kind": edge["kind"],
+                "source": ("design/contract.json#/architecture_decomposition/observed-imports"),
+                "confidence": "high",
+                "observed": True,
+            }
+            for edge in architecture["architecture_import_edges"]
+        )
     # merge agent-recorded edges (never dropped by rescans)
-    g["edges"] += [e for e in g["recorded"]
-                   if not any(x["from"] == e["from"] and x["to"] == e["to"]
-                              and x["kind"] == e["kind"] for x in g["edges"])]
+    g["edges"] += [
+        e
+        for e in g["recorded"]
+        if not any(
+            x["from"] == e["from"] and x["to"] == e["to"] and x["kind"] == e["kind"]
+            for x in g["edges"]
+        )
+    ]
     # Every edge states its provenance.  High graph priority is only safe when
     # a reviewer can distinguish deterministic scanner output from a human- or
     # agent-recorded runtime relationship.
@@ -2733,15 +3047,13 @@ def _scan_locked(ws: str, into: dict | None = None,
         e.setdefault("source", "recorded" if recorded else "scanner")
         e.setdefault("confidence", "medium" if recorded else "high")
         for node in (e["from"], e["to"]):
-            g["modules"].setdefault(
-                node, {"kind": _node_kind(node), "files": 0})
+            g["modules"].setdefault(node, {"kind": _node_kind(node), "files": 0})
     # v2.0.0: unify ext:X with an INTERNAL module named X. An import the
     # resolver could not map to a file (e.g. `from core import hub` where
     # core/ is a package dir) used to become a dangling ext: node - and
     # every consumer (impact, hub signal, blast radius) undercounted the
     # real dependents of that internal module.
-    internal = {m for m, meta in g["modules"].items()
-                if not m.startswith(("ext:", "svc:", "req:"))}
+    internal = {m for m, meta in g["modules"].items() if not m.startswith(("ext:", "svc:", "req:"))}
     for e in g["edges"]:
         for side in ("from", "to"):
             v = e[side]
@@ -2749,9 +3061,11 @@ def _scan_locked(ws: str, into: dict | None = None,
                 e[side] = v[4:]
     referenced = {e["from"] for e in g["edges"]}
     referenced |= {e["to"] for e in g["edges"]}
-    for m in [m for m in g["modules"]
-              if m.startswith("ext:") and m[4:] in internal
-              and m not in referenced]:
+    for m in [
+        m
+        for m in g["modules"]
+        if m.startswith("ext:") and m[4:] in internal and m not in referenced
+    ]:
         del g["modules"][m]
     # dedupe edges that collapsed onto an existing internal edge
     seen, uniq = set(), []
@@ -2771,9 +3085,14 @@ def _scan_locked(ws: str, into: dict | None = None,
             comps, dstats = graph_decomposition.derive(ws, g, prev)
             g["components"] = comps
             g["meta"]["decompose"] = {"floors": dstats.get("floors_hash", "")}
-        except Exception as e:   # fail-open: never crash the scan
-            dstats = {"components": 0, "recomputed": 0, "cache_hits": 0,
-                      "floor_folded": 0, "error": f"decompose failed: {e}"}
+        except Exception as e:  # fail-open: never crash the scan
+            dstats = {
+                "components": 0,
+                "recomputed": 0,
+                "cache_hits": 0,
+                "floor_folded": 0,
+                "error": f"decompose failed: {e}",
+            }
             if "components" in prev:
                 g["components"] = copy.deepcopy(prev["components"])
                 pd = (prev.get("meta") or {}).get("decompose")
@@ -2785,8 +3104,12 @@ def _scan_locked(ws: str, into: dict | None = None,
         if pd is not None:
             g["meta"]["decompose"] = copy.deepcopy(pd)
     g["meta"]["graph_scan_quality"] = _graph_scan_quality(
-        base_failures, dstats, architecture, decompose=decompose,
-        scanned_revision=tp.git_head(ws) or "")
+        base_failures,
+        dstats,
+        architecture,
+        decompose=decompose,
+        scanned_revision=tp.git_head(ws) or "",
+    )
     if into is not None:
         # Active batch: replace the batched graph's contents in place so the
         # batch's single flush persists this scan (identity preserved).
@@ -2795,8 +3118,9 @@ def _scan_locked(ws: str, into: dict | None = None,
         g = into
     _stamp_meta(ws, g, scanned=True)
     if dstats is not None:
-        payload = {k: dstats.get(k, 0) for k in
-                   ("components", "recomputed", "cache_hits", "floor_folded")}
+        payload = {
+            k: dstats.get(k, 0) for k in ("components", "recomputed", "cache_hits", "floor_folded")
+        }
         if dstats.get("error"):
             payload["error"] = dstats["error"]
         tp.trace(ws, "graph_decompose", **payload)
@@ -2804,15 +3128,21 @@ def _scan_locked(ws: str, into: dict | None = None,
         # --decompose no-change rescan is a NO-OP: when nothing but the
         # volatile meta timestamps moved, skip the write so graph.json stays
         # byte-identical (the fingerprint-cache acceptance criterion).
-        if (decompose and os.path.exists(os.path.abspath(_path(ws)))
-                and _scan_volatile_stripped(g)
-                == _scan_volatile_stripped(prev)):
-            tp.trace(ws, "graph_scan", modules=len(modules),
-                     edges=len(g["edges"]), files=len(file_entries))
+        if (
+            decompose
+            and os.path.exists(os.path.abspath(_path(ws)))
+            and _scan_volatile_stripped(g) == _scan_volatile_stripped(prev)
+        ):
+            tp.trace(
+                ws,
+                "graph_scan",
+                modules=len(modules),
+                edges=len(g["edges"]),
+                files=len(file_entries),
+            )
             return prev
         save(ws, g)
-    tp.trace(ws, "graph_scan", modules=len(modules), edges=len(g["edges"]),
-             files=len(file_entries))
+    tp.trace(ws, "graph_scan", modules=len(modules), edges=len(g["edges"]), files=len(file_entries))
     return g
 
 
@@ -2827,27 +3157,37 @@ def _mutation(ws: str):
         yield _BATCH[p]
         return
     with tp.file_lock(p):
-        _GRAPH_CACHE.pop(p, None)          # re-read under the lock
+        _GRAPH_CACHE.pop(p, None)  # re-read under the lock
         g = load(ws)
         try:
             yield g
         except BaseException:
-            _GRAPH_CACHE.pop(p, None)      # partial mutations — not truth
+            _GRAPH_CACHE.pop(p, None)  # partial mutations — not truth
             raise
         _stamp_meta(ws, g)
         save(ws, g)
 
 
-def record_edge(ws: str, src: str, dst: str, kind: str = "runtime",
-                note: str = "", confidence: str = "medium") -> dict:
+def record_edge(
+    ws: str, src: str, dst: str, kind: str = "runtime", note: str = "", confidence: str = "medium"
+) -> dict:
     """An agent-observed dependency static analysis can't see (HTTP call,
     queue, cron, deploy relationship). Survives rescans."""
     if confidence not in ("high", "medium", "low"):
         raise ValueError("confidence must be high, medium, or low")
-    e = {"from": src, "to": dst, "kind": kind, "note": note,
-         "recorded": True, "source": "recorded", "confidence": confidence}
+    e = {
+        "from": src,
+        "to": dst,
+        "kind": kind,
+        "note": note,
+        "recorded": True,
+        "source": "recorded",
+        "confidence": confidence,
+    }
+
     def same(x):
         return (x.get("from"), x.get("to"), x.get("kind")) == (src, dst, kind)
+
     with _mutation(ws) as g:
         g["recorded"] = [x for x in g.get("recorded", []) if not same(x)] + [e]
         g["edges"] = [x for x in g.get("edges", []) if not same(x)] + [e]
@@ -2867,6 +3207,7 @@ def record_edge(ws: str, src: str, dst: str, kind: str = "runtime",
 # change's blast radius automatically — and contracts/evaluation query the
 # product side without any extra machinery.
 
+
 def modules_for_scope(scope_globs, manifests: dict | None = None) -> list:
     """Map scope globs/paths to graph modules (glob prefix → module).
 
@@ -2879,9 +3220,11 @@ def modules_for_scope(scope_globs, manifests: dict | None = None) -> list:
         prefix = g.split("*", 1)[0].rstrip("/")
         if not prefix:
             continue
-        mods.add(module_of(prefix, manifests)
-                 if "." in posixpath.basename(prefix)
-                 else module_of(prefix + "/_", manifests))
+        mods.add(
+            module_of(prefix, manifests)
+            if "." in posixpath.basename(prefix)
+            else module_of(prefix + "/_", manifests)
+        )
     return sorted(mods)
 
 
@@ -2899,17 +3242,20 @@ def scope_modules(ws: str, scope_globs) -> list:
     overlay coverage: callers must name each approved file exactly.
     """
     graph = load(ws)
-    modules = set(modules_for_scope(
-        scope_globs, declared_module_ids(graph)))
+    modules = set(modules_for_scope(scope_globs, declared_module_ids(graph)))
     declared = set(graph.get("modules") or {})
     for raw_scope in scope_globs or []:
         scope = str(raw_scope or "").replace("\\", "/")
         parts = scope.split("/")
-        if not scope or scope != scope.strip() or scope.endswith("/") or \
-                posixpath.isabs(scope) or any(part in ("", ".", "..")
-                                               for part in parts) or \
-                any(token in scope for token in ("*", "?", "[")) or \
-                not posixpath.splitext(posixpath.basename(scope))[1]:
+        if (
+            not scope
+            or scope != scope.strip()
+            or scope.endswith("/")
+            or posixpath.isabs(scope)
+            or any(part in ("", ".", "..") for part in parts)
+            or any(token in scope for token in ("*", "?", "["))
+            or not posixpath.splitext(posixpath.basename(scope))[1]
+        ):
             continue
         if scope in declared:
             modules.add(scope)
@@ -2925,8 +3271,9 @@ def _req_node(rid: str) -> str:
     return rid if rid.startswith("req:") else f"req:{rid}"
 
 
-def link_requirement(ws: str, rid: str, files, kind: str = "realizes",
-                     replace: bool = True) -> dict:
+def link_requirement(
+    ws: str, rid: str, files, kind: str = "realizes", replace: bool = True
+) -> dict:
     """Maintain the req→module edges for one requirement. `files` may be
     real paths or scope globs. replace=True refreshes that requirement's
     edges of this kind (the true-up), so the product side never goes stale."""
@@ -2938,9 +3285,15 @@ def link_requirement(ws: str, rid: str, files, kind: str = "realizes",
             g["recorded"] = [e for e in g["recorded"] if not drop(e)]
             g["edges"] = [e for e in g["edges"] if not drop(e)]
         for m in mods:
-            e = {"from": node, "to": m, "kind": kind, "note": "",
-                 "recorded": True, "source": "requirement",
-                 "confidence": "high"}
+            e = {
+                "from": node,
+                "to": m,
+                "kind": kind,
+                "note": "",
+                "recorded": True,
+                "source": "requirement",
+                "confidence": "high",
+            }
             g["recorded"].append(e)
             g["edges"].append(e)
             g["modules"].setdefault(m, {"kind": "module", "files": 0})
@@ -2949,11 +3302,11 @@ def link_requirement(ws: str, rid: str, files, kind: str = "realizes",
     return {"requirement": node, "kind": kind, "modules": mods}
 
 
-def link_requirement_dep(ws: str, rid: str, depends_on: str,
-                         note: str = "") -> dict:
+def link_requirement_dep(ws: str, rid: str, depends_on: str, note: str = "") -> dict:
     """Product dependency: req:rid depends on req:depends_on."""
-    return record_edge(ws, _req_node(rid), _req_node(depends_on),
-                       kind="depends", note=note, confidence="high")
+    return record_edge(
+        ws, _req_node(rid), _req_node(depends_on), kind="depends", note=note, confidence="high"
+    )
 
 
 def product_impact(ws: str, changed_files) -> dict:
@@ -2964,20 +3317,25 @@ def product_impact(ws: str, changed_files) -> dict:
     items = list(changed_files or [])
     # accept file paths OR already-resolved module names
     mods = {module_of(f, declared_module_ids(g)) for f in items} | set(items)
-    direct = sorted({e["from"] for e in g["edges"]
-                     if e["from"].startswith("req:")
-                     and e["kind"] in ("planned", "realizes")
-                     and e["to"] in mods})
+    direct = sorted(
+        {
+            e["from"]
+            for e in g["edges"]
+            if e["from"].startswith("req:")
+            and e["kind"] in ("planned", "realizes")
+            and e["to"] in mods
+        }
+    )
     rev = {}
     for e in g["edges"]:
-        if (e["kind"] == "depends" and e["from"].startswith("req:")
-                and e["to"].startswith("req:")):
+        if e["kind"] == "depends" and e["from"].startswith("req:") and e["to"].startswith("req:"):
             rev.setdefault(e["to"], []).append(e["from"])
-    upstream = sorted({r for d in direct for r in rev.get(d, [])}
-                      - set(direct))
-    return {"affected_requirements": direct,
-            "dependent_requirements": upstream,
-            "modules": sorted(mods)}
+    upstream = sorted({r for d in direct for r in rev.get(d, [])} - set(direct))
+    return {
+        "affected_requirements": direct,
+        "dependent_requirements": upstream,
+        "modules": sorted(mods),
+    }
 
 
 # -------------------------------------------------------- governance policy
@@ -3003,9 +3361,11 @@ def normalize_policy(policy: dict | None) -> dict:
     """Coerce a policy's depths to safe ints and its boundary to a known
     mode (M2, v2.2.1) — consumers trust this output instead of re-coercing."""
     p = dict(policy or {})
-    for key, default, minimum in (("local_depth", 3, 1),
-                                  ("contract_depth", 1, 0),
-                                  ("requirement_depth", 1, 0)):
+    for key, default, minimum in (
+        ("local_depth", 3, 1),
+        ("contract_depth", 1, 0),
+        ("requirement_depth", 1, 0),
+    ):
         try:
             p[key] = max(minimum, int(p.get(key, default)))
         except (TypeError, ValueError):
@@ -3043,7 +3403,9 @@ def aggregate_impact_policy(tasks) -> dict:
     boundary_rank = {"stop": 0, "contract-only": 1, "expand": 2}
     boundary = max(
         (p.get("boundary_mode", "contract-only") for p in policies),
-        key=lambda value: boundary_rank.get(value, 1))
+        key=lambda value: boundary_rank.get(value, 1),
+    )
+
     def number(policy, key, default, minimum):
         try:
             return max(minimum, int(policy.get(key, default)))
@@ -3051,13 +3413,10 @@ def aggregate_impact_policy(tasks) -> dict:
             return default
 
     return {
-        "local_depth": max(number(p, "local_depth", 3, 1)
-                           for p in policies),
+        "local_depth": max(number(p, "local_depth", 3, 1) for p in policies),
         "boundary_mode": boundary,
-        "contract_depth": max(number(p, "contract_depth", 1, 0)
-                              for p in policies),
-        "requirement_depth": max(number(p, "requirement_depth", 1, 0)
-                                 for p in policies),
+        "contract_depth": max(number(p, "contract_depth", 1, 0) for p in policies),
+        "requirement_depth": max(number(p, "requirement_depth", 1, 0) for p in policies),
     }
 
 
@@ -3073,26 +3432,28 @@ def readiness(ws: str, tasks) -> dict:
     try:
         g = scan(ws)
     except Exception as exc:
-        return {"passed": False, "errors": [f"graph scan failed: {exc}"],
-                "warnings": [], "tasks": [], "graph": {}}
+        return {
+            "passed": False,
+            "errors": [f"graph scan failed: {exc}"],
+            "warnings": [],
+            "tasks": [],
+            "graph": {},
+        }
     errors.extend(quality_errors(g))
     for task in tasks or []:
         tid = task.get("id", "?")
         supplied = dict(task.get("impact_policy") or {})
         policy = impact_policy(task)
-        if supplied.get("boundary_mode") not in (None, "contract-only",
-                                                 "stop", "expand"):
+        if supplied.get("boundary_mode") not in (None, "contract-only", "stop", "expand"):
             errors.append(f"task {tid}: invalid graph boundary_mode")
         for _k in ("local_depth", "contract_depth", "requirement_depth"):
             if _k in supplied:
                 try:
                     int(supplied[_k])
                 except (TypeError, ValueError):
-                    errors.append(
-                        f"task {tid}: invalid dependency depth policy")
+                    errors.append(f"task {tid}: invalid dependency depth policy")
                     break
-        mods = modules_for_scope(task.get("scope") or [],
-                                 declared_module_ids(g))
+        mods = modules_for_scope(task.get("scope") or [], declared_module_ids(g))
         unknown = sorted(m for m in mods if m not in g.get("modules", {}))
         declared_new = set(task.get("new_modules") or [])
         undeclared_unknown = sorted(set(unknown) - declared_new)
@@ -3100,59 +3461,84 @@ def readiness(ws: str, tasks) -> dict:
         contracts = list(task.get("contracts") or [])
         task_contract_ids = contract_ids(task)
         if distributed and not contracts:
-            errors.append(f"task {tid}: distributed/system work must declare "
-                          "its API, event, data, trust, or runtime contracts")
-        invalid_contracts = sorted(c for c in task_contract_ids
-                                   if not c.startswith(("contract:",
-                                                        "resource:")))
+            errors.append(
+                f"task {tid}: distributed/system work must declare "
+                "its API, event, data, trust, or runtime contracts"
+            )
+        invalid_contracts = sorted(
+            c for c in task_contract_ids if not c.startswith(("contract:", "resource:"))
+        )
         if invalid_contracts:
-            errors.append(f"task {tid}: contract ids need contract: or "
-                          "resource: prefixes: " + ", ".join(invalid_contracts))
-        missing_contracts = sorted(c for c in task_contract_ids
-                                   if c not in g.get("modules", {}))
+            errors.append(
+                f"task {tid}: contract ids need contract: or "
+                "resource: prefixes: " + ", ".join(invalid_contracts)
+            )
+        missing_contracts = sorted(c for c in task_contract_ids if c not in g.get("modules", {}))
         if missing_contracts:
-            errors.append(f"task {tid}: contracts are not recorded in the "
-                          "dependency graph: " + ", ".join(missing_contracts))
+            errors.append(
+                f"task {tid}: contracts are not recorded in the "
+                "dependency graph: " + ", ".join(missing_contracts)
+            )
         if undeclared_unknown:
             # Name the exact remedy field: without it a planner can only
             # discover `new_modules` by reading source.
             errors.append(
                 f"task {tid}: new/unknown graph modules were not declared: "
                 + ", ".join(undeclared_unknown)
-                + " — declare them in the task's \"new_modules\" field in "
-                  "plan/tasks.json (e.g. \"new_modules\": "
-                + json.dumps(undeclared_unknown) + ")")
+                + ' — declare them in the task\'s "new_modules" field in '
+                'plan/tasks.json (e.g. "new_modules": ' + json.dumps(undeclared_unknown) + ")"
+            )
         if declared_new - set(unknown):
-            warnings.append(f"task {tid}: declared new_modules already exist: "
-                            + ", ".join(sorted(declared_new - set(unknown))))
+            warnings.append(
+                f"task {tid}: declared new_modules already exist: "
+                + ", ".join(sorted(declared_new - set(unknown)))
+            )
         imp = impact(ws, mods, policy=policy) if mods else None
-        rows.append({"task": tid, "modules": mods, "unknown": unknown,
-                     "declared_new_modules": sorted(declared_new),
-                     "contracts": contracts, "policy": policy,
-                     "impact": imp})
-    return {"passed": not errors, "errors": errors, "warnings": warnings,
-            "tasks": rows, "graph": dict(g.get("meta") or {})}
+        rows.append(
+            {
+                "task": tid,
+                "modules": mods,
+                "unknown": unknown,
+                "declared_new_modules": sorted(declared_new),
+                "contracts": contracts,
+                "policy": policy,
+                "impact": imp,
+            }
+        )
+    return {
+        "passed": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "tasks": rows,
+        "graph": dict(g.get("meta") or {}),
+    }
 
 
-def completion(ws: str, changed_files, planned_modules=None,
-               policy: dict | None = None) -> dict:
+def completion(ws: str, changed_files, planned_modules=None, policy: dict | None = None) -> dict:
     """Graph Definition of Done read model for one realized change."""
     graph = load(ws)
     files = list(changed_files or [])
     actual = sorted({module_of(f, declared_module_ids(graph)) for f in files})
     planned = sorted(set(planned_modules or []))
     imp = impact(ws, files, policy=policy)
-    contract_files = sorted(f for f in files if re.search(
-        r"(^|/)(openapi|asyncapi|schemas?|contracts?)(/|\.)|"
-        r"\.(proto|avsc)$", f, re.I))
+    contract_files = sorted(
+        f
+        for f in files
+        if re.search(
+            r"(^|/)(openapi|asyncapi|schemas?|contracts?)(/|\.)|"
+            r"\.(proto|avsc)$",
+            f,
+            re.I,
+        )
+    )
     errors = quality_errors(graph)
     if imp.get("unknown"):
-        errors.append("graph contains unknown realized modules: "
-                      + ", ".join(imp["unknown"]))
+        errors.append("graph contains unknown realized modules: " + ", ".join(imp["unknown"]))
     unexpected = sorted(set(actual) - set(planned)) if planned else []
     if unexpected:
-        errors.append("realized dependency surface exceeds the approved plan: "
-                      + ", ".join(unexpected))
+        errors.append(
+            "realized dependency surface exceeds the approved plan: " + ", ".join(unexpected)
+        )
     return {
         "passed": not errors,
         "errors": errors,
@@ -3167,8 +3553,10 @@ def completion(ws: str, changed_files, planned_modules=None,
 
 # ------------------------------------------------------------------ impact
 
-def bounded_changed_symbol_callers(*, snapshot: dict, changed_symbols,
-                                   bounds: dict, clock=None) -> dict:
+
+def bounded_changed_symbol_callers(
+    *, snapshot: dict, changed_symbols, bounds: dict, clock=None
+) -> dict:
     """Walk a canonical symbol index from callee to callers, once, bounded.
 
     The snapshot schema is deliberately language-neutral: ``symbol_edges``
@@ -3190,8 +3578,7 @@ def bounded_changed_symbol_callers(*, snapshot: dict, changed_symbols,
     max_hops = limit("max_hops", 6)
     max_edges = limit("max_edges", 512)
     timeout_seconds = limit("timeout_seconds", 10)
-    symbols = sorted({str(s).strip() for s in (changed_symbols or [])
-                      if str(s).strip()})
+    symbols = sorted({str(s).strip() for s in (changed_symbols or []) if str(s).strip()})
     unresolved = symbols[max_symbols:]
     symbols = symbols[:max_symbols]
     reverse: dict[str, list] = {}
@@ -3243,8 +3630,7 @@ def bounded_changed_symbol_callers(*, snapshot: dict, changed_symbols,
                     # later changed symbols, and the next caller frontier.
                     truncated = truncated or (
                         row_index + 1 < len(rows)
-                        or any(reverse.get(node)
-                               for node in current_frontier[callee_index + 1:])
+                        or any(reverse.get(node) for node in current_frontier[callee_index + 1 :])
                         or any(reverse.get(node) for node in next_frontier)
                     )
                     stopped = True
@@ -3274,14 +3660,16 @@ def bounded_changed_symbol_callers(*, snapshot: dict, changed_symbols,
         "truncated": truncated,
         "timed_out": timed_out,
         "edges_examined": examined,
-        "bounds": {"max_symbols": max_symbols, "max_hops": max_hops,
-                   "max_edges": max_edges,
-                   "timeout_seconds": timeout_seconds},
+        "bounds": {
+            "max_symbols": max_symbols,
+            "max_hops": max_hops,
+            "max_edges": max_edges,
+            "timeout_seconds": timeout_seconds,
+        },
     }
 
 
-def impact(ws: str, changed_files, max_depth: int = 3,
-           policy: dict | None = None) -> dict:
+def impact(ws: str, changed_files, max_depth: int = 3, policy: dict | None = None) -> dict:
     """Blast radius of a change: the modules touched, then everything that
     depends on them (reverse edges), by depth. This is what a reviewer needs
     BEFORE reading any code — and it costs zero tokens."""
@@ -3318,8 +3706,9 @@ def impact(ws: str, changed_files, max_depth: int = 3,
     # which module_of() used to collapse to "(root)", silently zeroing
     # their blast radius.
     _ids = declared_module_ids(g)
-    touched = sorted({f if f in g["modules"] else module_of(f, _ids)
-                      for f in (changed_files or [])})
+    touched = sorted(
+        {f if f in g["modules"] else module_of(f, _ids) for f in (changed_files or [])}
+    )
     seen = {m: 0 for m in touched}
     # frontier state carries the number of explicit contract/resource and
     # requirement boundaries crossed.  This keeps distributed-system impact
@@ -3337,38 +3726,37 @@ def impact(ws: str, changed_files, max_depth: int = 3,
                 next_requirement = requirement_hops
                 boundary_pair = _is_boundary(m) or _is_boundary(dep)
                 if boundary_pair:
-                    allowed_contract = (m.startswith(("contract:", "resource:"))
-                                        or dep.startswith(("contract:",
-                                                           "resource:")))
-                    if (boundary_mode == "stop"
-                            or (boundary_mode == "contract-only"
-                                and not allowed_contract)):
-                        policy_blocked.append({"module": dep, "via": m,
-                                               "kind": kind,
-                                               "reason": "boundary-policy"})
+                    allowed_contract = m.startswith(("contract:", "resource:")) or dep.startswith(
+                        ("contract:", "resource:")
+                    )
+                    if boundary_mode == "stop" or (
+                        boundary_mode == "contract-only" and not allowed_contract
+                    ):
+                        policy_blocked.append(
+                            {"module": dep, "via": m, "kind": kind, "reason": "boundary-policy"}
+                        )
                         continue
                     next_boundary += 1
                     if next_boundary > contract_depth:
-                        policy_blocked.append({"module": dep, "via": m,
-                                               "kind": kind,
-                                               "reason": "contract-depth"})
+                        policy_blocked.append(
+                            {"module": dep, "via": m, "kind": kind, "reason": "contract-depth"}
+                        )
                         continue
                 if m.startswith("req:") or dep.startswith("req:"):
                     next_requirement += 1
                     if next_requirement > requirement_depth:
-                        policy_blocked.append({"module": dep, "via": m,
-                                               "kind": kind,
-                                               "reason": "requirement-depth"})
+                        policy_blocked.append(
+                            {"module": dep, "via": m, "kind": kind, "reason": "requirement-depth"}
+                        )
                         continue
                 if dep not in seen:
                     seen[dep] = depth
-                    by_depth.setdefault(depth, []).append(
-                        {"module": dep, "via": m, "kind": kind})
+                    by_depth.setdefault(depth, []).append({"module": dep, "via": m, "kind": kind})
                     nxt.append((dep, next_boundary, next_requirement))
         frontier = nxt
     depth_truncated = any(
-        dep not in seen for m, _bh, _rh in frontier
-        for dep, _kind in rev.get(m, []))
+        dep not in seen for m, _bh, _rh in frontier for dep, _kind in rev.get(m, [])
+    )
     # A named boundary/requirement policy stop is an intentional radius
     # limit, not evidence that traversal ran out of budget.  Keep the legacy
     # aggregate flag for callers that display every stopped path, while
@@ -3394,46 +3782,63 @@ def render_context(imp: dict) -> str:
     """Token-lean impact summary injected at review steps."""
     if not imp["touched"]:
         return ""
-    lines = [f"Change blast radius (dependency graph, no re-derivation "
-             f"needed): touches {', '.join(imp['touched'])}."]
+    lines = [
+        f"Change blast radius (dependency graph, no re-derivation "
+        f"needed): touches {', '.join(imp['touched'])}."
+    ]
     for depth in sorted(imp["impacted"]):
         entries = imp["impacted"][depth]
         lines.append(
-            f"  depth {depth}: " + "; ".join(
-                f"{e['module']} ({e['kind']} ← {e['via']})"
-                for e in entries[:8])
-            + (f" …+{len(entries)-8}" if len(entries) > 8 else ""))
+            f"  depth {depth}: "
+            + "; ".join(f"{e['module']} ({e['kind']} ← {e['via']})" for e in entries[:8])
+            + (f" …+{len(entries) - 8}" if len(entries) > 8 else "")
+        )
     if imp["unknown"]:
-        lines.append("  (new modules, not in graph yet: "
-                     + ", ".join(imp["unknown"]) + " — rescan after merge)")
+        lines.append(
+            "  (new modules, not in graph yet: "
+            + ", ".join(imp["unknown"])
+            + " — rescan after merge)"
+        )
     if imp.get("truncated"):
-        lines.append(f"  traversal stopped at depth {imp.get('depth_limit')} "
-                     "with additional dependents beyond the review radius")
+        lines.append(
+            f"  traversal stopped at depth {imp.get('depth_limit')} "
+            "with additional dependents beyond the review radius"
+        )
     policy = imp.get("policy") or {}
     if policy:
-        lines.append("  policy: local depth "
-                     f"{policy.get('local_depth', imp.get('depth_limit'))}; "
-                     f"boundary {policy.get('boundary_mode', 'contract-only')}; "
-                     f"contract depth {policy.get('contract_depth', 1)}")
+        lines.append(
+            "  policy: local depth "
+            f"{policy.get('local_depth', imp.get('depth_limit'))}; "
+            f"boundary {policy.get('boundary_mode', 'contract-only')}; "
+            f"contract depth {policy.get('contract_depth', 1)}"
+        )
     if imp.get("affected_requirements"):
         lines.append(
             "  PRODUCT impact — this change touches the realized surface of: "
             + ", ".join(imp["affected_requirements"])
-            + ". Re-check those requirements' acceptance criteria.")
+            + ". Re-check those requirements' acceptance criteria."
+        )
     if imp.get("dependent_requirements"):
         lines.append(
             "  requirements depending on the affected ones: "
-            + ", ".join(imp["dependent_requirements"]))
+            + ", ".join(imp["dependent_requirements"])
+        )
     return "\n".join(lines)
 
 
 # ------------------------------------------------------------------ html
 
+
 def _esc(s) -> str:
     """HTML-escape a repo-derived value (module id, dir name) before it goes
     into the impact table — directory names are attacker-influenced."""
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
-            .replace(">", "&gt;").replace('"', "&quot;"))
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 _HTML = """<!DOCTYPE html>
@@ -3612,8 +4017,8 @@ for(const c of comps){if(!byComp[c.id])continue;
 # between neighbouring labels) linearly with the count. Computed here, in
 # Python, and carried per component in the embedded data — the renderer
 # stays a static self-contained page with no host-side layout engine.
-COMPONENT_RING_BASE = 24    # gap for a single-component module (px)
-COMPONENT_RING_STEP = 4     # extra gap per additional component (px)
+COMPONENT_RING_BASE = 24  # gap for a single-component module (px)
+COMPONENT_RING_STEP = 4  # extra gap per additional component (px)
 
 
 def component_ring_gap(count: int) -> int:
@@ -3649,14 +4054,18 @@ def focus_graph(g: dict, imp: dict, depth: int) -> "tuple[dict, dict, str]":
             kept_impacted[d] = es
             keep |= {e["module"] for e in es}
     mods = {k: v for k, v in (g.get("modules") or {}).items() if k in keep}
-    edges = [e for e in (g.get("edges") or [])
-             if e.get("from") in keep and e.get("to") in keep]
-    note = (f"focused to depth {depth}: "
-            f"{len(mods)}/{len(g.get('modules') or {})} modules · "
-            f"{len(edges)}/{len(g.get('edges') or [])} edges shown")
+    edges = [e for e in (g.get("edges") or []) if e.get("from") in keep and e.get("to") in keep]
+    note = (
+        f"focused to depth {depth}: "
+        f"{len(mods)}/{len(g.get('modules') or {})} modules · "
+        f"{len(edges)}/{len(g.get('edges') or [])} edges shown"
+    )
     sub_g = {**g, "modules": mods, "edges": edges}
-    sub_i = {**imp, "impacted": kept_impacted,
-             "total_impacted": sum(len(v) for v in kept_impacted.values())}
+    sub_i = {
+        **imp,
+        "impacted": kept_impacted,
+        "total_impacted": sum(len(v) for v in kept_impacted.values()),
+    }
     return sub_g, sub_i, note
 
 
@@ -3684,23 +4093,29 @@ def as_fragment(page: str) -> str:
         f'<iframe id="{fid}" title="dependency graph" sandbox="allow-scripts" '
         'style="width:100%;height:620px;border:1px solid var(--border);'
         'border-radius:8px;background:#fcfcfb"></iframe>'
-        f'<noscript>the dependency graph needs scripts to unpack '
-        f'({len(raw)} bytes)</noscript>'
-        '<script>(async function(){try{'
+        f"<noscript>the dependency graph needs scripts to unpack "
+        f"({len(raw)} bytes)</noscript>"
+        "<script>(async function(){try{"
         f'var b=atob("{packed}");var u=new Uint8Array(b.length);'
-        'for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);'
-        'var t=await new Response(new Blob([u]).stream()'
+        "for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);"
+        "var t=await new Response(new Blob([u]).stream()"
         '.pipeThrough(new DecompressionStream("gzip"))).text();'
         f'document.getElementById("{fid}").srcdoc=t;'
-        '}catch(e){'
+        "}catch(e){"
         f'document.getElementById("{fid}").outerHTML='
         '"<p style=\\"font-family:monospace;font-size:12px\\">graph could not '
-        'be unpacked in this view: "+e+"</p>";}})();</script></div>')
+        'be unpacked in this view: "+e+"</p>";}})();</script></div>'
+    )
 
 
-def to_html(ws: str, changed_files=None, title: str | None = None,
-            out: str | None = None, focus: int | None = None,
-            fragment: bool = False) -> str:
+def to_html(
+    ws: str,
+    changed_files=None,
+    title: str | None = None,
+    out: str | None = None,
+    focus: int | None = None,
+    fragment: bool = False,
+) -> str:
     """Self-contained interactive dependency map; changed/impacted modules
     highlighted so a reviewer sees the blast radius before reading code.
 
@@ -3712,28 +4127,36 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
     focus_note = ""
     if focus and imp.get("touched"):
         g, imp, focus_note = focus_graph(g, imp, int(focus))
-    impacted = {e["module"]: d for d, es in imp["impacted"].items()
-                for e in es}
-    rows = ["<table><tr><th>module</th><th>status</th><th>via</th>"
-            "<th>kind</th></tr>"]
+    impacted = {e["module"]: d for d, es in imp["impacted"].items() for e in es}
+    rows = ["<table><tr><th>module</th><th>status</th><th>via</th><th>kind</th></tr>"]
     for m in imp["touched"]:
-        rows.append(f"<tr><td>{_esc(m)}</td><td class=chg>changed</td>"
-                    "<td>—</td><td>—</td></tr>")
+        rows.append(f"<tr><td>{_esc(m)}</td><td class=chg>changed</td><td>—</td><td>—</td></tr>")
     for d in sorted(imp["impacted"]):
         for e in imp["impacted"][d]:
-            rows.append(f"<tr><td>{_esc(e['module'])}</td>"
-                        f"<td class=imp>impacted (depth {d})</td>"
-                        f"<td>{_esc(e['via'])}</td><td>{_esc(e['kind'])}</td>"
-                        "</tr>")
-    table = "\n".join(rows) + "</table>" if imp["touched"] else \
-        "<p style='margin:6px 20px'>no change set given — structural view.</p>"
+            rows.append(
+                f"<tr><td>{_esc(e['module'])}</td>"
+                f"<td class=imp>impacted (depth {d})</td>"
+                f"<td>{_esc(e['via'])}</td><td>{_esc(e['kind'])}</td>"
+                "</tr>"
+            )
+    table = (
+        "\n".join(rows) + "</table>"
+        if imp["touched"]
+        else "<p style='margin:6px 20px'>no change set given — structural view.</p>"
+    )
 
-    data = {"modules": g["modules"], "edges": g["edges"],
-            "changed": imp["touched"], "impacted": impacted}
-    sub = (f"{len(g['modules'])} components · {len(g['edges'])} edges · "
-           f"{imp['total_impacted']} impacted by this change"
-           if imp["touched"] else
-           f"{len(g['modules'])} components · {len(g['edges'])} edges")
+    data = {
+        "modules": g["modules"],
+        "edges": g["edges"],
+        "changed": imp["touched"],
+        "impacted": impacted,
+    }
+    sub = (
+        f"{len(g['modules'])} components · {len(g['edges'])} edges · "
+        f"{imp['total_impacted']} impacted by this change"
+        if imp["touched"]
+        else f"{len(g['modules'])} components · {len(g['edges'])} edges"
+    )
     comps = g.get("components")
     if isinstance(comps, list) and comps:
         # R-0003 component layer (ADDITIVE): rendered as small nodes ringed
@@ -3743,16 +4166,19 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
         per_module: dict = {}
         for c in comps:
             if isinstance(c, dict):
-                per_module[c.get("module")] = \
-                    per_module.get(c.get("module"), 0) + 1
+                per_module[c.get("module")] = per_module.get(c.get("module"), 0) + 1
         data["components"] = [
-            {"id": c.get("id"), "module": c.get("module"),
-             "files": len(c.get("files") or []),
-             "symbols": len(c.get("symbols") or []),
-             "ring": component_ring_gap(per_module.get(c.get("module"), 1)),
-             "deps": [{"to": d.get("to"), "kind": d.get("kind")}
-                      for d in (c.get("deps") or [])]}
-            for c in comps if isinstance(c, dict)]
+            {
+                "id": c.get("id"),
+                "module": c.get("module"),
+                "files": len(c.get("files") or []),
+                "symbols": len(c.get("symbols") or []),
+                "ring": component_ring_gap(per_module.get(c.get("module"), 1)),
+                "deps": [{"to": d.get("to"), "kind": d.get("kind")} for d in (c.get("deps") or [])],
+            }
+            for c in comps
+            if isinstance(c, dict)
+        ]
         sub += f" · {len(comps)} decomposed component node(s)"
     if focus_note:
         sub += " · " + focus_note
@@ -3760,17 +4186,21 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
     # repo-supplied module id — it would close the inline <script> early and
     # let the remainder execute as markup. Escape `<` (and U+2028/9) so the
     # embedded JSON can never break out of the script element.
-    safe_data = (json.dumps(data).replace("<", "\\u003c")
-                 .replace(" ", "\\u2028").replace(" ", "\\u2029"))
-    html = (_HTML.replace("__TITLE__", _esc(title or os.path.basename(ws)))
-            .replace("__RING_BASE__", str(COMPONENT_RING_BASE))
-            .replace("__SUB__", _esc(sub))
-            .replace("__TABLE__", table)
-            .replace("__DATA__", safe_data))
+    safe_data = (
+        json.dumps(data).replace("<", "\\u003c").replace(" ", "\\u2028").replace(" ", "\\u2029")
+    )
+    html = (
+        _HTML.replace("__TITLE__", _esc(title or os.path.basename(ws)))
+        .replace("__RING_BASE__", str(COMPONENT_RING_BASE))
+        .replace("__SUB__", _esc(sub))
+        .replace("__TABLE__", table)
+        .replace("__DATA__", safe_data)
+    )
     if fragment:
         html = as_fragment(html)
     if out is None:
         import storage as runtime_storage
+
         out = runtime_storage.dependency_graph_visual_path(ws)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:

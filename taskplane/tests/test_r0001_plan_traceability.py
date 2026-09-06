@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import copy
 import json
 from pathlib import Path
@@ -10,6 +11,48 @@ from taskplane import plan_topology
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+_SOURCE_LIMITS = {
+    "local_depth": 3,
+    "max_fanout": 2,
+    "max_elapsed_ms": 10,
+    "parsers": ["declarative", "python-ast", "runtime-probe"],
+    "languages": ["data", "python", "runtime"],
+    "policy": "approved",
+}
+_BOUND_SOURCE = [
+    {"id": "file:taskplane/depgraph.py", "kind": "file"},
+    {"id": "module:taskplane", "kind": "module"},
+    {"id": "symbol:depgraph.scan", "kind": "symbol"},
+    {"id": "configuration:components.yaml", "kind": "configuration"},
+    {
+        "id": "contract:taskplane-source-touchpoint-coverage-v1",
+        "kind": "contract",
+    },
+    {"id": "runtime:tp-graph-scan-strict", "kind": "runtime"},
+]
+
+
+def _source_observations() -> dict[str, dict]:
+    observations = {}
+    for row in _BOUND_SOURCE:
+        kind = row["kind"]
+        observations[row["id"]] = {
+            "verified": True,
+            "state": "present",
+            "source_fingerprint": f"sha256:{kind}",
+            "parser": "python-ast" if kind in {"file", "module", "symbol"}
+            else "runtime-probe" if kind == "runtime"
+            else "declarative",
+            "language": "python" if kind in {"file", "module", "symbol"}
+            else "runtime" if kind == "runtime"
+            else "data",
+            "policy": "approved",
+            "depth": 1,
+            "fanout": 1,
+            "elapsed_ms": 1,
+        }
+    return observations
 
 
 def _approved_artifacts() -> tuple[dict, dict]:
@@ -120,6 +163,164 @@ def test_traceability_foreign_keys_and_bidirectional_coverage(monkeypatch):
             plan_topology.build_plan_traceability(design, plan)
 
 
+def test_bound_source_coverage_is_deterministic_complete_and_verified_once(
+    monkeypatch,
+):
+    depgraph = plan_topology._depgraph
+    observations = _source_observations()
+    calls = Counter()
+
+    def verify(bound_input):
+        calls[bound_input["id"]] += 1
+        return copy.deepcopy(observations[bound_input["id"]])
+
+    receipt = depgraph.build_source_touchpoint_coverage(
+        "source-tree-a",
+        _BOUND_SOURCE,
+        limits=_SOURCE_LIMITS,
+        verifier=verify,
+    )
+
+    assert receipt["schema"] == "taskplane.source-touchpoint-coverage/v1"
+    assert receipt["status"] == "complete"
+    assert receipt["complete"] is True
+    assert receipt["stopping_conditions"] == []
+    assert receipt["limits"] == _SOURCE_LIMITS
+    assert set(receipt["touchpoints"]) == {
+        row["id"] for row in _BOUND_SOURCE
+    }
+    assert set(receipt["kinds"]) == {
+        "file",
+        "module",
+        "symbol",
+        "configuration",
+        "contract",
+        "runtime",
+    }
+    assert calls == Counter({row["id"]: 1 for row in _BOUND_SOURCE})
+
+    replay_calls = Counter()
+
+    def replay_verify(bound_input):
+        replay_calls[bound_input["id"]] += 1
+        return copy.deepcopy(observations[bound_input["id"]])
+
+    replay = depgraph.build_source_touchpoint_coverage(
+        "source-tree-a",
+        list(reversed(_BOUND_SOURCE)),
+        limits=dict(reversed(list(_SOURCE_LIMITS.items()))),
+        verifier=replay_verify,
+    )
+    assert replay == receipt
+    assert replay_calls == Counter({row["id"]: 1 for row in _BOUND_SOURCE})
+
+    changed_observations = copy.deepcopy(observations)
+    changed_observations[_BOUND_SOURCE[0]["id"]]["source_fingerprint"] = (
+        "sha256:changed"
+    )
+    changed = depgraph.build_source_touchpoint_coverage(
+        "source-tree-b",
+        _BOUND_SOURCE,
+        limits=_SOURCE_LIMITS,
+        verifier=lambda row: copy.deepcopy(changed_observations[row["id"]]),
+    )
+    assert changed["fingerprint"] != receipt["fingerprint"]
+
+    with pytest.raises(ValueError, match="source tree"):
+        depgraph.derive_verified_source(
+            "unused", {"meta": {"scanned_head": "source-tree-b"}}, receipt
+        )
+
+    expected = ([{"id": "taskplane::core"}], {"components": 1})
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            depgraph.graph_decomposition,
+            "derive",
+            lambda workspace, graph, previous: expected,
+        )
+        assert depgraph.derive_verified_source(
+            "unused",
+            {"meta": {"scanned_head": "source-tree-a"}},
+            receipt,
+        ) == expected
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "stop_reason"),
+    [
+        ("verified", False, "unverified"),
+        ("state", "missing", "missing"),
+        ("state", "ambiguous", "ambiguous"),
+        ("state", "unsupported", "unsupported"),
+        ("state", "truncated", "truncated"),
+        ("state", "rejected", "rejected"),
+        ("parser", "unknown-parser", "parser"),
+        ("language", "unknown-language", "language"),
+        ("policy", "denied", "policy"),
+        ("depth", 4, "depth"),
+        ("fanout", 3, "fan-out"),
+        ("elapsed_ms", 11, "time"),
+    ],
+    ids=(
+        "unverified",
+        "missing",
+        "ambiguous",
+        "unsupported",
+        "truncated",
+        "rejected",
+        "parser",
+        "language",
+        "policy",
+        "depth",
+        "fan-out",
+        "time",
+    ),
+)
+def test_source_coverage_stop_reason_is_partial_and_blocks_decomposition(
+    monkeypatch, field, value, stop_reason
+):
+    depgraph = plan_topology._depgraph
+    observations = _source_observations()
+    target = _BOUND_SOURCE[0]["id"]
+    observations[target][field] = value
+    calls = Counter()
+
+    def verify(bound_input):
+        calls[bound_input["id"]] += 1
+        return copy.deepcopy(observations[bound_input["id"]])
+
+    receipt = depgraph.build_source_touchpoint_coverage(
+        "source-tree-a",
+        _BOUND_SOURCE,
+        limits=_SOURCE_LIMITS,
+        verifier=verify,
+    )
+
+    assert receipt["status"] == "partial"
+    assert receipt["complete"] is False
+    assert stop_reason in receipt["touchpoints"][target]["stop_reasons"]
+    assert {row["reason"] for row in receipt["stopping_conditions"]} >= {
+        stop_reason
+    }
+    assert calls == Counter({row["id"]: 1 for row in _BOUND_SOURCE})
+    with pytest.raises(ValueError, match="source coverage is partial"):
+        depgraph.require_complete_source_coverage(receipt)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            depgraph.graph_decomposition,
+            "derive",
+            lambda *_args, **_kwargs: pytest.fail(
+                "partial coverage reached decomposition"
+            ),
+        )
+        with pytest.raises(ValueError, match="source coverage is partial"):
+            depgraph.derive_verified_source(
+                "unused",
+                {"meta": {"scanned_head": "source-tree-a"}},
+                receipt,
+            )
+
+
 def test_plan_owner_inventory_complete(monkeypatch):
     design, plan = _approved_artifacts()
 
@@ -163,5 +364,17 @@ def test_plan_owner_inventory_complete(monkeypatch):
         with pytest.raises(
             plan_topology.PlanTopologyError,
             match="wiring_closure producer ownership",
+        ):
+            plan_topology.build_plan_owner_inventory(design, plan)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            plan_topology,
+            "PLAN_TRACEABILITY_PRODUCER_OWNER",
+            "",
+        )
+        with pytest.raises(
+            plan_topology.PlanTopologyError,
+            match="plan_topology.py owner is required",
         ):
             plan_topology.build_plan_owner_inventory(design, plan)
