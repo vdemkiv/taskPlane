@@ -143,7 +143,19 @@ def precommit_evaluator_selection(runtime, dispatches, *, binding: dict) -> dict
         binding=binding, assignments=assignments, evaluation_lenses=[])
 
 
+def prepare_evaluator_phase(runtime, dispatch, *, selection_ref: dict):
+    return _evaluator_phase(runtime, dispatch, selection_ref=selection_ref, prepare=True)
+
+
+def complete_evaluator_phase(runtime, dispatch, observation, *, selection_ref: dict):
+    return _evaluator_phase(runtime, dispatch, selection_ref=selection_ref, observation=observation)
+
+
 def run_evaluator_phase(runtime, dispatch, *, selection_ref: dict) -> dict:
+    return _evaluator_phase(runtime, dispatch, selection_ref=selection_ref)
+
+
+def _evaluator_phase(runtime, dispatch, *, selection_ref: dict, prepare=False, observation=None):
     """Inactive evaluator adapter using incumbent runtime and immutable store.
 
     Selection and pending attempt bytes are durable before runtime dispatch.
@@ -181,8 +193,15 @@ def run_evaluator_phase(runtime, dispatch, *, selection_ref: dict) -> dict:
                 assignment["sealed_package_fingerprint"]:
             raise evidence.ProvenanceError("evaluator selection changed before effect")
         return runtime.launch(envelope, package, boundary)
-    result = replace(runtime, launch=launch).run(dispatch)
-    runtime.store.put("evaluator-attempt-result", result, fingerprint=key)
+    if prepare:
+        return runtime.prepare(dispatch)
+    result = (runtime.complete(agent_runtime.PreparedDispatch(dispatch), observation)
+        if observation is not None else replace(runtime, launch=launch).run(dispatch))
+    # External completion retains a pending assignment on missing/uncertain
+    # observations. The synchronous API retains its established refusal record
+    # so unfavorable launch-loss evidence cannot disappear from collection.
+    if observation is None or (result.get("terminal_identity") and result.get("effect_state") not in {"none", "uncertain"}):
+        runtime.store.put("evaluator-attempt-result", result, fingerprint=key)
     return result
 
 

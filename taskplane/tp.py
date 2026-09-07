@@ -1852,6 +1852,14 @@ def cmd_subagent_start(a) -> int:
                  error=type(exc).__name__)
     if isinstance(contract, dict) and contract:
         try:
+            from taskplane import loop as _phase_loop
+            _phase_loop.observe_phase_runtime_hook(ws, contract, event)
+        except Exception as exc:
+            _emit_submission_stop_block("SubagentStart", {
+                "status": "phase_observation_refused", "contract_id": contract.get("task_id"),
+                "artifact": type(exc).__name__ + ": " + str(exc), "recovery": "reconcile the original phase attempt"})
+            return 2
+        try:
             import review as _review
             lifecycle = contract.get("worker_lifecycle") or {}
             assignment = _review.register_slot_producer(
@@ -1904,6 +1912,17 @@ def cmd_subagent_stop(a) -> int:
         lifecycle_contract = None
         tp.trace(ws, "worker_contract_stop_lookup_failed",
                  agent_id=event.get("agent_id"), error=type(exc).__name__)
+    if isinstance(lifecycle_contract, dict) and lifecycle_contract.get("phase_runtime") is not None:
+        try:
+            from taskplane import loop as _phase_loop
+            collected = _phase_loop.observe_phase_runtime_hook(ws, lifecycle_contract, event)
+            if not isinstance(collected, dict) or collected.get("status") != "collected":
+                raise ValueError("phase output remains pending: " + str((collected or {}).get("reason_code")))
+        except Exception as exc:
+            _emit_submission_stop_block("SubagentStop", {
+                "status": "phase_observation_refused", "contract_id": lifecycle_contract.get("task_id"),
+                "artifact": type(exc).__name__ + ": " + str(exc), "recovery": "reconcile the original phase attempt"})
+            return 2
     try:
         import loop as _loop_runtime
         state = _loop_runtime.load(ws) or {}

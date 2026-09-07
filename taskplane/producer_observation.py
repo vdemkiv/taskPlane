@@ -332,6 +332,126 @@ class AttemptNonceSource:
                  launch: Callable[[], _EffectResult]) -> _EffectResult:
         return self._perform(issued, bindings, launch, expected="issued", uncertain="dispatch_uncertain")
 
+    def reserve_dispatch(self, issued: IssuedAttemptNonce,
+                         bindings: Mapping[str, object]) -> None:
+        """Fence external dispatch before returning a host launch request.
+
+        The reservation is uncertainty, never an observed launch identity.
+        Loss of the response requires reconciliation of this same operation.
+        """
+        self._perform(issued, bindings, lambda: None,
+                      expected="issued", uncertain="dispatch_uncertain")
+
+    def recover(self, bindings: Mapping[str, object]) -> IssuedAttemptNonce:
+        """Recover the original private nonce for observation, never reissue."""
+        checked = _nonce_bindings(bindings)
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            record = state["attempts"].get(str(checked["operation_id"]))
+            if record is None:
+                raise ProducerObservationError("nonce issuance missing")
+            issued = IssuedAttemptNonce(bytes.fromhex(record["secret"]), dict(record["receipt"]))
+            self._checked(issued, checked, state, active=False)
+            return issued
+
+    def _hook_path(self, issued: IssuedAttemptNonce, kind: str) -> Path:
+        if kind not in {"start", "terminal"}:
+            raise ProducerObservationError("invalid phase hook kind")
+        return self._directory / (str(issued.receipt["nonce_digest"]) + "-" + kind + ".json")
+
+    def record_phase_hook(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object], *,
+                          workspace: str, task_name: str, event: Mapping[str, object],
+                          outputs: list[dict[str, object]] | None = None) -> dict[str, object]:
+        """Seal facts from an exact claimed native hook in existing nonce custody.
+
+        Only the composition root reads engine-selected output bytes. Portable
+        receipts contain references and the nonce digest, never the secret.
+        """
+        from taskplane import taskplane_lite as host_policy
+        kind = {"SubagentStart": "start", "SubagentStop": "terminal"}.get(event.get("hook_event_name"))
+        if kind is None:
+            raise ProducerObservationError("phase lifecycle hook required")
+        identity = host_policy.hook_event_identity(workspace, "subagent-" + ("stop" if kind == "terminal" else "start"), dict(event))
+        claim = hashlib.sha256(identity.encode()).hexdigest() if identity else None
+        if not claim or event.get("_taskplane_hook_claim_id") != claim:
+            raise ProducerObservationError("phase hook claim mismatch")
+        owner = {key: _text(event.get(key), key) for key in ("agent_id", "agent_type", "task_name")}
+        owner["session_id"] = _text(event.get("session_id") or event.get("thread_id"), "session_id")
+        turn = _text(event.get("turn_id"), "turn_id")
+        if owner["agent_type"] != task_name or owner["task_name"] != task_name:
+            raise ProducerObservationError("stale_or_foreign_event")
+        usage = event.get("usage")
+        tokens = usage.get("total_tokens") if isinstance(usage, Mapping) else None
+        if tokens is not None and (type(tokens) is not int or tokens < 0):
+            raise ProducerObservationError("invalid phase usage")
+        released = event.get("lease_terminal")
+        if released is not None:
+            if kind != "terminal" or not isinstance(released, Mapping) or set(released) != {
+                    "lease_id", "attempt_id", "operation_id", "fencing_token", "released", "effects"} or \
+                    released["attempt_id"] != bindings["attempt_id"] or released["operation_id"] != bindings["operation_id"] or \
+                    type(released["released"]) is not bool or type(released["fencing_token"]) is not int or \
+                    not isinstance(released["effects"], Mapping) or len(_canonical_bytes(released)) > 16384:
+                raise ProducerObservationError("invalid released phase effect observation")
+            released = dict(released)
+        now = float(self.clock.wall_time())
+        if "observed_at" in event:
+            _freshness(event["observed_at"], now)
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            record = self._checked(issued, bindings, state, active=False)
+            if record["effect_state"] not in {"dispatch_uncertain", "dispatched"}:
+                raise ProducerObservationError("phase dispatch is not reserved")
+            path = self._hook_path(issued, kind)
+            if path.exists():
+                prior = self._read_phase_hook(issued, bindings, kind)
+                if prior["claim"] != claim or prior["owner"] != owner or prior["outputs"] != (outputs or []) or prior["tokens"] != tokens or prior.get("lease_terminal") != released:
+                    raise ProducerObservationError("conflicting phase hook replay")
+                return prior
+            if kind == "terminal":
+                start = self._read_phase_hook(issued, bindings, "start")
+                if start["owner"] != owner:
+                    raise ProducerObservationError("stale_or_foreign_event")
+            value = {"schema": "taskplane.attempt-hook-receipt/v1", "bindings": dict(bindings),
+                "nonce_digest": issued.receipt["nonce_digest"], "kind": kind,
+                "sequence": 1 if kind == "start" else 2, "claim": claim, "owner": owner,
+                "turn_id": turn, "observed_at": now, "outputs": outputs or [], "tokens": tokens,
+                "lease_terminal": released,
+                "outcome": None if kind == "start" else host_policy.normalize_worker_terminal_outcome(
+                    event.get("outcome") or event.get("status") or event.get("stop_reason") or "unknown")}
+            value["signature"] = self._sign(value)
+            self.store._write_atomic(path, _canonical_bytes(value))
+            return value
+
+    def _read_phase_hook(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
+                         kind: str) -> dict[str, object]:
+        path = self._hook_path(issued, kind)
+        if path.is_symlink():
+            raise ProducerObservationError("unsafe phase hook receipt")
+        try:
+            raw = path.read_bytes()
+            if len(raw) > 1024 * 1024:
+                raise ProducerObservationError("oversized phase hook receipt")
+            value = json.loads(raw)
+        except (OSError, ValueError) as exc:
+            raise ProducerObservationError("missing_" + kind) from exc
+        if not isinstance(value, dict) or value.get("bindings") != dict(bindings) or \
+                value.get("nonce_digest") != issued.receipt["nonce_digest"] or value.get("kind") != kind or \
+                not hmac.compare_digest(str(value.get("signature") or ""),
+                    self._sign({key: item for key, item in value.items() if key != "signature"})):
+            raise ProducerObservationError("phase hook binding or signature mismatch")
+        return value
+
+    def phase_hooks(self, issued: IssuedAttemptNonce,
+                    bindings: Mapping[str, object]) -> tuple[dict[str, object], dict[str, object]]:
+        """Read both authenticated receipts; absence remains an observation gap."""
+        with self.store._domain_lock(self._directory):
+            self._checked(issued, bindings, self._read(), active=False)
+            start = self._read_phase_hook(issued, bindings, "start")
+            terminal = self._read_phase_hook(issued, bindings, "terminal")
+            if start["owner"] != terminal["owner"] or terminal["observed_at"] < start["observed_at"]:
+                raise ProducerObservationError("stale_or_foreign_event")
+            return start, terminal
+
     def effect(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
                action: Callable[[], _EffectResult]) -> _EffectResult:
         return self._perform(issued, bindings, action, expected="dispatched", uncertain="effect_uncertain")

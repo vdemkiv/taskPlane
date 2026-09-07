@@ -58,6 +58,36 @@ class NativeEntryError(ValueError):
     """A diagnostic entry binding was refused before engine execution."""
 
 
+def phase_nonce_source(kernel, workspace: str, run_id: str):
+    """Compose existing private worker-key custody with the nonce owner.
+
+    This opens no new authority or observation source and makes no native
+    readiness claim. Admission remains with the current stage authority.
+    """
+    from taskplane import delivery_ports, producer_observation
+    authority = kernel._worker_contract_authority(workspace, create=True)
+    root = kernel.external_store_root(workspace)
+    evidence = delivery_ports.LocatorEvidenceStore(root,
+        hashlib.sha256(os.path.realpath(workspace).encode()).hexdigest(), run_id)
+    return producer_observation.AttemptNonceSource(evidence, key=authority["secret"])
+
+
+def observe_phase_hook(kernel, workspace: str, contract: Mapping[str, object],
+                       event: Mapping[str, object], *, nonce, bindings,
+                       outputs=None):
+    """Bind a claimed child hook to the existing enforced worker slot."""
+    lifecycle = contract.get("worker_lifecycle")
+    if not isinstance(lifecycle, Mapping) or contract.get("worker_scoped") is not True:
+        raise NativeEntryError("phase worker contract missing")
+    if (os.environ.get("TASKPLANE_HOOK_PATH") or "").lower() not in {"native", "bridge"}:
+        raise NativeEntryError("claimed native phase hook required")
+    if lifecycle.get("owner") != kernel._worker_event_owner(dict(event)):
+        raise NativeEntryError("phase hook owner mismatch")
+    issued = nonce.recover(bindings)
+    return nonce.record_phase_hook(issued, bindings, workspace=workspace,
+        task_name=str(lifecycle["expected_task_name"]), event=event, outputs=outputs)
+
+
 def _entry_text(value: object) -> str:
     if not isinstance(value, str) or not value or "\x00" in value:
         raise NativeEntryError("invalid_binding: nonempty text required")

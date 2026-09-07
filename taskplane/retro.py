@@ -145,6 +145,20 @@ def _phase_telemetry(store, *, telemetry_inputs, telemetry_ref,
 
 def run_retro_phase(runtime, dispatch, *, telemetry_inputs, telemetry_ref,
                     terminal_evidence_ref, terminal_metrics_ref) -> dict:
+    return _retro_phase(runtime, dispatch, telemetry_inputs=telemetry_inputs, telemetry_ref=telemetry_ref,
+        terminal_evidence_ref=terminal_evidence_ref, terminal_metrics_ref=terminal_metrics_ref)
+
+
+def prepare_retro_phase(runtime, dispatch, **telemetry):
+    return _retro_phase(runtime, dispatch, prepare=True, **telemetry)
+
+
+def complete_retro_phase(runtime, dispatch, observation, **telemetry):
+    return _retro_phase(runtime, dispatch, observation=observation, **telemetry)
+
+
+def _retro_phase(runtime, dispatch, *, telemetry_inputs, telemetry_ref,
+                    terminal_evidence_ref, terminal_metrics_ref, prepare=False, observation=None) -> dict:
     """Inactive adapter: telemetry-gated runtime output, without loop effects.
 
     The composition root supplies trusted runtime/telemetry ports. This does
@@ -166,10 +180,14 @@ def run_retro_phase(runtime, dispatch, *, telemetry_inputs, telemetry_ref,
             raise ValueError("Retro sealed package lacks terminal telemetry bindings")
         return telemetry, sealed
     check()
+    if prepare:
+        return runtime.prepare(dispatch)
     def launch(*args):
         check()  # immediately inside the incumbent nonce fence
         return runtime.launch(*args)
-    result = replace(runtime, launch=launch).run(dispatch)
+    from taskplane import agent_runtime
+    result = (runtime.complete(agent_runtime.PreparedDispatch(dispatch), observation)
+        if observation is not None else replace(runtime, launch=launch).run(dispatch))
     if result["status"] != "accepted":
         raise ValueError("Retro runtime refused: " + str(result["reason_code"]))
     telemetry, sealed = check()

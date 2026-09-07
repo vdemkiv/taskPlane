@@ -12,7 +12,10 @@ from datetime import datetime
 import hashlib
 from typing import Callable, Final, Mapping, Protocol, Sequence, TypeVar
 
-from . import delivery_ports, producer_observation, review_evidence, stage_entities
+if __package__:
+    from . import delivery_ports, producer_observation, review_evidence, stage_entities
+else:  # Existing tp.py direct-script entry loads its loop adapter flat.
+    from taskplane import delivery_ports, producer_observation, review_evidence, stage_entities
 
 
 _BINDINGS: Final[tuple[str, ...]] = (
@@ -81,6 +84,13 @@ class Observation:
     terminal_identity: str | None
     effect_state: str
     outputs: tuple[Artifact, ...]
+
+
+@dataclass(frozen=True)
+class PreparedDispatch:
+    """Validated input only; no launch identity, terminal result, or authority."""
+
+    dispatch: Dispatch
 
 
 class ToolBoundary:
@@ -197,7 +207,31 @@ class AgentRuntime:
             raise RuntimeRefusal("package_mismatch")
         return references
 
+    def prepare(self, dispatch: Dispatch) -> PreparedDispatch:
+        """Admit input before the external host is asked to launch anything."""
+        result = self._run(dispatch, prepare_only=True)
+        if not isinstance(result, PreparedDispatch):
+            raise RuntimeRefusal(str(result["reason_code"]))
+        return result
+
+    def complete(self, prepared: PreparedDispatch, observed: Observation) -> dict[str, object]:
+        """Revalidate and collect from the incumbent trusted observation port.
+
+        Callers must authenticate external observations before supplying them.
+        Missing terminal observations never become an accepted result.
+        """
+        result = self._run(prepared.dispatch, observed=observed)
+        assert isinstance(result, dict)
+        return result
+
     def run(self, dispatch: Dispatch) -> dict[str, object]:
+        """Preserved synchronous facade over the same admission and collection."""
+        result = self._run(dispatch)
+        assert isinstance(result, dict)
+        return result
+
+    def _run(self, dispatch: Dispatch, *, prepare_only: bool = False,
+             observed: Observation | None = None) -> dict[str, object] | PreparedDispatch:
         """Validate, dispatch once, observe and return; never decide readiness.
 
         Missing/invalid identity fields cannot be represented by a truthful
@@ -256,10 +290,15 @@ class AgentRuntime:
             self._budget(bindings)
             boundary = ToolBoundary(lambda: self._budget(bindings), registry=self.registry,
                 phase_id=str(bindings["phase_id"]), run_id=str(bindings["run_id"]), capability=self.capability)
+            if prepare_only:
+                return PreparedDispatch(dispatch)
             base["effect_state"] = "uncertain"
-            identity = self.nonce.dispatch(dispatch.issued, dispatch.nonce_bindings,
-                lambda: self.launch(envelope, dispatch.package, boundary))
-            observed = self.observe(identity)
+            if observed is None:
+                identity = self.nonce.dispatch(dispatch.issued, dispatch.nonce_bindings,
+                    lambda: self.launch(envelope, dispatch.package, boundary))
+                observed = self.observe(identity)
+            elif self.nonce.effect_state(dispatch.nonce_bindings) not in {"dispatch_uncertain", "dispatched"}:
+                raise RuntimeRefusal("observation_unavailable")
             base.update(start_identity=observed.start_identity, progress_identity=list(observed.progress_identity),
                         terminal_identity=observed.terminal_identity, effect_state=observed.effect_state)
             if not observed.start_identity or not observed.terminal_identity:

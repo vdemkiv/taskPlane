@@ -181,6 +181,46 @@ def authorize_delivery_dispatch(
     }
 
 
+def _external_build_binding(dispatch, lease):
+    from taskplane import delivery_ports
+    if not isinstance(lease, delivery_ports.AttemptLease) or dispatch.bindings["phase_id"] != "build" or any(
+            getattr(lease, key) != dispatch.bindings[key] for key in
+            ("lease_id", "run_id", "phase_id", "attempt_id", "operation_id", "fencing_token")):
+        raise ValueError("Build phase lease binding mismatch")
+
+
+def prepare_build_phase(runtime, dispatch, *, lease_owner, lease, paths=()):
+    """Reserve incumbent lease effects before emitting an external dispatch.
+
+    This is not a launch callback and returns no invented worker identity.
+    Any crash leaves the lease uncertain until a matching released observation.
+    """
+    _external_build_binding(dispatch, lease)
+    prepared = runtime.prepare(dispatch)
+    if lease_owner.pickup(lease)["continuation"] != "retry_same_attempt":
+        raise ValueError("Build effects require reconciliation")
+    def reserve(bound):
+        runtime.prepare(dispatch)
+        for path in paths:
+            path.revalidate()
+        lease_owner.revalidate(bound)
+        return prepared
+    return lease_owner.execute(lease, nonce_action=lambda action: action(), action=reserve, paths=paths)
+
+
+def complete_build_phase(runtime, dispatch, observation, *, lease_owner, lease, terminal):
+    from taskplane import agent_runtime, delivery_ports
+    _external_build_binding(dispatch, lease)
+    if not isinstance(terminal, delivery_ports.LeaseTerminalObservation) or \
+            not observation.start_identity or not observation.terminal_identity or \
+            terminal.terminal_identity != observation.terminal_identity:
+        raise ValueError("Build requires matching released terminal evidence")
+    lease_owner.reconcile(lease, terminal)
+    if lease_owner.authorize(lease) is not True:
+        raise ValueError("Build completion authority revoked")
+    return runtime.complete(agent_runtime.PreparedDispatch(dispatch), replace(observation, effect_state="reconciled"))
+
+
 def run_build_phase(runtime, dispatch, *, lease_owner, lease, launch,
                     observe_terminal, paths=()) -> dict[str, object]:
     """Inactive Build adapter over the runtime and incumbent lease/nonce owners.
