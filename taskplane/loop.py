@@ -4451,6 +4451,7 @@ STEP_ROLE = {
     "evaluate": "tp-evaluator",
     "fix": "tp-fixer",
     "em": "tp-engineering",
+    "retro": "tp-retro",
 }
 HUMAN_STEPS = progress_engine.HUMAN_STEPS
 
@@ -5079,6 +5080,15 @@ def init(ws: str, goal: str, spec_path: str | None = None,
 
 def _step_contract(step: str, state: dict, ws: str | None = None) -> dict:
     task = _current_task(state)
+    if step == "retro":
+        context = _phase_bridge_context(ws, state)
+        if context is None:
+            raise ValueError("Retro worker requires admitted phase routing")
+        paths = context["configuration"]["output_paths"].get("retro")
+        if not isinstance(paths, dict) or not paths:
+            raise ValueError("Retro requires declared output paths")
+        return tp.build_contract("RETRO: sealed terminal evidence", read_only=True,
+            write_allow=list(paths.values()), tools=["Read", "Grep", "Glob", "Bash", "Write"])
     if step == "pm":
         return tp.build_contract(
             f"PM: {state['goal']}", read_only=True,
@@ -7057,7 +7067,7 @@ def finalize_observed_dispatch_usage(
         outcome: str = "complete", native_task_name: str | None = None,
         usage_unavailable: bool = False,
         unavailable_reason: str | None = None,
-        dispatch_id: str | None = None) -> dict:
+        dispatch_id: str | None = None, phase_runtime: bool = False) -> dict:
     """Finalize one hook-observed dispatch into the binding budget ledger."""
     terminal_kind = {
         "success": "complete", "complete": "complete",
@@ -7091,11 +7101,26 @@ def finalize_observed_dispatch_usage(
                 reason=str(unavailable_reason or
                            "provider usage observation is unavailable"))
         else:
+            ended = float(ended_at if ended_at is not None else clock.wall_time())
+            events = [{"kind": terminal_kind, "sequence": 1}]
+            if phase_runtime:
+                stored = next(row for row in ledger["bindings"]
+                    if row["dispatch_id"] == binding["dispatch_id"])
+                if not stored["finalized_receipt_fingerprint"]:
+                    stored["ended_at"] = ended
+                    stored["events"] = [*stored["events"], dispatch_telemetry.dispatch_event(
+                        dispatch_id=stored["dispatch_id"], thread_id=stored["thread_id"],
+                        thread_type=stored["thread_type"], task_id=stored["task_id"],
+                        kind=terminal_kind, sequence=len(stored["events"]) + 1, at=ended)]
+                    # The host's authenticated usage/source remain identical;
+                    # the incumbent integrity producer binds the newly observed
+                    # terminal timing and event along with those original facts.
+                    stored["usage_integrity_fingerprint"] = dispatch_telemetry._usage_integrity_fingerprint(
+                        ledger, stored, stored["usage"], stored["usage_source_fingerprint"])
+                events = stored["events"]
             result = dispatch_telemetry.finalize_usage(
                 ledger, dispatch_id=str(binding["dispatch_id"]),
-                ended_at=float(ended_at if ended_at is not None
-                               else clock.wall_time()), clock=clock,
-                events=[{"kind": terminal_kind, "sequence": 1}])
+                ended_at=ended, clock=clock, events=events)
         _invalidate_terminal_metrics(locked)
         return result
 
@@ -7894,16 +7919,22 @@ def next_action(
         return {"error": "expanded-route authority is limited to Plan",
                 "step": step, "status": status(ws)}
 
-    if step == "retro" or (
+    phase_retro = False
+    retro_requested = step == "retro" or (
             step == "failed" and
             isinstance(state.get("run_artifact_binding"), Mapping) and
-            not isinstance(state.get("terminal_cleanup"), Mapping)):
+            not isinstance(state.get("terminal_cleanup"), Mapping))
+    if retro_requested:
         try:
-            if _phase_bridge_context(ws, state) is not None:
-                return {"step": "retro", "paused": True,
-                    "error": "phase Retro requires signed runtime and sealed terminal telemetry before dispatch; legacy sealing is unavailable"}
+            context = _phase_bridge_context(ws, state)
+            if context is not None:
+                if step != "retro":
+                    raise ValueError("failed run has no current Retro stage")
+                _phase_bridge_retro_inputs(ws, context)
+                phase_retro = True
         except (ValueError, OSError) as exc:
             return {"step": "retro", "error": "phase Retro prerequisites refused: " + str(exc)}
+    if retro_requested and not phase_retro:
         return {
             "step": "retro", "paused": False, "action": "loop_retro",
             "runtime_evals": runtime_eval.guidance("retro"),
@@ -8145,6 +8176,11 @@ def next_action(
                 definition["model_tier"], capability_snapshot=capability_snapshot,
                 enforcement_mode=os.environ.get("TASKPLANE_ENFORCE_DISPATCH"),
                 settings_context=effective_settings)
+            # The admitted definition pins its real skill bytes. A phase role
+            # need not have a separately invented agents/<role>.md file.
+            if step == "retro":
+                dispatch["role_instructions"] = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), definition["skill_ref"])
     except (ValueError, OSError) as exc:
         return {"error": "phase definition admission refused: " + str(exc), "step": step}
     if step in {"evaluate", "fix"} and worker_task is not None:
@@ -8870,6 +8906,7 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
     t = _current_task(state)
     evaluator_result, review_root = runtime_storage.instruction_artifact_paths(ws)
     return {
+        "retro": "Consume only the sealed terminal package and author the declared retrospective output. Return it through the existing host completion hook. Do not seal the loop, admit knowledge, mint a publication grant, or publish.",
         "pm": "Run tp-product: author specs/spec.md, then call `req new` "
               "exactly once with complete functional, acceptance, "
               "context-file, contract, and NFR fields. Code-bearing scope "
@@ -10419,6 +10456,145 @@ def _phase_bridge_operation(context: dict) -> str:
     return "phase-attempt-" + context["stage"]["fingerprint"][:32]
 
 
+def _phase_bridge_freshness(ws: str, scopes: list[str]) -> tuple[dict, dict]:
+    """Use the incumbent bounded impact producer, preserving its limits.
+
+    This binds the exact impact output; it does not assert that partial,
+    unknown or stale graph coverage is complete and launches no review.
+    """
+    from taskplane import review_evidence
+    impact = depgraph.impact(ws, scopes, policy=depgraph.impact_policy({}))
+    return {"candidate_sha": str(tp.git_head(ws) or ""),
+        "source_tree": tp._run(["git", "rev-parse", "HEAD^{tree}"], cwd=ws).stdout.strip(),
+        "impact_manifest_fingerprint": review_evidence.content_fingerprint(impact)}, impact
+
+
+def _phase_bridge_signing(ws, material, *, admit=False, authorize=None):
+    from taskplane import design_host_transport
+    freshness, _ = _phase_bridge_freshness(ws, material["signing_scope"])
+    if freshness != material["freshness"]:
+        raise ValueError("runtime signing current freshness changed")
+    return design_host_transport.runtime_receipt_authority(tp, ws,
+        bindings=material["bindings"], freshness=freshness, now=int(SystemClock().wall_time()),
+        admit=admit, authorize=authorize)
+
+
+def _phase_bridge_telemetry(ws: str, completion: Mapping[str, object], *, terminal_snapshot=None):
+    """Assemble existing authentic owners' inputs; no missing-fact repair.
+
+    Knowledge proposals require the incumbent knowledge owner's signed apply
+    receipts and purpose-specific trust. The runtime signer cannot supply
+    that authority; until supplied such proposals remain a precise gap.
+    """
+    import math
+    from taskplane import design_host_transport, review_evidence
+    artifacts = review_evidence.ArtifactStore(ws)
+    material = artifacts.read(completion["preparation"])
+    policy = _phase_bridge_signing(ws, material)
+    signed = artifacts.read(completion["runtime_receipt"])
+    result = policy.verify(signed, store=artifacts)["payload"]
+    if artifacts.read(completion["runtime_result"]) != result:
+        raise ValueError("telemetry accepted output differs from signed runtime")
+    if review_evidence.content_fingerprint(artifacts.read(material["impact_reference"])) != \
+            policy.freshness["impact_manifest_fingerprint"]:
+        raise ValueError("telemetry impact producer output changed")
+    knowledge = review_evidence.canonical_bytes(artifacts.read(material["knowledge_reference"]))
+    if hashlib.sha256(knowledge).hexdigest() != result["knowledge_fingerprint"]:
+        raise ValueError("telemetry consumed knowledge changed")
+    for output in result["collected_output_references"]:
+        artifacts.read(output)
+    source = design_host_transport.phase_nonce_source(tp, ws, str(result["run_id"]))
+    nonce = source.recover(material["nonce_bindings"])
+    start, terminal = source.phase_hooks(nonce, material["nonce_bindings"])
+    terminal_outputs = [review_evidence.portable_artifact_reference(artifacts, row["reference"])
+        for row in terminal["outputs"]]
+    if start["claim"] != result["start_identity"] or terminal["claim"] != result["terminal_identity"] or \
+            terminal_outputs != result["collected_output_references"] or terminal["outcome"] != "success":
+        raise ValueError("telemetry accepted output or terminal hook is severed")
+    state = load(ws)
+    ledger = dispatch_telemetry.validate_ledger((state or {}).get("dispatch_telemetry"))
+    if terminal_snapshot is not None:
+        snapshot = dispatch_telemetry.validate_ledger(artifacts.read(terminal_snapshot))
+        # Preserve every prior producer row; only later attempts may append.
+        for field in ("schema", "run_id", "source_sha", "design_fingerprint", "plan_fingerprint", "started_at"):
+            if ledger[field] != snapshot[field]:
+                raise ValueError("Retro terminal ledger identity changed")
+        for field in ("bindings", "dispatches", "usage_baselines"):
+            if any(row not in ledger[field] for row in snapshot[field]):
+                raise ValueError("Retro terminal ledger evidence changed")
+        ledger = snapshot
+    binding = next((row for row in ledger["bindings"]
+        if row["dispatch_id"] == result["attempt_id"]), None)
+    if binding is None or binding["thread_id"] != start["owner"]["task_name"]:
+        raise ValueError("telemetry native ledger attempt missing or foreign")
+    if result["knowledge_proposals"]:
+        raise ValueError("telemetry requires incumbent knowledge apply receipts and knowledge signing authority")
+    inputs = dispatch_telemetry.AttemptTelemetryInputs(ledger=ledger,
+        runtime_receipt=signed, nonce_source=source, nonce=nonce,
+        nonce_bindings=material["nonce_bindings"], knowledge_proposals=(), knowledge_receipts=(),
+        trusted_keys=policy.keys, freshness=policy.freshness,
+        # Signature verification uses integer seconds; telemetry events retain
+        # the host's fractional clock. Round the verification boundary up, not
+        # the authentic event down (expiry may conservatively refuse early).
+        now=math.ceil(SystemClock().wall_time()), event_deliveries=tuple(binding["events"]))
+    telemetry = dispatch_telemetry.produce_attempt_telemetry(inputs)
+    return inputs, artifacts.put("attempt-telemetry", telemetry)
+
+
+def _phase_bridge_retro_inputs(ws, context, domain=None):
+    """Connect the exact predecessor and incumbent terminal seals to Retro.
+
+    A snapshot preserves pre-Retro accounting without hiding later ledger
+    changes. This adapter never fills missing usage, evaluator or knowledge
+    evidence and never grants publication authority.
+    """
+    from taskplane import stage_migration, retro
+    artifacts = context["artifacts"]
+    rows = stage_migration.phase_records(context["store"].load(context["run_id"]))
+    matches = [row["result"] for row in rows.values() if row["operation"] == "phase_collect"
+        and row["result"].get("handoff", {}).get("fingerprint") ==
+            context["stage"]["input_manifest_ref"].get("fingerprint")]
+    if len(matches) != 1:
+        raise ValueError("Retro requires signed runtime and sealed terminal telemetry from its exact predecessor")
+    completion = matches[0]
+    if domain is None:
+        state = load(ws) or {}
+        if not isinstance(state.get("wave_metrics_evidence"), dict) or not isinstance(state.get("wave_metrics_receipt"), dict):
+            raise ValueError("Retro requires sealed terminal telemetry from the incumbent terminal producer")
+        inputs, telemetry_ref = _phase_bridge_telemetry(ws, completion)
+        domain = {"predecessor_completion": completion,
+            "terminal_snapshot": artifacts.put("terminal-ledger", inputs.ledger),
+            "telemetry_ref": telemetry_ref,
+            "terminal_evidence_ref": artifacts.put("terminal-evidence", state["wave_metrics_evidence"]),
+            "terminal_metrics_ref": artifacts.put("terminal-metrics", state["wave_metrics_receipt"])}
+    else:
+        if domain["predecessor_completion"] != completion:
+            raise ValueError("Retro predecessor completion changed")
+        inputs, telemetry_ref = _phase_bridge_telemetry(ws, completion,
+            terminal_snapshot=domain["terminal_snapshot"])
+        if telemetry_ref != domain["telemetry_ref"]:
+            raise ValueError("Retro predecessor telemetry changed")
+        # Authentic later usage invalidates the mutable latest-wave cache.
+        # The prepared domain retains the original producer seals, bound into
+        # Retro's package. Verify those against their immutable ledger below;
+        # _phase_bridge_telemetry also requires every predecessor row to remain
+        # byte-identical in the current ledger. Never substitute a newer seal.
+    kwargs = {key: domain[key] for key in ("telemetry_ref", "terminal_evidence_ref", "terminal_metrics_ref")}
+    kwargs["telemetry_inputs"] = inputs
+    retro._phase_telemetry(artifacts, **kwargs)
+    return domain, kwargs
+
+
+def collect_phase_runtime_telemetry(ws, contract):
+    from taskplane import stage_migration
+    requested = contract["phase_runtime"]
+    store = _stage_store(ws, requested["run_id"])
+    rows = stage_migration.phase_records(store.load(requested["run_id"]))
+    completion = rows[requested["operation_id"] + "-complete"]["result"]
+    _, reference = _phase_bridge_telemetry(ws, completion)
+    return reference
+
+
 def _phase_bridge_runtime(ws: str, context: dict, material: Mapping[str, object]):
     from taskplane import agent_runtime, design_host_transport, review_evidence, delivery_ports
     nonce = design_host_transport.phase_nonce_source(tp, ws, context["run_id"])
@@ -10463,6 +10639,21 @@ def _phase_bridge_build_owner(ws, context, runtime, material):
     return owner, lease
 
 
+def _phase_bridge_output_location(ws, path):
+    """Resolve only checkout-relative or incumbent run-owned output paths."""
+    if not isinstance(path, str) or ".." in path.replace("\\", "/").split("/"):
+        raise ValueError("phase output path is invalid")
+    if not os.path.isabs(path):
+        return ws, path
+    locator = runtime_storage.load_workspace_locator(ws) or {}
+    roots = [str(root) for root in (locator.get("paths") or {}).values()
+        if os.path.commonpath((os.path.abspath(path), os.path.abspath(str(root)))) == os.path.abspath(str(root))]
+    if not roots or not runtime_storage.managed_path_allowed(ws, path):
+        raise ValueError("phase output is outside incumbent managed custody")
+    root = max(roots, key=len)
+    return root, os.path.relpath(path, root)
+
+
 def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
                           envelope: Mapping[str, object]) -> dict | None:
     from taskplane import agent_runtime, design_host_transport, review_evidence, stage_migration
@@ -10471,6 +10662,11 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
     if context is None:
         return None
     config, stage, definition = context["configuration"], context["stage"], context["definition"]
+    retro_domain = None
+    if stage["stage_kind"] == "retro":
+        retro_domain, _ = _phase_bridge_retro_inputs(ws, context)
+        envelope["terminal_evidence_fingerprints"] = [retro_domain[key]["fingerprint"] for key in
+            ("telemetry_ref", "terminal_evidence_ref", "terminal_metrics_ref")]
     if stage["stage_kind"] in {"evaluate", "engineering"}:
         envelope["evaluation_lens_set_fingerprint"] = review_evidence.content_fingerprint([])
     authority = stage["authority"]
@@ -10490,8 +10686,9 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
     # timestamp before binding the nonce's exact numeric deadline.
     deadline = datetime.fromtimestamp(now + definition["budget"]["wall_ms"] / 1000,
         timezone.utc).timestamp()
+    attempt = contract["worker_lifecycle"]["dispatch_intent_id"]
     binding = {"run_id": context["run_id"], "phase_id": stage["stage_kind"],
-        "attempt_id": operation, "operation_id": operation, "candidate_fingerprint": config["candidate_fingerprint"],
+        "attempt_id": attempt, "operation_id": operation, "candidate_fingerprint": config["candidate_fingerprint"],
         "definition_set_fingerprint": context["registry"].definition_set_fingerprint,
         "phase_definition_fingerprint": definition["fingerprint"],
         "sealed_package_fingerprint": agent_runtime.package_fingerprint(package, knowledge, envelope),
@@ -10515,21 +10712,27 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
         raise ValueError("phase output paths do not match declared outputs")
     # Enforce the same pre-existing contract that the native host will bind.
     allowed = contract.get("write_allow") or contract["coding"]["scope_paths"]
-    import fnmatch
-    if any(not isinstance(path, str) or path.startswith("/") or ".." in path.split("/") or
-           not any(fnmatch.fnmatchcase(path, pattern) for pattern in allowed) for path in paths.values()):
-        raise ValueError("phase output path is outside the worker contract")
+    for path in paths.values():
+        _phase_bridge_output_location(ws, path)
+        if not tp.writable_target(path, allowed, ws):
+            raise ValueError("phase output path is outside the worker contract")
     material = {"bindings": bindings, "nonce_bindings": binding, "envelope": dict(envelope),
         "package": [artifact.projection() for artifact in package], "knowledge_reference": config["knowledge_reference"],
         "predecessor": predecessor, "stage_id": stage["stage_id"], "stage_fingerprint": stage["fingerprint"],
         "output_paths": paths, "prepared_at": now, "routing": context["route"]["result_fingerprint"],
         "contract_slot": contract["task_slot"]}
+    material["signing_scope"] = sorted(paths.values())
+    freshness, impact = _phase_bridge_freshness(ws, material["signing_scope"])
+    material["freshness"] = freshness
+    material["impact_reference"] = context["artifacts"].put("phase-impact", impact)
+    _phase_bridge_signing(ws, material, admit=True,
+        authorize=lambda: _phase_bridge_authorize(ws, context, context["store"].load(context["run_id"])))
     if stage["stage_kind"] == "build":
         scopes = contract["coding"]["scope_paths"]
         if not scopes:
             raise ValueError("Build requires its current effect scope")
         material["domain"] = {"lease": {"lease_id": operation, "run_id": context["run_id"],
-            "phase_id": "build", "attempt_id": operation, "operation_id": operation,
+            "phase_id": "build", "attempt_id": attempt, "operation_id": operation,
             "owner": contract["task_slot"], "issued_at": now, "expires_at": deadline,
             "heartbeat_deadline": deadline, "effect_scope": ["workspace:" + path for path in scopes],
             "fencing_token": fence}}
@@ -10541,19 +10744,39 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
         runtime.prepare(dispatch)
     elif stage["stage_kind"] in {"evaluate", "engineering"}:
         from taskplane import review
-        route = (load(ws) or {}).get("evaluate_child_evidence")
-        if not isinstance(route, Mapping) or route.get("run_id") != context["run_id"]:
-            raise ValueError("phase evaluator requires the incumbent complete evidence selection")
-        original = route["binding"]
-        selection_binding = {key: original[key] for key in ("candidate_sha", "source_tree",
-            "impact_manifest_fingerprint", "task_id", "requirement_id", "design_fingerprint",
-            "plan_fingerprint", "settings_digest")}
+        current_state = load(ws) or {}
+        engineering_source = None
+        if stage["stage_kind"] == "engineering":
+            kernel = (current_state.get("review_kernel_runs") or {}).get(
+                _review_kernel_binding_key("em", _current_task(current_state))) or {}
+            if kernel.get("stage") != "review" or os.path.realpath(str(kernel.get("workspace") or "")) != os.path.realpath(ws):
+                raise ValueError("Engineering requires its own current ReviewKernel selection")
+            engineering_source = review.engineering_phase_source(ws,
+                kernel_run_id=str(kernel.get("run_id") or ""), candidate_sha=freshness["candidate_sha"])
+            selection_binding = {**freshness,
+                "impact_manifest_fingerprint": review_evidence.content_fingerprint(engineering_source["impact"]),
+                "task_id": "engineering-signoff", "requirement_id": current_state.get("requirement_id"),
+                "design_fingerprint": current_state.get("design_fingerprint"),
+                "plan_fingerprint": current_state.get("plan_fingerprint"), "settings_digest": envelope.get("settings_digest")}
+        else:
+            route = current_state.get("evaluate_child_evidence")
+            if not isinstance(route, Mapping) or route.get("run_id") != context["run_id"]:
+                raise ValueError("phase evaluator requires the incumbent complete evidence selection")
+            original = route["binding"]
+            selection_binding = {key: original[key] for key in ("candidate_sha", "source_tree",
+                "impact_manifest_fingerprint", "task_id", "requirement_id", "design_fingerprint",
+                "plan_fingerprint", "settings_digest")}
         selection_binding.update({key: bindings[key] for key in ("run_id", "phase_id", "candidate_fingerprint")})
         selection = review.precommit_evaluator_selection(runtime, [dispatch], binding=selection_binding)
         material["domain"] = {"selection": selection}
+        if engineering_source is not None:
+            material["domain"]["engineering_source"] = engineering_source
         review.prepare_evaluator_phase(runtime, dispatch, selection_ref=selection)
     elif stage["stage_kind"] == "retro":
-        raise ValueError("phase Retro requires the incumbent signed runtime and sealed terminal telemetry inputs")
+        from taskplane import retro
+        material["domain"] = retro_domain
+        _, telemetry = _phase_bridge_retro_inputs(ws, context, retro_domain)
+        retro.prepare_retro_phase(runtime, dispatch, **telemetry)
     else:
         runtime.prepare(dispatch)
     reference = context["artifacts"].put("phase-preparation", material)
@@ -10568,6 +10791,9 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
     _phase_bridge_authorize(ws, context, context["store"].load(context["run_id"]))
     if stage["stage_kind"] == "build":
         build_c.prepare_build_phase(runtime, dispatch, lease_owner=owner, lease=lease)
+    _phase_bridge_signing(ws, material).require_current()
+    if stage["stage_kind"] == "retro":
+        _phase_bridge_retro_inputs(ws, context, material["domain"])
     source.reserve_dispatch(issued, binding)
     return {"schema": "taskplane.phase-preparation-reference/v1", "run_id": context["run_id"],
         "operation_id": operation, "receipt_fingerprint": receipt["result_fingerprint"],
@@ -10587,6 +10813,8 @@ def _phase_bridge_pending(ws: str, state: Mapping[str, object]) -> dict | None:
         return None
     from taskplane import review_evidence
     material = review_evidence.ArtifactStore(ws).read(row["result"]["reference"])
+    if not {"signing_scope", "freshness", "impact_reference"} <= set(material):
+        raise ValueError("persisted phase attempt has no compatible runtime-signing admission; retain its original identity")
     if material["stage_fingerprint"] != context["stage"]["fingerprint"] or \
             row["request_fingerprint"] != review_evidence.content_fingerprint(material):
         raise ValueError("phase preparation changed")
@@ -10645,7 +10873,8 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
         authored = {}
         remaining = 1024 * 1024
         for artifact_class, path in material["output_paths"].items():
-            raw = _stage_loop_read_output_no_follow(ws, path, required=True, remaining_bytes=remaining)
+            output_root, relative = _phase_bridge_output_location(ws, path)
+            raw = _stage_loop_read_output_no_follow(output_root, relative, required=True, remaining_bytes=remaining)
             remaining -= len(raw)
             authored[artifact_class] = json.loads(raw)
         if "plan-task" in authored:
@@ -10666,6 +10895,7 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
     observation = agent_runtime.Observation(start["claim"], (), terminal["claim"], "reconciled",
         tuple(agent_runtime.Artifact(row["artifact_class"], row["artifact_schema_version"], row["reference"])
             for row in terminal["outputs"]))
+    retro_receipt = None
     if stage["stage_kind"] == "build":
         from taskplane import build_c, delivery_ports
         owner, lease = _phase_bridge_build_owner(ws, context, runtime, material)
@@ -10681,11 +10911,20 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
         from taskplane import review
         result = review.complete_evaluator_phase(runtime, dispatch, observation,
             selection_ref=material["domain"]["selection"])
+    elif stage["stage_kind"] == "retro":
+        from taskplane import retro
+        _, telemetry = _phase_bridge_retro_inputs(ws, context, material["domain"])
+        retro_receipt = retro.complete_retro_phase(runtime, dispatch, observation, **telemetry)
+        result = retro.read_retro_phase(artifacts, retro_receipt, **telemetry)["runtime_result"]
     else:
         result = runtime.complete(agent_runtime.PreparedDispatch(dispatch), observation)
     if result["status"] != "accepted":
         reference = artifacts.put("phase-collection-refusal", result)
         return {"status": "pending", "operation_id": operation, "reason_code": result["reason_code"], "reference": reference}
+    # Current host policy authenticates only the collected accepted envelope.
+    # The original phase-result remains immutable evidence for compatibility.
+    _phase_bridge_authorize(ws, context, store.load(run_id))
+    signed = _phase_bridge_signing(ws, material).sign(result, store=artifacts)
     authority = stage["authority"]
     handoff = produce_phase_handoff(artifacts, registry=registry, phase_result=result, dispatch=dispatch,
         predecessor=material["predecessor"], producer_stage_id=stage["stage_id"],
@@ -10696,12 +10935,18 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
                 "authority_schema": "taskplane.consolidated-authorization/v1",
                 "revision": authority["authority_revision"], "fingerprint": authority["authority_fingerprint"]}})
     complete = {"runtime_result": artifacts.put("phase-result", result), "handoff": handoff,
+        "runtime_receipt": artifacts.put("signed-phase-result", signed),
         "preparation": requested["reference"], "terminal_observation": terminal["claim"]}
+    if retro_receipt is not None:
+        complete["retro_receipt"] = retro_receipt
     current = store.load(run_id)
     _phase_bridge_authorize(ws, context, current)
+    def authorize_collection(fresh):
+        _phase_bridge_authorize(ws, context, fresh)
+        _phase_bridge_signing(ws, material).verify(signed, store=artifacts)
     committed = stage_migration.commit_phase_record(store, run_id, expected_revision=current["revision"],
         operation_id=operation + "-complete", operation="phase_collect", request_fingerprint=review_evidence.content_fingerprint(complete),
-        validate_authority=lambda fresh: _phase_bridge_authorize(ws, context, fresh),
+        validate_authority=authorize_collection,
         result=complete)
     return {"status": "collected", "receipt": committed, "native_readiness_claimed": False}
 
@@ -10720,6 +10965,10 @@ def _phase_bridge_gate_check(ws: str, state: Mapping[str, object]) -> None:
         raise ValueError("phase runtime requires matching terminal and collected output before gate")
     artifacts = review_evidence.ArtifactStore(ws)
     result = stage_entities.validate_contract(artifacts.read(completion["runtime_result"]))
+    material = artifacts.read(completion["preparation"])
+    signed = artifacts.read(completion["runtime_receipt"])
+    if _phase_bridge_signing(ws, material).verify(signed, store=artifacts)["payload"] != result:
+        raise ValueError("signed runtime differs from accepted output")
     if result["status"] != "accepted" or not result["evaluator_dispatch_eligibility"]:
         raise ValueError("phase runtime result is not eligible for gate")
     current = _stage_loop_context(ws, state)
@@ -10727,6 +10976,26 @@ def _phase_bridge_gate_check(ws: str, state: Mapping[str, object]) -> None:
     stage_handoff.read_v2_manifest(artifacts, completion["handoff"],
         expected_authority_revision=current["stage"]["authority"]["authority_revision"],
         expected_authority_fingerprint=current["stage"]["authority"]["authority_fingerprint"])
+
+
+def _phase_bridge_retro_completion(ws, state):
+    from taskplane import retro
+    context = _phase_bridge_context(ws, state)
+    pending = _phase_bridge_pending(ws, state)
+    if context is None and pending is None:
+        return None
+    completion = ((pending or {}).get("phase_runtime") or {}).get("completion")
+    if context is None or context["stage"]["stage_kind"] != "retro" or not isinstance(completion, Mapping) or \
+            completion.get("retro_receipt") is None:
+        raise ValueError("phase Retro requires its telemetry-gated completion receipt; legacy sealing is unavailable")
+    _phase_bridge_gate_check(ws, state)
+    material = context["artifacts"].read(completion["preparation"])
+    _, kwargs = _phase_bridge_retro_inputs(ws, context, material["domain"])
+    accepted = retro.read_retro_phase(context["artifacts"], completion["retro_receipt"], **kwargs)
+    if accepted["runtime_result"] != context["artifacts"].read(completion["runtime_result"]):
+        raise ValueError("Retro accepted output differs from telemetry-gated completion")
+    _phase_bridge_telemetry(ws, completion)  # Retro's own actual terminal usage
+    return completion
 
 
 @dataclass(frozen=True)
@@ -11992,7 +12261,8 @@ def submit(ws: str, outcome: str, note: str = "",
             }
     submission = {
         "step": step,
-        "task": (task or {}).get("id"),
+        "task": ((task or {}).get("id") or ("engineering-signoff"
+            if step == "em" and _phase_bridge_context(ws, state) is not None else None)),
         "outcome": outcome,
         "note": note,
         "workspace": act_ws,
@@ -15259,9 +15529,7 @@ def retro(ws: str) -> dict:
     opening = load(ws)
     if isinstance(opening, Mapping):
         try:
-            if _phase_bridge_context(ws, opening) is not None or _phase_bridge_pending(ws, opening) is not None:
-                return {"error": "phase Retro requires its telemetry-gated completion receipt; legacy sealing is unavailable",
-                    "step": opening.get("step")}
+            _phase_bridge_retro_completion(ws, opening)
         except (ValueError, OSError) as exc:
             return {"error": "phase Retro prerequisites refused: " + str(exc), "step": opening.get("step")}
     if isinstance(opening, Mapping) and isinstance(
@@ -15279,6 +15547,8 @@ def retro(ws: str) -> dict:
     @contextlib.contextmanager
     def prepare_only_mutate(workspace: str):
         with mutate(workspace) as locked:
+            if locked is not None:
+                _phase_bridge_retro_completion(workspace, locked)
             yield locked
             if locked is None:
                 return

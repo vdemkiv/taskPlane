@@ -8,16 +8,18 @@ activity publication, replay resistance, and completion conservation.
 from __future__ import annotations
 
 import hashlib
+import base64
 import hmac
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import secrets
 import time
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING, TypeAlias
 
 if TYPE_CHECKING:
@@ -56,6 +58,168 @@ _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 class NativeEntryError(ValueError):
     """A diagnostic entry binding was refused before engine execution."""
+
+
+_RUNTIME_PURPOSE = "accepted-runtime-receipt"
+_RUNTIME_POLICY_SCHEMA = "taskplane.host-runtime-signing-policy/v1"
+
+
+@dataclass(frozen=True)
+class RuntimeReceiptAuthority:
+    """Host-local purpose and exact-attempt admission, never worker authority.
+
+    This value contains HMAC trust and must never enter a portable package.
+    Reload it at each effect boundary so rotation and emergency disabling are
+    current. Mathematical historical verification grants no current effect.
+    """
+
+    bindings: Mapping[str, object]
+    freshness: Mapping[str, object]
+    keys: Mapping[str, object] = field(repr=False)
+    key_id: str
+    now: int
+    expires_at: int
+
+    def require_current(self):
+        key = self.keys[self.key_id]
+        if key.status != "active" or not key.not_before <= self.now < min(key.not_after, self.expires_at):
+            raise NativeEntryError("runtime signing key is disabled, not yet valid or stale")
+
+    def verify(self, receipt, *, store=None, historical=False):
+        from taskplane import stage_handoff
+        key = self.keys.get(receipt.get("key_id"))
+        if key is None or receipt.get("key_id") != self.key_id:
+            raise NativeEntryError("runtime signing key is not admitted for this attempt")
+        if not historical and key.status != "active":
+            raise NativeEntryError("runtime signing key is disabled")
+        checked = stage_handoff.verify_contract(receipt, trusted_keys=self.keys,
+            expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
+            expected_freshness=self.freshness, now=self.now,
+            store=store, historical=historical)
+        result = checked["payload"]
+        if result["status"] != "accepted" or any(result.get(k) != v for k, v in self.bindings.items()):
+            raise NativeEntryError("runtime receipt differs from admitted attempt bindings")
+        if receipt["expires_at"] > self.expires_at:
+            raise NativeEntryError("runtime receipt exceeds admitted freshness interval")
+        return checked
+
+    def sign(self, result, *, store=None):
+        from taskplane import stage_handoff
+        self.require_current()
+        if result.get("status") != "accepted" or any(result.get(k) != v for k, v in self.bindings.items()):
+            raise NativeEntryError("runtime signing requires the exact accepted output")
+        receipt = stage_handoff.sign_contract(result, key=self.keys[self.key_id],
+            issued_at=self.now, expires_at=self.expires_at, freshness=self.freshness, store=store)
+        self.verify(receipt, store=store)
+        return receipt
+
+
+def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
+                              now: int, admit=False, authorize=None):
+    """Admit a purpose-limited key only through the incumbent host owner.
+
+    The private policy is separate from worker lifecycle and nonce secrets.
+    Admissions are immutable exact-operation records. Expiry or disabling
+    cannot cause automatic reissuance, and payload/key IDs never add trust.
+    The kernel's existing lock and atomic-write primitives retain custody.
+    """
+    from taskplane import stage_handoff
+    from datetime import datetime
+    fresh = stage_handoff._freshness(freshness)
+    operation = bindings.get("operation_id")
+    if not isinstance(operation, str) or not operation:
+        raise NativeEntryError("runtime signing operation missing")
+    if type(now) is not int or now < 0:
+        raise NativeEntryError("runtime signing time invalid")
+    path = Path(kernel.tp_dir(workspace)) / "runtime-receipt-authority.json"
+    identity = hashlib.sha256(os.path.realpath(workspace).encode()).hexdigest()
+    with kernel.file_lock(str(path)):
+        if path.exists() and (path.is_symlink() or not stat.S_ISREG(path.stat().st_mode)
+                or path.stat().st_mode & 0o077 or path.stat().st_uid != os.getuid()):
+            raise NativeEntryError("runtime signing custody is not private")
+        policy = kernel.load_json(str(path), default=None, what="runtime receipt signing policy")
+        if policy is None:
+            if not admit:
+                raise NativeEntryError("runtime signing authority missing")
+            if authorize is None:
+                raise NativeEntryError("runtime signing admission requires current host authority")
+            if authorize() is False:
+                raise NativeEntryError("runtime signing host authority refused admission")
+            policy = {"schema": _RUNTIME_POLICY_SCHEMA, "purpose": _RUNTIME_PURPOSE,
+                "workspace": identity, "keys": {}, "admissions": {}}
+        if not isinstance(policy, dict) or set(policy) != {
+                "schema", "purpose", "workspace", "keys", "admissions"} or \
+                policy["schema"] != _RUNTIME_POLICY_SCHEMA or policy["purpose"] != _RUNTIME_PURPOSE or \
+                policy["workspace"] != identity:
+            raise NativeEntryError("runtime signing purpose or owner mismatch")
+        if not isinstance(policy["keys"], dict) or not isinstance(policy["admissions"], dict):
+            raise NativeEntryError("runtime signing key admission policy malformed")
+        admission = policy["admissions"].get(operation)
+        if admission is None and admit:
+            if authorize is None:
+                raise NativeEntryError("runtime signing admission requires current host authority")
+            if authorize() is False:
+                raise NativeEntryError("runtime signing host authority refused admission")
+            expires = int(datetime.fromisoformat(str(bindings["deadline"]).replace("Z", "+00:00")).timestamp())
+            if expires <= now:
+                raise NativeEntryError("runtime signing admission is stale")
+            secret = secrets.token_bytes(32)
+            key_id = "runtime-" + secrets.token_hex(16)
+            policy["keys"][key_id] = {"key_id": key_id,
+                "secret": base64.b64encode(secret).decode("ascii"),
+                "not_before": now, "not_after": expires, "status": "active", "changed_at": None}
+            admission = {"bindings": dict(bindings), "freshness": fresh,
+                "key_id": key_id, "expires_at": expires}
+            policy["admissions"][operation] = admission
+            kernel.atomic_write_json(str(path), policy, sort_keys=True, private=True)
+        if not isinstance(admission, dict) or set(admission) != {
+                "bindings", "freshness", "key_id", "expires_at"} or \
+                admission["bindings"] != dict(bindings) or admission["freshness"] != fresh:
+            raise NativeEntryError("runtime signing attempt is missing or changed")
+        keys = {}
+        for key_id, raw in policy["keys"].items():
+            if not isinstance(raw, dict) or set(raw) != {
+                    "key_id", "secret", "not_before", "not_after", "status", "changed_at"}:
+                raise NativeEntryError("runtime signing key policy malformed")
+            key = stage_handoff.SigningKey(**{**raw,
+                "secret": base64.b64decode(raw["secret"], validate=True)})
+            if key.key_id != key_id:
+                raise NativeEntryError("runtime signing key identity mismatch")
+            keys[key_id] = key
+        if admission["key_id"] not in keys:
+            raise NativeEntryError("runtime signing key is unadmitted")
+        return RuntimeReceiptAuthority(dict(bindings), fresh, keys,
+            admission["key_id"], now, admission["expires_at"])
+
+
+def disable_runtime_receipt_authority(kernel, workspace: str, *, bindings,
+        freshness, now: int, authorize, status: str, changed_at: int):
+    """Host-only monotone retirement/revocation; retain historical key bytes.
+
+    New operations receive separate keys through normal admission. Neither
+    rotation nor disabling rewrites an old admission or grants a new attempt.
+    """
+    if status not in {"retired", "revoked", "compromised"} or type(changed_at) is not int or changed_at < now:
+        raise NativeEntryError("runtime signing disable policy invalid")
+    current = runtime_receipt_authority(kernel, workspace, bindings=bindings,
+        freshness=freshness, now=now)
+    path = Path(kernel.tp_dir(workspace)) / "runtime-receipt-authority.json"
+    with kernel.file_lock(str(path)):
+        if authorize is None or authorize() is False:
+            raise NativeEntryError("runtime signing host authority refused disabling")
+        policy = kernel.load_json(str(path), what="runtime receipt signing policy")
+        admission = policy["admissions"].get(bindings["operation_id"])
+        if admission is None or admission["key_id"] != current.key_id or admission["bindings"] != dict(bindings):
+            raise NativeEntryError("runtime signing admission changed before disabling")
+        raw = policy["keys"][current.key_id]
+        if raw["status"] != "active":
+            if raw["status"] == status and raw["changed_at"] == changed_at:
+                return
+            raise NativeEntryError("runtime signing disabling is immutable")
+        if changed_at < raw["not_before"]:
+            raise NativeEntryError("runtime signing disabling predates admission")
+        raw.update(status=status, changed_at=changed_at)
+        kernel.atomic_write_json(str(path), policy, sort_keys=True, private=True)
 
 
 def phase_nonce_source(kernel, workspace: str, run_id: str):

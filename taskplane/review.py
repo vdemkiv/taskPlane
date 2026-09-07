@@ -143,6 +143,30 @@ def precommit_evaluator_selection(runtime, dispatches, *, binding: dict) -> dict
         binding=binding, assignments=assignments, evaluation_lenses=[])
 
 
+def engineering_phase_source(ws: str, *, kernel_run_id: str, candidate_sha: str) -> dict:
+    """Read this Engineering kernel's full immutable selection and input.
+
+    This is a direct adapter, not a selector, dispatch or verdict producer.
+    Evaluate's child route cannot stand in for Engineering's own authority.
+    """
+    state = _load_state(ws, kernel_run_id)
+    manifest = copy.deepcopy(state["manifest"])
+    if manifest.get("manifest_bytes") != len(review_evidence_runtime.canonical_bytes(manifest)):
+        raise review_evidence_runtime.ProvenanceError("Engineering selection manifest changed")
+    store = review_evidence_runtime.ArtifactStore(ws)
+    envelope = review_evidence_runtime._load_complete_envelope(store, state["envelope"])
+    target = envelope["target"]
+    if state.get("stage") != "review" or manifest.get("stage") != "review" or \
+            state.get("run_id") != kernel_run_id or manifest.get("run_id") != kernel_run_id or \
+            target.get("step") != "em" or target.get("head") != candidate_sha or \
+            os.path.realpath(str(target.get("workspace") or "")) != os.path.realpath(ws) or \
+            manifest.get("context_fingerprint") != state["envelope"]["fingerprint"]:
+        raise review_evidence_runtime.ProvenanceError("Engineering kernel source is stale or foreign")
+    return {"manifest": manifest, "envelope": state["envelope"],
+        "selection": copy.deepcopy(state.get("slots") or []),
+        "target": copy.deepcopy(target), "impact": copy.deepcopy(envelope["impact"])}
+
+
 def prepare_evaluator_phase(runtime, dispatch, *, selection_ref: dict):
     return _evaluator_phase(runtime, dispatch, selection_ref=selection_ref, prepare=True)
 

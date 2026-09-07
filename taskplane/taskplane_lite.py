@@ -99,7 +99,7 @@ class StateError(RuntimeError):
 
 
 def atomic_write_json(path: str, data, *, indent: int = 1,
-                      sort_keys: bool = False) -> None:
+                      sort_keys: bool = False, private: bool = False) -> None:
     """Write JSON durably: fsynced temp + replace + parent-directory fsync.
 
     A crash mid-write leaves the previous version intact instead of a torn
@@ -116,6 +116,10 @@ def atomic_write_json(path: str, data, *, indent: int = 1,
         # these artifacts are fingerprinted and byte-compared (the audit
         # differential caught it: b'{\r\n  "reviews": 6\r\n}').
         with open(tmp, "x", encoding="utf-8", newline="") as f:
+            if private:
+                # Set custody before writing any secret, including to the
+                # temporary inode used by the incumbent atomic replacement.
+                os.fchmod(f.fileno(), 0o600)
             json.dump(data, f, indent=indent, sort_keys=sort_keys)
             f.flush()
             os.fsync(f.fileno())
@@ -5119,13 +5123,26 @@ def _loop_submission_status(workspace: str, contract: dict, binding: dict,
     snapshot = submission.get("snapshot")
     fingerprint = submission.get("fingerprint")
     evidence_paths = submission.get("evidence_paths")
+    def valid_evidence_path(item):
+        if _submission_relative_path(submission_workspace, item) is not None:
+            return True
+        if not contract.get("phase_runtime") or stage not in {"evaluate", "em"}:
+            return False
+        # Stage-native review submissions name the incumbent's exact managed
+        # output paths. This does not admit arbitrary external evidence or
+        # change the repository-only artifact-submission locator contract.
+        try:
+            import storage as runtime_storage
+            return (item in runtime_storage.submission_evidence_paths(submission_workspace, stage)
+                and runtime_storage.managed_path_allowed(submission_workspace, item))
+        except (ValueError, OSError):
+            return False
     if (not isinstance(snapshot, str) or not snapshot
             or not isinstance(fingerprint, str)
             or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
             or not isinstance(evidence_paths, list)
             or len(evidence_paths) > 128
-            or any(_submission_relative_path(submission_workspace, item) is None
-                   for item in evidence_paths)):
+            or any(not valid_evidence_path(item) for item in evidence_paths)):
         return _submission_result(contract, binding, "corrupt",
                                   artifact=artifact, recovery=recovery)
     try:

@@ -2100,6 +2100,9 @@ def cmd_subagent_stop(a) -> int:
         try:
             telemetry = _seal_terminal_dispatch_telemetry(
                 ws, lifecycle_contract, event, outcome=normalized_outcome)
+            if lifecycle_contract.get("phase_runtime") is not None:
+                from taskplane import loop as _phase_loop
+                _phase_loop.collect_phase_runtime_telemetry(ws, lifecycle_contract)
         except Exception as exc:
             reason = (
                 "taskplane blocked lifecycle completion because native "
@@ -2741,7 +2744,8 @@ def _seal_terminal_dispatch_telemetry(
         native_task_name=native_task_name, dispatch_id=dispatch_id or None)
     result = _loop_runtime.finalize_observed_dispatch_usage(
         ws, task_id=task_id, outcome=outcome,
-        native_task_name=native_task_name, dispatch_id=dispatch_id or None)
+        native_task_name=native_task_name, dispatch_id=dispatch_id or None,
+        phase_runtime=contract.get("phase_runtime") is not None)
     if isinstance(native_record, dict):
         result = {**result, "native_session": {
             "schema": "taskplane.native-session-reference/v1",
