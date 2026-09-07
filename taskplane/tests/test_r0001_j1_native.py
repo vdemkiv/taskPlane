@@ -13,9 +13,11 @@ The two approved J1 selectors remain outstanding, not renamed or substituted.
 """
 
 import copy
+import importlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -219,6 +221,29 @@ def test_supporting_r0001_contracts_reach_root_handoff_stage_and_preparation(
     assert loop.next_action(ws)["phase_runtime"]["reference"] == first["phase_runtime"]["reference"]
     assert store.load(run_id) == manifest
     record_property("evidence_mode", "supporting-production-init-next-with-simulated-source-and-authority")
+    record_property("native_host_execution", "not-performed")
+
+
+def test_supporting_cli_import_prepares_before_any_phase_observation(
+    tmp_path, monkeypatch, record_property
+):
+    """Actual CLI module loading and producers; simulated source/authority only."""
+    cli_loop = importlib.import_module("loop")
+    assert not cli_loop.__package__
+    # Exercise the same flat import as tp.py and the actual native preparation
+    # script; the runtime's nonce owner is still imported as a package.
+    monkeypatch.setattr(sys.modules[__name__], "loop", cli_loop)
+    ws, store, run_id, first, manifest, root, _, _ = (
+        _supporting_prepared_contract_boundaries(tmp_path, monkeypatch, R0001_CONTRACTS)
+    )
+    assert root["contracts"] == sorted(row["id"] for row in R0001_CONTRACTS)
+    assert first["phase_runtime"]["package"] == []
+    assert first["phase_runtime"]["native_identity_claimed"] is False
+    pending = cli_loop.next_action(ws)
+    assert pending["phase_runtime"]["reference"] == first["phase_runtime"]["reference"]
+    assert "task_name" not in pending
+    assert store.load(run_id) == manifest
+    record_property("evidence_mode", "supporting-production-cli-import-init-next-with-simulated-source-and-authority")
     record_property("native_host_execution", "not-performed")
 
 

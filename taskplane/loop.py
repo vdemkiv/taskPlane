@@ -10619,7 +10619,7 @@ def collect_phase_runtime_telemetry(ws, contract):
 
 
 def _phase_bridge_runtime(ws: str, context: dict, material: Mapping[str, object]):
-    from taskplane import agent_runtime, design_host_transport, review_evidence, delivery_ports
+    from taskplane import agent_runtime, design_host_transport, review_evidence, delivery_ports, producer_observation
     nonce = design_host_transport.phase_nonce_source(tp, ws, context["run_id"])
     binding = material["nonce_bindings"]
     issued = nonce.recover(binding)
@@ -10635,7 +10635,8 @@ def _phase_bridge_runtime(ws: str, context: dict, material: Mapping[str, object]
         try:
             _, terminal = nonce.phase_hooks(issued, binding)
             tokens = terminal["tokens"]
-        except producer_observation_policy.ProducerObservationError:
+        # The nonce owner is package-imported even when the CLI loads loop flat.
+        except producer_observation.ProducerObservationError:
             pass
         return {"tokens": tokens, "wall_ms": max(0, int((nonce.clock.wall_time() - material["prepared_at"]) * 1000)),
             "attempts": 0, "corrections": 0}
