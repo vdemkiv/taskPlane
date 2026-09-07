@@ -206,6 +206,113 @@ def _strings(values) -> list[str]:
     return sorted({str(v).strip() for v in (values or []) if str(v).strip()})
 
 
+def commit_evaluator_selection(store, *, binding: dict, assignments: list[dict],
+                               evaluation_lenses: list[str]) -> dict:
+    """Persist the orchestrator's full selection before any evaluator effects.
+
+    Inactive phase adapter. This records supplied authority, never issues it.
+    A selection cannot be replaced for the same run/candidate/phase identity;
+    bounded replacement attempts must already be named in its assignment set.
+    """
+    required = {"run_id", "phase_id", "candidate_fingerprint", "candidate_sha",
+                "source_tree", "impact_manifest_fingerprint", "task_id", "requirement_id",
+                "design_fingerprint", "plan_fingerprint", "settings_digest"}
+    if not isinstance(binding, dict) or set(binding) != required or any(
+            not isinstance(value, str) or not value.strip() for value in binding.values()):
+        raise ProvenanceError("evaluator selection binding is incomplete")
+    if binding["phase_id"] not in {"evaluate", "engineering"} or evaluation_lenses != []:
+        raise ProvenanceError("evaluator selection requires a zero-lens review phase")
+    if not assignments or len({row["attempt_id"] for row in assignments}) != len(assignments) or \
+            len({row["operation_id"] for row in assignments}) != len(assignments):
+        raise ProvenanceError("evaluator selection attempts must be unique")
+    for row in assignments:
+        if any(row.get(key) != binding[key] for key in
+               ("run_id", "phase_id", "candidate_fingerprint")):
+            raise ProvenanceError("evaluator selection assignment is foreign")
+    # Freshness inputs are retained in the record, but cannot mint a new
+    # selection identity to hide an earlier assignment for this candidate.
+    identity = {key: binding[key] for key in
+                ("run_id", "phase_id", "candidate_fingerprint")}
+    return store.put("evaluator-selection", {
+        "schema": "taskplane.evaluator-selection/v1", "binding": copy.deepcopy(binding),
+        "assignments": copy.deepcopy(assignments), "evaluation_lenses": [],
+        "evaluation_lens_set_fingerprint": content_fingerprint([]),
+    }, fingerprint=content_fingerprint(identity))
+
+
+def read_evaluator_selection(store, reference: dict) -> dict:
+    if not isinstance(reference, dict) or reference.get("kind") != "evaluator-selection":
+        raise ProvenanceError("committed evaluator selection is required")
+    selected = store.read(reference)
+    if selected.get("schema") != "taskplane.evaluator-selection/v1":
+        raise ProvenanceError("evaluator selection schema is invalid")
+    return selected
+
+
+def evaluator_attempt_key(selection_ref: dict, assignment: dict) -> str:
+    return content_fingerprint({"selection": selection_ref["digest"],
+        "attempt": assignment["attempt_id"], "operation": assignment["operation_id"]})
+
+
+def collect_evaluator_attempts(store, selection_ref: dict) -> dict:
+    """Read every precommitted attempt; no caller-selected result subset exists.
+
+    This is evidence collection only. Canonical evaluator validation still owns
+    substantive admissibility, and the orchestrator alone owns progression.
+    """
+    if __package__:
+        from . import evaluation_output, stage_entities
+    else:
+        import evaluation_output, stage_entities
+    selected = read_evaluator_selection(store, selection_ref)
+    starts = {ref["fingerprint"]: ref for ref in store.references("evaluator-attempt")}
+    results = {ref["fingerprint"]: ref for ref in store.references("evaluator-attempt-result")}
+    attempts, gaps, unfavorable = [], [], []
+    for assignment in selected["assignments"]:
+        key = evaluator_attempt_key(selection_ref, assignment)
+        row = {"attempt_id": assignment["attempt_id"], "operation_id": assignment["operation_id"],
+               "status": "pending", "result": None, "judgments": []}
+        attempts.append(row)
+        if key not in starts or key not in results:
+            row["status"] = "uncertain" if key in starts else "pending"
+            gaps.append({"attempt_id": row["attempt_id"], "reason": "terminal_evidence_missing"})
+            continue
+        expected_start = {"selection_digest": selection_ref["digest"], "assignment": assignment}
+        if store.read(starts[key]) != expected_start:
+            raise ProvenanceError("evaluator attempt selection mismatch")
+        result = stage_entities.validate_contract(store.read(results[key]))
+        if any(result.get(field) != value for field, value in assignment.items()):
+            raise ProvenanceError("evaluator attempt result binding mismatch")
+        row.update(status=result["status"], result=results[key])
+        if result["status"] != "accepted":
+            unfavorable.append(row["attempt_id"])
+        for reference in result["collected_output_references"]:
+            value = store.read(reference)
+            row["judgments"].append(reference)
+            try:
+                # Pass evidence is validated by the incumbent durable child
+                # evidence owner. A self-authored pass cannot stand in for it.
+                checked = evaluation_output.validate_evaluator_value(value,
+                    expected_lenses=selected["evaluation_lenses"],
+                    expected_evidence_binding={**{key: value for key, value in selected["binding"].items()
+                        if key not in {"run_id", "phase_id", "candidate_fingerprint"}},
+                        "evaluator_attempt_id": assignment["attempt_id"]})
+                if checked["task"] != selected["binding"]["task_id"] or \
+                        checked["requirement"] != selected["binding"]["requirement_id"]:
+                    raise ProvenanceError("evaluator judgment is foreign")
+                if checked["verdict"] != "pass" or any(
+                        criterion["status"] != "met" for criterion in checked["criteria"]):
+                    unfavorable.append(row["attempt_id"])
+            except (ValueError, KeyError):
+                gaps.append({"attempt_id": row["attempt_id"], "reason": "judgment_inadmissible"})
+        if not row["judgments"]:
+            gaps.append({"attempt_id": row["attempt_id"], "reason": "judgment_missing"})
+    return {"schema": "taskplane.phase-review-collection/v1", "selection": selection_ref,
+        "binding": selected["binding"], "attempts": attempts, "gaps": gaps,
+        "unfavorable_attempts": sorted(set(unfavorable)),
+        "admissible": not gaps and not unfavorable, "progression_authority": False}
+
+
 class ArtifactStore:
     """Content-addressed, immutable artifact storage under the checkout."""
 
