@@ -1,11 +1,17 @@
-"""T15C blocking regression: real T11 packages reach the incumbent lifecycle.
+"""T15C boundary corrections and the retained production-entry blocker.
 
 Host authorship and current authority are simulated in an isolated workspace.
-This diagnostic does not claim cutover, live-entry wiring, rollback or native
-success. The expected v2 transaction is red until its reader owner is connected.
+These checks do not claim cutover, rollback or native success. The real T11
+package crosses lifecycle and startup readers; the supported native entry
+remains blocked on its missing runtime bridge.
 """
-from taskplane import review_evidence, run_store, stage_entities, stage_handoff, storage
+import pytest
+
+from taskplane import loop, review_evidence, run_store, stage_entities, stage_handoff, stage_migration, storage
 from taskplane.tests.test_r0001_phase_agents_spec import _journey
+from taskplane.tests.test_r0001_native_entry import _request, _snapshot
+from taskplane import design_host_transport
+from taskplane import taskplane_lite
 
 
 def test_atomic_phase_cutover(tmp_path, record_property):
@@ -54,6 +60,7 @@ def test_atomic_phase_cutover(tmp_path, record_property):
     record_property("evidence_mode", "blocking-regression-simulated-host-and-authority")
     record_property("producer_reference", plan_ref["fingerprint"])
     record_property("producer_edge", "produce_phase_handoff -> StageLifecycle.terminalize_and_start")
+    loop._preflight_stage_dispatch(stage("build", plan_ref, ["stage-plan"]), package)
     try:
         receipt = lifecycle.terminalize_and_start("stage-plan", stage("build", plan_ref, ["stage-plan"]),
             expected_head_fingerprint=predecessor["fingerprint"], expected_revision=before["revision"],
@@ -66,3 +73,52 @@ def test_atomic_phase_cutover(tmp_path, record_property):
             expected_authority_revision=1, expected_authority_fingerprint="f" * 64) == package
         raise
     assert receipt["operation"] == "terminalize_and_start"
+    successor = stage("build", plan_ref, ["stage-plan"])
+    dispatch = taskplane_lite.stage_runtime_dispatch(successor, receipt, package,
+        successor["selected_artifacts"])
+    startup = taskplane_lite.stage_startup_bytes(dispatch)
+    projected = dispatch["startup"]["input_handoff"]
+    assert projected["schema"] == taskplane_lite.STAGE_HANDOFF_V2_DISPATCH_SCHEMA
+    assert projected["source_fingerprint"] == package["fingerprint"]
+    assert projected["phase_result"] == package["phase_result"]
+    assert dispatch["telemetry"]["manifest_bytes"] == plan_ref["bytes"]
+    assert dispatch["telemetry"]["predecessor_root_opens"] == 0
+    assert b"human:simulated" not in startup
+    assert b"simulated-session" not in startup
+    assert stage_handoff.read_manifest(artifacts, plan_ref,
+        expected_authority_revision=1, expected_authority_fingerprint="f" * 64) == package
+
+
+@pytest.mark.parametrize("case", ["v2-current", "stale-authority", "retained-read"])
+def test_mixed_version_matrix(tmp_path, case):
+    artifacts, _, _, _, reference, _ = _journey(tmp_path)
+    assert stage_migration.active_producer_schema("taskplane.stage-handoff") == stage_handoff.SCHEMA
+    if case == "stale-authority":
+        with pytest.raises(stage_handoff.StaleAuthorityError):
+            stage_handoff.read_manifest(artifacts, reference,
+                expected_authority_revision=2, expected_authority_fingerprint="f" * 64)
+    elif case == "retained-read":
+        original = artifacts.read(reference)
+        retained = stage_migration.read_compatible_contract(review_evidence.canonical_bytes(original), store=artifacts)
+        assert retained.payload == original
+        assert retained.progression_authority is False
+    else:
+        original = stage_handoff.read_manifest(artifacts, reference,
+            expected_authority_revision=1, expected_authority_fingerprint="f" * 64)
+        assert stage_handoff.store_manifest(artifacts, original) == reference
+
+
+def test_native_entry_diagnostic_refuses_without_real_capability(tmp_path, record_property):
+    """Diagnostic refusal only; this cannot earn supported-entry/native proof."""
+    request = _request(tmp_path)
+    prepared = design_host_transport.prepare_native_entry(request, _snapshot(request, stable=True))
+    observation = prepared.observation
+    record_property("evidence_mode", "simulated-capability-input-production-native-preflight")
+    record_property("missing_capabilities", str(observation["missing_capabilities"]))
+    assert observation["native_identity_claimed"] is False
+    assert observation["effect_state"] == "none"
+    assert observation["ready"] is False
+    assert observation["success"] is False
+    assert observation["action"] == "refusal"
+    assert observation["evidence_mode"] == "degraded_observation"
+    assert "real_canary" in observation["missing_capabilities"]

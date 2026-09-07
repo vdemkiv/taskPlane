@@ -366,6 +366,17 @@ def validate_manifest(
     allow_nonconsumable_reuse: bool = False,
 ) -> JsonObject:
     """Validate schema, authority, artifact integrity, and numeric bounds."""
+    if isinstance(manifest, Mapping) and manifest.get("schema") == "taskplane.stage-handoff/v2":
+        checked = validate_v2_manifest(store, manifest)
+        authority = checked["authorization"]["authority_record"]
+        if expected_authority_revision is not None and authority["revision"] != expected_authority_revision:
+            raise StaleAuthorityError("v2 handoff authority revision is stale")
+        if expected_authority_fingerprint is not None and authority["fingerprint"] != expected_authority_fingerprint:
+            raise StaleAuthorityError("v2 handoff authority fingerprint is stale")
+        if checked["producer"]["outcome"] != "done":
+            raise HandoffValidationError("current phase packages require a done producer")
+        _validate_complete_v2_outputs(store, checked)
+        return checked
     if isinstance(manifest, Mapping) and manifest.get("schema") != SCHEMA:
         raise HandoffValidationError("unsupported handoff manifest schema")
     row = _closed(manifest, _MANIFEST_FIELDS, "handoff manifest")

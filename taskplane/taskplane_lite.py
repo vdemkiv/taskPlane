@@ -3701,6 +3701,7 @@ STAGE_RECEIPT_SCHEMA = "taskplane.stage-operation-receipt/v1"
 STAGE_AUTHORITY_REFERENCE_SCHEMA = \
     "taskplane.stage-authority-reference/v1"
 STAGE_HANDOFF_DISPATCH_SCHEMA = "taskplane.stage-handoff-dispatch/v1"
+STAGE_HANDOFF_V2_DISPATCH_SCHEMA = "taskplane.stage-handoff-dispatch/v2"
 MAX_STAGE_STARTUP_BYTES = 128 * 1024
 MAX_STAGE_RECEIPT_BYTES = 2 * 1024 * 1024
 _STAGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -3923,11 +3924,43 @@ def _verify_dispatch_result(stage: dict, receipt: dict,
 
 def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
                                    selected_artifacts: list) -> dict:
-    if not isinstance(handoff, dict) or set(handoff) != _STAGE_HANDOFF_FIELDS:
+    entities, stage_handoff = _stage_modules()
+    is_v2 = isinstance(handoff, dict) and handoff.get("schema") == entities.HANDOFF_V2_SCHEMA
+    fields = _STAGE_HANDOFF_FIELDS | (entities._HANDOFF_V2_ADDITIONS if is_v2 else frozenset())
+    if not isinstance(handoff, dict) or set(handoff) != fields:
         raise StageDispatchError("verified handoff fields are invalid")
-    if handoff.get("schema") != "taskplane.stage-handoff/v1":
+    if handoff.get("schema") != "taskplane.stage-handoff/v1" and not is_v2:
         raise StageDispatchError("verified handoff schema is invalid")
-    _, stage_handoff = _stage_modules()
+    if is_v2:
+        try:
+            entities.validate_contract(handoff["phase_result"])
+            selected = set()
+            produced = []
+            for group in ("produced_artifacts", "inherited_artifacts"):
+                entities._schema_artifacts(handoff[group], group, references=True)
+                for row in handoff[group]:
+                    reference = row["reference"]
+                    identity = (reference["kind"], reference["fingerprint"])
+                    if identity in selected:
+                        raise ValueError("v2 artifact has duplicate ownership")
+                    selected.add(identity)
+                    if group == "produced_artifacts":
+                        produced.append(reference)
+            if selected != {(ref["kind"], ref["fingerprint"]) for ref in selected_artifacts} or \
+                    sorted(produced, key=lambda ref: (ref["kind"], ref["fingerprint"])) != sorted(
+                        handoff["phase_result"]["collected_output_references"],
+                        key=lambda ref: (ref["kind"], ref["fingerprint"])):
+                raise ValueError("v2 package differs from its collected outputs")
+            for receipt in handoff["knowledge_apply_receipts"]:
+                entities.validate_contract(receipt)
+            entities._contract_strings(handoff["unresolved_issues"], "unresolved issues")
+        except ValueError as exc:
+            raise StageDispatchError("verified v2 handoff is invalid") from exc
+        result = handoff["phase_result"]
+        if result["status"] != "accepted" or handoff["producer"]["outcome"] != "done" or \
+                result["run_id"] != stage["run_id"] or \
+                result["authority_fingerprint"] != stage["authority"]["authority_fingerprint"]:
+            raise StageDispatchError("verified v2 result binding is invalid")
     try:
         expected = stage_handoff.manifest_fingerprint(handoff)
     except (TypeError, ValueError) as exc:
@@ -4102,7 +4135,9 @@ def _dispatch_handoff_projection(handoff: dict,
     """Make a content-addressed handoff projection safe for a stage worker."""
     projected = _json_detach(handoff, "verified handoff")
     source_fingerprint = projected.pop("fingerprint")
-    projected["schema"] = STAGE_HANDOFF_DISPATCH_SCHEMA
+    projected["schema"] = (STAGE_HANDOFF_V2_DISPATCH_SCHEMA
+        if handoff["schema"] == "taskplane.stage-handoff/v2"
+        else STAGE_HANDOFF_DISPATCH_SCHEMA)
     projected["source_fingerprint"] = source_fingerprint
     projected["authorization"] = _json_detach(
         authority_reference, "stage authority reference")
@@ -4114,8 +4149,12 @@ def _dispatch_handoff_projection(handoff: dict,
 def _verify_dispatch_handoff_projection(value, authority_reference: dict) \
         -> dict:
     fields = _STAGE_HANDOFF_FIELDS | {"source_fingerprint"}
+    is_v2 = isinstance(value, dict) and value.get("schema") == STAGE_HANDOFF_V2_DISPATCH_SCHEMA
+    if is_v2:
+        entities, _ = _stage_modules()
+        fields |= entities._HANDOFF_V2_ADDITIONS
     if not isinstance(value, dict) or set(value) != fields or \
-            value.get("schema") != STAGE_HANDOFF_DISPATCH_SCHEMA:
+            value.get("schema") not in {STAGE_HANDOFF_DISPATCH_SCHEMA, STAGE_HANDOFF_V2_DISPATCH_SCHEMA}:
         raise StageDispatchError("stage dispatch handoff projection is invalid")
     _stage_fingerprint(
         value.get("source_fingerprint"), "source handoff fingerprint")
