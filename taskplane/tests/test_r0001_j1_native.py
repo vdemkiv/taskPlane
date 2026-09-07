@@ -5,8 +5,16 @@ SubagentStart/SubagentStop hooks through observe_phase_runtime_hook and
 design_host_transport.observe_phase_hook. Taskplane-owned nonce receipts are
 eligible; the older prepare_native_entry diagnostic is not this route.
 
-Execution requires an orchestrator-prepared current candidate phase contract,
-real host dispatch under that slot, and actual terminal/output collection.
+The J1 flow starts with the selected package's normal
+``onboard --install-codex-hooks`` producer. Its ignored launcher must resolve
+that candidate. Before native preparation/dispatch, the orchestrator must
+retain actual user-approved hook trust and both native and bridge receipts
+bound to the current session/workspace. Installed files or exit zero without
+a launcher are not hook execution evidence. No local supporting case below
+creates trust, invokes a hook with a made-up event, or supplies host receipts.
+
+Execution then requires an orchestrator-prepared current candidate phase
+contract, real host dispatch under that slot, and terminal/output collection.
 T19 received no such J1 workflow. Authentication is available, not a blocker.
 Existing simulated lifecycle helpers cannot supply genuine host authority.
 The two approved J1 selectors remain outstanding, not renamed or substituted.
@@ -15,6 +23,7 @@ The two approved J1 selectors remain outstanding, not renamed or substituted.
 import copy
 import importlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -24,7 +33,8 @@ import pytest
 
 from scripts import package_openai
 from taskplane import (
-    loop, requirements, review_evidence, stage_entities, stage_handoff, stage_migration,
+    host_capabilities, loop, requirements, review_evidence, stage_entities,
+    stage_handoff, stage_migration,
 )
 
 
@@ -72,6 +82,98 @@ def supporting_package_archive(tmp_path_factory):
         manifest = package_openai.load_manifest()
         package_openai.write_zip(package_openai.package_files(manifest), archive)
         yield archive
+
+
+@pytest.fixture(scope="module")
+def supporting_candidate_package(supporting_package_archive, tmp_path_factory):
+    """Extract the actual package producer's output, without a global install."""
+    destination = tmp_path_factory.mktemp("j1-onboarding-package-support")
+    with zipfile.ZipFile(supporting_package_archive) as archive:
+        archive.extractall(destination)
+    return destination / package_openai.ARCHIVE_ROOT
+
+
+def _supporting_package_onboard(package, workspace, *, install=False, launcher=False):
+    # No inherited adapter assertion may supply trust for this isolated test.
+    # Keep the task slot and existing native identity; the fallback merely
+    # selects the Codex report branch when tests run outside Codex.
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in host_capabilities._ENV_OBSERVATIONS}
+    environment.setdefault("CODEX_THREAD_ID", "supporting-onboarding-no-host-receipt")
+    engine = (workspace / ".taskplane" / "codex-hook.py" if launcher else
+              package / "taskplane" / "tp.py")
+    command = [sys.executable, str(engine), "onboard", "--json"]
+    if install:
+        command.append("--install-codex-hooks")
+    result = subprocess.run(command, cwd=workspace, env=environment,
+                            text=True, encoding="utf-8", capture_output=True,
+                            timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return json.loads(result.stdout)
+
+
+def test_supporting_j1_onboarding_detects_missing_launcher(
+    supporting_candidate_package, tmp_path, record_property
+):
+    from taskplane.tests.test_stage_cross_host import _real_pristine_run
+
+    workspace, _, _ = _real_pristine_run(tmp_path)
+    launcher = workspace / ".taskplane" / "codex-hook.py"
+    assert not launcher.exists()
+    report = _supporting_package_onboard(supporting_candidate_package, workspace)
+    assert report["codex_hooks"]["status"] == "missing"
+    assert report["codex_hooks"]["ok"] is False
+    assert report["host_capabilities"]["ready"] is False
+    assert not launcher.exists()  # The read-only report cannot onboard implicitly.
+    record_property("evidence_mode", "supporting-package-onboarding-no-host-execution")
+
+
+def test_supporting_j1_onboarding_produces_ignored_candidate_launcher(
+    supporting_candidate_package, tmp_path, record_property
+):
+    from taskplane.tests.test_stage_cross_host import _real_pristine_run
+
+    workspace, _, _ = _real_pristine_run(tmp_path)
+    report = _supporting_package_onboard(
+        supporting_candidate_package, workspace, install=True,
+    )
+    launcher = workspace / ".taskplane" / "codex-hook.py"
+    intended_engine = supporting_candidate_package / "taskplane" / "tp.py"
+    assert launcher.is_file()
+    assert report["codex_hooks"]["status"] == "ready"
+    assert Path(report["codex_hooks"]["resolved_engine"]).resolve() == intended_engine.resolve()
+    ignored = subprocess.run(["git", "check-ignore", "--", ".taskplane/codex-hook.py"],
+                             cwd=workspace, text=True, capture_output=True, check=True)
+    assert ignored.stdout.strip() == ".taskplane/codex-hook.py"
+    # Execute the real generated launcher through a non-hook command; its
+    # selected engine reports its own resolver result without a fake event.
+    through_launcher = _supporting_package_onboard(
+        supporting_candidate_package, workspace, launcher=True,
+    )
+    assert Path(through_launcher["codex_hooks"]["resolved_engine"]).resolve() == intended_engine.resolve()
+    record_property("evidence_mode", "supporting-package-onboarding-no-host-execution")
+
+
+def test_supporting_j1_onboarding_install_does_not_supply_trust_or_host_receipts(
+    supporting_candidate_package, tmp_path, record_property
+):
+    from taskplane.tests.test_stage_cross_host import _real_pristine_run
+
+    workspace, _, _ = _real_pristine_run(tmp_path)
+    report = _supporting_package_onboard(
+        supporting_candidate_package, workspace, install=True,
+    )
+    assert report["codex_hooks"]["status"] == "ready"
+    capabilities = report["host_capabilities"]
+    assert capabilities["trust"]["status"] == "unknown"
+    assert capabilities["loaded_session"]["status"] == "unknown"
+    assert capabilities["ready"] is False
+    assert not (Path(os.environ["TASKPLANE_HOME"]) / "host-receipts").exists()
+    # Stop at the missing authentic-host prerequisite. Root's real J1 flow
+    # must retain user trust and matching native/bridge receipts before it
+    # prepares or dispatches; this local test does not manufacture that pass.
+    record_property("evidence_mode", "supporting-package-onboarding-no-host-execution")
+    record_property("native_dispatch", "not-performed-missing-authentic-host-prerequisites")
 
 
 def _rewrite_supporting_archive(source, target, *, registry=None, version=None):
