@@ -47,7 +47,11 @@ JsonObject: TypeAlias = dict[str, object]
 _IDENTIFIER: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _KIND: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _FINGERPRINT: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
-_CONTRACT: Final[re.Pattern[str]] = re.compile(r"^contract:[a-z][a-z0-9-]{0,127}$")
+# Preserve legacy IDs and namespaced/versioned IDs within the same body bound.
+_CONTRACT: Final[re.Pattern[str]] = re.compile(
+    r"^contract:(?=.{1,128}$)(?:[a-z][a-z0-9-]*|"
+    r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+/v[1-9][0-9]*)$"
+)
 _PORTABLE_REFERENCE_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "schema",

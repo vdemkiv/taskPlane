@@ -54,7 +54,11 @@ _IDENTIFIER: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0
 _REPOSITORY_ID: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,255}$")
 _FINGERPRINT: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
-_CONTRACT: Final[re.Pattern[str]] = re.compile(r"^contract:[a-z][a-z0-9-]{0,127}$")
+# Preserve legacy IDs and namespaced/versioned IDs within the same body bound.
+_CONTRACT: Final[re.Pattern[str]] = re.compile(
+    r"^contract:(?=.{1,128}$)(?:[a-z][a-z0-9-]*|"
+    r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+/v[1-9][0-9]*)$"
+)
 _MANIFEST_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "schema",

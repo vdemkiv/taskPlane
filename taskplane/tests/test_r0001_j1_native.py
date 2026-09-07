@@ -12,6 +12,7 @@ Existing simulated lifecycle helpers cannot supply genuine host authority.
 The two approved J1 selectors remain outstanding, not renamed or substituted.
 """
 
+import copy
 import json
 from pathlib import Path
 import subprocess
@@ -20,11 +21,31 @@ import zipfile
 import pytest
 
 from scripts import package_openai
-from taskplane import loop, requirements, review_evidence, stage_migration
+from taskplane import (
+    loop, requirements, review_evidence, stage_entities, stage_handoff, stage_migration,
+)
 
 
 REGISTRY = "agents/spec-phase-definitions.json"
 REGISTRY_MEMBER = f"{package_openai.ARCHIVE_ROOT}/{REGISTRY}"
+
+# Exact R-0001 requirement.contracts source rows from the approved T19 packet
+# (1751eb687b006784ec442f253c9593d0208a4e167d20669e9903e4800a7fe88e).
+# These are requirement inputs, never inserted stage or handoff outputs.
+R0001_CONTRACTS = [
+    {"relation": "changes", "id": "contract:graph-decomposition"},
+    {"relation": "changes", "id": "contract:slice-validation"},
+    {"relation": "changes", "id": "contract:taskplane-source-touchpoint-coverage-v1"},
+    {"relation": "changes", "id": "contract:taskplane-cross-task-seam-manifest-v1"},
+    {"relation": "changes", "id": "contract:taskplane-realized-seam-conformance-v1"},
+    {"relation": "changes", "id": "contract:taskplane-standalone-review-seams-v1"},
+    {"relation": "changes", "id": "contract:taskplane.stage-handoff/v2"},
+    {"relation": "changes", "id": "contract:taskplane.phase-progress-receipt/v1"},
+    {"relation": "changes", "id": "contract:taskplane.phase-pickup-result/v1"},
+    {"relation": "changes", "id": "contract:taskplane.phase-review-collection/v1"},
+    {"relation": "changes", "id": "contract:taskplane.phase-host-dispatch/v1"},
+    {"relation": "consumes", "id": "contract:taskplane.stage-authority-binding/v1"},
+]
 
 
 @pytest.fixture(scope="module")
@@ -103,7 +124,7 @@ def test_supporting_package_preserves_explicit_historical_surface_override(
     )
 
 
-def _supporting_pristine_phase_run(tmp_path, monkeypatch):
+def _supporting_pristine_phase_run(tmp_path, monkeypatch, *, contracts=None):
     """Public producers with simulated source/authority; no stage or host event seed."""
     from taskplane.tests.test_r0001_phase_agents_spec import _registry
     from taskplane.tests.test_stage_cross_host import (
@@ -112,7 +133,15 @@ def _supporting_pristine_phase_run(tmp_path, monkeypatch):
 
     workspace, store, initial = _real_pristine_run(tmp_path)
     ws = str(workspace)
-    requirement = _record_bootstrap_requirement(workspace)
+    requirement = (
+        _record_bootstrap_requirement(workspace) if contracts is None else
+        requirements.record_requirement(
+            ws, "supporting R-0001 contract identity compatibility",
+            functional=["preserve exact source contract identities and relations"],
+            acceptance=["normal initialization prepares the first phase"],
+            contracts=contracts,
+        )
+    )
     monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
     initialized = loop.init(
@@ -150,6 +179,124 @@ def _supporting_pristine_phase_run(tmp_path, monkeypatch):
     assert not before.get("stage_heads")
     assert not before.get("stage_operations")
     return ws, store, initial["run_id"], requirement
+
+
+def _supporting_prepared_contract_boundaries(tmp_path, monkeypatch, contracts):
+    ws, store, run_id, requirement = _supporting_pristine_phase_run(
+        tmp_path, monkeypatch, contracts=contracts,
+    )
+    assert requirement["contracts"] == contracts
+    first = loop.next_action(ws)
+    assert "error" not in first, first
+    assert first["phase_runtime"]["status"] == "pending"
+    manifest = store.load(run_id)
+    root_id = loop.load(ws)["_stage_run_binding"]["root_stage_id"]
+    root = store.read_stage_object(run_id, manifest["stage_heads"][root_id]["object"])
+    artifacts = review_evidence.ArtifactStore(ws)
+    handoff = stage_handoff.read_manifest(
+        artifacts, root["input_manifest_ref"],
+        expected_authority_revision=root["authority"]["authority_revision"],
+        expected_authority_fingerprint=root["authority"]["authority_fingerprint"],
+    )
+    return ws, store, run_id, first, manifest, root, artifacts, handoff
+
+
+def test_supporting_r0001_contracts_reach_root_handoff_stage_and_preparation(
+    tmp_path, monkeypatch, record_property
+):
+    """Actual producers with simulated source/authority; no native J1 claim."""
+    ws, store, run_id, first, manifest, root, artifacts, handoff = (
+        _supporting_prepared_contract_boundaries(tmp_path, monkeypatch, R0001_CONTRACTS)
+    )
+    assert root["contracts"] == sorted(row["id"] for row in R0001_CONTRACTS)
+    assert handoff["contracts"] == {
+        "provided": [],
+        "consumed": [R0001_CONTRACTS[-1]["id"]],
+        "changed": sorted(row["id"] for row in R0001_CONTRACTS[:-1]),
+    }
+    root_input = artifacts.read(root["selected_artifacts"][0])
+    assert root_input["requirement"]["contracts"] == R0001_CONTRACTS
+    assert loop.next_action(ws)["phase_runtime"]["reference"] == first["phase_runtime"]["reference"]
+    assert store.load(run_id) == manifest
+    record_property("evidence_mode", "supporting-production-init-next-with-simulated-source-and-authority")
+    record_property("native_host_execution", "not-performed")
+
+
+@pytest.mark.parametrize("contract_id", [
+    pytest.param("contract:a--", id="legacy-trailing-hyphens"),
+    pytest.param("contract:" + "a" * 128, id="legacy-128-character-body"),
+    pytest.param("contract:namespace." + "a" * 114 + "/v12",
+                 id="namespaced-versioned-128-character-body"),
+])
+def test_supporting_contract_legacy_spelling_and_body_bounds(
+    tmp_path, monkeypatch, contract_id
+):
+    """Supporting production preparation accepts both grammars at the old bound."""
+    contracts = [{"relation": "provides", "id": contract_id}]
+    *_, root, artifacts, handoff = _supporting_prepared_contract_boundaries(
+        tmp_path, monkeypatch, contracts,
+    )
+    assert root["contracts"] == [contract_id]
+    assert handoff["contracts"] == {"provided": [contract_id], "consumed": [], "changed": []}
+    assert artifacts.read(root["selected_artifacts"][0])["requirement"]["contracts"] == contracts
+
+
+@pytest.fixture(scope="module")
+def supporting_contract_reader_inputs(tmp_path_factory):
+    """Produce once in an isolated store; consumer cases mutate detached copies."""
+    tmp_path = tmp_path_factory.mktemp("j1-contract-reader-support")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("TASKPLANE_HOME", str(tmp_path / "tp-store"))
+        *_, root, artifacts, handoff = _supporting_prepared_contract_boundaries(
+            tmp_path, patch, R0001_CONTRACTS,
+        )
+    return root, artifacts, handoff
+
+
+@pytest.mark.parametrize("owner", ["handoff", "stage"])
+@pytest.mark.parametrize("ids,reason", [
+    pytest.param(["contract:"], "invalid entry", id="empty-body"),
+    pytest.param(["contract:1bad"], "invalid entry", id="leading-digit"),
+    pytest.param(["contract:Upper"], "invalid entry", id="uppercase"),
+    pytest.param(["contract:a_b"], "invalid entry", id="underscore"),
+    pytest.param(["contract:.a/v1"], "invalid entry", id="empty-namespace"),
+    pytest.param(["contract:a..b/v1"], "invalid entry", id="empty-segment"),
+    pytest.param(["contract:a./v1"], "invalid entry", id="trailing-dot"),
+    pytest.param(["contract:a.b"], "invalid entry", id="missing-version"),
+    pytest.param(["contract:a/v1"], "invalid entry", id="missing-namespace"),
+    pytest.param(["contract:a.b/v0"], "invalid entry", id="zero-version"),
+    pytest.param(["contract:a.b/v01"], "invalid entry", id="leading-zero-version"),
+    pytest.param(["contract:a.b/v-1"], "invalid entry", id="negative-version"),
+    pytest.param(["contract:a.b/v"], "invalid entry", id="empty-version"),
+    pytest.param(["contract:a.b/v1/extra"], "invalid entry", id="extra-path"),
+    pytest.param(["contract:a.b/v1?query"], "invalid entry", id="query-suffix"),
+    pytest.param(["contract:a.b\\v1"], "invalid entry", id="backslash"),
+    pytest.param(["contract:a.b/v1\nextra"], "invalid entry", id="embedded-newline"),
+    pytest.param(["contract:a b/v1"], "invalid entry", id="embedded-space"),
+    pytest.param(["contract:" + "a" * 129], "invalid entry", id="legacy-over-bound"),
+    pytest.param(["contract:namespace." + "a" * 115 + "/v12"],
+                 "invalid entry", id="namespaced-versioned-over-bound"),
+    pytest.param([R0001_CONTRACTS[0]["id"]] * 2, "duplicate entries", id="legacy-duplicate"),
+    pytest.param([R0001_CONTRACTS[-1]["id"]] * 2, "duplicate entries", id="namespaced-duplicate"),
+])
+def test_supporting_contract_readers_reject_malformed_ids_and_duplicates(
+    supporting_contract_reader_inputs, record_property, owner, ids, reason
+):
+    """Consumer-unit corruption of actual producer output; no journey proof."""
+    root, artifacts, handoff = supporting_contract_reader_inputs
+    if owner == "handoff":
+        broken = copy.deepcopy(handoff)
+        broken["contracts"]["consumed"] = ids
+        broken["fingerprint"] = stage_handoff.manifest_fingerprint(broken)
+        with pytest.raises(stage_handoff.HandoffValidationError, match=reason):
+            stage_handoff.validate_manifest(artifacts, broken)
+    else:
+        broken = copy.deepcopy(root)
+        broken["contracts"] = ids
+        broken["fingerprint"] = stage_entities.stage_fingerprint(broken)
+        with pytest.raises(stage_entities.StageValidationError, match=reason):
+            stage_entities.validate_stage(broken)
+    record_property("evidence_mode", "consumer-unit-corruption-of-production-output")
 
 
 def test_supporting_pristine_init_next_prepares_once_and_picks_up_pending(
