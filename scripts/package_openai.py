@@ -86,6 +86,7 @@ HOOK_FILES = (
 )
 
 STAGE_RUNTIME_FILES = (
+    "agents/spec-phase-definitions.json",
     "taskplane/taskplane_lite.py",
     "taskplane/loop.py",
     "taskplane/tp.py",
@@ -1413,6 +1414,12 @@ def validate_archive(
         for required in stage_runtime_files:
             require(f"{ARCHIVE_ROOT}/{required}" in names,
                     f"ZIP is missing stage runtime member {required}")
+            if required == "agents/spec-phase-definitions.json":
+                require(
+                    archive.read(f"{ARCHIVE_ROOT}/{required}") ==
+                    (expected_surface_root / required).read_bytes(),
+                    f"ZIP stage runtime member does not match source: {required}",
+                )
         for required in expected_skill_files(expected_surface_root):
             require(f"{ARCHIVE_ROOT}/{required}" in names,
                     f"ZIP is missing installable skill member {required}")
