@@ -333,6 +333,51 @@ def derive_verified_source(workspace: str, graph: dict, coverage: dict, prev: di
     return derive(workspace, graph, prev)
 
 
+DEPENDENCY_DECOMPOSITION_SCHEMA = "taskplane.dependency-decomposition/v1"
+
+
+def dependency_decomposition(graph: dict) -> dict:
+    """Partition the verified scanner graph into dependency-ordered SCC tasks.
+
+    Components retain their exact source spans. Cyclic modules share a task;
+    every acyclic dependency cut becomes a Plan seam. Declared overlays cannot
+    substitute for scanner observations in this production projection.
+    """
+    coverage = require_complete_source_coverage(graph["meta"]["source_coverage"],
+        source_tree=graph["meta"]["source_tree"])
+    if graph["meta"]["graph_scan_quality"]["degraded"]:
+        raise ValueError("degraded source graph blocks dependency decomposition")
+    components = graph.get("components") or []
+    if not components or any(row.get("degraded") for row in components):
+        raise ValueError("verified source components are required")
+    modules = sorted({row["module"] for row in components})
+    edges = sorted({(row["to"], row["from"], row["kind"])
+        for row in graph["edges"] if row.get("source") == "scanner"
+        and row["from"] in modules and row["to"] in modules and row["from"] != row["to"]})
+    groups = graph_primitives.strongly_connected_components(modules,
+        [(a, b) for a, b, _ in edges])
+    owners = {node: "dependency-" + _coverage_fingerprint({"nodes": group})[:16]
+        for group in groups for node in group}
+    tasks = [{"id": owners[group[0]], "nodes": group,
+        "deps": sorted({owners[a] for a, b, _ in edges if b in group and a not in group})}
+        for group in groups]
+    pending = {row["id"]: row for row in tasks}
+    ordered = []
+    while pending:
+        ready = sorted(key for key, row in pending.items() if not set(row["deps"]) & pending.keys())
+        if not ready:
+            raise ValueError("dependency task cycle after SCC decomposition")
+        ordered.extend(pending.pop(key) for key in ready)
+    value = {"schema": DEPENDENCY_DECOMPOSITION_SCHEMA,
+        "source_tree": coverage["source_tree"], "coverage_fingerprint": coverage["fingerprint"],
+        "components": [{key: row[key] for key in ("id", "module", "files", "symbols", "fingerprint")}
+            for row in sorted(components, key=lambda row: row["id"])],
+        "edges": [{"producer": a, "consumer": b, "kind": kind} for a, b, kind in edges],
+        "tasks": ordered}
+    value["fingerprint"] = _coverage_fingerprint(value)
+    return value
+
+
 def design_traceability_inventory(contract: dict) -> dict:
     """Close the canonical Design entities consumed by Plan traceability."""
     if not isinstance(contract, dict):

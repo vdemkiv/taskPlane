@@ -49,6 +49,19 @@ class PlanTopologyError(RuntimeError):
     """The Plan topology or trace-derived metrics are structurally unsafe."""
 
 
+def produce_dependency_plan(workspace: str, *, binding: Mapping[str, Any],
+        seam_contracts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Use the incumbent live source scanner and decomposition producer."""
+    graph = _depgraph.scan(workspace, decompose=True)
+    decomposition = _depgraph.graph_decomposition.dependency_decomposition(graph)
+    coverage = graph["meta"]["source_coverage"]
+    manifest = _wiring_closure.build_seam_manifest(decomposition,
+        binding={**binding, "source_tree": decomposition["source_tree"],
+            "graph_fingerprint": decomposition["fingerprint"]}, contracts=seam_contracts)
+    return {"source-coverage": coverage, "decomposition": decomposition,
+        "seam-manifest": manifest}
+
+
 def canonical_plan_fingerprint(plan: Mapping[str, Any]) -> str:
     """Return the exact fingerprint used by the Plan approval receipt.
 

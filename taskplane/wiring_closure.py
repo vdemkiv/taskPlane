@@ -26,6 +26,81 @@ from typing import Any
 ACCEPTANCE_SELECTOR_SCHEMA = "taskplane.acceptance-selector-map/v1"
 WIRING_CLOSURE_SCHEMA = "taskplane.wiring-closure/v1"
 CANDIDATE_CHECKOUT_WIRING_SCHEMA = "taskplane.candidate-checkout-wiring/v1"
+SEAM_MANIFEST_SCHEMA = "taskplane.cross-task-seam-manifest/v1"
+REALIZED_CONFORMANCE_SCHEMA = "taskplane.realized-seam-conformance/v1"
+
+
+def build_seam_manifest(decomposition, *, binding, contracts):
+    """Close every actual dependency cut against its authored interface contract."""
+    owners = {node: task["id"] for task in decomposition["tasks"] for node in task["nodes"]}
+    nodes = sorted({row["module"] for row in decomposition["components"]})
+    if sorted(owners) != nodes or sum(len(task["nodes"]) for task in decomposition["tasks"]) != len(nodes):
+        raise ValueError("dependency nodes have missing or duplicate ownership")
+    order = {task["id"]: index for index, task in enumerate(decomposition["tasks"])}
+    bindings = ("run_id", "requirement_fingerprint", "design_fingerprint", "plan_fingerprint",
+        "candidate_fingerprint", "source_tree", "graph_fingerprint")
+    if any(not binding.get(key) for key in bindings):
+        raise ValueError("seam provenance binding is incomplete")
+    contract_rows = {}
+    for raw in contracts:
+        key = (raw["producer"], raw["consumer"], raw["kind"])
+        if key in contract_rows:
+            raise ValueError("duplicate seam contract")
+        contract_rows[key] = raw
+    seams = []
+    for edge in decomposition["edges"]:
+        a, b = edge["producer"], edge["consumer"]
+        if owners[a] == owners[b]:
+            continue
+        key = (a, b, edge["kind"])
+        raw = contract_rows.pop(key, None)
+        if raw is None:
+            raise ValueError(f"missing seam contract: {a}->{b}:{edge['kind']}")
+        fields = ("schema_version", "cardinality", "producer_symbol", "consumer_symbol", "positive", "severed")
+        if any(not isinstance(raw.get(field), str) or not raw[field].strip() for field in fields) or raw["positive"] == raw["severed"]:
+            raise ValueError("seam requires exact symbols, schema, cardinality and distinct proofs")
+        if raw["cardinality"] not in {"one", "many"} or order[owners[a]] >= order[owners[b]]:
+            raise ValueError("seam cardinality or dependency order is invalid")
+        endpoints = {}
+        for side, node in (("producer", a), ("consumer", b)):
+            files = sorted({path for component in decomposition["components"] if component["module"] == node
+                for path in component["files"]})
+            # The incumbent scanner proves module/file dependencies. Do not
+            # advertise function-call precision that this scanner cannot prove.
+            if raw[side + "_symbol"].replace(".", "/") + ".py" not in files:
+                raise ValueError("seam symbol is not an exact observed module file")
+            endpoints[side + "_files"] = files
+        seams.append({"id": f"{a}->{b}:{edge['kind']}", **edge, **endpoints,
+            **{field: raw[field] for field in fields}, "producer_owner": owners[a],
+            "consumer_owner": owners[b], "producer_order": order[owners[a]], "consumer_order": order[owners[b]]})
+    if contract_rows:
+        raise ValueError("unexpected or reversed seam contract")
+    return _seal({"schema": SEAM_MANIFEST_SCHEMA, "binding": dict(binding),
+        "decomposition_fingerprint": decomposition["fingerprint"], "nodes": nodes, "seams": seams})
+
+
+def realized_seam_conformance(manifest, decomposition):
+    """Compare integrated scanner truth with the immutable Plan cut set."""
+    expected = {row["id"] for row in manifest["seams"]}
+    owners = {node: task["id"] for task in decomposition["tasks"] for node in task["nodes"]}
+    actual = {f"{row['producer']}->{row['consumer']}:{row['kind']}" for row in decomposition["edges"]
+        if owners[row["producer"]] != owners[row["consumer"]]}
+    missing, unexpected = sorted(expected - actual), sorted(actual - expected)
+    actual_nodes = sorted(owners)
+    if actual_nodes != manifest["nodes"]:
+        raise ValueError("realized seam conformance: missing or unexpected source nodes")
+    for seam in manifest["seams"]:
+        for side in ("producer", "consumer"):
+            files = sorted({path for component in decomposition["components"] if component["module"] == seam[side]
+                for path in component["files"]})
+            if files != seam[side + "_files"]:
+                raise ValueError("realized seam conformance: changed endpoint source span")
+    if missing or unexpected:
+        raise ValueError(f"realized seam conformance: missing={missing}, unexpected={unexpected}")
+    return _seal({"schema": REALIZED_CONFORMANCE_SCHEMA, "status": "conformant",
+        "binding": manifest["binding"], "manifest_fingerprint": manifest["fingerprint"],
+        "realized_decomposition_fingerprint": decomposition["fingerprint"],
+        "realized_source_tree": decomposition["source_tree"], "missing": missing, "unexpected": unexpected})
 EXPECTED_CRITERION_COUNT = 12
 EXPECTED_EDGE_IDS = tuple(f"W{number:02d}" for number in range(1, 33))
 EXPECTED_PRODUCER_COUNT = 18

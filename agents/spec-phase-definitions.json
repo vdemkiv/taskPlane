@@ -151,7 +151,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "9353a3d0462c01862b0470b082f500d90ada0f2fd1672473246ba4fa08c315da",
+    "fingerprint": "ab80b0dc9990f3505cf4a771d686259fb84a37bc5de1d7cd042187a66aaf7c7c",
     "gate": "human",
     "id": "plan",
     "model_tier": "inherit",
@@ -162,6 +162,24 @@
       {
         "artifact_class": "plan-task",
         "artifact_schema_version": "taskplane.plan-task/v1",
+        "cardinality": "one",
+        "required": true
+      },
+      {
+        "artifact_class": "source-coverage",
+        "artifact_schema_version": "taskplane.source-touchpoint-coverage/v1",
+        "cardinality": "one",
+        "required": true
+      },
+      {
+        "artifact_class": "decomposition",
+        "artifact_schema_version": "taskplane.dependency-decomposition/v1",
+        "cardinality": "one",
+        "required": true
+      },
+      {
+        "artifact_class": "seam-manifest",
+        "artifact_schema_version": "taskplane.cross-task-seam-manifest/v1",
         "cardinality": "one",
         "required": true
       }
@@ -216,6 +234,27 @@
         "knowledge_fingerprint_required": true,
         "knowledge_scope": [],
         "required": true
+      },
+      {
+        "artifact_class": "source-coverage",
+        "artifact_schema_version": "taskplane.source-touchpoint-coverage/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "decomposition",
+        "artifact_schema_version": "taskplane.dependency-decomposition/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "seam-manifest",
+        "artifact_schema_version": "taskplane.cross-task-seam-manifest/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
       }
     ],
     "domain_validator_refs": [
@@ -229,7 +268,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "c284eb01566143ca60026b4388cc4ecbca09ed110c63c45135eea5222f4db8b8",
+    "fingerprint": "f9d6e9878e0d82b8de5448623f6bb12d65e9a1413f45c96807cef611ed486903",
     "gate": "human",
     "id": "build",
     "model_tier": "inherit",
@@ -240,6 +279,12 @@
       {
         "artifact_class": "stage",
         "artifact_schema_version": "taskplane.stage/v1",
+        "cardinality": "one",
+        "required": true
+      },
+      {
+        "artifact_class": "realized-conformance",
+        "artifact_schema_version": "taskplane.realized-seam-conformance/v1",
         "cardinality": "one",
         "required": true
       }

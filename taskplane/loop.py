@@ -10708,7 +10708,9 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
     for relation, name in (("consumes", "consumed_artifact_schema_versions"), ("produces", "produced_artifact_schema_versions")):
         bindings[name] = [{key: row[key] for key in ("artifact_class", "artifact_schema_version")} for row in definition[relation]]
     paths = config["output_paths"].get(stage["stage_kind"])
-    if not isinstance(paths, dict) or set(paths) != {row["artifact_class"] for row in definition["produces"]}:
+    producer_owned = {"plan": {"source-coverage", "decomposition", "seam-manifest"},
+        "build": {"realized-conformance"}}.get(stage["stage_kind"], set())
+    if not isinstance(paths, dict) or set(paths) != ({row["artifact_class"] for row in definition["produces"]} - producer_owned):
         raise ValueError("phase output paths do not match declared outputs")
     # Enforce the same pre-existing contract that the native host will bind.
     allowed = contract.get("write_allow") or contract["coding"]["scope_paths"]
@@ -10877,12 +10879,13 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
             raw = _stage_loop_read_output_no_follow(output_root, relative, required=True, remaining_bytes=remaining)
             remaining -= len(raw)
             authored[artifact_class] = json.loads(raw)
-        if "plan-task" in authored:
+        if stage["stage_kind"] in {"plan", "build"}:
             package = consume_phase_handoff(artifacts, material["predecessor"], registry=registry,
                 phase_id=stage["stage_kind"], expected_authority_revision=stage["authority"]["authority_revision"],
                 expected_authority_fingerprint=stage["authority"]["authority_fingerprint"], expected_run_id=run_id,
                 expected_candidate_fingerprint=dispatch.bindings["candidate_fingerprint"])
-            authored["plan-task"] = seal_phase_plan_task(artifacts, package, load(ws), authored["plan-task"])
+            authored = produce_spec_phase_candidates(artifacts, definition, authored,
+                package=package, state=load(ws), workspace=ws)
         produced = store_spec_phase_outputs(artifacts, definition, authored)
         outputs = [artifact.projection() for artifact in produced]
     observed = design_host_transport.observe_phase_hook(tp, ws, contract, event,
@@ -11185,6 +11188,15 @@ def validate_spec_phase_artifact(value: Mapping[str, object]) -> dict:
         return test_strategy.validate_strategy(value)
     if schema == "taskplane.stage/v1":
         return stage_entities.validate_stage(value)
+    if schema in {"taskplane.source-touchpoint-coverage/v1", "taskplane.dependency-decomposition/v1",
+            "taskplane.cross-task-seam-manifest/v1", "taskplane.realized-seam-conformance/v1"}:
+        from taskplane import graph_decomposition, review_evidence
+        if schema == "taskplane.source-touchpoint-coverage/v1":
+            return graph_decomposition.require_complete_source_coverage(dict(value))
+        if value.get("fingerprint") != review_evidence.content_fingerprint(
+                {key: item for key, item in value.items() if key != "fingerprint"}):
+            raise ValueError("dependency artifact fingerprint is stale")
+        return _copy_json(value)
     if schema == "taskplane.requirement/v1":
         if not value.get("id") or not value.get("acceptance_criteria"):
             raise ValueError("requirement needs identity and acceptance criteria")
@@ -11227,7 +11239,7 @@ def store_spec_phase_outputs(store: object, definition: Mapping[str, object],
 
 
 def seal_phase_plan_task(store: object, package: PhasePackage,
-        state: Mapping[str, object], task: Mapping[str, object]) -> dict:
+        state: Mapping[str, object], task: Mapping[str, object], *, workspace: str | None = None) -> dict:
     """Plan-owned candidate producer using actual sealed Design outputs."""
     if package.store is not store:
         raise ValueError("Plan package artifact store differs")
@@ -11238,7 +11250,61 @@ def seal_phase_plan_task(store: object, package: PhasePackage,
     result["test_strategy_authority_receipt"] = _seal_task_test_strategy_authority(
         "", state, result, design_package=package)
     value = {"schema": "taskplane.plan-task/v1", "task": result}
+    if workspace is not None:
+        from taskplane import plan_topology, review_evidence
+        value["dependency_outputs"] = plan_topology.produce_dependency_plan(workspace,
+            binding={"run_id": package.run_id, "candidate_fingerprint": package.candidate_fingerprint,
+                "requirement_fingerprint": review_evidence.content_fingerprint(package.read("requirement")),
+                "design_fingerprint": state["design_fingerprint"],
+                "plan_fingerprint": review_evidence.content_fingerprint(result)},
+            seam_contracts=package.read("design").get("seam_contracts", []))
     return validate_spec_phase_artifact(value)
+
+
+def seal_phase_build_conformance(store: object, package: PhasePackage, workspace: str) -> dict:
+    """Build consumes actual Plan outputs and compares fresh integrated source."""
+    from taskplane import graph_decomposition, plan_topology, review_evidence, wiring_closure
+    if package.store is not store or package.phase_id != "build":
+        raise ValueError("Build requires its own sealed Plan package")
+    planned = package.read("plan-task")
+    for name, value in planned.get("dependency_outputs", {}).items():
+        if package.read(name) != value:
+            raise ValueError("Plan dependency output differs from sealed producer bytes")
+    if set(planned.get("dependency_outputs", {})) != {"source-coverage", "decomposition", "seam-manifest"}:
+        raise ValueError("Plan dependency producer outputs missing")
+    manifest = package.read("seam-manifest")
+    decomposition = package.read("decomposition")
+    coverage = graph_decomposition.require_complete_source_coverage(package.read("source-coverage"),
+        source_tree=decomposition["source_tree"])
+    if decomposition["coverage_fingerprint"] != coverage["fingerprint"] or \
+            manifest["decomposition_fingerprint"] != decomposition["fingerprint"] or \
+            manifest["binding"]["graph_fingerprint"] != decomposition["fingerprint"] or \
+            manifest["binding"]["source_tree"] != coverage["source_tree"] or \
+            manifest["binding"]["requirement_fingerprint"] != review_evidence.content_fingerprint(package.read("requirement")) or \
+            manifest["binding"]["design_fingerprint"] != review_evidence.content_fingerprint(package.read("design")):
+        raise ValueError("Build dependency provenance is stale")
+    expected = wiring_closure.build_seam_manifest(decomposition, binding=manifest["binding"],
+        contracts=package.read("design").get("seam_contracts", []))
+    if manifest != expected:
+        raise ValueError("Build seam manifest differs from dependency-derived Plan")
+    if manifest["binding"]["candidate_fingerprint"] != package.candidate_fingerprint or \
+            manifest["binding"]["run_id"] != package.run_id or \
+            manifest["binding"]["plan_fingerprint"] != review_evidence.content_fingerprint(planned["task"]):
+        raise ValueError("Build seam binding is stale")
+    graph = plan_topology._depgraph.scan(workspace, decompose=True)
+    realized = graph_decomposition.dependency_decomposition(graph)
+    return wiring_closure.realized_seam_conformance(manifest, realized)
+
+
+def produce_spec_phase_candidates(store, definition, authored, *, package, state, workspace):
+    """Shared production boundary for native collection and local adapter tests."""
+    result = _copy_json(authored)
+    if definition["id"] == "plan":
+        planned = seal_phase_plan_task(store, package, state, authored["plan-task"], workspace=workspace)
+        result = {"plan-task": planned, **planned["dependency_outputs"]}
+    elif definition["id"] == "build":
+        result["realized-conformance"] = seal_phase_build_conformance(store, package, workspace)
+    return result
 
 
 def _test_strategy_artifact(ws: str, reference: Mapping[str, object]) \

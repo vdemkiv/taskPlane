@@ -24,9 +24,8 @@ def _registry():
     return settings.load_phase_registry(rows,
         skills={row["skill_ref"]: (ROOT / row["skill_ref"]).read_bytes() for row in rows},
         validator_inventory={"taskplane.loop.validate_spec_phase_artifact": "spec-phase/v1"},
-        artifact_schemas={"requirement": "taskplane.requirement/v1", "design": "taskplane.design/v1",
-            "test-strategy": "taskplane.test-strategy/v1", "plan-task": "taskplane.plan-task/v1",
-            "stage": "taskplane.stage/v1"})
+        artifact_schemas={item["artifact_class"]: item["artifact_schema_version"]
+            for row in rows for relation in ("consumes", "produces") for item in row[relation]})
 
 
 def _strategy():
@@ -94,9 +93,8 @@ def _run(tmp_path, store, registry, phase, authored, predecessor=None, *, state=
         assert identity == "simulated-" + phase
         # The simulated host authors domain candidates. Production code seals
         # Plan authority and stores declared outputs before runtime collection.
-        candidates = authored
-        if phase == "plan":
-            candidates = {"plan-task": loop.seal_phase_plan_task(store, package, state, authored["plan-task"])}
+        candidates = loop.produce_spec_phase_candidates(store, definition, authored,
+            package=package, state=state, workspace=str(tmp_path / "source"))
         outputs = loop.store_spec_phase_outputs(store, definition, candidates)
         calls.append("observe")
         return agent_runtime.Observation("simulated-start-" + phase, (), "simulated-stop-" + phase, "effect_free", outputs)
@@ -116,13 +114,25 @@ def _run(tmp_path, store, registry, phase, authored, predecessor=None, *, state=
     return reference, result
 
 
-def _journey(tmp_path):
+def _journey(tmp_path, *, seam_selectors=None):
+    # Small real source inputs to the incumbent scanner, independent of the
+    # simulated host. No intermediate graph or seam receipt is authored here.
+    for directory, content in (("provider", "VALUE = 1\n"),
+            ("consumer", "from provider import value\nVALUE = 1\n")):
+        folder = tmp_path / "source" / directory
+        folder.mkdir(parents=True)
+        (folder / ("value.py" if directory == "provider" else "use.py")).write_text(content)
     store = review_evidence.ArtifactStore(str(tmp_path / "artifacts"))
     registry = _registry()
     strategy = _strategy()
     product, _ = _run(tmp_path, store, registry, "product", {"requirement": {
         "schema": "taskplane.requirement/v1", "id": "R-T11", "acceptance_criteria": ["Quality reaches fresh Build"]}})
     design = {"schema": "taskplane.design/v1", "requirement": "R-T11",
+        "seam_contracts": [{"producer": "provider", "consumer": "consumer", "kind": "imports",
+            "producer_symbol": "provider.value", "consumer_symbol": "consumer.use", "schema_version": "python-module/v1",
+            "cardinality": "one", "positive": (seam_selectors or [SELECTOR])[0],
+            "severed": (seam_selectors or [None,
+                "taskplane/tests/test_r0001_phase_agents_spec.py::test_severed_product_design_plan_binding_fails_independently"])[1]}],
         "acceptance_map": [{"criterion": "Quality reaches fresh Build", "tests": [SELECTOR]}],
         "test_strategy": {"authority": {"schema": "taskplane.design-test-strategy-reference/v1",
             "path": "design/test-strategy.json", "strategy_fingerprint": strategy["contract_fingerprint_sha256"]}}}
@@ -161,7 +171,8 @@ def test_definition_drives_stateless_product_design_plan(tmp_path, record_proper
         criterion_ids=authority["selection"]["criterion_ids"],
         changed_producer_ids=authority["selection"]["changed_producer_ids"], changed_paths=["taskplane/loop.py"])
     assert quality["selectors"] == [SELECTOR]
-    assert {artifact.artifact_class for artifact in package.artifacts} == {"requirement", "design", "test-strategy", "plan-task"}
+    assert {artifact.artifact_class for artifact in package.artifacts} == {"requirement", "design", "test-strategy", "plan-task",
+        "source-coverage", "decomposition", "seam-manifest"}
     assert stage_handoff.read_v2_manifest(store, design_ref, expected_authority_revision=1,
         expected_authority_fingerprint="f" * 64)["phase_result"] == result
     record_property("evidence_mode", "local-production-with-simulated-host-and-authority")
