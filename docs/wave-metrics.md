@@ -53,3 +53,36 @@ and eight active-delivery hours. A breach must have an explicit classification.
 Any unexplained breach or nonzero owned cleanup leak makes `signoff.ready`
 false. Every deliberate serialization is named with its reason. Pairwise-
 disjoint build work and CI cells remain parallel.
+
+## Inactive phase adapter and publication boundary
+
+The additive `retro.run_retro_phase` adapter consumes the current attempt
+telemetry, terminal evidence, and terminal-wave-metrics receipt from the
+existing artifact store. Their fingerprints enter the sealed dispatch package.
+It checks them before dispatch, inside the nonce fence, and before retaining
+the runtime result. Missing, altered, foreign, or stale telemetry leaves Retro
+unsealed. Unavailable provider usage remains unavailable; it cannot be filled
+with zero to manufacture a terminal seal. The adapter does not run the current
+Retro command, admit knowledge, or advance the loop.
+
+The additive publication grant in `release_evidence` binds the human approval
+identity and validity interval to the repository/run/candidate, source tree,
+impact, definitions, knowledge, authority, protected-main commit and evidence,
+exact package bytes, version/tag/channel/destination, final sign-off, and Retro
+predecessor. Its fingerprint is integrity, not human authentication. The trusted
+outside-model authority port must authenticate the exact current approval and
+its independent sign-off, protected-main, and native-evidence prerequisites.
+Earlier Design, Build, merge, or release-preparation approval is insufficient.
+
+Consumption rechecks the grant, package, Retro telemetry, and current binding
+inside the existing nonce fence. An immutable use record in the existing
+artifact store prevents reuse even after effect-free reconciliation. A failed
+or interrupted publication attempt remains uncertain and needs authoritative
+reconciliation; it does not authorize another attempt with the same grant.
+The external publication port must atomically honor the supplied expected
+bindings and exact bytes. This local fence makes no exactly-once remote claim.
+
+These APIs are inactive until the separately authorized shared-routing cutover
+(HG-E/T15C). The incumbent flow and default settings remain selected. Local
+tests use simulated host and human-authority ports and do not satisfy J0/J1/J6,
+independent Engineering, human sign-off, or actual publication.

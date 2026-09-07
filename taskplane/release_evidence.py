@@ -10,6 +10,7 @@ continuity only; none claims cryptographic actor authenticity.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import math
 import re
@@ -206,6 +207,145 @@ _PROTECTED_MAIN_GATE_FIELDS = frozenset(
 
 class ReleaseEvidenceError(ValueError):
     """Release evidence is incomplete, stale, ambiguous, or over-authorized."""
+
+
+PUBLICATION_GRANT_SCHEMA = "taskplane.publication-grant/v1"
+_PUBLICATION_BINDINGS = frozenset({
+    "run_id", "candidate_fingerprint", "candidate_sha", "source_tree", "impact_manifest_fingerprint",
+    "definition_set_fingerprint", "phase_definition_fingerprint", "knowledge_fingerprint",
+    "authority_fingerprint", "repository_id", "protected_main_commit", "package_sha256",
+    "version", "tag", "channel", "destination", "action", "final_signoff_fingerprint",
+    "protected_main_fingerprint", "predecessor_fingerprint",
+})
+_PUBLICATION_APPROVAL = frozenset({
+    "approval_id", "actor", "action", "binding_fingerprint", "issued_at", "expires_at",
+})
+
+
+def _publication_binding(value: Mapping[str, Any]) -> dict:
+    binding = dict(_closed(value, _PUBLICATION_BINDINGS, "publication binding"))
+    for name, item in binding.items():
+        if name.endswith("fingerprint") or name == "package_sha256":
+            _fingerprint(item, name)
+        elif name in {"candidate_sha", "source_tree", "protected_main_commit"}:
+            _source_sha(item, name)
+        elif len(_text(item, name)) > 512 or any(ord(char) < 32 for char in item):
+            raise ReleaseEvidenceError("publication binding text is invalid")
+    if binding["action"] not in {"publish", "publication", "tag"}:
+        raise ReleaseEvidenceError("publication grant cannot authorize another action")
+    if binding["candidate_sha"] != binding["protected_main_commit"]:
+        raise ReleaseEvidenceError("publication requires the exact protected-main candidate")
+    return binding
+
+
+def _publication_grant(value: Mapping[str, Any], *, now: float) -> dict:
+    fields = frozenset({"schema", "binding", "approval", "fingerprint"})
+    grant = dict(_closed(value, fields, "publication grant"))
+    if grant["schema"] != PUBLICATION_GRANT_SCHEMA:
+        raise ReleaseEvidenceError("publication grant schema is invalid")
+    _verify_seal(grant, fields, "publication grant")
+    binding = _publication_binding(grant["binding"])
+    approval = _closed(grant["approval"], _PUBLICATION_APPROVAL, "publication approval")
+    for name in ("approval_id", "actor", "action"):
+        _text(approval[name], name)
+    issued = _number(approval["issued_at"], "approval issued_at")
+    expires = _number(approval["expires_at"], "approval expires_at")
+    if not issued <= now < expires or approval["action"] != binding["action"] or \
+            approval["binding_fingerprint"] != content_fingerprint(binding):
+        raise ReleaseEvidenceError("publication approval is expired, substituted or outside scope")
+    return grant
+
+
+def _publication_nonce_binding(grant: Mapping[str, Any]) -> dict:
+    binding, approval = grant["binding"], grant["approval"]
+    # Stable human approval identity is the nonce operation identity. A changed
+    # request under that approval cannot acquire a fresh attempt or effect slot.
+    operation = "publication-" + content_fingerprint({
+        "repository_id": binding["repository_id"], "approval_id": approval["approval_id"]})
+    return {"run_id": binding["run_id"], "phase_id": "publication",
+        "attempt_id": operation, "operation_id": operation,
+        "candidate_fingerprint": binding["candidate_fingerprint"],
+        "definition_set_fingerprint": binding["definition_set_fingerprint"],
+        "phase_definition_fingerprint": binding["phase_definition_fingerprint"],
+        "sealed_package_fingerprint": grant["fingerprint"],
+        "knowledge_fingerprint": binding["knowledge_fingerprint"],
+        "authority_fingerprint": binding["authority_fingerprint"],
+        "host_kind": "publication-authority-port", "host_version": "v1",
+        "deadline": approval["expires_at"]}
+
+
+def issue_publication_grant(store, *, nonce_source, binding, approval, authority_check):
+    """Inactive composition for one explicit outside-model human approval.
+
+    The trusted composition root owns the nonce source and authority port.
+    ``authority_check`` authenticates the exact current human record and its
+    scoped final sign-off/protected-main/native-evidence predecessors. A model
+    mapping, a seal, or an earlier merge/Design approval is not that authority.
+    This function only retains approved bytes; it performs no publication.
+    """
+    grant = _seal({"schema": PUBLICATION_GRANT_SCHEMA,
+        "binding": _publication_binding(binding), "approval": dict(approval)})
+    _publication_grant(grant, now=nonce_source.clock.wall_time())
+    if authority_check(json.loads(canonical_json(grant))) is not True:
+        raise ReleaseEvidenceError("current human publication authority is required")
+    nonce_binding = _publication_nonce_binding(grant)
+    issued = nonce_source.issue(nonce_binding)
+    reference = store.put("publication-grant", grant)
+    return reference, issued
+
+
+def consume_publication_grant(*, store, nonce_source, grant_ref, issued,
+                              current_binding, authority_check, package,
+                              retro_ref, retro_inputs, publication):
+    """Fence a single publication attempt, refusing replay and all movement.
+
+    Callbacks are trusted host/authority ports, never agent tools. The current
+    binding must be read from incumbent authority, Git and release owners. The
+    publication port uses the supplied immutable bytes and exact destination;
+    it must enforce those same expected bindings atomically at its external
+    boundary. No exactly-once remote effect is claimed: any attempted callback
+    leaves the incumbent nonce uncertain and cannot be retried with this grant.
+    """
+    from taskplane import retro, taskplane_lite
+    if grant_ref is None or not isinstance(package, bytes):
+        raise ReleaseEvidenceError("publication grant and exact package bytes are required")
+    def check():
+        grant = _publication_grant(store.read(grant_ref), now=nonce_source.clock.wall_time())
+        binding = grant["binding"]
+        if _publication_binding(current_binding()) != binding:
+            raise ReleaseEvidenceError("publication destination or predecessor moved")
+        if hashlib.sha256(package).hexdigest() != binding["package_sha256"]:
+            raise ReleaseEvidenceError("publication package bytes changed")
+        report = retro.read_retro_phase(store, retro_ref, **retro_inputs)
+        result = report["runtime_result"]
+        if retro_ref["fingerprint"] != binding["predecessor_fingerprint"] or any(
+                result[field] != binding[field] for field in (
+                    "run_id", "candidate_fingerprint", "definition_set_fingerprint",
+                    "phase_definition_fingerprint", "knowledge_fingerprint", "authority_fingerprint")) or \
+                report["freshness"] != {name: binding[name] for name in (
+                    "candidate_sha", "source_tree", "impact_manifest_fingerprint")}:
+            raise ReleaseEvidenceError("publication Retro predecessor is stale or foreign")
+        if authority_check(json.loads(canonical_json(grant))) is not True:
+            raise ReleaseEvidenceError("current human publication authority is required")
+        return grant
+    grant = check()
+    def effect():
+        identity = content_fingerprint({"repository_id": grant["binding"]["repository_id"],
+            "approval_id": grant["approval"]["approval_id"]})
+        path = Path(store._path("publication-use", identity))
+        # The immutable use record survives even an effect-free reconciliation
+        # of the attempt. Reconciliation is never a new human publication grant.
+        with taskplane_lite.file_lock(str(path) + ".use"):
+            if path.exists() or path.is_symlink():
+                raise ReleaseEvidenceError("publication grant was already consumed")
+            current = check()  # re-read bytes, telemetry and authority inside fence
+            if current != grant:
+                raise ReleaseEvidenceError("publication grant changed at effect boundary")
+            store.put("publication-use", {"schema": "taskplane.publication-use/v1",
+                "grant_fingerprint": grant["fingerprint"], "operation_fingerprint": identity,
+                "outcome": "attempted-effect-uncertain"}, fingerprint=identity)
+            return publication(package, dict(current["binding"]))
+    return nonce_source.dispatch(issued, _publication_nonce_binding(grant), effect)
 
 
 def terminal_release_evidence_surface(
