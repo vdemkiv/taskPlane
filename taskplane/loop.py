@@ -9994,9 +9994,28 @@ def _collect_zero_lens_evaluate_before_guidance(
 
 
 def _acceptance_evidence_errors(ws: str, state: dict, task: dict,
-                                verdict: dict) -> list:
-    """Static DoD evidence check, safe to compose with runtime guidance."""
+                                verdict: dict, *, phase_package=None) -> list:
+    """Candidate-bound DoD evidence check shared with runtime guidance."""
     errors = []
+    if phase_package is not None:
+        from taskplane import plan_topology
+        planned = _validated_phase_contribution_plan(phase_package, state)
+        return plan_topology.acceptance_evidence_errors(planned["acceptance"], verdict,
+            read=phase_package.store.read)
+    # A native aggregate derives its obligations from its retained predecessor
+    # chain. Omitting structured proof cannot fall back to nonempty prose.
+    try:
+        aggregate = _current_phase_contribution_package(ws, state)
+        if aggregate is not None:
+            package, build_handoff = aggregate
+            references = [json.loads(row.get("evidence", ""))["acceptance_evidence"]
+                for row in verdict.get("criteria", [])]
+            if not references or any(row != references[0] for row in references):
+                raise ValueError("aggregate criteria require one exact acceptance evidence reference")
+            accept_phase_contributions(package, state, package.store.read(references[0]),
+                build_handoff=build_handoff)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        errors.append("aggregate contribution acceptance failed: " + str(exc))
     expected_criteria = _criteria_for(ws, state, task)
     rows = verdict.get("criteria") or []
     if not isinstance(rows, list):
@@ -11206,12 +11225,17 @@ def validate_spec_phase_artifact(value: Mapping[str, object]) -> dict:
         if not isinstance(value.get("test_strategy"), Mapping):
             raise ValueError("Design requires its selected strategy")
     elif schema == "taskplane.plan-task/v1":
-        task = value.get("task")
-        if not isinstance(task, Mapping) or not task.get("test_strategy_authority_receipt"):
-            raise ValueError("Plan output requires sealed Design quality authority")
-        errors = tp.plan_test_command_errors(task.get("tests"))
-        if errors:
-            raise ValueError("; ".join(errors))
+        if "plan" in value and not isinstance(value["plan"], Mapping):
+            raise ValueError("Plan output requires a plan object")
+        tasks = value["plan"].get("tasks") if "plan" in value else [value.get("task")]
+        if not isinstance(tasks, list) or not tasks:
+            raise ValueError("Plan output requires tasks")
+        for task in tasks:
+            if not isinstance(task, Mapping) or not task.get("test_strategy_authority_receipt"):
+                raise ValueError("Plan output requires sealed Design quality authority")
+            errors = tp.plan_test_command_errors(task.get("tests"))
+            if errors:
+                raise ValueError("; ".join(errors))
     else:
         raise ValueError("unsupported specification artifact schema")
     return _copy_json(value)
@@ -11246,12 +11270,29 @@ def seal_phase_plan_task(store: object, package: PhasePackage,
     if not any(row["artifact_class"] == "plan-task"
                for row in package.registry.admit(package.phase_id, ()).to_dict()["produces"]):
         raise ValueError("phase definition cannot produce Plan authority")
+    from taskplane import plan_topology, review_evidence
     result = _copy_json(task)
-    result["test_strategy_authority_receipt"] = _seal_task_test_strategy_authority(
-        "", state, result, design_package=package)
-    value = {"schema": "taskplane.plan-task/v1", "task": result}
+    if "tasks" in result:
+        if not isinstance(result["tasks"], list) or not result["tasks"]:
+            raise ValueError("Plan requires a nonempty task inventory")
+        for row in result["tasks"]:
+            if not isinstance(row, dict):
+                raise ValueError("Plan task must be an object")
+            row["test_strategy_authority_receipt"] = _seal_task_test_strategy_authority(
+                "", state, row, design_package=package)
+        design = package.read("design")
+        binding = {"run_id": package.run_id, "candidate_fingerprint": package.candidate_fingerprint,
+            "plan_fingerprint": review_evidence.content_fingerprint(result),
+            "design_fingerprint": state["design_fingerprint"]}
+        value = {"schema": "taskplane.plan-task/v1", "plan": result,
+            "traceability": plan_topology.build_plan_traceability(design, result),
+            "owners": plan_topology.build_plan_owner_inventory(design, result),
+            "acceptance": plan_topology.build_plan_acceptance(design, result, binding=binding)}
+    else:
+        result["test_strategy_authority_receipt"] = _seal_task_test_strategy_authority(
+            "", state, result, design_package=package)
+        value = {"schema": "taskplane.plan-task/v1", "task": result}
     if workspace is not None:
-        from taskplane import plan_topology, review_evidence
         value["dependency_outputs"] = plan_topology.produce_dependency_plan(workspace,
             binding={"run_id": package.run_id, "candidate_fingerprint": package.candidate_fingerprint,
                 "requirement_fingerprint": review_evidence.content_fingerprint(package.read("requirement")),
@@ -11261,12 +11302,97 @@ def seal_phase_plan_task(store: object, package: PhasePackage,
     return validate_spec_phase_artifact(value)
 
 
+def _validated_phase_contribution_plan(package, state):
+    from taskplane import plan_topology, review_evidence
+    planned = package.read("plan-task")
+    plan = planned["plan"]
+    for task in plan["tasks"]:
+        _validated_task_test_strategy_authority("", state, task, design_package=package)
+    design = package.read("design")
+    binding = {"run_id": package.run_id, "candidate_fingerprint": package.candidate_fingerprint,
+        "plan_fingerprint": review_evidence.content_fingerprint(plan),
+        "design_fingerprint": state["design_fingerprint"]}
+    if planned["traceability"] != plan_topology.build_plan_traceability(design, plan) or \
+            planned["owners"] != plan_topology.build_plan_owner_inventory(design, plan) or \
+            planned["acceptance"] != plan_topology.build_plan_acceptance(design, plan, binding=binding):
+        raise ValueError("Plan contribution/proof lineage differs from its actual producer")
+    return planned
+
+
+def _current_phase_contribution_package(ws, state):
+    """Resolve retained Plan/Build lineage for the existing aggregate DoD."""
+    from taskplane import stage_handoff
+    context = _phase_bridge_context(ws, state)
+    if context is None or context["stage"]["stage_kind"] not in {"evaluate", "engineering"}:
+        return None
+    authority = context["stage"]["authority"]
+    options = {"expected_authority_revision": authority["authority_revision"],
+        "expected_authority_fingerprint": authority["authority_fingerprint"]}
+    reference = context["stage"]["input_manifest_ref"]
+    built = None
+    multi = False
+    for _ in range(3):  # Engineering -> Evaluate -> Build -> Plan, no broad walk.
+        manifest = stage_handoff.read_v2_manifest(context["artifacts"], reference, **options)
+        for artifact in manifest["produced_artifacts"] + manifest["inherited_artifacts"]:
+            if artifact["artifact_class"] == "plan-task":
+                multi = "plan" in context["artifacts"].read(artifact["reference"])
+        if not multi:
+            return None
+        phase = manifest["phase_result"]["phase_id"]
+        if phase == "build":
+            built = reference
+        if phase == "plan":
+            if built is None:
+                raise ValueError("aggregate contribution acceptance lacks Build completion")
+            package = consume_phase_handoff(context["artifacts"], reference,
+                registry=context["registry"], phase_id="build", **options,
+                expected_run_id=context["run_id"],
+                expected_candidate_fingerprint=context["configuration"]["candidate_fingerprint"])
+            return package, built
+        previous = [row for row in manifest["evidence_references"] if row["kind"] == "stage-handoff"]
+        if len(previous) != 1:
+            raise ValueError("aggregate contribution predecessor is missing or ambiguous")
+        reference = previous[0]
+    raise ValueError("aggregate contribution Plan lineage exceeds its phase boundary")
+
+
+def accept_phase_contributions(package, state, evidence, *, build_handoff):
+    """Aggregate current Plan obligations through the incumbent acceptance check."""
+    if package.phase_id != "build":
+        raise ValueError("acceptance requires the current Build input package")
+    from taskplane import stage_handoff, review_evidence
+    built = stage_handoff.read_v2_manifest(package.store, build_handoff,
+        expected_authority_revision=package.authority_revision,
+        expected_authority_fingerprint=package.authority_fingerprint)
+    result = built["phase_result"]
+    _phase_result_definition(package.registry, result)
+    if result["phase_id"] != "build" or result["run_id"] != package.run_id or \
+            result["candidate_fingerprint"] != package.candidate_fingerprint or \
+            package.reference["fingerprint"] not in {row["fingerprint"] for row in built["evidence_references"]}:
+        raise ValueError("acceptance Build/Plan candidate binding is stale")
+    conformance = [package.store.read(row["reference"]) for row in built["produced_artifacts"]
+        if row["artifact_class"] == "realized-conformance"]
+    if len(conformance) != 1 or conformance[0]["status"] != "conformant":
+        raise ValueError("acceptance requires current Build conformance")
+    errors = _acceptance_evidence_errors("", state, {}, evidence, phase_package=package)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return {"status": "accepted", "plan_handoff": package.reference["fingerprint"],
+        "build_handoff": build_handoff["fingerprint"],
+        "candidate_fingerprint": package.candidate_fingerprint,
+        "evidence_reference": package.store.put("acceptance-evidence", dict(evidence)),
+        "evidence_fingerprint": review_evidence.content_fingerprint(evidence)}
+
+
 def seal_phase_build_conformance(store: object, package: PhasePackage, workspace: str) -> dict:
     """Build consumes actual Plan outputs and compares fresh integrated source."""
     from taskplane import graph_decomposition, plan_topology, review_evidence, wiring_closure
     if package.store is not store or package.phase_id != "build":
         raise ValueError("Build requires its own sealed Plan package")
     planned = package.read("plan-task")
+    if "plan" in planned:
+        _validated_phase_contribution_plan(package, {"design_required": True, "run_id": package.run_id,
+            "design_fingerprint": review_evidence.content_fingerprint(package.read("design"))})
     for name, value in planned.get("dependency_outputs", {}).items():
         if package.read(name) != value:
             raise ValueError("Plan dependency output differs from sealed producer bytes")
@@ -11289,7 +11415,7 @@ def seal_phase_build_conformance(store: object, package: PhasePackage, workspace
         raise ValueError("Build seam manifest differs from dependency-derived Plan")
     if manifest["binding"]["candidate_fingerprint"] != package.candidate_fingerprint or \
             manifest["binding"]["run_id"] != package.run_id or \
-            manifest["binding"]["plan_fingerprint"] != review_evidence.content_fingerprint(planned["task"]):
+            manifest["binding"]["plan_fingerprint"] != review_evidence.content_fingerprint(planned.get("plan", planned.get("task"))):
         raise ValueError("Build seam binding is stale")
     graph = plan_topology._depgraph.scan(workspace, decompose=True)
     realized = graph_decomposition.dependency_decomposition(graph)

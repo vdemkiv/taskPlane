@@ -51,7 +51,7 @@ def _authority():
             "authority_schema": "taskplane.consolidated-authorization/v1", "revision": 1, "fingerprint": "f" * 64}}
 
 
-def _run(tmp_path, store, registry, phase, authored, predecessor=None, *, state=None):
+def _run(tmp_path, store, registry, phase, authored, predecessor=None, *, state=None, driver=None):
     definition = registry.admit(phase, ()).to_dict()
     package = () if predecessor is None else loop.consume_phase_handoff(
         store, predecessor, registry=registry, phase_id=phase, expected_authority_revision=1,
@@ -104,7 +104,7 @@ def _run(tmp_path, store, registry, phase, authored, predecessor=None, *, state=
         lambda: {"tokens": 0, "wall_ms": 0, "attempts": 0, "corrections": 0},
         lambda reason: {"kind": "hold" if reason else "evaluate", "phase_id": phase})
     dispatch = agent_runtime.Dispatch(bindings, artifacts, knowledge, issued, binding, envelope)
-    result = runtime.run(dispatch)
+    result = runtime.run(dispatch) if driver is None else driver(runtime, dispatch)
     assert result["status"] == "accepted", result
     assert calls == ["launch", "observe"]
     reference = loop.produce_phase_handoff(store, registry=registry, phase_result=result, dispatch=dispatch,
@@ -114,7 +114,7 @@ def _run(tmp_path, store, registry, phase, authored, predecessor=None, *, state=
     return reference, result
 
 
-def _journey(tmp_path, *, seam_selectors=None):
+def _journey(tmp_path, *, seam_selectors=None, driver=None):
     # Small real source inputs to the incumbent scanner, independent of the
     # simulated host. No intermediate graph or seam receipt is authored here.
     for directory, content in (("provider", "VALUE = 1\n"),
@@ -126,7 +126,7 @@ def _journey(tmp_path, *, seam_selectors=None):
     registry = _registry()
     strategy = _strategy()
     product, _ = _run(tmp_path, store, registry, "product", {"requirement": {
-        "schema": "taskplane.requirement/v1", "id": "R-T11", "acceptance_criteria": ["Quality reaches fresh Build"]}})
+        "schema": "taskplane.requirement/v1", "id": "R-T11", "acceptance_criteria": ["Quality reaches fresh Build"]}}, driver=driver)
     design = {"schema": "taskplane.design/v1", "requirement": "R-T11",
         "seam_contracts": [{"producer": "provider", "consumer": "consumer", "kind": "imports",
             "producer_symbol": "provider.value", "consumer_symbol": "consumer.use", "schema_version": "python-module/v1",
@@ -137,14 +137,14 @@ def _journey(tmp_path, *, seam_selectors=None):
         "test_strategy": {"authority": {"schema": "taskplane.design-test-strategy-reference/v1",
             "path": "design/test-strategy.json", "strategy_fingerprint": strategy["contract_fingerprint_sha256"]}}}
     state = {"run_id": "run-t11", "design_required": True, "design_fingerprint": review_evidence.content_fingerprint(design)}
-    design_ref, result = _run(tmp_path, store, registry, "design", {"design": design, "test-strategy": strategy}, product, state=state)
+    design_ref, result = _run(tmp_path, store, registry, "design", {"design": design, "test-strategy": strategy}, product, state=state, driver=driver)
     task = {"id": "T11", "tests": "python3 -m pytest -q " + SELECTOR,
         "criteria": ["Quality reaches fresh Build"], "acceptance_refs": ["Quality reaches fresh Build"],
         "test_contract": {"changed_producers": ["taskplane/loop.py"]},
         "test_strategy_authority": {"schema": "taskplane.plan-test-strategy-reference/v1",
             "path": "design/test-strategy.json", "strategy_fingerprint": strategy["contract_fingerprint_sha256"],
             "criterion_ids": ["AC-T11"], "changed_producer_ids": ["spec-package"]}}
-    plan_ref, _ = _run(tmp_path, store, registry, "plan", {"plan-task": task}, design_ref, state=state)
+    plan_ref, _ = _run(tmp_path, store, registry, "plan", {"plan-task": task}, design_ref, state=state, driver=driver)
     return store, registry, state, design_ref, plan_ref, result
 
 

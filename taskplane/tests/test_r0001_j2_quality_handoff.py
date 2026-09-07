@@ -1,7 +1,7 @@
 """J2 actual package producers, with explicitly simulated host/authority inputs.
 
-No predecessor runtime is available to Build. This does not establish J1/J6
-native execution. The simulated-substitution native claim remains unverified.
+No predecessor runtime is available to Build. Substitution is refused by the
+same immutable package reader; this does not establish J1/J6 native execution.
 """
 from pathlib import Path
 
@@ -75,18 +75,23 @@ def test_fresh_design_package_reaches_plan_and_build_through_public_boundary(tmp
     record_property("build_handoff", build_ref["fingerprint"])
 
 
-@pytest.mark.parametrize("case", ["removed_strategy", "altered_output", "missing_quality_authority"])
+@pytest.mark.parametrize("case", ["removed_strategy", "altered_output", "missing_quality_authority", "simulated_substitution"])
 def test_severed_design_artifact_fails_the_same_plan_build_connection(tmp_path, record_property, case):
     store, registry, state, _, plan_ref, _, _, _, _ = _connection(tmp_path)
     package, quality, positive = _fresh_build_inputs(store, registry, state, plan_ref, tmp_path / "source")
     baseline = package.manifest()
     artifact_class = {"removed_strategy": "test-strategy", "altered_output": "design",
-        "missing_quality_authority": "plan-task"}[case]
-    ref = next(row.reference for row in package.artifacts if row.artifact_class == artifact_class)
+        "missing_quality_authority": "plan-task", "simulated_substitution": "stage-handoff"}[case]
+    ref = plan_ref if case == "simulated_substitution" else next(row.reference for row in package.artifacts if row.artifact_class == artifact_class)
     path = Path(store.root) / ref["kind"] / (ref["fingerprint"] + ".json")
     original = path.read_bytes()
     try:
-        if case == "altered_output":
+        if case == "simulated_substitution":
+            # Attempt to relabel an actual simulated producer as a native host.
+            # The original handoff remains the authoritative reference.
+            assert b"simulated:local-test" in original
+            path.write_bytes(original.replace(b"simulated:local-test", b"codex:native"))
+        elif case == "altered_output":
             path.write_bytes(original + b" ")
         else:
             path.unlink()

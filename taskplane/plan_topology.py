@@ -223,6 +223,70 @@ def build_plan_traceability(
     return material
 
 
+def build_plan_acceptance(design: Mapping[str, Any], plan: Mapping[str, Any],
+        *, binding: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive exact task and joint proof obligations from the existing owners."""
+    trace = build_plan_traceability(design, plan)
+    owners = build_plan_owner_inventory(design, plan)
+    criteria = {row["criterion_id"]: row for row in design["acceptance_map"]}
+    contributions, obligations = [], []
+    for task in plan["tasks"]:
+        receipt = task.get("test_strategy_authority_receipt") or {}
+        selected = (receipt.get("selection") or {}).get("selectors", [])
+        for criterion in trace["tasks"][task["id"]]["criteria"]:
+            contribution = {"task": task["id"], "criterion": criterion}
+            contributions.append(contribution)
+            selectors = [item for item in criteria[criterion]["tests"] if item in selected]
+            if not selectors:
+                raise PlanTopologyError("contribution lacks an exact approved proof")
+            for selector in selectors:
+                obligations.append({"kind": "task", **contribution,
+                    "selector": selector, "command": task["tests"]})
+    for journey_id, journey in trace["journeys"].items():
+        for selector in (journey["positive"], journey["severed"]):
+            obligations.append({"kind": "joint", "journey": journey_id,
+                "criteria": journey["criteria"], "owner": journey["owner"],
+                "selector": selector, "command": "python3 -m pytest -q " + selector})
+    for row in obligations:
+        row["id"] = content_fingerprint(row)
+    material = {"schema": "taskplane.acceptance-evidence/v1", "binding": dict(binding),
+        "traceability_fingerprint": trace["fingerprint"],
+        "owner_inventory_fingerprint": owners["fingerprint"],
+        "contributions": contributions, "obligations": obligations}
+    material["fingerprint"] = content_fingerprint(material)
+    return material
+
+
+def acceptance_evidence_errors(contract: Mapping[str, Any], evidence: Mapping[str, Any],
+        *, read: Any) -> list[str]:
+    """Read exact immutable observations; task completion cannot accept a criterion."""
+    errors = []
+    if evidence.get("schema") != "taskplane.acceptance-evidence/v1" or evidence.get("binding") != contract["binding"]:
+        errors.append("acceptance binding is missing or stale")
+    if evidence.get("contributions") != contract["contributions"]:
+        errors.append("required contribution inventory differs")
+    proofs = evidence.get("proofs")
+    if not isinstance(proofs, list):
+        return errors + ["required proof inventory is missing"]
+    by_id = {row.get("id"): row for row in proofs if isinstance(row, dict)}
+    expected = {row["id"] for row in contract["obligations"]}
+    if set(by_id) != expected or len(by_id) != len(proofs):
+        errors.append("required proof inventory differs")
+    for obligation in contract["obligations"]:
+        row = by_id.get(obligation["id"], {})
+        try:
+            observation = read(row["reference"])
+            if observation.get("schema") != "taskplane.acceptance-proof/v1" or \
+                    observation.get("obligation") != obligation or \
+                    observation.get("binding") != contract["binding"] or \
+                    type(observation.get("returncode")) is not int or observation["returncode"] != 0 or \
+                    observation.get("evidence_mode") not in {"real", "simulated"} or not observation.get("output"):
+                raise ValueError("proof observation differs")
+        except (KeyError, ValueError, OSError, TypeError):
+            errors.append("required proof is missing or stale: " + obligation["id"])
+    return errors
+
+
 def _unique_authorities(rows: Mapping[str, str], label: str) -> None:
     reverse: dict[str, list[str]] = {}
     for identity, owner in rows.items():
