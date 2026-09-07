@@ -20,6 +20,7 @@ import zipfile
 import pytest
 
 from scripts import package_openai
+from taskplane import loop, requirements, review_evidence, stage_migration
 
 
 REGISTRY = "agents/spec-phase-definitions.json"
@@ -100,3 +101,141 @@ def test_supporting_package_preserves_explicit_historical_surface_override(
         release_surface_files=(),
         canonical_authority_files=(),
     )
+
+
+def _supporting_pristine_phase_run(tmp_path, monkeypatch):
+    """Public producers with simulated source/authority; no stage or host event seed."""
+    from taskplane.tests.test_r0001_phase_agents_spec import _registry
+    from taskplane.tests.test_stage_cross_host import (
+        _real_pristine_run, _record_bootstrap_requirement,
+    )
+
+    workspace, store, initial = _real_pristine_run(tmp_path)
+    ws = str(workspace)
+    requirement = _record_bootstrap_requirement(workspace)
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    initialized = loop.init(
+        ws, "supporting first-dispatch regression", requirement_id=requirement["id"],
+        by="human:simulated",
+    )
+    assert "error" not in initialized, initialized
+    authority = initialized["_stage_native_root_authority"]
+    artifacts = review_evidence.ArtifactStore(ws)
+    configuration = {
+        "definition_source": REGISTRY,
+        "definition_set_fingerprint": _registry().definition_set_fingerprint,
+        "knowledge_reference": artifacts.put("phase-knowledge", {"facts": []}),
+        "candidate_fingerprint": review_evidence.content_fingerprint(
+            {"revision": authority["target_revision"], "evidence_mode": "simulated"}
+        ),
+        "target_revision": authority["target_revision"],
+        "host_kind": "simulated", "host_version": "supporting-local-test",
+        "output_paths": {"product": {"requirement": "specs/requirement.json"}},
+    }
+
+    def authorize(current):
+        assert current["run_id"] == authority["run_id"]
+        assert loop._stage_native_init_authority(
+            ws, requirement["id"], "human:simulated"
+        ) == authority
+
+    stage_migration.change_phase_routing(
+        store, initial["run_id"], owner="agent-runtime", configuration=configuration,
+        expected_previous=None, expected_revision=initial["revision"],
+        operation_id="supporting-enable-phase-runtime", validate_authority=authorize,
+    )
+    before = store.load(initial["run_id"])
+    assert before["schema"] == "taskplane.run/v3"
+    assert not before.get("stage_heads")
+    assert not before.get("stage_operations")
+    return ws, store, initial["run_id"], requirement
+
+
+def test_supporting_pristine_init_next_prepares_once_and_picks_up_pending(
+    tmp_path, monkeypatch, record_property
+):
+    """Actual init/next and preparation; no native launch/terminal is simulated."""
+    ws, store, run_id, _ = _supporting_pristine_phase_run(tmp_path, monkeypatch)
+    first = loop.next_action(ws)
+    assert "error" not in first, first
+    assert first["phase_runtime"]["status"] == "pending"
+    manifest = store.load(run_id)
+    root_id = loop.load(ws)["_stage_run_binding"]["root_stage_id"]
+    assert manifest["active_stage_projection"]["active_stage_ids"] == [root_id]
+    assert sorted(row["operation"] for row in manifest["stage_operations"].values()) == [
+        "resume_stage", "start_stage",
+    ]
+    preparations = [row for row in stage_migration.phase_records(manifest).values()
+                    if row["operation"] == "phase_prepare"]
+    assert len(preparations) == 1
+    assert first["phase_runtime"]["reference"] == preparations[0]["result"]["reference"]
+
+    pending = loop.next_action(ws)
+    assert pending["phase_runtime"]["reference"] == first["phase_runtime"]["reference"]
+    assert pending["phase_runtime"]["operation_id"] == first["phase_runtime"]["operation_id"]
+    assert pending["phase_runtime"]["status"] == "pending"
+    assert "task_name" not in pending  # One dispatch request, no second launch request.
+    assert loop.next_action(ws)["phase_runtime"] == pending["phase_runtime"]
+    # Pickup keeps precedence over a new requirement attachment.
+    assert loop.next_action(ws, rid="R-9999")["phase_runtime"] == pending["phase_runtime"]
+    assert store.load(run_id) == manifest
+    record_property("evidence_mode", "supporting-production-init-next-with-simulated-source-and-authority")
+    record_property("native_host_execution", "not-performed")
+
+
+@pytest.mark.parametrize("change", ["session", "requirement"])
+def test_supporting_pristine_next_rejects_changed_authority_before_effects(
+    tmp_path, monkeypatch, record_property, change
+):
+    ws, store, run_id, requirement = _supporting_pristine_phase_run(tmp_path, monkeypatch)
+    before = store.load(run_id)
+    if change == "session":
+        monkeypatch.setenv("TASKPLANE_SESSION_ID", "foreign-simulated-session")
+    else:
+        requirements.amend_requirement(ws, requirement["id"],
+            acceptance=["changed supporting requirement must refuse bootstrap"])
+    refused = loop.next_action(ws)
+    assert "stage-native root bootstrap failed closed" in refused["error"]
+    assert f"{change} changed" in refused["error"]
+    assert "task_name" not in refused
+    assert "phase_runtime" not in refused
+    assert store.load(run_id) == before
+    record_property("evidence_mode", "supporting-production-init-next-with-simulated-source-and-authority")
+
+
+def test_supporting_pristine_next_recovers_committed_root_before_pending_lookup(
+    tmp_path, monkeypatch, record_property
+):
+    """Sever the singleton binding write after the actual lifecycle commit."""
+    ws, store, run_id, _ = _supporting_pristine_phase_run(tmp_path, monkeypatch)
+    persist = loop._persist_stage_run_binding
+
+    def interrupted(*args, **kwargs):
+        raise OSError("supporting interruption after root commit")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(loop, "_persist_stage_run_binding", interrupted)
+        refused = loop.next_action(ws)
+    assert "supporting interruption after root commit" in refused["error"]
+    committed = store.load(run_id)
+    assert len(committed["stage_operations"]) == 1
+    assert not any(row["operation"] == "phase_prepare"
+                   for row in stage_migration.phase_records(committed).values())
+    assert loop._persist_stage_run_binding is persist
+
+    recovered = loop.next_action(ws)
+    assert "error" not in recovered, recovered
+    assert recovered["phase_runtime"]["status"] == "pending"
+    manifest = store.load(run_id)
+    assert {key: manifest["stage_operations"][key]
+            for key in committed["stage_operations"]} == committed["stage_operations"]
+    assert sorted(row["operation"] for row in manifest["stage_operations"].values()) == [
+        "resume_stage", "start_stage",
+    ]
+    assert manifest["stage_heads"] == committed["stage_heads"]
+    pending = loop.next_action(ws)
+    assert pending["phase_runtime"]["reference"] == recovered["phase_runtime"]["reference"]
+    assert "task_name" not in pending
+    assert store.load(run_id) == manifest
+    record_property("evidence_mode", "supporting-production-init-next-with-simulated-source-and-authority")

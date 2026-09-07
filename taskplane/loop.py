@@ -7876,6 +7876,17 @@ def next_action(
     state = load(ws)
     if state is None:
         return {"error": "no active loop — run `tp.py loop init` first"}
+    # Pending pickup resolves the current stage, so a pristine native run must
+    # first commit (or recover) its init-authorized root.
+    try:
+        _stage_bootstrap_pristine_root(ws, state)
+    except Exception as exc:
+        return {"error": "stage-native root bootstrap failed closed: "
+                f"{exc.__class__.__name__}: {exc}",
+                "step": state.get("step")}
+    state = load(ws)
+    if state is None:
+        return {"error": "no active loop — run `tp.py loop init` first"}
     try:
         pending_phase = _phase_bridge_pending(ws, state)
         if pending_phase is not None:
@@ -7897,13 +7908,6 @@ def next_action(
             return {"error": "requirement attach failed",
                     "blockers": attach_errors}
         state = load(ws)
-    try:
-        _stage_bootstrap_pristine_root(ws, state)
-    except Exception as exc:
-        return {"error": "stage-native root bootstrap failed closed: "
-                f"{exc.__class__.__name__}: {exc}",
-                "step": state.get("step")}
-    state = load(ws)
     if state is None:
         return {"error": "no active loop — run `tp.py loop init` first"}
     step = state["step"]
