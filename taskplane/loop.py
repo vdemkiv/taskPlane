@@ -11671,10 +11671,9 @@ class PhasePackage:
 
     @property
     def artifacts(self) -> tuple:
-        if __package__:
-            from . import agent_runtime
-        else:
-            import agent_runtime
+        # The direct CLI's flat loop and the native runtime share one typed
+        # artifact identity, not distinct dataclasses with identical fields.
+        from taskplane import agent_runtime
 
         value = self.manifest()
         rows = value["produced_artifacts"] + value["inherited_artifacts"]

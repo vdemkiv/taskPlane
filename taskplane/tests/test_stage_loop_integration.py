@@ -370,6 +370,24 @@ def test_phase_plan_consumes_top_level_design_strategy_and_distinct_approval_dom
     assert package.read("plan-task")["task"]["test_strategy_authority_receipt"]["design_fingerprint"] == state["design_fingerprint"]
 
 
+def test_flat_script_handoff_uses_canonical_runtime_artifacts(tmp_path, monkeypatch):
+    import importlib
+    import sys
+    from taskplane.tests import test_r0001_phase_agents_spec as spec
+    monkeypatch.syspath_prepend(str(Path(loop.__file__).parent))
+    monkeypatch.delitem(sys.modules, "loop", raising=False)
+    flat = importlib.import_module("loop")
+    assert flat is not loop and flat.__package__ == ""
+    store, registry, state, _, plan, _ = spec._journey(tmp_path)
+    package, _ = spec._consume(store, registry, state, plan)
+    restored = flat.consume_phase_handoff(store, plan, registry=registry, phase_id="build",
+        expected_authority_revision=package.authority_revision,
+        expected_authority_fingerprint=package.authority_fingerprint,
+        expected_run_id=package.run_id, expected_candidate_fingerprint=package.candidate_fingerprint)
+    assert [row.projection() for row in restored.artifacts] == [row.projection() for row in package.artifacts]
+    assert restored.artifacts == package.artifacts
+
+
 @pytest.mark.parametrize("case", ["one-owner", "missing-cross-task-contract", "ambiguous-owner"])
 def test_dependency_plan_uses_actual_scoped_ownership(tmp_path, case):
     from taskplane import plan_topology
@@ -402,7 +420,8 @@ def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop
     from datetime import datetime, timezone
     from types import SimpleNamespace
     import sys
-    from taskplane import tp as cli, design_host_transport
+    import runpy
+    from taskplane import design_host_transport
     from taskplane.tests.test_r0001_phase_cutover import _emit_host_hook
     from taskplane.tests.test_r0001_phase_agents_spec import SELECTOR, _strategy
     ws, store, run_id, artifacts, design_completion = collected_zero_lens_design
@@ -456,10 +475,19 @@ def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop
     destination.write_text(json.dumps(plan, sort_keys=True, indent=4) + "\n")
     def no_host_effect(*args, **kwargs): pytest.fail("current validation must not dispatch or replay Stop")
     monkeypatch.setattr(design_host_transport, "observe_phase_hook", no_host_effect)
-    monkeypatch.setitem(sys.modules, "loop", loop)
+    # Execute the real script entry, retaining its flat ``import loop``.
+    # Aliasing that module to the package hides cross-module dataclass bugs.
+    monkeypatch.syspath_prepend(str(Path(loop.__file__).parent))
+    monkeypatch.delitem(sys.modules, "loop", raising=False)
     capsys.readouterr()
     args = SimpleNamespace(workspace=ws, loop_action="resolve", decision="reconcile", phase_operation=action["phase_runtime"]["operation_id"])
-    return_code = cli.cmd_loop(args)
+    script = str(Path(loop.__file__).with_name("tp.py"))
+    monkeypatch.setattr(sys, "argv", [script, "loop", "--workspace", ws, "resolve", "reconcile",
+        "--phase-operation", args.phase_operation])
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_path(script, run_name="__main__")
+    return_code = exited.value.code
+    assert sys.modules["loop"] is not loop and sys.modules["loop"].__package__ == ""
     recovered = json.loads(capsys.readouterr().out)
     original_impact = artifacts.read(material["impact_reference"])
     _, current_impact = loop._phase_bridge_freshness(ws, material["signing_scope"])
