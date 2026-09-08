@@ -8621,9 +8621,8 @@ def next_action(
                 settings_context=effective_settings)
             # The admitted definition pins its real skill bytes. A phase role
             # need not have a separately invented agents/<role>.md file.
-            if step == "retro":
-                dispatch["role_instructions"] = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), definition["skill_ref"])
+            dispatch["role_instructions"] = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), definition["skill_ref"])
     except (ValueError, OSError) as exc:
         return {"error": "phase definition admission refused: " + str(exc), "step": step}
     if step in {"evaluate", "fix"} and worker_task is not None:

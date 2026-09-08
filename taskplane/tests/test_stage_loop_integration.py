@@ -208,11 +208,29 @@ def test_collected_product_uses_selected_successor_before_legacy_design_policy(c
     assert requested["role"] == "tp-design"
     assert requested["phase_runtime"]["status"] == "pending"
     material = artifacts.read(requested["phase_runtime"]["reference"])
+    instructions = Path(requested["role_instructions"])
+    assert instructions.is_file(), instructions
+    assert instructions == Path(loop.__file__).resolve().parents[1] / "skills/tp-design/SKILL.md"
+    assert hashlib.sha256(instructions.read_bytes()).hexdigest() == material["bindings"]["skill_content_fingerprint"]
+    assert requested["role_marker"] == "taskplane-role:tp-design"
+    assert material["envelope"]["task_name"] == requested["task_name"]
     assert artifacts.read(material["predecessor"]) == artifacts.read(completion["handoff"])
     assert [row["artifact_class"] for row in material["package"]] == ["requirement"]
     refused = loop.gate(ws, "pass")
     assert "matching terminal and collected output" in refused["error"]
     assert loop.load(ws)["step"] == "design"
+
+
+@pytest.mark.parametrize("phase", ["product", "design", "plan", "build", "evaluate", "engineering", "retro"])
+def test_selected_phase_instruction_sources_match_admitted_skill_bytes(phase):
+    from taskplane.tests.test_r0001_phase_agents_spec import _registry
+    registry, _ = loop._phase_bridge_registry({
+        "definition_source": "agents/spec-phase-definitions.json",
+        "definition_set_fingerprint": _registry().definition_set_fingerprint})
+    definition = registry.admit(phase, ()).to_dict()
+    instructions = Path(loop.__file__).resolve().parents[1] / definition["skill_ref"]
+    assert instructions.is_file()
+    assert hashlib.sha256(instructions.read_bytes()).hexdigest() == definition["skill_content_fingerprint"]
 
 
 @pytest.fixture
@@ -1291,6 +1309,7 @@ def test_next_action_attaches_stage_runtime_dispatch(tmp_path, monkeypatch) \
 
     assert result["step"] == "pm"
     assert result["stage_runtime_dispatch"] is marker
+    assert Path(result["role_instructions"]).name == "tp-product.md"
 
 
 def test_wave_emits_native_intent_without_stage_runtime_dispatch(
