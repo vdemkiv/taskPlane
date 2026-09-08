@@ -3808,8 +3808,53 @@ def _stage_history(store: object, run_id: str, request: Mapping[str, object]) \
     }
 
 
+def _project_bound_stage_start(ws, store, lifecycle, stage, *, foreground, receipt=None):
+    """Preflight a bound start, then finish its projection with the receipt."""
+    from taskplane import stage_migration
+    steps = {"product": "pm", "design": "design", "plan": "plan"}
+    if not foreground or stage["stage_kind"] not in steps:
+        return
+    run_id = stage["run_id"]
+    # Match the incumbent loop→run lock order. Persist the projection while
+    # both owners are locked; no new run operation or authority is created.
+    with tp.file_lock(_loop_path(ws)):
+        state = _load_raw(ws)
+        binding = _stage_read_run_binding(state)
+        if binding is None:
+            return
+        refusal = _stage_bound_run_refusal(ws, state)
+        if refusal or binding["run_id"] != run_id:
+            raise ValueError("stage start projection belongs to a different bound run")
+        with tp.file_lock(store._manifest_path(run_id)):
+            current = store._load_manifest(run_id)
+            route = stage_migration.phase_routing(current)
+            if current["schema"] != "taskplane.run/v4" or route is None or route["result"]["owner"] != "agent-runtime":
+                return
+            lifecycle._check_authority(stage["authority"], current, stage)
+            if state["step"] not in steps.values() or state.get("tasks"):
+                raise ValueError("stage start projection cannot replace delivery task state")
+            if tp._active_worker_contracts(ws):
+                raise ValueError("stage start projection cannot replace an active worker")
+            if receipt is None:
+                return
+            if (current["stage_operations"].get(receipt["operation_id"]) != receipt or
+                    current["active_stage_projection"]["foreground_stage_id"] != stage["stage_id"] or
+                    _indexed_stage(store, current, run_id, stage["stage_id"]) != stage):
+                raise ValueError("stage start projection receipt or foreground is stale")
+            step = steps[stage["stage_kind"]]
+            design_required = state.get("design_required") or step == "design"
+            if state["step"] == step and state.get("design_required") == design_required:
+                return
+            state.update(step=step, design_required=design_required)
+            save(ws, state)
+
+
 def stage_command(ws: str, command: str, request: object) -> dict:
-    """Run one explicit stage command without touching ``loop next/wave``.
+    """Run one explicit stage command without launching ``loop next/wave``.
+
+    An authorized foreground start projects an already-bound v4 agent-runtime
+    pre-build loop. Exact replay finishes a missed projection; standalone,
+    legacy, background and delivery-task commands keep their existing behavior.
 
     Stage entities are an additive rollout.  History remains readable for a
     migrated v4 run during rollback, while every mutation pauses when the
@@ -3909,6 +3954,9 @@ def stage_command(ws: str, command: str, request: object) -> dict:
             _preflight_stage_dispatch(
                 stage, verified_handoff,
                 declared_scope=data.get("declared_scope"))
+            if action == "start":
+                _project_bound_stage_start(ws, store, lifecycle, stage,
+                    foreground=data.get("foreground", True))
             receipt = lifecycle.start_stage(
                 stage,
                 expected_revision=data.get("expected_revision"),
@@ -3931,6 +3979,9 @@ def stage_command(ws: str, command: str, request: object) -> dict:
             dispatch = _stage_dispatch(
                 store, lifecycle, checked, stage,
                 declared_scope=data.get("declared_scope"))
+            if action == "start":
+                _project_bound_stage_start(ws, store, lifecycle, stage,
+                    foreground=data.get("foreground", True), receipt=checked)
             return {"schema": STAGE_COMMAND_SCHEMA, "command": action,
                     "run_id": run_id, "receipt": checked,
                     "dispatch": dispatch}

@@ -215,6 +215,120 @@ def test_collected_product_uses_selected_successor_before_legacy_design_policy(c
     assert loop.load(ws)["step"] == "design"
 
 
+@pytest.fixture
+def historical_product_plan_correction(collected_product_handoff, monkeypatch):
+    from taskplane import stage_entities
+    ws, store, run_id, completion, _, artifacts = collected_product_handoff
+    context = loop._phase_bridge_context
+    def historical_optional_design(*args, **kwargs):
+        value = context(*args, **kwargs)
+        if value and value["stage"]["stage_kind"] == "product":
+            # Reproduce the old optional-Design successor choice only. The
+            # admitted registry and signed Product artifacts remain original.
+            value = {**value, "definition": {**value["definition"],
+                "edge_conditions": [{"condition": "accepted", "successor": "plan"}]}}
+        return value
+    with monkeypatch.context() as patch:
+        patch.setattr(loop, "_phase_bridge_context", historical_optional_design)
+        assert loop.gate(ws, "pass")["step"] == "plan"
+    refused = loop.next_action(ws)
+    assert "not a declared predecessor" in refused["error"]
+    current = store.load(run_id)
+    plan = context(ws, loop.load(ws))["stage"]
+    product = loop._indexed_stage(store, current, run_id, plan["predecessor_stage_ids"][0])
+    closed = loop.stage_command(ws, "terminalize", {
+        "schema": "taskplane.stage-command/v1", "run_id": run_id,
+        "stage_id": plan["stage_id"], "expected_head_fingerprint": plan["fingerprint"],
+        "expected_revision": current["revision"], "operation_id": "close-incorrect-plan",
+        "outcome": "closed", "actor": plan["authority"]["actor"],
+        "terminalized_at": plan["created_at"], "reason_code": "incorrect_successor",
+        "reason": "Historical optional-Design routing skipped required predecessor",
+        "authority": plan["authority"]})
+    assert not closed.get("error"), closed
+    design = stage_entities.create_stage(run_id=run_id, stage_id="correct-design",
+        requirement=product["requirement"], design=product["design"], stage_kind="design",
+        parent_stage_ids=[], predecessor_stage_ids=[product["stage_id"]],
+        input_manifest_ref=plan["input_manifest_ref"], execution_root_id="execution-correct-design",
+        deliverables=["design-contract"], budget=product["budget"], dependencies=[],
+        contracts=product["contracts"], authority=product["authority"], created_at=plan["created_at"],
+        selected_artifacts=artifacts.read(completion["handoff"])["selected_artifacts"])
+    request = {"schema": "taskplane.stage-command/v1", "stage": design,
+        "expected_revision": store.load(run_id)["revision"], "operation_id": "start-correct-design",
+        "expected_predecessor_fingerprints": {product["stage_id"]: product["fingerprint"]},
+        "foreground": True, "authority": design["authority"]}
+    return ws, store, run_id, completion, artifacts, request
+
+
+@pytest.mark.parametrize("interrupted", [False, True], ids=["normal", "after-stage-commit"])
+def test_public_stage_start_projects_corrected_design_and_replays(historical_product_plan_correction, monkeypatch, interrupted):
+    ws, store, run_id, completion, artifacts, request = historical_product_plan_correction
+    original = {key: artifacts.read(completion[key]) for key in
+                ("preparation", "runtime_result", "runtime_receipt", "handoff")}
+    if interrupted:
+        def missed_projection(*args, **kwargs):
+            raise OSError("interrupted singleton projection")
+        with monkeypatch.context() as patch:
+            patch.setattr(loop, "save", missed_projection)
+            refused = loop.stage_command(ws, "start", request)
+        assert "interrupted singleton projection" in refused["error"]
+        assert loop.load(ws)["step"] == "plan"
+        committed = store.load(run_id)
+        assert "correct-design" in committed["stage_heads"]
+    started = loop.stage_command(ws, "start", request)
+    assert not started.get("error"), started
+    if interrupted:
+        assert store.load(run_id) == committed
+    assert loop.load(ws)["step"] == "design"
+    assert loop.load(ws)["design_required"] is True
+    before = store.load(run_id)
+    assert loop.stage_command(ws, "start", request) == started
+    assert store.load(run_id) == before
+    requested = loop.next_action(ws)
+    assert not requested.get("error"), requested
+    assert requested["role"] == "tp-design"
+    assert requested["phase_runtime"]["status"] == "pending"
+    assert {key: artifacts.read(completion[key]) for key in original} == original
+
+
+@pytest.mark.parametrize("case", ["background", "stale-revision", "foreign-authority", "worker", "stale-foreground"])
+def test_public_stage_start_projection_refuses_unrelated_changes(historical_product_plan_correction, monkeypatch, case):
+    ws, store, run_id, _, _, request = historical_product_plan_correction
+    before = copy.deepcopy(loop.load(ws))
+    if case == "background":
+        request["foreground"] = False
+    elif case == "stale-revision":
+        request["expected_revision"] -= 1
+    elif case == "foreign-authority":
+        request["authority"] = {**request["authority"], "actor": "human:foreign"}
+    elif case == "worker":
+        monkeypatch.setattr(loop.tp, "_active_worker_contracts", lambda ws: [("foreign-slot", {})])
+    else:
+        project = loop._project_bound_stage_start
+        def close_before_projection(ws, store, lifecycle, stage, **kwargs):
+            if kwargs.get("receipt") is None:
+                return project(ws, store, lifecycle, stage, **kwargs)
+            closed = loop.stage_command(ws, "terminalize", {
+                "schema": "taskplane.stage-command/v1", "run_id": run_id,
+                "stage_id": stage["stage_id"], "expected_head_fingerprint": stage["fingerprint"],
+                "expected_revision": store.load(run_id)["revision"], "operation_id": "close-before-projection",
+                "outcome": "closed", "actor": stage["authority"]["actor"],
+                "terminalized_at": stage["created_at"], "reason_code": "superseded",
+                "reason": "Current foreground changed before singleton projection",
+                "authority": stage["authority"]})
+            assert not closed.get("error"), closed
+            return project(ws, store, lifecycle, stage, **kwargs)
+        monkeypatch.setattr(loop, "_project_bound_stage_start", close_before_projection)
+    manifest_before = store.load(run_id)
+    result = loop.stage_command(ws, "start", request)
+    if case == "background":
+        assert not result.get("error"), result
+    else:
+        assert result.get("error"), result
+    if case in {"stale-revision", "foreign-authority", "worker"}:
+        assert store.load(run_id) == manifest_before
+    assert loop.load(ws) == before
+
+
 @pytest.mark.parametrize("changed", ["source", "graph-content", "graph-quality", "impact", "policy", "binding", "recorded-impact", "signature"])
 def test_product_handoff_freshness_still_rejects_content_changes(collected_product_handoff, monkeypatch, changed):
     ws, _, _, completion, material, artifacts = collected_product_handoff
