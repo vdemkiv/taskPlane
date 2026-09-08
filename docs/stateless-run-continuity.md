@@ -73,6 +73,31 @@ completed **137 passed in 109.18 seconds**. Scoped Ruff and whitespace checks
 passed. These are isolated source tests, not T19 acceptance or a native Stop
 receipt; no broad repository suite or unchanged six-file check was repeated.
 
+### Failed Build classification is not acceptance
+
+After a genuine failed Build, `loop next` uses the existing independent
+Evaluate failure-classification route. Its contract explicitly says
+`failure-classification-only`, retains the real ReviewKernel attempt and
+native producer observation, and binds the current candidate separately from
+the gate-owned historical detection. It does not dispatch acceptance-quality
+children or invent approved selectors and producer/consumer edges. Ordinary
+successful-Build Evaluate still requires those exact inputs unchanged.
+
+Legacy detection retained a workspace fingerprint, not a unique attempt or
+the full Build submission. Such input is explicitly marked
+`unavailable-in-legacy-detection`; no missing submission is reconstructed.
+Future failed gates retain their complete submission in the existing failure
+record. The evaluator must disclose historical limits and obtain bounded
+current independent evidence before assigning ownership. Detection alone
+does not establish a product defect.
+
+The existing gates remain authoritative: PASS and unavailable cannot erase
+a detected failed Build, stale/foreign failure inventories refuse, and only
+a complete product-only classification opens Fix. Other classes retain their
+existing recovery or hold route. The public continuation remains `loop next`,
+followed by genuine independent evaluator submission and orchestrator gating;
+this source repair performs none of those real-run actions.
+
 ## Supported legacy continuation
 
 ### Administrative cancellation before continuation
@@ -317,7 +342,7 @@ Additional paired compatibility files are `taskplane/loop_recovery.py`,
 | `taskplane/design_host_transport.py` | `0f0a002cd0d4e984bcebc3a56f33e35f6287ff26562ec99b2cba51083ad6ef16` | `0f0a002cd0d4e984bcebc3a56f33e35f6287ff26562ec99b2cba51083ad6ef16` | exact |
 | `taskplane/dispatch_telemetry.py` | `574c56f068a41cfe259000e3670843339ebf0f68235764044ec48dc6240be61f` | `574c56f068a41cfe259000e3670843339ebf0f68235764044ec48dc6240be61f` | exact |
 | `taskplane/host_capabilities.py` | `3222731240e9f209a307f97cee51209c3137344a9f7236c839894c4ce14f25b7` | `3222731240e9f209a307f97cee51209c3137344a9f7236c839894c4ce14f25b7` | exact |
-| `taskplane/loop.py` | `2026ec0a48d2c0173308fea872fab198215c875a1b26bc3cb3086a77fa277253` | `ac8650d9e482f55518a4e1e70043050b3637748f31ec861b6ba7bcf3d2de2b45` | reconciled |
+| `taskplane/loop.py` | `2026ec0a48d2c0173308fea872fab198215c875a1b26bc3cb3086a77fa277253` | `9f07b11de387a4e22b5b445ae6f09c3217bb27b49f2bd28ebea9f1af412afef2` | reconciled |
 | `taskplane/operational-settings.json` | `5d8f8227a8f320168ea511b4f5b6480bc77fd0b7e45bae081f99fb5b09ca9293` | `5d8f8227a8f320168ea511b4f5b6480bc77fd0b7e45bae081f99fb5b09ca9293` | exact |
 | `taskplane/producer_observation.py` | `cf1709640d4541bf5f84d56fafc5244fd08b035726fe1c3abd0d98bea1b2d660` | `cf1709640d4541bf5f84d56fafc5244fd08b035726fe1c3abd0d98bea1b2d660` | exact |
 | `taskplane/settings.py` | `88547c6e0e1c149ea5fd723e2d6f7c0c0426de5e5ded1a484bcfd0977a771418` | `369dfbaf79ca2c20abdfffaf4399646716a524c2886763588e6b5b25ef9b0f68` | reconciled |

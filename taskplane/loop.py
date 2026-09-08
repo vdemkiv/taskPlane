@@ -6656,6 +6656,64 @@ def _native_delivery_dispatch_binding(
     }
 
 
+def _failed_build_classification(
+        ws: str, state: Mapping, task: Mapping, *, evaluator_attempt_id: str) -> dict | None:
+    """Project detected red for independent classification, never acceptance."""
+    if not (state.get("_build_failed") or task.get("_build_failed")):
+        return None
+    if (not (state.get("_build_failed") is True or task.get("_build_failed") is True)
+            or state.get("step") != "evaluate" or not evaluator_attempt_id or not state.get("run_id")
+            or (_current_task(dict(state)) or {}).get("id") != task.get("id")):
+        raise ValueError("failed Build classification lacks its exact Evaluate run/attempt")
+    detection = task.get("failure_routing")
+    if not isinstance(detection, Mapping):
+        raise ValueError("failed Build classification requires retained detection evidence")
+    records = failure_routing.validate_failure_records(detection.get("records") or [])
+    expected = failure_routing.route_failure_records(records)
+    expected["fingerprint"] = hashlib.sha256(json.dumps(
+        expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False).encode("utf-8")).hexdigest()
+    if detection != expected or len(records) != 1:
+        raise ValueError("failed Build detection inventory changed")
+    record = records[0]
+    evidence = record["evidence"]
+    historical_id = str(record["candidate"]["id"])
+    if (record["source"] != "taskplane.loop.gate" or record["class"] != "unknown"
+            or record["stage"] not in {"execute", "fix"}
+            or evidence.get("stage") != record["stage"]
+            or evidence.get("task") != task.get("id")
+            or evidence.get("submission_outcome") != "fail"
+            or not re.fullmatch(re.escape(str(task.get("id"))) + r"@[0-9a-f]{40}", historical_id)
+            or record["candidate"]["fingerprint"] != hashlib.sha256(historical_id.encode()).hexdigest()
+            or not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("submission_fingerprint") or ""))):
+        raise ValueError("failed Build detection is missing, foreign or not an owned red")
+    submission = evidence.get("submission")
+    if submission is not None and (not isinstance(submission, Mapping)
+            or submission.get("task") != task["id"]
+            or submission.get("step") != record["stage"]
+            or submission.get("outcome") != "fail"
+            or submission.get("fingerprint") != evidence["submission_fingerprint"]):
+        raise ValueError("retained failed Build submission conflicts with detection")
+    return {
+        "mode": "failure-classification-only", "run_id": state["run_id"],
+        "task_id": task["id"], "evaluator_attempt_id": evaluator_attempt_id,
+        "candidate": _failure_candidate_identity(ws, task),
+        "detected_failure": _copy_json(detection),
+        "full_submission_status": "retained" if submission is not None else "unavailable-in-legacy-detection",
+        "failed_submission": _copy_json(submission) if submission is not None else None,
+        "acceptance_allowed": False,
+        "instruction": "Independently classify the retained failed Build evidence against the current candidate. "
+            "Retain its historical candidate and submission identity; do not relabel historical evidence as current. "
+            "A workspace fingerprint is not the missing full submission or a unique attempt receipt. When the "
+            "full submission is unavailable, disclose that limit and collect bounded current independent "
+            "evidence; do not reconstruct historical bytes or infer product ownership from the detection alone. "
+            "Produce a complete candidate-bound failure inventory through the normal evaluator output and native "
+            "observation path. PASS and unavailable cannot erase this detected failure. Only product-only "
+            "classification can open Fix; other classes retain their owned recovery or hold. Do not create "
+            "acceptance children, Plan selectors or edges, or rerun a broad acceptance suite for this classification.",
+    }
+
+
 def _prepare_public_evaluate_evidence(
         ws: str, act_ws: str, state: Mapping[str, object],
         task: Mapping[str, object], *, evaluator_attempt_id: str) -> dict:
@@ -8728,20 +8786,26 @@ def next_action(
                 fresh.setdefault("review_kernel_runs", {})[
                     _review_kernel_binding_key(step, task)] = binding
     evaluate_children = None
+    failure_classification = None
     if step == "evaluate":
         try:
             attempt_id = str((review_kernel or {}).get("run_id") or "").strip()
             if not attempt_id:
                 raise ValueError("Evaluate evidence lacks evaluator attempt identity")
-            evaluate_children = _prepare_public_evaluate_evidence(
-                ws, act_ws, state, task or {},
-                evaluator_attempt_id=attempt_id)
-            evaluate_children = _dispatch_public_evaluate_evidence_children(
-                ws, state, task or {}, evaluate_children,
-                observation_authority=root_observation_authority,
-                model_tier=str(dispatch["model_tier"]))
-            contract["evaluate_child_evidence"] = _copy_json(
-                evaluate_children)
+            failure_classification = _failed_build_classification(
+                act_ws, state, task or {}, evaluator_attempt_id=attempt_id)
+            if failure_classification is not None:
+                contract["failure_classification"] = _copy_json(failure_classification)
+            else:
+                evaluate_children = _prepare_public_evaluate_evidence(
+                    ws, act_ws, state, task or {},
+                    evaluator_attempt_id=attempt_id)
+                evaluate_children = _dispatch_public_evaluate_evidence_children(
+                    ws, state, task or {}, evaluate_children,
+                    observation_authority=root_observation_authority,
+                    model_tier=str(dispatch["model_tier"]))
+                contract["evaluate_child_evidence"] = _copy_json(
+                    evaluate_children)
         except Exception as exc:
             return {
                 "error": "Evaluate child evidence preparation failed closed: "
@@ -8855,6 +8919,8 @@ def next_action(
                 "language_references"),
         } if routing and step != "evaluate" and not zero_lens_delivery else {}),
         "review_kernel": review_kernel,
+        **({"failure_classification": failure_classification}
+           if failure_classification is not None else {}),
         **({"evaluate_child_evidence": evaluate_children}
            if evaluate_children is not None else {}),
         "runtime_evals": runtime_eval.guidance(step),
@@ -8887,7 +8953,8 @@ def next_action(
             "depends": list(req_rec.get("depends_on") or []),
             "context_files": list(req_rec.get("context_files") or []),
             "context": reqs.render_context([req_rec])},
-        "instruction": _instruction(step, state, act_ws),
+        "instruction": (_instruction(step, state, act_ws) if failure_classification is None
+                        else failure_classification["instruction"]),
     }
     # Native Build/Fix/Evaluate delivery is described by the exact intent
     # below.  StageLifecycle remains the genuine governance boundary for
@@ -10505,6 +10572,11 @@ def _detected_build_failure_routing(
         "stage": stage,
         "task": str(task.get("id") or "unknown"),
     }
+    # The legacy detector retained only a workspace fingerprint. Preserve the
+    # complete real submission for future gates without reconstructing older
+    # missing payloads or changing their immutable failure records.
+    if submission.get("task") == task.get("id") and submission.get("step") == stage:
+        evidence["submission"] = _copy_json(submission)
     record = {
         "schema": failure_routing.FAILURE_RECORD_SCHEMA_ID,
         "id": "build-detection-" + hashlib.sha256(json.dumps(

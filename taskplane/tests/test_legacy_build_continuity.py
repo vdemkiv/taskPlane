@@ -116,6 +116,147 @@ def test_current_native_terminal_pipeline_admits_actual_pending_ledger_shape(leg
     assert after["tasks"] == state["tasks"]
 
 
+def test_failed_build_dispatch_classifies_without_acceptance_children(legacy, monkeypatch):
+    ws = legacy[0]
+    assert invoke(legacy)["continued"] is True
+    state = loop._load_raw(ws)
+    state.update(step="evaluate", goal="classify original incomplete Build", _build_failed=True)
+    task = state["tasks"][19]
+    task["evaluation_evidence_edges"] = []
+    task["failure_routing"] = loop._detected_build_failure_routing(ws, task,
+        {"fingerprint":"b" * 64, "outcome":"fail"}, "execute")
+    loop.save(ws, state)
+    monkeypatch.setattr(loop.tp, "dor_check", lambda *_:(True, [], []))
+    monkeypatch.setattr(loop.depgraph, "scan", lambda *_:None)
+    monkeypatch.setattr(loop.depgraph, "load", lambda *_:{"modules":{}})
+    monkeypatch.setattr(loop, "_diff_files", lambda *_:[])
+    monkeypatch.setattr(loop, "status", lambda *_:{})
+    monkeypatch.setattr(loop, "_run_artifact_root", lambda *_:ws)
+    monkeypatch.setattr(loop, "_bind_worker_submission", lambda _ws,_state,_step,contract,_task:contract)
+    monkeypatch.setattr(loop, "_review_kernel", lambda *a,**k:({
+        "run_id":"genuine-test-attempt", "status":"ready", "slots":[],
+        "expected_lenses":[], "zero_lens_evaluation":True}, None))
+    monkeypatch.setattr(loop, "_bind_stateless_review_contract_actions", lambda _ws,kernel,**kw:kernel)
+    monkeypatch.setattr(loop, "_prepare_public_evaluate_evidence",
+        lambda *a,**k:pytest.fail("classification requested acceptance children"))
+    monkeypatch.setattr(loop, "_dispatch_public_evaluate_evidence_children",
+        lambda *a,**k:pytest.fail("classification dispatched acceptance children"))
+    class Ready(Exception): pass
+    def instruction(*args):
+        raise Ready("classification reached ordinary native dispatch composition")
+    monkeypatch.setattr(loop, "_design_context", instruction)
+    with pytest.raises(Ready):
+        loop.next_action(ws)
+    after = loop._load_raw(ws)
+    assert after["tasks"] == state["tasks"] and after["_build_failed"] is True
+    assert after["review_kernel_runs"]["evaluate:T19"]["run_id"] == "genuine-test-attempt"
+
+
+@pytest.mark.parametrize("damage", [None, "missing-detection", "changed-seal", "foreign-task",
+    "foreign-candidate", "pass", "missing-attempt", "not-evaluate", "not-failed"])
+def test_failed_build_classification_retains_detection_and_refuses_drift(legacy, monkeypatch, damage):
+    ws, _, original, _ = legacy
+    state = copy.deepcopy(original)
+    state.update(step="evaluate", _build_failed=True)
+    task = state["tasks"][19]
+    task["failure_routing"] = loop._detected_build_failure_routing(ws, task,
+        {"fingerprint":"b" * 64, "outcome":"fail"}, "execute")
+    historical = copy.deepcopy(task["failure_routing"])
+    # Later repairs change the current candidate, never the historical red.
+    monkeypatch.setattr(loop.tp, "git_head", lambda _:"c" * 40)
+    attempt = "current-attempt"
+    if damage == "missing-detection": task.pop("failure_routing")
+    if damage == "changed-seal": task["failure_routing"]["fingerprint"] = "f" * 64
+    if damage == "foreign-task": task["id"] = "OTHER"
+    if damage == "foreign-candidate":
+        task["failure_routing"] = loop._detected_build_failure_routing(ws, {"id":"OTHER"},
+            {"fingerprint":"b" * 64, "outcome":"fail"}, "execute")
+    if damage == "pass":
+        task["failure_routing"] = loop._detected_build_failure_routing(ws, task,
+            {"fingerprint":"b" * 64, "outcome":"pass"}, "execute")
+    if damage == "missing-attempt": attempt = ""
+    if damage == "not-evaluate": state["step"] = "execute"
+    if damage == "not-failed": state.pop("_build_failed")
+    before = copy.deepcopy(state)
+    if damage not in {None, "not-failed"}:
+        with pytest.raises(ValueError):
+            loop._failed_build_classification(ws, state, task, evaluator_attempt_id=attempt)
+    else:
+        result = loop._failed_build_classification(ws, state, task, evaluator_attempt_id=attempt)
+        if damage == "not-failed":
+            assert result is None  # Ordinary acceptance preparation remains mandatory.
+        else:
+            assert result["mode"] == "failure-classification-only"
+            assert result["detected_failure"] == historical
+            assert result["candidate"] == loop._failure_candidate_identity(ws, task)
+            assert result["evaluator_attempt_id"] == attempt
+            assert result["acceptance_allowed"] is False
+            assert result["failed_submission"] is None
+            assert result["full_submission_status"] == "unavailable-in-legacy-detection"
+    assert state == before
+
+
+def test_future_failed_build_detection_retains_complete_submission(legacy):
+    ws, _, original, _ = legacy
+    state = copy.deepcopy(original)
+    state.update(step="evaluate", _build_failed=True)
+    task = state["tasks"][19]
+    submission = {"task":"T19", "step":"execute", "outcome":"fail",
+        "fingerprint":"b" * 64, "snapshot":"c" * 40, "workspace":ws,
+        "note":"incomplete: exact required native evidence unavailable", "submitted_at":123,
+        "evidence_paths":[".eval/build.json"], "changed_files":["src/t19.py"],
+        "engine_fingerprint":"d" * 64, "evidence_engine_fingerprint":"e" * 64}
+    task["failure_routing"] = loop._detected_build_failure_routing(ws, task, submission, "execute")
+    result = loop._failed_build_classification(ws, state, task, evaluator_attempt_id="attempt")
+    assert result["failed_submission"] == submission
+    assert result["full_submission_status"] == "retained"
+    submission["note"] = "changed caller object"
+    assert result["failed_submission"]["note"] != submission["note"]
+
+
+@pytest.mark.parametrize("failure_class", ["product", "test", "infrastructure", "environment", "unknown"])
+def test_failed_build_classifier_keeps_incumbent_correction_guards(legacy, monkeypatch, failure_class):
+    from taskplane import evaluation_output, failure_routing
+    ws, root, state, _ = legacy
+    assert invoke(legacy)["continued"] is True
+    state = loop._load_raw(ws)
+    state.update(step="evaluate", _build_failed=True)
+    task = state["tasks"][19]
+    candidate = loop._failure_candidate_identity(ws, task)
+    evidence = {"observation":"bounded independently observed failure"}
+    record = {"schema":failure_routing.FAILURE_RECORD_SCHEMA_ID, "id":"actual-failure",
+        "source":"independent-evaluator", "stage":"evaluate", "repro":"bounded exact probe",
+        "evidence":evidence, "evidence_digest":failure_routing.evidence_digest(evidence),
+        "class":failure_class, "reason":"current observed failure", "owner":"existing owner",
+        "cluster":"failure-classification", "route":failure_routing.route_for_class(failure_class),
+        "candidate":candidate}
+    verdict = {"schema":evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        "task":"T19", "requirement":"R-0001", "verdict":"fail",
+        "evaluation":{"status":"complete", "reason_code":"none", "detail":"classified red"},
+        "criteria":[{"criterion":"delivery", "status":"cannot-verify", "evidence":"actual-failure"}],
+        "graph":{"dispositions":[], "requirements_checked":[], "contracts_checked":[]},
+        "failures":[record]}
+    path = root / "classifier.json"
+    path.write_text(json.dumps(verdict))
+    monkeypatch.setattr(loop.runtime_storage, "evaluation_path", lambda _:str(path))
+    errors, _, decision = loop._evaluation_failure_routing(ws, state, task)
+    assert not errors, errors
+    assert decision["product_fix_allowed"] is (failure_class == "product")
+    verdict["failures"][0]["candidate"] = {"id":"foreign@" + "a" * 40, "fingerprint":"f" * 64}
+    path.write_text(json.dumps(verdict))
+    assert loop._evaluation_failure_routing(ws, state, task)[0]
+    verdict["failures"][0]["candidate"] = candidate
+    verdict["evaluation"] = {"status":"unavailable", "reason_code":"orchestration_unavailable",
+        "detail":"honest missing receipt"}
+    path.write_text(json.dumps(verdict))
+    assert any("failed build" in error for error in loop._evaluation_unavailable_errors(ws, state, task)[0])
+    loop.save(ws, state)
+    state["submission_required"] = False
+    loop.save(ws, state)
+    monkeypatch.setattr(loop, "status", lambda *_:{})
+    assert "cannot erase" in loop.gate(ws, "pass")["error"]
+
+
 def test_failed_gate_cleanup_preserves_existing_adverse_terminal_receipt(cancellation):
     legacy, path, _ = cancellation
     ws = legacy[0]
