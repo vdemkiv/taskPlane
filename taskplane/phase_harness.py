@@ -206,8 +206,8 @@ def advise_resource_limits(runtime: Any, ws: str, state: dict[str, Any], by: str
 
 
 def reconcile(runtime: Any, ws: str, state: dict[str, Any], operation: str) -> dict[str, Any]:
-    """Resume collection from nonce-owned observations, not another Stop hook."""
-    from taskplane import stage_migration
+    """Validate current candidates using genuine completion, never a replayed hook."""
+    from taskplane import stage_migration, codex_identity
     if runtime.tp.task_slot() is not None:
         raise ValueError("phase reconciliation is orchestrator-only")
     context = runtime._phase_bridge_context(ws, state)
@@ -231,17 +231,31 @@ def reconcile(runtime: Any, ws: str, state: dict[str, Any], operation: str) -> d
     if attempt is None or attempt[0]["operation_id"] != operation:
         raise ValueError("phase contract is foreign")
     source, dispatch = attempt[4].nonce, attempt[5]
-    start, terminal = source.phase_hooks(dispatch.issued, dispatch.nonce_bindings)
+    source.validate(dispatch.issued, dispatch.nonce_bindings,
+        enforce_deadline=not attempt[4].resource_limits_advisory)
+    hooks = source.terminal_hooks(dispatch.issued, dispatch.nonce_bindings)
+    if hooks is None:
+        if context["stage"]["stage_kind"] not in {"product", "design", "plan"}:
+            raise ValueError("provider completion reconciliation is pre-build only")
+        start = source._read_phase_hook(dispatch.issued, dispatch.nonce_bindings, "start")
+        terminal = codex_identity.completed_child(ws, start)
+    else:
+        start, terminal = hooks
     owner = (contract.get("worker_lifecycle") or {}).get("owner")
     if not isinstance(owner, dict) or any(owner != {key: observed["owner"][key]
             for key in ("session_id", "agent_id", "task_name")} for observed in (start, terminal)):
         raise ValueError("phase terminal owner differs from the bound worker")
     record_dispatch(runtime, ws, contract, material, start)
-    result = runtime._collect_phase_attempt(ws, attempt)
+    result = runtime._collect_phase_attempt(ws, attempt, completed_worker=terminal if hooks is None else None)
     if result["status"] != "collected":
         return {**result, "dispatch_allowed": False}
     _reconcile_usage(runtime, ws, contract, material, terminal)
     runtime.collect_phase_runtime_telemetry(ws, contract)
+    if hooks is None:
+        # Current validation is not a historical Stop. Keep the slot intact;
+        # the ordinary successful gate owns its retirement.
+        return {**result, "worker_released":False, "dispatch_allowed":False,
+            "validation":"current-semantic", "completion_source":"codex-task-complete"}
     lifecycle = contract["worker_lifecycle"]
     with runtime.tp.file_lock(path):
         current = runtime.tp.load_json(path, default=None, what="phase worker contract")

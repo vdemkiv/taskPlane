@@ -147,6 +147,7 @@ def collected_product_handoff(tmp_path, monkeypatch):
         configuration = copy.deepcopy(kwargs["configuration"])
         configuration["output_paths"]["design"] = {
             "design": "design/contract.json", "test-strategy": "design/test-strategy.json"}
+        configuration["output_paths"]["plan"] = {"plan-task":"plan/tasks.json"}
         return route(*args, **{**kwargs, "configuration": configuration})
     monkeypatch.setattr(stage_migration, "change_phase_routing", with_design_destination)
     record = cross_host._record_bootstrap_requirement
@@ -237,7 +238,7 @@ def test_selected_phase_instruction_sources_match_admitted_skill_bytes(phase):
 def collected_zero_lens_design(collected_product_handoff, monkeypatch):
     """Real phase owners with authored test candidates and simulated host events."""
     from taskplane.tests.test_r0001_phase_cutover import _host_event
-    from taskplane.tests.test_r0001_phase_agents_spec import _strategy
+    from taskplane.tests.test_r0001_phase_agents_spec import _strategy, SELECTOR
     ws, store, run_id, _, _, artifacts = collected_product_handoff
     assert loop.gate(ws, "pass")["step"] == "design"
     action = loop.next_action(ws)
@@ -246,14 +247,11 @@ def collected_zero_lens_design(collected_product_handoff, monkeypatch):
     loop.tp.bind_worker_contract_event(ws, start)
     slot = action["contract_bootstrap"]["task_slot"]
     worker = loop.tp.load_json(loop.tp.active_contract_path(ws, slot))
-    # The independent telemetry adapter still uses the legacy designer alias.
-    # Preserve its refusal; the real nonce owner records Start before that call.
-    with pytest.raises(loop.dispatch_telemetry.DispatchTelemetryError,
-                       match="native stage dispatch does not match"):
-        loop.observe_phase_runtime_hook(ws, worker, start)
+    assert loop.observe_phase_runtime_hook(ws, worker, start)["status"] == "pending"
     state = loop.load(ws)
     requirement = loop.reqs.get_requirement(ws, state["requirement_id"])
     folder = Path(ws) / "design"
+    source_modules = loop.depgraph.scope_modules(ws, ["app.py"])
     folder.mkdir(exist_ok=True)
     (folder / "design.md").write_text("# Greeting design\nKeep the existing greeting boundary.\n")
     contract = {
@@ -263,14 +261,14 @@ def collected_zero_lens_design(collected_product_handoff, monkeypatch):
         "alternatives": [{"id": choice, "name": choice, "description": choice,
             "tradeoffs": {"gains": ["simple"], "costs": ["limited scope"], "revisit_when": "requirements grow"}}
             for choice in ("existing", "new-module")], "selected_approach": "existing",
-        "modules": {"existing": ["app"], "new": []}, "contracts": [],
+        "modules": {"existing": source_modules, "new": []}, "contracts": [],
         "graph": {"baseline_fingerprint": state["design_graph_fingerprint"],
-            "proposed_modules": ["app"], "proposed_edges": [],
+            "proposed_modules": source_modules, "proposed_edges": [],
             "depth_policy": {"local_depth": 1, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
             "dor": [{"check": "source exists", "evidence": "app.py"}],
             "dod": [{"check": "greeting preserved", "evidence": "acceptance test"}]},
         "acceptance_map": [{"criterion": criterion, "design_element": "app.greet", "validation": "regression",
-            "tests": ["taskplane/tests/test_stage_loop_integration.py::test_stateless_design_gate_uses_collected_runtime_not_legacy_team"]}
+            "tests": [SELECTOR]}
             for criterion in requirement["acceptance"]],
         "risks": [{"risk": "regression", "mitigation": "test", "owner": "engineering"}],
         "failure_modes": [{"mode": "wrong greeting", "detection": "test", "recovery": "correct source"}],
@@ -278,7 +276,9 @@ def collected_zero_lens_design(collected_product_handoff, monkeypatch):
         "rollout": {"strategy": "reviewed change", "rollback": "revert change"},
         "visualization": {"required": False, "reason": "single function"},
         "test_strategy": {"path": "design/test-strategy.json"}, "open_questions": [],
-        "lens_evidence": []}
+        "lens_evidence": [], "test_strategy_reference":{
+            "schema":"taskplane.design-test-strategy-reference/v1", "path":"design/test-strategy.json",
+            "strategy_fingerprint":_strategy()["contract_fingerprint_sha256"]}}
     contract["lens_evidence"] = [{"lens": "solution-design", "verdict": "pass", "blockers": 0,
         "evidence": "Explicit test-candidate self-assessment; no independent lens execution",
         "produced_by": action["task_name"], "self_attested": True,
@@ -368,6 +368,130 @@ def test_phase_plan_consumes_top_level_design_strategy_and_distinct_approval_dom
     store, registry, state, _, plan, _ = spec._journey(tmp_path)
     package, _ = spec._consume(store, registry, state, plan)
     assert package.read("plan-task")["task"]["test_strategy_authority_receipt"]["design_fingerprint"] == state["design_fingerprint"]
+
+
+@pytest.mark.parametrize("case", ["one-owner", "missing-cross-task-contract", "ambiguous-owner"])
+def test_dependency_plan_uses_actual_scoped_ownership(tmp_path, case):
+    from taskplane import plan_topology
+    for folder, text in (("provider", "VALUE = 1\n"),
+            ("consumer", "from provider import value\n"), ("unrelated", "VALUE = 2\n")):
+        destination = tmp_path / folder / "value.py"
+        destination.parent.mkdir()
+        destination.write_text(text)
+    for arguments in (("init",), ("add", "."), ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "source")):
+        subprocess.run(["git", *arguments], cwd=tmp_path, check=True, capture_output=True)
+    tasks = [{"id":"T1", "scope":["provider/value.py", "consumer/value.py"], "modules":["*"], "deps":[]}]
+    if case == "missing-cross-task-contract":
+        tasks[0]["scope"] = ["provider/value.py"]
+        tasks.append({"id":"T2", "scope":["consumer/value.py"], "deps":["T1"]})
+    if case == "ambiguous-owner":
+        tasks.append({"id":"T2", "scope":["consumer/value.py"], "deps":["T1"]})
+    binding = {key:"a" * 64 for key in ("run_id", "candidate_fingerprint", "requirement_fingerprint", "design_fingerprint", "plan_fingerprint")}
+    if case != "one-owner":
+        with pytest.raises(ValueError, match="missing seam contract" if case == "missing-cross-task-contract" else "ambiguous Plan"):
+            plan_topology.produce_dependency_plan(str(tmp_path), binding=binding, seam_contracts=[], plan={"tasks":tasks})
+        return
+    result = plan_topology.produce_dependency_plan(str(tmp_path), binding=binding, seam_contracts=[], plan={"tasks":tasks})
+    assert result["decomposition"]["tasks"] == [{"id":"T1", "nodes":["consumer", "provider"], "deps":[]}]
+    assert result["seam-manifest"]["seams"] == []
+    assert result["source-coverage"]["complete"] is True
+
+
+def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop(collected_zero_lens_design, tmp_path, monkeypatch, capsys):
+    """Actual public owners, simulated provider metadata; no native J1 claim."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    import sys
+    from taskplane import tp as cli, design_host_transport
+    from taskplane.tests.test_r0001_phase_cutover import _emit_host_hook
+    from taskplane.tests.test_r0001_phase_agents_spec import SELECTOR, _strategy
+    ws, store, run_id, artifacts, design_completion = collected_zero_lens_design
+    original_design = artifacts.read(design_completion["runtime_receipt"])
+    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "0")
+    assert loop.gate(ws, "pass")["step"] == "design_approval"
+    assert loop.approve(ws, by="human:fixture — approve greeting Design")["step"] == "plan"
+    # The incident run has an attributable advisory usage policy. Unknown
+    # provider token usage stays unknown; this is not a synthetic zero count.
+    policy = loop.resolve(ws, "limits-advisory", by=loop.load(ws)["_stage_native_root_authority"]["actor"])
+    assert not policy.get("error"), policy
+    state = loop.load(ws)
+    requirement = loop.reqs.get_requirement(ws, state["requirement_id"])
+    plan = {"requirement":requirement["id"], "delivery_mode":"build", "tasks":[{"id":"T1", "task":"Preserve greeting",
+        "scope":["app.py"], "modules":["app"], "deps":[], "contracts":[],
+        "criteria":requirement["acceptance"], "acceptance_refs":requirement["acceptance"],
+        "tests":"python3 -m pytest -q " + SELECTOR,
+        "test_contract":{"changed_producers":["app.py"]},
+        "test_strategy_authority":{"schema":"taskplane.plan-test-strategy-reference/v1", "path":"design/test-strategy.json",
+            "strategy_fingerprint":_strategy()["contract_fingerprint_sha256"], "criterion_ids":["AC-T11"],
+            "changed_producer_ids":["spec-package"]}}]}
+    # Existing candidate files are inputs, not accepted outputs. Preparation
+    # observes the destination before the simulated worker reserializes it.
+    destination = Path(ws) / "plan/tasks.json"
+    destination.parent.mkdir(exist_ok=True)
+    destination.write_text(json.dumps(plan))
+    (destination.parent / "plan.md").write_text("# Plan\nPreserve the greeting with its existing test.\n")
+    loop.depgraph.scan(ws, decompose=True)
+    action = loop.next_action(ws)
+    assert not action.get("error"), action
+    child = "11111111-1111-4111-8111-111111111111"
+    assert _emit_host_hook(ws, action, "SubagentStart", monkeypatch, agent_id=child) == 0
+    material = artifacts.read(action["phase_runtime"]["reference"])
+    nonce = design_host_transport.phase_nonce_source(loop.tp, ws, run_id, existing_only=True)
+    issued = nonce.recover(material["nonce_bindings"])
+    start = nonce._read_phase_hook(issued, material["nonce_bindings"], "start")
+    assert nonce.terminal_hooks(issued, material["nonce_bindings"]) is None
+    home = tmp_path / "provider"
+    day = datetime.fromtimestamp(start["observed_at"], timezone.utc).strftime("%Y/%m/%d")
+    path = home / "sessions" / day / f"rollout-current-{child}.jsonl"
+    path.parent.mkdir(parents=True)
+    owner = start["owner"]
+    agent_path = "/root/" + owner["task_name"]
+    metadata = {"type":"session_meta", "payload":{"id":child, "session_id":owner["session_id"],
+        "parent_thread_id":owner["session_id"], "cwd":ws, "agent_path":agent_path,
+        "source":{"subagent":{"thread_spawn":{"parent_thread_id":owner["session_id"], "agent_path":agent_path}}}}}
+    complete = {"type":"event_msg", "payload":{"type":"task_complete", "turn_id":start["turn_id"],
+        "started_at":start["observed_at"]-2, "completed_at":loop.time.time(), "duration_ms":2000}}
+    path.write_text(json.dumps(metadata) + "\n" + json.dumps(complete) + "\n")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    destination.write_text(json.dumps(plan, sort_keys=True, indent=4) + "\n")
+    def no_host_effect(*args, **kwargs): pytest.fail("current validation must not dispatch or replay Stop")
+    monkeypatch.setattr(design_host_transport, "observe_phase_hook", no_host_effect)
+    monkeypatch.setitem(sys.modules, "loop", loop)
+    capsys.readouterr()
+    args = SimpleNamespace(workspace=ws, loop_action="resolve", decision="reconcile", phase_operation=action["phase_runtime"]["operation_id"])
+    return_code = cli.cmd_loop(args)
+    recovered = json.loads(capsys.readouterr().out)
+    original_impact = artifacts.read(material["impact_reference"])
+    _, current_impact = loop._phase_bridge_freshness(ws, material["signing_scope"])
+    def changed_keys(old, new, prefix=""):
+        if isinstance(old, dict) and isinstance(new, dict):
+            return [item for key in old.keys() | new.keys()
+                for item in changed_keys(old.get(key), new.get(key), prefix + "." + key)]
+        return [prefix] if old != new else []
+    if return_code:
+        pytest.fail(str(recovered.get("error")) + "\n" + "\n".join(sorted(changed_keys(original_impact, current_impact))))
+    assert recovered.get("validation") == "current-semantic", {key:value for key,value in recovered.items()
+        if key not in {"dashboard", "dashboard_snapshot", "artifacts", "dispatch_audit", "enforcement"}}
+    assert recovered["completion_source"] == "codex-task-complete"
+    assert not recovered["worker_released"]
+    assert loop.resolve(ws, "reconcile", phase_operation=args.phase_operation)["replay"] is True
+    assert nonce.terminal_hooks(issued, material["nonce_bindings"]) is None
+    collected_plan_stage = loop._phase_bridge_context(ws, loop.load(ws))["stage"]
+    result = loop.gate(ws, "pass")
+    assert not result.get("error"), result.get("dor", result)
+    assert result["step"] == "plan_approval"
+    assert loop._phase_bridge_context(ws, loop.load(ws))["stage"] == collected_plan_stage
+    approved = loop.approve(ws, by="human:fixture — approve the scoped greeting Plan")
+    assert not approved.get("error"), approved.get("dor", approved)
+    assert approved["step"] == "execute"
+    assert loop._phase_bridge_context(ws, loop.load(ws))["stage"]["stage_kind"] == "build"
+    from taskplane import plan_topology
+    assert loop.load(ws)["delivery_mode_receipt"]["plan_fingerprint"] == plan_topology.canonical_plan_fingerprint(plan)
+    assert artifacts.read(design_completion["runtime_receipt"]) == original_design
+    assert json.loads(destination.read_text()) == plan  # No harness field insertion.
+    import stage_migration
+    assert len([row for row in stage_migration.phase_records(store.load(run_id)).values()
+        if row["operation"] == "phase_collect" and row["operation_id"] == args.phase_operation + "-complete"]) == 1
 
 
 @pytest.fixture

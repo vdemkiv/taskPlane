@@ -22,6 +22,33 @@ from taskplane.tests.test_codex_child_identity import native as native_child
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("damage", [None, "missing", "foreign-child", "foreign-turn", "later-active", "earlier-completion"])
+def test_completed_child_uses_only_exact_provider_lifecycle_metadata(native_child, monkeypatch, damage):
+    from taskplane import codex_identity
+    from taskplane.tests.test_codex_child_identity import NOW, NAME
+    home, path, metadata, event = native_child
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    start = {"owner": {**{key:event[key] for key in ("agent_id", "session_id", "agent_type")}, "task_name":NAME},
+        "turn_id":event["turn_id"], "observed_at":NOW.timestamp() + 5}
+    complete = {"type":"event_msg", "payload":{"type":"task_complete", "turn_id":event["turn_id"],
+        "started_at":NOW.timestamp(), "completed_at":NOW.timestamp() + 20, "duration_ms":20000,
+        "last_agent_message":"must not be returned or retained"}}
+    if damage == "foreign-child": metadata["payload"]["id"] = event["session_id"]
+    if damage == "foreign-turn": complete["payload"]["turn_id"] = "other"
+    if damage == "earlier-completion": complete["payload"]["completed_at"] = NOW.timestamp()
+    rows = [metadata] + ([] if damage == "missing" else [complete])
+    if damage == "later-active": rows.append({"type":"event_msg", "payload":{"type":"task_started", "turn_id":"later"}})
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    if damage:
+        with pytest.raises(ValueError): codex_identity.completed_child(event["cwd"], start)
+    else:
+        result = codex_identity.completed_child(event["cwd"], start)
+        assert result["source"] == "codex-task-complete"
+        assert result["outcome"] == "complete"
+        assert result["turn_id"] == event["turn_id"]
+        assert "must not be returned" not in json.dumps(result)
+
+
 @pytest.mark.parametrize("damage", [None, "wrong-path", "traversal", "symlink-escape", "stale", "wrong-task"])
 def test_real_evaluator_submission_absolute_path_survives_stop(onboarded, monkeypatch, damage):
     import loop

@@ -113,12 +113,22 @@ def accepted_producer_chain(tmp_path_factory):
         requested = loop.next_action(ws)
         expected = loop.tp.peek_expectation(ws, requested["task_name"], strict=False)
         loop.record_native_dispatch_observation(ws, expected=expected, native_task_name=requested["task_name"])
-        assert _emit_host_hook(ws, requested, "SubagentStart", patch) == 0
+        from datetime import datetime, timezone
+        child = "22222222-2222-4222-8222-222222222222"
+        assert _emit_host_hook(ws, requested, "SubagentStart", patch, agent_id=child) == 0
         _authored_requirement(ws, stage)
-        transcript = root / "simulated-provider.jsonl"
-        _write_segment(transcript, session_id="simulated-worker", parent="simulated-root",
+        home = root / "provider"
+        transcript = home / "sessions" / datetime.now(timezone.utc).strftime("%Y/%m/%d") / f"rollout-current-{child}.jsonl"
+        transcript.parent.mkdir(parents=True)
+        _write_segment(transcript, session_id=child, parent="simulated-session",
             total=100, cached=20, output=10)
-        assert _emit_host_hook(ws, requested, "SubagentStop", patch, agent_transcript_path=str(transcript)) == 0
+        rows = [json.loads(line) for line in transcript.read_text().splitlines()]
+        metadata = rows[0]["payload"]
+        metadata.update(session_id="simulated-session", cwd=ws, agent_path="/root/" + requested["task_name"])
+        metadata["source"]["subagent"]["thread_spawn"]["agent_path"] = metadata["agent_path"]
+        transcript.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        patch.setenv("CODEX_HOME", str(home))
+        assert _emit_host_hook(ws, requested, "SubagentStop", patch, agent_id=child, agent_transcript_path=str(transcript)) == 0
         completion = loop.next_action(ws)["phase_runtime"]["completion"]
         inputs, telemetry_ref = loop._phase_bridge_telemetry(ws, completion)
         material = artifacts.read(completion["preparation"])
@@ -136,6 +146,36 @@ def test_runtime_signing_exact_admission_binding(accepted_producer_chain, field,
     with pytest.raises(ValueError, match="admitted attempt bindings"):
         changed.verify(inputs.runtime_receipt)
     record_property("evidence_mode", "local-production-with-simulated-host-and-authority")
+
+
+@pytest.mark.parametrize("damage", [None, "source", "authority", "disabled-original"])
+def test_current_validation_signing_retains_original_admission(accepted_producer_chain, monkeypatch, damage):
+    ws, _, _, artifacts, _, inputs, _, material, original = accepted_producer_chain
+    source = Path(loop.tp.tp_dir(ws)) / "runtime-receipt-authority.json"
+    load_json = loop.tp.load_json
+    before = load_json(str(source))
+    bindings = dict(material["bindings"])
+    freshness = {**material["freshness"], "impact_manifest_fingerprint":"d" * 64}
+    if damage == "source": freshness["source_tree"] = "d" * 40
+    if damage == "authority": bindings["authority_fingerprint"] = "foreign"
+    if damage == "disabled-original":
+        altered = copy.deepcopy(before)
+        altered["keys"][original.key_id]["status"] = "revoked"
+        monkeypatch.setattr(loop.tp, "load_json", lambda path, *a, **kw:
+            altered if str(path) == str(source) else load_json(path, *a, **kw))
+    def current_policy():
+        return design_host_transport.runtime_receipt_authority(loop.tp, ws,
+            bindings=bindings, freshness=freshness, original_freshness=material["freshness"],
+            collection_policy="d" * 64, now=original.now, admit=True, authorize=lambda: True)
+    if damage:
+        with pytest.raises(ValueError): current_policy()
+    else:
+        policy = current_policy()
+        signed = policy.sign(inputs.runtime_receipt["payload"], store=artifacts)
+        assert policy.verify(signed, store=artifacts)["payload"] == inputs.runtime_receipt["payload"]
+        assert signed["freshness"] == freshness
+        assert current_policy().key_id == policy.key_id
+    assert load_json(str(source))["admissions"][bindings["operation_id"]] == before["admissions"][bindings["operation_id"]]
 
 
 @pytest.mark.parametrize("case", ["missing", "unadmitted", "foreign-purpose", "foreign-owner",
@@ -564,7 +604,7 @@ def test_atomic_phase_cutover(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("damage", ["invalid", "malformed", "missing"])
-def test_phase_stop_retains_output_bytes_before_validation(tmp_path, monkeypatch, damage):
+def test_phase_stop_survives_invalid_current_candidates(tmp_path, monkeypatch, damage):
     """Production nonce/collector, simulated host; no native acceptance claim."""
     ws, _, stage, _, _, _ = _normal_phase_workspace(tmp_path, monkeypatch)
     action = loop.next_action(ws)
@@ -581,13 +621,16 @@ def test_phase_stop_retains_output_bytes_before_validation(tmp_path, monkeypatch
     _, terminal = nonce.phase_hooks(dispatch.issued, dispatch.nonce_bindings)
     assert terminal["outcome"] == "success"  # Host completion is not output acceptance.
     saved = copy.deepcopy(terminal)
-    _authored_requirement(ws, stage)  # Later bytes cannot replace the worker's output.
     with pytest.raises((ValueError, OSError)):
         loop._collect_phase_attempt(ws, attempt)
+    _authored_requirement(ws, stage)
+    accepted = loop._collect_phase_attempt(ws, attempt)
+    assert accepted["status"] == "collected"
+    assert accepted["receipt"]["result"]["validation"]["mode"] == "current-semantic"
     assert nonce.phase_hooks(dispatch.issued, dispatch.nonce_bindings)[1] == saved
 
 
-def test_phase_reconcile_uses_pinned_candidates_without_replaying_stop(tmp_path, monkeypatch):
+def test_phase_reconcile_accepts_equivalent_json_without_replaying_stop(tmp_path, monkeypatch):
     ws, store, stage, artifacts, _, _ = _normal_phase_workspace(tmp_path, monkeypatch)
     action = loop.next_action(ws)
     assert _emit_host_hook(ws, action, "SubagentStart", monkeypatch) == 0
@@ -602,7 +645,8 @@ def test_phase_reconcile_uses_pinned_candidates_without_replaying_stop(tmp_path,
     attempt = loop._phase_bridge_attempt(ws, worker)
     nonce, dispatch = attempt[4].nonce, attempt[5]
     before = nonce.phase_hooks(dispatch.issued, dispatch.nonce_bindings)
-    (Path(ws) / "specs/requirement.json").write_text("later replacement is not the producer output")
+    candidate = Path(ws) / "specs/requirement.json"
+    candidate.write_text(json.dumps(json.loads(candidate.read_text()), indent=4, sort_keys=True) + "\n")
     def no_replayed_host(*args, **kwargs):
         pytest.fail("reconciliation must not observe another host event")
     monkeypatch.setattr(design_host_transport, "observe_phase_hook", no_replayed_host)
@@ -616,15 +660,7 @@ def test_phase_reconcile_uses_pinned_candidates_without_replaying_stop(tmp_path,
     result = artifacts.read(rows[0]["result"]["runtime_result"])
     assert result["status"] == "accepted"
     assert "task_name" not in loop.next_action(ws)
-    raw_ref = before[1]["outputs"][0]["reference"]
-    raw_path = Path(artifacts.root) / raw_ref["kind"] / (raw_ref["fingerprint"] + ".json")
-    saved = raw_path.read_bytes()
-    try:
-        raw_path.write_bytes(b'"tampered"')
-        with pytest.raises(ValueError):
-            loop._phase_bridge_telemetry(ws, rows[0]["result"])
-    finally:
-        raw_path.write_bytes(saved)
+    assert rows[0]["result"]["validation"]["mode"] == "current-semantic"
 
 
 @pytest.mark.parametrize("sever", ["missing-start", "missing-terminal", "foreign-worker",

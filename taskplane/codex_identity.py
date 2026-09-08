@@ -149,3 +149,49 @@ def terminal_usage(workspace: str, terminal: dict[str, Any], *,
             counter_at.timestamp() > stopped_at:
         raise ValueError("terminal native usage is foreign or later than the stopped attempt")
     return snapshot
+
+
+def completed_child(workspace: str, start: dict[str, Any]) -> dict[str, Any]:
+    """Read current provider completion for an authenticated Start's child.
+
+    This is not a recovered SubagentStop. Only bounded lifecycle metadata is
+    returned; messages are neither interpreted nor retained.
+    """
+    from taskplane import review_evidence
+    owner = start["owner"]
+    matched = _matching_child({**owner, "cwd":workspace},
+        now=datetime.fromtimestamp(start["observed_at"], timezone.utc))
+    if matched is None or matched[0] != owner["task_name"]:
+        raise ValueError("completed worker has no exact provider identity")
+    descriptor = os.open(matched[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        offset = max(0, before.st_size - MAX_METADATA_BYTES)
+        stream.seek(offset)
+        tail = stream.read(MAX_METADATA_BYTES)
+        after = os.fstat(stream.fileno())
+    if any(getattr(before, key) != getattr(after, key) for key in ("st_ino", "st_size", "st_mtime_ns")):
+        raise ValueError("provider lifecycle changed during observation")
+    if offset:
+        tail = tail.partition(b"\n")[2]
+    latest = None
+    for raw in tail.splitlines():
+        try:
+            row = json.loads(raw)
+        except (ValueError, UnicodeError):
+            continue
+        if not isinstance(row, dict) or row.get("type") != "event_msg":
+            continue
+        payload = row.get("payload")
+        if isinstance(payload, dict) and payload.get("type") in {"task_started", "task_complete", "turn_aborted"}:
+            latest = {key:payload.get(key) for key in ("type", "turn_id", "started_at", "completed_at", "duration_ms")}
+    if not latest or latest["type"] != "task_complete" or latest["turn_id"] != start["turn_id"]:
+        raise ValueError("exact provider turn is not currently completed")
+    ended = latest["completed_at"]
+    began = latest["started_at"]
+    if type(ended) not in (int, float) or type(began) not in (int, float) or not (
+            0 <= began <= start["observed_at"] <= ended <= datetime.now(timezone.utc).timestamp()):
+        raise ValueError("provider completion time is invalid")
+    result = {"source":"codex-task-complete", "owner":dict(owner), "turn_id":latest["turn_id"],
+        "observed_at":ended, "outcome":"complete", "tokens":None, "provider_lifecycle":latest}
+    return {**result, "claim":"codex-task-complete:" + review_evidence.content_fingerprint(result)}

@@ -50,16 +50,32 @@ class PlanTopologyError(RuntimeError):
 
 
 def produce_dependency_plan(workspace: str, *, binding: Mapping[str, Any],
-        seam_contracts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        seam_contracts: Sequence[Mapping[str, Any]], plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Use the incumbent live source scanner and decomposition producer."""
     graph = _depgraph.scan(workspace, decompose=True)
-    decomposition = _depgraph.graph_decomposition.dependency_decomposition(graph)
+    decomposition = dependency_plan_projection(graph, plan)
     coverage = graph["meta"]["source_coverage"]
     manifest = _wiring_closure.build_seam_manifest(decomposition,
         binding={**binding, "source_tree": decomposition["source_tree"],
             "graph_fingerprint": decomposition["fingerprint"]}, contracts=seam_contracts)
     return {"source-coverage": coverage, "decomposition": decomposition,
         "seam-manifest": manifest}
+
+
+def dependency_plan_projection(graph: dict, plan: Mapping[str, Any] | None = None) -> dict:
+    """Keep scanner truth, assigning only approved scope to actual Plan tasks."""
+    owners = None
+    if plan is not None:
+        tasks = plan["tasks"]
+        owners = {}
+        for component in graph.get("components", []):
+            for task in tasks:
+                if any(_scope_matches(scope, path) for scope in task["scope"] for path in component["files"]):
+                    module = component["module"]
+                    if module in owners and owners[module] != task["id"]:
+                        raise ValueError("source module has ambiguous Plan task ownership")
+                    owners[module] = task["id"]
+    return _depgraph.graph_decomposition.dependency_decomposition(graph, task_owners=owners)
 
 
 def canonical_plan_fingerprint(plan: Mapping[str, Any]) -> str:

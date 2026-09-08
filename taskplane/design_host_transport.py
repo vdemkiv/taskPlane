@@ -118,7 +118,8 @@ class RuntimeReceiptAuthority:
 
 
 def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
-                              now: int, admit=False, authorize=None, collection_policy: str | None = None):
+                              now: int, admit=False, authorize=None, collection_policy: str | None = None,
+                              original_freshness=None):
     """Admit a purpose-limited key only through the incumbent host owner.
 
     The private policy is separate from worker lifecycle and nonce secrets.
@@ -129,6 +130,10 @@ def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
     from taskplane import stage_handoff
     from datetime import datetime
     fresh = stage_handoff._freshness(freshness)
+    original_fresh = fresh if original_freshness is None else stage_handoff._freshness(original_freshness)
+    if original_freshness is not None and (collection_policy is None or any(
+            fresh[key] != original_fresh[key] for key in ("candidate_sha", "source_tree"))):
+        raise NativeEntryError("current validation changed original source authority")
     operation = bindings.get("operation_id")
     if not isinstance(operation, str) or not operation:
         raise NativeEntryError("runtime signing operation missing")
@@ -164,7 +169,7 @@ def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
             raise NativeEntryError("runtime signing key admission policy malformed")
         original = policy["admissions"].get(original_operation)
         if collection_policy is not None and original is not None and (
-                original.get("bindings") != dict(bindings) or original.get("freshness") != fresh or
+                original.get("bindings") != dict(bindings) or original.get("freshness") != original_fresh or
                 policy["keys"].get(original.get("key_id"), {}).get("status") != "active"):
             raise NativeEntryError("original runtime signing authority changed or is disabled")
         admission = policy["admissions"].get(operation)
