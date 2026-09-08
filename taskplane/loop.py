@@ -13674,6 +13674,18 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                 return {"error": "Plan lens collection changed during gate validation",
                         "dod": {"passed": False, "errors": lens_errors}}
         stage_state_before = json.loads(json.dumps(state))
+        product_successor = None
+        if step == "pm":
+            try:
+                phase = _phase_bridge_context(ws, state)
+                if phase is not None:
+                    successors = [edge["successor"] for edge in phase["definition"]["edge_conditions"]
+                                  if edge["condition"] == "accepted"]
+                    if len(successors) != 1 or successors[0] not in {"design", "plan"}:
+                        raise ValueError("Product requires one supported accepted successor")
+                    product_successor = successors[0]
+            except (ValueError, OSError) as exc:
+                return {"error": "phase runtime successor refused: " + str(exc), "step": step}
         # v2.3.0: the final staleness re-attest runs INSIDE the state lock,
         # immediately before the transition commits — the old pre-lock check
         # left a TOCTOU window in which a workspace edit got blessed by a
@@ -13776,7 +13788,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             if "requirement_refinement" in _validated:
                 state["requirement_refinement"] = \
                     _validated["requirement_refinement"]
-            state["step"] = ("design" if state.get("design_required") else "plan")
+            if product_successor is not None:
+                state["design_required"] = product_successor == "design"
+            state["step"] = product_successor or ("design" if state.get("design_required") else "plan")
         elif step == "design":
             if _consolidated_enabled():
                 contract, _ = _design_contract(ws)

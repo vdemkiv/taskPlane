@@ -132,17 +132,30 @@ def _initialize_real_new_run(tmp_path, monkeypatch, *, stage_kind="product",
 @pytest.fixture
 def collected_product_handoff(tmp_path, monkeypatch):
     """Actual producers/collector on a small Git target; host events simulated."""
-    from taskplane import review_evidence
+    from taskplane import review_evidence, stage_migration
     from taskplane.tests import test_stage_cross_host as cross_host
     from taskplane.tests.test_r0001_j1_native import _supporting_pristine_phase_run
     from taskplane.tests.test_r0001_phase_cutover import _emit_host_hook, _host_event
+    git = cross_host._git
+    def with_python_input(workspace, *args):
+        if args == ("add", "."):
+            (workspace / "app.py").write_text("def greet(name):\n    return f'Hello {name}'\n")
+        return git(workspace, *args)
+    monkeypatch.setattr(cross_host, "_git", with_python_input)
+    route = stage_migration.change_phase_routing
+    def with_design_destination(*args, **kwargs):
+        configuration = copy.deepcopy(kwargs["configuration"])
+        configuration["output_paths"]["design"] = {
+            "design": "design/contract.json", "test-strategy": "design/test-strategy.json"}
+        return route(*args, **{**kwargs, "configuration": configuration})
+    monkeypatch.setattr(stage_migration, "change_phase_routing", with_design_destination)
     record = cross_host._record_bootstrap_requirement
     def with_context(workspace):
         requirement = record(workspace)
         requirement = loop.reqs.amend_requirement(str(workspace), requirement["id"],
-            context_files=["README.md"], nfr={"security":"retain exact authority",
+            context_files=["app.py"], nfr={"security":"retain exact authority",
                 "architecture":"reuse existing owners", "reliability":"preserve accepted evidence"})
-        loop.depgraph.link_requirement(str(workspace), requirement["id"], ["README.md"], kind="planned", replace=True)
+        loop.depgraph.link_requirement(str(workspace), requirement["id"], ["app.py"], kind="planned", replace=True)
         return requirement
     monkeypatch.setattr(cross_host, "_record_bootstrap_requirement", with_context)
     ws, store, run_id, requirement = _supporting_pristine_phase_run(tmp_path, monkeypatch)
@@ -176,11 +189,30 @@ def test_collected_product_gate_preserves_signed_handoff_after_graph_refresh(col
     monkeypatch.setattr(loop.depgraph, "time", types.SimpleNamespace(time=lambda: impact["graph"]["updated_at"] + 10))
     gated = loop.gate(ws, "pass")
     assert not gated.get("error"), gated
-    assert gated["step"] == "plan"
+    assert gated["step"] == "design"
     assert {key:artifacts.read(completion[key]) for key in original} == original
     from taskplane import stage_migration
     retained = stage_migration.phase_records(store.load(run_id))
     assert any(row["operation"] == "phase_collect" and row["result"] == completion for row in retained.values())
+
+
+def test_collected_product_uses_selected_successor_before_legacy_design_policy(collected_product_handoff):
+    ws, _, _, completion, _, artifacts = collected_product_handoff
+    assert loop.load(ws)["design_required"] is False
+    gated = loop.gate(ws, "pass")
+    assert not gated.get("error"), gated
+    assert gated["step"] == "design"
+    assert loop.load(ws)["design_required"] is True
+    requested = loop.next_action(ws)
+    assert not requested.get("error"), requested
+    assert requested["role"] == "tp-design"
+    assert requested["phase_runtime"]["status"] == "pending"
+    material = artifacts.read(requested["phase_runtime"]["reference"])
+    assert artifacts.read(material["predecessor"]) == artifacts.read(completion["handoff"])
+    assert [row["artifact_class"] for row in material["package"]] == ["requirement"]
+    refused = loop.gate(ws, "pass")
+    assert "matching terminal and collected output" in refused["error"]
+    assert loop.load(ws)["step"] == "design"
 
 
 @pytest.mark.parametrize("changed", ["source", "graph-content", "graph-quality", "impact", "policy", "binding", "recorded-impact", "signature"])
