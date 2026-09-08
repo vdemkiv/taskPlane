@@ -12831,6 +12831,59 @@ def _submission_staleness(ws: str, submission: dict) -> str | None:
     return None
 
 
+def collect_failed_submission_observation(ws: str, *, slot: str) -> dict:
+    """Attach only a durable native observation to this pending failed submission.
+
+    Called after the claimed Stop records its observation, before retirement.
+    An interrupted consumption is re-attested, never minted or consumed twice.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", str(slot or "")):
+        raise ValueError("failed producer slot is invalid")
+    with tp.file_lock(tp.active_contract_path(ws, slot)):
+        with mutate(ws) as state:
+            task = _current_task(state or {}) or {}
+            submission = (state or {}).get("_submission") or {}
+            if (not state or state.get("step") != "evaluate"
+                    or _validated_delivery_mode(state) is None
+                    or submission.get("outcome") != "fail" or submission.get("step") != "evaluate"
+                    or submission.get("task") != task.get("id")):
+                raise ValueError("native failure observation lacks its current failed submission")
+            contract = _worker_stage_contract(ws, "evaluate", task)
+            lifecycle = contract.get("worker_lifecycle") or {}
+            if (contract.get("task_slot") != slot or lifecycle.get("status") != "active"
+                    or not isinstance(lifecycle.get("owner"), Mapping)):
+                raise ValueError("failed submission no longer owns its exact active worker")
+            tp._verify_worker_release_action(ws, slot, lifecycle.get("release_action"), contract)
+            if _submission_staleness(ws, submission):
+                raise ValueError("failed submission changed before native observation consumption")
+            material = producer_output_identity(ws, state, task, "evaluate", active_contract=contract)
+            receipt = submission.get("producer_observation")
+            if receipt is None:
+                try:
+                    receipt = producer_observation_policy.consume_matching_observation(**material)
+                except producer_observation_policy.ProducerObservationError as exc:
+                    if str(exc) != "producer observation replay":
+                        raise
+                    store = producer_observation_policy._production_store(
+                        material["evidence_root"], ws, material["run_id"])
+                    paths = list((store.path / "producer_observation" / "receipts").glob("*.json"))
+                    if len(paths) != 1:
+                        raise ValueError("interrupted producer consumption is ambiguous") from exc
+                    receipt, _ = producer_observation_policy._load_stored_observation(paths[0])
+            producer_observation_policy.validate_consumed_matching_observation(receipt, **material)
+            identity = producer_observation_policy._decode_stopping_identity(
+                receipt["host_session_or_turn"], material["producer_dispatch"])
+            if lifecycle["owner"] != {key:identity[key] for key in ("agent_id", "session_id", "task_name")}:
+                raise ValueError("native failure observation belongs to another worker owner")
+            if (_worker_stage_contract(ws, "evaluate", task) != contract
+                    or _submission_staleness(ws, submission)
+                    or producer_output_identity(ws, state, task, "evaluate", active_contract=contract) != material):
+                raise ValueError("failed submission identity changed during observation consumption")
+            submission["producer_observation"] = _copy_json(receipt)
+            submission["producer_worker_slot"] = slot
+            return _copy_json(receipt)
+
+
 def _producer_observation_errors(
         act_ws: str, state: dict, task: dict | None, step: str,
         submission: Mapping[str, object] | None, *, clock=None) -> list[str]:
@@ -12838,12 +12891,29 @@ def _producer_observation_errors(
     if _validated_delivery_mode(state) is None or step not in {"evaluate", "em"}:
         return []
     try:
+        contract = _worker_stage_contract(act_ws, step, task)
+        slot = (submission or {}).get("producer_worker_slot")
+        if slot is not None:
+            if step != "evaluate" or (submission or {}).get("outcome") != "fail":
+                raise ValueError("terminal producer slot is only bound to a failed Evaluate submission")
+            if contract and contract.get("task_slot") != slot:
+                raise ValueError("failed producer slot was replaced")
+            if not contract:
+                contract = tp.released_worker_contract(act_ws, slot)
+            lifecycle = contract.get("worker_lifecycle") or {}
+            if lifecycle.get("stage") != step or lifecycle.get("task") != (task or {}).get("id"):
+                raise ValueError("terminal producer contract belongs to another task")
         material = producer_output_identity(
             act_ws, state, task, step,
-            active_contract=_worker_stage_contract(act_ws, step, task))
+            active_contract=contract)
         producer_observation_policy.validate_consumed_matching_observation(
             (submission or {}).get("producer_observation"), **material,
             clock=clock)
+        if slot is not None:
+            identity = producer_observation_policy._decode_stopping_identity(
+                submission["producer_observation"]["host_session_or_turn"], material["producer_dispatch"])
+            if lifecycle.get("owner") != {key:identity[key] for key in ("agent_id", "session_id", "task_name")}:
+                raise ValueError("terminal producer observation belongs to another worker owner")
     except Exception as exc:
         return ["producer observation validation failed: "
                 f"{exc.__class__.__name__}: {exc}"]

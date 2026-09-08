@@ -5,11 +5,15 @@ import json
 from pathlib import Path
 from contextlib import contextmanager
 import sys
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from taskplane import delivery_policy, loop, loop_recovery, run_context, settings
+
+REAL_GIT_HEAD = loop.tp.git_head
+REAL_WORKSPACE_FINGERPRINT = loop.tp.workspace_fingerprint
 
 
 @pytest.mark.parametrize("size", [977211, 1553457, 2000001])
@@ -255,6 +259,186 @@ def test_failed_build_classifier_keeps_incumbent_correction_guards(legacy, monke
     loop.save(ws, state)
     monkeypatch.setattr(loop, "status", lambda *_:{})
     assert "cannot erase" in loop.gate(ws, "pass")["error"]
+
+
+@pytest.fixture
+def classifier_terminal(legacy, monkeypatch):
+    from taskplane import evaluation_output, failure_routing, tp as cli
+    ws, root, _, _ = legacy
+    assert invoke(legacy)["continued"] is True
+    (root / ".gitignore").write_text(".taskplane/\n.eval/\n")
+    for command in (["git", "init", "-q"], ["git", "add", "."],
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "commit", "-qm", "generated legacy fixture baseline"]):
+        subprocess.run(command, cwd=ws, check=True, capture_output=True)
+    monkeypatch.setattr(loop.tp, "git_head", REAL_GIT_HEAD)
+    monkeypatch.setattr(loop.tp, "workspace_fingerprint", REAL_WORKSPACE_FINGERPRINT)
+    head = REAL_GIT_HEAD(ws)
+    # Rendering is unrelated to producer authority; retain the public owners.
+    dashboard = sys.modules[loop.submit.__module__]
+    import views
+    monkeypatch.setattr(dashboard, "refresh_dashboard_snapshot", lambda *a,**k:{})
+    monkeypatch.setattr(dashboard, "_publication_problem", lambda *a:None)
+    monkeypatch.setattr(views, "refresh_views", lambda *a:None)
+    state = loop._load_raw(ws)
+    state.update(step="evaluate", _build_failed=True, submission_required=True,
+        goal="generated legacy classification", max_fix_cycles=3)
+    task = state["tasks"][19]
+    loop.stamp_plan_delivery_mode(state, json.loads((root / "plan/tasks.json").read_text()),
+        plan_fingerprint=fingerprint(json.loads((root / "plan/tasks.json").read_text())), source_sha=head)
+    state["review_kernel_runs"] = {"evaluate:T19":{"run_id":"e" * 32,
+        "workspace":ws, "stage":"evaluate", "status":"ready"}}
+    candidate = loop._failure_candidate_identity(ws, task)
+    evidence = {"observation":"independent environment failure"}
+    record = {"schema":failure_routing.FAILURE_RECORD_SCHEMA_ID, "id":"observed-failure",
+        "source":"native-evaluator", "stage":"evaluate", "repro":"bounded current probe",
+        "evidence":evidence, "evidence_digest":failure_routing.evidence_digest(evidence),
+        "class":"environment", "reason":"required native service unavailable", "owner":"host",
+        "cluster":"classification", "route":"environment-recovery", "candidate":candidate}
+    verdict = {"schema":evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID, "task":"T19",
+        "requirement":"R-0001", "verdict":"fail", "evaluation":{"status":"complete",
+        "reason_code":"none", "detail":"bounded independent classification"},
+        "criteria":[{"criterion":"delivery", "status":"cannot-verify", "evidence":"observed-failure"}],
+        "graph":{"dispositions":[], "requirements_checked":[], "contracts_checked":[]}, "failures":[record]}
+    (root / ".eval").mkdir()
+    (root / ".eval/verdict.json").write_text(json.dumps(verdict))
+    dispatch = {"run_id":"e" * 32, "task_id":"T19", "stage":"evaluate",
+        "producer":"tp-evaluator", "task_name":"tp_step_evaluator_t19_test",
+        "role_marker":"taskplane-role:tp-evaluator", "model":None, "reasoning_effort":"medium"}
+    contract = loop.tp.build_contract("Evaluate", read_only=True, write_allow=[".eval/**"])
+    dispatch["fingerprint"] = loop.producer_observation_policy.content_fingerprint(dispatch)
+    contract.update(producer_dispatch=dispatch, output_contract={"stage":"evaluate",
+        "task":"T19", "producer":"tp-evaluator", "result_path":".eval/verdict.json",
+        "output_schema_id":evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID})
+    contract = loop.tp.prepare_worker_contract(ws, contract, stage="evaluate", task="T19",
+        task_name=dispatch["task_name"], role_marker=dispatch["role_marker"])
+    contract = loop.tp.bind_submission_contract(contract, ws, task="T19", stage="evaluate",
+        slot=contract["task_slot"], locator={"type":"loop_submission"}, validation_rule="loop-submission/v1")
+    loop.tp.activate(ws, contract, snapshot=head, task_slot_override=contract["task_slot"])
+    event = {"cwd":ws, "hook_event_name":"SubagentStart", "session_id":"test-parent",
+        "agent_id":"test-child", "task_name":dispatch["task_name"], "agent_type":dispatch["task_name"],
+        "turn_id":"test-turn"}
+    loop.tp.bind_worker_contract_event(ws, event)
+    loop.save(ws, state)
+    assert loop.submit(ws, "fail", note="independent classifier complete")["submitted"]
+    event["hook_event_name"] = "SubagentStop"
+    claim = loop.tp.claim_hook_event(ws, "subagent-stop", event, hook_path="native")
+    event["_taskplane_hook_claim_id"] = claim["claim_id"]
+    monkeypatch.setenv("TASKPLANE_HOOK_PATH", "native")
+    monkeypatch.setattr(cli, "_subagent_event", lambda:dict(event))
+    monkeypatch.setitem(sys.modules, "loop", loop)
+    monkeypatch.setattr(loop, "status", lambda *_:{})
+    monkeypatch.setattr(loop.yield_meter, "gate_snapshot", lambda *_:None)
+    return ws, root, contract, cli
+
+
+def test_native_failed_submission_stop_and_gate_use_same_consumed_observation(classifier_terminal, capsys):
+    ws, root, contract, cli = classifier_terminal
+    before = loop._load_raw(ws)
+    assert "producer_observation" not in before["_submission"]
+    decision = loop.tp.stop_submission_decision(ws, contract,
+        observed_slot=contract["task_slot"], loop_state=before)
+    assert decision["valid"], decision
+    assert cli.cmd_subagent_stop(SimpleNamespace()) == 0, capsys.readouterr().out
+    submitted = loop._load_raw(ws)["_submission"]
+    assert submitted.get("producer_observation"), "native Stop observation was never attached to fail submission"
+    assert submitted["producer_worker_slot"] == contract["task_slot"]
+    assert not Path(loop.tp.active_contract_path(ws, contract["task_slot"])).exists()
+    result = loop.gate(ws, "fail")
+    assert result.get("step") == "escalated", result
+    after = loop._load_raw(ws)
+    assert after["tasks"][:19] == before["tasks"][:19]
+    assert after["tasks"][19]["failure_routing"]["next"] == "environment-recovery"
+
+
+def record_classifier_stop(fixture, **changed):
+    """Generated host claim through the real observer, never a consumer receipt."""
+    ws, _, contract, cli = fixture
+    state = loop._load_raw(ws)
+    active = loop.tp.load_json(loop.tp.active_contract_path(ws, contract["task_slot"]))
+    material = loop.producer_output_identity(ws, state, state["tasks"][19], "evaluate",
+        active_contract=active)
+    material.update(changed)
+    event = cli._subagent_event()
+    return loop.producer_observation_policy.record_codex_subagent_stop(event=event,
+        hook_claim_id=event["_taskplane_hook_claim_id"], **material)
+
+
+@pytest.mark.parametrize("damage", ["missing", "foreign-source", "foreign-slot", "foreign-task", "stale-output"])
+def test_failed_observation_refuses_independent_missing_foreign_stale(classifier_terminal, damage):
+    ws, root, contract, _ = classifier_terminal
+    if damage != "missing":
+        record_classifier_stop(classifier_terminal,
+            **({"source_sha":"f" * 40} if damage == "foreign-source" else {}))
+    if damage == "stale-output":
+        with (root / ".eval/verdict.json").open("a") as stream:
+            stream.write("\n ")
+    if damage == "foreign-task":
+        with loop.mutate(ws) as state:
+            state["_submission"]["task"] = "OTHER"
+    before = loop._load_raw(ws)
+    with pytest.raises(ValueError):
+        loop.collect_failed_submission_observation(ws,
+            slot="task_foreign" if damage == "foreign-slot" else contract["task_slot"])
+    assert loop._load_raw(ws) == before
+    assert "producer_observation" not in before["_submission"]
+
+
+def test_failed_observation_byte_race_and_interrupted_consumption_replay(classifier_terminal, monkeypatch):
+    ws, root, contract, _ = classifier_terminal
+    receipt = record_classifier_stop(classifier_terminal)
+    output = root / ".eval/verdict.json"
+    original = output.read_bytes()
+    consume = loop.producer_observation_policy.consume_matching_observation
+    def raced(**material):
+        result = consume(**material)
+        output.write_bytes(original + b"\n")
+        return result
+    monkeypatch.setattr(loop.producer_observation_policy, "consume_matching_observation", raced)
+    before = loop._load_raw(ws)
+    with pytest.raises(ValueError, match="changed during"):
+        loop.collect_failed_submission_observation(ws, slot=contract["task_slot"])
+    assert loop._load_raw(ws) == before
+    output.write_bytes(original)
+    monkeypatch.setattr(loop.producer_observation_policy, "consume_matching_observation", consume)
+    assert loop.collect_failed_submission_observation(ws, slot=contract["task_slot"]) == receipt
+    once = loop._load_raw(ws)
+    assert loop.collect_failed_submission_observation(ws, slot=contract["task_slot"]) == receipt
+    assert loop._load_raw(ws) == once
+
+
+@pytest.mark.parametrize("damage", ["missing-terminal", "missing-quarantine", "signature", "foreign-owner",
+    "foreign-task", "foreign-slot", "stale-output", "missing-observation"])
+def test_failed_gate_requires_exact_signed_retired_producer(classifier_terminal, capsys, damage):
+    ws, root, contract, cli = classifier_terminal
+    assert cli.cmd_subagent_stop(SimpleNamespace()) == 0, capsys.readouterr().out
+    slot = contract["task_slot"]
+    terminal = Path(loop.tp._worker_terminal_path(ws, slot))
+    receipt = json.loads(terminal.read_text())
+    archive = root / ".taskplane/quarantine/contracts" / f"{slot}-{receipt['receipt_id'].split('-')[-1]}.json"
+    if damage == "missing-terminal": terminal.unlink()
+    if damage == "missing-quarantine": archive.unlink()
+    if damage == "signature":
+        receipt["signature"] = "0" * 64
+        terminal.write_text(json.dumps(receipt))
+    if damage in {"foreign-owner", "foreign-task"}:
+        released = json.loads(archive.read_text())
+        if damage == "foreign-owner": released["worker_lifecycle"]["owner"]["agent_id"] = "foreign"
+        else: released["worker_lifecycle"]["task"] = "OTHER"
+        archive.write_text(json.dumps(released))
+    if damage == "stale-output":
+        with (root / ".eval/verdict.json").open("a") as stream:
+            stream.write("\n ")
+    if damage in {"foreign-slot", "missing-observation"}:
+        with loop.mutate(ws) as state:
+            if damage == "foreign-slot": state["_submission"]["producer_worker_slot"] = "task_foreign"
+            else: state["_submission"].pop("producer_observation")
+    before = loop._load_raw(ws)
+    result = loop.gate(ws, "fail")
+    assert result.get("error"), result
+    after = loop._load_raw(ws)
+    assert after["step"] == "evaluate" and after["_submission"] == before["_submission"]
+    assert after["tasks"] == before["tasks"]
 
 
 def test_failed_gate_cleanup_preserves_existing_adverse_terminal_receipt(cancellation):

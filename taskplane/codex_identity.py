@@ -101,6 +101,29 @@ def _matching_child(event: dict[str, Any], *, codex_home: str | None = None,
     return matches[0] if len(matches) == 1 else None
 
 
+def terminal_transcript(workspace: str, contract: dict[str, Any], event: dict[str, Any]) -> tuple[str, str]:
+    """Select only the active lifecycle owner's exact native child metadata.
+
+    The hook must load its authenticated active slot before calling. Parent
+    transcript fields never select a child counter or provide missing identity.
+    """
+    lifecycle = contract.get("worker_lifecycle") or {}
+    owner = lifecycle.get("owner")
+    if not isinstance(owner, dict) or lifecycle.get("status") != "active":
+        raise ValueError("native terminal transcript requires an active child owner")
+    identity = {"agent_id":event.get("agent_id"),
+        "session_id":event.get("session_id") or event.get("thread_id"),
+        "task_name":event.get("task_name") or event.get("agent_type")}
+    if (any(not value or owner.get(key) != value for key,value in identity.items())
+            or identity["task_name"] != lifecycle.get("expected_task_name")
+            or os.path.realpath(str(event.get("cwd") or "")) != os.path.realpath(workspace)):
+        raise ValueError("native terminal event differs from the bound child owner")
+    matched = _matching_child(event)
+    if matched is None or matched[0] != owner["task_name"]:
+        raise ValueError("native terminal transcript has no exact child metadata")
+    return matched[1], matched[2]
+
+
 def terminal_usage(workspace: str, terminal: dict[str, Any], *,
                    codex_home: str | None = None) -> dict[str, Any]:
     """Read the exact stopped child's host counter when Stop has no usage.

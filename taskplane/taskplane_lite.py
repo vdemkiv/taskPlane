@@ -3231,6 +3231,13 @@ def workspace_fingerprint(workspace: str, snapshot_ref: str | None = None,
     for raw in extra_paths or []:
         raw = str(raw or "").strip()
         if os.path.isabs(raw):
+            # Normalize an exact contained producer path to the same identity
+            # as its relative spelling; legacy .eval outputs are not managed
+            # external paths and must not silently disappear from the hash.
+            relative = os.path.relpath(raw, workspace)
+            if os.path.normpath(raw) == raw and _submission_relative_path(workspace, relative) is not None:
+                entries.append((relative.replace(os.sep, "/"), raw))
+                continue
             import storage as runtime_storage
             locator = runtime_storage.load_workspace_locator(workspace)
             resolved = os.path.realpath(raw)
@@ -5126,6 +5133,14 @@ def _loop_submission_status(workspace: str, contract: dict, binding: dict,
     def valid_evidence_path(item):
         if _submission_relative_path(submission_workspace, item) is not None:
             return True
+        # The incumbent producer names repository outputs with absolute paths.
+        # Admit only that exact stage-owned path, never arbitrary absolute input.
+        if isinstance(item, str) and os.path.isabs(item) and os.path.normpath(item) == item:
+            import storage as runtime_storage
+            if item in runtime_storage.submission_evidence_paths(submission_workspace, stage):
+                relative = os.path.relpath(item, submission_workspace)
+                if _submission_relative_path(submission_workspace, relative) is not None:
+                    return True
         if not contract.get("phase_runtime") or stage not in {"evaluate", "em"}:
             return False
         # Stage-native review submissions name the incumbent's exact managed
@@ -6159,6 +6174,32 @@ def _verify_worker_terminal_receipt(workspace: str, slot: str,
         if receipt.get(field) != value:
             raise _worker_lifecycle_error(
                 workspace, f"worker terminal receipt {field} mismatches slot")
+
+
+def released_worker_contract(workspace: str, slot: str) -> dict:
+    """Read one exact signed quarantine for a submission-bound terminal slot."""
+    if not _TASK_SLOT_RE.fullmatch(str(slot or "")):
+        raise _worker_lifecycle_error(workspace, "terminal worker slot is invalid")
+    terminal_path = _worker_terminal_path(workspace, slot)
+    if os.path.islink(terminal_path):
+        raise _worker_lifecycle_error(workspace, "terminal receipt is symlinked")
+    receipt = load_json(terminal_path, what="exact worker terminal receipt")
+    identifier = str((receipt or {}).get("receipt_id") or "")
+    if not re.fullmatch(r"worker-terminal-[0-9a-f]{24}", identifier):
+        raise _worker_lifecycle_error(workspace, "terminal receipt identity is invalid")
+    archive = os.path.join(tp_dir(workspace), "quarantine", "contracts",
+        f"{slot}-{identifier.split('-')[-1]}.json")
+    if os.path.islink(archive):
+        raise _worker_lifecycle_error(workspace, "terminal quarantine is symlinked")
+    contract = load_json(archive, what="exact worker quarantine")
+    lifecycle = (contract or {}).get("worker_lifecycle") or {}
+    action = lifecycle.get("release_action")
+    _verify_worker_release_action(workspace, slot, action, contract)
+    _verify_worker_terminal_receipt(workspace, slot, receipt, contract, action)
+    if (lifecycle.get("status") != "released" or lifecycle.get("terminal") != receipt
+            or receipt.get("authority") != "host-lifecycle" or receipt.get("owner") != lifecycle.get("owner")):
+        raise _worker_lifecycle_error(workspace, "quarantine lacks its exact native terminal")
+    return contract
 
 
 def release_worker_contract(

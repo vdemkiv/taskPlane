@@ -1985,15 +1985,13 @@ def cmd_subagent_stop(a) -> int:
                            or "success")
             normalized_outcome = tp.normalize_worker_terminal_outcome(
                 raw_outcome)
+            child_lifecycle = (lifecycle_contract or {}).get("worker_lifecycle") or {}
+            if (child_lifecycle.get("task") != task_id
+                    or child_lifecycle.get("expected_task_name") != native_task_name
+                    or child_lifecycle.get("dispatch_intent_id") != dispatch_id):
+                raise ValueError("Evaluate child terminal lacks its exact lifecycle owner")
             telemetry = _seal_terminal_dispatch_telemetry(
-                ws, {
-                    "budget": {"token_usage_required": True},
-                    "worker_lifecycle": {
-                        "task": task_id,
-                        "expected_task_name": native_task_name,
-                        "dispatch_intent_id": dispatch_id,
-                    },
-                }, event, outcome=normalized_outcome)
+                ws, lifecycle_contract, event, outcome=normalized_outcome)
             telemetry_receipt = (telemetry.get("receipt")
                                  if isinstance(telemetry, dict) else None)
             if (not isinstance(telemetry, dict) or
@@ -2059,18 +2057,24 @@ def cmd_subagent_stop(a) -> int:
         print("{}")
         return 0
     producer_error = None
+    producer_binding = (lifecycle_contract or {}).get("producer_dispatch") or {}
+    required_delivery = producer_binding.get("stage") in {"evaluate", "em"}
+    delivery = None
     try:
         import loop as _loop_runtime
         import producer_observation as _producer_observation
         state = _loop_runtime.load(ws)
         step = (state or {}).get("step")
         task = _loop_runtime._current_task(state or {})
-        required_delivery = (step in {"evaluate", "em"} and
+        required_delivery = required_delivery or (step in {"evaluate", "em"} and
                              (state or {}).get(
                                  "delivery_mode_receipt") is not None)
         delivery = (_loop_runtime._validated_delivery_mode(state or {})
                     if step in {"evaluate", "em"} else None)
         existing = (state or {}).get("_submission") or {}
+        if required_delivery and (delivery is None or step not in {"evaluate", "em"}):
+            raise _producer_observation.ProducerObservationError(
+                "bound producer requires its current delivery observation authority")
         if delivery is not None and step in {"evaluate", "em"}:
             if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() \
                     not in {"native", "bridge"}:
@@ -2098,6 +2102,9 @@ def cmd_subagent_stop(a) -> int:
                 tp.trace(ws, "producer_observation_recorded", step=step,
                          task=expected_task, run_id=material["run_id"],
                          fingerprint=receipt["fingerprint"][:12])
+            if step == "evaluate" and existing.get("outcome") == "fail":
+                _loop_runtime.collect_failed_submission_observation(
+                    ws, slot=str(contract.get("task_slot") or ""))
     except Exception as exc:
         if ('delivery' in locals() and delivery is not None) or \
                 ('required_delivery' in locals() and required_delivery):
@@ -2711,6 +2718,12 @@ def _seal_terminal_dispatch_telemetry(
         return {"status": "not-bound"}
     import spend as _spend
     transcript = _spend.event_transcript(event)
+    provider = _hook_usage_provider(event)
+    child_metadata = None
+    if provider == "codex" and (contract.get("worker_scoped") or
+            event.get("hook_event_name") == "SubagentStop"):
+        import codex_identity
+        transcript, child_metadata = codex_identity.terminal_transcript(ws, contract, event)
     usage_required = not advisory and bool((contract.get("budget") or {}).get(
         "token_usage_required"))
     if not transcript:
@@ -2725,7 +2738,6 @@ def _seal_terminal_dispatch_telemetry(
             dispatch_id=dispatch_id or None)
         return {**result, "reason":
                 "host transcript path is unavailable"}
-    provider = _hook_usage_provider(event)
     projection = _bounded_transcript_projection(
         ws, transcript, provider)
     if projection.get("status") != "available":
@@ -2750,6 +2762,14 @@ def _seal_terminal_dispatch_telemetry(
     metered_projection = dict(projection)
     native_record = None
     native_snapshot = projection.get("native_session")
+    if child_metadata is not None:
+        owner = lifecycle["owner"]
+        if (not isinstance(native_snapshot, dict)
+                or native_snapshot.get("session_id") != owner["agent_id"]
+                or native_snapshot.get("root_session_id") != owner["session_id"]
+                or native_snapshot.get("parent_session_id") != owner["session_id"]
+                or (native_snapshot.get("source") or {}).get("metadata_record_sha256") != child_metadata):
+            raise ValueError("native terminal counter differs from authenticated child metadata")
     if isinstance(native_snapshot, dict):
         native_record = _loop_runtime.record_native_session_snapshot(
             ws, task_id=task_id, dispatch_id=dispatch_id,

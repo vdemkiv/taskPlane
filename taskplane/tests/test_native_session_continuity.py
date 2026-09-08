@@ -16,9 +16,141 @@ import pytest
 import host_capabilities as caps
 import storage
 import tp as cli
+from taskplane.tests.test_codex_child_identity import native as native_child
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("damage", [None, "wrong-path", "traversal", "symlink-escape", "stale", "wrong-task"])
+def test_real_evaluator_submission_absolute_path_survives_stop(onboarded, monkeypatch, damage):
+    import loop
+    workspace, _ = onboarded
+    ws = str(workspace)
+    (workspace / ".eval").mkdir()
+    verdict = workspace / ".eval/verdict.json"
+    verdict.write_text('{"verdict":"fail"}')
+    snapshot = cli.tp.git_head(ws)
+    state = {"step":"evaluate", "current_task":0, "tasks":[{"id":"T19"}],
+        "submission_required":True, "baseline":snapshot}
+    loop.save(ws, state)
+    contract = cli.tp.bind_submission_contract(cli.tp.build_contract("Evaluate", read_only=True),
+        ws, task="T19", stage="evaluate", slot="classifier", locator={"type":"loop_submission"},
+        validation_rule="loop-submission/v1")
+    monkeypatch.setattr(loop, "_worker_stage_snapshot", lambda *a:snapshot)
+    submitted = loop.submit(ws, "fail", note="independent failure classification")
+    assert submitted.get("submitted"), submitted
+    state = loop._load_raw(ws)
+    assert state["_submission"]["evidence_paths"] == [str(verdict)]
+    assert not contract.get("phase_runtime")
+    if damage == "wrong-path": state["_submission"]["evidence_paths"] = [str(workspace / "unrelated.json")]
+    if damage == "traversal": state["_submission"]["evidence_paths"] = [str(workspace / ".eval/../.eval/verdict.json")]
+    if damage == "symlink-escape":
+        outside = workspace.parent / "foreign.json"
+        outside.write_text(verdict.read_text())
+        verdict.unlink()
+        verdict.symlink_to(outside)
+    if damage == "stale": verdict.write_text('{"verdict":"changed"}')
+    if damage == "wrong-task": state["_submission"]["task"] = "OTHER"
+    result = cli.tp.stop_submission_decision(ws, contract, observed_slot="classifier", loop_state=state)
+    assert result["valid"] is (damage is None), result
+    if damage == "stale": assert result["status"] == "stale"
+
+
+def test_early_producer_load_error_cannot_disappear(tmp_path, monkeypatch, capsys):
+    import loop
+    from types import SimpleNamespace
+    state_calls = []
+    def load(*a):
+        state_calls.append(True)
+        if len(state_calls) == 1: return {}
+        raise ValueError("unreadable producer state")
+    contract = {"producer_dispatch":{"stage":"evaluate", "producer":"tp-evaluator"}}
+    monkeypatch.setattr(cli, "_subagent_event", lambda:{"cwd":str(tmp_path)})
+    monkeypatch.setattr(cli.tp, "load_active_for_event", lambda *a:contract)
+    monkeypatch.setattr(loop, "load", load)
+    monkeypatch.setattr(loop, "complete_observed_evaluate_evidence_child", lambda *a:None)
+    monkeypatch.setattr(cli, "_submission_stop_check", lambda *a:None)
+    trace = []
+    monkeypatch.setattr(cli.tp, "trace", lambda ws,event,**kw:trace.append((event,kw)))
+    assert cli.cmd_subagent_stop(SimpleNamespace()) == 2
+    assert "unreadable producer state" in capsys.readouterr().out
+    assert any(event == "producer_observation_failed" for event,_ in trace)
+
+
+@pytest.mark.parametrize("damage", [None, "foreign-agent", "foreign-session", "foreign-task",
+    "missing-owner", "foreign-metadata", "parent-only", "symlink"])
+def test_terminal_seal_selects_only_bound_native_child(native_child, monkeypatch, damage):
+    from taskplane import run_context
+    home, path, metadata, event = native_child
+    owner = {"agent_id":event["agent_id"], "session_id":event["session_id"],
+        "task_name":metadata["payload"]["agent_path"].split("/")[-1]}
+    event.update(hook_event_name="SubagentStop", task_name=owner["task_name"], host="codex",
+        transcript_path="must-not-read-parent", agent_transcript_path=str(path))
+    contract = {"worker_scoped":True, "worker_lifecycle":{"task":"T19", "status":"active",
+        "dispatch_intent_id":"exact-dispatch", "expected_task_name":owner["task_name"], "owner":dict(owner)}}
+    if damage == "foreign-agent": event["agent_id"] = event["session_id"]
+    if damage == "foreign-session": event["session_id"] = "foreign"
+    if damage == "foreign-task": event["task_name"] = "foreign"
+    if damage == "missing-owner": contract["worker_lifecycle"].pop("owner")
+    if damage == "foreign-metadata":
+        metadata["payload"]["parent_thread_id"] = "foreign"
+        path.write_text(json.dumps(metadata) + "\n")
+    if damage == "parent-only": event["agent_transcript_path"] = event["transcript_path"]
+    if damage == "symlink":
+        actual = path.with_suffix(".actual")
+        path.rename(actual)
+        path.symlink_to(actual)
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setattr(run_context, "resource_limits_advisory", lambda _:True)
+    monkeypatch.setattr(cli, "_dispatch_usage_observation_required", lambda *a:True)
+    class Selected(Exception): pass
+    def project(ws, selected, provider):
+        assert selected == str(path), "terminal selected parent instead of exact child"
+        assert damage is None, "invalid child reached counter observation"
+        raise Selected()
+    monkeypatch.setattr(cli, "_bounded_transcript_projection", project)
+    with pytest.raises(Selected if damage is None else ValueError):
+        cli._seal_terminal_dispatch_telemetry(event["cwd"], contract, event, outcome="failure")
+
+
+@pytest.mark.parametrize("damage", [None, "parent-snapshot", "metadata-race"])
+def test_terminal_counter_rechecks_authenticated_child_after_projection(native_child, monkeypatch, damage):
+    import loop
+    from taskplane import run_context
+    home, path, metadata, event = native_child
+    counter = {"type":"event_msg", "ordinal":5, "timestamp":"2026-09-07T00:00:00Z",
+        "payload":{"type":"token_count", "info":{"total_token_usage":{
+            "input_tokens":95, "cached_input_tokens":70, "output_tokens":5,
+            "reasoning_output_tokens":1, "total_tokens":100}}}}
+    path.write_text(json.dumps(metadata) + "\n" + json.dumps(counter) + "\n")
+    owner = {"agent_id":event["agent_id"], "session_id":event["session_id"],
+        "task_name":metadata["payload"]["agent_path"].split("/")[-1]}
+    event.update(hook_event_name="SubagentStop", task_name=owner["task_name"], host="codex",
+        transcript_path="must-not-read-parent", agent_transcript_path=str(path))
+    contract = {"worker_scoped":True, "worker_lifecycle":{"task":"T19", "status":"active",
+        "dispatch_intent_id":"exact-dispatch", "expected_task_name":owner["task_name"], "owner":owner}}
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("TASKPLANE_HOME", str(home.parent / "state"))
+    monkeypatch.setattr(run_context, "resource_limits_advisory", lambda _:True)
+    monkeypatch.setattr(cli, "_dispatch_usage_observation_required", lambda *a:True)
+    project = cli._bounded_transcript_projection
+    def projection(*args):
+        value = project(*args)
+        assert value["status"] == "available", value
+        if damage == "parent-snapshot": value["native_session"]["session_id"] = owner["session_id"]
+        if damage == "metadata-race": value["native_session"]["source"]["metadata_record_sha256"] = "f" * 64
+        return value
+    monkeypatch.setattr(cli, "_bounded_transcript_projection", projection)
+    class VerifiedCounter(Exception): pass
+    def record(ws, **kwargs):
+        assert damage is None, "foreign counter reached ledger mutation"
+        assert kwargs["snapshot"]["usage"]["total_tokens"] == 100
+        assert kwargs["snapshot"]["usage"]["cached_input_tokens"] == 70
+        raise VerifiedCounter()
+    monkeypatch.setattr(loop, "record_native_session_snapshot", record)
+    with pytest.raises(VerifiedCounter if damage is None else ValueError):
+        cli._seal_terminal_dispatch_telemetry(event["cwd"], contract, event, outcome="failure")
 
 
 @pytest.fixture

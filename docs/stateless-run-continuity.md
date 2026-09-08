@@ -20,7 +20,76 @@ measured usage, and run-owned advisory resource policy from the frozen repair.
 No phase edges, automatic lens declarations, evidence requirements, global
 plugin settings, or installed package were changed by the legacy extension.
 
-## Night delivery: Evaluate refusal and gate cleanup
+## Native terminal seam repair after the genuine classifier failure
+
+This source-only follow-up is based on `854b0b72c603522727d4c45a3a45c0f847bb7108`
+and the seven-path contract SHA-256
+`f00c588bf1613856998eac0daf00fc1692ac17da95043a1d333b3d886b854dc8`.
+It changes neither the original failed classifier verdict nor its historical
+Stop, submission, contract, loop, usage, or gate records.
+
+Three reproducible seams are repaired:
+
+- The normal submission producer emits an absolute repository-owned verdict
+  path, while legacy Stop validation previously rejected it. Stop now accepts
+  only the exact incumbent stage-owned path after containment checks. The
+  fingerprint owner also includes those actual bytes: its old absolute-path
+  branch silently skipped repository-local extras. Wrong paths, traversal,
+  symlink escape, foreign ownership and changed bytes still refuse.
+- The terminal adapter selects and verifies the active lifecycle owner's
+  exact Codex child metadata, then verifies the projected counter has the same
+  child, root, parent and metadata digest. A generic parent transcript cannot
+  select the terminal counter. Generated dual-field events reproduce the old
+  selection defect, but the actual historical raw Stop event was not retained;
+  its incidence remains unproven. Monotonicity checks, measured cache semantics,
+  original counters and unavailable/unknown truth are unchanged.
+- A producer contract establishes its observation obligation before fallible
+  state loading. Errors fail closed and are reported. After an actual claimed
+  Stop records its external observation, the loop owner consumes and attaches
+  that exact receipt to a matching pending failed Evaluate submission under
+  slot/state locks. It rechecks source, output bytes, attempt, owner, slot and
+  submission. Interrupted consumption re-attests the existing durable marker;
+  it does not mint or consume another observation. After normal retirement,
+  the failure gate can validate only that submission's exact signed native
+  terminal and quarantined contract. Missing, foreign, stale or tampered
+  evidence remains a refusal. Ordinary pass acceptance is unchanged.
+
+The real-Git composition regression exercises generated independent verdict
+bytes through public submit, simulated claimed native Stop, authentic test-store
+observation consumption, signed retirement and the public failure gate. Its
+environment failure routes to the existing escalation owner while preserving
+all 19 completed records. Independent missing/foreign/stale tests and a byte
+race verify refusal; the interrupted consumption test verifies exact idempotent
+pickup. These are local supporting tests, not actual-host or main-wave acceptance.
+The focused composition cluster passed 15 tests in 58.30 seconds; the submission,
+child-selection, measured-counter and early-error cluster passed 18 in 14.04
+seconds. The declared three-file suite passed **166 tests in 195.94 seconds**:
+`test_native_session_continuity.py`, `test_legacy_build_continuity.py`, and
+`test_codex_child_identity.py`. Scoped Ruff and whitespace checks passed.
+
+Supported recovery remains orchestrator-owned: preserve the old evidence,
+continue the existing exact native classifier if the host and current contract
+still admit it, and require fresh candidate-bound classification and ordinary
+`loop submit fail` before a genuine native Stop. The old submission cannot be
+restamped because its fingerprint omitted verdict bytes. Only after fresh
+Stop evidence is validated may the orchestrator call ordinary `loop gate fail`
+and follow its existing classification route. A stale contract/candidate or
+unavailable native continuation remains a blocker; no synthetic hook replay,
+manual receipt insertion, counter reset, contract clear or acceptance waiver is
+provided by this repair.
+
+Exact follow-up source SHA-256 (the frozen integration table below is historical):
+
+| File | SHA-256 |
+| --- | --- |
+| `taskplane/codex_identity.py` | `bce53ad52c54eacc5350c2e85df4cb69ff5ec78d1b71501275bc7fdb3e7878fb` |
+| `taskplane/loop.py` | `e27df017d7a3ad6ef99f08cc9b7d8b45cd7a74af20b7a49aaa8c1b3ce0a46fa0` |
+| `taskplane/taskplane_lite.py` | `2a45274101cccb72885fe02adfe134061cc8c6dd7a2b63dacefad4806bd660fd` |
+| `taskplane/tp.py` | `36bc4b695ec47308361e7d8e550c8659298c76e2ff4a52944f72b734c5d8c03c` |
+| `taskplane/tests/test_native_session_continuity.py` | `1f3c1b27d4d0937ca5b96b8d2a7d81006bbf68c9ca1c53ee4100b9504cfcfa5d` |
+| `taskplane/tests/test_legacy_build_continuity.py` | `0d81506d6bc5015b6c5baf54d5a8ca55afdd53054f832c811929e661787f3c8c` |
+
+## Earlier night delivery: Evaluate refusal and gate cleanup
 
 The current source-only repair is bound to night-delivery approval SHA-256
 `80bd480ea9b1843e7e9be37d714120c5132e992c35212431ea45244f9f02d440` and the
