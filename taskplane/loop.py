@@ -11275,6 +11275,38 @@ def _phase_bridge_output_location(ws, path):
     return root, os.path.relpath(path, root)
 
 
+def _phase_bridge_preparation_operation(ws, context, source, binding):
+    """Keep canceled, never-prepared Build issuance distinct from new work."""
+    if context["stage"]["stage_kind"] != "build":
+        return binding["operation_id"]
+    receipts = source.unreserved_issuances(binding["operation_id"])
+    if not receipts:
+        return binding["operation_id"]
+    from taskplane import stage_migration
+    current = context["store"].load(context["run_id"])
+    _phase_bridge_authorize(ws, context, current)
+    if any(row["operation"] == "phase_prepare" and
+            row["result"].get("stage_fingerprint") == context["stage"]["fingerprint"]
+            for row in stage_migration.phase_records(current).values()) or \
+            (load(ws) or {}).get("attempt_lease") or tp._active_worker_contracts(ws):
+        raise ValueError("prior preparation has an active preparation or effect owner")
+    path = tp._dispatch_path(ws, "expected_dispatch.json")
+    with tp._file_lock(path):
+        queue = tp._load_queue_strict(path)
+        for receipt in receipts:
+            if any(receipt[key] != binding[key] for key in (
+                    "run_id", "phase_id", "candidate_fingerprint", "definition_set_fingerprint",
+                    "phase_definition_fingerprint", "knowledge_fingerprint", "authority_fingerprint",
+                    "host_kind", "host_version")):
+                raise ValueError("prior preparation has foreign phase bindings")
+            matches = [row for row in queue if row.get("intent_id") == receipt["attempt_id"]]
+            if len(matches) != 1 or matches[0].get("intent_run_id") != context["run_id"] or \
+                    matches[0].get("cancelled") is not True or matches[0].get("matched") is not True or \
+                    matches[0].get("cancellation_reason") != "worker-contract-activation-failed":
+                raise ValueError("prior preparation lacks exact activation-failed dispatch cancellation")
+    return binding["operation_id"] + "-" + hashlib.sha256(binding["attempt_id"].encode()).hexdigest()[:32]
+
+
 def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
                           envelope: Mapping[str, object]) -> dict | None:
     from taskplane import agent_runtime, design_host_transport, review_evidence, stage_migration
@@ -11322,6 +11354,8 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
         "knowledge_fingerprint": hashlib.sha256(knowledge).hexdigest(),
         "authority_fingerprint": authority["authority_fingerprint"],
         "host_kind": config["host_kind"], "host_version": config["host_version"], "deadline": deadline}
+    operation = _phase_bridge_preparation_operation(ws, context, source, binding)
+    binding["operation_id"] = operation
     issued = source.issue(binding)
     bindings = {key: value for key, value in binding.items() if key not in {"host_kind", "host_version", "deadline"}}
     prior_lease = ((load(ws) or {}).get("attempt_lease") or {}).get("lease") or {}

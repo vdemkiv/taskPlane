@@ -116,10 +116,19 @@ def admit_lens_plan(context: dict[str, Any]) -> None:
         raise ValueError("selected phase requires an explicit phase-owned lens dispatch plan; legacy routing is not authority")
 
 
+def _initial_operation(context: dict[str, Any]) -> str:
+    from taskplane import stage_migration
+    prepared = sorted((row for row in stage_migration.phase_records(context["manifest"]).values()
+        if row["operation"] == "phase_prepare" and
+        row["result"].get("stage_fingerprint") == context["stage"]["fingerprint"]),
+        key=lambda row: row["committed_revision"])
+    return prepared[0]["operation_id"] if prepared else "phase-attempt-" + context["stage"]["fingerprint"][:32]
+
+
 def retry_chain(context: dict[str, Any]) -> list[dict[str, Any]]:
     """Follow explicit retry grants in the existing run journal, never time."""
     from taskplane import stage_migration
-    operation = "phase-attempt-" + context["stage"]["fingerprint"][:32]
+    operation = _initial_operation(context)
     rows = sorted((row for row in stage_migration.phase_records(context["manifest"]).values()
         if row["operation"] == "phase_retry" and
         row["result"].get("stage_fingerprint") == context["stage"]["fingerprint"]),
@@ -140,13 +149,19 @@ def retry_chain(context: dict[str, Any]) -> list[dict[str, Any]]:
                 result.get("next_operation") != "phase-attempt-" + row["request_fingerprint"][:32]:
             raise ValueError("phase retry chain does not verify")
         operation = result["next_operation"]
+    allowed = {_initial_operation(context)} | {row["result"]["next_operation"] for row in rows}
+    if any(row["operation"] == "phase_prepare" and
+            row["result"].get("stage_fingerprint") == context["stage"]["fingerprint"] and
+            row["operation_id"] not in allowed
+            for row in stage_migration.phase_records(context["manifest"]).values()):
+        raise ValueError("multiple ungranted phase preparations")
     return rows
 
 
 def operation_id(context: dict[str, Any]) -> str:
     retries = retry_chain(context)
     return (str(retries[-1]["result"]["next_operation"]) if retries else
-            "phase-attempt-" + context["stage"]["fingerprint"][:32])
+            _initial_operation(context))
 
 
 def usage_evidence(workspace: str, material: Mapping[str, Any], terminal: dict[str, Any]) -> dict[str, Any]:

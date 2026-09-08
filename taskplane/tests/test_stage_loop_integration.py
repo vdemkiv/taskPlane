@@ -627,7 +627,8 @@ def test_phase_output_mapping_refuses_before_nonce_or_worker_effects(monkeypatch
         loop._phase_bridge_prepare("unused", {}, {}, {})
 
 
-def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop(collected_zero_lens_design, tmp_path, monkeypatch, capsys, record_property):
+@pytest.mark.parametrize("preparation_failure", [False, True], ids=["clean", "issued-before-output-refusal"])
+def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop(collected_zero_lens_design, tmp_path, monkeypatch, capsys, record_property, preparation_failure):
     """Actual public owners, simulated provider metadata; no native J1 claim."""
     from datetime import datetime, timezone
     from types import SimpleNamespace
@@ -747,6 +748,31 @@ def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop
     root_failures = [{key:row.get(key) for key in ("stage", "failure_code")}
         for row in root_trace if row.get("event") == "native_orchestrator_meter_unavailable"]
     record_property("unmocked_root_hook_failures", json.dumps(root_failures))
+    abandoned = {}
+    if preparation_failure:
+        from taskplane import producer_observation
+        original_issue = producer_observation.AttemptNonceSource.issue
+        def historical_output_refusal(source, bindings):
+            issued = original_issue(source, bindings)
+            abandoned.update(source=source, bindings=dict(bindings), receipt=dict(issued.receipt))
+            raise ValueError("phase output paths do not match declared outputs")
+        # Historical 10cc ordering: real nonce issuance preceded output-map
+        # validation. Public activation failure owns the actual cancellation.
+        with monkeypatch.context() as patch:
+            patch.setattr(producer_observation.AttemptNonceSource, "issue", historical_output_refusal)
+            patch.setattr(sys, "argv", [script, "loop", "--workspace", ws, "next"])
+            capsys.readouterr()
+            with pytest.raises(SystemExit):
+                runpy.run_path(script, run_name="__main__")
+            failed = json.loads(capsys.readouterr().out)
+        assert "phase output paths do not match declared outputs" in failed["error"]
+        assert not failed.get("recovery_errors")
+        assert abandoned["source"].effect_state(abandoned["bindings"]) == "issued"
+        assert abandoned["bindings"]["operation_id"] == "phase-attempt-" + loop._phase_bridge_context(ws, loop.load(ws))["stage"]["fingerprint"][:32]
+        assert abandoned["bindings"]["operation_id"] not in stage_migration.phase_records(store.load(run_id))
+        assert not loop.load(ws).get("attempt_lease")
+        cancelled_before = loop.tp.dispatch_intent_census(ws, run_id)["cancelled_intent_ids"]
+        assert abandoned["bindings"]["attempt_id"] in cancelled_before
     monkeypatch.setattr(sys, "argv", [script, "loop", "--workspace", ws, "next"])
     capsys.readouterr()
     with pytest.raises(SystemExit) as exited:
@@ -763,9 +789,49 @@ def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop
     build_material = artifacts.read(build["phase_runtime"]["reference"])
     assert build_material["signing_scope"] == ["app.py"]
     assert build_material["domain"]["lease"]["effect_scope"] == ["workspace:app.py"]
+    if preparation_failure:
+        assert build_material["bindings"]["operation_id"] != abandoned["bindings"]["operation_id"]
+        assert abandoned["source"].recover(abandoned["bindings"]).receipt == abandoned["receipt"]
+        assert abandoned["source"].effect_state(abandoned["bindings"]) == "issued"
+        assert loop.tp.dispatch_intent_census(ws, run_id)["cancelled_intent_ids"] == cancelled_before
     pending = loop.next_action(ws)
     assert pending["phase_runtime"]["reference"] == build["phase_runtime"]["reference"]
     assert "task_name" not in pending
+
+
+@pytest.mark.parametrize("case", ["uncanceled", "different-reason", "foreign-run", "foreign-candidate",
+    "dispatch-uncertain", "effect-lease", "disabled-key", "unknown-hook"])
+def test_unprepared_build_replacement_refuses_activity_or_cancellation_conflict(tmp_path, monkeypatch, case):
+    """Negative composition checks using actual nonce/cancellation owners."""
+    from types import SimpleNamespace
+    from taskplane.tests.test_r0001_agent_runtime import _setup
+    runtime, dispatch, _ = _setup(tmp_path)
+    ws = _workspace(tmp_path)
+    original = dict(dispatch.nonce_bindings)
+    binding = dict(original, attempt_id="new-intent", deadline=300.0)
+    context = {"stage":{"stage_kind":"build", "fingerprint":"f" * 64},
+        "run_id":original["run_id"], "store":SimpleNamespace(load=lambda _: {})}
+    monkeypatch.setattr(loop, "_phase_bridge_authorize", lambda *args: None)
+    monkeypatch.setattr(loop, "load", lambda _: {"attempt_lease":{"status":"active"}} if case == "effect-lease" else {})
+    loop.tp.record_expected_dispatch(ws, "step", "tp-executor", "standard", None,
+        task_name="old-worker", intent_id=original["attempt_id"],
+        intent_run_id="foreign" if case == "foreign-run" else original["run_id"])
+    if case != "uncanceled":
+        loop.tp.cancel_expected_dispatch(ws, original["attempt_id"],
+            reason="unrelated" if case == "different-reason" else "worker-contract-activation-failed")
+    if case == "foreign-candidate":
+        binding["candidate_fingerprint"] = "b" * 64
+    elif case == "dispatch-uncertain":
+        runtime.nonce.reserve_dispatch(dispatch.issued, original)
+    elif case == "disabled-key":
+        runtime.nonce.disable_key()
+    elif case == "unknown-hook":
+        # Malformed presence must refuse; it is deliberately NOT a host receipt.
+        runtime.nonce._hook_path(dispatch.issued, "start").write_text("not host evidence")
+    before = runtime.nonce._path.read_bytes()
+    with pytest.raises(ValueError, match="prior preparation|nonce key is disabled"):
+        loop._phase_bridge_preparation_operation(ws, context, runtime.nonce, binding)
+    assert runtime.nonce._path.read_bytes() == before
 
 
 @pytest.fixture

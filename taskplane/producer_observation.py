@@ -314,6 +314,30 @@ class AttemptNonceSource:
                 raise ProducerObservationError("nonce issuance missing or bindings changed")
             return record["effect_state"]
 
+    def unreserved_issuances(self, operation: str) -> list[dict[str, object]]:
+        """Inspect unused operation-family receipts without renewing authority.
+
+        A receipt alone is not permission to replace an attempt: the caller
+        must also prove cancellation and absence of preparation/effect owners.
+        """
+        _text(operation, "operation_id")
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            result = []
+            for name, record in state["attempts"].items():
+                if name != operation and not name.startswith(operation + "-"):
+                    continue
+                receipt = record["receipt"]
+                bindings = {key: receipt.get(key) for key in _NONCE_BINDINGS}
+                issued = IssuedAttemptNonce(bytes.fromhex(record["secret"]), dict(receipt))
+                self._checked(issued, bindings, state, enforce_deadline=False)
+                if bindings["operation_id"] != name or record["effect_state"] != "issued" or any(
+                        path.exists() or path.is_symlink() for path in
+                        (self._hook_path(issued, "start"), self._hook_path(issued, "terminal"))):
+                    raise ProducerObservationError("prior preparation has nonce activity; reconcile original operation")
+                result.append(dict(receipt))
+            return result
+
     def _perform(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
                  action: Callable[[], _EffectResult], *, expected: str,
                  uncertain: str) -> _EffectResult:
