@@ -40,6 +40,54 @@ def _workspace(tmp_path):
     return str(workspace)
 
 
+@pytest.mark.parametrize("stage", ["projection", "seed", "capability", "start_seal",
+    "observation_seal", "open", "advance", "final_snapshot"])
+def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monkeypatch, stage):
+    """Failure injection into existing hook/audit owners; no native evidence."""
+    import loop as hook_loop
+    import root_seed
+    import host_native
+    import native_session_meter
+    from taskplane import tp as cli
+    from taskplane.tests.test_native_root_session import _prepared, _write_root
+    ws = str(tmp_path)
+    _prepared(tmp_path)
+    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
+    monkeypatch.setenv("TASKPLANE_NATIVE_HOOKS_LOADED", "supported")
+    monkeypatch.setenv("TASKPLANE_MANAGED_HOOK_POLICY", "supported")
+    transcript = tmp_path / "root-counter.jsonl"
+    _write_root(transcript, total=40_000, sequence=1)
+    event = {"cwd":ws, "session_id":"root-session", "turn_id":"turn-root",
+        "transcript_path":str(transcript)}
+    if stage == "advance":
+        cli._observe_active_loop_orchestrator(ws, event)
+        assert hook_loop.load(ws)["root_hygiene"]["status"] == "open"
+        _write_root(transcript, total=40_100, sequence=2)
+    owner, name = {
+        "projection": (cli, "_bounded_transcript_projection"),
+        "seed": (root_seed, "load_root_seed"),
+        "capability": (cli.host_caps, "root_session_capability"),
+        "start_seal": (host_native, "start_root_session"),
+        "observation_seal": (native_session_meter, "seal_root_observation"),
+        "open": (hook_loop, "open_delivery_wave"),
+        "advance": (hook_loop, "record_delivery_root_observation"),
+        "final_snapshot": (hook_loop, "record_native_orchestrator_snapshot"),
+    }[stage]
+    sentinel = "sensitive-exception-sentinel /private/transcript?secret=do-not-retain"
+    def fail(*args, **kwargs):
+        raise RuntimeError(sentinel)
+    monkeypatch.setattr(owner, name, fail)
+    cli._observe_active_loop_orchestrator(ws, event)
+    text = (Path(cli.tp.tp_dir(ws)) / "trace.jsonl").read_text()
+    records = [json.loads(line) for line in text.splitlines()]
+    failures = [row for row in records if row["event"] == "native_orchestrator_meter_unavailable"]
+    assert len(failures) == 1
+    assert failures[0]["stage"] == stage
+    assert failures[0]["failure_code"] == "RuntimeError"
+    assert sentinel not in text
+    assert str(transcript) not in json.dumps(failures)
+
+
 @pytest.mark.parametrize("case", ["advisory", "strict", "resumed", "foreign", "missing", "zero"])
 def test_root_hook_respects_saved_advisory_without_reducing_cumulative_usage(tmp_path, monkeypatch, case):
     """Production policy/open owners; generated host metadata, not native proof."""

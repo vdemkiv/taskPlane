@@ -2909,11 +2909,13 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
     if "turn_id" not in event or event.get("agent_id") or \
             event.get("agent_type"):
         return
+    stage = "load"
     try:
         import loop as _loop_runtime
         import spend as _spend
         if _loop_runtime.load(ws) is None:
             return
+        stage = "projection"
         transcript = _spend.event_transcript(event)
         if not transcript:
             raise ValueError("host transcript path is unavailable")
@@ -2924,6 +2926,7 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                 snapshot, dict) or total <= 0:
             raise ValueError(str(
                 projection.get("reason") or "native counter is null or zero"))
+        stage = "load"
         state = _loop_runtime.load(ws) or {}
         root = state.get("root_hygiene")
         if isinstance(root, dict) and root.get("status") in {"prepared", "open"}:
@@ -2931,15 +2934,19 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
             import native_session_meter as _native_meter
             import root_seed as _root_seed
 
+            stage = "authority"
             authority = _transcript_projection_authority(ws)
             if root.get("status") == "prepared":
+                stage = "seed"
                 settings = tp._canonical_operational_settings()
                 seed = _root_seed.load_root_seed(
                     ws, str(root.get("seed_ref") or ""))
+                stage = "capability"
                 capability = host_caps.root_session_capability(
                     _host_capability_snapshot(ws),
                     settings_digest=settings.digest,
                     native_snapshot=snapshot, turn_id=event.get("turn_id"))
+                stage = "start_seal"
                 start = _host_native.start_root_session(
                     capability, seed, run_id=str(seed["run_id"]),
                     wave_id=str(seed["wave_id"]),
@@ -2951,21 +2958,25 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                     started_at=_time.strftime(
                         "%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
                     issuer_sequence=1, authority=authority)
+                stage = "observation_seal"
                 observation = _native_meter.seal_root_observation(
                     snapshot, sequence=1, session_role="root",
                     status_receipt_fingerprint=start["fingerprint"],
                     authority=authority)
+                stage = "open"
                 _loop_runtime.open_delivery_wave(
                     ws, host_start_receipt=start,
                     first_observation=observation,
                     observation_authority=authority)
             else:
+                stage = "advance"
                 prior = (root.get("meter") or {}).get("watermark") or {}
                 if not (
                     snapshot.get("source_identity_fingerprint") ==
                         prior.get("source_identity_fingerprint")
                     and snapshot.get("usage") == prior.get("usage")
                 ):
+                    stage = "observation_seal"
                     observation = _native_meter.seal_root_observation(
                         snapshot,
                         sequence=int(prior.get("last_sequence") or 0) + 1,
@@ -2973,9 +2984,11 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                         status_receipt_fingerprint=str(
                             root.get("host_start_fingerprint") or ""),
                         authority=authority)
+                    stage = "advance"
                     _loop_runtime.record_delivery_root_observation(
                         ws, observation=observation,
                         observation_authority=authority)
+        stage = "final_snapshot"
         _loop_runtime.record_native_orchestrator_snapshot(
             ws, snapshot=snapshot,
             observation_authority=_transcript_projection_authority(ws))
@@ -2985,7 +2998,8 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
         # the cumulative root meter fresh without inventing broader authority.
         try:
             tp.trace(ws, "native_orchestrator_meter_unavailable",
-                     error=type(exc).__name__)
+                     error=type(exc).__name__, stage=stage,
+                     failure_code=type(exc).__name__)
         except Exception:
             pass
 
