@@ -363,3 +363,59 @@ def test_authenticated_meter_arriving_at_state_lock_is_preserved(legacy, monkeyp
     assert not result.get("error"), result
     assert loop._load_raw(ws)["dispatch_telemetry"] == latest[0]["dispatch_telemetry"]
     assert loop._load_raw(ws)["root_hygiene"]["meter"] == latest[0]["root_hygiene"]["meter"]
+
+
+def test_authenticated_context_rent_average_can_fall_while_cumulative_usage_grows(legacy):
+    from taskplane import dispatch_telemetry, native_session_meter
+    from taskplane.tests.test_native_session_meter import _write_segment
+    ws, root, state, packet = legacy
+    authority = b"generated-context-rent-test-authority"
+    segment = root / "root.jsonl"
+    observations = []
+    for sequence in range(1, 53):
+        if sequence <= 50:
+            inputs = 862271 + (9943503 - 862271) * (sequence - 1) // 49
+            cached = 812271 + (9563136 - 812271) * (sequence - 1) // 49
+            outputs = 1000 + (41537 - 1000) * (sequence - 1) // 49
+            reasoning = 500 + (20647 - 500) * (sequence - 1) // 49
+        else:
+            inputs = 9943503 + (10130316 - 9943503) * (sequence - 50) // 2
+            cached = 9563136 + (9744384 - 9563136) * (sequence - 50) // 2
+            outputs = 41537 + (43369 - 41537) * (sequence - 50) // 2
+            reasoning = 20647 + (20894 - 20647) * (sequence - 50) // 2
+        _write_segment(segment, session_id="root", total=inputs + outputs,
+            cached=cached, output=outputs, ordinal=sequence * 3)
+        rows = segment.read_text().splitlines()
+        counter = json.loads(rows[-1])
+        counter["payload"]["info"]["total_token_usage"]["reasoning_output_tokens"] = reasoning
+        rows[-1] = json.dumps(counter)
+        segment.write_text("\n".join(rows) + "\n")
+        observations.append(native_session_meter.seal_root_observation(
+            native_session_meter.read_snapshot(str(segment)), sequence=sequence, session_role="root",
+            status_receipt_fingerprint="e" * 64, terminal_reason=None, authority=authority))
+    before_meter = native_session_meter.fold_root_observations(observations[:50], authority=authority)
+    after_meter = native_session_meter.fold_root_observations(observations[50:], authority=authority,
+        prior=before_meter["watermark"])
+    assert before_meter["turns"] == 50 and after_meter["turns"] == 52
+    assert before_meter["context_rent_tokens"] == 191262.72
+    assert after_meter["context_rent_tokens"] == 187392.0
+    assert before_meter["peak_context_tokens"] == after_meter["peak_context_tokens"] == 862271
+    assert all(after_meter["usage"][key] > value for key, value in before_meter["usage"].items())
+    ledger = dispatch_telemetry.new_ledger(run_id=state["run_id"], source_sha="a" * 40,
+        design_fingerprint=state["design_fingerprint"], plan_fingerprint=fingerprint(packet["before_plan"]), started_at=1)
+    dispatch_telemetry.configure_root_admission(ledger,
+        root_session_settings=packet["settings_snapshot"]["workflow"]["root_session"], settings_digest=state["settings_digest"])
+    dispatch_telemetry.record_root_meter(ledger, before_meter, observation_authority=authority)
+    state["dispatch_telemetry"] = ledger
+    state["root_hygiene"] = {"status": "open", "meter": before_meter, "policy": "original",
+        "observation_authority_fingerprint": hashlib.sha256(authority).hexdigest()}
+    packet["before_state_fingerprint"] = loop_recovery.legacy_state_fingerprint(state)
+    packet["observation_checkpoint"] = loop_recovery.legacy_observation_checkpoint(state)
+    dispatch_telemetry.record_root_meter(ledger, after_meter, observation_authority=authority)
+    state["root_hygiene"]["meter"] = after_meter
+    loop.save(ws, state)
+    result = invoke(legacy, observation_authority=authority)
+    assert not result.get("error"), result
+    assert result["continued"] is True
+    assert loop._load_raw(ws)["root_hygiene"]["meter"] == after_meter
+    assert loop._load_raw(ws)["dispatch_telemetry"] == ledger

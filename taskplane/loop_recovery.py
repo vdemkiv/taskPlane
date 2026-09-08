@@ -307,7 +307,11 @@ def _validate_observations(state: Mapping, checkpoint, authority: bytes | None) 
     if current["sequence"] == checkpoint["sequence"] and current["meter_fingerprint"] != checkpoint["meter_fingerprint"]:
         raise ValueError("root observation sequence has conflicting evidence")
     previous = checkpoint["counters"]
-    for key, value in current["counters"].items():
+    # The meter owns context rent as cached_input_tokens / turns, an average
+    # that may fall while every cumulative counter grows. Its authenticated
+    # value stays observable, but only cumulative quantities are monotonic.
+    for key in ("turns", "peak_context_tokens", "usage"):
+        value = current["counters"][key]
         pairs = ((value[name], previous[key][name]) for name in value) if isinstance(value, dict) else [(value, previous[key])]
         if any(isinstance(old, bool) or not isinstance(old, (int, float)) or new < old for new, old in pairs):
             raise ValueError("measured root usage moved backwards")

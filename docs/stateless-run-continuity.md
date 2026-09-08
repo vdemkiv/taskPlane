@@ -106,6 +106,11 @@ the newest meter bytes. Unknown usage remains unknown. Original numeric
 limits stay in the saved settings and ledger; the original loop record owns
 the separately attributed advisory decision.
 
+Context rent is the native meter's cumulative cached input divided by turns;
+it is an average, not a cumulative counter. Its authenticated value is retained
+even when the average falls. Monotonicity still applies to sequence, ledger
+revision, turns, peak context and every cumulative usage counter.
+
 The receipt explicitly names the new human scope approval, old/new Plan
 fingerprints, source candidate, settings, requirement, retained Build
 results and before/after semantic state fingerprints. The old Plan's approval
@@ -141,6 +146,18 @@ separate settings/flow/telemetry-signature/native-identity cluster passed
 Scoped Ruff, strict run_context type checking, generated CLI comparison and
 source provenance checks passed. A final CLI workspace-option correction
 was checked with its exact parser invocation and two focused passing tests.
+
+A bounded follow-up reproduced the first real continuation check's refusal:
+between turns 50 and 52, context rent fell from 191262.72 to 187392.0 while
+all cumulative usage increased and peak context stayed 862271. A generated
+authenticated regression reproduces these exact counters through the native
+meter owner. It failed before removing the average's inappropriate monotonic
+constraint, then passed. The complete legacy suite passed **41 tests in
+17.69 seconds**; scoped Ruff and whitespace checks passed. No aggregate suite
+was repeated for this change. Only `loop_recovery.py`, its paired legacy test
+and this document changed; all 31 frozen integration hashes below remain
+unchanged. The real Plan, amendment packet and loop state were not edited by
+the follow-up worker.
 
 Those are supporting local regressions. They do not replace the original
 T19 journey selectors or actual main-wave native evidence.
