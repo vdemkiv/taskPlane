@@ -6,6 +6,7 @@ adapter completion and severances do not prove an all-phase native journey.
 Missing Retro prerequisites refuse, and the native diagnostic stays non-ready.
 """
 import pytest
+import copy
 import io
 import json
 import hashlib
@@ -560,6 +561,70 @@ def test_atomic_phase_cutover(tmp_path, monkeypatch):
     assert successor["input_manifest_ref"]["fingerprint"] == collected["handoff"]["fingerprint"]
     dispatch = taskplane_lite.stage_runtime_dispatch(successor, transitioned, handoff, successor["selected_artifacts"])
     assert dispatch["startup"]["input_handoff"]["phase_result"] == result
+
+
+@pytest.mark.parametrize("damage", ["invalid", "malformed", "missing"])
+def test_phase_stop_retains_output_bytes_before_validation(tmp_path, monkeypatch, damage):
+    """Production nonce/collector, simulated host; no native acceptance claim."""
+    ws, _, stage, _, _, _ = _normal_phase_workspace(tmp_path, monkeypatch)
+    action = loop.next_action(ws)
+    assert _emit_host_hook(ws, action, "SubagentStart", monkeypatch) == 0
+    output = Path(ws) / "specs/requirement.json"
+    if damage != "missing":
+        output.parent.mkdir(exist_ok=True)
+        output.write_text("{" if damage == "malformed" else '{"schema":"foreign/v1"}')
+    worker = taskplane_lite.load_json(taskplane_lite.active_contract_path(ws, action["contract_bootstrap"]["task_slot"]))
+    with pytest.raises((ValueError, OSError)):
+        loop.observe_phase_runtime_hook(ws, worker, _host_event(ws, action, "SubagentStop"))
+    attempt = loop._phase_bridge_attempt(ws, worker)
+    nonce, dispatch = attempt[4].nonce, attempt[5]
+    _, terminal = nonce.phase_hooks(dispatch.issued, dispatch.nonce_bindings)
+    assert terminal["outcome"] == "success"  # Host completion is not output acceptance.
+    saved = copy.deepcopy(terminal)
+    _authored_requirement(ws, stage)  # Later bytes cannot replace the worker's output.
+    with pytest.raises((ValueError, OSError)):
+        loop._collect_phase_attempt(ws, attempt)
+    assert nonce.phase_hooks(dispatch.issued, dispatch.nonce_bindings)[1] == saved
+
+
+def test_phase_reconcile_uses_pinned_candidates_without_replaying_stop(tmp_path, monkeypatch):
+    ws, store, stage, artifacts, _, _ = _normal_phase_workspace(tmp_path, monkeypatch)
+    action = loop.next_action(ws)
+    assert _emit_host_hook(ws, action, "SubagentStart", monkeypatch) == 0
+    _authored_requirement(ws, stage)
+    worker = taskplane_lite.load_json(taskplane_lite.active_contract_path(ws, action["contract_bootstrap"]["task_slot"]))
+    with monkeypatch.context() as patch:
+        def production_fault(*args, **kwargs):
+            raise ValueError("injected semantic production fault")
+        patch.setattr(loop, "produce_spec_phase_candidates", production_fault)
+        with pytest.raises(ValueError, match="semantic production fault"):
+            loop.observe_phase_runtime_hook(ws, worker, _host_event(ws, action, "SubagentStop"))
+    attempt = loop._phase_bridge_attempt(ws, worker)
+    nonce, dispatch = attempt[4].nonce, attempt[5]
+    before = nonce.phase_hooks(dispatch.issued, dispatch.nonce_bindings)
+    (Path(ws) / "specs/requirement.json").write_text("later replacement is not the producer output")
+    def no_replayed_host(*args, **kwargs):
+        pytest.fail("reconciliation must not observe another host event")
+    monkeypatch.setattr(design_host_transport, "observe_phase_hook", no_replayed_host)
+    operation = action["phase_runtime"]["operation_id"]
+    recovered = loop.resolve(ws, "reconcile", phase_operation=operation)
+    assert recovered.get("status") == "collected", recovered
+    assert loop.resolve(ws, "reconcile", phase_operation=operation).get("replay") is True
+    assert nonce.phase_hooks(dispatch.issued, dispatch.nonce_bindings) == before
+    rows = [row for row in stage_migration.phase_records(store.load(stage["run_id"])).values() if row["operation"] == "phase_collect"]
+    assert len(rows) == 1
+    result = artifacts.read(rows[0]["result"]["runtime_result"])
+    assert result["status"] == "accepted"
+    assert "task_name" not in loop.next_action(ws)
+    raw_ref = before[1]["outputs"][0]["reference"]
+    raw_path = Path(artifacts.root) / raw_ref["kind"] / (raw_ref["fingerprint"] + ".json")
+    saved = raw_path.read_bytes()
+    try:
+        raw_path.write_bytes(b'"tampered"')
+        with pytest.raises(ValueError):
+            loop._phase_bridge_telemetry(ws, rows[0]["result"])
+    finally:
+        raw_path.write_bytes(saved)
 
 
 @pytest.mark.parametrize("sever", ["missing-start", "missing-terminal", "foreign-worker",

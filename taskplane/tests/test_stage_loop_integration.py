@@ -346,6 +346,30 @@ def test_design_phase_dod_rejects_different_current_phase(tmp_path, monkeypatch)
     assert "Design phase evidence refused: current phase is not Design" in loop._design_dod_errors(str(tmp_path), {"step": "design"})
 
 
+def test_phase_plan_consumes_top_level_design_strategy_and_distinct_approval_domain(tmp_path, monkeypatch):
+    """Authored candidates through existing producers; simulated host/approval."""
+    from taskplane.tests import test_r0001_phase_agents_spec as spec
+    original = spec._run
+    def authored_design(*args, **kwargs):
+        values = list(args)
+        if values[3] == "design":
+            authored = copy.deepcopy(values[4])
+            design = authored["design"]
+            design["test_strategy_reference"] = design["test_strategy"].pop("authority")
+            source = tmp_path / "source"
+            (source / "design").mkdir(exist_ok=True)
+            (source / "design/contract.json").write_text(json.dumps(design))
+            (source / "design/test-strategy.json").write_text(json.dumps(authored["test-strategy"]))
+            kwargs["state"]["design_fingerprint"] = loop._dc.design_evidence_fingerprint(str(source), design)
+            assert kwargs["state"]["design_fingerprint"] != spec.review_evidence.content_fingerprint(design)
+            values[4] = authored
+        return original(*values, **kwargs)
+    monkeypatch.setattr(spec, "_run", authored_design)
+    store, registry, state, _, plan, _ = spec._journey(tmp_path)
+    package, _ = spec._consume(store, registry, state, plan)
+    assert package.read("plan-task")["task"]["test_strategy_authority_receipt"]["design_fingerprint"] == state["design_fingerprint"]
+
+
 @pytest.fixture
 def historical_product_plan_correction(collected_product_handoff, monkeypatch):
     from taskplane import stage_entities

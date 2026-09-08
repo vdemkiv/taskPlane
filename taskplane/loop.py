@@ -11071,8 +11071,15 @@ def _phase_bridge_telemetry(ws: str, completion: Mapping[str, object], *, termin
     start, terminal = source.phase_hooks(nonce, material["nonce_bindings"])
     terminal_outputs = [review_evidence.portable_artifact_reference(artifacts, row["reference"])
         for row in terminal["outputs"]]
+    raw_capture = bool(terminal["outputs"]) and all(
+        row["reference"].get("kind") == "phase-output-candidate" for row in terminal["outputs"])
+    if raw_capture:
+        # The nonce signs captured bytes; the verified runtime receipt signs
+        # their validated transformation. Neither reference domain is restamped.
+        for row in terminal["outputs"]:
+            artifacts.read(row["reference"])
     if start["claim"] != result["start_identity"] or terminal["claim"] != result["terminal_identity"] or \
-            terminal_outputs != result["collected_output_references"] or terminal["outcome"] != "success":
+            (not raw_capture and terminal_outputs != result["collected_output_references"]) or terminal["outcome"] != "success":
         raise ValueError("telemetry accepted output or terminal hook is severed")
     state = load(ws)
     ledger = dispatch_telemetry.validate_ledger((state or {}).get("dispatch_telemetry"))
@@ -11426,26 +11433,28 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
     run_id, registry, operation = context["run_id"], context["registry"], requested["operation_id"]
     source = runtime.nonce
     outputs = []
+    capture_error = None
     if event.get("hook_event_name") == "SubagentStop":
         _phase_bridge_authorize(ws, context, manifest)
-        authored = {}
+        declarations = {row["artifact_class"]: row for row in definition["produces"]}
         remaining = 1024 * 1024
-        for artifact_class, path in material["output_paths"].items():
-            output_root, relative = _phase_bridge_output_location(ws, path)
-            raw = _stage_loop_read_output_no_follow(output_root, relative, required=True, remaining_bytes=remaining)
-            remaining -= len(raw)
-            authored[artifact_class] = json.loads(raw)
-        if stage["stage_kind"] in {"plan", "build"}:
-            package = consume_phase_handoff(artifacts, material["predecessor"], registry=registry,
-                phase_id=stage["stage_kind"], expected_authority_revision=stage["authority"]["authority_revision"],
-                expected_authority_fingerprint=stage["authority"]["authority_fingerprint"], expected_run_id=run_id,
-                expected_candidate_fingerprint=dispatch.bindings["candidate_fingerprint"])
-            authored = produce_spec_phase_candidates(artifacts, definition, authored,
-                package=package, state=load(ws), workspace=ws)
-        produced = store_spec_phase_outputs(artifacts, definition, authored)
-        outputs = [artifact.projection() for artifact in produced]
+        try:
+            for artifact_class, path in material["output_paths"].items():
+                output_root, relative = _phase_bridge_output_location(ws, path)
+                raw = _stage_loop_read_output_no_follow(output_root, relative, required=True, remaining_bytes=remaining)
+                remaining -= len(raw)
+                # Pin raw bytes before semantic validation. The signed Stop is
+                # lifecycle evidence even when these candidates cannot collect.
+                reference = artifacts.put("phase-output-candidate", raw.hex())
+                outputs.append({"artifact_class": artifact_class,
+                    "artifact_schema_version": declarations[artifact_class]["artifact_schema_version"],
+                    "reference": reference})
+        except (ValueError, OSError) as exc:
+            capture_error = exc
     observed = design_host_transport.observe_phase_hook(tp, ws, contract, event,
         nonce=source, bindings=dispatch.nonce_bindings, outputs=outputs)
+    if capture_error is not None:
+        raise capture_error
     if observed["kind"] == "start":
         phase_harness.record_dispatch(sys.modules[__name__], ws, contract, material, observed)
         return {"status": "pending", "operation_id": operation, "observed_start": observed["claim"]}
@@ -11455,7 +11464,7 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
 def _collect_phase_attempt(ws, attempt):
     """Collect saved, authenticated facts. Never creates or replays host events."""
     from taskplane import agent_runtime, review_evidence, stage_migration
-    requested, material, context, _, runtime, dispatch = attempt
+    requested, material, context, definition, runtime, dispatch = attempt
     stage, store, artifacts = context["stage"], context["store"], context["artifacts"]
     run_id, registry, operation = context["run_id"], context["registry"], requested["operation_id"]
     _phase_bridge_authorize(ws, context, store.load(run_id))
@@ -11471,9 +11480,27 @@ def _collect_phase_attempt(ws, attempt):
         return {"status": "collected", "receipt": prior, "replay": True, "native_readiness_claimed": False}
     if terminal["outcome"] != "success":
         return {"status": "pending", "operation_id": operation, "reason_code": "terminal_not_successful"}
+    output_rows = terminal["outputs"]
+    if not output_rows or any(row["reference"].get("kind") == "phase-output-candidate" for row in output_rows):
+        authored = {}
+        for row in output_rows:
+            if row["reference"].get("kind") != "phase-output-candidate" or row["artifact_class"] in authored:
+                raise ValueError("phase candidate capture is mixed or duplicated")
+            authored[row["artifact_class"]] = json.loads(bytes.fromhex(artifacts.read(row["reference"])))
+        if set(authored) != set(material["output_paths"]):
+            raise ValueError("phase terminal lacks captured output bytes")
+        package = None
+        if stage["stage_kind"] in {"plan", "build"}:
+            package = consume_phase_handoff(artifacts, material["predecessor"], registry=registry,
+                phase_id=stage["stage_kind"], expected_authority_revision=stage["authority"]["authority_revision"],
+                expected_authority_fingerprint=stage["authority"]["authority_fingerprint"], expected_run_id=run_id,
+                expected_candidate_fingerprint=dispatch.bindings["candidate_fingerprint"])
+        authored = produce_spec_phase_candidates(artifacts, definition, authored,
+            package=package, state=load(ws), workspace=ws)
+        output_rows = [artifact.projection() for artifact in store_spec_phase_outputs(artifacts, definition, authored)]
     observation = agent_runtime.Observation(start["claim"], (), terminal["claim"], "reconciled",
         tuple(agent_runtime.Artifact(row["artifact_class"], row["artifact_schema_version"], row["reference"])
-            for row in terminal["outputs"]))
+            for row in output_rows))
     retro_receipt = None
     if stage["stage_kind"] == "build":
         from taskplane import build_c, delivery_ports
@@ -12058,6 +12085,10 @@ def _seal_task_test_strategy_authority(
     design_settings = design.get("test_strategy")
     design_reference = (design_settings.get("authority")
                         if isinstance(design_settings, Mapping) else None)
+    if design_package is not None and "test_strategy_reference" in design:
+        if design_reference is not None and design_reference != design["test_strategy_reference"]:
+            raise ValueError("sealed Design strategy references conflict")
+        design_reference = design["test_strategy_reference"]
     plan_reference = task.get("test_strategy_authority")
     if not isinstance(design_reference, Mapping) or set(design_reference) != \
             _DESIGN_STRATEGY_REFERENCE_FIELDS or design_reference.get(
@@ -12080,12 +12111,9 @@ def _seal_task_test_strategy_authority(
         rel = design_reference["path"]
         if strategy["contract_fingerprint_sha256"] != design_reference["strategy_fingerprint"]:
             raise ValueError("sealed Design strategy fingerprint differs")
-        if __package__:
-            from . import review_evidence
-        else:
-            import review_evidence
-        if review_evidence.content_fingerprint(design) != state.get("design_fingerprint"):
-            raise ValueError("sealed Design contract fingerprint differs")
+        # Package artifacts bind canonical Design bytes. The loop's approval
+        # anchor covers narrative/requirement/files, a different hash domain;
+        # retain it below without equating it to the package content hash.
         if design_package.run_id != state.get("run_id"):
             raise ValueError("sealed Design package belongs to another run")
     criterion_ids = _strategy_authority_strings(
