@@ -40,6 +40,65 @@ def _workspace(tmp_path):
     return str(workspace)
 
 
+def test_stage_native_first_worker_identity_is_run_scoped_and_replay_stable(tmp_path, monkeypatch):
+    """Real init/next producers; simulated host metadata, no native J1 claim."""
+    from taskplane import requirements, review_evidence, run_store, stage_migration, storage
+    from taskplane.tests.test_r0001_phase_agents_spec import _registry
+
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "same-host-session")
+    names = []
+    for ordinal in (1, 2):
+        root = tmp_path / str(ordinal)
+        root.mkdir()
+        ws = _workspace(root)
+        source = (Path(ws) / "README.md").read_bytes()
+        store = run_store.RunStore()
+        identity = storage.resolve_repository_identity(ws)
+        initial = store.create(identity, run_id=f"run-product-{ordinal}", checkout=ws,
+            host={"kind":"codex", "session_id":"same-host-session"},
+            target={"kind":"workspace", "revision":loop.tp.git_head(ws)})
+        run_id = initial["run_id"]
+        storage.write_workspace_locator(ws, identity=identity,
+            layout=storage.resolve_layout(identity, home=store.home, run_id=run_id), run_id=run_id)
+        requirement = requirements.record_requirement(ws, "Same Product goal",
+            functional=["preserve the native attempt identity"],
+            acceptance=["two runs cannot collide in one retained host task tree"])
+        initialized = loop.init(ws, "Same Product goal", requirement_id=requirement["id"], by="human:simulated")
+        assert not initialized.get("error"), initialized
+        authority = initialized["_stage_native_root_authority"]
+        artifacts = review_evidence.ArtifactStore(ws)
+        def authorize(current):
+            assert current["run_id"] == run_id
+            assert loop._stage_native_init_authority(ws, requirement["id"], "human:simulated") == authority
+        stage_migration.change_phase_routing(store, run_id, owner="agent-runtime",
+            configuration={"definition_source":"agents/spec-phase-definitions.json",
+                "definition_set_fingerprint":_registry().definition_set_fingerprint,
+                "knowledge_reference":artifacts.put("phase-knowledge", {"facts":[]}),
+                "candidate_fingerprint":review_evidence.content_fingerprint({"revision":authority["target_revision"]}),
+                "target_revision":authority["target_revision"], "host_kind":"simulated",
+                "host_version":"supporting-test", "output_paths":{"product":{"requirement":"specs/requirement.json"}}},
+            expected_previous=None, expected_revision=store.load(run_id)["revision"],
+            operation_id="select-product-runtime", validate_authority=authorize)
+        first = loop.next_action(ws)
+        assert not first.get("error"), first
+        names.append(first["task_name"])
+        state = loop.load(ws)
+        manifest = store.load(run_id)
+        slot = Path(loop.tp.active_contract_path(ws, first["contract_bootstrap"]["task_slot"]))
+        contract_bytes = slot.read_bytes()
+        repeated = loop.next_action(ws)
+        assert repeated["phase_runtime"]["reference"] == first["phase_runtime"]["reference"]
+        assert repeated["phase_runtime"]["operation_id"] == first["phase_runtime"]["operation_id"]
+        assert "task_name" not in repeated  # Pickup is observation, not another launch.
+        assert loop.load(ws)["worker_dispatch_sequences"] == state["worker_dispatch_sequences"] == {"pm:pm":1}
+        assert slot.read_bytes() == contract_bytes
+        assert json.loads(contract_bytes)["worker_lifecycle"]["expected_task_name"] == first["task_name"]
+        assert store.load(run_id) == manifest
+        assert (Path(ws) / "README.md").read_bytes() == source
+    assert names[0] != names[1], "fresh runs reused the same host-global first Product name"
+
+
 def _initialize_real_new_run(tmp_path, monkeypatch, *, stage_kind="product",
                              stage_id=None,
                              goal="exercise the real stage loop",

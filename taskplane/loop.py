@@ -5447,8 +5447,9 @@ def _reserve_worker_dispatch_ref(
     the same stable name after Fix or an unavailable Evaluate therefore turns
     a new worker slot into an unbindable orphan: no fresh direct native agent
     can own the old name, and nested agent identities do not match it exactly.
-    Keep the historical name for the first attempt, then add a durable attempt
-    discriminator. The worker contract still binds the exact emitted name.
+    Stage-native reservations include the bound run and durable attempt
+    sequence. Legacy naming and already emitted identities stay unchanged.
+    The worker contract still binds the exact emitted name.
     """
     stage = str(stage or "").strip()
     task = str(task or "").strip()
@@ -5480,6 +5481,7 @@ def _reserve_worker_dispatch_ref(
     with mutate(ws) as fresh:
         if fresh is None:
             raise ValueError("worker dispatch sequence requires an active loop")
+        run_binding = _stage_read_run_binding(fresh)
         sequences = fresh.setdefault("worker_dispatch_sequences", {})
         if not isinstance(sequences, dict):
             raise ValueError("worker dispatch sequence ledger is malformed")
@@ -5495,6 +5497,8 @@ def _reserve_worker_dispatch_ref(
         state.update(fresh)
 
     ref = task if sequence == 1 else f"{task}-attempt-{sequence}"
+    if run_binding is not None:
+        ref = f"{task}-run-{run_binding['run_id']}-attempt-{sequence}"
     tp.trace(ws, "worker_dispatch_identity_reserved", stage=stage, task=task,
              sequence=sequence, dispatch_ref=ref)
     return ref, sequence
