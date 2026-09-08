@@ -611,7 +611,23 @@ def test_dependency_plan_uses_actual_scoped_ownership(tmp_path, case):
     assert result["source-coverage"]["complete"] is True
 
 
-def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop(collected_zero_lens_design, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("phase, paths", [("build", {"stage":"worker-stage.json"}),
+    ("build", None), ("plan", None)])
+def test_phase_output_mapping_refuses_before_nonce_or_worker_effects(monkeypatch, phase, paths):
+    """Negative preflight only; no authority or output is supplied by this stub."""
+    from types import SimpleNamespace
+    from taskplane.tests.test_r0001_phase_agents_spec import _registry
+    context = {"configuration":{"output_paths":{phase:paths}},
+        "stage":{"stage_kind":phase, "authority":{}},
+        "definition":_registry().admit(phase, ()).to_dict(),
+        "run_id":"preflight-only", "store":SimpleNamespace(load=lambda run_id: {})}
+    monkeypatch.setattr(loop, "_phase_bridge_context", lambda *args: context)
+    monkeypatch.setattr(loop, "_phase_bridge_authorize", lambda *args: None)
+    with pytest.raises(ValueError, match="phase output paths do not match declared outputs"):
+        loop._phase_bridge_prepare("unused", {}, {}, {})
+
+
+def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop(collected_zero_lens_design, tmp_path, monkeypatch, capsys, record_property):
     """Actual public owners, simulated provider metadata; no native J1 claim."""
     from datetime import datetime, timezone
     from types import SimpleNamespace
@@ -716,6 +732,40 @@ def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop
     import stage_migration
     assert len([row for row in stage_migration.phase_records(store.load(run_id)).values()
         if row["operation"] == "phase_collect" and row["operation_id"] == args.phase_operation + "-complete"]) == 1
+    # Continue through the actual root hook and direct-script Build command.
+    # Neither the final root telemetry owner nor Build preparation is mocked.
+    from taskplane import tp as cli
+    from taskplane.tests.test_native_root_session import _write_root
+    root_transcript = tmp_path / "current-root-counter.jsonl"
+    _write_root(root_transcript, total=40_000, sequence=1, session_id=owner["session_id"])
+    root_event = {"cwd":ws, "session_id":owner["session_id"], "turn_id":"root-build-turn",
+        "transcript_path":str(root_transcript)}
+    cli.host_caps.record_runtime_hook_receipt(cli.tp.store_home(), hook_path="native", event=root_event)
+    cli._observe_active_loop_orchestrator(ws, root_event)
+    assert loop.load(ws)["root_hygiene"]["status"] == "open"
+    root_trace = [json.loads(line) for line in (Path(cli.tp.tp_dir(ws)) / "trace.jsonl").read_text().splitlines()]
+    root_failures = [{key:row.get(key) for key in ("stage", "failure_code")}
+        for row in root_trace if row.get("event") == "native_orchestrator_meter_unavailable"]
+    record_property("unmocked_root_hook_failures", json.dumps(root_failures))
+    monkeypatch.setattr(sys, "argv", [script, "loop", "--workspace", ws, "next"])
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_path(script, run_name="__main__")
+    build = json.loads(capsys.readouterr().out)
+    assert exited.value.code == 0, build.get("error")
+    assert build["execution_mode"] == "stateless-phase"
+    assert build["phase_definition"]["id"] == "build"
+    assert build["phase_runtime"]["status"] == "pending"
+    assert build["contract_bootstrap"]["task_slot"]
+    assert build["phase_runtime"]["outputs"] == {}
+    assert {row["artifact_class"]:row["owner"] for row in build["phase_outputs"]} == {
+        "stage":"runtime", "realized-conformance":"runtime"}
+    build_material = artifacts.read(build["phase_runtime"]["reference"])
+    assert build_material["signing_scope"] == ["app.py"]
+    assert build_material["domain"]["lease"]["effect_scope"] == ["workspace:app.py"]
+    pending = loop.next_action(ws)
+    assert pending["phase_runtime"]["reference"] == build["phase_runtime"]["reference"]
+    assert "task_name" not in pending
 
 
 @pytest.fixture

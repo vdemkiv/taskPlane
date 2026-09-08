@@ -11292,6 +11292,12 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
         envelope["evaluation_lens_set_fingerprint"] = review_evidence.content_fingerprint([])
     authority = stage["authority"]
     _phase_bridge_authorize(ws, context, context["store"].load(context["run_id"]))
+    producer_owned = {"plan": {"source-coverage", "decomposition", "seam-manifest"},
+        "build": {"stage", "realized-conformance"}}.get(stage["stage_kind"], set())
+    worker_outputs = {row["artifact_class"] for row in definition["produces"]} - producer_owned
+    paths = config["output_paths"].get(stage["stage_kind"], {} if not worker_outputs else None)
+    if not isinstance(paths, dict) or set(paths) != worker_outputs:
+        raise ValueError("phase output paths do not match declared outputs")
     predecessor = None if definition["entry"] else stage["input_manifest_ref"]
     package = () if predecessor is None else consume_phase_handoff(context["artifacts"], predecessor,
         registry=context["registry"], phase_id=stage["stage_kind"],
@@ -11328,11 +11334,6 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
         deadline=datetime.fromtimestamp(deadline, timezone.utc).isoformat(), budget=definition["budget"])
     for relation, name in (("consumes", "consumed_artifact_schema_versions"), ("produces", "produced_artifact_schema_versions")):
         bindings[name] = [{key: row[key] for key in ("artifact_class", "artifact_schema_version")} for row in definition[relation]]
-    paths = config["output_paths"].get(stage["stage_kind"])
-    producer_owned = {"plan": {"source-coverage", "decomposition", "seam-manifest"},
-        "build": {"realized-conformance"}}.get(stage["stage_kind"], set())
-    if not isinstance(paths, dict) or set(paths) != ({row["artifact_class"] for row in definition["produces"]} - producer_owned):
-        raise ValueError("phase output paths do not match declared outputs")
     # Enforce the same pre-existing contract that the native host will bind.
     allowed = contract.get("write_allow") or contract["coding"]["scope_paths"]
     for path in paths.values():
@@ -11344,7 +11345,8 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
         "predecessor": predecessor, "stage_id": stage["stage_id"], "stage_fingerprint": stage["fingerprint"],
         "output_paths": paths, "prepared_at": now, "routing": context["route"]["result_fingerprint"],
         "contract_slot": contract["task_slot"]}
-    material["signing_scope"] = sorted(paths.values())
+    material["signing_scope"] = sorted(contract["coding"]["scope_paths"]
+        if stage["stage_kind"] == "build" else paths.values())
     freshness, impact = _phase_bridge_freshness(ws, material["signing_scope"])
     material["freshness"] = freshness
     material["impact_reference"] = context["artifacts"].put("phase-impact", impact)
@@ -11526,6 +11528,11 @@ def _collect_phase_attempt(ws, attempt, *, completed_worker=None):
             phase_id=stage["stage_kind"], expected_authority_revision=stage["authority"]["authority_revision"],
             expected_authority_fingerprint=stage["authority"]["authority_fingerprint"], expected_run_id=run_id,
             expected_candidate_fingerprint=dispatch.bindings["candidate_fingerprint"])
+    if stage["stage_kind"] == "build":
+        # The authenticated terminal precedes this read. Preserve the current
+        # control-plane stage exactly; it is not a worker-authored success or
+        # a fabricated stage terminal. Lease reconciliation still gates collection.
+        authored["stage"] = stage
     authored = produce_spec_phase_candidates(artifacts, definition, authored,
         package=package, state=load(ws), workspace=ws)
     output_rows = [artifact.projection() for artifact in store_spec_phase_outputs(artifacts, definition, authored)]
