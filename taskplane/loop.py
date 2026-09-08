@@ -3575,6 +3575,11 @@ def _stage_loop_transition(
     if from_kind is None or (
             from_kind == to_kind and not force and not completion):
         return None
+    if (from_step == "design" and to_step == "design_approval" and
+            _phase_bridge_context(ws, state) is not None):
+        # Human approval is a checkpoint of the collected Design, not a new
+        # Design execution. Keep its signed attempt current until approval.
+        return None
     replayed = _stage_loop_replayed_transition(
         ws, state, from_step=from_step, to_step=to_step,
         from_kind=from_kind, to_kind=to_kind,
@@ -9495,9 +9500,18 @@ _design_review_errors = _dc.design_review_errors
 
 def _design_dod_errors(ws: str, state: dict) -> list:
     """Join the Design artifact DoD with its mandatory runtime inputs."""
+    try:
+        phase = _phase_bridge_context(ws, state)
+        if phase is not None:
+            if phase["stage"]["stage_kind"] != "design":
+                raise ValueError("current phase is not Design")
+            _phase_bridge_gate_check(ws, state)
+        runtime_errors = [] if phase is not None else _design_team_errors(ws, state)
+    except (ValueError, OSError) as exc:
+        runtime_errors = [f"Design phase evidence refused: {exc}"]
     return [*_base_design_dod_errors(ws, state),
             *_design_control_plane_errors(ws, state),
-            *_design_team_errors(ws, state)]
+            *runtime_errors]
 
 
 def _retained_production_authority_errors(ws: str) -> list[str]:

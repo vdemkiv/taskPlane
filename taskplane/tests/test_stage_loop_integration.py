@@ -234,6 +234,119 @@ def test_selected_phase_instruction_sources_match_admitted_skill_bytes(phase):
 
 
 @pytest.fixture
+def collected_zero_lens_design(collected_product_handoff, monkeypatch):
+    """Real phase owners with authored test candidates and simulated host events."""
+    from taskplane.tests.test_r0001_phase_cutover import _host_event
+    from taskplane.tests.test_r0001_phase_agents_spec import _strategy
+    ws, store, run_id, _, _, artifacts = collected_product_handoff
+    assert loop.gate(ws, "pass")["step"] == "design"
+    action = loop.next_action(ws)
+    assert not action.get("error"), action
+    start = _host_event(ws, action, "SubagentStart")
+    loop.tp.bind_worker_contract_event(ws, start)
+    slot = action["contract_bootstrap"]["task_slot"]
+    worker = loop.tp.load_json(loop.tp.active_contract_path(ws, slot))
+    # The independent telemetry adapter still uses the legacy designer alias.
+    # Preserve its refusal; the real nonce owner records Start before that call.
+    with pytest.raises(loop.dispatch_telemetry.DispatchTelemetryError,
+                       match="native stage dispatch does not match"):
+        loop.observe_phase_runtime_hook(ws, worker, start)
+    state = loop.load(ws)
+    requirement = loop.reqs.get_requirement(ws, state["requirement_id"])
+    folder = Path(ws) / "design"
+    folder.mkdir(exist_ok=True)
+    (folder / "design.md").write_text("# Greeting design\nKeep the existing greeting boundary.\n")
+    contract = {
+        "schema": "taskplane.design/v1", "requirement": requirement["id"],
+        "title": "Greeting design", "summary": "Keep the greeting function", "decision": "Keep the existing module",
+        "current_state": {"summary": "A single greeting function", "sources": ["app.py"]},
+        "alternatives": [{"id": choice, "name": choice, "description": choice,
+            "tradeoffs": {"gains": ["simple"], "costs": ["limited scope"], "revisit_when": "requirements grow"}}
+            for choice in ("existing", "new-module")], "selected_approach": "existing",
+        "modules": {"existing": ["app"], "new": []}, "contracts": [],
+        "graph": {"baseline_fingerprint": state["design_graph_fingerprint"],
+            "proposed_modules": ["app"], "proposed_edges": [],
+            "depth_policy": {"local_depth": 1, "boundary_mode": "contract-only", "contract_depth": 1, "requirement_depth": 1},
+            "dor": [{"check": "source exists", "evidence": "app.py"}],
+            "dod": [{"check": "greeting preserved", "evidence": "acceptance test"}]},
+        "acceptance_map": [{"criterion": criterion, "design_element": "app.greet", "validation": "regression",
+            "tests": ["taskplane/tests/test_stage_loop_integration.py::test_stateless_design_gate_uses_collected_runtime_not_legacy_team"]}
+            for criterion in requirement["acceptance"]],
+        "risks": [{"risk": "regression", "mitigation": "test", "owner": "engineering"}],
+        "failure_modes": [{"mode": "wrong greeting", "detection": "test", "recovery": "correct source"}],
+        "observability": {"signals": ["test result"], "alerts_none_rationale": "local pure function"},
+        "rollout": {"strategy": "reviewed change", "rollback": "revert change"},
+        "visualization": {"required": False, "reason": "single function"},
+        "test_strategy": {"path": "design/test-strategy.json"}, "open_questions": [],
+        "lens_evidence": []}
+    contract["lens_evidence"] = [{"lens": "solution-design", "verdict": "pass", "blockers": 0,
+        "evidence": "Explicit test-candidate self-assessment; no independent lens execution",
+        "produced_by": action["task_name"], "self_attested": True,
+        "content_fingerprint": loop._dc.design_content_fingerprint(ws, contract)}]
+    (folder / "contract.json").write_text(json.dumps(contract))
+    (folder / "test-strategy.json").write_text(json.dumps(_strategy()))
+    assert loop._base_design_dod_errors(ws, state) == []
+    assert loop._design_control_plane_errors(ws, state) == []
+    slot = action["contract_bootstrap"]["task_slot"]
+    worker = loop.tp.load_json(loop.tp.active_contract_path(ws, slot))
+    stop = _host_event(ws, action, "SubagentStop")
+    collected = loop.observe_phase_runtime_hook(ws, worker, stop)
+    assert collected["status"] == "collected", collected
+    loop.tp.terminalize_worker_contract(ws, stop, outcome="success", submission_status="not_required")
+    completion = loop.next_action(ws)["phase_runtime"]["completion"]
+    assert artifacts.read(completion["runtime_result"])["status"] == "accepted"
+    assert "design_team_plan" not in loop.load(ws)
+    return ws, store, run_id, artifacts, completion
+
+
+@pytest.mark.parametrize("consolidated", [False, True], ids=["human-checkpoint", "consolidated"])
+def test_stateless_design_gate_uses_collected_runtime_not_legacy_team(collected_zero_lens_design, monkeypatch, consolidated):
+    ws, _, _, artifacts, completion = collected_zero_lens_design
+    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1" if consolidated else "0")
+    original = {key: artifacts.read(completion[key]) for key in
+                ("preparation", "runtime_result", "runtime_receipt", "handoff")}
+    stage = loop._phase_bridge_context(ws, loop.load(ws))["stage"]
+    result = loop.gate(ws, "pass")
+    assert not result.get("error"), result.get("dod", result)
+    if consolidated:
+        assert result["step"] == "plan"
+    else:
+        assert result["step"] == "design_approval"
+        assert loop._phase_bridge_context(ws, loop.load(ws))["stage"] == stage
+        approved = loop.approve(ws, by="human:fixture — approve greeting design")
+        assert not approved.get("error"), approved.get("dod", approved)
+        assert approved["step"] == "plan"
+    assert {key: artifacts.read(completion[key]) for key in original} == original
+
+
+def test_legacy_design_still_requires_team_despite_untrusted_phase_flags(tmp_path, monkeypatch):
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "disabled")
+    errors = loop._design_dod_errors(str(tmp_path), {
+        "step": "design", "phase_runtime": {"status": "collected"},
+        "phase_definition": {"phase_id": "design"}})
+    assert "Design lens team plan is missing" in errors
+
+
+@pytest.mark.parametrize("reason", ["missing collected output", "foreign receipt", "stale source"])
+def test_design_phase_dod_propagates_existing_verifier_refusal(tmp_path, monkeypatch, reason):
+    # Focused join test; real signature/provenance severances have their own
+    # production-owner regression below this boundary.
+    monkeypatch.setattr(loop, "_phase_bridge_context", lambda *_: {"stage": {"stage_kind": "design"}})
+    def refuse(*_):
+        raise ValueError(reason)
+    monkeypatch.setattr(loop, "_phase_bridge_gate_check", refuse)
+    assert f"Design phase evidence refused: {reason}" in loop._design_dod_errors(str(tmp_path), {"step": "design_approval"})
+
+
+def test_design_phase_dod_rejects_different_current_phase(tmp_path, monkeypatch):
+    monkeypatch.setattr(loop, "_phase_bridge_context", lambda *_: {"stage": {"stage_kind": "product"}})
+    def cannot_accept_other_phase(*_):
+        pytest.fail("foreign phase must refuse before consuming its receipt")
+    monkeypatch.setattr(loop, "_phase_bridge_gate_check", cannot_accept_other_phase)
+    assert "Design phase evidence refused: current phase is not Design" in loop._design_dod_errors(str(tmp_path), {"step": "design"})
+
+
+@pytest.fixture
 def historical_product_plan_correction(collected_product_handoff, monkeypatch):
     from taskplane import stage_entities
     ws, store, run_id, completion, _, artifacts = collected_product_handoff
