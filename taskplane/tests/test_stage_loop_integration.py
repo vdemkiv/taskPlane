@@ -461,6 +461,62 @@ def _finish_plan_lenses(ws, workspace, action, *, usage="unavailable"):
     return events
 
 
+@pytest.mark.parametrize("started", [False, True])
+def test_session_start_preserves_current_plan_lens_slots(native_plan_lens_action, started):
+    ws, _, _, _, action = native_plan_lens_action
+    worker = action["plan_lens_dispatches"][0]
+    if started:
+        loop.tp.bind_worker_contract_event(ws, {"cwd":ws, "session_id":"pristine-session",
+            "agent_id":"current-plan-child", "agent_type":worker["task_name"],
+            "task_name":worker["task_name"], "turn_id":"turn-plan"})
+    paths = [Path(loop.tp.active_contract_path(ws, row["task_slot"])) for row in action["plan_lens_dispatches"]]
+    before = {str(path):path.read_bytes() for path in paths}
+    assert loop.tp.sweep_completed_worker_contracts(ws, loop_state=loop.load(ws)) == []
+    assert {str(path):path.read_bytes() for path in paths} == before
+    assert loop.resume(ws)["step"] == "plan"
+
+
+@pytest.mark.parametrize("stage", ["design-lens", "unrecognized-worker"])
+@pytest.mark.parametrize("started", [False, True])
+def test_session_start_does_not_guess_lens_or_unknown_stage_completion(tmp_path, stage, started):
+    from taskplane.tests.test_worker_contract_lifecycle import _active_worker, _event
+    contract = _active_worker(tmp_path, stage=stage, task="architecture")
+    if started:
+        loop.tp.bind_worker_contract_event(str(tmp_path), _event(tmp_path), now=11)
+    path = Path(loop.tp.active_contract_path(str(tmp_path), contract["task_slot"]))
+    before = path.read_bytes()
+    assert loop.tp.sweep_completed_worker_contracts(str(tmp_path), loop_state={"step":"design", "tasks":[]}) == []
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("receipt_kind", ["missing", "tampered", "native"])
+def test_session_start_terminal_flag_requires_authenticated_receipt(tmp_path, receipt_kind):
+    from taskplane.tests.test_worker_contract_lifecycle import _active_worker, _event
+    ws = str(tmp_path)
+    contract = _active_worker(tmp_path, stage="plan-lens", task="architecture")
+    slot = contract["task_slot"]
+    loop.tp.bind_worker_contract_event(ws, _event(tmp_path), now=11)
+    if receipt_kind != "missing":
+        loop.tp.record_worker_terminal(ws, slot, event=_event(tmp_path), outcome="failure",
+            submission_status="not_required", now=12)
+    path = Path(loop.tp.active_contract_path(ws, slot))
+    current = json.loads(path.read_text())
+    current["worker_lifecycle"]["status"] = "terminal"
+    if receipt_kind == "tampered":
+        current["worker_lifecycle"]["terminal"]["signature"] = "tampered"
+    path.write_text(json.dumps(current))
+    before = path.read_bytes()
+    if receipt_kind == "native":
+        released = loop.tp.sweep_completed_worker_contracts(ws, loop_state={"step":"plan"})
+        assert len(released) == 1
+        assert released[0]["outcome"] == "failure"
+        assert loop.tp.released_worker_contract(ws, slot)["worker_lifecycle"]["terminal"]["authority"] == "host-lifecycle"
+    else:
+        with pytest.raises(loop.tp.StateError):
+            loop.tp.sweep_completed_worker_contracts(ws, loop_state={"step":"plan"})
+        assert path.read_bytes() == before
+
+
 def _write_reviewed_plan(ws, workspace):
     requirement = loop.reqs.get_requirement(ws, loop.load(ws)["requirement_id"])
     tasks = {"tasks":[{"id":"t01", "scope":["README.md"], "tests":"python3 -c 'assert True'",

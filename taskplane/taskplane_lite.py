@@ -6282,11 +6282,15 @@ def validate_design_lens_dispatch_completion(
 
 def _worker_loop_completed(contract: dict, state: dict | None) -> bool:
     lifecycle = contract.get("worker_lifecycle") or {}
+    stage = lifecycle.get("stage")
+    if stage not in {"pm", "design", "plan", "em", "execute", "fix", "evaluate", "design-lens", "plan-lens"}:
+        return False  # Unknown workers never inherit an ordinary task's completion.
     if lifecycle.get("status") == "terminal":
         return True
+    if stage in {"design-lens", "plan-lens"}:
+        return False  # Only their authenticated terminal owner can complete lenses.
     if not isinstance(state, dict):
         return False
-    stage = lifecycle.get("stage")
     task = str(lifecycle.get("task") or "")
     step = state.get("step")
     if stage in {"pm", "design", "plan", "em"}:
@@ -6392,6 +6396,13 @@ def sweep_completed_worker_contracts(
         if not stage or not task:
             raise _worker_lifecycle_error(
                 workspace, f"worker slot {slot} lifecycle is malformed")
+        if lifecycle.get("status") == "terminal":
+            receipt = lifecycle.get("terminal")
+            if not isinstance(receipt, dict):
+                raise _worker_lifecycle_error(workspace, "terminal worker lacks its receipt")
+            action = lifecycle.get("release_action")
+            _verify_worker_release_action(workspace, slot, action, contract)
+            _verify_worker_terminal_receipt(workspace, slot, receipt, contract, action)
         identities.setdefault((stage, task), []).append(slot)
     for (stage, task), slots in sorted(identities.items()):
         if len(slots) > 1:
