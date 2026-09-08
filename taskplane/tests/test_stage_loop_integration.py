@@ -42,7 +42,8 @@ def _workspace(tmp_path):
 
 @pytest.mark.parametrize("stage", ["projection", "seed", "capability", "start_seal",
     "observation_seal", "open", "advance", "final_snapshot",
-    "start_seal_capability", "start_seal_binding", "start_seal_seed", "start_seal_unexpected"])
+    "start_seal_capability", "start_seal_binding", "start_seal_seed", "start_seal_unexpected",
+    "start_seal_role", "start_seal_resumed", "start_seal_session_binding"])
 def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monkeypatch, stage):
     """Failure injection into existing hook/audit owners; no native evidence."""
     import loop as hook_loop
@@ -60,7 +61,13 @@ def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monk
     monkeypatch.setenv("TASKPLANE_NATIVE_HOOKS_LOADED", "supported")
     monkeypatch.setenv("TASKPLANE_MANAGED_HOOK_POLICY", "supported")
     transcript = tmp_path / "root-counter.jsonl"
-    _write_root(transcript, total=40_000, sequence=1)
+    _write_root(transcript, total=40_000, sequence=1,
+        resumed=case == "start_seal_resumed",
+        session_id="foreign-session" if case == "start_seal_session_binding" else "root-session")
+    if case == "start_seal_role":
+        rows = [json.loads(line) for line in transcript.read_text().splitlines()]
+        rows[0]["payload"]["parent_thread_id"] = "test-parent"
+        transcript.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     event = {"cwd":ws, "session_id":"root-session", "turn_id":"turn-root",
         "transcript_path":str(transcript)}
     if stage == "advance":
@@ -84,6 +91,9 @@ def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monk
         "start_seal_seed": ("root seed schema is unsupported", "root_seed_invalid"),
         "start_seal_unexpected": (sentinel, "RootSessionReceiptError"),
     }
+    fresh_failures = {"start_seal_role":"root_role_not_root",
+        "start_seal_resumed":"root_session_resumed",
+        "start_seal_session_binding":"root_session_binding_mismatch"}
     capability = cli.host_caps.root_session_capability
     def with_missing(*args, **kwargs):
         value = capability(*args, **kwargs)
@@ -94,16 +104,20 @@ def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monk
         if case in messages:
             raise host_native.RootSessionReceiptError(messages[case][0])
         raise RuntimeError(sentinel)
-    monkeypatch.setattr(owner, name, fail)
+    if case not in fresh_failures:
+        monkeypatch.setattr(owner, name, fail)
     cli._observe_active_loop_orchestrator(ws, event)
     text = (Path(cli.tp.tp_dir(ws)) / "trace.jsonl").read_text()
     records = [json.loads(line) for line in text.splitlines()]
     failures = [row for row in records if row["event"] == "native_orchestrator_meter_unavailable"]
     assert len(failures) == 1
     assert failures[0]["stage"] == stage
-    assert failures[0]["failure_code"] == (messages[case][1] if case in messages else "RuntimeError")
+    assert failures[0]["failure_code"] == ("root_capability_unsupported" if case in fresh_failures
+        else messages[case][1] if case in messages else "RuntimeError")
     if case == "start_seal_capability":
         assert failures[0]["tags"] == ["root_fresh_start", "root_turn_mapping"]
+    if case in fresh_failures:
+        assert failures[0]["tags"] == ["root_fresh_start", fresh_failures[case]]
     assert sentinel not in text
     assert str(transcript) not in json.dumps(failures)
 

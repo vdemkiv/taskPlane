@@ -2942,8 +2942,9 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                 seed = _root_seed.load_root_seed(
                     ws, str(root.get("seed_ref") or ""))
                 stage = "capability"
+                host_snapshot = _host_capability_snapshot(ws)
                 capability = host_caps.root_session_capability(
-                    _host_capability_snapshot(ws),
+                    host_snapshot,
                     settings_digest=settings.digest,
                     native_snapshot=snapshot, turn_id=event.get("turn_id"))
                 stage = "start_seal"
@@ -3020,6 +3021,20 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                     missing = capability.get("missing") if isinstance(capability, dict) else None
                     tags = [code for code in ("root_fresh_start", "root_cumulative_meter", "root_turn_mapping")
                             if isinstance(missing, list) and code in missing]
+                    if "root_fresh_start" in tags:
+                        try:
+                            role = _native_meter.derive_session_role(snapshot)
+                        except (TypeError, ValueError):
+                            pass  # Keep the original closed missing codes.
+                        else:
+                            if role != "root":
+                                tags.append("root_role_not_root")
+                            if snapshot.get("resumed") is not False:
+                                tags.append("root_session_resumed")
+                            native_session = str(snapshot.get("session_id") or "")
+                            expected_session = hashlib.sha256(native_session.encode("utf-8")).hexdigest() if native_session else None
+                            if host_snapshot.session_fingerprint != expected_session:
+                                tags.append("root_session_binding_mismatch")
             tp.trace(ws, "native_orchestrator_meter_unavailable",
                      error=type(exc).__name__, stage=stage,
                      failure_code=failure_code, tags=tags)
