@@ -447,8 +447,9 @@ def _prefer_existing_loop_resume(ws: str, projection: dict) -> dict:
     return updated
 
 
-def _host_capability_snapshot(ws: str, install_context: str | None = None):
-    """One capability snapshot for all onboarding host-path decisions."""
+def _host_capability_snapshot(ws: str, install_context: str | None = None, *,
+                              session_id: str | None = None):
+    """Use a verified hook session when supplied; CLI defaults stay ambient."""
     context = install_context or _install_context()
     bridge = _codex_hooks_report(ws)
     plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -457,8 +458,9 @@ def _host_capability_snapshot(ws: str, install_context: str | None = None):
                         or os.environ.get("CODEX_THREAD_ID")) else "claude")
     version = (os.environ.get("CODEX_VERSION") if host == "codex" else
                os.environ.get("CLAUDE_CODE_VERSION"))
-    session_id = (os.environ.get("CODEX_THREAD_ID")
-                  or os.environ.get("CLAUDE_SESSION_ID"))
+    if session_id is None:
+        session_id = (os.environ.get("CODEX_THREAD_ID")
+                      or os.environ.get("CLAUDE_SESSION_ID"))
     observations = host_caps.runtime_hook_observations(
         tp.store_home(), session_id=session_id, workspace=ws)
     # Explicit adapter-owned environment receipts take precedence over the
@@ -2934,6 +2936,13 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
             import native_session_meter as _native_meter
             import root_seed as _root_seed
 
+            stage = "identity"
+            snapshot = _native_meter.validate_snapshot(snapshot)
+            event_sessions = [event[key] for key in
+                ("session_id", "thread_id", "conversation_id") if key in event]
+            if not event_sessions or any(not isinstance(value, str) or not value or
+                    value != snapshot["session_id"] for value in event_sessions):
+                raise ValueError("root hook event and provider session do not agree")
             stage = "authority"
             authority = _transcript_projection_authority(ws)
             if root.get("status") == "prepared":
@@ -2942,7 +2951,7 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                 seed = _root_seed.load_root_seed(
                     ws, str(root.get("seed_ref") or ""))
                 stage = "capability"
-                host_snapshot = _host_capability_snapshot(ws)
+                host_snapshot = _host_capability_snapshot(ws, session_id=snapshot["session_id"])
                 capability = host_caps.root_session_capability(
                     host_snapshot,
                     settings_digest=settings.digest,

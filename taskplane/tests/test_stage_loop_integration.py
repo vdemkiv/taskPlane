@@ -111,18 +111,20 @@ def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monk
     records = [json.loads(line) for line in text.splitlines()]
     failures = [row for row in records if row["event"] == "native_orchestrator_meter_unavailable"]
     assert len(failures) == 1
-    assert failures[0]["stage"] == stage
-    assert failures[0]["failure_code"] == ("root_capability_unsupported" if case in fresh_failures
+    assert failures[0]["stage"] == ("identity" if case == "start_seal_session_binding" else stage)
+    assert failures[0]["failure_code"] == ("ValueError" if case == "start_seal_session_binding"
+        else "root_capability_unsupported" if case in fresh_failures
         else messages[case][1] if case in messages else "RuntimeError")
     if case == "start_seal_capability":
         assert failures[0]["tags"] == ["root_fresh_start", "root_turn_mapping"]
-    if case in fresh_failures:
+    if case in fresh_failures and case != "start_seal_session_binding":
         assert failures[0]["tags"] == ["root_fresh_start", fresh_failures[case]]
     assert sentinel not in text
     assert str(transcript) not in json.dumps(failures)
 
 
-@pytest.mark.parametrize("case", ["advisory", "strict", "resumed", "foreign", "missing", "zero"])
+@pytest.mark.parametrize("case", ["advisory", "strict", "resumed", "foreign", "missing", "zero",
+    "missing_identity", "conflicting_identity", "foreign_receipt", "foreign_workspace"])
 def test_root_hook_respects_saved_advisory_without_reducing_cumulative_usage(tmp_path, monkeypatch, case):
     """Production policy/open owners; generated host metadata, not native proof."""
     from taskplane import tp as cli
@@ -155,11 +157,26 @@ def test_root_hook_respects_saved_advisory_without_reducing_cumulative_usage(tmp
         resumed=case == "resumed", session_id="foreign-root" if case == "foreign" else "root-session")
     if case == "missing":
         transcript.write_text("{}\n")
-    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
-    monkeypatch.setenv("TASKPLANE_NATIVE_HOOKS_LOADED", "supported")
-    monkeypatch.setenv("TASKPLANE_MANAGED_HOOK_POLICY", "supported")
+    monkeypatch.setenv("CODEX_THREAD_ID", "stale-inherited-session")
+    monkeypatch.delenv("TASKPLANE_NATIVE_HOOKS_LOADED", raising=False)
+    monkeypatch.delenv("TASKPLANE_MANAGED_HOOK_POLICY", raising=False)
     event = {"cwd":ws, "session_id":"root-session", "turn_id":"turn-root",
         "transcript_path":str(transcript), "tool_name":"Read", "tool_input":{}}
+    # The actual hook admission owner records the event session, independently
+    # of the ambient process session inherited by the hook subprocess.
+    receipt_event = dict(event)
+    if case == "foreign_receipt":
+        receipt_event["session_id"] = "foreign-receipt-session"
+    if case == "foreign_workspace":
+        receipt_event["cwd"] = str(tmp_path / "foreign-workspace")
+    cli.host_caps.record_runtime_hook_receipt(cli.tp.store_home(),
+        hook_path="bridge" if case == "foreign_workspace" else "native", event=receipt_event)
+    if case == "missing_identity":
+        event.pop("session_id")
+    if case == "conflicting_identity":
+        event["thread_id"] = "conflicting-session"
+    assert cli._host_capability_snapshot(ws).session_fingerprint == hashlib.sha256(
+        b"stale-inherited-session").hexdigest()  # Ordinary CLI default is unchanged.
     import loop as hook_loop
     open_wave = hook_loop.open_delivery_wave
     open_errors = []
