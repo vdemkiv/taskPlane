@@ -5873,10 +5873,14 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
              if not f.startswith(lens_router.LOOP_OWNED) and
              (not task or not task.get("scope") or
               runtime_kernel.match_any(f, task.get("scope") or []))]
+    # Delivery retains the whole approved wave artifact; model-facing scoped
+    # views keep their independent 16 KiB bound. Standalone review's default
+    # remains unchanged. Never truncate a larger diff into apparent evidence.
+    diff_byte_limit = 2_000_000
     diff_rc, patch = review.canonical_diff_patch(
-        diff_ws, base, paths=files)
+        diff_ws, base, paths=files, max_bytes=diff_byte_limit)
     if diff_rc:
-        reason = ("canonical governed diff exceeds the 400000-byte bound"
+        reason = (f"canonical governed diff exceeds the {diff_byte_limit}-byte bound"
                   if diff_rc == review.CANONICAL_DIFF_TOO_LARGE else
                   "canonical diff derivation failed")
         raise review.ReviewKernelError(reason)
@@ -8706,8 +8710,11 @@ def next_action(
         except Exception as exc:
             review_kernel = {"status": "kernel_unavailable", "slots": [],
                              "reason": f"{exc.__class__.__name__}: {exc}"}
-            routing = {"lenses": [], "context": {
-                "status": "kernel_unavailable", "breadth": "routed"}}
+            # Keep the first causal refusal. An unavailable kernel has no
+            # evaluator attempt identity and cannot authorize child evidence.
+            return {"error": "Review kernel preparation failed closed: " + review_kernel["reason"],
+                "step": step, "status": status(ws), "review_kernel": review_kernel,
+                "dispatch_allowed": False}
         binding = {
             "schema": "taskplane.review-kernel-binding/v1",
             "run_id": review_kernel.get("run_id"),
@@ -13024,7 +13031,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     wt or ws, t, submission or {}, "execute")
             release_ws = t.get("workspace") or ws
             released_contracts = tp.release_worker_contracts_for_gate(
-                release_ws, stage=step, task=str(task_id))
+                release_ws, stage=step, task=str(task_id),
+                outcome="success" if outcome == "pass" else "failure",
+                submission_status="gated:" + outcome)
             if not released_contracts:
                 tp.clear(release_ws)  # legacy pre-lifecycle run
             tp.trace(ws, "loop_gate", step=step, task=task_id, outcome=outcome,
@@ -13684,7 +13693,9 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
     # the commit window; a refused gate above leaves it governed for retry.
     release_task = gate_worker_task
     released_contracts = tp.release_worker_contracts_for_gate(
-        act_ws, stage=step, task=release_task)
+        act_ws, stage=step, task=release_task,
+        outcome="success" if outcome == "pass" else "failure",
+        submission_status="gated:" + outcome)
     if not released_contracts:
         tp.clear(act_ws)  # legacy pre-lifecycle run
     cleanup_result = None

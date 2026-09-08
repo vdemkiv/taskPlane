@@ -20,6 +20,59 @@ measured usage, and run-owned advisory resource policy from the frozen repair.
 No phase edges, automatic lens declarations, evidence requirements, global
 plugin settings, or installed package were changed by the legacy extension.
 
+## Night delivery: Evaluate refusal and gate cleanup
+
+The current source-only repair is bound to night-delivery approval SHA-256
+`80bd480ea9b1843e7e9be37d714120c5132e992c35212431ea45244f9f02d440` and the
+separate bounded capacity decision SHA-256
+`b976a39490dabde2388d9503fee99ee55b3b7e13f7f4d9451638ea6d2f0e8d7d`.
+The original approval packet and all historical runtime receipts remain unchanged.
+
+The actual T19-scoped tracked diff was 977,211 bytes; the full original-baseline
+EM artifact was 1,553,457 bytes across 79 files. Delivery's default 400,000-byte
+diff call therefore failed before creating a ReviewKernel identity, and the
+catch-and-continue handler hid that cause behind a missing evaluator identity.
+The delivery caller now passes the authorized finite 2,000,000-byte artifact
+limit. Standalone review retains its 400,000-byte default, scoped views retain
+their 16 KiB bound, and no diff is truncated or inlined. Kernel failures now
+return their original reason before recording a null identity or preparing
+evidence children. Tests cover both measured artifact sizes and 2,000,001-byte
+refusal, plus the actual public-next error propagation path.
+
+Serial and parallel gate cleanup now pass the actual gate result to the
+existing lifecycle owner (`failure`, `gated:fail` for a failed gate). Previously
+they omitted those arguments and inherited `success`, `gated`. Any already
+signed terminal receipt remains byte-for-byte unchanged, including an adverse
+historical wrong-success receipt. No task result is upgraded by cleanup.
+
+The historical native Stop failure is **not resolved retrospectively**. Its
+minimized error identifies `DispatchTelemetryError`, but its detailed reason
+was not retained. Read-only counter projection and the present original ledger
+validate. Both the current local and installed handlers admit the actual child
+snapshot in isolated in-memory copies with the real persistence owner replaced.
+A generated disposable-store regression also seals and idempotently replays the
+actual pending-ledger shape (zero recorded start/end, no events, unknown usage)
+through the current terminal adapter. These checks do not establish what failed
+at Stop time, repair historical observations, prove native success, or authorize
+a fabricated hook replay. No telemetry counter/source implementation was changed
+without a reproducible defect; a fresh authentic terminal is still required.
+
+After this source commit, the root's supported continuation is ordinary local
+`loop next` against the same original run, using its existing saved settings and
+host admission. No new cancellation, scope amendment, identity fabrication,
+Plan edit, or global installation is required for this repair. Any next genuine
+evidence refusal remains a gate, not permission to skip validation. Implementation
+hashes: loop SHA-256
+`ac8650d9e482f55518a4e1e70043050b3637748f31ec861b6ba7bcf3d2de2b45`;
+legacy regressions SHA-256
+`cd6ced1522c4f8af68588d02e88663d1b7c4784312647ad139a76fd3005748cd`.
+The cap, causal-error and gate-failure tests failed first on the original
+implementation, then passed after the bounded fix. Declared verification:
+`python3 -m pytest -q -x taskplane/tests/test_legacy_build_continuity.py taskplane/tests/test_native_session_continuity.py taskplane/tests/test_r0001_telemetry_seal.py`
+completed **137 passed in 109.18 seconds**. Scoped Ruff and whitespace checks
+passed. These are isolated source tests, not T19 acceptance or a native Stop
+receipt; no broad repository suite or unchanged six-file check was repeated.
+
 ## Supported legacy continuation
 
 ### Administrative cancellation before continuation
@@ -264,7 +317,7 @@ Additional paired compatibility files are `taskplane/loop_recovery.py`,
 | `taskplane/design_host_transport.py` | `0f0a002cd0d4e984bcebc3a56f33e35f6287ff26562ec99b2cba51083ad6ef16` | `0f0a002cd0d4e984bcebc3a56f33e35f6287ff26562ec99b2cba51083ad6ef16` | exact |
 | `taskplane/dispatch_telemetry.py` | `574c56f068a41cfe259000e3670843339ebf0f68235764044ec48dc6240be61f` | `574c56f068a41cfe259000e3670843339ebf0f68235764044ec48dc6240be61f` | exact |
 | `taskplane/host_capabilities.py` | `3222731240e9f209a307f97cee51209c3137344a9f7236c839894c4ce14f25b7` | `3222731240e9f209a307f97cee51209c3137344a9f7236c839894c4ce14f25b7` | exact |
-| `taskplane/loop.py` | `2026ec0a48d2c0173308fea872fab198215c875a1b26bc3cb3086a77fa277253` | `f3107bde5be788a68582f06b3c3c8a06fde058ddb858ac81f180af73f1d7d11e` | reconciled |
+| `taskplane/loop.py` | `2026ec0a48d2c0173308fea872fab198215c875a1b26bc3cb3086a77fa277253` | `ac8650d9e482f55518a4e1e70043050b3637748f31ec861b6ba7bcf3d2de2b45` | reconciled |
 | `taskplane/operational-settings.json` | `5d8f8227a8f320168ea511b4f5b6480bc77fd0b7e45bae081f99fb5b09ca9293` | `5d8f8227a8f320168ea511b4f5b6480bc77fd0b7e45bae081f99fb5b09ca9293` | exact |
 | `taskplane/producer_observation.py` | `cf1709640d4541bf5f84d56fafc5244fd08b035726fe1c3abd0d98bea1b2d660` | `cf1709640d4541bf5f84d56fafc5244fd08b035726fe1c3abd0d98bea1b2d660` | exact |
 | `taskplane/settings.py` | `88547c6e0e1c149ea5fd723e2d6f7c0c0426de5e5ded1a484bcfd0977a771418` | `369dfbaf79ca2c20abdfffaf4399646716a524c2886763588e6b5b25ef9b0f68` | reconciled |

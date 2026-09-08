@@ -12,6 +12,124 @@ import pytest
 from taskplane import delivery_policy, loop, loop_recovery, run_context, settings
 
 
+@pytest.mark.parametrize("size", [977211, 1553457, 2000001])
+def test_delivery_review_artifact_capacity_preserves_full_diff(legacy, monkeypatch, size):
+    from taskplane import review
+    patch = "x" * size
+    limits = []
+
+    def canonical(*args, max_bytes=400_000, **kwargs):
+        limits.append(max_bytes)
+        return (review.CANONICAL_DIFF_TOO_LARGE, "") if size > max_bytes else (0, patch)
+
+    class Retained(Exception): pass
+
+    def retain(*args, payload, **kwargs):
+        assert payload["patch"] == patch
+        raise Retained("full artifact retained, never inlined")
+
+    monkeypatch.setattr(loop, "_review_runtime_modules", lambda: (loop.tp, SimpleNamespace(ArtifactStore=lambda _:None), review))
+    monkeypatch.setattr(loop, "_diff_files", lambda *_:["taskplane/loop.py"])
+    monkeypatch.setattr(review, "canonical_diff_patch", canonical)
+    monkeypatch.setattr(loop, "store_retained_review_diff", retain)
+    expected = review.ReviewKernelError if size > 2_000_000 else Retained
+    with pytest.raises(expected, match="2000000-byte bound" if size > 2_000_000 else "full artifact"):
+        loop._review_kernel(legacy[0], legacy[0], base="c" * 40, step="evaluate",
+            task={"id":"T19", "scope":["taskplane/loop.py"]}, graph={}, impact={}, requirement={})
+    assert limits == [2_000_000]
+
+
+def test_legacy_failed_build_gate_retires_worker_as_failure(legacy, monkeypatch):
+    ws = legacy[0]
+    assert invoke(legacy)["continued"] is True
+    state = loop._load_raw(ws)
+    state["submission_required"] = False
+    loop.save(ws, state)
+    released = []
+    monkeypatch.setattr(loop.tp, "release_worker_contracts_for_gate",
+        lambda *args, **kwargs: released.append(kwargs) or [{"released":True}])
+    monkeypatch.setattr(loop, "status", lambda *_:{})
+    monkeypatch.setattr(loop.yield_meter, "gate_snapshot", lambda *_:None)
+    result = loop.gate(ws, "fail", note="genuine incomplete Build")
+    assert not result.get("error"), result
+    assert released[-1]["outcome"] == "failure"
+    assert released[-1]["submission_status"] == "gated:fail"
+    after = loop._load_raw(ws)
+    assert after["step"] == "evaluate" and after["_build_failed"] is True
+    assert after["tasks"][:19] == state["tasks"][:19]
+
+
+def test_legacy_evaluate_reports_original_kernel_error_without_attempt_identity(legacy, monkeypatch):
+    ws = legacy[0]
+    assert invoke(legacy)["continued"] is True
+    state = loop._load_raw(ws)
+    state.update(step="evaluate", goal="original legacy task", _build_failed=True)
+    loop.save(ws, state)
+    monkeypatch.setattr(loop.tp, "dor_check", lambda *_:(True, [], []))
+    monkeypatch.setattr(loop.depgraph, "scan", lambda *_:None)
+    monkeypatch.setattr(loop.depgraph, "load", lambda *_:{"modules":{}})
+    monkeypatch.setattr(loop, "_diff_files", lambda *_:[])
+    monkeypatch.setattr(loop, "status", lambda *_:{})
+    monkeypatch.setattr(loop, "_run_artifact_root", lambda *_:ws)
+    monkeypatch.setattr(loop, "_bind_worker_submission", lambda _ws,_state,_step,contract,_task:contract)
+
+    def failed(*args, **kwargs):
+        raise ValueError("canonical governed diff exceeds the 2000000-byte bound")
+
+    monkeypatch.setattr(loop, "_review_kernel", failed)
+    monkeypatch.setattr(loop, "_prepare_public_evaluate_evidence", lambda *a,**k:pytest.fail("minted evaluator identity"))
+    result = loop.next_action(ws)
+    assert "2000000-byte bound" in result["error"], result
+    assert result["review_kernel"]["status"] == "kernel_unavailable"
+    assert "review_kernel_runs" not in loop._load_raw(ws)
+    assert loop.tp.worker_contract_for_stage(ws,stage="evaluate",task="T19") is None
+
+
+def test_current_native_terminal_pipeline_admits_actual_pending_ledger_shape(legacy, monkeypatch):
+    from taskplane import dispatch_telemetry, tp as cli
+    from taskplane.tests.test_native_session_meter import _write_segment
+    ws, root, _, _ = legacy
+    assert invoke(legacy)["continued"] is True
+    state = loop._load_raw(ws)
+    ledger = dispatch_telemetry.new_ledger(run_id=state["run_id"], source_sha="a" * 40,
+        design_fingerprint=state["design_fingerprint"], plan_fingerprint="p" * 64, started_at=1)
+    binding = loop._native_delivery_dispatch_binding(state, stage="execute", task=state["tasks"][19],
+        intent_id="intent-generated-stop", native_task_name="generated-child")
+    assert binding["started_at"] == binding["ended_at"] == 0 and binding["events"] == []
+    dispatch_telemetry.bind_dispatch(ledger, binding)
+    state["dispatch_telemetry"] = ledger
+    loop.save(ws, state)
+    segment = root / "generated-child.jsonl"
+    _write_segment(segment, session_id="generated-child", total=1300, cached=800, output=100, ordinal=3)
+    contract = {"budget":{"token_usage_required":True}, "worker_lifecycle": {
+        "task":"T19", "expected_task_name":"generated-child", "dispatch_intent_id":"intent-generated-stop"}}
+    monkeypatch.setitem(sys.modules, "loop", loop)
+    event = {"host":"codex", "task_name":"generated-child", "transcript_path":str(segment)}
+    result = cli._seal_terminal_dispatch_telemetry(ws, contract, event, outcome="failure")
+    assert result["status"] == "admitted"
+    assert result["receipt"]["total_tokens"] == 1300
+    assert result["receipt"]["events"][-1]["kind"] == "failed"
+    assert result["native_session"]["attributed_usage"]["total_tokens"] == 1300
+    assert cli._seal_terminal_dispatch_telemetry(ws, contract, event, outcome="failure")["status"] == "duplicate"
+    after = loop._load_raw(ws)
+    assert len(after["dispatch_telemetry"]["dispatches"]) == 1
+    assert after["tasks"] == state["tasks"]
+
+
+def test_failed_gate_cleanup_preserves_existing_adverse_terminal_receipt(cancellation):
+    legacy, path, _ = cancellation
+    ws = legacy[0]
+    contract = json.loads(path.read_text())
+    # Simulate an already-recorded historical wrong outcome. A future gate
+    # correction must preserve it, not rewrite adverse signed evidence.
+    receipt = loop.tp.record_worker_terminal(ws, contract["task_id"], event=None,
+        outcome="success", submission_status="gated", authority="loop-gate")
+    result = loop.tp.release_worker_contracts_for_gate(ws, stage="execute", task="T19",
+        outcome="failure", submission_status="gated:fail")
+    archive = json.loads(Path(result[0]["quarantine"]).read_text())
+    assert archive["worker_lifecycle"]["terminal"] == receipt
+
+
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                                      ensure_ascii=True).encode()).hexdigest()
