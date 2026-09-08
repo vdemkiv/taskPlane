@@ -6623,6 +6623,20 @@ def open_delivery_wave(
         reasons.append("first observed input is missing or zero")
     elif first > seed_budget:
         reasons.append("first observed input exceeds seed budget")
+    resource_policy = None
+    if override is None and reasons == ["first observed input exceeds seed budget"] \
+            and run_context.selected(state):
+        # A long-lived root keeps its full cumulative counter. The existing
+        # human resource decision overrides only this numeric seed check,
+        # never host identity, available usage, or resume evidence.
+        resource_store = _stage_store(ws, str(state["run_id"]))
+        resource_policy = phase_harness.resource_policy(
+            resource_store.load(str(state["run_id"])), str(state["run_id"]))
+        if resource_policy is not None:
+            if resource_policy["actor"] != (state.get("_stage_native_root_authority") or {}).get("actor"):
+                raise ValueError("root resource policy actor differs from run authority")
+            override = {"by": resource_policy["actor"],
+                "reason": "Saved advisory resource policy " + resource_policy["fingerprint"]}
     attributed_override = None
     if reasons:
         if override is None:
@@ -6638,6 +6652,11 @@ def open_delivery_wave(
     with mutate(ws) as locked:
         if locked is None or locked.get("root_hygiene") != root:
             raise ValueError("root preparation changed before wave open")
+        if resource_policy is not None and (locked.get("run_id") != state["run_id"] or
+                locked.get("_stage_native_root_authority") != state.get("_stage_native_root_authority") or
+                phase_harness.resource_policy(resource_store.load(str(state["run_id"])),
+                    str(state["run_id"])) != resource_policy):
+            raise ValueError("root resource policy changed before wave open")
         ledger = locked.get("dispatch_telemetry")
         if ledger is None:
             ledger = dispatch_telemetry.new_ledger(

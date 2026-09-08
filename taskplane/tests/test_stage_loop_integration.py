@@ -40,6 +40,75 @@ def _workspace(tmp_path):
     return str(workspace)
 
 
+@pytest.mark.parametrize("case", ["advisory", "strict", "resumed", "foreign", "missing", "zero"])
+def test_root_hook_respects_saved_advisory_without_reducing_cumulative_usage(tmp_path, monkeypatch, case):
+    """Production policy/open owners; generated host metadata, not native proof."""
+    from taskplane import tp as cli
+    from taskplane.tests.test_r0001_j1_native import _supporting_pristine_phase_run
+    from taskplane.tests.test_native_root_session import _write_root
+
+    ws, store, run_id, _ = _supporting_pristine_phase_run(tmp_path, monkeypatch)
+    action = loop.next_action(ws)
+    assert not action.get("error"), action
+    policy = None
+    if case != "strict":
+        decision = loop.resolve(ws, "limits-advisory", by="human:simulated")
+        assert not decision.get("error"), decision
+        policy = decision["resource_policy"]
+    state = loop.load(ws)
+    # Preparation input only: no Build result or phase acceptance is invented.
+    state["baseline"] = loop.tp.git_head(ws)
+    loop.save(ws, state)
+    loop.prepare_delivery_root(ws, seed_ref="waves/test/root-seed.json", wave_id="test",
+        prepared_at="2026-09-08T22:25:37Z", operation_id="prepare-root-policy",
+        design={"path":"design/contract.json", "fingerprint":"b" * 64},
+        plan={"path":"plan/tasks.json", "fingerprint":"c" * 64},
+        pickups=[{"id":"test", "write_scopes":["README.md"],
+            "disjointness_receipt_fingerprint":"d" * 64}],
+        outstanding_human_gates=[], predecessor_terminal_projection={"status":"none"})
+    prepared = copy.deepcopy(loop.load(ws)["root_hygiene"])
+    manifest = store.load(run_id)
+    transcript = Path(ws) / "root-counter.jsonl"
+    _write_root(transcript, total=0 if case == "zero" else 7_981_454, sequence=1,
+        resumed=case == "resumed", session_id="foreign-root" if case == "foreign" else "root-session")
+    if case == "missing":
+        transcript.write_text("{}\n")
+    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
+    monkeypatch.setenv("TASKPLANE_NATIVE_HOOKS_LOADED", "supported")
+    monkeypatch.setenv("TASKPLANE_MANAGED_HOOK_POLICY", "supported")
+    event = {"cwd":ws, "session_id":"root-session", "turn_id":"turn-root",
+        "transcript_path":str(transcript), "tool_name":"Read", "tool_input":{}}
+    import loop as hook_loop
+    open_wave = hook_loop.open_delivery_wave
+    open_errors = []
+    def observed_open(*args, **kwargs):
+        try:
+            return open_wave(*args, **kwargs)
+        except ValueError as exc:
+            open_errors.append(str(exc))
+            raise
+    monkeypatch.setattr(hook_loop, "open_delivery_wave", observed_open)
+    cli._observe_active_loop_orchestrator(ws, event)
+    opened = loop.load(ws)["root_hygiene"]
+    if case != "advisory":
+        assert opened == prepared
+        if case == "strict":
+            assert open_errors == ["first observed input exceeds seed budget"]
+        return
+    assert opened["status"] == "open", open_errors
+    assert opened["meter"]["first_observed_input_tokens"] == 7_981_453
+    assert opened["meter"]["usage"]["total_tokens"] == 7_981_454
+    assert opened["conformance"] == "overridden"
+    assert opened["canary_eligible"] is False
+    assert opened["override"]["by"] == policy["actor"]
+    assert policy["fingerprint"] in opened["override"]["reason"]
+    assert opened["override"]["failed_checks"] == ["first observed input exceeds seed budget"]
+    assert opened["prepare_receipt"] == prepared["prepare_receipt"]
+    cli._observe_active_loop_orchestrator(ws, event)
+    assert loop.load(ws)["root_hygiene"] == opened
+    assert store.load(run_id) == manifest
+
+
 def test_stage_native_first_worker_identity_is_run_scoped_and_replay_stable(tmp_path, monkeypatch):
     """Real init/next producers; simulated host metadata, no native J1 claim."""
     from taskplane import requirements, review_evidence, run_store, stage_migration, storage
