@@ -1,7 +1,7 @@
 {
   "name": "taskplane",
-  "version": "2.19.0",
-  "description": "AI software-delivery control plane for Claude and Codex: simple design, build, review, and status prompts backed by dependency-aware readiness, scoped execution, fingerprinted evidence, selective review through 26 review lenses, and human approval.",
+  "version": "2.20.0",
+  "description": "AI software-delivery control plane for Claude and Codex: stateless stage handoffs, scoped execution, focused pre-build review, direct Evaluate and Engineering evidence, durable recovery, and human approval.",
   "author": {
     "name": "Volodymyr Demkiv",
     "email": "vdemkiv@gmail.com",
@@ -24,7 +24,7 @@
   "interface": {
     "displayName": "taskplane",
     "shortDescription": "AI delivery with proof",
-    "longDescription": "taskplane is the AI software-delivery control plane for heavy users who design, build, and review code with Claude or Codex every day. Ask simply to design, build, review, or show status while a strict execution harness stays behind the scenes. Design turns a refined requirement and current code into alternatives plus a human-approved, fingerprinted Design Contract with a proposed graph overlay, named contracts, bounded depth, Design DoR/DoD, validation traceability, risks, rollout, and conditional visualization—without changing product code. Definition of Ready blocks under-specified or dependency-ambiguous work; scoped contracts constrain execution; workers submit fingerprinted evidence for orchestrator-only Definition-of-Done gates; and engineering review records a complete 26-lens disposition while executing only the evidence-selected deep reviewers and at most one light sweep, with every remaining light or n/a rationale disclosed. Distributed-system reasoning stops at explicit contracts between entities by default.",
+    "longDescription": "taskplane connects requirements, Design, Plan, Build, Evaluate, Engineering, and Retro through scoped contracts and fingerprinted evidence. Fresh invocations recover exact run-owned settings and approved artifacts. Product and Design use focused review routes; Plan uses three or four selected lenses; Build, Evaluate, and Engineering launch no lens workers. Workers submit evidence, orchestrator-only gates validate it, and humans retain scope and final sign-off authority. Native lifecycle observations and measured or explicitly unknown usage remain distinct from source-test results.",
     "developerName": "Volodymyr Demkiv",
     "category": "Developer Tools",
     "capabilities": [
