@@ -150,7 +150,12 @@ buttons can drive the next prompt where supported; otherwise ask for the same
 explicit approval in conversation. Never run the loop silently.
 
 0. **Cold start (nothing attached yet):** FIRST run `$TP onboard --json`.
-   If `ready` is false, don't dive in — show the onboarding dashboard
+   For an existing run, use `$TP loop resume` first. It reads durable scope
+   without dispatch, lifecycle effects, an advisory waiver or a session receipt.
+   Follow `resume_run` even when `ready` is false; `loop next` separately
+   revalidates authorization and transport before effects. Do not create a
+   replacement loop or recover authority from predecessor conversation.
+   For missing setup, show the onboarding dashboard
    (`$TP onboard` prints the fragment) inline via `mcp__visualize__show_widget`
    and help with the one missing piece its `next_action` names:
    `attach_folder` → ask for a local path, repository URL, ref, or PR and run
@@ -162,11 +167,8 @@ explicit approval in conversation. Never run the loop silently.
    convert authentication, tool installation, or storage authorization into a
    terminal handoff or a new-task instruction. `init_git` → offer to `git init && git add -A &&
    git commit` for them (gates need a snapshot); `tp_init` → run step 1.
-   `continue_advisory` → keep the current Codex task, state plainly that live
-   hook enforcement is unproven, and after the human explicitly directs
-   continuation here add `--advisory --by <human>` to the next governed
-   command. Never translate this action into a new-task requirement and never
-   describe advisory enforcement as live.
+   `resume_run` → read the saved run in this task. Recovery does not upgrade
+   unproven hook enforcement or authorize a worker.
    The buttons drive this via `sendPrompt`. Don't guess a workspace — a
    governed run needs a real folder + a git commit, and this is where a
    brand-new user gets them in place.
@@ -182,7 +184,9 @@ explicit approval in conversation. Never run the loop silently.
    preflight; run-private data lives under its run root; only explicitly shared
    knowledge lives in `.taskplane-kb/`. Consume paths from the run manifest,
    never assume `.em-review` is the source or artifact root.
-2. **Initialize once:** when the user supplied an existing R-id, run
+2. **Initialize once:** only when no run exists. Initialization establishes
+   the run and locator without requiring a loaded-hook receipt, because it
+   launches no worker. When the user supplied an existing R-id, run
    `$TP loop init --req R-XXXX "<goal>"`. Otherwise run `$TP loop init
    "<goal>"`; the PM step owns the first requirement/spec. Never run a
    standalone `req new` before this loop. The `new-run` canary is the explicit
@@ -300,11 +304,16 @@ explicit approval in conversation. Never run the loop silently.
 6. **Finish:** after sign-off run the retro per `references/retro.md`,
    then `discipline/finishing-work.md` (debt, graph rescan, track close).
 
-**Stage rollout and rollback.** `TASKPLANE_STAGE_NATIVE` is disabled by
-default and accepts only two enabling modes: `new-run` for a pristine new-run
+**Stage rollout and rollback.** For a run not yet initialized,
+`TASKPLANE_STAGE_NATIVE` is disabled by default and accepts two enabling modes: `new-run` for a pristine new-run
 canary, and `enabled` after verified migration. Other values fail closed, and
 `new-run` refuses any existing singleton or migration-bound run, including
 terminal history and attempts using `--force`. Before
+continuing an initialized run in a fresh process, recover the runtime choice
+from its durable binding. A missing environment flag is not rollback, and a
+changed host session does not invalidate the original scoped authorization.
+Explicit disabling values still block effects; deploy rollback through the
+host's configured environment so it applies to every execution. Before
 starting a canary, set `TASKPLANE_STAGE_NATIVE=new-run` and then run normal
 `loop init` with `--req <R-id>` resolving an exact existing requirement and
 `--by human:owner` naming the accountable human who becomes the root stage

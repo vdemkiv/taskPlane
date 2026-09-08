@@ -118,7 +118,7 @@ def _handoff_payload_text(ws, handoff):
 
 def test_disabled_loop_stage_context_does_not_open_a_locator(
         monkeypatch) -> None:
-    monkeypatch.delenv("TASKPLANE_STAGE_NATIVE", raising=False)
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "disabled")
     monkeypatch.setattr(
         loop.runtime_storage, "load_workspace_locator",
         lambda _ws: (_ for _ in ()).throw(AssertionError("locator opened")))

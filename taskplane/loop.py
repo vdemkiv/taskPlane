@@ -69,6 +69,7 @@ import storage as runtime_storage
 import spend
 import taskplane_lite as tp
 import yield_meter
+from taskplane import run_context, phase_harness
 
 if TYPE_CHECKING:
     from taskplane.review_evidence import ArtifactStore
@@ -2005,8 +2006,19 @@ def _stage_store(ws: str, run_id: str):
     return stage_run_store.RunStore()
 
 
-def _stage_mode() -> str:
-    """Resolve the fail-closed v4 rollout mode through the lite kernel."""
+def _stage_mode(state: Mapping[str, object] | None = None) -> str:
+    """Resolve explicit rollout policy, otherwise the run's durable choice.
+
+    A new process lacking its predecessor's environment is not a rollback.
+    Only already-bound/pristine runs recover their selected runtime; legacy
+    runs and new initializations retain the default-disabled policy.
+    """
+    if "TASKPLANE_STAGE_NATIVE" not in os.environ and isinstance(state, Mapping):
+        if _stage_read_run_binding(state) is not None:
+            return "enabled"
+        if state.get("_stage_native_new_run_pristine") is True and isinstance(
+                state.get("_stage_native_root_authority"), Mapping):
+            return "new-run"
     resolver = getattr(tp, "stage_native_mode", None)
     if callable(resolver):
         return str(resolver())
@@ -2244,7 +2256,7 @@ def _stage_loop_mutation_refusal(
         }
     if refusal := _stage_bound_run_refusal(ws, singleton):
         return refusal
-    mode = _stage_mode()
+    mode = _stage_mode(singleton)
     bootstrap_record = (singleton.get("_stage_native_root_authority")
                         if isinstance(singleton, Mapping) else None)
     if bootstrap_record is not None and _stage_read_run_binding(
@@ -2501,7 +2513,7 @@ def _stage_bootstrap_pristine_root(
     requirement. Content-addressed inputs make a crash between the v4 commit
     and singleton binding replay the same lifecycle operation.
     """
-    if _stage_mode() != "new-run" or _stage_read_run_binding(state) is not None:
+    if _stage_mode(state) != "new-run" or _stage_read_run_binding(state) is not None:
         return None
     if state.get("_stage_native_new_run_pristine") is not True:
         return None
@@ -2530,12 +2542,11 @@ def _stage_bootstrap_pristine_root(
             review_evidence.content_fingerprint(
                 authority_material) != authority_fingerprint:
         raise ValueError("stage-native root bootstrap authority is invalid")
-    session_id = str(
-        os.environ.get("TASKPLANE_SESSION_ID") or
-        os.environ.get("CODEX_THREAD_ID") or
-        os.environ.get("CLAUDE_SESSION_ID") or "").strip()
-    if session_id != root_authority.get("session_id"):
-        raise ValueError("stage-native root bootstrap session changed")
+    # The recorded session identifies the original authorization. It is not
+    # a lease on the orchestrator's conversation. Revalidate the complete
+    # durable authority below, retaining its exact original fingerprint.
+    if tp.task_slot() is not None:
+        raise ValueError("a worker cannot bootstrap the run root")
 
     locator = runtime_storage.load_workspace_locator(ws)
     if not isinstance(locator, Mapping):
@@ -2701,7 +2712,9 @@ def _stage_loop_context(
         ws: str, state: Mapping[str, object] | None = None, *,
         stage_id: str | None = None) -> dict | None:
     """Resolve an enabled v4 foreground without changing legacy state."""
-    if _stage_mode() == "disabled":
+    mode = (_stage_mode() if "TASKPLANE_STAGE_NATIVE" in os.environ else
+            _stage_mode(state if state is not None else _load_raw(ws)))
+    if mode == "disabled":
         return None
     locator = runtime_storage.load_workspace_locator(ws)
     if not isinstance(locator, Mapping):
@@ -2713,7 +2726,7 @@ def _stage_loop_context(
     manifest = store.load(run_id)
     # Existing singleton runs remain byte-identical until migration commits.
     if manifest.get("schema") == "taskplane.run/v3" and \
-            _stage_mode() == "new-run":
+            mode == "new-run":
         raise ValueError(
             "stage-native new-run requires a committed root stage before "
             "dispatch")
@@ -2792,6 +2805,9 @@ def _stage_loop_dispatch(
         "stage_fingerprint": stage["fingerprint"], "step": step,
         "slot": str(slot),
     }
+    retries = _phase_bridge_retries(context)
+    if retries:
+        identity["phase_operation"] = retries[-1]["result"]["next_operation"]
     operation_id = _stage_loop_identity(
         stage_entities, "loop-dispatch-", identity)
     attempt_id = _stage_loop_identity(
@@ -3249,7 +3265,7 @@ def _stage_loop_replayed_transition(
     predecessor-bound identity, and accept only the receipt whose current
     heads and lineage still match the durable aggregate.
     """
-    if _stage_mode() == "disabled" or not isinstance(completion, Mapping):
+    if _stage_mode(state) == "disabled" or not isinstance(completion, Mapping):
         return None
     locator = runtime_storage.load_workspace_locator(ws)
     if not isinstance(locator, Mapping) or not locator.get("run_id"):
@@ -3664,7 +3680,7 @@ def stage_command(ws: str, command: str, request: object) -> dict:
             return _stage_history(store, run_id, data)
 
         manifest = store.load(run_id)
-        blocker = _stage_mutation_blocker(_stage_mode(), manifest, ws)
+        blocker = _stage_mutation_blocker(_stage_mode(_load_raw(ws)), manifest, ws)
         if blocker:
             return {
                 "schema": STAGE_COMMAND_SCHEMA,
@@ -4583,6 +4599,35 @@ def load(ws: str) -> dict | None:
     return state
 
 
+def resume(ws: str) -> dict:
+    """Resolve a root's durable inputs without a host session or any effect.
+
+    This is a read projection of existing owners, not another coordinator or
+    a transferable authorization. `next_action` still owns dispatch and its
+    current authority, capability and duplicate-operation checks.
+    """
+    state = _load_raw(ws)
+    if state is None:
+        return {"schema": "taskplane.loop-resume/v1", "status": "not_started",
+                "next_action": "initialize_run", "command": "loop init"}
+    if refusal := _stage_bound_run_refusal(ws, state):
+        return {"schema": "taskplane.loop-resume/v1", "status": "refused", **refusal}
+    tasks = state.get("tasks") or []
+    return {
+        "schema": "taskplane.loop-resume/v1", "status": "resumable",
+        "read_only": True, "run_id": state["run_id"], "goal": state["goal"],
+        "step": state["step"], "requirement_id": state.get("requirement_id"),
+        "spec_path": state.get("spec_path"),
+        "state_path": _loop_path(ws), "current_task": state.get("current_task"),
+        "tasks": [{"id": task["id"], "scope": task.get("scope") or [],
+                   "status": task.get("status")} for task in tasks],
+        "design_fingerprint": state.get("design_fingerprint"),
+        "plan_fingerprint": state.get("plan_fingerprint"),
+        "next_action": "resolve_current_action", "command": "loop next",
+        "authority": "revalidate durable authorization before effects",
+    }
+
+
 def save(ws: str, state: dict) -> None:
     os.makedirs(_state_dir(ws), exist_ok=True)
     # Atomic write (tp.atomic_write_json): parallel wave workers gate
@@ -4919,7 +4964,12 @@ def init(ws: str, goal: str, spec_path: str | None = None,
          requirement_id: str | None = None, parallel: bool = False,
          design: bool = False, design_only: bool = False,
          force: bool = False, by: str | None = None,
-         reuse_approved_design: bool = False) -> dict:
+         reuse_approved_design: bool = False,
+         enforcement_decision: dict | None = None) -> dict:
+    if enforcement_decision is not None:
+        import enforcement as enforcement_kernel
+        enforcement_decision = enforcement_kernel.validate_decision(
+            enforcement_decision)
     if _stage_mode() == "new-run":
         try:
             prior_singleton = _load_raw(ws)
@@ -5007,9 +5057,11 @@ def init(ws: str, goal: str, spec_path: str | None = None,
         os.replace(src, archived_to)
         tp.trace(ws, "loop_init_replaced", prior_step=existing.get("step"),
                  archived_to=archived_to)
+    locator = runtime_storage.load_workspace_locator(ws)
     state = {
         "governance_revision": 2,
         "run_id": ((root_authority or {}).get("run_id") or
+                   ((locator or {}).get("run_id") if existing is None else None) or
                    "loop-" + secrets.token_hex(12)),
         "baseline": tp.git_head(ws),
         # Workers submit evidence; only the driver asks the engine to evaluate
@@ -5033,6 +5085,11 @@ def init(ws: str, goal: str, spec_path: str | None = None,
         "consumed_host_decisions": {},
         "consumed_host_events": {},
         "authority_effect_outbox": {},
+        **({"enforcement": {
+            "schema": "taskplane.run-enforcement/v1",
+            "current": enforcement_decision,
+            "history": [enforcement_decision],
+        }} if enforcement_decision is not None else {}),
         **reused_design,
         # This marker is minted only by an attributable new-run init.  The
         # first `loop next` consumes it while atomically committing the exact
@@ -5044,6 +5101,11 @@ def init(ws: str, goal: str, spec_path: str | None = None,
     }
     try:
         state.update(_prepare_run_control_plane(ws, state))
+        if root_authority is not None:
+            settings = operational_settings.load_settings(environment=os.environ)
+            if settings.digest != state["settings_digest"]:
+                raise ValueError("initial settings changed before snapshot capture")
+            state["settings_snapshot"] = settings.to_dict()
     except Exception as exc:
         return {
             "error": "whole-run control-plane initialization failed closed: "
@@ -5146,6 +5208,71 @@ def _current_task(state: dict):
         return None
     i = state.get("current_task", 0)
     return tasks[i] if 0 <= i < len(tasks) else None
+
+
+def _build_review_deferred(state: Mapping) -> dict | None:
+    """Preserve an admitted legacy review decision, not new phase semantics."""
+    if state.get("legacy_build_continuation") is None:
+        return None
+    return loop_recovery.legacy_review_policy(state)
+
+
+def _next_deferred_build_index(state: Mapping, completing: str | None = None) -> int | None:
+    tasks = state.get("tasks") or []
+    ids = [task.get("id") for task in tasks]
+    if len(ids) != len(set(ids)) or any(not isinstance(name, str) or not name for name in ids):
+        raise ValueError("deferred Build task identities are invalid")
+    passed = {task["id"] for task in tasks if task.get("status") in DEP_SATISFIED}
+    if completing is not None:
+        if completing not in ids:
+            raise ValueError("deferred Build completion names a foreign task")
+        passed.add(completing)
+    for task in tasks:
+        if not isinstance(task.get("deps", []), list) or not set(task.get("deps", [])) <= set(ids):
+            raise ValueError("deferred Build dependency is invalid")
+    unsettled = [(i, task) for i, task in enumerate(tasks)
+                 if task["id"] != completing and task.get("status") not in SETTLED]
+    if not unsettled:
+        return None
+    if any(task.get("status", "pending") != "pending" for _, task in unsettled):
+        raise ValueError("deferred Build has unresolved work")
+    for i, task in unsettled:
+        if set(task.get("deps", [])) <= passed:
+            return i
+    raise ValueError("deferred Build has no dependency-ready task; Engineering remains owed")
+
+
+def _advance_build_with_review_deferred(ws: str, state: dict) -> bool:
+    """Only a verified Build gate may append another non-judged completion."""
+    policy = _build_review_deferred(state)
+    if policy is None:
+        return False
+    task = _current_task(state)
+    if (state.get("step") != "evaluate" or not isinstance(task, dict)
+            or state.get("evaluate_child_evidence") is not None
+            or state.get("_build_failed") or task.get("_build_failed")):
+        raise ValueError("only an undispatched successful Build may defer review")
+    suite = (state.get("_suite_evidence") or {}).get(task["id"])
+    if (not isinstance(suite, dict) or suite.get("returncode") != 0
+            or suite.get("command") != task.get("tests") or not suite.get("key")):
+        raise ValueError("deferred review still requires the exact passing Build tests")
+    candidate = tp.git_head(ws)
+    if not candidate:
+        raise ValueError("deferred review requires a committed Build candidate")
+    next_index = _next_deferred_build_index(state, task["id"])
+    task["status"] = "passed"
+    task["evaluation"] = {"task": task["id"], "status": "deferred", "verdict": "non-judged",
+        "reason_code": "human-deferred-to-em", "detail": "Build tests passed; independent Engineering review remains owed.",
+        "policy_fingerprint": policy["fingerprint"], "build_candidate": candidate, "suite_key": suite["key"]}
+    pending = state.setdefault("deferred_review_tasks", [])
+    if task["id"] not in pending:
+        pending.append(task["id"])
+    if next_index is None:
+        state["step"] = "selection" if state.get("ab") and not state.get("selection") else "em"
+    else:
+        state["current_task"] = next_index
+        state["step"] = "execute"
+    return True
 
 
 def _reserve_worker_dispatch_ref(
@@ -6333,7 +6460,7 @@ def admit_native_dispatch(
             preserved_context_fingerprint=preserved_context_fingerprint,
             observation_authority=observation_authority,
             admission_operation_id=str(dispatch.get("dispatch_id") or ""),
-            dispatch=dispatch)
+            dispatch=dispatch, resource_limits_advisory=run_context.resource_limits_advisory(ws))
         if not decision.get("dispatch_allowed"):
             locked["root_hygiene"] = {
                 **dict(locked["root_hygiene"]),
@@ -6495,7 +6622,8 @@ def _screen_public_native_route(
             outstanding_set_fingerprint=outstanding,
             preserved_context_fingerprint=preserved,
             observation_authority=observation_authority,
-            admission_operation_id=dispatch_id, dispatch=dispatch)
+            admission_operation_id=dispatch_id, dispatch=dispatch,
+            resource_limits_advisory=run_context.resource_limits_advisory(ws))
         if not decision.get("dispatch_allowed"):
             locked["root_hygiene"] = {
                 **dict(root), "status": "admissions_closed",
@@ -6702,7 +6830,7 @@ def complete_observed_evaluate_evidence_child(
     route = state.get("evaluate_child_evidence")
     if not isinstance(route, Mapping):
         return None
-    native_task_name = str(event.get("agent_type") or "")
+    native_task_name = str(event.get("task_name") or event.get("agent_type") or "")
     child = next((row for row in route.get("child_dispatches") or []
                   if row.get("task_name") == native_task_name), None)
     if not isinstance(child, Mapping):
@@ -6747,7 +6875,7 @@ def _invalidate_terminal_metrics(state: dict) -> None:
 
 def record_native_dispatch_observation(
         ws: str, *, expected: Mapping[str, object],
-        native_task_name: str) -> dict:
+        native_task_name: str, observed_at: float | None = None) -> dict:
     """Bind one actual Codex spawn to its emitted native intent."""
     intent_id = str(expected.get("intent_id") or "").strip()
     dispatch_ref = str(expected.get("ref") or "").strip()
@@ -6834,7 +6962,7 @@ def record_native_dispatch_observation(
         existing = next((row for row in ledger.get("bindings") or []
                          if row.get("dispatch_id") == intent_id), None)
         observed_at = ((existing or {}).get("started_at") or
-                       SystemClock().wall_time())
+                       (SystemClock().wall_time() if observed_at is None else observed_at))
         binding = dispatch_telemetry.bind_dispatch(ledger, {
             "dispatch_id": intent_id,
             "thread_id": str(native_task_name or intent_id),
@@ -7037,7 +7165,7 @@ def record_native_orchestrator_snapshot(
                     preserved_context_fingerprint=preserved,
                     observation_authority=observation_authority,
                     admission_operation_id=dispatch_id,
-                    dispatch=binding)
+                    dispatch=binding, resource_limits_advisory=run_context.resource_limits_advisory(ws))
     record = record_native_session_snapshot(
         ws, task_id="orchestrator", dispatch_id=dispatch_id,
         snapshot=checked)
@@ -7137,7 +7265,7 @@ def _verified_stage_loop_wave_split(
     the active projection is intentionally ambiguous, so recovery must inspect
     persisted receipts before asking ``_stage_loop_context`` for a foreground.
     """
-    if _stage_mode() == "disabled" or not ready:
+    if _stage_mode(_load_raw(ws)) == "disabled" or not ready:
         return None
     locator = runtime_storage.load_workspace_locator(ws)
     if not isinstance(locator, Mapping):
@@ -7489,6 +7617,7 @@ def _stage_loop_wave_dispatches(
     return dispatches
 
 
+@run_context.operation
 def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
     """The next parallel wave: every task whose dependencies have PASSED
     and whose scope is disjoint from the rest of the wave. Each entry ships
@@ -7861,6 +7990,30 @@ def claim(ws: str, task_id: str, agent_ws: str) -> dict:
 
 # --------------------------------------------------------------- next / gate
 
+def read_pending_action(ws: str) -> dict | None:
+    """Observe an existing attempt without settings, host admission or effects.
+
+    This cannot authorize dispatch or a gate. A later mutation must reload
+    current authority. Never flush an outbox or reconstruct a preparation
+    merely to tell a replacement controller what is already in flight.
+    """
+    try:
+        state = _load_raw(ws)
+        if not run_context.selected(state):
+            return None
+        if refusal := _stage_loop_mutation_refusal(ws, allow_new_run_bootstrap=True):
+            return {**refusal, "read_only": True, "dispatch_allowed": False}
+        if _stage_read_run_binding(state) is None:
+            return None  # Pristine root preparation is an effect, not pickup.
+        observed = _phase_bridge_pending(ws, state)
+        return None if observed is None else {
+            **observed, "read_only": True, "dispatch_allowed": False}
+    except (ValueError, OSError) as exc:
+        return {"error": "phase runtime pickup refused: " + str(exc),
+                "read_only": True, "dispatch_allowed": False}
+
+
+@run_context.operation
 def next_action(
         ws: str, rid: str | None = None, *,
         expanded_route_provider_client:
@@ -7891,6 +8044,9 @@ def next_action(
         pending_phase = _phase_bridge_pending(ws, state)
         if pending_phase is not None:
             return pending_phase
+        phase_context = _phase_bridge_context(ws, state)
+        if phase_context is not None:
+            phase_harness.admit_lens_plan(phase_context)
     except (ValueError, OSError) as exc:
         return {"error": "phase runtime pickup refused: " + str(exc), "step": state.get("step")}
     # v2.3.0 wiring: attach a requirement BEFORE the design DoR evaluates —
@@ -8173,7 +8329,6 @@ def next_action(
 
     contract = _step_contract(step, state, act_ws)
     try:
-        phase_context = _phase_bridge_context(ws, state)
         if phase_context is not None:
             definition = phase_context["definition"]
             dispatch = tp.dispatch_fields("step", definition["role"], dispatch_ref,
@@ -8300,7 +8455,7 @@ def next_action(
     expanded_route_request = None
     delivery_dispatch = None
     zero_lens_delivery = False
-    if step in {"pm", "design", "plan"}:
+    if step in {"pm", "design", "plan"} and phase_context is None:
         focused_stage = "product" if step == "pm" else step
         try:
             stage_evidence, mandatory = _focused_stage_evidence(
@@ -8492,8 +8647,12 @@ def next_action(
                 if delivery_receipt is not None:
                     review_delivery_authority = delivery_receipt
             retry_context = None
+            review_task = task
+            if step == "em" and _build_review_deferred(state) is not None:
+                review_task = dict(task or {}, scope=[], contracts=[
+                    row for item in state.get("tasks") or [] for row in item.get("contracts") or []])
             review_kernel, routing = _review_kernel(
-                ws, diff_ws, base=base_ref, step=step, task=task,
+                ws, diff_ws, base=base_ref, step=step, task=review_task,
                 graph=depgraph.load(graph_ws), impact=imp or {},
                 requirement=req_rec,
                 test_evidence=((state.get("_suite_evidence") or {}).get(
@@ -8796,6 +8955,7 @@ def next_action(
         if phase_request is not None:
             contract["phase_runtime"] = phase_request
             result["phase_runtime"] = phase_request
+            phase_harness.compile_brief(phase_context, result, req_rec, act_ws)
         tp.activate(
             act_ws, contract, snapshot=snapshot,
             task_slot_override=contract["task_slot"])
@@ -9068,6 +9228,18 @@ def _aggregate_impact_policy(tasks) -> dict:
     return depgraph.aggregate_impact_policy(tasks)
 
 
+def _expanded_task_contracts(requirement: Mapping, task: Mapping) -> list:
+    """The existing Plan gate's requirement-first contract expansion."""
+    merged, seen = [], set()
+    for contract in list(requirement.get("contracts") or []) + list(task.get("contracts") or []):
+        ids = depgraph.contract_ids([contract])
+        cid = ids[0] if ids else ""
+        if cid and cid not in seen:
+            merged.append(contract)
+            seen.add(cid)
+    return merged
+
+
 def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
     """Definition of Ready for implementation, derived from the plan.
 
@@ -9107,14 +9279,7 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
             # Requirements own stable product/contract dependencies; the plan
             # may add contracts but cannot silently erase the requirement's
             # boundaries with an empty or narrower task-level list.
-            merged_contracts, seen_contracts = [], set()
-            for contract in list(rec.get("contracts") or []) + \
-                    list(task.get("contracts") or []):
-                cids = depgraph.contract_ids([contract])
-                cid = cids[0] if cids else ""
-                if cid and cid not in seen_contracts:
-                    merged_contracts.append(contract)
-                    seen_contracts.add(cid)
+            merged_contracts = _expanded_task_contracts(rec, task)
             if apply:
                 task["contracts"] = merged_contracts
             for dep in rec.get("depends_on") or []:
@@ -9680,6 +9845,8 @@ def _reanchor_replanned_tasks(
 
 
 def _first_unsettled_task_index(state: Mapping) -> int | None:
+    if _build_review_deferred(state) is not None:
+        return _next_deferred_build_index(state)
     for index, task in enumerate(state.get("tasks") or []):
         if task.get("status") not in SETTLED:
             return index
@@ -10475,8 +10642,20 @@ def _phase_bridge_authorize(ws: str, context: dict, current: Mapping[str, object
         raise ValueError("phase stage changed before effect")
 
 
+def _phase_bridge_retries(context: dict) -> list[dict]:
+    return phase_harness.retry_chain(context)
+
+
 def _phase_bridge_operation(context: dict) -> str:
-    return "phase-attempt-" + context["stage"]["fingerprint"][:32]
+    return phase_harness.operation_id(context)
+
+
+def _phase_retry_release(ws: str, result: dict) -> None:
+    phase_harness.release_expired(sys.modules[__name__], ws, result)
+
+
+def _resolve_phase_retry(ws: str, state: dict, **request) -> dict:
+    return phase_harness.resolve_retry(sys.modules[__name__], ws, state, **request)
 
 
 def _phase_bridge_freshness(ws: str, scopes: list[str]) -> tuple[dict, dict]:
@@ -10497,9 +10676,12 @@ def _phase_bridge_signing(ws, material, *, admit=False, authorize=None):
     freshness, _ = _phase_bridge_freshness(ws, material["signing_scope"])
     if freshness != material["freshness"]:
         raise ValueError("runtime signing current freshness changed")
+    run_id = material["bindings"]["run_id"]
+    policy = phase_harness.resource_policy(_stage_store(ws, run_id).load(run_id), run_id)
     return design_host_transport.runtime_receipt_authority(tp, ws,
         bindings=material["bindings"], freshness=freshness, now=int(SystemClock().wall_time()),
-        admit=admit, authorize=authorize)
+        admit=admit, authorize=authorize,
+        collection_policy=None if policy is None else policy["fingerprint"])
 
 
 def _phase_bridge_telemetry(ws: str, completion: Mapping[str, object], *, terminal_snapshot=None):
@@ -10510,7 +10692,9 @@ def _phase_bridge_telemetry(ws: str, completion: Mapping[str, object], *, termin
     that authority; until supplied such proposals remain a precise gap.
     """
     import math
-    from taskplane import design_host_transport, review_evidence
+    # These ports exchange typed signing keys. Keep their canonical package
+    # identity even when tp.py loads the legacy loop module as a flat script.
+    from taskplane import design_host_transport, review_evidence, dispatch_telemetry
     artifacts = review_evidence.ArtifactStore(ws)
     material = artifacts.read(completion["preparation"])
     policy = _phase_bridge_signing(ws, material)
@@ -10559,7 +10743,9 @@ def _phase_bridge_telemetry(ws: str, completion: Mapping[str, object], *, termin
         # Signature verification uses integer seconds; telemetry events retain
         # the host's fractional clock. Round the verification boundary up, not
         # the authentic event down (expiry may conservatively refuse early).
-        now=math.ceil(SystemClock().wall_time()), event_deliveries=tuple(binding["events"]))
+        now=math.ceil(SystemClock().wall_time()), event_deliveries=tuple(binding["events"]),
+        resource_limits_advisory=phase_harness.resource_policy(
+            _stage_store(ws, result["run_id"]).load(result["run_id"]), result["run_id"]) is not None)
     telemetry = dispatch_telemetry.produce_attempt_telemetry(inputs)
     return inputs, artifacts.put("attempt-telemetry", telemetry)
 
@@ -10634,7 +10820,7 @@ def _phase_bridge_runtime(ws: str, context: dict, material: Mapping[str, object]
         tokens = 0 if nonce.effect_state(binding) == "issued" else None
         try:
             _, terminal = nonce.phase_hooks(issued, binding)
-            tokens = terminal["tokens"]
+            tokens = phase_harness.usage_evidence(ws, material, terminal)["tokens"]
         # The nonce owner is package-imported even when the CLI loads loop flat.
         except producer_observation.ProducerObservationError:
             pass
@@ -10644,7 +10830,9 @@ def _phase_bridge_runtime(ws: str, context: dict, material: Mapping[str, object]
         raise ValueError("external host dispatch requires matching hook observation")
     runtime = agent_runtime.AgentRuntime(context["registry"], context["artifacts"], nonce,
         delivery_ports.SystemClock(), unavailable, unavailable, context["validators"], usage,
-        lambda reason: {"kind": "hold" if reason else "evaluate", "phase_id": binding["phase_id"]})
+        lambda reason: {"kind": "hold" if reason else "evaluate", "phase_id": binding["phase_id"]},
+        resource_limits_advisory=phase_harness.resource_policy(
+            context["store"].load(context["run_id"]), context["run_id"]) is not None)
     return runtime, dispatch
 
 
@@ -10751,8 +10939,9 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
     freshness, impact = _phase_bridge_freshness(ws, material["signing_scope"])
     material["freshness"] = freshness
     material["impact_reference"] = context["artifacts"].put("phase-impact", impact)
-    _phase_bridge_signing(ws, material, admit=True,
-        authorize=lambda: _phase_bridge_authorize(ws, context, context["store"].load(context["run_id"])))
+    if phase_harness.resource_policy(context["manifest"], context["run_id"]) is None:
+        _phase_bridge_signing(ws, material, admit=True,
+            authorize=lambda: _phase_bridge_authorize(ws, context, context["store"].load(context["run_id"])))
     if stage["stage_kind"] == "build":
         scopes = contract["coding"]["scope_paths"]
         if not scopes:
@@ -10817,7 +11006,8 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
     _phase_bridge_authorize(ws, context, context["store"].load(context["run_id"]))
     if stage["stage_kind"] == "build":
         build_c.prepare_build_phase(runtime, dispatch, lease_owner=owner, lease=lease)
-    _phase_bridge_signing(ws, material).require_current()
+    if not runtime.resource_limits_advisory:
+        _phase_bridge_signing(ws, material).require_current()
     if stage["stage_kind"] == "retro":
         _phase_bridge_retro_inputs(ws, context, material["domain"])
     source.reserve_dispatch(issued, binding)
@@ -10828,38 +11018,12 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
 
 
 def _phase_bridge_pending(ws: str, state: Mapping[str, object]) -> dict | None:
-    # Even after rollback, a prepared current stage remains pinned to v2.
-    context = _stage_loop_context(ws, state)
-    if context is None or not isinstance(context.get("stage"), dict):
-        return None
-    from taskplane import stage_migration
-    rows = stage_migration.phase_records(context["manifest"])
-    row = rows.get(_phase_bridge_operation(context))
-    if row is None:
-        return None
-    from taskplane import review_evidence
-    material = review_evidence.ArtifactStore(ws).read(row["result"]["reference"])
-    if not {"signing_scope", "freshness", "impact_reference"} <= set(material):
-        raise ValueError("persisted phase attempt has no compatible runtime-signing admission; retain its original identity")
-    if material["stage_fingerprint"] != context["stage"]["fingerprint"] or \
-            row["request_fingerprint"] != review_evidence.content_fingerprint(material):
-        raise ValueError("phase preparation changed")
-    completed = rows.get(_phase_bridge_operation(context) + "-complete")
-    return {"step": state.get("step"), "paused": True,
-        "phase_runtime": {"status": "collected" if completed else "pending",
-            "operation_id": _phase_bridge_operation(context), "reference": row["result"]["reference"],
-            "completion": None if completed is None else completed["result"]},
-        "awaiting": "current gate" if completed else "matching host terminal and output collection",
-        "wait_policy": event_wait_policy(_phase_bridge_operation(context), 1)}
+    return phase_harness.pending(sys.modules[__name__], ws, state)
 
 
-def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: Mapping[str, object]) -> dict | None:
-    """Existing CLI hooks feed actual selected producer bytes into the runtime.
-
-    This is observation/collection only. It cannot approve the candidate,
-    manufacture a host result, or invoke a stage gate.
-    """
-    from taskplane import agent_runtime, design_host_transport, review_evidence, stage_migration
+def _phase_bridge_attempt(ws: str, contract: Mapping[str, object]):
+    """Reconstruct the exact attempt independently of a host callback."""
+    from taskplane import review_evidence, stage_migration
     requested = contract.get("phase_runtime")
     if requested is None:
         return None
@@ -10892,6 +11056,18 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
         "lifecycle": lifecycle, "registry": registry, "validators": validators, "artifacts": artifacts}
     definition = registry.admit(material["bindings"]["phase_id"], ()).to_dict()
     runtime, dispatch = _phase_bridge_runtime(ws, context, material)
+    return requested, material, context, definition, runtime, dispatch
+
+
+def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: Mapping[str, object]) -> dict | None:
+    """Record actual host observations, then collect through the shared port."""
+    from taskplane import design_host_transport
+    attempt = _phase_bridge_attempt(ws, contract)
+    if attempt is None:
+        return None
+    requested, material, context, definition, runtime, dispatch = attempt
+    stage, manifest, artifacts = context["stage"], context["manifest"], context["artifacts"]
+    run_id, registry, operation = context["run_id"], context["registry"], requested["operation_id"]
     source = runtime.nonce
     outputs = []
     if event.get("hook_event_name") == "SubagentStop":
@@ -10915,8 +11091,28 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
     observed = design_host_transport.observe_phase_hook(tp, ws, contract, event,
         nonce=source, bindings=dispatch.nonce_bindings, outputs=outputs)
     if observed["kind"] == "start":
+        phase_harness.record_dispatch(sys.modules[__name__], ws, contract, material, observed)
         return {"status": "pending", "operation_id": operation, "observed_start": observed["claim"]}
-    start, terminal = source.phase_hooks(dispatch.issued, dispatch.nonce_bindings)
+    return _collect_phase_attempt(ws, attempt)
+
+
+def _collect_phase_attempt(ws, attempt):
+    """Collect saved, authenticated facts. Never creates or replays host events."""
+    from taskplane import agent_runtime, review_evidence, stage_migration
+    requested, material, context, _, runtime, dispatch = attempt
+    stage, store, artifacts = context["stage"], context["store"], context["artifacts"]
+    run_id, registry, operation = context["run_id"], context["registry"], requested["operation_id"]
+    _phase_bridge_authorize(ws, context, store.load(run_id))
+    start, terminal = runtime.nonce.phase_hooks(dispatch.issued, dispatch.nonce_bindings)
+    runtime.nonce.validate(dispatch.issued, dispatch.nonce_bindings,
+        enforce_deadline=not runtime.resource_limits_advisory)
+    prior = stage_migration.phase_records(store.load(run_id)).get(operation + "-complete")
+    if prior is not None:
+        signed = artifacts.read(prior["result"]["runtime_receipt"])
+        _phase_bridge_signing(ws, material).verify(signed, store=artifacts)
+        if signed["payload"]["terminal_identity"] != terminal["claim"]:
+            raise ValueError("collected terminal changed")
+        return {"status": "collected", "receipt": prior, "replay": True, "native_readiness_claimed": False}
     if terminal["outcome"] != "success":
         return {"status": "pending", "operation_id": operation, "reason_code": "terminal_not_successful"}
     observation = agent_runtime.Observation(start["claim"], (), terminal["claim"], "reconciled",
@@ -10951,7 +11147,8 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
     # Current host policy authenticates only the collected accepted envelope.
     # The original phase-result remains immutable evidence for compatibility.
     _phase_bridge_authorize(ws, context, store.load(run_id))
-    signed = _phase_bridge_signing(ws, material).sign(result, store=artifacts)
+    signed = _phase_bridge_signing(ws, material, admit=runtime.resource_limits_advisory,
+        authorize=lambda: _phase_bridge_authorize(ws, context, store.load(run_id))).sign(result, store=artifacts)
     authority = stage["authority"]
     handoff = produce_phase_handoff(artifacts, registry=registry, phase_result=result, dispatch=dispatch,
         predecessor=material["predecessor"], producer_stage_id=stage["stage_id"],
@@ -10964,6 +11161,9 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
     complete = {"runtime_result": artifacts.put("phase-result", result), "handoff": handoff,
         "runtime_receipt": artifacts.put("signed-phase-result", signed),
         "preparation": requested["reference"], "terminal_observation": terminal["claim"]}
+    complete["resource_usage"] = {**phase_harness.usage_evidence(ws, material, terminal),
+        "limits": dict(material["bindings"]["budget"]),
+        "advisory": runtime.resource_limits_advisory}
     if retro_receipt is not None:
         complete["retro_receipt"] = retro_receipt
     current = store.load(run_id)
@@ -10996,6 +11196,10 @@ def _phase_bridge_gate_check(ws: str, state: Mapping[str, object]) -> None:
     signed = artifacts.read(completion["runtime_receipt"])
     if _phase_bridge_signing(ws, material).verify(signed, store=artifacts)["payload"] != result:
         raise ValueError("signed runtime differs from accepted output")
+    from taskplane import design_host_transport
+    source = design_host_transport.phase_nonce_source(tp, ws, result["run_id"], existing_only=True)
+    source.validate(source.recover(material["nonce_bindings"]), material["nonce_bindings"],
+        enforce_deadline=not run_context.resource_limits_advisory(ws))
     if result["status"] != "accepted" or not result["evaluator_dispatch_eligibility"]:
         raise ValueError("phase runtime result is not eligible for gate")
     current = _stage_loop_context(ws, state)
@@ -12294,6 +12498,7 @@ def _task_submission_authority_error(
     return None
 
 
+@run_context.operation
 def submit(ws: str, outcome: str, note: str = "",
            task_id: str | None = None) -> dict:
     """Worker submission — evidence request, never a state transition.
@@ -12656,6 +12861,7 @@ def _stage_loop_gate_completion(
     return result
 
 
+@run_context.operation
 def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
          rid: str | None = None) -> dict:
     """Record the current step's outcome, transition, and clear its contract."""
@@ -13269,6 +13475,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                 current["failure_routing"] = \
                     _detected_build_failure_routing(
                         act_ws, current, submission or {}, "execute")
+            else:
+                _advance_build_with_review_deferred(act_ws, state)
         elif step == "evaluate":
             t = _current_task(state)
             # One Evaluate route is bound to one task/candidate/attempt.  It
@@ -13431,6 +13639,8 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                         act_ws, current, submission or {}, "fix")
                 current["_build_failed"] = True
             state["step"] = "evaluate"
+            if outcome == "pass":
+                _advance_build_with_review_deferred(act_ws, state)
         elif step == "em":
             if outcome == "pass":
                 # The graph was true-d up before the EM brief, so its
@@ -14147,9 +14357,7 @@ def _whole_run_terminal_authority(
             "whole-run terminal authority requires an attributable host "
             "session")
     root = state.get("_stage_native_root_authority")
-    if isinstance(root, Mapping) and (
-            root.get("session_id") != session_id or
-            root.get("actor") != actor):
+    if isinstance(root, Mapping) and root.get("actor") != actor:
         raise ValueError(
             "whole-run terminal authority does not match the run root")
     host = ("codex" if os.environ.get("CODEX_THREAD_ID") else
@@ -14457,6 +14665,7 @@ def _complete_whole_run_terminal(
                           if transition is not None else {})}
 
 
+@run_context.operation
 def terminalize_run(ws: str, outcome: str, *, by: str) -> dict:
     """Public idempotent close for cancellation, interruption, or handoff."""
     if outcome not in _WHOLE_RUN_TERMINAL_OUTCOMES:
@@ -15026,6 +15235,7 @@ def _refinement_report(ws: str, state: dict) -> list:
     return out
 
 
+@run_context.operation
 def approve(ws: str, force: bool = False, by: str = None) -> dict:
     """Pass a human checkpoint (plan-approval or EM sign-off).
 
@@ -15461,14 +15671,32 @@ def _cascade_skip(state: dict, root_id: str) -> list:
     return cascaded
 
 
+@run_context.operation
 def resolve(
         ws: str, decision: str, *, by: str | None = None,
         accept_producer_receipt_outage: bool = False,
-        outage_fingerprint: str | None = None) -> dict:
+        outage_fingerprint: str | None = None, phase_operation: str | None = None,
+        candidate_fingerprint: str | None = None, worker_stopped: bool = False) -> dict:
     """Human decision when a task escalated (fix cycles exhausted)."""
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
     state = load(ws)
+    if decision == "limits-advisory":
+        if state is None or phase_operation or candidate_fingerprint or worker_stopped:
+            return {"error": "limits-advisory requires only the existing run and human --by"}
+        return phase_harness.advise_resource_limits(sys.modules[__name__], ws, state, by or "")
+    if decision == "reconcile":
+        if state is None or candidate_fingerprint or worker_stopped:
+            return {"error": "reconcile requires the exact existing phase operation"}
+        return phase_harness.reconcile(sys.modules[__name__], ws, state, phase_operation or "")
+    if phase_operation is not None or candidate_fingerprint is not None or worker_stopped:
+        try:
+            if decision != "retry" or state is None:
+                raise ValueError("phase recovery only supports retry on the existing run")
+            return _resolve_phase_retry(ws, state, operation=phase_operation or "",
+                candidate=candidate_fingerprint or "", by=by or "", worker_stopped=worker_stopped)
+        except (ValueError, OSError) as exc:
+            return {"error": "phase retry refused: " + str(exc), "dispatch_allowed": False}
     if state is not None and state.get("step") == "em" and \
             isinstance(state.get("engineering_review_outage"), Mapping) and \
             decision == "pass" and accept_producer_receipt_outage is True:
@@ -15667,6 +15895,16 @@ def resolve(
     return {"step": state["step"], "status": status(ws),
             **({"stage_transition": stage_transition}
                if stage_transition is not None else {})}
+def continue_build(ws: str, *, source: str, by: str, request: str,
+                   expected_fingerprint: str, check: bool = False,
+                   observation_authority: bytes | None = None) -> dict:
+    """Explicit legacy scope continuity, distinct from independent-pass replan."""
+    import sys
+    return loop_recovery.continue_build(sys.modules[__name__], ws, source=source,
+        by=by, request=request, expected_fingerprint=expected_fingerprint, check=check,
+        observation_authority=observation_authority)
+
+
 def replan(ws: str, by: str, reason: str) -> dict:
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
@@ -15716,6 +15954,7 @@ def replan(ws: str, by: str, reason: str) -> dict:
         return {"error": "stage-native replan transition failed closed: "
                 f"{exc.__class__.__name__}: {exc}",
                 "step": (load(ws) or {}).get("step")}
+@run_context.operation
 def retro(ws: str) -> dict:
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal

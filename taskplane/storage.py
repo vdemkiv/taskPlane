@@ -458,19 +458,42 @@ def load_workspace_locator(checkout: str) -> dict | None:
     return value
 
 
+def bind_workspace_taskplane_home(
+        checkout: str, environment: MutableMapping[str, str]) -> str | None:
+    """Recover the storage selection for CLI and hook processes alike."""
+    locator = load_workspace_locator(checkout)
+    expected = str(locator["home"]) if locator else None
+    if expected is None:
+        return None
+    _bind_taskplane_home(environment, expected)
+    return expected
+
+
+def _bind_taskplane_home(environment: MutableMapping[str, str], expected: str) -> None:
+    configured = str(environment.get("TASKPLANE_HOME") or "")
+    if configured:
+        canonical = taskplane_home(configured)
+        if os.path.normcase(configured) != os.path.normcase(canonical):
+            raise StorageIdentityError("hook TASKPLANE_HOME is not canonical")
+        if os.path.normcase(canonical) != os.path.normcase(expected):
+            raise StorageIdentityError(
+                "hook TASKPLANE_HOME does not match the workspace locator")
+    environment["TASKPLANE_HOME"] = expected
+
+
 def bind_hook_taskplane_home(
         checkout: str, environment: MutableMapping[str, str], *,
         hook_path: str | None = None) -> str:
     """Bind a governed hook process to its dedicated checkout locator.
 
     Calling this function declares that the invocation is a Taskplane hook.
-    A governed checkout must bind to its locator. Before governance exists,
-    only the installed native hook may bootstrap a session receipt, and only
-    in the canonical user-default home. Repository bridges, custom homes, and
-    conflicting or noncanonical values remain closed failures.
+    A governed checkout binds to its locator. Before governance exists,
+    only the installed native path may use the canonical user-default home.
+    Run initialization is independent of hook readiness and produces the
+    locator before dispatch. Hooks never create a competing run binding.
     """
-    locator = load_workspace_locator(checkout)
-    if locator is None:
+    expected = bind_workspace_taskplane_home(checkout, environment)
+    if expected is None:
         # A newly-created Codex task has no run locator yet.  The installed
         # native hook is nevertheless authoritative evidence that the host
         # loaded Taskplane, and its package command is inert unless the
@@ -482,18 +505,7 @@ def bind_hook_taskplane_home(
                 "Taskplane hook requires a governed workspace locator")
         expected = taskplane_home(os.path.join(
             os.path.expanduser("~"), ".taskplane"))
-    else:
-        expected = str(locator["home"])
-    configured = str(environment.get("TASKPLANE_HOME") or "")
-    if configured:
-        canonical = os.path.realpath(
-            os.path.abspath(os.path.expanduser(configured)))
-        if os.path.normcase(configured) != os.path.normcase(canonical):
-            raise StorageIdentityError("hook TASKPLANE_HOME is not canonical")
-        if os.path.normcase(canonical) != os.path.normcase(expected):
-            raise StorageIdentityError(
-                "hook TASKPLANE_HOME does not match the workspace locator")
-    environment["TASKPLANE_HOME"] = expected
+    _bind_taskplane_home(environment, expected)
     return expected
 
 

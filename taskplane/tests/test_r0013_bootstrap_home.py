@@ -98,7 +98,9 @@ def test_new_codex_task_writes_current_compatible_receipt_only_to_locator_bound_
         receipt = json.loads(receipts[hook_path])
         assert receipt["schema"] == host_capabilities.RUNTIME_RECEIPT_SCHEMA
         assert receipt["hook_path"] == hook_path
-        assert receipt["event_name"] == "SubagentStart"
+        # The projection follows the latest actual observation, rather than
+        # freezing the first event and preventing a late bridge converging.
+        assert receipt["event_name"] == "SubagentStop"
     observations = host_capabilities.runtime_hook_observations(
         str(dedicated_home), session_id="fresh-codex-task",
         workspace=str(checkout))

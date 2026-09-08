@@ -469,6 +469,7 @@ class OperationalSettings:
     receipt: Mapping[str, Any]
     schema: str = CURRENT_SCHEMA
     phase_definitions: tuple[bytes, ...] = ()
+    legacy_snapshot: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -481,7 +482,8 @@ class OperationalSettings:
             "dashboard": self.dashboard.to_dict(),
             "overrides": self.overrides.to_dict(),
             "observability": self.observability.to_dict(),
-            "phase_definitions": [json.loads(value) for value in self.phase_definitions],
+            **({} if self.legacy_snapshot else {
+                "phase_definitions": [json.loads(value) for value in self.phase_definitions]}),
         }
 
 
@@ -594,6 +596,7 @@ def _nonnegative_number(value: object, label: str) -> int | float:
 def _validate_and_type(
     data: Mapping[str, Any], receipt: Mapping[str, Any], *,
     catalog_ids: frozenset[str],
+    legacy_snapshot: bool = False,
 ) -> OperationalSettings:
     if data.get("schema") != CURRENT_SCHEMA:
         raise SettingsError("unsupported operational settings schema")
@@ -840,6 +843,8 @@ def _validate_and_type(
                       "governance_paths": typed_governance_paths},
         "observability": dict(observable_raw),
     }
+    if legacy_snapshot:
+        normalized.pop("phase_definitions")
     digest = _digest(normalized)
     sealed_receipt = dict(receipt)
     sealed_receipt["settings_digest"] = digest
@@ -865,6 +870,7 @@ def _validate_and_type(
         observability=ObservabilitySettings(observable_raw["receipt"], False),
         digest=digest, receipt=_freeze(sealed_receipt),
         phase_definitions=phase_definitions,
+        legacy_snapshot=legacy_snapshot,
     )
 
 
@@ -964,6 +970,16 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     the closed one-release environment alias table is interpreted here.
     """
     del host_capabilities
+    # Every consumer in a governed invocation sees the same durable values,
+    # including flat CLI imports and package imports. Host negotiation is
+    # deliberately separate from configuration selection.
+    from taskplane import run_context
+    bound = run_context.current_settings()
+    if bound is not None and Path(path) == DEFAULT_SETTINGS_PATH:
+        if overlay is not None:
+            raise SettingsError("a bound run cannot replace settings through a transient overlay")
+        return from_snapshot(bound[0], expected_digest=bound[1],
+                             allow_legacy="phase_definitions" not in bound[0])
     defaults = _read_json(DEFAULT_SETTINGS_PATH)
     raw = _read_json(Path(path))
     _reject_secrets(raw)
@@ -1149,6 +1165,26 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         effective, receipt, catalog_ids=catalog_ids)
 
 
+def from_snapshot(value: Mapping[str, Any], *, expected_digest: str,
+                  allow_legacy: bool = False) -> OperationalSettings:
+    """Validate complete durable values without merging today's defaults/env."""
+    raw = json.loads(_canonical(dict(value)))
+    legacy = allow_legacy and set(raw) == _TOP - {"phase_definitions"}
+    if (set(raw) != _TOP and not legacy) or raw.get("schema") != CURRENT_SCHEMA or _digest(raw) != expected_digest:
+        raise SettingsError("run settings snapshot is incomplete or its digest changed")
+    _reject_secrets(raw)
+    _validate_keys(raw)
+    _require_v2_root_session(raw)
+    catalog_ids, catalog_digest = _read_lens_catalog()
+    checked = _validate_and_type(raw, {"schema": RECEIPT_SCHEMA,
+        "precedence": ["durable-run"], "migration": None, "environment": None,
+        "overlay": None, "lens_catalog_digest": catalog_digest}, catalog_ids=catalog_ids,
+        legacy_snapshot=legacy)
+    if checked.digest != expected_digest:
+        raise SettingsError("run settings snapshot is not canonical")
+    return checked
+
+
 def settings_digest(settings: OperationalSettings | Mapping[str, Any]) -> str:
     """Return the portable digest of an effective settings value."""
     value = settings.to_dict() if isinstance(settings, OperationalSettings) else dict(settings)
@@ -1171,7 +1207,7 @@ __all__ = [
     "REQUIRED_DASHBOARD_LIFECYCLE_EVENTS", "SettingsError",
     "StageLensPolicy", "StageSettings", "TestSettings", "WorkflowSettings",
     "STAGES", "ROUTED_LENS_STAGES", "ZERO_LENS_STAGES",
-    "DESIGN_LENS_MAX", "PLAN_LENS_MAX", "load_settings",
+    "DESIGN_LENS_MAX", "PLAN_LENS_MAX", "load_settings", "from_snapshot",
     "PhaseDefinition", "PhaseRegistry", "load_phase_registry",
     "settings_digest", "settings_receipt",
 ]

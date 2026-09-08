@@ -5755,6 +5755,17 @@ def bind_worker_contract_event(workspace: str, event: dict, *,
         raise _worker_lifecycle_error(
             workspace, "worker start does not identify exactly one pending slot")
     slot, contract = candidates[0]
+    with file_lock(active_contract_path(workspace, slot)):
+        return _bind_worker_contract_slot(workspace, slot, owner, now=now)
+
+
+def _bind_worker_contract_slot(workspace: str, slot: str, owner: dict, *, now=None) -> dict:
+    # Serialize activation with exact-slot recovery; a delayed Start cannot
+    # resurrect an administratively retired pending contract.
+    contract = load_json(active_contract_path(workspace, slot), default=None,
+                         what="pending worker contract")
+    if not isinstance(contract, dict):
+        raise _worker_lifecycle_error(workspace, "worker slot is no longer pending")
     lifecycle = contract["worker_lifecycle"]
     if lifecycle.get("status") == "active":
         if lifecycle.get("owner") != owner:
@@ -5983,6 +5994,24 @@ def record_worker_terminal(
                 or observed != owner:
             raise _worker_lifecycle_error(
                 workspace, "terminal event does not match worker owner")
+    elif authority == "phase-observation":
+        # Recovery consumes the nonce owner's signed facts. It never invents
+        # a callback or treats a controller's assertion as a native Stop.
+        from taskplane import design_host_transport, review_evidence
+        requested = contract.get("phase_runtime") or {}
+        material = review_evidence.ArtifactStore(workspace).read(requested["reference"])
+        if material["contract_slot"] != slot or material["bindings"]["operation_id"] != requested["operation_id"]:
+            raise _worker_lifecycle_error(workspace, "phase terminal binding changed")
+        source = design_host_transport.phase_nonce_source(sys.modules[__name__], workspace,
+            requested["run_id"], existing_only=True)
+        issued = source.recover(material["nonce_bindings"])
+        source.validate(issued, material["nonce_bindings"], enforce_deadline=False)
+        start, terminal = source.phase_hooks(issued, material["nonce_bindings"])
+        if lifecycle.get("status") != "active" or any(owner != {key: observed["owner"][key]
+                for key in ("session_id", "agent_id", "task_name")} for observed in (start, terminal)) or \
+                outcome != terminal["outcome"] or submission_status != "phase-collected:" + terminal["claim"]:
+            raise _worker_lifecycle_error(workspace, "phase terminal owner or outcome changed")
+        now = int(terminal["observed_at"])
     elif authority not in {"loop-gate", "session-start", "orphan-recovery"}:
         raise _worker_lifecycle_error(
             workspace, "worker terminal authority is unsupported")

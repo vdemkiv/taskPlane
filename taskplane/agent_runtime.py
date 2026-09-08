@@ -159,6 +159,7 @@ class AgentRuntime:
     usage: Callable[[], Mapping[str, int | None]]
     continuation: Callable[[str | None], Mapping[str, object]]
     capability: delivery_ports.TaskDispatchCapability | None = None
+    resource_limits_advisory: bool = False
 
     def _budget(self, bindings: Mapping[str, object]) -> None:
         limits = _object(bindings["budget"])
@@ -167,14 +168,22 @@ class AgentRuntime:
             raise RuntimeRefusal("budget_exhausted")
         for name, maximum in limits.items():
             used = consumed[name]
+            if used is None:
+                if self.resource_limits_advisory:
+                    continue
+                raise RuntimeRefusal("observation_unavailable")
             if type(maximum) is not int or type(used) is not int:
                 raise RuntimeRefusal("budget_exhausted")
-            if not isinstance(maximum, int) or not isinstance(used, int) or used < 0 or used > maximum:
+            if not isinstance(maximum, int) or not isinstance(used, int) or used < 0:
+                raise RuntimeRefusal("budget_exhausted")
+            if self.resource_limits_advisory:
+                continue
+            if used > maximum:
                 raise RuntimeRefusal("budget_exhausted")
             if name in {"tokens", "wall_ms", "attempts"} and used >= maximum:
                 raise RuntimeRefusal("budget_exhausted")
         deadline = datetime.fromisoformat(str(bindings["deadline"]).replace("Z", "+00:00"))
-        if self.clock.wall_time() >= deadline.timestamp():
+        if not self.resource_limits_advisory and self.clock.wall_time() >= deadline.timestamp():
             raise RuntimeRefusal("budget_exhausted")
 
     def _artifacts(self, artifacts: tuple[Artifact, ...], declared: object,
@@ -274,7 +283,8 @@ class AgentRuntime:
                 raise RuntimeRefusal("knowledge_fingerprint_mismatch")
             if bindings["sealed_package_fingerprint"] != package_fingerprint(dispatch.package, dispatch.knowledge, dispatch.envelope):
                 raise RuntimeRefusal("package_mismatch")
-            nonce = self.nonce.validate(dispatch.issued, dispatch.nonce_bindings)
+            nonce = self.nonce.validate(dispatch.issued, dispatch.nonce_bindings,
+                enforce_deadline=not self.resource_limits_advisory)
             for key, value in dispatch.nonce_bindings.items():
                 if key in bindings and key != "deadline" and bindings[key] != value:
                     raise RuntimeRefusal("package_mismatch")
@@ -297,7 +307,7 @@ class AgentRuntime:
                 identity = self.nonce.dispatch(dispatch.issued, dispatch.nonce_bindings,
                     lambda: self.launch(envelope, dispatch.package, boundary))
                 observed = self.observe(identity)
-            elif self.nonce.effect_state(dispatch.nonce_bindings) not in {"dispatch_uncertain", "dispatched"}:
+            elif self.nonce.effect_state(dispatch.nonce_bindings) not in {"dispatch_uncertain", "dispatched", "observed"}:
                 raise RuntimeRefusal("observation_unavailable")
             base.update(start_identity=observed.start_identity, progress_identity=list(observed.progress_identity),
                         terminal_identity=observed.terminal_identity, effect_state=observed.effect_state)

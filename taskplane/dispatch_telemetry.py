@@ -184,6 +184,7 @@ class AttemptTelemetryInputs:
     freshness: Mapping[str, object]
     now: int
     event_deliveries: Sequence[Mapping[str, object]]
+    resource_limits_advisory: bool = False
 
 
 def _telemetry_object(value: object) -> dict[str, object]:
@@ -206,11 +207,21 @@ def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, objec
     proposal inventory. Rejected/conflicting updates remain visible. This
     prerequisite does not grant a gate, native evidence, or lifecycle authority.
     """
+    if inputs.resource_limits_advisory:
+        key_id = inputs.runtime_receipt.get("key_id")
+        issued_at = inputs.runtime_receipt.get("issued_at")
+        if not isinstance(key_id, str) or type(issued_at) is not int:
+            raise DispatchTelemetryError("telemetry runtime signing identity is malformed")
+        key = inputs.trusted_keys.get(key_id)
+        if key is None or key.status != "active" or issued_at > inputs.now:
+            raise DispatchTelemetryError("telemetry runtime signing authority is disabled or from the future")
     verified = stage_handoff.verify_contract(inputs.runtime_receipt,
         trusted_keys=inputs.trusted_keys, expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
-        expected_freshness=inputs.freshness, now=inputs.now)
+        expected_freshness=inputs.freshness, now=inputs.now,
+        historical=inputs.resource_limits_advisory)
     result = _telemetry_object(verified["payload"])
-    nonce = inputs.nonce_source.validate(inputs.nonce, inputs.nonce_bindings)
+    nonce = inputs.nonce_source.validate(inputs.nonce, inputs.nonce_bindings,
+        enforce_deadline=not inputs.resource_limits_advisory)
     for field in ("run_id", "phase_id", "attempt_id", "operation_id", "candidate_fingerprint",
                   "definition_set_fingerprint", "phase_definition_fingerprint",
                   "sealed_package_fingerprint", "knowledge_fingerprint", "authority_fingerprint",
@@ -2254,7 +2265,8 @@ def _screen_dispatch_projection(
         outstanding_set_fingerprint: str,
         preserved_context_fingerprint: str,
         observation_authority: bytes | None = None,
-        overrides: Mapping[str, int | float] | None = None) -> dict[str, Any]:
+        overrides: Mapping[str, int | float] | None = None,
+        resource_limits_advisory: bool = False) -> dict[str, Any]:
     """Return the one fail-closed decision consumed before a native start."""
     identity = validate_ledger(ledger)
     required = {
@@ -2335,7 +2347,7 @@ def _screen_dispatch_projection(
             if reason_code == "root_usage_unavailable" else
             "The root-session admission boundary is closed; active workers "
             "may terminalize but no new task was started.")
-        if isinstance(ledger, MutableMapping):
+        if isinstance(ledger, MutableMapping) and not resource_limits_advisory:
             state = ledger.get("root_admission")
             if isinstance(state, MutableMapping) and not state.get("sticky"):
                 state["sticky"] = True
@@ -2375,6 +2387,12 @@ def _screen_dispatch_projection(
         "wave_usage": reconciled_wave_usage,
         "checkpoint": None,
     }
+    if resource_limits_advisory and (root_admission is None or root_admission["reason_code"] in {
+            None, "root_usage_unavailable", "root_budget_reached", "root_seed_budget_exceeded"}):
+        # Authenticated ledger/root admission was validated above. Keep every
+        # measurement, triggered ceiling and budget claim; only its enforcement
+        # is advisory. Session/identity/custody refusals are not resource limits.
+        result.update(status="advisory", dispatch_allowed=True)
     if not result["dispatch_allowed"]:
         result["checkpoint"] = _scope_review_checkpoint(
             reason=reason, source_sha=identity["source_sha"],
@@ -2397,7 +2415,8 @@ def screen_dispatch(
         admission_operation_id: str | None = None,
         dispatch: Mapping[str, Any] | None = None,
         usage: Mapping[str, Any] | None = None,
-        source_fingerprint: str | None = None) -> dict[str, Any]:
+        source_fingerprint: str | None = None,
+        resource_limits_advisory: bool = False) -> dict[str, Any]:
     """Screen and, when requested, bind one dispatch as one operation.
 
     A projection-only call remains useful for status.  Once root admission is
@@ -2416,7 +2435,7 @@ def screen_dispatch(
             outstanding_set_fingerprint=outstanding_set_fingerprint,
             preserved_context_fingerprint=preserved_context_fingerprint,
             observation_authority=observation_authority,
-            overrides=overrides)
+            overrides=overrides, resource_limits_advisory=resource_limits_advisory)
     if not isinstance(ledger, MutableMapping):
         raise DispatchTelemetryError(
             "atomic screen_dispatch admission requires a mutable ledger")
@@ -2445,7 +2464,7 @@ def screen_dispatch(
             outstanding_set_fingerprint=outstanding_set_fingerprint,
             preserved_context_fingerprint=preserved_context_fingerprint,
             observation_authority=observation_authority,
-            overrides=overrides)
+            overrides=overrides, resource_limits_advisory=resource_limits_advisory)
         projected.pop("fingerprint", None)
         projected.update({
             "admission_operation_id": operation_id,
@@ -2460,7 +2479,7 @@ def screen_dispatch(
         outstanding_set_fingerprint=outstanding_set_fingerprint,
         preserved_context_fingerprint=preserved_context_fingerprint,
         observation_authority=observation_authority,
-        overrides=overrides)
+        overrides=overrides, resource_limits_advisory=resource_limits_advisory)
     binding = None
     operation_status = "refused"
     if projected["dispatch_allowed"]:

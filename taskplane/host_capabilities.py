@@ -328,8 +328,14 @@ def _receipt_dir(home: str) -> str:
     return os.path.join(os.path.abspath(home), "host-receipts")
 
 
-def _receipt_path(home: str, hook_path: str) -> str:
-    return os.path.join(_receipt_dir(home), f"{hook_path}.json")
+def _receipt_path(home: str, hook_path: str, session: str | None = None,
+                  workspace: str | None = None) -> str:
+    directory = _receipt_dir(home)
+    if session:
+        directory = os.path.join(directory, "sessions", session)
+        if hook_path == "bridge" and workspace:
+            directory = os.path.join(directory, "workspaces", workspace)
+    return os.path.join(directory, f"{hook_path}.json")
 
 
 def _fingerprint_text(value: object) -> str | None:
@@ -374,37 +380,43 @@ def record_runtime_hook_receipt(
             os.path.normcase(os.path.realpath(cwd))) if cwd else None,
         "event_name": _bounded(event.get("hook_event_name"), 64),
     }
-    directory = _receipt_dir(home)
-    os.makedirs(directory, exist_ok=True)
-    target = _receipt_path(home, path_name)
-    # A session-bound receipt remains valid for that task. Avoid an fsync on
-    # every tool call once this hook path has proved it executed.
-    if receipt["session_fingerprint"]:
+    # One global latest file erased another live task's receipt. Keep each
+    # session (and each bridge workspace) independently addressable, while
+    # retaining the legacy latest projection for older readers.
+    targets = dict.fromkeys((
+        _receipt_path(home, path_name, receipt["session_fingerprint"],
+                      receipt["workspace_fingerprint"]),
+        _receipt_path(home, path_name),
+    ))
+    for target in targets:
+        directory = os.path.dirname(target)
+        os.makedirs(directory, exist_ok=True)
+        # Only an exact repeated event is a no-op. Freezing the first event
+        # forever prevents a bridge loaded later from converging with native.
         try:
             with open(target, encoding="utf-8") as handle:
                 prior = json.load(handle)
-            if isinstance(prior, dict) and prior.get("schema") == \
-                    RUNTIME_RECEIPT_SCHEMA and prior.get("hook_path") == \
-                    path_name and prior.get("session_fingerprint") == \
-                    receipt["session_fingerprint"]:
-                return prior
+            if isinstance(prior, dict) and receipt["session_fingerprint"] and all(
+                    prior.get(key) == value for key, value in receipt.items()
+                    if key != "observed_at"):
+                continue
         except (OSError, ValueError, json.JSONDecodeError):
             pass
-    temporary = ""
-    try:
-        with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", newline="", delete=False,
-                dir=directory, prefix=f".{path_name}-receipt-",
-                suffix=".tmp") as handle:
-            temporary = handle.name
-            json.dump(receipt, handle, sort_keys=True, separators=(",", ":"))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, target)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        temporary = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", newline="", delete=False,
+                    dir=directory, prefix=f".{path_name}-receipt-",
+                    suffix=".tmp") as handle:
+                temporary = handle.name
+                json.dump(receipt, handle, sort_keys=True, separators=(",", ":"))
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     return receipt
 
 
@@ -420,8 +432,16 @@ def runtime_hook_observations(
     receipts: dict[str, dict[str, Any]] = {}
     for hook_path in ("native", "bridge"):
         try:
-            with open(_receipt_path(home, hook_path), encoding="utf-8") as f:
-                row = json.load(f)
+            target = _receipt_path(home, hook_path, expected_session,
+                                   expected_workspace)
+            try:
+                with open(target, encoding="utf-8") as f:
+                    row = json.load(f)
+            except FileNotFoundError:
+                # Existing v1 receipts remain readable only after all the
+                # same session/workspace/freshness checks below.
+                with open(_receipt_path(home, hook_path), encoding="utf-8") as f:
+                    row = json.load(f)
             if not isinstance(row, dict) or row.get("schema") != \
                     RUNTIME_RECEIPT_SCHEMA or row.get("hook_path") != hook_path:
                 continue

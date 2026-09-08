@@ -99,7 +99,7 @@ def _setup(tmp_path: Path, *, local_read: bool = False,
 
 
 @pytest.mark.parametrize("case", ["connected", "authorized-local-read", "missing-input", "altered-input", "stale-package",
-    "foreign-input", "knowledge", "definition", "model", "instructions", "missing-terminal", "missing-output", "budget", "launch-loss"])
+    "foreign-input", "knowledge", "definition", "model", "instructions", "missing-terminal", "missing-output", "budget", "unknown-usage", "launch-loss"])
 def test_agent_runtime_wraps_incumbent_dispatch(tmp_path: Path, case: str) -> None:
     facade, dispatch, calls = _setup(tmp_path, local_read=case == "authorized-local-read", foreign_stage=case == "foreign-input")
     expected = "package_mismatch"
@@ -129,6 +129,9 @@ def test_agent_runtime_wraps_incumbent_dispatch(tmp_path: Path, case: str) -> No
     elif case == "budget":
         facade.usage = lambda: {"tokens": 10**12, "wall_ms": 0, "attempts": 0, "corrections": 0}
         expected = "budget_exhausted"
+    elif case == "unknown-usage":
+        facade.usage = lambda: {"tokens": None, "wall_ms": 0, "attempts": 0, "corrections": 0}
+        expected = "observation_unavailable"
     elif case == "launch-loss":
         def lose(envelope: dict[str, object], artifacts: tuple[runtime.Artifact, ...],
                  boundary: runtime.ToolBoundary) -> str:
@@ -203,3 +206,25 @@ def test_runtime_blocks_ssrf_dns_rebinding_inherited_secrets_and_unpinned_acquis
     assert result["reason_code"] == "capability_denied"
     assert calls == []
     assert "must-not-inherit" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("case", ["over", "unknown", "revoked", "missing-output", "foreign-package"])
+def test_advisory_resources_do_not_waive_authority_or_output(tmp_path: Path, case: str) -> None:
+    facade, dispatch, calls = _setup(tmp_path)
+    prepared = facade.prepare(dispatch)
+    facade.nonce.reserve_dispatch(dispatch.issued, dispatch.nonce_bindings)
+    observed = facade.observe("simulated-worker-1")
+    facade.clock.advance(201)
+    facade.resource_limits_advisory = True
+    facade.usage = lambda: {"tokens": None if case == "unknown" else 10**12,
+        "wall_ms": 10**12, "attempts": 1000, "corrections": 1000}
+    if case == "revoked":
+        facade.nonce.disable_key()
+    elif case == "missing-output":
+        observed = replace(observed, outputs=())
+    elif case == "foreign-package":
+        prepared = runtime.PreparedDispatch(replace(dispatch, knowledge=b"foreign"))
+    result = facade.complete(prepared, observed)
+    assert (result["status"] == "accepted") == (case in {"over", "unknown"})
+    assert calls == ["observe"]  # Recovery never launches.
+    assert result["budget"] == dispatch.bindings["budget"]

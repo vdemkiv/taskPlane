@@ -100,6 +100,19 @@ def test_telemetry_receipt_precedes_seal(tmp_path, monkeypatch, unavailable):
         assert private not in portable
 
 
+@pytest.mark.parametrize("field,value", [
+    ("key_id", None), ("key_id", []), ("key_id", 42), ("key_id", {}),
+    ("issued_at", None), ("issued_at", []), ("issued_at", "100"),
+    ("issued_at", True), ("issued_at", 120.5),
+])
+def test_advisory_telemetry_refuses_malformed_signing_identity(tmp_path, monkeypatch, field, value):
+    inputs = replace(sources(tmp_path, monkeypatch), resource_limits_advisory=True)
+    assert telemetry.produce_attempt_telemetry(inputs)["fingerprint"]
+    malformed = dict(inputs.runtime_receipt, **{field: value})
+    with pytest.raises(telemetry.DispatchTelemetryError, match="signing identity"):
+        telemetry.produce_attempt_telemetry(replace(inputs, runtime_receipt=malformed))
+
+
 @pytest.mark.parametrize("case", ["sever-dispatch-output", "missing-runtime", "missing-knowledge",
     "missing-terminal", "missing-retention", "foreign-run", "stale-candidate", "stale-tree", "stale-impact",
     "untrusted-key", "missing-nonce", "changed-usage", "secret", "prompt", "transcript",

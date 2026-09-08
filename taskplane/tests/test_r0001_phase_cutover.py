@@ -88,6 +88,10 @@ def test_normal_runtime_telemetry_uses_native_ledger(tmp_path, monkeypatch, reco
         agent_transcript_path=str(transcript)) == 0
     completion = loop.next_action(ws)["phase_runtime"]["completion"]
     inputs, ref = loop._phase_bridge_telemetry(ws, completion)
+    import loop as flat_loop
+    flat_inputs, flat_ref = flat_loop._phase_bridge_telemetry(ws, completion)
+    assert flat_inputs.runtime_receipt == inputs.runtime_receipt
+    assert artifacts.read(flat_ref) == artifacts.read(ref)
     telemetry = artifacts.read(ref)
     assert inputs.runtime_receipt["payload"]["attempt_id"] == requested["dispatch_intent"]["intent_id"]
     assert telemetry["terminal_outcome"] == "complete"
@@ -748,15 +752,19 @@ def test_atomic_cutover_crash_boundaries(tmp_path, monkeypatch, boundary):
         assert "task_name" not in held
         return
     requested = loop.next_action(ws)
+    expected = loop.tp.peek_expectation(ws, requested["task_name"], strict=False)
+    loop.record_native_dispatch_observation(ws, expected=expected, native_task_name=requested["task_name"])
     assert _emit_host_hook(ws, requested, "SubagentStart", monkeypatch) == 0
     _authored_requirement(ws, stage)
     monkeypatch.setattr(run_store.RunStore, "commit", commit)
     with pytest.raises(SimulatedCrash):
         _emit_host_hook(ws, requested, "SubagentStop", monkeypatch)
     held = loop.next_action(ws)
-    assert held["phase_runtime"]["status"] == ("pending" if boundary.startswith("before") else "collected")
+    assert held["phase_runtime"]["status"] == ("recovery_required" if boundary.startswith("before") else "collected")
     assert "task_name" not in held
-    _emit_host_hook(ws, requested, "SubagentStop", monkeypatch)
+    # A fresh controller collects signed observations; no synthetic/replayed Stop.
+    recovered = loop.resolve(ws, "reconcile", phase_operation=requested["phase_runtime"]["operation_id"])
+    assert recovered.get("status") == "collected", recovered
     assert loop.next_action(ws)["phase_runtime"]["status"] == "collected"
     assert len([r for r in stage_migration.phase_records(store.load(stage["run_id"])).values()
         if r["operation"] == "phase_collect"]) == 1

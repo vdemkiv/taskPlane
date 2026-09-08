@@ -17,7 +17,7 @@ import os
 import posixpath
 import re
 import stat
-from typing import Final
+from typing import Any, Final
 
 if __package__:
     from . import review_evidence
@@ -180,7 +180,7 @@ def phase_records(manifest: Mapping[str, object]) -> dict[str, dict]:
         if not isinstance(row, dict) or set(row) != {"schema", "operation_id", "operation",
                 "request_fingerprint", "result", "result_fingerprint", "committed_revision"} or \
                 row["schema"] != "taskplane.phase-operation-receipt/v1" or row["operation_id"] != key or \
-                row["operation"] not in {"phase_routing", "phase_prepare", "phase_collect"} or \
+                row["operation"] not in {"phase_routing", "phase_prepare", "phase_collect", "phase_retry", "resource_policy"} or \
                 row["result_fingerprint"] != _fingerprint(row["result"]) or \
                 not isinstance(row["request_fingerprint"], str) or not _FINGERPRINT.fullmatch(row["request_fingerprint"]) or \
                 type(row["committed_revision"]) is not int or not 1 < row["committed_revision"] <= manifest["revision"]:
@@ -188,8 +188,10 @@ def phase_records(manifest: Mapping[str, object]) -> dict[str, dict]:
     return copy.deepcopy(rows)
 
 
-def commit_phase_record(store, run_id, *, expected_revision, operation_id,
-        operation, request_fingerprint, result, validate_authority):
+def commit_phase_record(store: run_store_module.RunStore, run_id: str, *,
+        expected_revision: int, operation_id: str, operation: str,
+        request_fingerprint: str, result: dict[str, Any],
+        validate_authority: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
     """Revision-CAS non-lifecycle data through RunStore's general commit API.
 
     No stage receipt is forged: lifecycle state and its journal stay owned by

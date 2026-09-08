@@ -79,6 +79,7 @@ class RuntimeReceiptAuthority:
     key_id: str
     now: int
     expires_at: int
+    durable_evidence: bool = False
 
     def require_current(self):
         key = self.keys[self.key_id]
@@ -90,12 +91,14 @@ class RuntimeReceiptAuthority:
         key = self.keys.get(receipt.get("key_id"))
         if key is None or receipt.get("key_id") != self.key_id:
             raise NativeEntryError("runtime signing key is not admitted for this attempt")
-        if not historical and key.status != "active":
+        if (not historical or self.durable_evidence) and key.status != "active":
             raise NativeEntryError("runtime signing key is disabled")
+        if self.durable_evidence and receipt.get("issued_at", self.now + 1) > self.now:
+            raise NativeEntryError("runtime receipt is from the future")
         checked = stage_handoff.verify_contract(receipt, trusted_keys=self.keys,
             expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
             expected_freshness=self.freshness, now=self.now,
-            store=store, historical=historical)
+            store=store, historical=historical or self.durable_evidence)
         result = checked["payload"]
         if result["status"] != "accepted" or any(result.get(k) != v for k, v in self.bindings.items()):
             raise NativeEntryError("runtime receipt differs from admitted attempt bindings")
@@ -115,7 +118,7 @@ class RuntimeReceiptAuthority:
 
 
 def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
-                              now: int, admit=False, authorize=None):
+                              now: int, admit=False, authorize=None, collection_policy: str | None = None):
     """Admit a purpose-limited key only through the incumbent host owner.
 
     The private policy is separate from worker lifecycle and nonce secrets.
@@ -131,6 +134,11 @@ def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
         raise NativeEntryError("runtime signing operation missing")
     if type(now) is not int or now < 0:
         raise NativeEntryError("runtime signing time invalid")
+    if collection_policy is not None and not re.fullmatch(r"[a-f0-9]{64}", collection_policy):
+        raise NativeEntryError("runtime collection policy invalid")
+    original_operation = operation
+    if collection_policy is not None:
+        operation += "-collection-" + collection_policy
     path = Path(kernel.tp_dir(workspace)) / "runtime-receipt-authority.json"
     identity = hashlib.sha256(os.path.realpath(workspace).encode()).hexdigest()
     with kernel.file_lock(str(path)):
@@ -154,6 +162,11 @@ def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
             raise NativeEntryError("runtime signing purpose or owner mismatch")
         if not isinstance(policy["keys"], dict) or not isinstance(policy["admissions"], dict):
             raise NativeEntryError("runtime signing key admission policy malformed")
+        original = policy["admissions"].get(original_operation)
+        if collection_policy is not None and original is not None and (
+                original.get("bindings") != dict(bindings) or original.get("freshness") != fresh or
+                policy["keys"].get(original.get("key_id"), {}).get("status") != "active"):
+            raise NativeEntryError("original runtime signing authority changed or is disabled")
         admission = policy["admissions"].get(operation)
         if admission is None and admit:
             if authorize is None:
@@ -161,6 +174,12 @@ def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
             if authorize() is False:
                 raise NativeEntryError("runtime signing host authority refused admission")
             expires = int(datetime.fromisoformat(str(bindings["deadline"]).replace("Z", "+00:00")).timestamp())
+            if collection_policy is not None:
+                # Resource duration is not an authorization expiry. This new,
+                # exact-operation signing admission is authorized by the run's
+                # explicit human policy; original admissions remain immutable.
+                # The independent cryptographic signing window is one day.
+                expires = now + 86400
             if expires <= now:
                 raise NativeEntryError("runtime signing admission is stale")
             secret = secrets.token_bytes(32)
@@ -189,7 +208,7 @@ def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
         if admission["key_id"] not in keys:
             raise NativeEntryError("runtime signing key is unadmitted")
         return RuntimeReceiptAuthority(dict(bindings), fresh, keys,
-            admission["key_id"], now, admission["expires_at"])
+            admission["key_id"], now, admission["expires_at"], collection_policy is not None)
 
 
 def disable_runtime_receipt_authority(kernel, workspace: str, *, bindings,
@@ -222,17 +241,23 @@ def disable_runtime_receipt_authority(kernel, workspace: str, *, bindings,
         kernel.atomic_write_json(str(path), policy, sort_keys=True, private=True)
 
 
-def phase_nonce_source(kernel, workspace: str, run_id: str):
+def phase_nonce_source(kernel, workspace: str, run_id: str, *, existing_only: bool = False):
     """Compose existing private worker-key custody with the nonce owner.
 
     This opens no new authority or observation source and makes no native
     readiness claim. Admission remains with the current stage authority.
     """
     from taskplane import delivery_ports, producer_observation
-    authority = kernel._worker_contract_authority(workspace, create=True)
+    authority = kernel._worker_contract_authority(workspace, create=not existing_only)
     root = kernel.external_store_root(workspace)
+    workspace_key = hashlib.sha256(os.path.realpath(workspace).encode()).hexdigest()
+    if existing_only:
+        domain = Path(root) / ".taskplane-evidence" / workspace_key / run_id / "producer_observation"
+        if not (domain / "nonce-state.json").is_file() or any(
+                not (domain / child).is_dir() for child in ("intents", "receipts")):
+            raise NativeEntryError("existing phase nonce custody is unavailable")
     evidence = delivery_ports.LocatorEvidenceStore(root,
-        hashlib.sha256(os.path.realpath(workspace).encode()).hexdigest(), run_id)
+        workspace_key, run_id)
     return producer_observation.AttemptNonceSource(evidence, key=authority["secret"])
 
 

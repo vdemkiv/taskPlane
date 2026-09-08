@@ -458,20 +458,25 @@ def test_supporting_pristine_init_next_prepares_once_and_picks_up_pending(
     record_property("native_host_execution", "not-performed")
 
 
-@pytest.mark.parametrize("change", ["session", "requirement"])
+@pytest.mark.parametrize("change", ["authorization_session", "requirement"])
 def test_supporting_pristine_next_rejects_changed_authority_before_effects(
     tmp_path, monkeypatch, record_property, change
 ):
     ws, store, run_id, requirement = _supporting_pristine_phase_run(tmp_path, monkeypatch)
     before = store.load(run_id)
-    if change == "session":
-        monkeypatch.setenv("TASKPLANE_SESSION_ID", "foreign-simulated-session")
+    if change == "authorization_session":
+        # Changing the recorded authorization is not the same as replacing
+        # the process/session that consumes its unchanged durable scope.
+        state = loop.load(ws)
+        state["_stage_native_root_authority"]["session_id"] = "foreign-authorization"
+        loop.save(ws, state)
     else:
         requirements.amend_requirement(ws, requirement["id"],
             acceptance=["changed supporting requirement must refuse bootstrap"])
     refused = loop.next_action(ws)
     assert "stage-native root bootstrap failed closed" in refused["error"]
-    assert f"{change} changed" in refused["error"]
+    assert ("authority is invalid" if change == "authorization_session" else
+            "requirement changed") in refused["error"]
     assert "task_name" not in refused
     assert "phase_runtime" not in refused
     assert store.load(run_id) == before

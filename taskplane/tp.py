@@ -160,6 +160,10 @@ def _set_effective_settings_snapshot(settings):
 def _effective_settings_snapshot():
     """Return the active snapshot, loading it once for direct API callers."""
     global _EFFECTIVE_SETTINGS
+    from taskplane import run_context
+    if run_context.current_settings() is not None:
+        from taskplane.settings import load_settings
+        return load_settings()
     if _EFFECTIVE_SETTINGS is None:
         from taskplane.settings import load_settings
         _EFFECTIVE_SETTINGS = load_settings(environment=os.environ)
@@ -393,12 +397,12 @@ def _existing_loop_step(ws: str) -> str | None:
     """Return the bounded current loop step without making it hook truth.
 
     An existing loop proves continuation context, not that Codex hooks are
-    live.  Onboarding uses this only to expose the already-supported,
-    attributable advisory path instead of demanding a restart.
+    live. Onboarding can expose read-only recovery without an enforcement
+    waiver or a new conversation.
     """
     try:
         import loop as loop_runtime
-        state = loop_runtime.load(ws)
+        state = loop_runtime._load_raw(ws)
     except Exception:
         return None
     if not isinstance(state, dict):
@@ -407,13 +411,13 @@ def _existing_loop_step(ws: str) -> str | None:
     return step[:64] or None
 
 
-def _prefer_existing_loop_advisory(ws: str, projection: dict) -> dict:
-    """Offer current-task advisory continuation for an established loop.
+def _prefer_existing_loop_resume(ws: str, projection: dict) -> dict:
+    """Separate recovery of durable scope from readiness to dispatch.
 
     ``ready`` stays false and the effective path stays ``transitioning``: no
     runtime receipt exists, so live enforcement remains unproven.  Only the
-    recovery recommendation changes to the explicit ``--advisory --by`` path
-    that governed commands already validate and persist.
+    recovery recommendation changes. Reading scope grants no new authority
+    and needs neither an advisory waiver nor a replacement session.
     """
     if projection.get("next_action") != "start_new_session":
         return projection
@@ -423,16 +427,16 @@ def _prefer_existing_loop_advisory(ws: str, projection: dict) -> dict:
     updated = dict(projection)
     effective = dict(updated.get("effective_path") or {})
     effective["reason"] = (
-        "an existing Taskplane loop can continue in this Codex task with "
-        "explicit --advisory --by attribution; start a new task only when "
-        "live hook enforcement is required")
+        "recover the saved run with loop resume in this task; loop next "
+        "revalidates authority and live enforcement before dispatch")
     updated["effective_path"] = effective
-    updated["next_action"] = "continue_advisory"
+    updated["next_action"] = "resume_run"
     updated["continuation"] = {
         "available": True,
         "loop_step": step,
-        "status": "advisory",
-        "requires": ["--advisory", "--by <human>"],
+        "status": "read_only",
+        "command": "loop resume",
+        "requires": [],
     }
     return updated
 
@@ -494,7 +498,8 @@ def _enforcement_check(
         ws: str, *, saved=None, advisory: bool = False,
         actor: str | None = None, run_id: str | None = None,
         revision: str | int | None = None,
-        prospective_activation: bool = False) -> tuple[dict, dict | None]:
+        prospective_activation: bool = False,
+        require_live: bool = True) -> tuple[dict, dict | None]:
     """Compute one decision and, in strict mode, one machine refusal."""
     prior = _saved_enforcement(saved)
     workspace_fp = hashlib.sha256(os.path.normcase(os.path.realpath(
@@ -504,6 +509,12 @@ def _enforcement_check(
         return prior, None
     snapshot = _host_capability_snapshot(ws)
     mode = _screen_enforcement_mode(snapshot.host)
+    if (os.environ.get("TASKPLANE_ENFORCE_SCREEN") is None and prior
+            and prior.get("workspace_fingerprint") == workspace_fp
+            and (run_id is None or prior.get("run_id") == run_id)):
+        # Policy belongs to the durable run, not the process that resumes it.
+        # Reprobe liveness below; retained policy is not retained live proof.
+        mode = prior["mode"]
     # A named slot does not exist until ``new`` activates it.  Loading that
     # slot to calculate pre-activation liveness would fail closed whenever a
     # sibling contract already exists, making a second slot impossible to
@@ -538,7 +549,7 @@ def _enforcement_check(
                 "error": str(exc), "enforcement": decision,
                 "recovery": ["repeat with --advisory --by <human>"],
             }
-    if mode == "strict" and decision["status"] == "unproven":
+    if require_live and mode == "strict" and decision["status"] == "unproven":
         recovery = (["run /reload-plugins, then retry this exact command",
                      "or repeat with --advisory --by <human>"]
                     if snapshot.host == "claude" and
@@ -933,12 +944,11 @@ def _onboard_report(ws: str) -> dict:
     if codex_hooks is not None:
         snapshot = _host_capability_snapshot(ws)
         host_capabilities = host_caps.onboarding_projection(snapshot)
-        host_capabilities = _prefer_existing_loop_advisory(
+        host_capabilities = _prefer_existing_loop_resume(
             ws, host_capabilities)
         native_effective = (host_capabilities["effective_path"]["value"]
                             == "native_effective")
-        advisory_continuation = (
-            host_capabilities.get("next_action") == "continue_advisory")
+        resumable = host_capabilities.get("next_action") == "resume_run"
         if native_effective:
             checks[0]["hint"] = (
                 "The loaded native Taskplane hook governs this checkout; "
@@ -977,10 +987,9 @@ def _onboard_report(ws: str) -> dict:
                          "receipt; no restart is required." if
                          host_capabilities["loaded_session"]["status"] ==
                          "supported" else
-                         "Continue the existing loop in this task with "
-                         "explicit --advisory --by attribution; start a new "
-                         "task only if live enforcement is required." if
-                         advisory_continuation else
+                         "Read the existing run with loop resume; dispatch "
+                         "will check live enforcement separately." if
+                         resumable else
                          "Start one new Codex task only after the initial "
                          "hook installation or a host policy change."),
             },
@@ -1605,6 +1614,10 @@ def cmd_screen_dispatch(a) -> int:
             not ti.get("role") or ti.get("role") == exp.get("agent"))
         ok = name_ok and not unknown_governed and model_ok and effort_ok \
             and context_ok and role_ok
+        tp.trace(ws, "native_dispatch_checks", name_ok=name_ok,
+                 known_brief=not unknown_governed, model_ok=model_ok,
+                 effort_ok=effort_ok, context_ok=context_ok, role_ok=role_ok,
+                 message_present=bool(message))
         if ok and exp is not None and exp.get("intent_id"):
             try:
                 import spend as _spend
@@ -1819,7 +1832,10 @@ def cmd_subagent_start(a) -> int:
     agent_type = event.get("agent_type")
     tp.trace(ws, "subagent_start", agent_id=agent_id,
              agent_type=agent_type, turn_id=event.get("turn_id"),
-             permission_mode=event.get("permission_mode"))
+             permission_mode=event.get("permission_mode"),
+             has_task_name=bool(event.get("task_name")),
+             has_agent_path=bool(event.get("agent_path")),
+             has_child_transcript=bool(event.get("agent_transcript_path")))
     binding = None
     try:
         binding = tp.bind_worker_contract_event(ws, event)
@@ -1927,7 +1943,7 @@ def cmd_subagent_stop(a) -> int:
         import loop as _loop_runtime
         state = _loop_runtime.load(ws) or {}
         route = state.get("evaluate_child_evidence")
-        native_task_name = str(event.get("agent_type") or "")
+        native_task_name = str(event.get("task_name") or event.get("agent_type") or "")
         evidence_child = (next((row for row in route.get(
             "child_dispatches") or []
             if isinstance(row, dict) and
@@ -2573,7 +2589,7 @@ def _transcript_projection_checkpoint_path(
         tp.tp_dir(ws), "transcript-usage", identity + ".json")
 
 
-def _transcript_projection_authority(ws: str) -> bytes:
+def _transcript_projection_authority(ws: str, *, create: bool = True) -> bytes:
     """Load the private engine authority used across CLI invocations."""
     path = os.path.join(
         tp.tp_dir(ws), "transcript-usage", "authority-v1.json")
@@ -2581,6 +2597,8 @@ def _transcript_projection_authority(ws: str) -> bytes:
         authority = tp.load_json(
             path, default=None, what="transcript checkpoint authority")
         if authority is None:
+            if not create:
+                raise tp.StateError(path, "original transcript observation authority is missing")
             secret = os.urandom(32)
             authority = {
                 "schema": "taskplane.transcript-checkpoint-authority/v1",
@@ -2675,6 +2693,8 @@ def _seal_terminal_dispatch_telemetry(
         ws: str, contract: dict, event: dict, *, outcome: str) -> dict:
     """Observe and finalize the exact native attempt before slot release."""
     import loop as _loop_runtime
+    from taskplane import run_context
+    advisory = run_context.resource_limits_advisory(ws)
 
     task_id = _contract_dispatch_task_id(contract)
     lifecycle = contract.get("worker_lifecycle") or {}
@@ -2685,7 +2705,7 @@ def _seal_terminal_dispatch_telemetry(
         return {"status": "not-bound"}
     import spend as _spend
     transcript = _spend.event_transcript(event)
-    usage_required = bool((contract.get("budget") or {}).get(
+    usage_required = not advisory and bool((contract.get("budget") or {}).get(
         "token_usage_required"))
     if not transcript:
         if usage_required:
@@ -2719,7 +2739,7 @@ def _seal_terminal_dispatch_telemetry(
                                         "unavailable")}
     terminal_ok, terminal_reason = _spend.status(
         contract, int((projection.get("usage") or {})["total_tokens"]))
-    if not terminal_ok:
+    if not terminal_ok and not advisory:
         raise ValueError(terminal_reason)
     metered_projection = dict(projection)
     native_record = None
@@ -3180,7 +3200,8 @@ def _screen(a) -> int:
                         _contract_dispatch_intent_id(contract) or None))
             except Exception:
                 pass
-        if _token_denial is not None:
+        from taskplane import run_context
+        if _token_denial is not None and not run_context.resource_limits_advisory(ws):
             _tok_why, _effective = _token_denial
             # A broken meter must fail closed, but it must not hide a more
             # specific authority boundary.  Preserve the contract's direct
@@ -3200,7 +3221,8 @@ def _screen(a) -> int:
     ok, reason = tp.budget_status(
         contract, used, reserve=_CLOSING_RESERVE,
         closing=_is_closing_command(command))
-    if not ok:
+    from taskplane import run_context
+    if not ok and not run_context.resource_limits_advisory(ws):
         _meter_bump(ws, tid, "denies")
         tp.trace(ws, "budget_deny", tool=tool_name, used=used,
                  max=(contract.get("budget") or {}).get("max_actions"))
@@ -3632,24 +3654,51 @@ def cmd_loop(a) -> int:
     action = a.loop_action
     out = None
     enforcement = None
+    if action == "next":
+        observed = loopmod.read_pending_action(ws)
+        if observed is not None:
+            print(json.dumps(observed, sort_keys=True))
+            return 1 if observed.get("error") else 0
+    if action == "init" and getattr(a, "advisory", False):
+        # Validate an explicit waiver before acquiring any run storage.
+        _, refusal = _enforcement_check(ws, advisory=True,
+            actor=getattr(a, "by", None), require_live=False)
+        if refusal:
+            print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
+            return 1
+    if (action == "init" and loopmod.load(ws) is None
+            and runtime_storage.load_workspace_locator(ws) is None):
+        import preflight
+        prepared = preflight.RepositoryPreflight().prepare(
+            ws, workspace=ws, host={"kind": tp.host(),
+                "session_id": (os.environ.get("CODEX_THREAD_ID") or
+                               os.environ.get("CLAUDE_SESSION_ID"))})
+        if prepared.get("status") != "ready":
+            print(json.dumps(prepared, sort_keys=True))
+            return 2
     if action in {"next", "gate"}:
         refusal = _graph_quality_refusal(ws, "Design/Plan/Review/DoD")
         if refusal:
             print(json.dumps(refusal, indent=2))
             return 1
-    guarded_actions = {"init", "next", "wave", "claim", "gate", "approve"}
-    if action in guarded_actions:
+    # Defining or reading a run launches no worker. Its durable scope must
+    # exist before a transport can be admitted, including after a fresh
+    # session. Enforcement belongs at the effect/dispatch boundary.
+    guarded_actions = {"next", "wave", "claim", "gate", "approve"}
+    if action in guarded_actions or action == "init":
         current = loopmod.load(ws)
+        locator = runtime_storage.load_workspace_locator(ws)
         enforcement, refusal = _enforcement_check(
             ws, saved=(current or {}).get("enforcement"),
             advisory=bool(getattr(a, "advisory", False)),
             actor=getattr(a, "by", None),
-            run_id=(current or {}).get("run_id"),
-            revision=((current or {}).get("baseline") or tp.git_head(ws)))
+            run_id=((current or {}).get("run_id") or (locator or {}).get("run_id")),
+            revision=((current or {}).get("baseline") or tp.git_head(ws)),
+            require_live=action != "init")
         if refusal:
             print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
             return 1
-        if current is not None:
+        if current is not None and action != "init":
             loopmod.record_enforcement(ws, enforcement)
     if action == "init":
         checkpoints = (a.checkpoints.split(",") if a.checkpoints is not None
@@ -3661,10 +3710,9 @@ def cmd_loop(a) -> int:
                           design=a.design, design_only=a.design_only,
                           force=getattr(a, "force", False),
                           by=getattr(a, "by", None),
+                          enforcement_decision=enforcement,
                           reuse_approved_design=getattr(
                               a, "reuse_approved_design", False))
-        if isinstance(st, dict) and not st.get("error") and enforcement:
-            loopmod.record_enforcement(ws, enforcement)
         # Only collapse to the success summary when the engine did NOT refuse.
         # Previously any dict with a "step" key (including a refusal that also
         # carries the CURRENT step) was reported as {"initialized": true} with
@@ -3674,12 +3722,14 @@ def cmd_loop(a) -> int:
         if isinstance(st, dict) and st.get("error"):
             out = st
         elif isinstance(st, dict) and "step" in st:
-            out = {"initialized": True, "step": st["step"]}
+            out = {"initialized": True, "step": st["step"], "run_id": st["run_id"]}
             for k in ("note", "archived", "warning"):
                 if st.get(k):
                     out[k] = st[k]
         else:
             out = st
+    elif action == "resume":
+        out = loopmod.resume(ws)
     elif action == "next":
         import depgraph
         try:
@@ -3741,12 +3791,24 @@ def cmd_loop(a) -> int:
         out = loopmod.approve(ws, force=a.force, by=getattr(a, "by", None))
     elif action == "select":
         out = loopmod.select(ws, a.choice, note=a.note or "")
+    elif action == "restore-settings":
+        from taskplane import run_context
+        out = run_context.restore_settings(loopmod, ws, a.settings_from)
+    elif action == "continue-build":
+        saved = loopmod._load_raw(ws) or {}
+        out = loopmod.continue_build(ws, source=a.amendment_from, by=a.by,
+            request=a.request, expected_fingerprint=a.fingerprint, check=a.check,
+            observation_authority=(_transcript_projection_authority(ws, create=False)
+                if (saved.get("root_hygiene") or {}).get("meter") else None))
     elif action == "resolve":
         out = loopmod.resolve(
             ws, a.decision, by=getattr(a, "by", None),
             accept_producer_receipt_outage=getattr(
                 a, "accept_producer_receipt_outage", False),
-            outage_fingerprint=getattr(a, "outage_fingerprint", None))
+            outage_fingerprint=getattr(a, "outage_fingerprint", None),
+            phase_operation=getattr(a, "phase_operation", None),
+            candidate_fingerprint=getattr(a, "candidate_fingerprint", None),
+            worker_stopped=getattr(a, "worker_stopped", False))
     elif action == "replan":
         out = loopmod.replan(ws, by=a.by, reason=a.reason)
     elif action == "evidence":
@@ -3823,8 +3885,9 @@ def cmd_loop(a) -> int:
     # BYTE-IDENTICAL to the pre-workflow payload (the MANDATORY fallback
     # and the only Codex path — R-0004's core promise).
     if isinstance(out, dict):
+        saved_loop = loopmod._load_raw(ws) if action == "continue-build" else loopmod.load(ws)
         canonical = enforcement or _saved_enforcement(
-            (loopmod.load(ws) or {}).get("enforcement"))
+            (saved_loop or {}).get("enforcement"))
         if canonical:
             out.setdefault("enforcement", canonical)
     if action in ("wave", "next"):
@@ -5395,8 +5458,8 @@ def cmd_context(a) -> int:
     ws = _workspace(a.workspace)
     lifecycle_released = []
     terminal_recovery = None
-    if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
-            "native", "bridge"}:
+    if ((os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
+            "native", "bridge"} and not getattr(a, "context_replay", False)):
         # A new/resumed host session is a safe recovery point only for slots
         # the durable loop already proves completed.  Live/current workers
         # remain untouched; terminal or stage-advanced slots are moved to the
@@ -5452,8 +5515,21 @@ def cmd_context(a) -> int:
         lines.append(f"  track: {trk['active']} "
                      f"({len(trk['tracks'])} total)")
     if st.get("loop") != "none":
-        lines.append(f"  loop: step={st['step']} goal=\"{st['goal'][:48]}\" "
+        lines.append(f"  loop: step={st['step']} goal={json.dumps(st['goal'][:4096])} "
                      f"tasks={len(st.get('tasks') or [])}")
+        # Restore a bounded pointer to the durable scope. A resumed root
+        # must ask the engine for its current dispatch, not reconstruct an
+        # approved plan or authority from its predecessor's conversation.
+        saved = loopmod.load(ws) or {}
+        lines.append(f"  run: {saved.get('run_id')}")
+        lines.append(f"  continuation state: {loopmod.state_dir(ws)}")
+        if saved.get("requirement_id"):
+            lines.append(f"  requirement: {saved['requirement_id']}")
+        if saved.get("spec_path"):
+            lines.append(f"  specification: {json.dumps(saved['spec_path'])}")
+        lines.append("  Read saved scope with the workspace launcher: loop resume. "
+                     "Then loop next revalidates authority and pending work; "
+                     "session context grants no new approval.")
     if reqs_open:
         lines.append(f"  requirements open: {len(reqs_open)} "
                      f"(latest {reqs_open[-1]['id']} {reqs_open[-1]['title'][:40]})")
@@ -5554,11 +5630,55 @@ def _replay_hook_response(command: str, response_class: str) -> int:
     return 0
 
 
+def _invoke_run_command(a, workspace: str) -> int:
+    # Scope discovery and exact historical configuration restoration stay
+    # reachable even when the saved configuration is absent or corrupt.
+    if a.cmd in {"context", "summary"} or (
+            a.cmd == "loop" and getattr(a, "loop_action", None) in {
+                "resume", "status", "restore-settings", "continue-build"}):
+        return a.fn(a)
+    from taskplane import run_context, settings
+    import loop as loopmod
+    if a.cmd == "loop" and getattr(a, "loop_action", None) == "next":
+        observed = loopmod.read_pending_action(workspace)
+        if observed is not None:
+            print(json.dumps(observed, sort_keys=True))
+            return 1 if observed.get("error") else 0
+    # Admission inputs belong to the selected run, not CLI construction.
+    # Initialize/prepare keep their existing validation-before-write rule.
+    state = None if a.cmd in {"repository", "onboard"} or (
+        a.cmd == "loop" and getattr(a, "loop_action", None) == "init") else loopmod._load_raw(workspace)
+    try:
+        with run_context.bind(workspace, state):
+            _set_effective_settings_snapshot(settings.load_settings(environment=os.environ))
+            return a.fn(a)
+    except (run_context.RunContextError, settings.SettingsError) as exc:
+        print(json.dumps({"error": "operational settings are invalid: " + str(exc),
+                          "dispatch_allowed": False}, sort_keys=True))
+        print(f"taskplane: operational settings are invalid: {exc}", file=sys.stderr)
+        return 1
+
+
 def _run_hook_command(a) -> int:
     """Claim native/bridge hook events once, execute once, replay by class."""
+    # Schema/help discovery is independent of workspace or run storage.
+    if a.cmd in {"help", "version"}:
+        from taskplane.settings import load_settings
+        _set_effective_settings_snapshot(load_settings(environment=os.environ))
+        return a.fn(a)
     hook_path = (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower()
     if a.cmd not in _HOOK_COMMANDS or hook_path not in {"native", "bridge"}:
-        return a.fn(a)
+        workspace = _workspace(getattr(a, "workspace", None))
+        if a.cmd == "repository" and getattr(a, "repository_action", None) == "prepare":
+            try:
+                runtime_storage.load_workspace_locator(workspace)
+            except runtime_storage.StorageIdentityError:
+                # Keep the incumbent explicit locator-repair boundary
+                # reachable. Its handler validates checkout/spec first.
+                return a.fn(a)
+        # An explicit home conflicting with a valid locator is not repair.
+        runtime_storage.bind_workspace_taskplane_home(workspace, os.environ)
+        return _invoke_run_command(a, workspace)
 
     raw = sys.stdin.read()
     try:
@@ -5567,21 +5687,29 @@ def _run_hook_command(a) -> int:
         event = {}
     if not isinstance(event, dict):
         event = {}
+    if a.cmd in {"subagent-start", "subagent-stop"}:
+        import codex_identity
+        event = codex_identity.normalize_lifecycle(event)
+        raw = json.dumps(event, separators=(",", ":"))
     event_cwd = event.get("cwd")
     workspace = _workspace(
         event_cwd if isinstance(event_cwd, str) and event_cwd
         else getattr(a, "workspace", None))
+    a.workspace = workspace
     receipt_home = runtime_storage.bind_hook_taskplane_home(
         workspace, os.environ, hook_path=hook_path)
     host_caps.record_runtime_hook_receipt(
         receipt_home, hook_path=hook_path, event=event)
     claim = tp.claim_hook_event(
         workspace, a.cmd, event, hook_path=hook_path)
-    if not claim.get("execute"):
+    context_replay = (not claim.get("execute") and a.cmd == "context"
+                      and claim.get("response_class") in {"context", "empty"})
+    if not claim.get("execute") and not context_replay:
         return _replay_hook_response(
             a.cmd, str(claim.get("response_class") or "block"))
+    a.context_replay = context_replay
 
-    if a.cmd == "subagent-stop":
+    if a.cmd in {"subagent-start", "subagent-stop"}:
         event = dict(event)
         event["_taskplane_hook_claim_id"] = claim.get("claim_id")
         raw = json.dumps(event, separators=(",", ":"))
@@ -5590,17 +5718,30 @@ def _run_hook_command(a) -> int:
     try:
         sys.stdin = io.StringIO(raw)
         with contextlib.redirect_stdout(captured):
-            returncode = a.fn(a)
+            returncode = _invoke_run_command(a, workspace)
     except Exception:
-        tp.complete_hook_event(workspace, claim, response_class="error")
+        if not context_replay:
+            tp.complete_hook_event(workspace, claim, response_class="error")
         raise
     finally:
         sys.stdin = original_stdin
 
     output = captured.getvalue()
+    if a.cmd == "context" and not returncode:
+        # Codex expects SessionStart JSON. Direct `tp context` remains plain
+        # text; both initial and duplicate hook paths carry usable context.
+        try:
+            payload = json.loads(output)
+        except (ValueError, TypeError):
+            payload = None
+        if not isinstance(payload, dict):
+            output = json.dumps({"hookSpecificOutput": {
+                "hookEventName": "SessionStart", "additionalContext": output.strip(),
+            }}) + "\n"
     response_class = _hook_response_class(a.cmd, output, int(returncode or 0))
-    tp.complete_hook_event(
-        workspace, claim, response_class=response_class)
+    if not context_replay:
+        tp.complete_hook_event(
+            workspace, claim, response_class=response_class)
     sys.stdout.write(output)
     return int(returncode or 0)
 
@@ -6300,7 +6441,8 @@ def cmd_review(a) -> int:
                 command = command[1:]
             result = rv.run_review_validation_command(
                 ws, command=command, cwd=a.cwd, run_id=a.run_id,
-                timeout=a.timeout)
+                timeout=(a.timeout if a.timeout is not None else
+                         _effective_settings_snapshot().limits.timeouts["subprocess_seconds"]))
         except Exception as exc:
             print(json.dumps({
                 "schema": "taskplane.review-validation-command/v1",
@@ -8205,16 +8347,8 @@ def main(argv=None) -> int:
     # launcher; otherwise SessionStart contaminates unrelated Codex chats.
     if _unbound_global_hook(argv):
         return 0
-    # Interpret and authenticate the complete operational policy before CLI
-    # construction or any workflow action can create repository state.
-    try:
-        from taskplane import settings as operational_settings
-        _set_effective_settings_snapshot(
-            operational_settings.load_settings(environment=os.environ))
-    except Exception as exc:
-        print(f"taskplane: operational settings are invalid: {exc}",
-              file=sys.stderr)
-        return 1
+    # Parse without today's settings. The selected run's saved policy is
+    # authenticated by _invoke_run_command before an action can create state.
     compatibility_refusal = _enforce_stage_compatibility(argv)
     if compatibility_refusal is not None:
         return compatibility_refusal
@@ -8431,6 +8565,7 @@ def main(argv=None) -> int:
     lp = sub.add_parser("loop", help="drive the Evaluate-Loop engine")
     lp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lsub = lp.add_subparsers(dest="loop_action", required=True)
+    lsub.add_parser("resume", help="read durable run scope and continuation without dispatch")
     li = lsub.add_parser("init", help="start an Evaluate-Loop for a goal")
     li.add_argument("goal", nargs="*")
     li.add_argument("--spec", help="path to an existing spec (skips PM)")
@@ -8545,9 +8680,26 @@ def main(argv=None) -> int:
     lr = lsub.add_parser(
         "resolve", help="resolve a blocked loop: retry, pass, skip, defer or abort")
     lr.add_argument(
-        "decision", choices=["retry", "pass", "skip", "defer", "abort"])
+        "decision", choices=["retry", "pass", "skip", "defer", "abort", "limits-advisory", "reconcile"])
     lr.add_argument("--by",
-                    help="human approving an exact producer-receipt outage")
+                    help="human approving the exact recovery decision")
+    lr.add_argument("--phase-operation", help="exact existing phase operation to reconcile or retry once")
+    lr.add_argument("--candidate-fingerprint", help="exact candidate SHA-256 for the new phase attempt")
+    lrestore = lsub.add_parser("restore-settings",
+        help="restore a digest-only run's exact original settings without changing policy")
+    lrestore.add_argument("--from", dest="settings_from", required=True,
+        help="original complete settings JSON matching the saved run digest")
+    lcontinue = lsub.add_parser("continue-build",
+        help="human: validate and consume an exact legacy Build scope append without resetting work")
+    lcontinue.add_argument("--from", dest="amendment_from", required=True,
+        help="exact legacy amendment JSON packet with original Plan and settings")
+    lcontinue.add_argument("--by", required=True, help="original human policy owner")
+    lcontinue.add_argument("--request", required=True, help="explicit approved scope and advisory-resource instruction")
+    lcontinue.add_argument("--fingerprint", required=True, help="approved canonical amendment packet SHA-256")
+    lcontinue.add_argument("--check", action="store_true", help="validate without committing loop state or dispatching")
+    lcontinue.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    lr.add_argument("--worker-stopped", action="store_true",
+                    help="attest the expired unbound worker is stopped; not a completion or pass")
     lr.add_argument(
         "--accept-producer-receipt-outage", action="store_true",
         help="accept only the exact fingerprint supplied alongside --by")
@@ -9112,8 +9264,7 @@ def main(argv=None) -> int:
     rvv.add_argument("--cwd", default=".", help="sandbox-relative working directory")
     rvv.add_argument(
         "--timeout", type=int,
-        default=_effective_settings_snapshot().limits.timeouts[
-            "subprocess_seconds"],
+        default=None,
                      help="command timeout in seconds (maximum 1800)")
     rvv.add_argument("command", nargs=argparse.REMAINDER,
                      help="command argv after --; no shell interpretation")

@@ -241,7 +241,7 @@ class AttemptNonceSource:
         return hmac.new(self._key, _canonical_bytes(value), hashlib.sha256).hexdigest()
 
     def _checked(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
-                 state: _NonceState, *, active: bool = True) -> _NonceRecord:
+                 state: _NonceState, *, active: bool = True, enforce_deadline: bool = True) -> _NonceRecord:
         checked = _nonce_bindings(bindings)
         if active:
             self._active(state)
@@ -266,7 +266,7 @@ class AttemptNonceSource:
         if not hmac.compare_digest(issued.secret.hex(), record["secret"]) or \
                 not hmac.compare_digest(_canonical_bytes(receipt), _canonical_bytes(record["receipt"])):
             raise ProducerObservationError("nonce durable issuance mismatch")
-        if active and _number(self.clock.wall_time(), "clock.wall_time") >= \
+        if active and enforce_deadline and _number(self.clock.wall_time(), "clock.wall_time") >= \
                 _number(checked["deadline"], "deadline"):
             raise ProducerObservationError("nonce attempt deadline expired")
         return record
@@ -301,9 +301,9 @@ class AttemptNonceSource:
             return IssuedAttemptNonce(secret, receipt)
 
     def validate(self, issued: IssuedAttemptNonce,
-                 bindings: Mapping[str, object]) -> dict[str, object]:
+                 bindings: Mapping[str, object], *, enforce_deadline: bool = True) -> dict[str, object]:
         with self.store._domain_lock(self._directory):
-            self._checked(issued, bindings, self._read())
+            self._checked(issued, bindings, self._read(), enforce_deadline=enforce_deadline)
             return dict(issued.receipt)
 
     def effect_state(self, bindings: Mapping[str, object]) -> str:
@@ -378,7 +378,7 @@ class AttemptNonceSource:
         owner = {key: _text(event.get(key), key) for key in ("agent_id", "agent_type", "task_name")}
         owner["session_id"] = _text(event.get("session_id") or event.get("thread_id"), "session_id")
         turn = _text(event.get("turn_id"), "turn_id")
-        if owner["agent_type"] != task_name or owner["task_name"] != task_name:
+        if owner["task_name"] != task_name:
             raise ProducerObservationError("stale_or_foreign_event")
         usage = event.get("usage")
         tokens = usage.get("total_tokens") if isinstance(usage, Mapping) else None
@@ -451,6 +451,14 @@ class AttemptNonceSource:
             if start["owner"] != terminal["owner"] or terminal["observed_at"] < start["observed_at"]:
                 raise ProducerObservationError("stale_or_foreign_event")
             return start, terminal
+
+    def terminal_hooks(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object]
+                       ) -> tuple[dict[str, object], dict[str, object]] | None:
+        """Read a completed host observation, distinguishing absence from corruption."""
+        path = self._hook_path(issued, "terminal")
+        if not path.exists() and not path.is_symlink():
+            return None
+        return self.phase_hooks(issued, bindings)
 
     def effect(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
                action: Callable[[], _EffectResult]) -> _EffectResult:
@@ -782,8 +790,7 @@ def _stopping_identity(
         raise ProducerObservationError(
             "Codex SubagentStop stopping-agent identity is required")
     expected_name = str(dispatch["task_name"])
-    if identity["agent_type"] != expected_name or \
-            identity["task_name"] != expected_name:
+    if identity["task_name"] != expected_name:
         raise ProducerObservationError(
             "Codex SubagentStop stopping agent does not match emitted "
             "producer dispatch")
@@ -803,8 +810,7 @@ def _decode_stopping_identity(
     for field in _STOP_IDENTITY_FIELDS:
         _text(identity.get(field), field)
     expected_name = str(dispatch["task_name"])
-    if identity["agent_type"] != expected_name or \
-            identity["task_name"] != expected_name:
+    if identity["task_name"] != expected_name:
         raise ProducerObservationError(
             "producer observation stopping agent mismatched")
     return identity
